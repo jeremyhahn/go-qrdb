@@ -1,0 +1,1103 @@
+// Copyright 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package mcp
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/mark3labs/mcp-go/mcp"
+	mcpserver "github.com/mark3labs/mcp-go/server"
+
+	mcpapi "github.com/jeremyhahn/go-qrdb/pkg/api/mcp"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+)
+
+// ---------------------------------------------------------------------------
+// Mock services
+// ---------------------------------------------------------------------------
+
+type mockKVService struct {
+	mu    sync.RWMutex
+	store map[string][]byte
+
+	putErr  error
+	getErr  error
+	delErr  error
+	listErr error
+}
+
+func newMockKVService() *mockKVService {
+	return &mockKVService{store: make(map[string][]byte)}
+}
+
+func (m *mockKVService) Put(_ context.Context, key string, value []byte) error {
+	if m.putErr != nil {
+		return m.putErr
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.store[key] = value
+	return nil
+}
+
+func (m *mockKVService) Get(_ context.Context, key string) ([]byte, error) {
+	if m.getErr != nil {
+		return nil, m.getErr
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	v, ok := m.store[key]
+	if !ok {
+		return nil, &service.KeyNotFoundError{Key: key}
+	}
+	return v, nil
+}
+
+func (m *mockKVService) Delete(_ context.Context, key string) error {
+	if m.delErr != nil {
+		return m.delErr
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.store, key)
+	return nil
+}
+
+func (m *mockKVService) List(_ context.Context, prefix string) ([]string, error) {
+	if m.listErr != nil {
+		return nil, m.listErr
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var keys []string
+	for k := range m.store {
+		if prefix == "" || strings.HasPrefix(k, prefix) {
+			keys = append(keys, k)
+		}
+	}
+	return keys, nil
+}
+
+type mockAdminService struct {
+	healthResult    *service.HealthStatus
+	statusResult    *service.StatusInfo
+	peersResult     *service.PeersInfo
+	healthErr       error
+	statusErr       error
+	peersErr        error
+	addMemberErr    error
+	removeMemberErr error
+	snapshotErr     error
+	drainErr        error
+}
+
+func newMockAdminService() *mockAdminService {
+	return &mockAdminService{
+		healthResult: &service.HealthStatus{Status: "ok", Leader: true},
+		statusResult: &service.StatusInfo{
+			NodeID:      "node-1",
+			RaftAddress: "127.0.0.1:63001",
+			IsLeader:    true,
+			LeaderID:    1,
+			ShardCount:  1,
+			IsDraining:  false,
+		},
+		peersResult: &service.PeersInfo{
+			Shards: []service.ShardPeers{
+				{
+					ShardID:  1,
+					LeaderID: 1,
+					Peers: []service.PeerInfo{
+						{ReplicaID: 1, Address: "127.0.0.1:63001", IsLeader: true},
+						{ReplicaID: 2, Address: "127.0.0.2:63001", IsLeader: false},
+					},
+				},
+			},
+		},
+	}
+}
+
+func (m *mockAdminService) Health(_ context.Context) (*service.HealthStatus, error) {
+	if m.healthErr != nil {
+		return nil, m.healthErr
+	}
+	return m.healthResult, nil
+}
+
+func (m *mockAdminService) Status(_ context.Context) (*service.StatusInfo, error) {
+	if m.statusErr != nil {
+		return nil, m.statusErr
+	}
+	return m.statusResult, nil
+}
+
+func (m *mockAdminService) Peers(_ context.Context) (*service.PeersInfo, error) {
+	if m.peersErr != nil {
+		return nil, m.peersErr
+	}
+	return m.peersResult, nil
+}
+
+func (m *mockAdminService) AddMember(_ context.Context, _, _ uint64, _ string) error {
+	return m.addMemberErr
+}
+
+func (m *mockAdminService) RemoveMember(_ context.Context, _, _ uint64) error {
+	return m.removeMemberErr
+}
+
+func (m *mockAdminService) RequestSnapshot(_ context.Context, _ uint64) error {
+	return m.snapshotErr
+}
+
+func (m *mockAdminService) Drain(_ context.Context) error {
+	return m.drainErr
+}
+
+// Compile-time interface assertions for mock services.
+var (
+	_ service.KVServicer    = (*mockKVService)(nil)
+	_ service.AdminServicer = (*mockAdminService)(nil)
+)
+
+// ---------------------------------------------------------------------------
+// Test helpers
+// ---------------------------------------------------------------------------
+
+// buildMCPServer creates a real MCP server (in-process) with all tools
+// registered, suitable for use with NewInProcess.
+func buildMCPServer(kvSvc service.KVServicer, adminSvc service.AdminServicer) *mcpserver.MCPServer {
+	srv := mcpapi.NewServer(kvSvc, adminSvc, ":0")
+	return srv.MCPServer()
+}
+
+// connectInProcess creates a new in-process MCP SDK Transport, connects
+// it, and returns it along with a cleanup function.
+func connectInProcess(t *testing.T, kvSvc service.KVServicer, adminSvc service.AdminServicer) (*Transport, func()) {
+	t.Helper()
+
+	mcpSrv := buildMCPServer(kvSvc, adminSvc)
+
+	tr, err := NewInProcess(mcpSrv)
+	if err != nil {
+		t.Fatalf("NewInProcess: %v", err)
+	}
+
+	if connErr := tr.Connect(context.Background()); connErr != nil {
+		t.Fatalf("Connect: %v", connErr)
+	}
+
+	cleanup := func() {
+		_ = tr.Close()
+	}
+
+	return tr, cleanup
+}
+
+// ---------------------------------------------------------------------------
+// Constructor tests
+// ---------------------------------------------------------------------------
+
+func TestNew_MissingAddress(t *testing.T) {
+	_, err := New()
+	if err == nil {
+		t.Fatal("expected error for missing address")
+	}
+	var cfgErr *transport.ConfigError
+	if !errors.As(err, &cfgErr) {
+		t.Fatalf("expected *transport.ConfigError, got %T: %v", err, err)
+	}
+}
+
+func TestNew_ValidAddress(t *testing.T) {
+	tr, err := New(transport.WithAddress("http://localhost:63004/mcp"))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if tr == nil {
+		t.Fatal("expected non-nil transport")
+	}
+}
+
+func TestNewInProcess_NilServer(t *testing.T) {
+	_, err := NewInProcess(nil)
+	if err == nil {
+		t.Fatal("expected error for nil MCPServer")
+	}
+	var cfgErr *transport.ConfigError
+	if !errors.As(err, &cfgErr) {
+		t.Fatalf("expected *transport.ConfigError, got %T: %v", err, err)
+	}
+}
+
+func TestNewInProcess_ValidServer(t *testing.T) {
+	mcpSrv := buildMCPServer(newMockKVService(), newMockAdminService())
+	tr, err := NewInProcess(mcpSrv)
+	if err != nil {
+		t.Fatalf("NewInProcess: %v", err)
+	}
+	if tr == nil {
+		t.Fatal("expected non-nil transport")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Lifecycle tests
+// ---------------------------------------------------------------------------
+
+func TestConnect_InProcess(t *testing.T) {
+	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
+	defer cleanup()
+
+	if !tr.Healthy(context.Background()) {
+		t.Fatal("expected Healthy to return true after Connect")
+	}
+}
+
+func TestConnect_ClosedTransport(t *testing.T) {
+	mcpSrv := buildMCPServer(newMockKVService(), newMockAdminService())
+
+	tr, err := NewInProcess(mcpSrv)
+	if err != nil {
+		t.Fatalf("NewInProcess: %v", err)
+	}
+	// Close before connect.
+	_ = tr.Close()
+
+	err = tr.Connect(context.Background())
+	if err == nil {
+		t.Fatal("expected error on Connect after Close")
+	}
+	var closedErr *transport.ClosedError
+	if !errors.As(err, &closedErr) {
+		t.Fatalf("expected *transport.ClosedError, got %T: %v", err, err)
+	}
+}
+
+func TestClose_Idempotent(t *testing.T) {
+	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
+	defer cleanup()
+
+	if err := tr.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+	// Second close should succeed without error.
+	if err := tr.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+}
+
+func TestHealthy_AfterClose(t *testing.T) {
+	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
+	defer cleanup()
+
+	_ = tr.Close()
+	if tr.Healthy(context.Background()) {
+		t.Fatal("expected Healthy=false after Close")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// KV operations tests
+// ---------------------------------------------------------------------------
+
+func TestPutGetDelete(t *testing.T) {
+	kvSvc := newMockKVService()
+	tr, cleanup := connectInProcess(t, kvSvc, newMockAdminService())
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Put
+	if err := tr.Put(ctx, "hello", []byte("world")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	// Get
+	val, err := tr.Get(ctx, "hello")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if string(val) != "world" {
+		t.Fatalf("expected value %q, got %q", "world", string(val))
+	}
+
+	// Delete
+	if err := tr.Delete(ctx, "hello"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	// Get after delete returns KeyNotFoundError.
+	_, err = tr.Get(ctx, "hello")
+	if err == nil {
+		t.Fatal("expected error on Get after Delete")
+	}
+	var knfErr *transport.KeyNotFoundError
+	if !errors.As(err, &knfErr) {
+		t.Fatalf("expected *transport.KeyNotFoundError, got %T: %v", err, err)
+	}
+}
+
+func TestGet_KeyNotFound(t *testing.T) {
+	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
+	defer cleanup()
+
+	_, err := tr.Get(context.Background(), "nonexistent")
+	if err == nil {
+		t.Fatal("expected error for missing key")
+	}
+	var knfErr *transport.KeyNotFoundError
+	if !errors.As(err, &knfErr) {
+		t.Fatalf("expected *transport.KeyNotFoundError, got %T: %v", err, err)
+	}
+}
+
+func TestList(t *testing.T) {
+	kvSvc := newMockKVService()
+	tr, cleanup := connectInProcess(t, kvSvc, newMockAdminService())
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Insert keys with different prefixes.
+	for _, key := range []string{"app:1", "app:2", "other:1"} {
+		if err := tr.Put(ctx, key, []byte("v")); err != nil {
+			t.Fatalf("Put %q: %v", key, err)
+		}
+	}
+
+	// List all keys.
+	keys, err := tr.List(ctx, "")
+	if err != nil {
+		t.Fatalf("List all: %v", err)
+	}
+	if len(keys) != 3 {
+		t.Fatalf("expected 3 keys, got %d", len(keys))
+	}
+
+	// List with prefix.
+	keys, err = tr.List(ctx, "app:")
+	if err != nil {
+		t.Fatalf("List with prefix: %v", err)
+	}
+	if len(keys) != 2 {
+		t.Fatalf("expected 2 keys with prefix 'app:', got %d", len(keys))
+	}
+}
+
+func TestPut_OnClosedTransport(t *testing.T) {
+	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
+	defer cleanup()
+
+	_ = tr.Close()
+	err := tr.Put(context.Background(), "key", []byte("val"))
+	if err == nil {
+		t.Fatal("expected error on closed transport")
+	}
+	var closedErr *transport.ClosedError
+	if !errors.As(err, &closedErr) {
+		t.Fatalf("expected *transport.ClosedError, got %T: %v", err, err)
+	}
+}
+
+func TestGet_OnClosedTransport(t *testing.T) {
+	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
+	defer cleanup()
+
+	_ = tr.Close()
+	_, err := tr.Get(context.Background(), "key")
+	if err == nil {
+		t.Fatal("expected error on closed transport")
+	}
+	var closedErr *transport.ClosedError
+	if !errors.As(err, &closedErr) {
+		t.Fatalf("expected *transport.ClosedError, got %T: %v", err, err)
+	}
+}
+
+func TestDelete_OnClosedTransport(t *testing.T) {
+	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
+	defer cleanup()
+
+	_ = tr.Close()
+	err := tr.Delete(context.Background(), "key")
+	if err == nil {
+		t.Fatal("expected error on closed transport")
+	}
+	var closedErr *transport.ClosedError
+	if !errors.As(err, &closedErr) {
+		t.Fatalf("expected *transport.ClosedError, got %T: %v", err, err)
+	}
+}
+
+func TestList_OnClosedTransport(t *testing.T) {
+	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
+	defer cleanup()
+
+	_ = tr.Close()
+	_, err := tr.List(context.Background(), "")
+	if err == nil {
+		t.Fatal("expected error on closed transport")
+	}
+	var closedErr *transport.ClosedError
+	if !errors.As(err, &closedErr) {
+		t.Fatalf("expected *transport.ClosedError, got %T: %v", err, err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Admin operations tests
+// ---------------------------------------------------------------------------
+
+func TestHealth(t *testing.T) {
+	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
+	defer cleanup()
+
+	resp, err := tr.Health(context.Background())
+	if err != nil {
+		t.Fatalf("Health: %v", err)
+	}
+	if resp.Status != "ok" {
+		t.Fatalf("expected status %q, got %q", "ok", resp.Status)
+	}
+	if !resp.IsLeader {
+		t.Fatal("expected IsLeader=true")
+	}
+}
+
+func TestHealth_OnClosedTransport(t *testing.T) {
+	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
+	defer cleanup()
+
+	_ = tr.Close()
+	_, err := tr.Health(context.Background())
+	if err == nil {
+		t.Fatal("expected error on closed transport")
+	}
+	var closedErr *transport.ClosedError
+	if !errors.As(err, &closedErr) {
+		t.Fatalf("expected *transport.ClosedError, got %T: %v", err, err)
+	}
+}
+
+func TestStatus(t *testing.T) {
+	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
+	defer cleanup()
+
+	resp, err := tr.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if resp.NodeID != "node-1" {
+		t.Fatalf("expected NodeID %q, got %q", "node-1", resp.NodeID)
+	}
+	if resp.RaftAddress != "127.0.0.1:63001" {
+		t.Fatalf("expected RaftAddress %q, got %q", "127.0.0.1:63001", resp.RaftAddress)
+	}
+	if !resp.IsLeader {
+		t.Fatal("expected IsLeader=true")
+	}
+	if resp.LeaderID != 1 {
+		t.Fatalf("expected LeaderID=1, got %d", resp.LeaderID)
+	}
+	if resp.ShardCount != 1 {
+		t.Fatalf("expected ShardCount=1, got %d", resp.ShardCount)
+	}
+	if resp.IsDraining {
+		t.Fatal("expected IsDraining=false")
+	}
+}
+
+func TestStatus_OnClosedTransport(t *testing.T) {
+	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
+	defer cleanup()
+
+	_ = tr.Close()
+	_, err := tr.Status(context.Background())
+	if err == nil {
+		t.Fatal("expected error on closed transport")
+	}
+	var closedErr *transport.ClosedError
+	if !errors.As(err, &closedErr) {
+		t.Fatalf("expected *transport.ClosedError, got %T: %v", err, err)
+	}
+}
+
+func TestPeers(t *testing.T) {
+	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
+	defer cleanup()
+
+	resp, err := tr.Peers(context.Background())
+	if err != nil {
+		t.Fatalf("Peers: %v", err)
+	}
+	if len(resp.Shards) != 1 {
+		t.Fatalf("expected 1 shard, got %d", len(resp.Shards))
+	}
+	shard := resp.Shards[0]
+	if shard.ShardID != 1 {
+		t.Fatalf("expected ShardID=1, got %d", shard.ShardID)
+	}
+	if shard.LeaderID != 1 {
+		t.Fatalf("expected LeaderID=1, got %d", shard.LeaderID)
+	}
+	if len(shard.Peers) != 2 {
+		t.Fatalf("expected 2 peers, got %d", len(shard.Peers))
+	}
+}
+
+func TestPeers_OnClosedTransport(t *testing.T) {
+	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
+	defer cleanup()
+
+	_ = tr.Close()
+	_, err := tr.Peers(context.Background())
+	if err == nil {
+		t.Fatal("expected error on closed transport")
+	}
+	var closedErr *transport.ClosedError
+	if !errors.As(err, &closedErr) {
+		t.Fatalf("expected *transport.ClosedError, got %T: %v", err, err)
+	}
+}
+
+func TestAddMember(t *testing.T) {
+	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
+	defer cleanup()
+
+	err := tr.AddMember(context.Background(), 1, 3, "127.0.0.3:63001")
+	if err != nil {
+		t.Fatalf("AddMember: %v", err)
+	}
+}
+
+func TestAddMember_OnClosedTransport(t *testing.T) {
+	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
+	defer cleanup()
+
+	_ = tr.Close()
+	err := tr.AddMember(context.Background(), 1, 3, "127.0.0.3:63001")
+	if err == nil {
+		t.Fatal("expected error on closed transport")
+	}
+	var closedErr *transport.ClosedError
+	if !errors.As(err, &closedErr) {
+		t.Fatalf("expected *transport.ClosedError, got %T: %v", err, err)
+	}
+}
+
+func TestRemoveMember(t *testing.T) {
+	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
+	defer cleanup()
+
+	err := tr.RemoveMember(context.Background(), 1, 2)
+	if err != nil {
+		t.Fatalf("RemoveMember: %v", err)
+	}
+}
+
+func TestRemoveMember_OnClosedTransport(t *testing.T) {
+	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
+	defer cleanup()
+
+	_ = tr.Close()
+	err := tr.RemoveMember(context.Background(), 1, 2)
+	if err == nil {
+		t.Fatal("expected error on closed transport")
+	}
+	var closedErr *transport.ClosedError
+	if !errors.As(err, &closedErr) {
+		t.Fatalf("expected *transport.ClosedError, got %T: %v", err, err)
+	}
+}
+
+func TestRequestSnapshot(t *testing.T) {
+	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
+	defer cleanup()
+
+	err := tr.RequestSnapshot(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("RequestSnapshot: %v", err)
+	}
+}
+
+func TestRequestSnapshot_OnClosedTransport(t *testing.T) {
+	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
+	defer cleanup()
+
+	_ = tr.Close()
+	err := tr.RequestSnapshot(context.Background(), 1)
+	if err == nil {
+		t.Fatal("expected error on closed transport")
+	}
+	var closedErr *transport.ClosedError
+	if !errors.As(err, &closedErr) {
+		t.Fatalf("expected *transport.ClosedError, got %T: %v", err, err)
+	}
+}
+
+func TestDrain(t *testing.T) {
+	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
+	defer cleanup()
+
+	err := tr.Drain(context.Background())
+	if err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+}
+
+func TestDrain_OnClosedTransport(t *testing.T) {
+	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
+	defer cleanup()
+
+	_ = tr.Close()
+	err := tr.Drain(context.Background())
+	if err == nil {
+		t.Fatal("expected error on closed transport")
+	}
+	var closedErr *transport.ClosedError
+	if !errors.As(err, &closedErr) {
+		t.Fatalf("expected *transport.ClosedError, got %T: %v", err, err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Request method test
+// ---------------------------------------------------------------------------
+
+func TestRequest_OnClosedTransport(t *testing.T) {
+	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
+	defer cleanup()
+
+	_ = tr.Close()
+	err := tr.Request(context.Background(), "qrdb_health", nil, nil)
+	if err == nil {
+		t.Fatal("expected error on closed transport")
+	}
+	var closedErr *transport.ClosedError
+	if !errors.As(err, &closedErr) {
+		t.Fatalf("expected *transport.ClosedError, got %T: %v", err, err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Error type tests
+// ---------------------------------------------------------------------------
+
+func TestInitializeError_Format(t *testing.T) {
+	inner := errors.New("handshake failed")
+	err := &initializeError{Err: inner}
+	if !strings.Contains(err.Error(), "initialization failed") {
+		t.Fatalf("expected 'initialization failed' in message, got %q", err.Error())
+	}
+	if err.Unwrap() != inner {
+		t.Fatal("Unwrap did not return inner error")
+	}
+}
+
+func TestToolCallError_Format(t *testing.T) {
+	inner := errors.New("timeout")
+	err := &toolCallError{Tool: "qrdb_put", Err: inner}
+	if !strings.Contains(err.Error(), "qrdb_put") {
+		t.Fatalf("expected tool name in message, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "timeout") {
+		t.Fatalf("expected 'timeout' in message, got %q", err.Error())
+	}
+	if err.Unwrap() != inner {
+		t.Fatal("Unwrap did not return inner error")
+	}
+}
+
+func TestToolResultError_Format(t *testing.T) {
+	err := &toolResultError{Tool: "qrdb_get", Message: "key not found"}
+	if !strings.Contains(err.Error(), "qrdb_get") {
+		t.Fatalf("expected tool name in message, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "key not found") {
+		t.Fatalf("expected message content, got %q", err.Error())
+	}
+}
+
+func TestJsonDecodeError_Format(t *testing.T) {
+	inner := errors.New("unexpected end of JSON")
+	err := &jsonDecodeError{Err: inner}
+	if !strings.Contains(err.Error(), "JSON decode failed") {
+		t.Fatalf("expected 'JSON decode failed' in message, got %q", err.Error())
+	}
+	if err.Unwrap() != inner {
+		t.Fatal("Unwrap did not return inner error")
+	}
+}
+
+func TestNoContentError_Format(t *testing.T) {
+	err := &noContentError{Tool: "qrdb_health"}
+	if !strings.Contains(err.Error(), "qrdb_health") {
+		t.Fatalf("expected tool name in message, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "no content") {
+		t.Fatalf("expected 'no content' in message, got %q", err.Error())
+	}
+}
+
+func TestUnexpectedContentTypeError_Format(t *testing.T) {
+	err := &unexpectedContentTypeError{Tool: "qrdb_status"}
+	if !strings.Contains(err.Error(), "qrdb_status") {
+		t.Fatalf("expected tool name in message, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "unexpected content type") {
+		t.Fatalf("expected 'unexpected content type' in message, got %q", err.Error())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// isNotFoundError helper tests
+// ---------------------------------------------------------------------------
+
+func TestIsNotFoundError_Nil(t *testing.T) {
+	if isNotFoundError(nil) {
+		t.Fatal("expected false for nil error")
+	}
+}
+
+func TestIsNotFoundError_MatchingError(t *testing.T) {
+	err := errors.New("key not found: mykey")
+	if !isNotFoundError(err) {
+		t.Fatal("expected true for 'not found' error")
+	}
+}
+
+func TestIsNotFoundError_NonMatchingError(t *testing.T) {
+	err := errors.New("internal server error")
+	if isNotFoundError(err) {
+		t.Fatal("expected false for non-matching error")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Service error path tests (cover callTool error propagation)
+// ---------------------------------------------------------------------------
+
+func TestPut_ServiceError(t *testing.T) {
+	kvSvc := newMockKVService()
+	kvSvc.putErr = errors.New("raft timeout")
+	tr, cleanup := connectInProcess(t, kvSvc, newMockAdminService())
+	defer cleanup()
+
+	err := tr.Put(context.Background(), "key", []byte("val"))
+	if err == nil {
+		t.Fatal("expected error from service")
+	}
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) {
+		t.Fatalf("expected *transport.RequestError, got %T: %v", err, err)
+	}
+}
+
+func TestGet_ServiceError(t *testing.T) {
+	kvSvc := newMockKVService()
+	kvSvc.getErr = errors.New("internal error")
+	tr, cleanup := connectInProcess(t, kvSvc, newMockAdminService())
+	defer cleanup()
+
+	_, err := tr.Get(context.Background(), "key")
+	if err == nil {
+		t.Fatal("expected error from service")
+	}
+	// Internal error should NOT be a KeyNotFoundError.
+	var knfErr *transport.KeyNotFoundError
+	if errors.As(err, &knfErr) {
+		t.Fatal("expected non-KeyNotFoundError for internal error")
+	}
+}
+
+func TestDelete_ServiceError(t *testing.T) {
+	kvSvc := newMockKVService()
+	kvSvc.delErr = errors.New("raft timeout")
+	tr, cleanup := connectInProcess(t, kvSvc, newMockAdminService())
+	defer cleanup()
+
+	err := tr.Delete(context.Background(), "key")
+	if err == nil {
+		t.Fatal("expected error from service")
+	}
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) {
+		t.Fatalf("expected *transport.RequestError, got %T: %v", err, err)
+	}
+}
+
+func TestList_ServiceError(t *testing.T) {
+	kvSvc := newMockKVService()
+	kvSvc.listErr = errors.New("raft timeout")
+	tr, cleanup := connectInProcess(t, kvSvc, newMockAdminService())
+	defer cleanup()
+
+	_, err := tr.List(context.Background(), "")
+	if err == nil {
+		t.Fatal("expected error from service")
+	}
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) {
+		t.Fatalf("expected *transport.RequestError, got %T: %v", err, err)
+	}
+}
+
+func TestHealth_ServiceError(t *testing.T) {
+	adminSvc := newMockAdminService()
+	adminSvc.healthErr = errors.New("health check failed")
+	tr, cleanup := connectInProcess(t, newMockKVService(), adminSvc)
+	defer cleanup()
+
+	_, err := tr.Health(context.Background())
+	if err == nil {
+		t.Fatal("expected error from service")
+	}
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) {
+		t.Fatalf("expected *transport.RequestError, got %T: %v", err, err)
+	}
+}
+
+func TestStatus_ServiceError(t *testing.T) {
+	adminSvc := newMockAdminService()
+	adminSvc.statusErr = errors.New("status unavailable")
+	tr, cleanup := connectInProcess(t, newMockKVService(), adminSvc)
+	defer cleanup()
+
+	_, err := tr.Status(context.Background())
+	if err == nil {
+		t.Fatal("expected error from service")
+	}
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) {
+		t.Fatalf("expected *transport.RequestError, got %T: %v", err, err)
+	}
+}
+
+func TestPeers_ServiceError(t *testing.T) {
+	adminSvc := newMockAdminService()
+	adminSvc.peersErr = errors.New("peers unavailable")
+	tr, cleanup := connectInProcess(t, newMockKVService(), adminSvc)
+	defer cleanup()
+
+	_, err := tr.Peers(context.Background())
+	if err == nil {
+		t.Fatal("expected error from service")
+	}
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) {
+		t.Fatalf("expected *transport.RequestError, got %T: %v", err, err)
+	}
+}
+
+func TestAddMember_ServiceError(t *testing.T) {
+	adminSvc := newMockAdminService()
+	adminSvc.addMemberErr = errors.New("not leader")
+	tr, cleanup := connectInProcess(t, newMockKVService(), adminSvc)
+	defer cleanup()
+
+	err := tr.AddMember(context.Background(), 1, 3, "127.0.0.3:63001")
+	if err == nil {
+		t.Fatal("expected error from service")
+	}
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) {
+		t.Fatalf("expected *transport.RequestError, got %T: %v", err, err)
+	}
+}
+
+func TestRemoveMember_ServiceError(t *testing.T) {
+	adminSvc := newMockAdminService()
+	adminSvc.removeMemberErr = errors.New("not leader")
+	tr, cleanup := connectInProcess(t, newMockKVService(), adminSvc)
+	defer cleanup()
+
+	err := tr.RemoveMember(context.Background(), 1, 2)
+	if err == nil {
+		t.Fatal("expected error from service")
+	}
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) {
+		t.Fatalf("expected *transport.RequestError, got %T: %v", err, err)
+	}
+}
+
+func TestRequestSnapshot_ServiceError(t *testing.T) {
+	adminSvc := newMockAdminService()
+	adminSvc.snapshotErr = errors.New("snapshot failed")
+	tr, cleanup := connectInProcess(t, newMockKVService(), adminSvc)
+	defer cleanup()
+
+	err := tr.RequestSnapshot(context.Background(), 1)
+	if err == nil {
+		t.Fatal("expected error from service")
+	}
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) {
+		t.Fatalf("expected *transport.RequestError, got %T: %v", err, err)
+	}
+}
+
+func TestDrain_ServiceError(t *testing.T) {
+	adminSvc := newMockAdminService()
+	adminSvc.drainErr = errors.New("drain failed")
+	tr, cleanup := connectInProcess(t, newMockKVService(), adminSvc)
+	defer cleanup()
+
+	err := tr.Drain(context.Background())
+	if err == nil {
+		t.Fatal("expected error from service")
+	}
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) {
+		t.Fatalf("expected *transport.RequestError, got %T: %v", err, err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Request method success and edge cases
+// ---------------------------------------------------------------------------
+
+func TestRequest_Success(t *testing.T) {
+	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
+	defer cleanup()
+
+	// Use a real tool name so the MCP server can route it.
+	err := tr.Request(context.Background(), "qrdb_health", nil, nil)
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+}
+
+func TestRequest_WithMapArgs(t *testing.T) {
+	kvSvc := newMockKVService()
+	tr, cleanup := connectInProcess(t, kvSvc, newMockAdminService())
+	defer cleanup()
+
+	// Put via Request with map args.
+	err := tr.Request(context.Background(), "qrdb_put", map[string]any{
+		"key":   "rkey",
+		"value": "rval",
+	}, nil)
+	if err != nil {
+		t.Fatalf("Request put: %v", err)
+	}
+
+	// Verify through KV interface.
+	val, getErr := tr.Get(context.Background(), "rkey")
+	if getErr != nil {
+		t.Fatalf("Get: %v", getErr)
+	}
+	if string(val) != "rval" {
+		t.Fatalf("expected %q, got %q", "rval", string(val))
+	}
+}
+
+func TestRequest_UnknownTool(t *testing.T) {
+	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
+	defer cleanup()
+
+	err := tr.Request(context.Background(), "nonexistent_tool", nil, nil)
+	if err == nil {
+		t.Fatal("expected error for unknown tool")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Healthy edge cases
+// ---------------------------------------------------------------------------
+
+func TestHealthy_NilClient(t *testing.T) {
+	mcpSrv := buildMCPServer(newMockKVService(), newMockAdminService())
+	tr, err := NewInProcess(mcpSrv)
+	if err != nil {
+		t.Fatalf("NewInProcess: %v", err)
+	}
+	// Don't call Connect — client remains nil.
+	if tr.Healthy(context.Background()) {
+		t.Fatal("expected Healthy=false when client is nil")
+	}
+}
+
+func TestHealthy_ServiceError(t *testing.T) {
+	adminSvc := newMockAdminService()
+	adminSvc.healthErr = errors.New("unavailable")
+	tr, cleanup := connectInProcess(t, newMockKVService(), adminSvc)
+	defer cleanup()
+
+	// Health tool returns error → Healthy returns false.
+	if tr.Healthy(context.Background()) {
+		t.Fatal("expected Healthy=false when health tool returns error")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// extractTextContent edge cases
+// ---------------------------------------------------------------------------
+
+func TestExtractTextContent_NilResult(t *testing.T) {
+	text := extractTextContent(nil)
+	if text != "" {
+		t.Fatalf("expected empty string, got %q", text)
+	}
+}
+
+func TestExtractTextContent_EmptyContent(t *testing.T) {
+	result := &mcp.CallToolResult{}
+	text := extractTextContent(result)
+	if text != "" {
+		t.Fatalf("expected empty string, got %q", text)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Client composite interface test (compile-time check validated at line 38)
+// ---------------------------------------------------------------------------
+
+func TestTransport_ImplementsClientInterface(t *testing.T) {
+	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
+	defer cleanup()
+
+	// Verify the transport satisfies the composite Client interface at runtime.
+	var client transport.Client = tr
+	ctx := context.Background()
+
+	// Use via Client interface — KV Put then Get.
+	if err := client.Put(ctx, "iface-key", []byte("iface-val")); err != nil {
+		t.Fatalf("Put via Client: %v", err)
+	}
+	val, err := client.Get(ctx, "iface-key")
+	if err != nil {
+		t.Fatalf("Get via Client: %v", err)
+	}
+	if string(val) != "iface-val" {
+		t.Fatalf("expected %q, got %q", "iface-val", string(val))
+	}
+
+	// Admin Health via Client interface.
+	resp, err := client.Health(ctx)
+	if err != nil {
+		t.Fatalf("Health via Client: %v", err)
+	}
+	if resp.Status != "ok" {
+		t.Fatalf("expected status %q, got %q", "ok", resp.Status)
+	}
+}

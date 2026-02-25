@@ -1,0 +1,68 @@
+# TiKV benchmark cluster with TLS.
+# Uses host networking for direct host access to PD and TiKV.
+
+volumes:
+  certs:
+  pd-data:
+  tikv-data:
+
+services:
+  # Init container: generate self-signed TLS certs
+  cert-gen:
+    image: alpine:3.19
+    volumes:
+      - certs:/certs
+      - ./scripts:/scripts:ro
+    entrypoint: ["/bin/sh", "/scripts/gen-certs.sh"]
+
+  # Placement Driver (1N profile) — mTLS
+  pd:
+    image: pingcap/pd:v8.5.0
+    network_mode: host
+    depends_on:
+      cert-gen:
+        condition: service_completed_successfully
+    volumes:
+      - certs:/certs:ro
+      - pd-data:/data/pd
+    command:
+      - --name=pd
+      - --client-urls=https://0.0.0.0:2379
+      - --peer-urls=https://0.0.0.0:2380
+      - --advertise-client-urls=https://127.0.0.1:2379
+      - --advertise-peer-urls=https://127.0.0.1:2380
+      - --cacert=/certs/ca.pem
+      - --cert=/certs/server.pem
+      - --key=/certs/server-key.pem
+      - --data-dir=/data/pd
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-check-certificate --certificate=/certs/server.pem --private-key=/certs/server-key.pem -q -O- https://127.0.0.1:2379/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  # TiKV (1N profile)
+  tikv:
+    image: pingcap/tikv:v8.5.0
+    network_mode: host
+    depends_on:
+      pd:
+        condition: service_healthy
+    volumes:
+      - certs:/certs:ro
+      - tikv-data:/data/tikv
+      - ./tikv.toml:/tikv.toml:ro
+    command:
+      - --addr=0.0.0.0:20160
+      - --advertise-addr=127.0.0.1:20160
+      - --status-addr=0.0.0.0:20180
+      - --advertise-status-addr=127.0.0.1:20180
+      - --pd-endpoints=https://127.0.0.1:2379
+      - --config=/tikv.toml
+      - --data-dir=/data/tikv
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-check-certificate -q -O- https://127.0.0.1:20180/status"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 15s

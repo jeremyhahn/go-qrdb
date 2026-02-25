@@ -1,0 +1,142 @@
+// Copyright 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package service
+
+import (
+	"context"
+	"errors"
+
+	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/lease"
+	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
+)
+
+// LeaseServicer is an alias for the canonical lease.LeaseServicer interface.
+type LeaseServicer = lease.LeaseServicer
+
+// LeaseService implements LeaseServicer backed by a QuicRaft host
+// running an MVCCStateMachine with an attached Lessor.
+type LeaseService struct {
+	host    Host
+	shardID uint64
+}
+
+// NewLeaseService creates a new LeaseServicer that operates on the
+// specified shard. The shard must be running an MVCCStateMachine with
+// an attached Lessor for lease operations to succeed.
+func NewLeaseService(host Host, shardID uint64) LeaseServicer {
+	return &LeaseService{
+		host:    host,
+		shardID: shardID,
+	}
+}
+
+// Grant creates a new lease with the specified TTL in seconds. The
+// server assigns a unique lease ID. Returns the lease including the
+// assigned ID and granted TTL.
+func (s *LeaseService) Grant(ctx context.Context, ttl int64) (*Lease, error) {
+	cmd := protocol.EncodeLeaseGrant(ttl)
+	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+	if err != nil {
+		return nil, s.translateProposeError(err)
+	}
+
+	return &Lease{
+		ID:         int64(result.Value),
+		TTL:        ttl,
+		GrantedTTL: ttl,
+	}, nil
+}
+
+// Revoke immediately expires a lease and deletes all attached keys.
+func (s *LeaseService) Revoke(ctx context.Context, leaseID int64) error {
+	cmd := protocol.EncodeLeaseRevoke(leaseID)
+	_, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+	if err != nil {
+		return s.translateProposeError(err)
+	}
+	return nil
+}
+
+// KeepAlive resets the TTL on an existing lease, preventing it from
+// expiring. Returns the refreshed lease with updated TTL.
+func (s *LeaseService) KeepAlive(ctx context.Context, leaseID int64) (*Lease, error) {
+	cmd := protocol.EncodeLeaseKeepAlive(leaseID)
+	_, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+	if err != nil {
+		return nil, s.translateProposeError(err)
+	}
+
+	// Read back the lease to get current state.
+	return s.TimeToLive(ctx, leaseID)
+}
+
+// TimeToLive returns the current state of a lease including its
+// remaining TTL and attached keys.
+func (s *LeaseService) TimeToLive(ctx context.Context, leaseID int64) (*Lease, error) {
+	result, err := s.host.SyncRead(ctx, s.shardID, LeaseTimeToLiveQuery{ID: leaseID})
+	if err != nil {
+		return nil, s.translateReadError(err)
+	}
+
+	l, ok := result.(*Lease)
+	if !ok {
+		return nil, &unexpectedResultTypeError{}
+	}
+	return l, nil
+}
+
+// Leases returns all active leases.
+func (s *LeaseService) Leases(ctx context.Context) ([]*Lease, error) {
+	result, err := s.host.SyncRead(ctx, s.shardID, LeasesQuery{})
+	if err != nil {
+		return nil, s.translateReadError(err)
+	}
+
+	leases, ok := result.([]*Lease)
+	if !ok {
+		return nil, &unexpectedResultTypeError{}
+	}
+	return leases, nil
+}
+
+// translateProposeError converts QuicRaft proposal errors to service-level
+// typed errors.
+func (s *LeaseService) translateProposeError(err error) error {
+	var nle *quicraft.NotLeaderError
+	if errors.As(err, &nle) {
+		return &NotLeaderError{
+			ShardID:       nle.ShardID,
+			LeaderID:      nle.LeaderID,
+			LeaderAddress: nle.LeaderAddress,
+		}
+	}
+	return &ProposeError{Err: err}
+}
+
+// translateReadError converts QuicRaft read errors to service-level
+// typed errors.
+func (s *LeaseService) translateReadError(err error) error {
+	var nle *quicraft.NotLeaderError
+	if errors.As(err, &nle) {
+		return &NotLeaderError{
+			ShardID:       nle.ShardID,
+			LeaderID:      nle.LeaderID,
+			LeaderAddress: nle.LeaderAddress,
+		}
+	}
+	return &ReadError{Err: err}
+}

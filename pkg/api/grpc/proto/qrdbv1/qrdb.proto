@@ -1,0 +1,644 @@
+// Copyright 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+
+package qrdb.v1;
+
+option go_package = "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1";
+
+import "google/protobuf/empty.proto";
+
+// QRDBService is the gRPC API for the QRDB distributed key-value database.
+// It provides data-plane (KV CRUD) and control-plane (admin) operations.
+service QRDBService {
+    // -----------------------------------------------------------------------
+    // Basic KV operations (unchanged)
+    // -----------------------------------------------------------------------
+
+    // Put stores a key-value pair via Raft consensus.
+    rpc Put(PutRequest) returns (PutResponse);
+
+    // Get retrieves a value by key using a linearizable read.
+    rpc Get(GetRequest) returns (GetResponse);
+
+    // Delete removes a key via Raft consensus.
+    rpc Delete(DeleteRequest) returns (DeleteResponse);
+
+    // List returns sorted keys matching a prefix.
+    rpc List(ListRequest) returns (ListResponse);
+
+    // -----------------------------------------------------------------------
+    // MVCC operations
+    // -----------------------------------------------------------------------
+
+    // PutWithLease stores a key-value pair with an attached lease.
+    rpc PutWithLease(PutWithLeaseRequest) returns (PutWithLeaseResponse);
+
+    // GetRevision retrieves a key-value pair with full MVCC revision metadata.
+    rpc GetRevision(GetRevisionRequest) returns (GetRevisionResponse);
+
+    // GetAtRevision retrieves a key-value pair at a historical revision.
+    rpc GetAtRevision(GetAtRevisionRequest) returns (GetAtRevisionResponse);
+
+    // Range returns key-value pairs in the half-open interval [start, end).
+    rpc Range(RangeRequest) returns (RangeResponse);
+
+    // Compact discards all MVCC revisions older than the specified revision.
+    rpc Compact(CompactRequest) returns (google.protobuf.Empty);
+
+    // CurrentRevision returns the latest committed MVCC revision.
+    rpc CurrentRevision(google.protobuf.Empty) returns (CurrentRevisionResponse);
+
+    // -----------------------------------------------------------------------
+    // Transaction operations
+    // -----------------------------------------------------------------------
+
+    // Transaction executes an atomic compare-and-swap transaction.
+    rpc Transaction(TransactionRequest) returns (TransactionResponse);
+
+    // -----------------------------------------------------------------------
+    // Batch operations
+    // -----------------------------------------------------------------------
+
+    // Batch executes multiple operations atomically.
+    rpc Batch(BatchRequest) returns (BatchResponse);
+
+    // -----------------------------------------------------------------------
+    // Watch operations
+    // -----------------------------------------------------------------------
+
+    // Watch creates a server-streaming watcher that delivers events for
+    // the specified key or prefix.
+    rpc Watch(WatchRequest) returns (stream WatchResponse);
+
+    // -----------------------------------------------------------------------
+    // Lease operations
+    // -----------------------------------------------------------------------
+
+    // LeaseGrant creates a new lease with the specified TTL.
+    rpc LeaseGrant(LeaseGrantRequest) returns (LeaseGrantResponse);
+
+    // LeaseRevoke immediately expires a lease and deletes attached keys.
+    rpc LeaseRevoke(LeaseRevokeRequest) returns (google.protobuf.Empty);
+
+    // LeaseKeepAlive resets the TTL on an existing lease.
+    rpc LeaseKeepAlive(LeaseKeepAliveRequest) returns (LeaseKeepAliveResponse);
+
+    // LeaseTimeToLive returns the current state of a lease.
+    rpc LeaseTimeToLive(LeaseTimeToLiveRequest) returns (LeaseTimeToLiveResponse);
+
+    // LeaseList returns all active leases.
+    rpc LeaseList(google.protobuf.Empty) returns (LeaseListResponse);
+
+    // -----------------------------------------------------------------------
+    // Index operations (Tier 2)
+    // -----------------------------------------------------------------------
+
+    // IndexCreate creates a new secondary index.
+    rpc IndexCreate(IndexCreateRequest) returns (google.protobuf.Empty);
+
+    // IndexDrop removes a secondary index.
+    rpc IndexDrop(IndexDropRequest) returns (google.protobuf.Empty);
+
+    // IndexQuery returns entry IDs matching an exact value in an index.
+    rpc IndexQuery(IndexQueryRequest) returns (IndexQueryResponse);
+
+    // IndexScan returns entries in an index within a value range.
+    rpc IndexScan(IndexScanRequest) returns (IndexScanResponse);
+
+    // -----------------------------------------------------------------------
+    // Time-series operations (Tier 2)
+    // -----------------------------------------------------------------------
+
+    // TSWrite stores a single time-series data point.
+    rpc TSWrite(TSWriteRequest) returns (google.protobuf.Empty);
+
+    // TSWriteBatch stores multiple time-series data points atomically.
+    rpc TSWriteBatch(TSWriteBatchRequest) returns (google.protobuf.Empty);
+
+    // TSQuery retrieves data points for a metric within a time range.
+    rpc TSQuery(TSQueryRequest) returns (TSQueryResponse);
+
+    // TSAggregate computes an aggregation over data points in a time range.
+    rpc TSAggregate(TSAggregateRequest) returns (TSAggregateResponse);
+
+    // -----------------------------------------------------------------------
+    // Admin operations (unchanged)
+    // -----------------------------------------------------------------------
+
+    // Health returns the node health status.
+    rpc Health(google.protobuf.Empty) returns (HealthResponse);
+
+    // Status returns detailed node status information.
+    rpc Status(google.protobuf.Empty) returns (StatusResponse);
+
+    // Peers returns the peer list for all loaded shards.
+    rpc Peers(google.protobuf.Empty) returns (PeersResponse);
+
+    // AddMember adds a new node to a shard.
+    rpc AddMember(AddMemberRequest) returns (google.protobuf.Empty);
+
+    // RemoveMember removes a node from a shard.
+    rpc RemoveMember(RemoveMemberRequest) returns (google.protobuf.Empty);
+
+    // RequestSnapshot triggers a snapshot for the given shard.
+    rpc RequestSnapshot(RequestSnapshotMessage) returns (google.protobuf.Empty);
+
+    // Drain transitions the node into drain mode.
+    rpc Drain(google.protobuf.Empty) returns (google.protobuf.Empty);
+}
+
+// ===========================================================================
+// Basic KV messages (unchanged)
+// ===========================================================================
+
+// PutRequest is the request payload for Put.
+message PutRequest {
+    string key = 1;
+    bytes value = 2;
+}
+
+// PutResponse is the response payload for Put.
+message PutResponse {}
+
+// GetRequest is the request payload for Get.
+message GetRequest {
+    string key = 1;
+}
+
+// GetResponse is the response payload for Get.
+message GetResponse {
+    bytes value = 1;
+}
+
+// DeleteRequest is the request payload for Delete.
+message DeleteRequest {
+    string key = 1;
+}
+
+// DeleteResponse is the response payload for Delete.
+message DeleteResponse {}
+
+// ListRequest is the request payload for List.
+message ListRequest {
+    string prefix = 1;
+}
+
+// ListResponse is the response payload for List.
+message ListResponse {
+    repeated string keys = 1;
+}
+
+// ===========================================================================
+// MVCC messages
+// ===========================================================================
+
+// KeyValue is a versioned key-value pair with MVCC revision metadata.
+message KeyValue {
+    bytes key = 1;
+    bytes value = 2;
+    int64 create_revision = 3;
+    int64 mod_revision = 4;
+    int64 version = 5;
+    int64 lease_id = 6;
+}
+
+// PutWithLeaseRequest stores a key-value pair with an attached lease.
+message PutWithLeaseRequest {
+    string key = 1;
+    bytes value = 2;
+    int64 lease_id = 3;
+}
+
+// PutWithLeaseResponse returns the resulting key-value.
+message PutWithLeaseResponse {
+    KeyValue kv = 1;
+}
+
+// GetRevisionRequest retrieves a key with full revision metadata.
+message GetRevisionRequest {
+    string key = 1;
+}
+
+// GetRevisionResponse returns the key-value with revision metadata.
+message GetRevisionResponse {
+    KeyValue kv = 1;
+}
+
+// GetAtRevisionRequest retrieves a key at a historical revision.
+message GetAtRevisionRequest {
+    string key = 1;
+    int64 revision = 2;
+}
+
+// GetAtRevisionResponse returns the historical key-value.
+message GetAtRevisionResponse {
+    KeyValue kv = 1;
+}
+
+// RangeRequest queries a range of keys.
+message RangeRequest {
+    bytes start = 1;
+    bytes end = 2;
+    int64 limit = 3;
+    int64 revision = 4;
+    bool count_only = 5;
+    bool keys_only = 6;
+    SortOrder sort_order = 7;
+    SortTarget sort_target = 8;
+}
+
+// SortOrder specifies the sort direction.
+enum SortOrder {
+    SORT_NONE = 0;
+    SORT_ASCEND = 1;
+    SORT_DESCEND = 2;
+}
+
+// SortTarget specifies which field to sort by.
+enum SortTarget {
+    SORT_BY_KEY = 0;
+    SORT_BY_VERSION = 1;
+    SORT_BY_CREATE_REVISION = 2;
+    SORT_BY_MOD_REVISION = 3;
+    SORT_BY_VALUE = 4;
+}
+
+// RangeResponse returns the matched key-values and total count.
+message RangeResponse {
+    repeated KeyValue kvs = 1;
+    int64 count = 2;
+}
+
+// CompactRequest compacts revisions up to the specified revision.
+message CompactRequest {
+    int64 revision = 1;
+}
+
+// CurrentRevisionResponse returns the latest revision.
+message CurrentRevisionResponse {
+    int64 revision = 1;
+}
+
+// ===========================================================================
+// Transaction messages
+// ===========================================================================
+
+// CompareTarget selects which field to compare.
+enum CompareTarget {
+    COMPARE_VERSION = 0;
+    COMPARE_CREATE_REVISION = 1;
+    COMPARE_MOD_REVISION = 2;
+    COMPARE_VALUE = 3;
+}
+
+// CompareResult specifies the comparison operator.
+enum CompareResult {
+    COMPARE_EQUAL = 0;
+    COMPARE_GREATER = 1;
+    COMPARE_LESS = 2;
+    COMPARE_NOT_EQUAL = 3;
+}
+
+// Compare is a single precondition in a transaction.
+message Compare {
+    bytes key = 1;
+    CompareTarget target = 2;
+    CompareResult result = 3;
+    // target_union contains the comparison value based on target type.
+    oneof target_union {
+        int64 version = 4;
+        int64 create_revision = 5;
+        int64 mod_revision = 6;
+        bytes value = 7;
+    }
+}
+
+// OpType identifies the type of operation.
+enum OpType {
+    OP_PUT = 0;
+    OP_GET = 1;
+    OP_DELETE = 2;
+    OP_RANGE = 3;
+}
+
+// Op is a single operation within a transaction or batch.
+message Op {
+    OpType type = 1;
+    bytes key = 2;
+    bytes value = 3;
+    bytes range_end = 4;
+    int64 lease_id = 5;
+}
+
+// OpResponse is the result of a single operation.
+message OpResponse {
+    repeated KeyValue kvs = 1;
+    int64 count = 2;
+    bool succeeded = 3;
+}
+
+// TransactionRequest executes a compare-and-swap transaction.
+message TransactionRequest {
+    repeated Compare compares = 1;
+    repeated Op success_ops = 2;
+    repeated Op failure_ops = 3;
+}
+
+// TransactionResponse returns the result of a transaction.
+message TransactionResponse {
+    bool succeeded = 1;
+    int64 revision = 2;
+    repeated OpResponse responses = 3;
+}
+
+// ===========================================================================
+// Batch messages
+// ===========================================================================
+
+// BatchRequest executes multiple operations atomically.
+message BatchRequest {
+    repeated Op ops = 1;
+}
+
+// BatchResponse returns the per-operation results.
+message BatchResponse {
+    repeated OpResponse responses = 1;
+}
+
+// ===========================================================================
+// Watch messages
+// ===========================================================================
+
+// EventType identifies the type of a watch event.
+enum EventType {
+    EVENT_PUT = 0;
+    EVENT_DELETE = 1;
+}
+
+// Event represents a single change to a key.
+message Event {
+    EventType type = 1;
+    KeyValue kv = 2;
+    KeyValue prev_kv = 3;
+}
+
+// WatchRequest creates a watcher.
+message WatchRequest {
+    bytes key = 1;
+    bytes range_end = 2;
+    int64 start_revision = 3;
+    bool prev_kv = 4;
+    bool progress_notify = 5;
+}
+
+// WatchResponse delivers watch events.
+message WatchResponse {
+    int64 watch_id = 1;
+    repeated Event events = 2;
+    bool canceled = 3;
+    string cancel_reason = 4;
+    int64 revision = 5;
+}
+
+// ===========================================================================
+// Lease messages
+// ===========================================================================
+
+// Lease describes a distributed TTL lease.
+message Lease {
+    int64 id = 1;
+    int64 ttl = 2;
+    int64 granted_ttl = 3;
+    int64 remaining_ttl = 4;
+    repeated bytes keys = 5;
+}
+
+// LeaseGrantRequest creates a new lease.
+message LeaseGrantRequest {
+    int64 ttl = 1;
+}
+
+// LeaseGrantResponse returns the created lease.
+message LeaseGrantResponse {
+    Lease lease = 1;
+}
+
+// LeaseRevokeRequest expires a lease.
+message LeaseRevokeRequest {
+    int64 lease_id = 1;
+}
+
+// LeaseKeepAliveRequest resets a lease TTL.
+message LeaseKeepAliveRequest {
+    int64 lease_id = 1;
+}
+
+// LeaseKeepAliveResponse returns the refreshed lease.
+message LeaseKeepAliveResponse {
+    Lease lease = 1;
+}
+
+// LeaseTimeToLiveRequest queries a lease.
+message LeaseTimeToLiveRequest {
+    int64 lease_id = 1;
+}
+
+// LeaseTimeToLiveResponse returns the lease state.
+message LeaseTimeToLiveResponse {
+    Lease lease = 1;
+}
+
+// LeaseListResponse returns all active leases.
+message LeaseListResponse {
+    repeated Lease leases = 1;
+}
+
+// ===========================================================================
+// Index messages (Tier 2)
+// ===========================================================================
+
+// IndexCreateRequest creates a new secondary index.
+message IndexCreateRequest {
+    string name = 1;
+    string field_name = 2;
+    bool unique = 3;
+    bool sparse = 4;
+}
+
+// IndexDropRequest removes a secondary index.
+message IndexDropRequest {
+    string name = 1;
+}
+
+// IndexQueryRequest queries an index for exact match.
+message IndexQueryRequest {
+    string index_name = 1;
+    bytes value = 2;
+}
+
+// IndexQueryResponse returns matching entry IDs.
+message IndexQueryResponse {
+    repeated uint64 ids = 1;
+}
+
+// IndexScanRequest scans an index within a value range.
+message IndexScanRequest {
+    string index_name = 1;
+    bytes start = 2;
+    bytes end = 3;
+}
+
+// IndexScanEntry maps an index value to its matching entry IDs.
+message IndexScanEntry {
+    string value = 1;
+    repeated uint64 ids = 2;
+}
+
+// IndexScanResponse returns the scan results.
+message IndexScanResponse {
+    repeated IndexScanEntry entries = 1;
+}
+
+// ===========================================================================
+// Time-series messages (Tier 2)
+// ===========================================================================
+
+// TSTag is a key-value label for time-series data.
+message TSTag {
+    string key = 1;
+    string value = 2;
+}
+
+// TSDataPoint is a single time-series measurement.
+message TSDataPoint {
+    string metric = 1;
+    double value = 2;
+    int64 timestamp_ns = 3;
+    repeated TSTag tags = 4;
+}
+
+// TSWriteRequest stores a single data point.
+message TSWriteRequest {
+    TSDataPoint point = 1;
+}
+
+// TSWriteBatchRequest stores multiple data points.
+message TSWriteBatchRequest {
+    repeated TSDataPoint points = 1;
+}
+
+// TSQueryRequest retrieves data points in a time range.
+message TSQueryRequest {
+    string metric = 1;
+    int64 start_ns = 2;
+    int64 end_ns = 3;
+    repeated TSTag tags = 4;
+    int32 limit = 5;
+    bool descending = 6;
+}
+
+// TSQueryResponse returns matching data points.
+message TSQueryResponse {
+    repeated TSDataPoint points = 1;
+}
+
+// AggFunc identifies an aggregation function.
+enum AggFunc {
+    AGG_AVG = 0;
+    AGG_SUM = 1;
+    AGG_MIN = 2;
+    AGG_MAX = 3;
+    AGG_COUNT = 4;
+    AGG_PERCENTILE = 5;
+}
+
+// TSAggregateRequest computes an aggregation over a time range.
+message TSAggregateRequest {
+    string metric = 1;
+    int64 start_ns = 2;
+    int64 end_ns = 3;
+    AggFunc function = 4;
+    int64 interval_ns = 5;
+}
+
+// TSAggResult is an aggregation result for a single interval.
+message TSAggResult {
+    int64 timestamp_ns = 1;
+    double value = 2;
+    int64 count = 3;
+}
+
+// TSAggregateResponse returns the aggregation results.
+message TSAggregateResponse {
+    repeated TSAggResult results = 1;
+}
+
+// ===========================================================================
+// Admin messages (unchanged)
+// ===========================================================================
+
+// HealthResponse is the response payload for Health.
+message HealthResponse {
+    string status = 1;
+    bool leader = 2;
+}
+
+// StatusResponse is the response payload for Status.
+message StatusResponse {
+    string node_id = 1;
+    string raft_address = 2;
+    bool is_leader = 3;
+    uint64 leader_id = 4;
+    int32 shard_count = 5;
+    bool is_draining = 6;
+}
+
+// PeersResponse is the response payload for Peers.
+message PeersResponse {
+    repeated ShardPeers shards = 1;
+}
+
+// ShardPeers describes the peers for a single shard.
+message ShardPeers {
+    uint64 shard_id = 1;
+    uint64 leader_id = 2;
+    repeated PeerInfo peers = 3;
+}
+
+// PeerInfo describes a single peer in a shard.
+message PeerInfo {
+    uint64 replica_id = 1;
+    string address = 2;
+    bool is_leader = 3;
+}
+
+// AddMemberRequest is the request payload for AddMember.
+message AddMemberRequest {
+    uint64 shard_id = 1;
+    uint64 replica_id = 2;
+    string raft_address = 3;
+}
+
+// RemoveMemberRequest is the request payload for RemoveMember.
+message RemoveMemberRequest {
+    uint64 shard_id = 1;
+    uint64 replica_id = 2;
+}
+
+// RequestSnapshotMessage is the request payload for RequestSnapshot.
+message RequestSnapshotMessage {
+    uint64 shard_id = 1;
+}

@@ -1,0 +1,119 @@
+services:
+  # QRDB server with all protocols enabled
+  qrdbd:
+    build:
+      context: ../../..
+      dockerfile: Dockerfile
+    image: go-qrdb-integration:latest
+    container_name: qrdb-integration-server
+    expose:
+      - "63001/udp"  # Raft/QUIC (UDP)
+      - "63001/tcp"  # Raft fallback (TCP)
+      - "63002"      # REST API
+      - "63003"      # gRPC
+      - "63005"      # MCP
+    # Required for QUIC UDP buffer settings
+    privileged: true
+    volumes:
+      - qrdb-data:/data
+      - qrdb-socket:/var/run/qrdbd
+      - qrdb-certs:/etc/qrdb/certs
+      - ./config.test.yaml:/etc/qrdb/qrdbd.yaml
+      - ./scripts:/scripts:ro
+    environment:
+      - QRDB_CONFIG=/etc/qrdb/qrdbd.yaml
+      - QRDB_LOG_LEVEL=debug
+      - CERT_DIR=/etc/qrdb/certs
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "--no-check-certificate", "https://localhost:63002/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+      start_period: 20s
+    networks:
+      - qrdb-integration
+    user: root
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        # Set UDP buffer sizes for QUIC
+        echo "Configuring UDP buffers for QUIC..."
+        echo 2500000 > /proc/sys/net/core/rmem_max 2>/dev/null || echo "Warning: Could not set rmem_max"
+        echo 2500000 > /proc/sys/net/core/wmem_max 2>/dev/null || echo "Warning: Could not set wmem_max"
+        # Ensure directories exist
+        mkdir -p /etc/qrdb/certs /var/run/qrdbd /data
+        # Generate TLS certificates
+        echo "Generating TLS certificates..."
+        /scripts/generate-test-certs.sh
+        # Verify certificates were created
+        ls -la /etc/qrdb/certs/
+        echo "Starting qrdbd server..."
+        exec /app/qrdbd start --config /etc/qrdb/qrdbd.yaml
+
+  # Integration test runner
+  integration-tests:
+    build:
+      context: ../../..
+      dockerfile: build/docker/devcontainer/Dockerfile
+    image: go-qrdb-dev:latest
+    container_name: qrdb-integration-tests
+    privileged: true
+    user: root
+    depends_on:
+      qrdbd:
+        condition: service_healthy
+    volumes:
+      - ../../..:/workspace
+      - qrdb-socket:/var/run/qrdbd
+      - qrdb-certs:/etc/qrdb/certs:ro
+      - cli-build:/app/build
+      - go-cache:/root/go
+      - go-build-cache:/root/.cache/go-build
+    environment:
+      - CGO_ENABLED=1
+      - QRDB_UNIX_SOCKET=/var/run/qrdbd/qrdbd.sock
+      - QRDB_REST_URL=https://qrdbd:63002
+      - QRDB_GRPC_ADDR=qrdbd:63003
+      - QRDB_MCP_ADDR=qrdbd:63005
+      - QRDB_CLI_BIN=/app/build/bin/qrdb
+      - QRDB_TLS_CA=/etc/qrdb/certs/ca.crt
+      - INTEGRATION_TIMEOUT=60s
+    working_dir: /workspace
+    networks:
+      - qrdb-integration
+    command: >
+      sh -c "
+      echo 'Configuring UDP buffers for QUIC...' &&
+      echo 2500000 > /proc/sys/net/core/rmem_max 2>/dev/null || echo 'Warning: Could not set rmem_max' &&
+      echo 2500000 > /proc/sys/net/core/wmem_max 2>/dev/null || echo 'Warning: Could not set wmem_max' &&
+      echo 'Waiting for server to be ready...' &&
+      sleep 5 &&
+      echo 'Checking Unix socket...' &&
+      ls -la /var/run/qrdbd/ || true &&
+      echo 'Checking TLS certificates...' &&
+      ls -la /etc/qrdb/certs/ || true &&
+      echo 'Building CLI binary...' &&
+      mkdir -p /app/build/bin &&
+      CGO_ENABLED=0 go build -buildvcs=false -ldflags '-X main.version=test -X main.gitCommit=test -X main.buildDate=test' -o /app/build/bin/qrdb ./cmd/qrdb &&
+      echo 'Running integration tests...' &&
+      go test -v -tags=integration ./test/integration/api/... -timeout 15m
+      "
+
+volumes:
+  qrdb-data:
+    driver: local
+  qrdb-socket:
+    driver: local
+  qrdb-certs:
+    driver: local
+  cli-build:
+    driver: local
+  go-cache:
+    driver: local
+  go-build-cache:
+    driver: local
+
+networks:
+  qrdb-integration:
+    driver: bridge

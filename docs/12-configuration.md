@@ -1,0 +1,768 @@
+# Configuration Reference
+
+QRDB uses YAML-based configuration loaded at startup via the `--config` flag.
+CLI flags override YAML values when both are provided. Omitted fields inherit
+production-ready defaults from `DefaultConfig()`.
+
+```bash
+qrdb start --config /etc/qrdb/qrdb.yaml
+```
+
+---
+
+## Complete Default Configuration
+
+The following YAML shows every field with its default value. This is the
+configuration produced by `config.DefaultConfig()` and is valid as-is for a
+single-node deployment.
+
+```yaml
+# =============================================================================
+# QRDB Configuration Reference - All Defaults
+# =============================================================================
+
+server:
+  admin_port: 63002
+  grpc_port: 63003
+  host: "0.0.0.0"
+
+protocols:
+  rest: true
+  grpc: true
+  unix: true
+  mcp: true
+
+unix:
+  socket_path: "/var/run/qrdbd/qrdbd.sock"
+
+mcp:
+  port: 63005
+  endpoint: "/mcp"
+
+raft:
+  data_dir: "./data"
+  deployment_id: 1
+  shard_id: 1
+  replica_id: 1
+  raft_address: "127.0.0.1:63001"
+  listen_address: ""
+  peers: "1=127.0.0.1:63001"
+  join: false
+  snapshot_entries: 0
+  compaction_overhead: 0
+  max_in_mem_log_size: 0
+  max_total_in_mem_log_size: 0
+  sm_type: "pebble"
+
+storage:
+  backend: "pebble"
+  cache_size: 0
+  wal_dir: ""
+  max_open_files: 0
+
+tls:
+  enabled: true
+  ca_file: ""
+  cert_file: ""
+  key_file: ""
+  auto_tls: true
+
+logging:
+  level: "info"
+  format: "text"
+
+discovery:
+  method: "multicast"
+  multicast_secret: "quicraft"
+  dns_domain: ""
+
+mvcc:
+  compaction_retention: 1000
+  revision_limit: 0
+
+watch:
+  buffer_size: 1024
+  max_watchers: 0
+
+lease:
+  min_ttl: 5
+  max_ttl: 0
+  check_interval: 1
+
+index:
+  max_indexes: 0
+
+timeseries:
+  default_retention: 0
+  max_metrics: 0
+```
+
+---
+
+## Configuration Sections
+
+### server
+
+Configures the QRDB server's network listeners.
+
+| Field        | Type   | Default   | Required | CLI Flag       | Description                             |
+|--------------|--------|-----------|----------|----------------|-----------------------------------------|
+| `admin_port` | int    | `63002`   | yes      | `--admin-port` | TCP port for the REST/admin HTTP server |
+| `grpc_port`  | int    | `63003`   | no       | `--grpc-port`  | TCP port for the gRPC data-plane service |
+| `host`       | string | `0.0.0.0` | yes      | N/A            | Bind address for all listeners          |
+
+**Validation rules:**
+
+- `admin_port` must be between 1 and 65535 (inclusive).
+- `grpc_port` must be between 0 and 65535 (inclusive). Set to `0` to disable the gRPC listener.
+- `host` must not be empty.
+
+**Notes:**
+
+- The `admin_port` serves both the REST API and operational endpoints (`/status`, `/health`, `/metrics`, `/peers`, `/drain`).
+- When using non-static discovery methods (multicast, dns) without a config file, the server auto-selects free ports for `admin_port` and `grpc_port`.
+
+---
+
+### protocols
+
+Controls which API protocols are enabled.
+
+| Field  | Type | Default | CLI Flag        | Description                     |
+|--------|------|---------|-----------------|---------------------------------|
+| `rest` | bool | `true`  | `--enable-rest` | Enable the HTTP/REST admin and KV API |
+| `grpc` | bool | `true`  | `--enable-grpc` | Enable the gRPC KV service      |
+
+**Notes:**
+
+- At least one protocol should be enabled for client access.
+- Disabling both protocols still allows the Raft consensus layer to operate, but the node will not accept client requests.
+
+---
+
+### raft
+
+Configures the QuicRaft consensus layer.
+
+| Field                       | Type   | Default             | Required | CLI Flag                        | Description                                                  |
+|-----------------------------|--------|---------------------|----------|---------------------------------|--------------------------------------------------------------|
+| `data_dir`                  | string | `./data`            | yes      | `--data-dir`                    | Base directory for Raft data files (WAL, snapshots, metadata) |
+| `deployment_id`             | uint64 | `1`                 | no       | `--deployment-id`               | Isolates Raft clusters on the same network                   |
+| `shard_id`                  | uint64 | `1`                 | yes      | `--shard-id`                    | Raft shard (group) identifier                                |
+| `replica_id`                | uint64 | `1`                 | yes      | `--replica-id`                  | This node's replica identifier within the shard              |
+| `raft_address`              | string | `127.0.0.1:63001`   | yes      | `--raft-address`                | Advertised address for Raft peer communication               |
+| `listen_address`            | string | `""`                | no       | `--listen`                      | Bind address for Raft peer communication                     |
+| `peers`                     | string | `1=127.0.0.1:63001` | no       | `--peers`                       | Comma-separated initial cluster members                      |
+| `join`                      | bool   | `false`             | no       | `--join`                        | Join an existing cluster instead of forming a new one         |
+| `snapshot_entries`          | uint64 | `0`                 | no       | `--snapshot-entries`            | Applied entries between automatic snapshots                  |
+| `compaction_overhead`       | uint64 | `0`                 | no       | `--compaction-overhead`         | Log entries to keep after a snapshot for follower catch-up    |
+| `max_in_mem_log_size`       | uint64 | `0`                 | no       | `--max-in-mem-log-size`         | Per-shard in-memory Raft log size limit in bytes             |
+| `max_total_in_mem_log_size` | uint64 | `0`                 | no       | `--max-total-in-mem-log-size`   | Total in-memory Raft log size across all shards in bytes     |
+| `sm_type`                   | string | `pebble`            | no       | `--sm`                          | State machine backend type                                   |
+
+**Validation rules:**
+
+- `data_dir` must not be empty.
+- `shard_id` must be greater than 0.
+- `replica_id` must be greater than 0.
+- `raft_address` must not be empty.
+- `sm_type`, when non-empty, must be one of: `pebble`, `memory`, `mvcc`.
+
+**Valid `sm_type` values:**
+
+| Value    | Description                                              |
+|----------|----------------------------------------------------------|
+| `pebble` | PebbleDB-backed persistent disk state machine (default)  |
+| `memory` | In-memory state machine (data lost on restart)           |
+| `mvcc`   | MVCC versioned key-value engine with revision history    |
+
+**Peers format:**
+
+The `peers` field uses a comma-separated `replicaID=address` format:
+
+```yaml
+peers: "1=10.0.0.1:63001,2=10.0.0.2:63001,3=10.0.0.3:63001"
+```
+
+**Notes:**
+
+- When `listen_address` is empty, `raft_address` is used as the bind address.
+- Setting `snapshot_entries` to `0` disables automatic snapshots.
+- Setting `compaction_overhead` to `0` uses the system default of 5000 entries.
+- Setting `max_in_mem_log_size` or `max_total_in_mem_log_size` to `0` uses the system defaults.
+- With non-static discovery methods and no config file, `replica_id` is auto-generated from `crypto/rand` (48-bit) and `data_dir` is suffixed with the replica ID to avoid collisions.
+
+---
+
+### storage
+
+Configures the underlying storage backend.
+
+| Field            | Type  | Default  | Required | Description                                       |
+|------------------|-------|----------|----------|---------------------------------------------------|
+| `backend`        | string | `pebble` | no       | Storage engine selection                          |
+| `cache_size`     | int64  | `0`      | no       | PebbleDB block cache size in bytes                |
+| `wal_dir`        | string | `""`     | no       | Separate directory for the PebbleDB WAL           |
+| `max_open_files` | int    | `0`      | no       | Maximum number of open files for PebbleDB         |
+
+**Validation rules:**
+
+- `backend`, when non-empty, must be one of: `pebble`, `memory`.
+- `cache_size` must not be negative (>= 0).
+- `max_open_files` must not be negative (>= 0).
+
+**Valid `backend` values:**
+
+| Value    | Description                                           |
+|----------|-------------------------------------------------------|
+| `pebble` | PebbleDB persistent storage (default, production use) |
+| `memory` | In-memory storage (data lost on restart, testing use) |
+
+**Notes:**
+
+- Setting `cache_size` to `0` uses the PebbleDB default cache size.
+- Setting `max_open_files` to `0` uses the PebbleDB default file limit.
+- When `wal_dir` is empty, the WAL is stored in the default data directory. Placing the WAL on a separate disk can improve write throughput by isolating sequential WAL writes from random SSTable I/O.
+
+---
+
+### tls
+
+Configures TLS for all network listeners (REST, gRPC, Raft).
+
+| Field       | Type   | Default | Required                          | CLI Flag         | Description                                  |
+|-------------|--------|---------|-----------------------------------|------------------|----------------------------------------------|
+| `enabled`   | bool   | `true`  | no                                | N/A              | Enable TLS for all listeners                 |
+| `ca_file`   | string | `""`    | yes (when `enabled && !auto_tls`) | `--tls-ca-file`  | Path to CA certificate PEM file              |
+| `cert_file` | string | `""`    | yes (when `enabled && !auto_tls`) | `--tls-cert-file`| Path to TLS certificate PEM file             |
+| `key_file`  | string | `""`    | yes (when `enabled && !auto_tls`) | `--tls-key-file` | Path to TLS private key PEM file             |
+| `auto_tls`  | bool   | `true`  | no                                | N/A              | Auto-generate CA and certificates at startup |
+
+**Validation rules:**
+
+- When `enabled` is `true` and `auto_tls` is `false`, all three fields `ca_file`, `cert_file`, and `key_file` are required.
+- When `auto_tls` is `true`, certificate fields may be empty; a CA and leaf certificate are generated automatically.
+- When `enabled` is `false`, no TLS validation is performed.
+
+**TLS modes:**
+
+| Mode              | Configuration                                         | Use Case                      |
+|-------------------|-------------------------------------------------------|-------------------------------|
+| Auto TLS          | `enabled: true`, `auto_tls: true`                     | Development, single-node      |
+| Manual TLS        | `enabled: true`, `auto_tls: false`, paths set         | Production with PKI           |
+| TLS disabled      | `enabled: false`                                      | Testing behind a TLS proxy    |
+
+**Notes:**
+
+- When `auto_tls` is enabled, the generated CA certificate is written to `{data_dir}/ca.pem` so CLI commands (`qrdb status`, `qrdb peers`) can verify the server certificate.
+- The auto-generated certificates use the CA to sign a leaf certificate for the local node. This supports both REST/gRPC client connections and mTLS on the QUIC transport for Raft peer communication.
+- For production multi-node clusters, use manual TLS with a shared CA to enable mTLS between all cluster nodes.
+
+---
+
+### logging
+
+Configures structured logging output.
+
+| Field    | Type   | Default | CLI Flag       | Description                        |
+|----------|--------|---------|-----------     |------------------------------------|
+| `level`  | string | `info`  | `--log-level`  | Minimum log level                  |
+| `format` | string | `text`  | `--log-format` | Log output format                  |
+
+**Validation rules:**
+
+- `level`, when non-empty, must be one of: `debug`, `info`, `warn`, `error`.
+- `format`, when non-empty, must be one of: `text`, `json`.
+
+**Valid `level` values:**
+
+| Value   | Description                                              |
+|---------|----------------------------------------------------------|
+| `debug` | Verbose output including Raft protocol internals         |
+| `info`  | Standard operational messages (default)                  |
+| `warn`  | Warnings about potentially problematic conditions        |
+| `error` | Only errors that require operator attention               |
+
+**Valid `format` values:**
+
+| Value  | Description                                       |
+|--------|---------------------------------------------------|
+| `text` | Human-readable key=value format (default)         |
+| `json` | Structured JSON, suitable for log aggregation     |
+
+**Notes:**
+
+- The `--debug-raft` CLI flag forces the log level to `debug` regardless of the configured level.
+- The logger is configured early in the startup sequence so all pre-host log lines use the requested format and level.
+
+---
+
+### discovery
+
+Configures peer discovery for cluster formation.
+
+| Field              | Type   | Default      | CLI Flag             | Description                                       |
+|--------------------|--------|--------------|----------------------|---------------------------------------------------|
+| `method`           | string | `multicast`  | `--discovery`        | Discovery mechanism                               |
+| `multicast_secret` | string | `quicraft`   | `--multicast-secret` | Shared secret for multicast discovery auth         |
+| `dns_domain`       | string | `""`         | `--dns-domain`       | DNS domain for DNS-based peer discovery            |
+
+**Validation rules:**
+
+- `method`, when non-empty, must be one of: `static`, `multicast`, `dns`.
+
+**Valid `method` values:**
+
+| Value       | Description                                                      |
+|-------------|------------------------------------------------------------------|
+| `static`    | Peers are specified explicitly via the `raft.peers` field        |
+| `multicast` | Peers discover each other via authenticated multicast (default)  |
+| `dns`       | Peers are discovered via DNS SRV records                         |
+
+**Notes:**
+
+- **Static discovery** requires the `raft.peers` field to contain the complete initial member list. A single entry (`1=127.0.0.1:63001`) creates a single-node cluster with transport disabled.
+- **Multicast discovery** requires a shared `multicast_secret` across all nodes for authentication. The default minimum cluster size for bootstrap is 3 nodes.
+- **DNS discovery** requires `dns_domain` to be set. It looks up SRV records at `_raft._udp.{dns_domain}`.
+- When using multicast or dns discovery without a config file, the server auto-generates `replica_id`, selects free ports, and appends the replica ID to `data_dir` to avoid collisions.
+
+---
+
+### mvcc
+
+Configures the MVCC (Multi-Version Concurrency Control) versioned key-value engine. This section applies when `raft.sm_type` is set to `mvcc`.
+
+| Field                  | Type  | Default | Description                                                |
+|------------------------|-------|---------|------------------------------------------------------------|
+| `compaction_retention` | int64 | `1000`  | Minimum number of revisions to retain after compaction      |
+| `revision_limit`       | int64 | `0`     | Maximum historical revisions to retain per key              |
+
+**Validation rules:**
+
+- `compaction_retention` must not be negative (>= 0).
+- `revision_limit` must not be negative (>= 0).
+
+**Notes:**
+
+- Setting `compaction_retention` to `0` disables automatic compaction retention.
+- Setting `revision_limit` to `0` means unlimited revisions are retained per key.
+- The `compaction_retention` value determines how many revisions survive a compaction pass. For example, with a retention of `1000`, at least the most recent 1000 revisions across all keys are preserved.
+
+---
+
+### watch
+
+Configures the real-time watch notification system for key change events.
+
+| Field          | Type | Default | Description                                         |
+|----------------|------|---------|-----------------------------------------------------|
+| `buffer_size`  | int  | `1024`  | Per-watcher event channel buffer size               |
+| `max_watchers` | int  | `0`     | Maximum number of concurrent watchers allowed       |
+
+**Validation rules:**
+
+- `buffer_size` must not be negative (>= 0).
+- `max_watchers` must not be negative (>= 0).
+
+**Notes:**
+
+- Larger `buffer_size` values reduce back-pressure on publishers at the cost of increased memory usage per watcher.
+- Setting `max_watchers` to `0` allows unlimited concurrent watchers. In production, consider setting a limit to bound memory usage.
+
+---
+
+### lease
+
+Configures the distributed lease management system.
+
+| Field            | Type  | Default | Description                                             |
+|------------------|-------|---------|---------------------------------------------------------|
+| `min_ttl`        | int64 | `5`     | Minimum lease TTL in seconds                            |
+| `max_ttl`        | int64 | `0`     | Maximum lease TTL in seconds                            |
+| `check_interval` | int64 | `1`     | Interval in seconds between lease expiry checks         |
+
+**Validation rules:**
+
+- `min_ttl` must not be negative (>= 0).
+- `max_ttl` must not be negative (>= 0).
+- When `max_ttl` is greater than 0, `min_ttl` must not exceed `max_ttl`.
+- `check_interval` must not be negative (>= 0).
+
+**Notes:**
+
+- Requests for TTLs shorter than `min_ttl` are clamped to `min_ttl`.
+- Requests for TTLs longer than `max_ttl` are clamped to `max_ttl`.
+- Setting `max_ttl` to `0` allows unlimited lease durations.
+- Lower `check_interval` values improve expiry accuracy at the cost of CPU usage. A value of `1` second provides a good balance for most workloads.
+
+---
+
+### index
+
+Configures the secondary indexing system.
+
+| Field         | Type | Default | Description                                  |
+|---------------|------|---------|----------------------------------------------|
+| `max_indexes` | int  | `0`     | Maximum number of secondary indexes allowed  |
+
+**Validation rules:**
+
+- `max_indexes` must not be negative (>= 0).
+
+**Notes:**
+
+- Setting `max_indexes` to `0` allows unlimited secondary indexes.
+- Each secondary index consumes additional storage and incurs write amplification. Set a limit appropriate for your workload.
+
+---
+
+### timeseries
+
+Configures the time-series storage engine.
+
+| Field               | Type  | Default | Description                                                |
+|---------------------|-------|---------|------------------------------------------------------------|
+| `default_retention` | int64 | `0`     | Default data retention period in seconds                   |
+| `max_metrics`       | int64 | `0`     | Maximum number of distinct metric names allowed            |
+
+**Validation rules:**
+
+- `default_retention` must not be negative (>= 0).
+- `max_metrics` must not be negative (>= 0).
+
+**Notes:**
+
+- Setting `default_retention` to `0` disables automatic data retention. Data points are retained indefinitely.
+- Setting `max_metrics` to `0` allows unlimited distinct metric names.
+- Data points older than `default_retention` seconds are eligible for automatic deletion.
+
+---
+
+## Configuration Loading
+
+### Load Order
+
+1. `DefaultConfig()` initializes all fields with production-ready defaults.
+2. The YAML file (if provided via `--config`) is unmarshaled on top of the defaults. Only fields present in the YAML file override the defaults.
+3. CLI flags that are explicitly set override the corresponding YAML values.
+
+### Validation
+
+After loading and merging, the configuration is validated by `Config.Validate()`.
+Validation checks every field and returns the first error encountered as a
+`*ValidationError` containing the field path and reason:
+
+```
+config: validation failed for "raft.shard_id": must be greater than 0
+```
+
+### Error Types
+
+| Error Type        | Returned When                                      |
+|-------------------|-----------------------------------------------------|
+| `*LoadError`      | The YAML file cannot be read or parsed              |
+| `*ValidationError`| A configuration field has an invalid value          |
+
+Both error types implement the `error` interface. `LoadError` also implements
+`Unwrap()` for use with `errors.Is` and `errors.As`.
+
+---
+
+## Example Configurations
+
+### Minimal Single-Node
+
+The simplest deployment. Uses in-memory storage, static discovery, auto-generated
+TLS, and disables the QUIC transport (no remote peers).
+
+```yaml
+server:
+  admin_port: 63002
+  grpc_port: 63003
+  host: "0.0.0.0"
+
+raft:
+  data_dir: "./data"
+  shard_id: 1
+  replica_id: 1
+  raft_address: "127.0.0.1:63001"
+  sm_type: "memory"
+
+storage:
+  backend: "memory"
+
+tls:
+  enabled: true
+  auto_tls: true
+
+logging:
+  level: "debug"
+  format: "text"
+
+discovery:
+  method: "static"
+```
+
+### 3-Node Cluster with Static Discovery
+
+A production cluster with three nodes using PebbleDB storage, manual TLS
+certificates, and static peer discovery.
+
+**Node 1** (`/etc/qrdb/qrdb.yaml` on `10.0.0.1`):
+
+```yaml
+server:
+  admin_port: 63002
+  grpc_port: 63003
+  host: "0.0.0.0"
+
+protocols:
+  rest: true
+  grpc: true
+
+raft:
+  data_dir: "/var/lib/qrdb"
+  deployment_id: 1
+  shard_id: 1
+  replica_id: 1
+  raft_address: "10.0.0.1:63001"
+  listen_address: "0.0.0.0:63001"
+  peers: "1=10.0.0.1:63001,2=10.0.0.2:63001,3=10.0.0.3:63001"
+  snapshot_entries: 10000
+  compaction_overhead: 5000
+  sm_type: "pebble"
+
+storage:
+  backend: "pebble"
+  cache_size: 1073741824  # 1 GB
+  wal_dir: "/var/lib/qrdb/wal"
+  max_open_files: 4096
+
+tls:
+  enabled: true
+  auto_tls: false
+  ca_file: "/etc/qrdb/tls/ca.pem"
+  cert_file: "/etc/qrdb/tls/node1.pem"
+  key_file: "/etc/qrdb/tls/node1-key.pem"
+
+logging:
+  level: "info"
+  format: "json"
+
+discovery:
+  method: "static"
+```
+
+**Node 2** (`/etc/qrdb/qrdb.yaml` on `10.0.0.2`):
+
+```yaml
+server:
+  admin_port: 63002
+  grpc_port: 63003
+  host: "0.0.0.0"
+
+raft:
+  data_dir: "/var/lib/qrdb"
+  deployment_id: 1
+  shard_id: 1
+  replica_id: 2
+  raft_address: "10.0.0.2:63001"
+  listen_address: "0.0.0.0:63001"
+  peers: "1=10.0.0.1:63001,2=10.0.0.2:63001,3=10.0.0.3:63001"
+  snapshot_entries: 10000
+  compaction_overhead: 5000
+  sm_type: "pebble"
+
+storage:
+  backend: "pebble"
+  cache_size: 1073741824
+  wal_dir: "/var/lib/qrdb/wal"
+  max_open_files: 4096
+
+tls:
+  enabled: true
+  auto_tls: false
+  ca_file: "/etc/qrdb/tls/ca.pem"
+  cert_file: "/etc/qrdb/tls/node2.pem"
+  key_file: "/etc/qrdb/tls/node2-key.pem"
+
+logging:
+  level: "info"
+  format: "json"
+
+discovery:
+  method: "static"
+```
+
+**Node 3** (`/etc/qrdb/qrdb.yaml` on `10.0.0.3`):
+
+```yaml
+server:
+  admin_port: 63002
+  grpc_port: 63003
+  host: "0.0.0.0"
+
+raft:
+  data_dir: "/var/lib/qrdb"
+  deployment_id: 1
+  shard_id: 1
+  replica_id: 3
+  raft_address: "10.0.0.3:63001"
+  listen_address: "0.0.0.0:63001"
+  peers: "1=10.0.0.1:63001,2=10.0.0.2:63001,3=10.0.0.3:63001"
+  snapshot_entries: 10000
+  compaction_overhead: 5000
+  sm_type: "pebble"
+
+storage:
+  backend: "pebble"
+  cache_size: 1073741824
+  wal_dir: "/var/lib/qrdb/wal"
+  max_open_files: 4096
+
+tls:
+  enabled: true
+  auto_tls: false
+  ca_file: "/etc/qrdb/tls/ca.pem"
+  cert_file: "/etc/qrdb/tls/node3.pem"
+  key_file: "/etc/qrdb/tls/node3-key.pem"
+
+logging:
+  level: "info"
+  format: "json"
+
+discovery:
+  method: "static"
+```
+
+### High-Throughput MVCC with Watches and Leases
+
+A configuration tuned for high-throughput MVCC workloads with real-time watch
+notifications, lease management, secondary indexes, and time-series data.
+
+```yaml
+server:
+  admin_port: 63002
+  grpc_port: 63003
+  host: "0.0.0.0"
+
+protocols:
+  rest: true
+  grpc: true
+
+raft:
+  data_dir: "/var/lib/qrdb"
+  deployment_id: 1
+  shard_id: 1
+  replica_id: 1
+  raft_address: "10.0.0.1:63001"
+  listen_address: "0.0.0.0:63001"
+  peers: "1=10.0.0.1:63001,2=10.0.0.2:63001,3=10.0.0.3:63001"
+  snapshot_entries: 50000
+  compaction_overhead: 10000
+  max_in_mem_log_size: 10485760       # 10 MB per shard
+  max_total_in_mem_log_size: 104857600 # 100 MB total
+  sm_type: "mvcc"
+
+storage:
+  backend: "pebble"
+  cache_size: 4294967296   # 4 GB block cache
+  wal_dir: "/mnt/nvme/qrdb-wal"
+  max_open_files: 16384
+
+tls:
+  enabled: true
+  auto_tls: false
+  ca_file: "/etc/qrdb/tls/ca.pem"
+  cert_file: "/etc/qrdb/tls/node.pem"
+  key_file: "/etc/qrdb/tls/node-key.pem"
+
+logging:
+  level: "warn"
+  format: "json"
+
+discovery:
+  method: "static"
+
+mvcc:
+  compaction_retention: 5000
+  revision_limit: 100
+
+watch:
+  buffer_size: 4096
+  max_watchers: 10000
+
+lease:
+  min_ttl: 5
+  max_ttl: 86400          # 24 hours
+  check_interval: 1
+
+index:
+  max_indexes: 64
+
+timeseries:
+  default_retention: 604800  # 7 days
+  max_metrics: 10000
+```
+
+**Tuning notes for this configuration:**
+
+- **`raft.snapshot_entries: 50000`** -- Takes a snapshot every 50k entries to bound log replay time during recovery.
+- **`raft.compaction_overhead: 10000`** -- Retains 10k entries after snapshot for slow followers to catch up without requiring a full snapshot transfer.
+- **`raft.max_in_mem_log_size: 10485760`** -- Limits per-shard in-memory log to 10 MB, enabling rate limiting under sustained write pressure.
+- **`storage.cache_size: 4294967296`** -- Allocates 4 GB to the PebbleDB block cache to minimize disk reads for hot keys.
+- **`storage.wal_dir: "/mnt/nvme/qrdb-wal"`** -- Isolates WAL writes on a dedicated NVMe device to eliminate I/O contention with SSTable compaction.
+- **`storage.max_open_files: 16384`** -- Raises the file descriptor limit to handle large LSM trees without thrashing.
+- **`mvcc.compaction_retention: 5000`** -- Retains 5000 revisions after compaction, balancing history depth with storage efficiency.
+- **`mvcc.revision_limit: 100`** -- Caps per-key revision history to 100 entries, preventing unbounded growth for frequently updated keys.
+- **`watch.buffer_size: 4096`** -- Large event buffers reduce back-pressure on the watch publisher under bursty write loads.
+- **`watch.max_watchers: 10000`** -- Caps concurrent watchers to bound memory allocation.
+- **`lease.max_ttl: 86400`** -- Prevents clients from acquiring leases longer than 24 hours.
+- **`timeseries.default_retention: 604800`** -- Automatically expires time-series data points older than 7 days.
+
+---
+
+## CLI Flag to YAML Field Mapping
+
+When both a YAML config file and CLI flags are provided, CLI flags take
+precedence. The following table maps CLI flags to their YAML equivalents.
+
+| CLI Flag                        | YAML Path                          |
+|---------------------------------|------------------------------------|
+| `--config`                      | N/A (specifies the YAML file path) |
+| `--admin-port`                  | `server.admin_port`                |
+| `--grpc-port`                   | `server.grpc_port`                 |
+| `--enable-rest`                 | `protocols.rest`                   |
+| `--enable-grpc`                 | `protocols.grpc`                   |
+| `--data-dir`                    | `raft.data_dir`                    |
+| `--deployment-id`               | `raft.deployment_id`               |
+| `--shard-id`                    | `raft.shard_id`                    |
+| `--replica-id`                  | `raft.replica_id`                  |
+| `--raft-address`                | `raft.raft_address`                |
+| `--listen`                      | `raft.listen_address`              |
+| `--peers`                       | `raft.peers`                       |
+| `--join`                        | `raft.join`                        |
+| `--snapshot-entries`            | `raft.snapshot_entries`            |
+| `--compaction-overhead`         | `raft.compaction_overhead`         |
+| `--max-in-mem-log-size`         | `raft.max_in_mem_log_size`         |
+| `--max-total-in-mem-log-size`   | `raft.max_total_in_mem_log_size`   |
+| `--sm`                          | `raft.sm_type`                     |
+| `--tls-ca-file`                 | `tls.ca_file`                      |
+| `--tls-cert-file`               | `tls.cert_file`                    |
+| `--tls-key-file`                | `tls.key_file`                     |
+| `--log-level`                   | `logging.level`                    |
+| `--log-format`                  | `logging.format`                   |
+| `--discovery`                   | `discovery.method`                 |
+| `--multicast-secret`            | `discovery.multicast_secret`       |
+| `--dns-domain`                  | `discovery.dns_domain`             |
+| `--debug-raft`                  | N/A (forces `logging.level: debug`)|
+
+---
+
+## Port Summary
+
+| Service | Default Port | Protocol        | Configuration Field  |
+|---------|-------------|-----------------|----------------------|
+| Raft    | 63001       | QUIC (internal) | `raft.raft_address`  |
+| REST    | 63002       | HTTPS           | `server.admin_port`  |
+| gRPC    | 63003       | gRPC + TLS      | `server.grpc_port`   |

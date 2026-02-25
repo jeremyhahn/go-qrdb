@@ -1,0 +1,34 @@
+server:
+  admin_port: 63002
+  grpc_port: 63003
+  host: "0.0.0.0"
+
+protocols:
+  rest: true
+  grpc: true
+
+raft:
+  data_dir: "./data"
+  deployment_id: 1
+  shard_id: 1
+  replica_id: 1
+  raft_address: "127.0.0.1:63001"
+  listen_address: "0.0.0.0:63001"
+  peers: "1=127.0.0.1:63001"
+  join: false
+  sm_type: "memory"
+
+storage:
+  backend: "memory"
+
+tls:
+  enabled: false
+  client_auth: "require_and_verify"
+  min_version: "TLS1.3"
+
+logging:
+  level: "debug"
+  format: "text"
+
+discovery:
+  method: "static"

@@ -1,0 +1,537 @@
+// Copyright 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"os"
+	"strings"
+	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
+)
+
+// ---------------------------------------------------------------------------
+// Function-based admin mock (distinct from cmd_test.go mockAdminService)
+// ---------------------------------------------------------------------------
+
+// fnAdminService implements service.AdminServicer with configurable
+// function fields, allowing per-test behavior injection.
+type fnAdminService struct {
+	healthFn          func(ctx context.Context) (*service.HealthStatus, error)
+	statusFn          func(ctx context.Context) (*service.StatusInfo, error)
+	peersFn           func(ctx context.Context) (*service.PeersInfo, error)
+	addMemberFn       func(ctx context.Context, shardID, replicaID uint64, addr string) error
+	removeMemberFn    func(ctx context.Context, shardID, replicaID uint64) error
+	requestSnapshotFn func(ctx context.Context, shardID uint64) error
+	drainFn           func(ctx context.Context) error
+}
+
+func (m *fnAdminService) Health(ctx context.Context) (*service.HealthStatus, error) {
+	return m.healthFn(ctx)
+}
+
+func (m *fnAdminService) Status(ctx context.Context) (*service.StatusInfo, error) {
+	return m.statusFn(ctx)
+}
+
+func (m *fnAdminService) Peers(ctx context.Context) (*service.PeersInfo, error) {
+	return m.peersFn(ctx)
+}
+
+func (m *fnAdminService) AddMember(ctx context.Context, shardID, replicaID uint64, addr string) error {
+	return m.addMemberFn(ctx, shardID, replicaID, addr)
+}
+
+func (m *fnAdminService) RemoveMember(ctx context.Context, shardID, replicaID uint64) error {
+	return m.removeMemberFn(ctx, shardID, replicaID)
+}
+
+func (m *fnAdminService) RequestSnapshot(ctx context.Context, shardID uint64) error {
+	return m.requestSnapshotFn(ctx, shardID)
+}
+
+func (m *fnAdminService) Drain(ctx context.Context) error {
+	return m.drainFn(ctx)
+}
+
+// ---------------------------------------------------------------------------
+// Minimal KV service for admin tests (distinct from cmd_test.go)
+// ---------------------------------------------------------------------------
+
+// noopKVService implements service.KVServicer as a no-op, satisfying
+// the embedded.New constructor requirement for admin-focused tests.
+type noopKVService struct{}
+
+func (m *noopKVService) Put(_ context.Context, _ string, _ []byte) error    { return nil }
+func (m *noopKVService) Get(_ context.Context, _ string) ([]byte, error)    { return nil, nil }
+func (m *noopKVService) Delete(_ context.Context, _ string) error           { return nil }
+func (m *noopKVService) List(_ context.Context, _ string) ([]string, error) { return nil, nil }
+
+// ---------------------------------------------------------------------------
+// Test helper
+// ---------------------------------------------------------------------------
+
+// executeAdminCmd creates an embedded transport with the given admin service,
+// sets the package-level client, builds the admin command tree, and executes
+// it with the given args. It captures all output written to outputWriter.
+func executeAdminCmd(t *testing.T, adminSvc service.AdminServicer, args ...string) (string, error) {
+	t.Helper()
+
+	kvSvc := &noopKVService{}
+	tr, err := embedded.New(kvSvc, adminSvc)
+	if err != nil {
+		t.Fatalf("embedded.New() error: %v", err)
+	}
+
+	sdkClient, err := sdk.NewClient(tr)
+	if err != nil {
+		t.Fatalf("sdk.NewClient() error: %v", err)
+	}
+	t.Cleanup(func() { sdkClient.Close() })
+
+	// Save and restore package-level state.
+	oldClient := client
+	oldWriter := outputWriter
+	t.Cleanup(func() {
+		client = oldClient
+		outputWriter = oldWriter
+	})
+
+	// Set the package-level client and capture output.
+	client = sdkClient
+	var buf bytes.Buffer
+	outputWriter = &buf
+
+	// Build the admin command tree.
+	cmd := newAdminCmd()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(os.Stderr)
+	cmd.SetArgs(args)
+
+	execErr := cmd.ExecuteContext(context.Background())
+
+	return buf.String(), execErr
+}
+
+// ---------------------------------------------------------------------------
+// Health tests
+// ---------------------------------------------------------------------------
+
+func TestAdminHealth_Table(t *testing.T) {
+	adminSvc := &fnAdminService{
+		healthFn: func(_ context.Context) (*service.HealthStatus, error) {
+			return &service.HealthStatus{
+				Status: "ok",
+				Leader: true,
+			}, nil
+		},
+	}
+
+	output, err := executeAdminCmd(t, adminSvc, "health")
+	if err != nil {
+		t.Fatalf("admin health error: %v", err)
+	}
+
+	if !strings.Contains(output, "Status: ok") {
+		t.Errorf("output missing 'Status: ok', got: %q", output)
+	}
+	if !strings.Contains(output, "Leader: true") {
+		t.Errorf("output missing 'Leader: true', got: %q", output)
+	}
+}
+
+func TestAdminHealth_JSON(t *testing.T) {
+	adminSvc := &fnAdminService{
+		healthFn: func(_ context.Context) (*service.HealthStatus, error) {
+			return &service.HealthStatus{
+				Status: "ok",
+				Leader: true,
+			}, nil
+		},
+	}
+
+	// Set output format to JSON.
+	oldFormat := outputFormat
+	outputFormat = "json"
+	t.Cleanup(func() { outputFormat = oldFormat })
+
+	output, err := executeAdminCmd(t, adminSvc, "health")
+	if err != nil {
+		t.Fatalf("admin health json error: %v", err)
+	}
+
+	var resp transport.HealthResponse
+	if jsonErr := json.Unmarshal([]byte(output), &resp); jsonErr != nil {
+		t.Fatalf("JSON unmarshal error: %v, output: %q", jsonErr, output)
+	}
+	if resp.Status != "ok" {
+		t.Errorf("Status = %q, want %q", resp.Status, "ok")
+	}
+	if !resp.IsLeader {
+		t.Errorf("IsLeader = false, want true")
+	}
+}
+
+func TestAdminHealth_ServiceError(t *testing.T) {
+	adminSvc := &fnAdminService{
+		healthFn: func(_ context.Context) (*service.HealthStatus, error) {
+			return nil, &service.DrainError{Err: errors.New("node unhealthy")}
+		},
+	}
+
+	_, err := executeAdminCmd(t, adminSvc, "health")
+	if err == nil {
+		t.Fatal("expected error from health command")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Status tests
+// ---------------------------------------------------------------------------
+
+func TestAdminStatus_Table(t *testing.T) {
+	adminSvc := &fnAdminService{
+		statusFn: func(_ context.Context) (*service.StatusInfo, error) {
+			return &service.StatusInfo{
+				NodeID:      "node-1",
+				RaftAddress: "10.0.0.1:63001",
+				IsLeader:    true,
+				LeaderID:    1,
+				ShardCount:  3,
+				IsDraining:  false,
+			}, nil
+		},
+	}
+
+	output, err := executeAdminCmd(t, adminSvc, "status")
+	if err != nil {
+		t.Fatalf("admin status error: %v", err)
+	}
+
+	for _, want := range []string{
+		"NodeID:",
+		"node-1",
+		"RaftAddress:",
+		"10.0.0.1:63001",
+		"IsLeader:",
+		"true",
+		"LeaderID:",
+		"ShardCount:",
+		"3",
+		"IsDraining:",
+		"false",
+	} {
+		if !strings.Contains(output, want) {
+			t.Errorf("output missing %q, got: %q", want, output)
+		}
+	}
+}
+
+func TestAdminStatus_JSON(t *testing.T) {
+	adminSvc := &fnAdminService{
+		statusFn: func(_ context.Context) (*service.StatusInfo, error) {
+			return &service.StatusInfo{
+				NodeID:      "node-1",
+				RaftAddress: "10.0.0.1:63001",
+				IsLeader:    true,
+				LeaderID:    1,
+				ShardCount:  3,
+				IsDraining:  false,
+			}, nil
+		},
+	}
+
+	oldFormat := outputFormat
+	outputFormat = "json"
+	t.Cleanup(func() { outputFormat = oldFormat })
+
+	output, err := executeAdminCmd(t, adminSvc, "status")
+	if err != nil {
+		t.Fatalf("admin status json error: %v", err)
+	}
+
+	var resp transport.StatusResponse
+	if jsonErr := json.Unmarshal([]byte(output), &resp); jsonErr != nil {
+		t.Fatalf("JSON unmarshal error: %v, output: %q", jsonErr, output)
+	}
+	if resp.NodeID != "node-1" {
+		t.Errorf("NodeID = %q, want %q", resp.NodeID, "node-1")
+	}
+	if resp.ShardCount != 3 {
+		t.Errorf("ShardCount = %d, want 3", resp.ShardCount)
+	}
+}
+
+func TestAdminStatus_ServiceError(t *testing.T) {
+	adminSvc := &fnAdminService{
+		statusFn: func(_ context.Context) (*service.StatusInfo, error) {
+			return nil, &service.ReadError{Err: errors.New("raft timeout")}
+		},
+	}
+
+	_, err := executeAdminCmd(t, adminSvc, "status")
+	if err == nil {
+		t.Fatal("expected error from status command")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Peers tests
+// ---------------------------------------------------------------------------
+
+func TestAdminPeers_Table(t *testing.T) {
+	adminSvc := &fnAdminService{
+		peersFn: func(_ context.Context) (*service.PeersInfo, error) {
+			return &service.PeersInfo{
+				Shards: []service.ShardPeers{
+					{
+						ShardID:  1,
+						LeaderID: 10,
+						Peers: []service.PeerInfo{
+							{ReplicaID: 10, Address: "10.0.0.1:63001", IsLeader: true},
+							{ReplicaID: 20, Address: "10.0.0.2:63001", IsLeader: false},
+						},
+					},
+				},
+			}, nil
+		},
+	}
+
+	output, err := executeAdminCmd(t, adminSvc, "peers")
+	if err != nil {
+		t.Fatalf("admin peers error: %v", err)
+	}
+
+	for _, want := range []string{
+		"SHARD_ID",
+		"REPLICA_ID",
+		"ADDRESS",
+		"IS_LEADER",
+		"10.0.0.1:63001",
+		"10.0.0.2:63001",
+	} {
+		if !strings.Contains(output, want) {
+			t.Errorf("output missing %q, got: %q", want, output)
+		}
+	}
+}
+
+func TestAdminPeers_JSON(t *testing.T) {
+	adminSvc := &fnAdminService{
+		peersFn: func(_ context.Context) (*service.PeersInfo, error) {
+			return &service.PeersInfo{
+				Shards: []service.ShardPeers{
+					{
+						ShardID:  1,
+						LeaderID: 10,
+						Peers: []service.PeerInfo{
+							{ReplicaID: 10, Address: "10.0.0.1:63001", IsLeader: true},
+						},
+					},
+				},
+			}, nil
+		},
+	}
+
+	oldFormat := outputFormat
+	outputFormat = "json"
+	t.Cleanup(func() { outputFormat = oldFormat })
+
+	output, err := executeAdminCmd(t, adminSvc, "peers")
+	if err != nil {
+		t.Fatalf("admin peers json error: %v", err)
+	}
+
+	var resp transport.PeersResponse
+	if jsonErr := json.Unmarshal([]byte(output), &resp); jsonErr != nil {
+		t.Fatalf("JSON unmarshal error: %v, output: %q", jsonErr, output)
+	}
+	if len(resp.Shards) != 1 {
+		t.Fatalf("Shards count = %d, want 1", len(resp.Shards))
+	}
+	if resp.Shards[0].Peers[0].Address != "10.0.0.1:63001" {
+		t.Errorf("Peer address = %q, want %q", resp.Shards[0].Peers[0].Address, "10.0.0.1:63001")
+	}
+}
+
+func TestAdminPeers_ServiceError(t *testing.T) {
+	adminSvc := &fnAdminService{
+		peersFn: func(_ context.Context) (*service.PeersInfo, error) {
+			return nil, &service.ReadError{Err: errors.New("cluster unreachable")}
+		},
+	}
+
+	_, err := executeAdminCmd(t, adminSvc, "peers")
+	if err == nil {
+		t.Fatal("expected error from peers command")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Member add tests
+// ---------------------------------------------------------------------------
+
+func TestAdminMemberAdd_Success(t *testing.T) {
+	var gotShardID, gotReplicaID uint64
+	var gotAddress string
+
+	adminSvc := &fnAdminService{
+		addMemberFn: func(_ context.Context, shardID, replicaID uint64, addr string) error {
+			gotShardID = shardID
+			gotReplicaID = replicaID
+			gotAddress = addr
+			return nil
+		},
+	}
+
+	output, err := executeAdminCmd(t, adminSvc,
+		"member", "add", "10.0.0.3:63001",
+		"--shard-id", "1",
+		"--replica-id", "30",
+	)
+	if err != nil {
+		t.Fatalf("admin member add error: %v", err)
+	}
+
+	if !strings.Contains(output, "OK") {
+		t.Errorf("output missing 'OK', got: %q", output)
+	}
+	if gotShardID != 1 {
+		t.Errorf("shardID = %d, want 1", gotShardID)
+	}
+	if gotReplicaID != 30 {
+		t.Errorf("replicaID = %d, want 30", gotReplicaID)
+	}
+	if gotAddress != "10.0.0.3:63001" {
+		t.Errorf("address = %q, want %q", gotAddress, "10.0.0.3:63001")
+	}
+}
+
+func TestAdminMemberAdd_MissingShardID(t *testing.T) {
+	adminSvc := &fnAdminService{
+		addMemberFn: func(_ context.Context, _, _ uint64, _ string) error {
+			return nil
+		},
+	}
+
+	_, err := executeAdminCmd(t, adminSvc,
+		"member", "add", "10.0.0.3:63001",
+		"--replica-id", "30",
+	)
+	if err == nil {
+		t.Fatal("expected error for missing --shard-id")
+	}
+	if !strings.Contains(err.Error(), "shard-id") {
+		t.Errorf("error should mention shard-id, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Member remove tests
+// ---------------------------------------------------------------------------
+
+func TestAdminMemberRemove_Success(t *testing.T) {
+	var gotShardID, gotReplicaID uint64
+
+	adminSvc := &fnAdminService{
+		removeMemberFn: func(_ context.Context, shardID, replicaID uint64) error {
+			gotShardID = shardID
+			gotReplicaID = replicaID
+			return nil
+		},
+	}
+
+	output, err := executeAdminCmd(t, adminSvc,
+		"member", "remove", "20",
+		"--shard-id", "1",
+	)
+	if err != nil {
+		t.Fatalf("admin member remove error: %v", err)
+	}
+
+	if !strings.Contains(output, "OK") {
+		t.Errorf("output missing 'OK', got: %q", output)
+	}
+	if gotShardID != 1 {
+		t.Errorf("shardID = %d, want 1", gotShardID)
+	}
+	if gotReplicaID != 20 {
+		t.Errorf("replicaID = %d, want 20", gotReplicaID)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Snapshot tests
+// ---------------------------------------------------------------------------
+
+func TestAdminSnapshot_Success(t *testing.T) {
+	var gotShardID uint64
+
+	adminSvc := &fnAdminService{
+		requestSnapshotFn: func(_ context.Context, shardID uint64) error {
+			gotShardID = shardID
+			return nil
+		},
+	}
+
+	output, err := executeAdminCmd(t, adminSvc,
+		"snapshot",
+		"--shard-id", "2",
+	)
+	if err != nil {
+		t.Fatalf("admin snapshot error: %v", err)
+	}
+
+	if !strings.Contains(output, "OK") {
+		t.Errorf("output missing 'OK', got: %q", output)
+	}
+	if gotShardID != 2 {
+		t.Errorf("shardID = %d, want 2", gotShardID)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Drain tests
+// ---------------------------------------------------------------------------
+
+func TestAdminDrain_Success(t *testing.T) {
+	called := false
+	adminSvc := &fnAdminService{
+		drainFn: func(_ context.Context) error {
+			called = true
+			return nil
+		},
+	}
+
+	output, err := executeAdminCmd(t, adminSvc, "drain")
+	if err != nil {
+		t.Fatalf("admin drain error: %v", err)
+	}
+
+	if !called {
+		t.Error("drain was not called")
+	}
+	if !strings.Contains(output, "OK") {
+		t.Errorf("output missing 'OK', got: %q", output)
+	}
+}

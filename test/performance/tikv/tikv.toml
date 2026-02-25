@@ -1,0 +1,7 @@
+[security]
+ca-path = "/certs/ca.pem"
+cert-path = "/certs/server.pem"
+key-path = "/certs/server-key.pem"
+
+[server]
+grpc-compression-type = "none"

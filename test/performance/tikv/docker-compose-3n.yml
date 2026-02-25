@@ -1,0 +1,123 @@
+# 3-node TiKV cluster (1 PD + 3 TiKV stores, 3 replicas per region).
+# Uses host networking for direct host access to PD and TiKV.
+# PD default max-replicas=3, so all regions automatically get 3 replicas.
+
+volumes:
+  certs:
+  pd-data:
+  tikv-data-1:
+  tikv-data-2:
+  tikv-data-3:
+
+services:
+  # Init container: generate self-signed TLS certs
+  cert-gen:
+    image: alpine:3.19
+    volumes:
+      - certs:/certs
+      - ./scripts:/scripts:ro
+    entrypoint: ["/bin/sh", "/scripts/gen-certs.sh"]
+
+  # Placement Driver (single PD, scheduling only) -- mTLS
+  pd:
+    image: pingcap/pd:v8.5.0
+    network_mode: host
+    depends_on:
+      cert-gen:
+        condition: service_completed_successfully
+    volumes:
+      - certs:/certs:ro
+      - pd-data:/data/pd
+    command:
+      - --name=pd
+      - --client-urls=https://0.0.0.0:2379
+      - --peer-urls=https://0.0.0.0:2380
+      - --advertise-client-urls=https://127.0.0.1:2379
+      - --advertise-peer-urls=https://127.0.0.1:2380
+      - --cacert=/certs/ca.pem
+      - --cert=/certs/server.pem
+      - --key=/certs/server-key.pem
+      - --data-dir=/data/pd
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-check-certificate --certificate=/certs/server.pem --private-key=/certs/server-key.pem -q -O- https://127.0.0.1:2379/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  # TiKV store 1: addr 20160, status 20180
+  tikv1:
+    image: pingcap/tikv:v8.5.0
+    network_mode: host
+    depends_on:
+      pd:
+        condition: service_healthy
+    volumes:
+      - certs:/certs:ro
+      - tikv-data-1:/data/tikv
+      - ./tikv.toml:/tikv.toml:ro
+    command:
+      - --addr=0.0.0.0:20160
+      - --advertise-addr=127.0.0.1:20160
+      - --status-addr=0.0.0.0:20180
+      - --advertise-status-addr=127.0.0.1:20180
+      - --pd-endpoints=https://127.0.0.1:2379
+      - --config=/tikv.toml
+      - --data-dir=/data/tikv
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-check-certificate -q -O- https://127.0.0.1:20180/status"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 15s
+
+  # TiKV store 2: addr 20161, status 20181
+  tikv2:
+    image: pingcap/tikv:v8.5.0
+    network_mode: host
+    depends_on:
+      pd:
+        condition: service_healthy
+    volumes:
+      - certs:/certs:ro
+      - tikv-data-2:/data/tikv
+      - ./tikv.toml:/tikv.toml:ro
+    command:
+      - --addr=0.0.0.0:20161
+      - --advertise-addr=127.0.0.1:20161
+      - --status-addr=0.0.0.0:20181
+      - --advertise-status-addr=127.0.0.1:20181
+      - --pd-endpoints=https://127.0.0.1:2379
+      - --config=/tikv.toml
+      - --data-dir=/data/tikv
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-check-certificate -q -O- https://127.0.0.1:20181/status"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 15s
+
+  # TiKV store 3: addr 20162, status 20182
+  tikv3:
+    image: pingcap/tikv:v8.5.0
+    network_mode: host
+    depends_on:
+      pd:
+        condition: service_healthy
+    volumes:
+      - certs:/certs:ro
+      - tikv-data-3:/data/tikv
+      - ./tikv.toml:/tikv.toml:ro
+    command:
+      - --addr=0.0.0.0:20162
+      - --advertise-addr=127.0.0.1:20162
+      - --status-addr=0.0.0.0:20182
+      - --advertise-status-addr=127.0.0.1:20182
+      - --pd-endpoints=https://127.0.0.1:2379
+      - --config=/tikv.toml
+      - --data-dir=/data/tikv
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-check-certificate -q -O- https://127.0.0.1:20182/status"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 15s

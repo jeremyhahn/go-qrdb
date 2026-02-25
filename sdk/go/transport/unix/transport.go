@@ -1,0 +1,357 @@
+// Copyright 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Package unix implements a gRPC-over-Unix-socket transport for the QRDB
+// SDK. It uses the same protobuf client as the gRPC transport but connects
+// via a local Unix domain socket without TLS, providing efficient
+// inter-process communication.
+package unix
+
+import (
+	"context"
+	"sync/atomic"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/connectivity"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/emptypb"
+
+	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+)
+
+// Compile-time interface assertions.
+var (
+	_ transport.Transport   = (*Transport)(nil)
+	_ transport.KVClient    = (*Transport)(nil)
+	_ transport.AdminClient = (*Transport)(nil)
+	_ transport.Client      = (*Transport)(nil)
+)
+
+// Transport implements the QRDB SDK transport interface using gRPC over
+// a Unix domain socket. The Address field in the transport config is the
+// socket path (e.g., "/var/run/qrdb/qrdb.sock"). TLS is not used for
+// Unix socket communication.
+type Transport struct {
+	config *transport.Config
+	conn   *grpc.ClientConn
+	client pb.QRDBServiceClient
+	closed atomic.Bool
+}
+
+// New creates a new Unix socket transport with the given options. The
+// Address option must be set to the socket file path. The transport is
+// not connected until Connect is called.
+func New(opts ...transport.Option) (*Transport, error) {
+	cfg := transport.ApplyOptions(opts...)
+
+	// Unix transports require an address (the socket path) but not TLS.
+	if cfg.Address == "" {
+		return nil, &transport.ConfigError{Field: "Address", Reason: "socket path is required for Unix transports"}
+	}
+
+	return &Transport{config: cfg}, nil
+}
+
+// Connect establishes the gRPC connection over the Unix domain socket.
+// It uses insecure credentials since Unix sockets provide kernel-level
+// process isolation.
+func (t *Transport) Connect(ctx context.Context) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	target := "unix://" + t.config.Address
+
+	conn, err := grpc.NewClient(target,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		return &transport.ConnectionError{
+			Address: t.config.Address,
+			Err:     &dialError{Err: err},
+		}
+	}
+
+	t.conn = conn
+	t.client = pb.NewQRDBServiceClient(conn)
+
+	// Verify connectivity with a health check.
+	if !t.Healthy(ctx) {
+		return &transport.ConnectionError{
+			Address: t.config.Address,
+			Err:     &dialError{Err: status.Error(codes.Unavailable, "health check failed")},
+		}
+	}
+
+	return nil
+}
+
+// Close shuts down the gRPC connection and releases all resources.
+func (t *Transport) Close() error {
+	if t.closed.Swap(true) {
+		return nil
+	}
+	if t.conn != nil {
+		return t.conn.Close()
+	}
+	return nil
+}
+
+// Healthy returns true if the gRPC connection is active and the server
+// responds to a health check.
+func (t *Transport) Healthy(ctx context.Context) bool {
+	if t.closed.Load() || t.client == nil {
+		return false
+	}
+
+	resp, err := t.client.Health(ctx, &emptypb.Empty{})
+	if err != nil {
+		return false
+	}
+
+	return resp.GetStatus() != ""
+}
+
+// Request performs a generic gRPC request dispatch by method name.
+func (t *Transport) Request(ctx context.Context, method string, req, resp any) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	return t.conn.Invoke(ctx, method, req, resp)
+}
+
+// ---------------------------------------------------------------------------
+// KVClient implementation
+// ---------------------------------------------------------------------------
+
+// Put stores a key-value pair through Raft consensus.
+func (t *Transport) Put(ctx context.Context, key string, value []byte) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	_, err := t.client.Put(ctx, &pb.PutRequest{Key: key, Value: value})
+	if err != nil {
+		return mapGRPCError("Put", err)
+	}
+	return nil
+}
+
+// Get retrieves a value by key with a linearizable read. Returns
+// KeyNotFoundError when the server responds with NotFound.
+func (t *Transport) Get(ctx context.Context, key string) ([]byte, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	resp, err := t.client.Get(ctx, &pb.GetRequest{Key: key})
+	if err != nil {
+		return nil, mapGRPCError("Get", err)
+	}
+	return resp.GetValue(), nil
+}
+
+// Delete removes a key through Raft consensus.
+func (t *Transport) Delete(ctx context.Context, key string) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	_, err := t.client.Delete(ctx, &pb.DeleteRequest{Key: key})
+	if err != nil {
+		return mapGRPCError("Delete", err)
+	}
+	return nil
+}
+
+// List returns sorted keys matching the given prefix. An empty prefix
+// returns all keys.
+func (t *Transport) List(ctx context.Context, prefix string) ([]string, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	resp, err := t.client.List(ctx, &pb.ListRequest{Prefix: prefix})
+	if err != nil {
+		return nil, mapGRPCError("List", err)
+	}
+	return resp.GetKeys(), nil
+}
+
+// ---------------------------------------------------------------------------
+// AdminClient implementation
+// ---------------------------------------------------------------------------
+
+// Health returns the health status of the QRDB node.
+func (t *Transport) Health(ctx context.Context) (*transport.HealthResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	resp, err := t.client.Health(ctx, &emptypb.Empty{})
+	if err != nil {
+		return nil, mapGRPCError("Health", err)
+	}
+
+	return &transport.HealthResponse{
+		Status:   resp.GetStatus(),
+		IsLeader: resp.GetLeader(),
+	}, nil
+}
+
+// Status returns detailed node and shard status information.
+func (t *Transport) Status(ctx context.Context) (*transport.StatusResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	resp, err := t.client.Status(ctx, &emptypb.Empty{})
+	if err != nil {
+		return nil, mapGRPCError("Status", err)
+	}
+
+	return &transport.StatusResponse{
+		NodeID:      resp.GetNodeId(),
+		RaftAddress: resp.GetRaftAddress(),
+		IsLeader:    resp.GetIsLeader(),
+		LeaderID:    resp.GetLeaderId(),
+		ShardCount:  int(resp.GetShardCount()),
+		IsDraining:  resp.GetIsDraining(),
+	}, nil
+}
+
+// Peers returns the peer membership for all loaded shards.
+func (t *Transport) Peers(ctx context.Context) (*transport.PeersResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	resp, err := t.client.Peers(ctx, &emptypb.Empty{})
+	if err != nil {
+		return nil, mapGRPCError("Peers", err)
+	}
+
+	shards := make([]transport.ShardPeers, 0, len(resp.GetShards()))
+	for _, sp := range resp.GetShards() {
+		peers := make([]transport.PeerInfo, 0, len(sp.GetPeers()))
+		for _, p := range sp.GetPeers() {
+			peers = append(peers, transport.PeerInfo{
+				ReplicaID: p.GetReplicaId(),
+				Address:   p.GetAddress(),
+				IsLeader:  p.GetIsLeader(),
+			})
+		}
+		shards = append(shards, transport.ShardPeers{
+			ShardID:  sp.GetShardId(),
+			LeaderID: sp.GetLeaderId(),
+			Peers:    peers,
+		})
+	}
+
+	return &transport.PeersResponse{Shards: shards}, nil
+}
+
+// AddMember adds a new replica to the specified shard.
+func (t *Transport) AddMember(ctx context.Context, shardID, replicaID uint64, raftAddr string) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	_, err := t.client.AddMember(ctx, &pb.AddMemberRequest{
+		ShardId:     shardID,
+		ReplicaId:   replicaID,
+		RaftAddress: raftAddr,
+	})
+	if err != nil {
+		return mapGRPCError("AddMember", err)
+	}
+	return nil
+}
+
+// RemoveMember removes a replica from the specified shard.
+func (t *Transport) RemoveMember(ctx context.Context, shardID, replicaID uint64) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	_, err := t.client.RemoveMember(ctx, &pb.RemoveMemberRequest{
+		ShardId:   shardID,
+		ReplicaId: replicaID,
+	})
+	if err != nil {
+		return mapGRPCError("RemoveMember", err)
+	}
+	return nil
+}
+
+// RequestSnapshot triggers an asynchronous snapshot for the specified shard.
+func (t *Transport) RequestSnapshot(ctx context.Context, shardID uint64) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	_, err := t.client.RequestSnapshot(ctx, &pb.RequestSnapshotMessage{
+		ShardId: shardID,
+	})
+	if err != nil {
+		return mapGRPCError("RequestSnapshot", err)
+	}
+	return nil
+}
+
+// Drain transitions the host into drain mode.
+func (t *Transport) Drain(ctx context.Context) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	_, err := t.client.Drain(ctx, &emptypb.Empty{})
+	if err != nil {
+		return mapGRPCError("Drain", err)
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+// mapGRPCError translates a gRPC status error into the appropriate SDK
+// transport error type.
+func mapGRPCError(method string, err error) error {
+	st, ok := status.FromError(err)
+	if !ok {
+		return &transport.RequestError{Method: method, Err: err}
+	}
+
+	switch st.Code() {
+	case codes.NotFound:
+		return &transport.KeyNotFoundError{Key: st.Message()}
+	default:
+		return &transport.RequestError{Method: method, StatusCode: int(st.Code()), Err: err}
+	}
+}
+
+// ConnState returns the current gRPC connectivity state. This is useful
+// for diagnostics and testing.
+func (t *Transport) ConnState() connectivity.State {
+	if t.conn == nil {
+		return connectivity.Shutdown
+	}
+	return t.conn.GetState()
+}
