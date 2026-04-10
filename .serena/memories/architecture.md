@@ -33,7 +33,7 @@ test/
   integration/       - Integration tests (run in devcontainer)
   performance/       - Benchmark tests and performance docs
 docs/                - Documentation (api.md)
-build/               - Build artifacts, Docker files
+.devcontainer/       - VS Code devcontainer (Dockerfile, docker-compose.yml, entrypoint.sh)
 ```
 
 ## Key Interfaces

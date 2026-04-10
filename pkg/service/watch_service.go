@@ -16,6 +16,7 @@ package service
 
 import (
 	"context"
+	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
@@ -33,6 +34,18 @@ type WatchServicer interface {
 	// matching the given prefix. The watcher remains active until
 	// Close is called or the context is canceled.
 	WatchPrefix(ctx context.Context, prefix string, opts ...watch.WatchOption) (watch.Watcher, error)
+
+	// WatchEntity watches for changes to a specific entity identified
+	// by its type and ID. Events are transformed from raw KV events
+	// into entity-typed events and delivered on the returned channel.
+	// The channel is closed when the context is canceled.
+	WatchEntity(ctx context.Context, req *WatchEntityRequest) (<-chan WatchEntityEvent, error)
+
+	// WatchEntityType watches for changes to all entities of a given
+	// type. Events are transformed from raw KV prefix-watch events
+	// into entity-typed events and delivered on the returned channel.
+	// The channel is closed when the context is canceled.
+	WatchEntityType(ctx context.Context, req *WatchEntityTypeRequest) (<-chan WatchEntityEvent, error)
 }
 
 // WatchHub is the interface required by the WatchService to create and
@@ -65,4 +78,113 @@ func (s *WatchService) Watch(ctx context.Context, key string, opts ...watch.Watc
 // matching the given prefix.
 func (s *WatchService) WatchPrefix(ctx context.Context, prefix string, opts ...watch.WatchOption) (watch.Watcher, error) {
 	return s.hub.WatchPrefix(ctx, prefix, opts...)
+}
+
+// WatchEntity watches for changes to a specific entity. The entity's
+// storage key is constructed as "{entityType}/{id}" and a raw watcher
+// is created for that key. Raw KV events are transformed into
+// WatchEntityEvent values on the returned channel.
+func (s *WatchService) WatchEntity(ctx context.Context, req *WatchEntityRequest) (<-chan WatchEntityEvent, error) {
+	if req.EntityType == "" {
+		return nil, &EntityEmptyTypeError{}
+	}
+	if req.ID == "" {
+		return nil, &EntityEmptyIDError{EntityType: req.EntityType}
+	}
+
+	key := entityKey(req.EntityType, req.ID)
+
+	var opts []watch.WatchOption
+	if req.StartRevision > 0 {
+		opts = append(opts, watch.WithStartRevision(req.StartRevision))
+	}
+
+	w, err := s.hub.Watch(ctx, key, opts...)
+	if err != nil {
+		return nil, err
+	}
+
+	ch := make(chan WatchEntityEvent, 16)
+	go s.relayEntityEvents(ctx, w, req.EntityType, ch)
+
+	return ch, nil
+}
+
+// WatchEntityType watches for changes to all entities of a given type.
+// The entity type prefix is constructed as "{entityType}/" and a prefix
+// watcher is created. Raw KV events are transformed into WatchEntityEvent
+// values on the returned channel.
+func (s *WatchService) WatchEntityType(ctx context.Context, req *WatchEntityTypeRequest) (<-chan WatchEntityEvent, error) {
+	if req.EntityType == "" {
+		return nil, &EntityEmptyTypeError{}
+	}
+
+	prefix := entityPrefix(req.EntityType)
+
+	var opts []watch.WatchOption
+	if req.StartRevision > 0 {
+		opts = append(opts, watch.WithStartRevision(req.StartRevision))
+	}
+
+	w, err := s.hub.WatchPrefix(ctx, prefix, opts...)
+	if err != nil {
+		return nil, err
+	}
+
+	ch := make(chan WatchEntityEvent, 16)
+	go s.relayEntityEvents(ctx, w, req.EntityType, ch)
+
+	return ch, nil
+}
+
+// relayEntityEvents reads from a raw watcher and transforms events into
+// entity-typed events, sending them on the output channel. The goroutine
+// exits when the watcher's event channel is closed or the context is
+// canceled.
+func (s *WatchService) relayEntityEvents(ctx context.Context, w watch.Watcher, entityType EntityType, out chan<- WatchEntityEvent) {
+	defer close(out)
+	defer func() {
+		_ = w.Close()
+	}()
+
+	prefix := entityPrefix(entityType)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case resp, ok := <-w.Events():
+			if !ok {
+				return
+			}
+			for _, evt := range resp.Events {
+				if evt == nil || evt.Kv == nil {
+					continue
+				}
+
+				// Strip the entity type prefix to extract the entity ID.
+				fullKey := string(evt.Kv.Key)
+				id := strings.TrimPrefix(fullKey, prefix)
+
+				var eventType WatchEventType
+				if evt.Type == watch.EventDelete {
+					eventType = WatchEventDelete
+				}
+
+				entityEvent := WatchEntityEvent{
+					EntityType: entityType,
+					ID:         id,
+					Data:       evt.Kv.Value,
+					Revision:   resp.Revision,
+					Type:       eventType,
+				}
+
+				select {
+				case <-ctx.Done():
+					return
+				case out <- entityEvent:
+				}
+			}
+		}
+	}
 }

@@ -35,7 +35,7 @@ type mockKeyNotFoundErr struct {
 	key string
 }
 
-func (e *mockKeyNotFoundErr) Error() string      { return "key not found: " + e.key }
+func (e *mockKeyNotFoundErr) Error() string       { return "key not found: " + e.key }
 func (e *mockKeyNotFoundErr) KeyNotFound() string { return e.key }
 
 // mockRevisionCompactedErr satisfies the revisionCompactedErr interface.
@@ -71,10 +71,7 @@ func TestNewMVCCKVService_ReturnsNonNil(t *testing.T) {
 }
 
 func TestNewMVCCKVService_ImplementsInterface(t *testing.T) {
-	var svc MVCCKVServicer = NewMVCCKVService(&mockHost{}, 1)
-	if svc == nil {
-		t.Fatal("expected non-nil MVCCKVService implementing interface")
-	}
+	var _ MVCCKVServicer = NewMVCCKVService(&mockHost{}, 1) //nolint:staticcheck // QF1011: explicit interface assertion
 }
 
 // ---------------------------------------------------------------------------
@@ -1037,8 +1034,11 @@ func TestMVCCKVService_Range_WithOptions(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected MVCCRangeQuery, got %T", capturedQuery)
 	}
-	if len(rq.Opts) != 2 {
-		t.Fatalf("expected 2 opts, got %d", len(rq.Opts))
+	if rq.Limit != 10 {
+		t.Fatalf("expected Limit=10, got %d", rq.Limit)
+	}
+	if !rq.KeysOnly {
+		t.Fatal("expected KeysOnly=true")
 	}
 }
 
@@ -1747,5 +1747,75 @@ func TestMockRevisionNotFoundErr_ImplementsInterface(t *testing.T) {
 	key, rev := e.RevisionNotFound()
 	if key != "rk" || rev != 77 {
 		t.Fatalf("expected (rk, 77), got (%s, %d)", key, rev)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// MVCCKVService.Scan
+// ---------------------------------------------------------------------------
+
+func TestMVCCKVService_Scan(t *testing.T) {
+	expected := map[string][]byte{
+		"app/key1": []byte("v1"),
+		"app/key2": []byte("v2"),
+	}
+	host := &mockHost{
+		syncReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
+			return expected, nil
+		},
+	}
+	svc := NewMVCCKVService(host, 1)
+	result, err := svc.Scan(context.Background(), "app/")
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if len(result) != 2 {
+		t.Fatalf("expected 2 keys, got %d", len(result))
+	}
+}
+
+func TestMVCCKVService_Scan_NilResult(t *testing.T) {
+	host := &mockHost{
+		syncReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
+			return nil, nil
+		},
+	}
+	svc := NewMVCCKVService(host, 1)
+	result, err := svc.Scan(context.Background(), "empty/")
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if result != nil {
+		t.Fatalf("expected nil result, got %v", result)
+	}
+}
+
+func TestMVCCKVService_Scan_ReadError(t *testing.T) {
+	host := &mockHost{
+		syncReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
+			return nil, errors.New("read failed")
+		},
+	}
+	svc := NewMVCCKVService(host, 1)
+	_, err := svc.Scan(context.Background(), "prefix/")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestMVCCKVService_Scan_UnexpectedType(t *testing.T) {
+	host := &mockHost{
+		syncReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
+			return "not a map", nil
+		},
+	}
+	svc := NewMVCCKVService(host, 1)
+	_, err := svc.Scan(context.Background(), "prefix/")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var re *ReadError
+	if !errors.As(err, &re) {
+		t.Fatalf("expected *ReadError, got %T", err)
 	}
 }

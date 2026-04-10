@@ -15,6 +15,7 @@ import (
 )
 
 // TestRESTHealthEndpoint tests the REST /health endpoint directly.
+// Health is a public endpoint — no client certificate is required.
 func TestRESTHealthEndpoint(t *testing.T) {
 	cfg := LoadTestConfig()
 	if !isServerAvailable(t, cfg) {
@@ -24,7 +25,7 @@ func TestRESTHealthEndpoint(t *testing.T) {
 	client := &http.Client{
 		Timeout: 5 * time.Second,
 		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{RootCAs: loadCACertPool()},
+			TLSClientConfig: &tls.Config{RootCAs: loadCACertPool(cfg.TLSCACert)},
 		},
 	}
 
@@ -42,17 +43,17 @@ func TestRESTHealthEndpoint(t *testing.T) {
 }
 
 // TestRESTPutGetDelete tests KV operations via REST HTTP client directly.
+// Authenticated endpoints require a valid admin client certificate.
 func TestRESTPutGetDelete(t *testing.T) {
 	cfg := LoadTestConfig()
 	if !isServerAvailable(t, cfg) {
 		t.Fatal("REST server not available")
 	}
 
-	pool := loadCACertPool()
 	client := &http.Client{
 		Timeout: 5 * time.Second,
 		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{RootCAs: pool},
+			TLSClientConfig: loadClientTLSConfig(cfg),
 		},
 	}
 
@@ -65,7 +66,7 @@ func TestRESTPutGetDelete(t *testing.T) {
 	putResp, err := client.Do(putReq)
 	assertNoError(t, err, "PUT request failed")
 	putResp.Body.Close()
-	assertEqual(t, http.StatusOK, putResp.StatusCode, "Expected 200 on PUT")
+	assertEqual(t, http.StatusNoContent, putResp.StatusCode, "Expected 204 on PUT")
 
 	// GET
 	getResp, err := client.Get(cfg.RESTBaseURL + "/kv/" + key)
@@ -81,7 +82,7 @@ func TestRESTPutGetDelete(t *testing.T) {
 	delResp, err := client.Do(delReq)
 	assertNoError(t, err, "DELETE request failed")
 	delResp.Body.Close()
-	assertEqual(t, http.StatusOK, delResp.StatusCode, "Expected 200 on DELETE")
+	assertEqual(t, http.StatusNoContent, delResp.StatusCode, "Expected 204 on DELETE")
 
 	// Verify gone
 	getResp2, err := client.Get(cfg.RESTBaseURL + "/kv/" + key)

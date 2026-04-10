@@ -23,7 +23,7 @@ type UnknownLevelError struct {
 }
 
 func (e *UnknownLevelError) Error() string {
-	return "unknown consistency level: " + e.Level + " (valid: strong, linearizable, eventual)"
+	return "unknown consistency level: " + e.Level + " (valid: strong, linearizable, lease_read, eventual)"
 }
 
 // InvalidLevelError is returned when a consistency level value is out

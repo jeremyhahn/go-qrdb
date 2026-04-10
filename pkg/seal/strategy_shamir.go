@@ -12,10 +12,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/shamir"
+	"github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir"
 )
 
 const shareKeyPrefix = "shamir-share-"
@@ -67,6 +66,9 @@ func (s *ShamirStrategy) HardwareBacked() bool {
 	return false
 }
 
+// Close is a no-op for the Shamir strategy.
+func (s *ShamirStrategy) Close() error { return nil }
+
 // SealRootKey splits the root key into Shamir shares and persists them
 // to storage. The returned SealedRootKey envelope records the threshold
 // and total share counts but does not contain the root key itself.
@@ -76,12 +78,12 @@ func (s *ShamirStrategy) SealRootKey(ctx context.Context, rootKey []byte, creds 
 		return nil, fmt.Errorf("%w: %v", ErrShamirSplitFailed, err)
 	}
 
-	if err := s.persistShares(shares); err != nil {
+	if err := s.persistShares(ctx, shares); err != nil {
 		return nil, err
 	}
 
 	return &SealedRootKey{
-		Version:         sealedRootKeyVersion,
+		Version:         1,
 		Strategy:        StrategyShamir,
 		ShamirThreshold: s.threshold,
 		ShamirTotal:     s.total,
@@ -96,7 +98,7 @@ func (s *ShamirStrategy) UnsealRootKey(ctx context.Context, sealed *SealedRootKe
 		return nil, ErrNilSealedData
 	}
 
-	shares, err := s.LoadAllShares()
+	shares, err := s.LoadAllShares(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -113,16 +115,17 @@ func (s *ShamirStrategy) UnsealRootKey(ctx context.Context, sealed *SealedRootKe
 	return secret, nil
 }
 
-// BarrierEncryptor returns a software-based symmetric encryptor derived from
-// the provided root key using HKDF-SHA256.
+// BarrierEncryptor returns (nil, nil) because the Shamir strategy uses
+// epoch-based HKDF DEKs managed by the EpochBarrier. The root key is
+// reconstructed from shares and fed to the EpochBarrier for DEK derivation.
 func (s *ShamirStrategy) BarrierEncryptor(ctx context.Context, rootKey []byte) (SymmetricEncrypter, error) {
-	return newSoftwareBarrierEncryptor(rootKey)
+	return nil, nil
 }
 
 // LoadShare loads a single Shamir share by its 1-based index from storage.
-func (s *ShamirStrategy) LoadShare(index int) (*shamir.Share, error) {
+func (s *ShamirStrategy) LoadShare(ctx context.Context, index int) (*shamir.Share, error) {
 	key := shamirShareKey(index)
-	data, err := s.storage.Get(key)
+	data, err := s.storage.Get(ctx, key)
 	if err != nil {
 		return nil, fmt.Errorf("%w: index %d: %v", ErrShamirShareNotFound, index, err)
 	}
@@ -137,8 +140,8 @@ func (s *ShamirStrategy) LoadShare(index int) (*shamir.Share, error) {
 
 // LoadAllShares loads all Shamir shares from storage by listing keys with
 // the share prefix and deserializing each one.
-func (s *ShamirStrategy) LoadAllShares() ([]*shamir.Share, error) {
-	keys, err := s.storage.List(shareKeyPrefix)
+func (s *ShamirStrategy) LoadAllShares(ctx context.Context) ([]*shamir.Share, error) {
+	keys, err := s.storage.List(ctx, shareKeyPrefix)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrShamirStorageFailed, err)
 	}
@@ -149,7 +152,7 @@ func (s *ShamirStrategy) LoadAllShares() ([]*shamir.Share, error) {
 
 	shares := make([]*shamir.Share, 0, len(keys))
 	for _, key := range keys {
-		data, err := s.storage.Get(key)
+		data, err := s.storage.Get(ctx, key)
 		if err != nil {
 			return nil, fmt.Errorf("%w: key %s: %v", ErrShamirStorageFailed, key, err)
 		}
@@ -165,23 +168,31 @@ func (s *ShamirStrategy) LoadAllShares() ([]*shamir.Share, error) {
 }
 
 // DeleteShare removes a single Shamir share from storage by its 1-based index.
-func (s *ShamirStrategy) DeleteShare(index int) error {
+// Returns ErrShamirShareNotFound if the share does not exist.
+func (s *ShamirStrategy) DeleteShare(ctx context.Context, index int) error {
 	key := shamirShareKey(index)
-	if err := s.storage.Delete(key); err != nil {
+	exists, err := s.storage.Exists(ctx, key)
+	if err != nil {
+		return fmt.Errorf("%w: index %d: %v", ErrShamirStorageFailed, index, err)
+	}
+	if !exists {
+		return fmt.Errorf("%w: index %d", ErrShamirShareNotFound, index)
+	}
+	if err := s.storage.Delete(ctx, key); err != nil {
 		return fmt.Errorf("%w: index %d: %v", ErrShamirStorageFailed, index, err)
 	}
 	return nil
 }
 
 // DeleteAllShares removes all Shamir shares from storage.
-func (s *ShamirStrategy) DeleteAllShares() error {
-	keys, err := s.storage.List(shareKeyPrefix)
+func (s *ShamirStrategy) DeleteAllShares(ctx context.Context) error {
+	keys, err := s.storage.List(ctx, shareKeyPrefix)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrShamirStorageFailed, err)
 	}
 
 	for _, key := range keys {
-		if err := s.storage.Delete(key); err != nil {
+		if err := s.storage.Delete(ctx, key); err != nil {
 			return fmt.Errorf("%w: key %s: %v", ErrShamirStorageFailed, key, err)
 		}
 	}
@@ -192,8 +203,8 @@ func (s *ShamirStrategy) DeleteAllShares() error {
 // VerifyShares loads all persisted shares and validates their consistency.
 // Each share must have matching threshold and total values, and no duplicate
 // indices may exist.
-func (s *ShamirStrategy) VerifyShares() error {
-	shares, err := s.LoadAllShares()
+func (s *ShamirStrategy) VerifyShares(ctx context.Context) error {
+	shares, err := s.LoadAllShares(ctx)
 	if err != nil {
 		return err
 	}
@@ -223,8 +234,8 @@ func (s *ShamirStrategy) VerifyShares() error {
 }
 
 // ShareCount returns the number of shares currently persisted in storage.
-func (s *ShamirStrategy) ShareCount() (int, error) {
-	keys, err := s.storage.List(shareKeyPrefix)
+func (s *ShamirStrategy) ShareCount(ctx context.Context) (int, error) {
+	keys, err := s.storage.List(ctx, shareKeyPrefix)
 	if err != nil {
 		return 0, fmt.Errorf("%w: %v", ErrShamirStorageFailed, err)
 	}
@@ -248,7 +259,7 @@ func (s *ShamirStrategy) Storage() StorageBackend {
 
 // persistShares serializes each share to JSON and stores it in the backend
 // under the key "shamir-share-{index}".
-func (s *ShamirStrategy) persistShares(shares []*shamir.Share) error {
+func (s *ShamirStrategy) persistShares(ctx context.Context, shares []*shamir.Share) error {
 	for _, share := range shares {
 		data, err := json.Marshal(share)
 		if err != nil {
@@ -256,7 +267,7 @@ func (s *ShamirStrategy) persistShares(shares []*shamir.Share) error {
 		}
 
 		key := shamirShareKey(share.Index)
-		if err := s.storage.Put(key, data); err != nil {
+		if err := s.storage.Put(ctx, key, data); err != nil {
 			return fmt.Errorf("%w: index %d: %v", ErrShamirStorageFailed, share.Index, err)
 		}
 	}
@@ -265,8 +276,5 @@ func (s *ShamirStrategy) persistShares(shares []*shamir.Share) error {
 
 // shamirShareKey returns the storage key for a share at the given 1-based index.
 func shamirShareKey(index int) string {
-	var b strings.Builder
-	b.WriteString(shareKeyPrefix)
-	b.WriteString(fmt.Sprintf("%d", index))
-	return b.String()
+	return fmt.Sprintf("shamir-share-%d", index)
 }

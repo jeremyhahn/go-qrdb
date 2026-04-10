@@ -14,7 +14,11 @@
 
 package timeseries
 
-import "time"
+import (
+	"fmt"
+	"strconv"
+	"time"
+)
 
 // ClosedError is returned when an operation is attempted on closed storage.
 type ClosedError struct{}
@@ -30,6 +34,31 @@ type NilDBError struct{}
 // Error returns a human-readable description indicating a nil database.
 func (e *NilDBError) Error() string {
 	return "timeseries: pebble db is nil"
+}
+
+// EmptyDirError is returned when an empty data directory is provided to
+// NewWithDir.
+type EmptyDirError struct{}
+
+// Error returns a human-readable description indicating the directory is empty.
+func (e *EmptyDirError) Error() string {
+	return "timeseries: data directory is empty"
+}
+
+// OpenDirError is returned when PebbleDB fails to open the specified directory.
+type OpenDirError struct {
+	Dir string
+	Err error
+}
+
+// Error returns a human-readable description of the directory open failure.
+func (e *OpenDirError) Error() string {
+	return fmt.Sprintf("timeseries: failed to open directory %q: %v", e.Dir, e.Err)
+}
+
+// Unwrap returns the underlying error for use with errors.Is and errors.As.
+func (e *OpenDirError) Unwrap() error {
+	return e.Err
 }
 
 // InvalidMetricError is returned when a metric name is empty.
@@ -97,5 +126,44 @@ func (e *ReadError) Error() string {
 
 // Unwrap returns the underlying error for use with errors.Is and errors.As.
 func (e *ReadError) Unwrap() error {
+	return e.Err
+}
+
+// ValidationError is returned when a request fails general validation.
+type ValidationError struct {
+	Op      string
+	Message string
+}
+
+// Error returns a human-readable description of the validation failure.
+func (e *ValidationError) Error() string {
+	return "timeseries: " + e.Op + ": " + e.Message
+}
+
+// InvalidAggFuncError is returned when an unrecognized aggregation function
+// is specified.
+type InvalidAggFuncError struct {
+	Func AggFunc
+}
+
+// Error returns a human-readable description of the invalid aggregation function.
+func (e *InvalidAggFuncError) Error() string {
+	return "timeseries: invalid aggregation function: " + strconv.Itoa(int(e.Func))
+}
+
+// InvalidBatchPointError is returned when a data point within a batch
+// fails validation.
+type InvalidBatchPointError struct {
+	Index int
+	Err   error
+}
+
+// Error returns a human-readable description identifying the failing point.
+func (e *InvalidBatchPointError) Error() string {
+	return "timeseries: invalid data point at index " + strconv.Itoa(e.Index) + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying validation error.
+func (e *InvalidBatchPointError) Unwrap() error {
 	return e.Err
 }

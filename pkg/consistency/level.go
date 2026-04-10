@@ -35,11 +35,27 @@ const (
 	// This is the recommended default for most applications.
 	Linearizable
 
+	// LeaseRead allows the Raft leader to serve reads directly when its
+	// leadership lease is still valid, skipping the ReadIndex round-trip.
+	// Provides near-linearizable reads with sub-millisecond latency.
+	// Use for: high-throughput read workloads where a brief (<election
+	// timeout) window of stale reads during leader failover is acceptable.
+	LeaseRead
+
 	// Eventual allows reading from local node without Raft coordination.
 	// Fastest reads (<1ms) but may return stale data if node is
 	// partitioned. Use for: analytics, dashboards, caching where
 	// staleness is acceptable.
 	Eventual
+
+	// FollowerRead reads from the local state machine after the node
+	// confirms it has applied up to the committed index via ReadIndex.
+	// Unlike Eventual (StaleRead), this guarantees the read reflects
+	// all committed entries without requiring the client to contact the
+	// leader. Provides stronger guarantees than Eventual with lower
+	// latency than SyncRead on followers since the leader does not
+	// need to execute the query itself.
+	FollowerRead
 )
 
 // String returns the string representation of the consistency level.
@@ -49,23 +65,34 @@ func (l Level) String() string {
 		return "strong"
 	case Linearizable:
 		return "linearizable"
+	case LeaseRead:
+		return "lease_read"
 	case Eventual:
 		return "eventual"
+	case FollowerRead:
+		return "follower_read"
 	default:
 		return "unknown(" + strconv.Itoa(int(l)) + ")"
 	}
 }
 
 // ParseLevel converts a string to a consistency level. An empty string
-// returns the default level (Linearizable).
+// returns the default level (Linearizable). Recognized values are:
+// "strong", "linearizable", "lease_read" (aliases: "leaseread"),
+// "eventual" (aliases: "stale"), "follower_read" (aliases: "followerread").
+// All values are accepted in upper-case.
 func ParseLevel(s string) (Level, error) {
 	switch s {
 	case "strong", "STRONG":
 		return Strong, nil
 	case "linearizable", "LINEARIZABLE", "":
 		return Linearizable, nil
+	case "lease_read", "LEASE_READ", "leaseread", "LEASEREAD":
+		return LeaseRead, nil
 	case "eventual", "EVENTUAL", "stale", "STALE":
 		return Eventual, nil
+	case "follower_read", "FOLLOWER_READ", "followerread", "FOLLOWERREAD":
+		return FollowerRead, nil
 	default:
 		return Linearizable, &UnknownLevelError{Level: s}
 	}
@@ -73,7 +100,7 @@ func ParseLevel(s string) (Level, error) {
 
 // IsValid returns true if the consistency level is a recognized value.
 func (l Level) IsValid() bool {
-	return l >= Strong && l <= Eventual
+	return l >= Strong && l <= FollowerRead
 }
 
 // Default returns the default consistency level (Linearizable).

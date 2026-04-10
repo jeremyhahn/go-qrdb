@@ -15,27 +15,28 @@
 package index
 
 import (
+	"bytes"
 	"sort"
 	"sync"
 )
 
 // MemoryIndex is an in-memory implementation of the Index interface.
-// It uses a map of field value strings to entity ID slices, protected
+// It uses a map of field value strings to entity key slices, protected
 // by a read-write mutex for concurrent access.
 type MemoryIndex struct {
 	mu     sync.RWMutex
 	name   string
 	unique bool
-	data   map[string][]uint64
+	data   map[string][][]byte
 }
 
 // NewMemoryIndex creates a new in-memory index with the given name.
-// When unique is true, each field value may map to at most one entity ID.
+// When unique is true, each field value may map to at most one entity key.
 func NewMemoryIndex(name string, unique bool) *MemoryIndex {
 	return &MemoryIndex{
 		name:   name,
 		unique: unique,
-		data:   make(map[string][]uint64),
+		data:   make(map[string][][]byte),
 	}
 }
 
@@ -49,11 +50,11 @@ func (m *MemoryIndex) IsUnique() bool {
 	return m.unique
 }
 
-// Put adds an index entry mapping fieldValue to entityID. If the index
+// Put adds an index entry mapping fieldValue to entityKey. If the index
 // enforces uniqueness and a different entity already maps to the same
-// field value, a UniqueViolationError is returned. Duplicate entityID
+// field value, a UniqueViolationError is returned. Duplicate entityKey
 // entries for the same field value are silently ignored.
-func (m *MemoryIndex) Put(entityID uint64, fieldValue []byte) error {
+func (m *MemoryIndex) Put(entityKey []byte, fieldValue []byte) error {
 	if fieldValue == nil {
 		return &NilFieldValueError{Op: "put"}
 	}
@@ -66,33 +67,36 @@ func (m *MemoryIndex) Put(entityID uint64, fieldValue []byte) error {
 	}
 
 	key := string(fieldValue)
-	ids := m.data[key]
+	keys := m.data[key]
 
 	// Check unique constraint.
-	if m.unique && len(ids) > 0 && ids[0] != entityID {
+	if m.unique && len(keys) > 0 && !bytes.Equal(keys[0], entityKey) {
 		return &UniqueViolationError{
-			IndexName:  m.name,
-			FieldValue: fieldValue,
-			ExistingID: ids[0],
-			NewID:      entityID,
+			IndexName:   m.name,
+			FieldValue:  fieldValue,
+			ExistingKey: keys[0],
+			NewKey:      entityKey,
 		}
 	}
 
-	// Check for duplicate entityID.
-	for _, id := range ids {
-		if id == entityID {
+	// Check for duplicate entityKey.
+	for _, k := range keys {
+		if bytes.Equal(k, entityKey) {
 			return nil
 		}
 	}
 
-	m.data[key] = append(ids, entityID)
+	// Store a copy of the entity key.
+	keyCopy := make([]byte, len(entityKey))
+	copy(keyCopy, entityKey)
+	m.data[key] = append(keys, keyCopy)
 	return nil
 }
 
-// Get retrieves all entity IDs associated with the given field value.
-// Returns an empty slice if no entities are found. The returned slice
-// is a copy and may be freely modified by the caller.
-func (m *MemoryIndex) Get(fieldValue []byte) ([]uint64, error) {
+// Get retrieves all entity keys associated with the given field value.
+// Returns an empty slice if no entities are found. The returned slices
+// are copies and may be freely modified by the caller.
+func (m *MemoryIndex) Get(fieldValue []byte) ([][]byte, error) {
 	if fieldValue == nil {
 		return nil, &NilFieldValueError{Op: "get"}
 	}
@@ -104,19 +108,23 @@ func (m *MemoryIndex) Get(fieldValue []byte) ([]uint64, error) {
 		return nil, &ClosedError{Name: m.name}
 	}
 
-	ids := m.data[string(fieldValue)]
-	if len(ids) == 0 {
-		return []uint64{}, nil
+	keys := m.data[string(fieldValue)]
+	if len(keys) == 0 {
+		return [][]byte{}, nil
 	}
 
-	cp := make([]uint64, len(ids))
-	copy(cp, ids)
+	cp := make([][]byte, len(keys))
+	for i, k := range keys {
+		c := make([]byte, len(k))
+		copy(c, k)
+		cp[i] = c
+	}
 	return cp, nil
 }
 
-// Delete removes the mapping from fieldValue to entityID. If the field
+// Delete removes the mapping from fieldValue to entityKey. If the field
 // value's entity list becomes empty, the map entry is removed entirely.
-func (m *MemoryIndex) Delete(entityID uint64, fieldValue []byte) error {
+func (m *MemoryIndex) Delete(entityKey []byte, fieldValue []byte) error {
 	if fieldValue == nil {
 		return &NilFieldValueError{Op: "delete"}
 	}
@@ -129,17 +137,17 @@ func (m *MemoryIndex) Delete(entityID uint64, fieldValue []byte) error {
 	}
 
 	key := string(fieldValue)
-	ids := m.data[key]
+	keys := m.data[key]
 
-	for i, id := range ids {
-		if id == entityID {
+	for i, k := range keys {
+		if bytes.Equal(k, entityKey) {
 			// Remove by swapping with last element and truncating.
-			ids[i] = ids[len(ids)-1]
-			ids = ids[:len(ids)-1]
-			if len(ids) == 0 {
+			keys[i] = keys[len(keys)-1]
+			keys = keys[:len(keys)-1]
+			if len(keys) == 0 {
 				delete(m.data, key)
 			} else {
-				m.data[key] = ids
+				m.data[key] = keys
 			}
 			return nil
 		}
@@ -150,8 +158,8 @@ func (m *MemoryIndex) Delete(entityID uint64, fieldValue []byte) error {
 
 // Scan retrieves all index entries with field values in the half-open
 // interval [start, end). Returns a map of field value strings to copies
-// of their entity ID slices.
-func (m *MemoryIndex) Scan(start, end []byte) (map[string][]uint64, error) {
+// of their entity key slices.
+func (m *MemoryIndex) Scan(start, end []byte) (map[string][][]byte, error) {
 	if start == nil {
 		return nil, &NilFieldValueError{Op: "scan start"}
 	}
@@ -170,18 +178,22 @@ func (m *MemoryIndex) Scan(start, end []byte) (map[string][]uint64, error) {
 	endStr := string(end)
 
 	// Collect and sort keys for deterministic output.
-	keys := make([]string, 0, len(m.data))
+	fieldKeys := make([]string, 0, len(m.data))
 	for k := range m.data {
-		keys = append(keys, k)
+		fieldKeys = append(fieldKeys, k)
 	}
-	sort.Strings(keys)
+	sort.Strings(fieldKeys)
 
-	result := make(map[string][]uint64)
-	for _, k := range keys {
+	result := make(map[string][][]byte)
+	for _, k := range fieldKeys {
 		if k >= startStr && k < endStr {
-			ids := m.data[k]
-			cp := make([]uint64, len(ids))
-			copy(cp, ids)
+			keys := m.data[k]
+			cp := make([][]byte, len(keys))
+			for i, ek := range keys {
+				c := make([]byte, len(ek))
+				copy(c, ek)
+				cp[i] = c
+			}
 			result[k] = cp
 		}
 	}
@@ -189,9 +201,9 @@ func (m *MemoryIndex) Scan(start, end []byte) (map[string][]uint64, error) {
 	return result, nil
 }
 
-// GetAll retrieves all entity IDs in the index, deduplicated and sorted
+// GetAll retrieves all entity keys in the index, deduplicated and sorted
 // for deterministic output.
-func (m *MemoryIndex) GetAll() ([]uint64, error) {
+func (m *MemoryIndex) GetAll() ([][]byte, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -199,19 +211,21 @@ func (m *MemoryIndex) GetAll() ([]uint64, error) {
 		return nil, &ClosedError{Name: m.name}
 	}
 
-	seen := make(map[uint64]struct{})
-	for _, ids := range m.data {
-		for _, id := range ids {
-			seen[id] = struct{}{}
+	seen := make(map[string][]byte)
+	for _, keys := range m.data {
+		for _, k := range keys {
+			seen[string(k)] = k
 		}
 	}
 
-	result := make([]uint64, 0, len(seen))
-	for id := range seen {
-		result = append(result, id)
+	result := make([][]byte, 0, len(seen))
+	for _, k := range seen {
+		c := make([]byte, len(k))
+		copy(c, k)
+		result = append(result, c)
 	}
 	sort.Slice(result, func(i, j int) bool {
-		return result[i] < result[j]
+		return bytes.Compare(result[i], result[j]) < 0
 	})
 
 	return result, nil
@@ -226,7 +240,7 @@ func (m *MemoryIndex) Clear() error {
 		return &ClosedError{Name: m.name}
 	}
 
-	m.data = make(map[string][]uint64)
+	m.data = make(map[string][][]byte)
 	return nil
 }
 

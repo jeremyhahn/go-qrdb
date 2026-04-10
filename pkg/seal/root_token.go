@@ -9,7 +9,6 @@
 package seal
 
 import (
-	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -20,7 +19,7 @@ import (
 	"time"
 
 	"github.com/awnumar/memguard"
-	"github.com/jeremyhahn/go-qrdb/pkg/shamir"
+	"github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir"
 )
 
 const (
@@ -29,8 +28,8 @@ const (
 )
 
 // RootToken represents a generated root token that proves knowledge of
-// the master key through Shamir shares. The token is derived from the DEK
-// using HMAC-SHA256 with a random nonce.
+// the master key through Shamir shares. The token is derived from the
+// root key using HMAC-SHA256 with a random nonce.
 type RootToken struct {
 	Token     string    `json:"token"`
 	CreatedAt time.Time `json:"created_at"`
@@ -40,8 +39,8 @@ type RootToken struct {
 // master key through Shamir shares. The caller must provide enough share
 // values to meet the Shamir threshold. The reconstructed secret is verified
 // against the barrier's sealed root key, and a new token is derived from
-// the DEK using HMAC-SHA256.
-func (b *Barrier) GenerateRootToken(ctx context.Context, shareValues []string) (*RootToken, error) {
+// the root key using HMAC-SHA256.
+func (b *StorageBarrier) GenerateRootToken(ctx context.Context, shareValues []string) (*RootToken, error) {
 	if b.config.Shamir == nil {
 		return nil, ErrShamirNotConfigured
 	}
@@ -68,12 +67,12 @@ func (b *Barrier) GenerateRootToken(ctx context.Context, shareValues []string) (
 	}
 	defer memguard.WipeBytes(secret)
 
-	// Verify the secret and derive the DEK.
-	dek, err := b.verifySecretAndDeriveDEK(ctx, secret)
+	// Verify the secret against the sealed root key.
+	rootKey, err := b.verifySecretAndGetRootKey(ctx, secret)
 	if err != nil {
 		return nil, err
 	}
-	defer memguard.WipeBytes(dek)
+	defer memguard.WipeBytes(rootKey)
 
 	// Generate a random nonce.
 	nonce := make([]byte, rootTokenSize)
@@ -81,8 +80,8 @@ func (b *Barrier) GenerateRootToken(ctx context.Context, shareValues []string) (
 		return nil, err
 	}
 
-	// HMAC-SHA256(DEK, nonce || info) to derive the token.
-	mac := hmac.New(sha256.New, dek)
+	// HMAC-SHA256(rootKey, nonce || info) to derive the token.
+	mac := hmac.New(sha256.New, rootKey)
 	mac.Write(nonce)
 	mac.Write([]byte(rootTokenHMACInfo))
 	tokenBytes := mac.Sum(nil)
@@ -100,15 +99,15 @@ func (b *Barrier) GenerateRootToken(ctx context.Context, shareValues []string) (
 	return token, nil
 }
 
-// verifySecretAndDeriveDEK verifies the reconstructed Shamir secret against
-// the barrier's sealed root key and returns the data encryption key (DEK).
+// verifySecretAndGetRootKey verifies the reconstructed Shamir secret against
+// the barrier's sealed root key and returns a copy of the root key.
 // It supports two modes:
 //   - Direct mode: a ShamirStrategy is registered and the secret is the root
 //     key itself.
 //   - Credential mode: the secret is a password used to unseal the root key
 //     via one of the barrier's registered strategies.
-func (b *Barrier) verifySecretAndDeriveDEK(ctx context.Context, secret []byte) ([]byte, error) {
-	exists, err := b.base.Exists(b.config.RootKeyPath)
+func (b *StorageBarrier) verifySecretAndGetRootKey(ctx context.Context, secret []byte) ([]byte, error) {
+	exists, err := b.base.Exists(ctx, b.config.RootKeyPath)
 	if err != nil {
 		return nil, err
 	}
@@ -117,38 +116,18 @@ func (b *Barrier) verifySecretAndDeriveDEK(ctx context.Context, secret []byte) (
 	}
 
 	if b.ShamirStrategy() != nil {
-		return b.verifyDirectMode(secret)
+		return b.verifyDirectMode(ctx, secret)
 	}
 	return b.verifyCredentialMode(ctx, secret)
 }
 
 // verifyDirectMode verifies the secret when a ShamirStrategy is registered.
-// The secret IS the root key. Verification is done by creating a software
-// encryptor, performing a canary encrypt/decrypt round-trip, and then
-// confirming the sealed root key was sealed with the Shamir strategy.
-func (b *Barrier) verifyDirectMode(secret []byte) ([]byte, error) {
-	// Create a software encryptor from the secret (as root key).
-	enc, err := newSoftwareBarrierEncryptor(secret)
-	if err != nil {
-		return nil, ErrRootTokenVerificationFailed
-	}
-
-	// Canary round-trip to verify the key works.
-	canary := []byte("root-token-canary")
-	encrypted, err := enc.Encrypt(canary)
-	if err != nil {
-		return nil, ErrRootTokenVerificationFailed
-	}
-	decrypted, err := enc.Decrypt(encrypted)
-	if err != nil {
-		return nil, ErrRootTokenVerificationFailed
-	}
-	if !bytes.Equal(canary, decrypted) {
-		return nil, ErrRootTokenVerificationFailed
-	}
-
+// The secret IS the root key. Verification is done by encrypting and
+// decrypting a canary value with the EpochBarrier, and confirming the
+// sealed root key was sealed with the Shamir strategy.
+func (b *StorageBarrier) verifyDirectMode(ctx context.Context, secret []byte) ([]byte, error) {
 	// Verify the sealed root key blob uses the Shamir strategy.
-	blob, err := b.base.Get(b.config.RootKeyPath)
+	blob, err := b.base.Get(ctx, b.config.RootKeyPath)
 	if err != nil {
 		return nil, ErrRootTokenVerificationFailed
 	}
@@ -160,16 +139,18 @@ func (b *Barrier) verifyDirectMode(secret []byte) ([]byte, error) {
 		return nil, ErrRootTokenVerificationFailed
 	}
 
-	// Return a copy of the DEK.
-	return enc.DEK(), nil
+	// Return a copy of the secret (which is the root key in direct mode).
+	rootKeyCopy := make([]byte, len(secret))
+	copy(rootKeyCopy, secret)
+	return rootKeyCopy, nil
 }
 
 // verifyCredentialMode verifies the secret when no ShamirStrategy is
 // registered. The secret is treated as a password credential. We load
 // the sealed root key blob, find the matching strategy, unseal the root
-// key, derive the DEK from the root key, and return it.
-func (b *Barrier) verifyCredentialMode(ctx context.Context, secret []byte) ([]byte, error) {
-	blob, err := b.base.Get(b.config.RootKeyPath)
+// key, and return it.
+func (b *StorageBarrier) verifyCredentialMode(ctx context.Context, secret []byte) ([]byte, error) {
+	blob, err := b.base.Get(ctx, b.config.RootKeyPath)
 	if err != nil {
 		return nil, ErrRootTokenVerificationFailed
 	}
@@ -188,12 +169,6 @@ func (b *Barrier) verifyCredentialMode(ctx context.Context, secret []byte) ([]by
 	if err != nil {
 		return nil, ErrRootTokenVerificationFailed
 	}
-	defer memguard.WipeBytes(rootKey)
 
-	// Derive DEK from root key.
-	enc, err := newSoftwareBarrierEncryptor(rootKey)
-	if err != nil {
-		return nil, ErrRootTokenVerificationFailed
-	}
-	return enc.DEK(), nil
+	return rootKey, nil
 }

@@ -1,8 +1,8 @@
 module github.com/jeremyhahn/go-quicraft/contrib/qrdb/test/performance/tikv
 
-go 1.26
+go 1.26.1
 
-toolchain go1.26.0
+toolchain go1.26.1
 
 require (
 	github.com/jeremyhahn/go-quicraft/test/performance v0.0.0
@@ -53,5 +53,3 @@ require (
 	google.golang.org/protobuf v1.30.0 // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 )
-
-replace github.com/jeremyhahn/go-quicraft/test/performance => ../../../../../test/performance

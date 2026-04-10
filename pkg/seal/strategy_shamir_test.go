@@ -14,7 +14,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/shamir"
+	"github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir"
 )
 
 // failingBackend is a StorageBackend that returns errors on demand.
@@ -33,39 +33,43 @@ func newFailingBackend() *failingBackend {
 	return &failingBackend{inner: NewMemoryBackend()}
 }
 
-func (f *failingBackend) Get(key string) ([]byte, error) {
+func (f *failingBackend) Get(ctx context.Context, key string) ([]byte, error) {
 	if f.getErr != nil {
 		return nil, f.getErr
 	}
-	return f.inner.Get(key)
+	return f.inner.Get(ctx, key)
 }
 
-func (f *failingBackend) Put(key string, data []byte) error {
+func (f *failingBackend) Put(ctx context.Context, key string, data []byte) error {
 	if f.putErr != nil {
 		return f.putErr
 	}
-	return f.inner.Put(key, data)
+	return f.inner.Put(ctx, key, data)
 }
 
-func (f *failingBackend) Delete(key string) error {
+func (f *failingBackend) Delete(ctx context.Context, key string) error {
 	if f.delErr != nil {
 		return f.delErr
 	}
-	return f.inner.Delete(key)
+	return f.inner.Delete(ctx, key)
 }
 
-func (f *failingBackend) List(prefix string) ([]string, error) {
+func (f *failingBackend) List(ctx context.Context, prefix string) ([]string, error) {
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
-	return f.inner.List(prefix)
+	return f.inner.List(ctx, prefix)
 }
 
-func (f *failingBackend) Exists(key string) (bool, error) {
+func (f *failingBackend) Exists(ctx context.Context, key string) (bool, error) {
 	if f.existErr != nil {
 		return false, f.existErr
 	}
-	return f.inner.Exists(key)
+	return f.inner.Exists(ctx, key)
+}
+
+func (f *failingBackend) Scan(ctx context.Context, prefix string, fn func(key string, value []byte) error) error {
+	return f.inner.Scan(ctx, prefix, fn)
 }
 
 func (f *failingBackend) Close() error { return nil }
@@ -166,6 +170,7 @@ func TestStrategy_Shamir_SealUnsealRoundTrip(t *testing.T) {
 }
 
 func TestStrategy_Shamir_SealRootKey_PersistSharesFails(t *testing.T) {
+	ctx := context.Background()
 	fb := newFailingBackend()
 	s, err := NewShamirStrategy(fb, 2, 3)
 	if err != nil {
@@ -176,7 +181,7 @@ func TestStrategy_Shamir_SealRootKey_PersistSharesFails(t *testing.T) {
 	fb.putErr = errors.New("disk full")
 
 	rootKey := []byte("0123456789abcdef0123456789abcdef")
-	_, err = s.SealRootKey(context.Background(), rootKey, Credentials{})
+	_, err = s.SealRootKey(ctx, rootKey, Credentials{})
 	if err == nil {
 		t.Fatal("expected error from persistShares failure")
 	}
@@ -234,13 +239,13 @@ func TestStrategy_Shamir_UnsealRootKey_QuorumIncomplete(t *testing.T) {
 	}
 
 	// Delete shares until only 2 remain (below threshold of 3).
-	if err := s.DeleteShare(1); err != nil {
+	if err := s.DeleteShare(ctx, 1); err != nil {
 		t.Fatalf("DeleteShare(1): %v", err)
 	}
-	if err := s.DeleteShare(2); err != nil {
+	if err := s.DeleteShare(ctx, 2); err != nil {
 		t.Fatalf("DeleteShare(2): %v", err)
 	}
-	if err := s.DeleteShare(3); err != nil {
+	if err := s.DeleteShare(ctx, 3); err != nil {
 		t.Fatalf("DeleteShare(3): %v", err)
 	}
 
@@ -268,12 +273,12 @@ func TestStrategy_Shamir_UnsealRootKey_CombineFails(t *testing.T) {
 	// Corrupt the share values by writing bad data.
 	badShare := &shamir.Share{Index: 1, Threshold: 2, Total: 3, Value: "corrupted!!"}
 	data, _ := json.Marshal(badShare)
-	if err := store.Put("shamir-share-1", data); err != nil {
+	if err := store.Put(ctx, "shamir-share-1", data); err != nil {
 		t.Fatalf("Put corrupt share: %v", err)
 	}
 	badShare2 := &shamir.Share{Index: 2, Threshold: 2, Total: 3, Value: "also-bad!!"}
 	data2, _ := json.Marshal(badShare2)
-	if err := store.Put("shamir-share-2", data2); err != nil {
+	if err := store.Put(ctx, "shamir-share-2", data2); err != nil {
 		t.Fatalf("Put corrupt share 2: %v", err)
 	}
 
@@ -315,6 +320,7 @@ func TestStrategy_Shamir_UnsealRootKey_LoadAllSharesError(t *testing.T) {
 // ---------- Share management tests ----------
 
 func TestStrategy_Shamir_LoadShare_Success(t *testing.T) {
+	ctx := context.Background()
 	store := NewMemoryBackend()
 	s, err := NewShamirStrategy(store, 2, 3)
 	if err != nil {
@@ -322,12 +328,12 @@ func TestStrategy_Shamir_LoadShare_Success(t *testing.T) {
 	}
 
 	rootKey := []byte("0123456789abcdef0123456789abcdef")
-	_, err = s.SealRootKey(context.Background(), rootKey, Credentials{})
+	_, err = s.SealRootKey(ctx, rootKey, Credentials{})
 	if err != nil {
 		t.Fatalf("SealRootKey: %v", err)
 	}
 
-	share, err := s.LoadShare(1)
+	share, err := s.LoadShare(ctx, 1)
 	if err != nil {
 		t.Fatalf("LoadShare(1): %v", err)
 	}
@@ -340,13 +346,14 @@ func TestStrategy_Shamir_LoadShare_Success(t *testing.T) {
 }
 
 func TestStrategy_Shamir_LoadShare_NotFound(t *testing.T) {
+	ctx := context.Background()
 	store := NewMemoryBackend()
 	s, err := NewShamirStrategy(store, 2, 3)
 	if err != nil {
 		t.Fatalf("NewShamirStrategy: %v", err)
 	}
 
-	_, err = s.LoadShare(999)
+	_, err = s.LoadShare(ctx, 999)
 	if err == nil {
 		t.Fatal("expected error for non-existent share")
 	}
@@ -356,6 +363,7 @@ func TestStrategy_Shamir_LoadShare_NotFound(t *testing.T) {
 }
 
 func TestStrategy_Shamir_LoadShare_CorruptJSON(t *testing.T) {
+	ctx := context.Background()
 	store := NewMemoryBackend()
 	s, err := NewShamirStrategy(store, 2, 3)
 	if err != nil {
@@ -363,11 +371,11 @@ func TestStrategy_Shamir_LoadShare_CorruptJSON(t *testing.T) {
 	}
 
 	// Store corrupt (non-JSON) data at the share key.
-	if err := store.Put("shamir-share-1", []byte("not-json{")); err != nil {
+	if err := store.Put(ctx, "shamir-share-1", []byte("not-json{")); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 
-	_, err = s.LoadShare(1)
+	_, err = s.LoadShare(ctx, 1)
 	if err == nil {
 		t.Fatal("expected error for corrupt JSON")
 	}
@@ -377,6 +385,7 @@ func TestStrategy_Shamir_LoadShare_CorruptJSON(t *testing.T) {
 }
 
 func TestStrategy_Shamir_LoadAllShares_Success(t *testing.T) {
+	ctx := context.Background()
 	store := NewMemoryBackend()
 	s, err := NewShamirStrategy(store, 2, 3)
 	if err != nil {
@@ -384,12 +393,12 @@ func TestStrategy_Shamir_LoadAllShares_Success(t *testing.T) {
 	}
 
 	rootKey := []byte("0123456789abcdef0123456789abcdef")
-	_, err = s.SealRootKey(context.Background(), rootKey, Credentials{})
+	_, err = s.SealRootKey(ctx, rootKey, Credentials{})
 	if err != nil {
 		t.Fatalf("SealRootKey: %v", err)
 	}
 
-	shares, err := s.LoadAllShares()
+	shares, err := s.LoadAllShares(ctx)
 	if err != nil {
 		t.Fatalf("LoadAllShares: %v", err)
 	}
@@ -399,19 +408,21 @@ func TestStrategy_Shamir_LoadAllShares_Success(t *testing.T) {
 }
 
 func TestStrategy_Shamir_LoadAllShares_Empty(t *testing.T) {
+	ctx := context.Background()
 	store := NewMemoryBackend()
 	s, err := NewShamirStrategy(store, 2, 3)
 	if err != nil {
 		t.Fatalf("NewShamirStrategy: %v", err)
 	}
 
-	_, err = s.LoadAllShares()
+	_, err = s.LoadAllShares(ctx)
 	if err != ErrShamirNoSharesFound {
 		t.Errorf("expected ErrShamirNoSharesFound, got %v", err)
 	}
 }
 
 func TestStrategy_Shamir_LoadAllShares_ListError(t *testing.T) {
+	ctx := context.Background()
 	fb := newFailingBackend()
 	s, err := NewShamirStrategy(fb, 2, 3)
 	if err != nil {
@@ -420,7 +431,7 @@ func TestStrategy_Shamir_LoadAllShares_ListError(t *testing.T) {
 
 	fb.listErr = errors.New("list failed")
 
-	_, err = s.LoadAllShares()
+	_, err = s.LoadAllShares(ctx)
 	if err == nil {
 		t.Fatal("expected error from List failure")
 	}
@@ -430,6 +441,7 @@ func TestStrategy_Shamir_LoadAllShares_ListError(t *testing.T) {
 }
 
 func TestStrategy_Shamir_LoadAllShares_GetError(t *testing.T) {
+	ctx := context.Background()
 	fb := newFailingBackend()
 	s, err := NewShamirStrategy(fb, 2, 3)
 	if err != nil {
@@ -438,7 +450,7 @@ func TestStrategy_Shamir_LoadAllShares_GetError(t *testing.T) {
 
 	// Seal successfully first (Put must work).
 	rootKey := []byte("0123456789abcdef0123456789abcdef")
-	_, err = s.SealRootKey(context.Background(), rootKey, Credentials{})
+	_, err = s.SealRootKey(ctx, rootKey, Credentials{})
 	if err != nil {
 		t.Fatalf("SealRootKey: %v", err)
 	}
@@ -446,7 +458,7 @@ func TestStrategy_Shamir_LoadAllShares_GetError(t *testing.T) {
 	// Now make Get fail.
 	fb.getErr = errors.New("get failed")
 
-	_, err = s.LoadAllShares()
+	_, err = s.LoadAllShares(ctx)
 	if err == nil {
 		t.Fatal("expected error from Get failure")
 	}
@@ -456,6 +468,7 @@ func TestStrategy_Shamir_LoadAllShares_GetError(t *testing.T) {
 }
 
 func TestStrategy_Shamir_LoadAllShares_CorruptJSON(t *testing.T) {
+	ctx := context.Background()
 	store := NewMemoryBackend()
 	s, err := NewShamirStrategy(store, 2, 3)
 	if err != nil {
@@ -463,11 +476,11 @@ func TestStrategy_Shamir_LoadAllShares_CorruptJSON(t *testing.T) {
 	}
 
 	// Store corrupt data at a share key.
-	if err := store.Put("shamir-share-1", []byte("{invalid")); err != nil {
+	if err := store.Put(ctx, "shamir-share-1", []byte("{invalid")); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 
-	_, err = s.LoadAllShares()
+	_, err = s.LoadAllShares(ctx)
 	if err == nil {
 		t.Fatal("expected error for corrupt JSON in LoadAllShares")
 	}
@@ -477,6 +490,7 @@ func TestStrategy_Shamir_LoadAllShares_CorruptJSON(t *testing.T) {
 }
 
 func TestStrategy_Shamir_DeleteShare_Success(t *testing.T) {
+	ctx := context.Background()
 	store := NewMemoryBackend()
 	s, err := NewShamirStrategy(store, 2, 3)
 	if err != nil {
@@ -484,16 +498,16 @@ func TestStrategy_Shamir_DeleteShare_Success(t *testing.T) {
 	}
 
 	rootKey := []byte("0123456789abcdef0123456789abcdef")
-	_, err = s.SealRootKey(context.Background(), rootKey, Credentials{})
+	_, err = s.SealRootKey(ctx, rootKey, Credentials{})
 	if err != nil {
 		t.Fatalf("SealRootKey: %v", err)
 	}
 
-	if err := s.DeleteShare(1); err != nil {
+	if err := s.DeleteShare(ctx, 1); err != nil {
 		t.Fatalf("DeleteShare(1): %v", err)
 	}
 
-	count, err := s.ShareCount()
+	count, err := s.ShareCount(ctx)
 	if err != nil {
 		t.Fatalf("ShareCount: %v", err)
 	}
@@ -503,15 +517,22 @@ func TestStrategy_Shamir_DeleteShare_Success(t *testing.T) {
 }
 
 func TestStrategy_Shamir_DeleteShare_StorageError(t *testing.T) {
+	ctx := context.Background()
 	fb := newFailingBackend()
 	s, err := NewShamirStrategy(fb, 2, 3)
 	if err != nil {
 		t.Fatalf("NewShamirStrategy: %v", err)
 	}
 
+	// Store a share first so Exists returns true, then inject delete error.
+	rootKey := []byte("0123456789abcdef0123456789abcdef")
+	_, err = s.SealRootKey(ctx, rootKey, Credentials{})
+	if err != nil {
+		t.Fatalf("SealRootKey: %v", err)
+	}
 	fb.delErr = errors.New("delete failed")
 
-	err = s.DeleteShare(1)
+	err = s.DeleteShare(ctx, 1)
 	if err == nil {
 		t.Fatal("expected error from Delete failure")
 	}
@@ -520,7 +541,25 @@ func TestStrategy_Shamir_DeleteShare_StorageError(t *testing.T) {
 	}
 }
 
+func TestStrategy_Shamir_DeleteShare_NotFound(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryBackend()
+	s, err := NewShamirStrategy(store, 2, 3)
+	if err != nil {
+		t.Fatalf("NewShamirStrategy: %v", err)
+	}
+
+	err = s.DeleteShare(ctx, 99)
+	if err == nil {
+		t.Fatal("expected error for non-existent share")
+	}
+	if !errors.Is(err, ErrShamirShareNotFound) {
+		t.Errorf("expected ErrShamirShareNotFound, got %v", err)
+	}
+}
+
 func TestStrategy_Shamir_DeleteAllShares_Success(t *testing.T) {
+	ctx := context.Background()
 	store := NewMemoryBackend()
 	s, err := NewShamirStrategy(store, 2, 3)
 	if err != nil {
@@ -528,16 +567,16 @@ func TestStrategy_Shamir_DeleteAllShares_Success(t *testing.T) {
 	}
 
 	rootKey := []byte("0123456789abcdef0123456789abcdef")
-	_, err = s.SealRootKey(context.Background(), rootKey, Credentials{})
+	_, err = s.SealRootKey(ctx, rootKey, Credentials{})
 	if err != nil {
 		t.Fatalf("SealRootKey: %v", err)
 	}
 
-	if err := s.DeleteAllShares(); err != nil {
+	if err := s.DeleteAllShares(ctx); err != nil {
 		t.Fatalf("DeleteAllShares: %v", err)
 	}
 
-	count, err := s.ShareCount()
+	count, err := s.ShareCount(ctx)
 	if err != nil {
 		t.Fatalf("ShareCount: %v", err)
 	}
@@ -547,6 +586,7 @@ func TestStrategy_Shamir_DeleteAllShares_Success(t *testing.T) {
 }
 
 func TestStrategy_Shamir_DeleteAllShares_Empty(t *testing.T) {
+	ctx := context.Background()
 	store := NewMemoryBackend()
 	s, err := NewShamirStrategy(store, 2, 3)
 	if err != nil {
@@ -554,12 +594,13 @@ func TestStrategy_Shamir_DeleteAllShares_Empty(t *testing.T) {
 	}
 
 	// Deleting when no shares exist should not error.
-	if err := s.DeleteAllShares(); err != nil {
+	if err := s.DeleteAllShares(ctx); err != nil {
 		t.Fatalf("DeleteAllShares (empty): %v", err)
 	}
 }
 
 func TestStrategy_Shamir_DeleteAllShares_ListError(t *testing.T) {
+	ctx := context.Background()
 	fb := newFailingBackend()
 	s, err := NewShamirStrategy(fb, 2, 3)
 	if err != nil {
@@ -568,7 +609,7 @@ func TestStrategy_Shamir_DeleteAllShares_ListError(t *testing.T) {
 
 	fb.listErr = errors.New("list failed")
 
-	err = s.DeleteAllShares()
+	err = s.DeleteAllShares(ctx)
 	if err == nil {
 		t.Fatal("expected error from List failure")
 	}
@@ -578,6 +619,7 @@ func TestStrategy_Shamir_DeleteAllShares_ListError(t *testing.T) {
 }
 
 func TestStrategy_Shamir_DeleteAllShares_DeleteError(t *testing.T) {
+	ctx := context.Background()
 	fb := newFailingBackend()
 	s, err := NewShamirStrategy(fb, 2, 3)
 	if err != nil {
@@ -586,7 +628,7 @@ func TestStrategy_Shamir_DeleteAllShares_DeleteError(t *testing.T) {
 
 	// Seal successfully first.
 	rootKey := []byte("0123456789abcdef0123456789abcdef")
-	_, err = s.SealRootKey(context.Background(), rootKey, Credentials{})
+	_, err = s.SealRootKey(ctx, rootKey, Credentials{})
 	if err != nil {
 		t.Fatalf("SealRootKey: %v", err)
 	}
@@ -594,7 +636,7 @@ func TestStrategy_Shamir_DeleteAllShares_DeleteError(t *testing.T) {
 	// Now make Delete fail.
 	fb.delErr = errors.New("delete failed")
 
-	err = s.DeleteAllShares()
+	err = s.DeleteAllShares(ctx)
 	if err == nil {
 		t.Fatal("expected error from Delete failure in loop")
 	}
@@ -606,6 +648,7 @@ func TestStrategy_Shamir_DeleteAllShares_DeleteError(t *testing.T) {
 // ---------- VerifyShares tests ----------
 
 func TestStrategy_Shamir_VerifyShares_Success(t *testing.T) {
+	ctx := context.Background()
 	store := NewMemoryBackend()
 	s, err := NewShamirStrategy(store, 2, 3)
 	if err != nil {
@@ -613,30 +656,32 @@ func TestStrategy_Shamir_VerifyShares_Success(t *testing.T) {
 	}
 
 	rootKey := []byte("0123456789abcdef0123456789abcdef")
-	_, err = s.SealRootKey(context.Background(), rootKey, Credentials{})
+	_, err = s.SealRootKey(ctx, rootKey, Credentials{})
 	if err != nil {
 		t.Fatalf("SealRootKey: %v", err)
 	}
 
-	if err := s.VerifyShares(); err != nil {
+	if err := s.VerifyShares(ctx); err != nil {
 		t.Fatalf("VerifyShares: %v", err)
 	}
 }
 
 func TestStrategy_Shamir_VerifyShares_NoShares(t *testing.T) {
+	ctx := context.Background()
 	store := NewMemoryBackend()
 	s, err := NewShamirStrategy(store, 2, 3)
 	if err != nil {
 		t.Fatalf("NewShamirStrategy: %v", err)
 	}
 
-	err = s.VerifyShares()
+	err = s.VerifyShares(ctx)
 	if err != ErrShamirNoSharesFound {
 		t.Errorf("expected ErrShamirNoSharesFound, got %v", err)
 	}
 }
 
 func TestStrategy_Shamir_VerifyShares_WrongThreshold(t *testing.T) {
+	ctx := context.Background()
 	store := NewMemoryBackend()
 
 	s1, err := NewShamirStrategy(store, 2, 3)
@@ -656,7 +701,7 @@ func TestStrategy_Shamir_VerifyShares_WrongThreshold(t *testing.T) {
 		t.Fatalf("NewShamirStrategy: %v", err)
 	}
 
-	err = s2.VerifyShares()
+	err = s2.VerifyShares(ctx)
 	if err == nil {
 		t.Fatal("expected verification error for threshold mismatch")
 	}
@@ -666,6 +711,7 @@ func TestStrategy_Shamir_VerifyShares_WrongThreshold(t *testing.T) {
 }
 
 func TestStrategy_Shamir_VerifyShares_WrongTotal(t *testing.T) {
+	ctx := context.Background()
 	store := NewMemoryBackend()
 
 	s1, err := NewShamirStrategy(store, 2, 3)
@@ -685,7 +731,7 @@ func TestStrategy_Shamir_VerifyShares_WrongTotal(t *testing.T) {
 		t.Fatalf("NewShamirStrategy: %v", err)
 	}
 
-	err = s2.VerifyShares()
+	err = s2.VerifyShares(ctx)
 	if err == nil {
 		t.Fatal("expected verification error for total mismatch")
 	}
@@ -695,6 +741,7 @@ func TestStrategy_Shamir_VerifyShares_WrongTotal(t *testing.T) {
 }
 
 func TestStrategy_Shamir_VerifyShares_DuplicateIndex(t *testing.T) {
+	ctx := context.Background()
 	store := NewMemoryBackend()
 	s, err := NewShamirStrategy(store, 2, 3)
 	if err != nil {
@@ -707,7 +754,7 @@ func TestStrategy_Shamir_VerifyShares_DuplicateIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal share1: %v", err)
 	}
-	if err := store.Put("shamir-share-1", data1); err != nil {
+	if err := store.Put(ctx, "shamir-share-1", data1); err != nil {
 		t.Fatalf("Put share1: %v", err)
 	}
 
@@ -716,11 +763,11 @@ func TestStrategy_Shamir_VerifyShares_DuplicateIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal share2: %v", err)
 	}
-	if err := store.Put("shamir-share-2", data2); err != nil {
+	if err := store.Put(ctx, "shamir-share-2", data2); err != nil {
 		t.Fatalf("Put share2: %v", err)
 	}
 
-	err = s.VerifyShares()
+	err = s.VerifyShares(ctx)
 	if err == nil {
 		t.Fatal("expected verification error for duplicate index")
 	}
@@ -732,13 +779,14 @@ func TestStrategy_Shamir_VerifyShares_DuplicateIndex(t *testing.T) {
 // ---------- ShareCount tests ----------
 
 func TestStrategy_Shamir_ShareCount_Empty(t *testing.T) {
+	ctx := context.Background()
 	store := NewMemoryBackend()
 	s, err := NewShamirStrategy(store, 2, 3)
 	if err != nil {
 		t.Fatalf("NewShamirStrategy: %v", err)
 	}
 
-	count, err := s.ShareCount()
+	count, err := s.ShareCount(ctx)
 	if err != nil {
 		t.Fatalf("ShareCount: %v", err)
 	}
@@ -748,6 +796,7 @@ func TestStrategy_Shamir_ShareCount_Empty(t *testing.T) {
 }
 
 func TestStrategy_Shamir_ShareCount_AfterSeal(t *testing.T) {
+	ctx := context.Background()
 	store := NewMemoryBackend()
 	s, err := NewShamirStrategy(store, 2, 3)
 	if err != nil {
@@ -755,12 +804,12 @@ func TestStrategy_Shamir_ShareCount_AfterSeal(t *testing.T) {
 	}
 
 	rootKey := []byte("0123456789abcdef0123456789abcdef")
-	_, err = s.SealRootKey(context.Background(), rootKey, Credentials{})
+	_, err = s.SealRootKey(ctx, rootKey, Credentials{})
 	if err != nil {
 		t.Fatalf("SealRootKey: %v", err)
 	}
 
-	count, err := s.ShareCount()
+	count, err := s.ShareCount(ctx)
 	if err != nil {
 		t.Fatalf("ShareCount: %v", err)
 	}
@@ -770,6 +819,7 @@ func TestStrategy_Shamir_ShareCount_AfterSeal(t *testing.T) {
 }
 
 func TestStrategy_Shamir_ShareCount_StorageError(t *testing.T) {
+	ctx := context.Background()
 	fb := newFailingBackend()
 	s, err := NewShamirStrategy(fb, 2, 3)
 	if err != nil {
@@ -778,7 +828,7 @@ func TestStrategy_Shamir_ShareCount_StorageError(t *testing.T) {
 
 	fb.listErr = errors.New("list failed")
 
-	_, err = s.ShareCount()
+	_, err = s.ShareCount(ctx)
 	if err == nil {
 		t.Fatal("expected error from List failure")
 	}
@@ -789,7 +839,10 @@ func TestStrategy_Shamir_ShareCount_StorageError(t *testing.T) {
 
 // ---------- BarrierEncryptor tests ----------
 
-func TestStrategy_Shamir_BarrierEncryptor_Success(t *testing.T) {
+func TestStrategy_Shamir_BarrierEncryptor_ReturnsNil(t *testing.T) {
+	// ShamirStrategy delegates encryption to the barrier (not its own encryptor),
+	// so BarrierEncryptor returns nil, nil — signaling the barrier should use
+	// its own epoch-based HKDF DEK encryption.
 	store := NewMemoryBackend()
 	s, err := NewShamirStrategy(store, 2, 3)
 	if err != nil {
@@ -799,60 +852,39 @@ func TestStrategy_Shamir_BarrierEncryptor_Success(t *testing.T) {
 	rootKey := []byte("0123456789abcdef0123456789abcdef")
 	enc, err := s.BarrierEncryptor(context.Background(), rootKey)
 	if err != nil {
-		t.Fatalf("BarrierEncryptor: %v", err)
+		t.Fatalf("BarrierEncryptor: unexpected error: %v", err)
 	}
-
-	plaintext := []byte("hello world")
-	ciphertext, err := enc.Encrypt(plaintext)
-	if err != nil {
-		t.Fatalf("Encrypt: %v", err)
-	}
-
-	recovered, err := enc.Decrypt(ciphertext)
-	if err != nil {
-		t.Fatalf("Decrypt: %v", err)
-	}
-
-	if string(recovered) != string(plaintext) {
-		t.Errorf("round-trip failed: got %q, want %q", recovered, plaintext)
+	if enc != nil {
+		t.Error("expected nil encryptor from ShamirStrategy (barrier handles encryption)")
 	}
 }
 
-func TestStrategy_Shamir_BarrierEncryptor_DifferentKeysDifferentOutput(t *testing.T) {
+func TestStrategy_Shamir_BarrierEncryptor_NilForDifferentKeys(t *testing.T) {
 	store := NewMemoryBackend()
 	s, err := NewShamirStrategy(store, 2, 3)
 	if err != nil {
 		t.Fatalf("NewShamirStrategy: %v", err)
 	}
 
-	key1 := []byte("0123456789abcdef0123456789abcdef")
-	key2 := []byte("fedcba9876543210fedcba9876543210")
-
-	enc1, err := s.BarrierEncryptor(context.Background(), key1)
+	enc1, err := s.BarrierEncryptor(context.Background(), []byte("0123456789abcdef0123456789abcdef"))
 	if err != nil {
 		t.Fatalf("BarrierEncryptor(key1): %v", err)
 	}
 
-	enc2, err := s.BarrierEncryptor(context.Background(), key2)
+	enc2, err := s.BarrierEncryptor(context.Background(), []byte("fedcba9876543210fedcba9876543210"))
 	if err != nil {
 		t.Fatalf("BarrierEncryptor(key2): %v", err)
 	}
 
-	plaintext := []byte("test data")
-	ct1, err := enc1.Encrypt(plaintext)
-	if err != nil {
-		t.Fatalf("Encrypt(key1): %v", err)
-	}
-
-	_, err = enc2.Decrypt(ct1)
-	if err == nil {
-		t.Error("expected decryption failure with different key")
+	if enc1 != nil || enc2 != nil {
+		t.Error("expected nil encryptors from ShamirStrategy")
 	}
 }
 
 // ---------- persistShares error tests ----------
 
 func TestStrategy_Shamir_PersistShares_StoragePutError(t *testing.T) {
+	ctx := context.Background()
 	fb := newFailingBackend()
 	s, err := NewShamirStrategy(fb, 2, 3)
 	if err != nil {
@@ -866,7 +898,7 @@ func TestStrategy_Shamir_PersistShares_StoragePutError(t *testing.T) {
 		{Index: 2, Threshold: 2, Total: 3, Value: "b"},
 	}
 
-	err = s.persistShares(shares)
+	err = s.persistShares(ctx, shares)
 	if err == nil {
 		t.Fatal("expected error from Put failure")
 	}

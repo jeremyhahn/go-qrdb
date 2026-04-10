@@ -122,6 +122,82 @@ func (e *DrainError) Unwrap() error {
 }
 
 // ---------------------------------------------------------------------------
+// Shard management errors
+// ---------------------------------------------------------------------------
+
+// ShardStartError is returned when starting a Raft shard fails.
+type ShardStartError struct {
+	ShardID uint64
+	Err     error
+}
+
+// Error returns a human-readable description of the shard start failure.
+func (e *ShardStartError) Error() string {
+	return "service: start shard " + strconv.FormatUint(e.ShardID, 10) + " failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error for use with errors.Is and errors.As.
+func (e *ShardStartError) Unwrap() error {
+	return e.Err
+}
+
+// ShardStopError is returned when stopping a Raft shard fails.
+type ShardStopError struct {
+	ShardID uint64
+	Err     error
+}
+
+// Error returns a human-readable description of the shard stop failure.
+func (e *ShardStopError) Error() string {
+	return "service: stop shard " + strconv.FormatUint(e.ShardID, 10) + " failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error for use with errors.Is and errors.As.
+func (e *ShardStopError) Unwrap() error {
+	return e.Err
+}
+
+// ShardStateError is returned when querying a shard's Raft state fails.
+type ShardStateError struct {
+	ShardID uint64
+	Err     error
+}
+
+// Error returns a human-readable description of the shard state query failure.
+func (e *ShardStateError) Error() string {
+	return "service: get shard state " + strconv.FormatUint(e.ShardID, 10) + " failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error for use with errors.Is and errors.As.
+func (e *ShardStateError) Unwrap() error {
+	return e.Err
+}
+
+// TopologyError is returned when querying the cluster topology fails.
+type TopologyError struct {
+	Err error
+}
+
+// Error returns a human-readable description of the topology query failure.
+func (e *TopologyError) Error() string {
+	return "service: get topology failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error for use with errors.Is and errors.As.
+func (e *TopologyError) Unwrap() error {
+	return e.Err
+}
+
+// NoStateMachineFactoryError is returned when StartShard is called but no
+// state machine factory has been configured on the AdminService.
+type NoStateMachineFactoryError struct{}
+
+// Error returns a human-readable description.
+func (e *NoStateMachineFactoryError) Error() string {
+	return "service: no state machine factory configured"
+}
+
+// ---------------------------------------------------------------------------
 // MVCC errors
 // ---------------------------------------------------------------------------
 
@@ -298,4 +374,232 @@ type ConsistencyError struct {
 // Error returns a human-readable description of the consistency failure.
 func (e *ConsistencyError) Error() string {
 	return "service: consistency " + e.Level + ": " + e.Reason
+}
+
+// ---------------------------------------------------------------------------
+// Entity errors
+// ---------------------------------------------------------------------------
+
+// EntityEmptyDataError is returned when a PutEntity request contains
+// nil or zero-length data.
+type EntityEmptyDataError struct {
+	EntityType EntityType
+	ID         string
+}
+
+// Error returns a human-readable description of the empty data error.
+func (e *EntityEmptyDataError) Error() string {
+	return "service: entity data must not be empty: " + string(e.EntityType) + "/" + e.ID
+}
+
+// EntityEmptyIDError is returned when a request contains an empty entity ID.
+type EntityEmptyIDError struct {
+	EntityType EntityType
+}
+
+// Error returns a human-readable description of the empty ID error.
+func (e *EntityEmptyIDError) Error() string {
+	return "service: entity ID must not be empty for type: " + string(e.EntityType)
+}
+
+// EntityEmptyTypeError is returned when a request contains an empty entity type.
+type EntityEmptyTypeError struct{}
+
+// Error returns a human-readable description of the empty type error.
+func (e *EntityEmptyTypeError) Error() string {
+	return "service: entity type must not be empty"
+}
+
+// InvalidPageTokenError is returned when a page token cannot be parsed.
+type InvalidPageTokenError struct {
+	Token string
+}
+
+// Error returns a human-readable description of the invalid page token.
+func (e *InvalidPageTokenError) Error() string {
+	return "service: invalid page token: " + e.Token
+}
+
+// ---------------------------------------------------------------------------
+// Entity batch/transaction operation errors
+// ---------------------------------------------------------------------------
+
+// InvalidEntityOpTypeError is returned when a batch or transaction entity
+// operation has an unrecognized type string.
+type InvalidEntityOpTypeError struct {
+	OpType string
+}
+
+// Error returns a human-readable description of the invalid op type.
+func (e *InvalidEntityOpTypeError) Error() string {
+	return "service: invalid entity operation type: " + e.OpType
+}
+
+// BatchEntityEmptyOpsError is returned when a BatchEntityRequest contains
+// no operations. This is distinct from the raw batch which allows empty ops.
+type BatchEntityEmptyOpsError struct{}
+
+// Error returns a human-readable description.
+func (e *BatchEntityEmptyOpsError) Error() string {
+	return "service: batch entity request must contain at least one operation"
+}
+
+// ---------------------------------------------------------------------------
+// Import errors
+// ---------------------------------------------------------------------------
+
+// ImportInvalidFormatError is returned when the import format parameter
+// is not one of the supported values: "csv", "json", or "archive".
+type ImportInvalidFormatError struct {
+	Format string
+}
+
+// Error returns a human-readable description.
+func (e *ImportInvalidFormatError) Error() string {
+	return "service: invalid import format: " + e.Format + " (expected csv, json, yaml, ndjson, archive, or auto)"
+}
+
+// ImportMissingKeyFieldError is returned when the keyField is empty.
+type ImportMissingKeyFieldError struct{}
+
+// Error returns a human-readable description.
+func (e *ImportMissingKeyFieldError) Error() string {
+	return "service: import keyField is required"
+}
+
+// ImportInvalidValueModeError is returned when the valueMode parameter
+// is not one of the supported values: "field" or "row".
+type ImportInvalidValueModeError struct {
+	Mode string
+}
+
+// Error returns a human-readable description.
+func (e *ImportInvalidValueModeError) Error() string {
+	return "service: invalid import valueMode: " + e.Mode + " (expected field or row)"
+}
+
+// ImportMissingValueFieldError is returned when valueMode is "field" but
+// the valueField parameter is empty.
+type ImportMissingValueFieldError struct{}
+
+// Error returns a human-readable description.
+func (e *ImportMissingValueFieldError) Error() string {
+	return "service: import valueField is required when valueMode is 'field'"
+}
+
+// ImportRowError represents a failure during import of a specific row.
+type ImportRowError struct {
+	Row     int
+	Key     string
+	Message string
+}
+
+// Error returns a human-readable description.
+func (e *ImportRowError) Error() string {
+	return "service: import row " + strconv.Itoa(e.Row) + " failed: " + e.Message
+}
+
+// ImportParseError is returned when the input file cannot be parsed.
+type ImportParseError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *ImportParseError) Error() string {
+	return "service: import parse failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *ImportParseError) Unwrap() error {
+	return e.Err
+}
+
+// ImportTransactionAbortedError is returned when a transactional import
+// fails and all operations are rolled back.
+type ImportTransactionAbortedError struct {
+	Row     int
+	Key     string
+	Message string
+}
+
+// Error returns a human-readable description.
+func (e *ImportTransactionAbortedError) Error() string {
+	return "service: import aborted at row " + strconv.Itoa(e.Row) +
+		" (key=" + e.Key + "): " + e.Message
+}
+
+// ImportArchiveError is returned when archive extraction fails.
+type ImportArchiveError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *ImportArchiveError) Error() string {
+	return "service: import archive extraction failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *ImportArchiveError) Unwrap() error {
+	return e.Err
+}
+
+// ---------------------------------------------------------------------------
+// Barrier errors
+// ---------------------------------------------------------------------------
+
+// BarrierNotConfiguredError is returned when a barrier operation is
+// attempted but no barrier has been configured on the service.
+type BarrierNotConfiguredError struct{}
+
+// Error returns a human-readable description.
+func (e *BarrierNotConfiguredError) Error() string {
+	return "service: barrier service not configured"
+}
+
+// BarrierManagerNotConfiguredError is returned when a barrier operation is
+// attempted but no DatabaseBarrierManager has been configured on the
+// database service.
+type BarrierManagerNotConfiguredError struct{}
+
+// Error returns a human-readable description.
+func (e *BarrierManagerNotConfiguredError) Error() string {
+	return "service: database barrier manager not configured"
+}
+
+// ---------------------------------------------------------------------------
+// Codec errors
+// ---------------------------------------------------------------------------
+
+// CodecEncodeError is returned when the codec manager fails to encode a
+// value for storage.
+type CodecEncodeError struct {
+	Op  string
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *CodecEncodeError) Error() string {
+	return "service: codec encode failed for " + e.Op + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *CodecEncodeError) Unwrap() error {
+	return e.Err
+}
+
+// CodecDecodeError is returned when the codec manager fails to decode or
+// transcode a value from storage.
+type CodecDecodeError struct {
+	Op  string
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *CodecDecodeError) Error() string {
+	return "service: codec decode failed for " + e.Op + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *CodecDecodeError) Unwrap() error {
+	return e.Err
 }

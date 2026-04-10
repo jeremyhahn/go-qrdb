@@ -18,6 +18,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -39,7 +40,12 @@ import (
 	"testing"
 	"time"
 
+	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+	qtransport "github.com/jeremyhahn/go-qrdb/sdk/go/transport/quic"
 	"github.com/quic-go/quic-go/http3"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 )
 
 const (
@@ -205,12 +211,17 @@ func (ca *benchCA) generateNodeCert(b *testing.B) (certPath, keyPath string) {
 
 // QRDBCluster manages QRDB processes for benchmarking.
 type QRDBCluster struct {
-	binary     string
-	procs      []*exec.Cmd
-	adminPorts []int
-	leaderPort int
-	dataDir    string
-	caPool     *x509.CertPool
+	binary        string
+	procs         []*exec.Cmd
+	adminPorts    []int
+	grpcPorts     []int
+	quicPorts     []int
+	leaderPort    int
+	grpcConn      *grpc.ClientConn
+	grpcClient    pb.QRDBServiceClient
+	quicTransport *qtransport.Transport
+	dataDir       string
+	caPool        *x509.CertPool
 }
 
 var (
@@ -335,7 +346,15 @@ func SetupQRDBCluster(b *testing.B, nodes int) *QRDBCluster {
 	}
 	adminPorts, err := allocateTCPPorts(nodes)
 	if err != nil {
-		b.Fatalf("allocateTCPPorts: %v", err)
+		b.Fatalf("allocateTCPPorts admin: %v", err)
+	}
+	grpcPorts, err := allocateTCPPorts(nodes)
+	if err != nil {
+		b.Fatalf("allocateTCPPorts grpc: %v", err)
+	}
+	quicPorts, err := allocateUDPPorts(nodes)
+	if err != nil {
+		b.Fatalf("allocateUDPPorts quic: %v", err)
 	}
 
 	dataDir, err := os.MkdirTemp("", "qrdb-bench-data-*")
@@ -357,8 +376,12 @@ func SetupQRDBCluster(b *testing.B, nodes int) *QRDBCluster {
 			"--listen", fmt.Sprintf("0.0.0.0:%d", raftPorts[i]),
 			"--raft-address", fmt.Sprintf("127.0.0.1:%d", raftPorts[i]),
 			"--admin-port", fmt.Sprintf("%d", adminPorts[i]),
+			"--grpc-port", fmt.Sprintf("%d", grpcPorts[i]),
+			"--enable-quic",
+			"--quic-port", fmt.Sprintf("%d", quicPorts[i]),
 			"--data-dir", nodeDataDir,
 			"--sm", benchSM,
+			"--auth-enabled=false",
 			"--log-level", "warn",
 			"--tls-ca-file", ca.certPath,
 			"--tls-cert-file", certPath,
@@ -395,13 +418,64 @@ func SetupQRDBCluster(b *testing.B, nodes int) *QRDBCluster {
 	// Warmup write to ensure ReadIndex pipeline is operational (PhD 6.4).
 	warmupWrite(b, client, leaderPort, 10*time.Second)
 
+	// Determine the gRPC and QUIC ports for the leader node.
+	leaderGRPCPort := grpcPorts[0]
+	leaderQUICPort := quicPorts[0]
+	for i, port := range adminPorts {
+		if port == leaderPort {
+			leaderGRPCPort = grpcPorts[i]
+			leaderQUICPort = quicPorts[i]
+			break
+		}
+	}
+
+	// Create the gRPC client connected to the leader node.
+	tlsCfg := &tls.Config{
+		RootCAs:    ca.pool,
+		MinVersion: tls.VersionTLS13,
+		ServerName: "localhost",
+	}
+	grpcAddr := fmt.Sprintf("127.0.0.1:%d", leaderGRPCPort)
+	grpcCreds := credentials.NewTLS(tlsCfg)
+	conn, err := grpc.NewClient(grpcAddr, grpc.WithTransportCredentials(grpcCreds))
+	if err != nil {
+		b.Fatalf("grpc.NewClient: %v", err)
+	}
+	b.Cleanup(func() { conn.Close() })
+
+	// Create the native QUIC transport client connected to the leader node.
+	quicTLSCfg := &tls.Config{
+		RootCAs:    ca.pool,
+		MinVersion: tls.VersionTLS13,
+		ServerName: "localhost",
+	}
+	quicAddr := fmt.Sprintf("127.0.0.1:%d", leaderQUICPort)
+	qt, err := qtransport.New(
+		transport.WithAddress(quicAddr),
+		transport.WithTLSConfig(quicTLSCfg),
+	)
+	if err != nil {
+		b.Fatalf("qtransport.New: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := qt.Connect(ctx); err != nil {
+		b.Fatalf("quic connect: %v", err)
+	}
+	b.Cleanup(func() { qt.Close() })
+
 	return &QRDBCluster{
-		binary:     binary,
-		procs:      procs,
-		adminPorts: adminPorts,
-		leaderPort: leaderPort,
-		dataDir:    dataDir,
-		caPool:     ca.pool,
+		binary:        binary,
+		procs:         procs,
+		adminPorts:    adminPorts,
+		grpcPorts:     grpcPorts,
+		quicPorts:     quicPorts,
+		leaderPort:    leaderPort,
+		grpcConn:      conn,
+		grpcClient:    pb.NewQRDBServiceClient(conn),
+		quicTransport: qt,
+		dataDir:       dataDir,
+		caPool:        ca.pool,
 	}
 }
 

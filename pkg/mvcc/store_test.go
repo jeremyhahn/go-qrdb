@@ -20,22 +20,18 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/cockroachdb/pebble/v2"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
+	pebblestorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 )
 
-// newTestStore opens a fresh PebbleDB in a temp directory and returns a
+// newTestStore creates a fresh in-memory storage and returns a
 // ready-to-use MVCC store. Cleanup is registered automatically.
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
-	dir := t.TempDir()
-	db, err := pebble.Open(dir, &pebble.Options{})
-	if err != nil {
-		t.Fatalf("open pebble: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	s, err := New(db)
+	store := memory.NewStorage()
+	t.Cleanup(func() { _ = store.Close() })
+	s, err := New(store)
 	if err != nil {
 		t.Fatalf("new store: %v", err)
 	}
@@ -58,12 +54,12 @@ func TestNew_FreshDB_RevisionZero(t *testing.T) {
 
 func TestNew_LoadsPersistedRevision(t *testing.T) {
 	dir := t.TempDir()
-	db, err := pebble.Open(dir, &pebble.Options{})
+	store, err := pebblestorage.New(pebblestorage.TestConfig(dir))
 	if err != nil {
-		t.Fatalf("open pebble: %v", err)
+		t.Fatalf("open storage: %v", err)
 	}
 
-	s, err := New(db)
+	s, err := New(store)
 	if err != nil {
 		t.Fatalf("new store: %v", err)
 	}
@@ -86,17 +82,17 @@ func TestNew_LoadsPersistedRevision(t *testing.T) {
 	expectedCompacted := s.CompactedRevision()
 
 	// Close and reopen.
-	if err := db.Close(); err != nil {
-		t.Fatalf("close db: %v", err)
+	if err := store.Close(); err != nil {
+		t.Fatalf("close storage: %v", err)
 	}
 
-	db2, err := pebble.Open(dir, &pebble.Options{})
+	store2, err := pebblestorage.New(pebblestorage.TestConfig(dir))
 	if err != nil {
-		t.Fatalf("reopen pebble: %v", err)
+		t.Fatalf("reopen storage: %v", err)
 	}
-	t.Cleanup(func() { _ = db2.Close() })
+	t.Cleanup(func() { _ = store2.Close() })
 
-	s2, err := New(db2)
+	s2, err := New(store2)
 	if err != nil {
 		t.Fatalf("new store 2: %v", err)
 	}
@@ -110,22 +106,22 @@ func TestNew_LoadsPersistedRevision(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// DB
+// Storage
 // ---------------------------------------------------------------------------
 
-func TestDB_ReturnsUnderlyingInstance(t *testing.T) {
+func TestStorage_ReturnsUnderlyingInstance(t *testing.T) {
 	s := newTestStore(t)
-	if s.DB() == nil {
-		t.Fatal("DB: returned nil")
+	if s.Storage() == nil {
+		t.Fatal("Storage: returned nil")
 	}
 }
 
-func TestDB_SameInstance(t *testing.T) {
+func TestStorage_SameInstance(t *testing.T) {
 	s := newTestStore(t)
-	a := s.DB()
-	b := s.DB()
+	a := s.Storage()
+	b := s.Storage()
 	if a != b {
-		t.Error("DB: expected same pebble.DB pointer on repeated calls")
+		t.Error("Storage: expected same storage.Storage on repeated calls")
 	}
 }
 
@@ -690,12 +686,12 @@ func TestCompact_RemovesOldRevisions(t *testing.T) {
 
 func TestCompact_PersistsCompactedMarker(t *testing.T) {
 	dir := t.TempDir()
-	db, err := pebble.Open(dir, &pebble.Options{})
+	store, err := pebblestorage.New(pebblestorage.TestConfig(dir))
 	if err != nil {
-		t.Fatalf("open pebble: %v", err)
+		t.Fatalf("open storage: %v", err)
 	}
 
-	s, err := New(db)
+	s, err := New(store)
 	if err != nil {
 		t.Fatalf("new store: %v", err)
 	}
@@ -706,18 +702,18 @@ func TestCompact_PersistsCompactedMarker(t *testing.T) {
 	if err := s.Compact(1); err != nil {
 		t.Fatalf("Compact: %v", err)
 	}
-	if err := db.Close(); err != nil {
+	if err := store.Close(); err != nil {
 		t.Fatalf("close: %v", err)
 	}
 
 	// Reopen and verify compacted marker.
-	db2, err := pebble.Open(dir, &pebble.Options{})
+	store2, err := pebblestorage.New(pebblestorage.TestConfig(dir))
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
-	t.Cleanup(func() { _ = db2.Close() })
+	t.Cleanup(func() { _ = store2.Close() })
 
-	s2, err := New(db2)
+	s2, err := New(store2)
 	if err != nil {
 		t.Fatalf("new store 2: %v", err)
 	}
@@ -732,7 +728,7 @@ func TestCompact_PersistsCompactedMarker(t *testing.T) {
 
 func TestPutInBatch_NewKey(t *testing.T) {
 	s := newTestStore(t)
-	batch := s.DB().NewBatch()
+	batch := s.Storage().Batch()
 	defer func() { _ = batch.Close() }()
 
 	kv, err := s.PutInBatch(batch, []byte("bk"), []byte("bv"), 5, 100)
@@ -761,7 +757,7 @@ func TestPutInBatch_ExistingKey(t *testing.T) {
 		t.Fatalf("Put: %v", err)
 	}
 
-	batch := s.DB().NewBatch()
+	batch := s.Storage().Batch()
 	defer func() { _ = batch.Close() }()
 
 	kv, err := s.PutInBatch(batch, []byte("bk"), []byte("v2"), 0, 50)
@@ -787,7 +783,7 @@ func TestDeleteInBatch_ExistingKey(t *testing.T) {
 		t.Fatalf("Put: %v", err)
 	}
 
-	batch := s.DB().NewBatch()
+	batch := s.Storage().Batch()
 	defer func() { _ = batch.Close() }()
 
 	prev, err := s.DeleteInBatch(batch, []byte("dk"), 50)
@@ -805,7 +801,7 @@ func TestDeleteInBatch_ExistingKey(t *testing.T) {
 func TestDeleteInBatch_NonExistentKey(t *testing.T) {
 	s := newTestStore(t)
 
-	batch := s.DB().NewBatch()
+	batch := s.Storage().Batch()
 	defer func() { _ = batch.Close() }()
 
 	prev, err := s.DeleteInBatch(batch, []byte("nope"), 50)
@@ -1132,7 +1128,7 @@ func TestRange_StartEnd_CompactedRevision(t *testing.T) {
 func TestBatch_PutAndDelete_CommitCycle(t *testing.T) {
 	s := newTestStore(t)
 
-	batch := s.DB().NewBatch()
+	batch := s.Storage().Batch()
 
 	_, err := s.PutInBatch(batch, []byte("bk1"), []byte("bv1"), 0, 10)
 	if err != nil {
@@ -1140,7 +1136,7 @@ func TestBatch_PutAndDelete_CommitCycle(t *testing.T) {
 	}
 
 	// Commit the batch.
-	if err := batch.Commit(pebble.Sync); err != nil {
+	if err := batch.Commit(); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
 	_ = batch.Close()
@@ -1190,11 +1186,14 @@ func TestCompact_PreservesLaterRevisions(t *testing.T) {
 		t.Errorf("Value: got %q, want %q", kv.Value, "v3")
 	}
 
-	// "b" at rev 2 was compacted. Metadata still exists, but data is gone.
-	// Get should fail because getDataAtRevision for rev 2 won't find the data.
-	_, err = s.Get([]byte("b"))
-	if err == nil {
-		t.Fatal("Get b after compaction: expected error, got nil")
+	// "b" at rev 2 is the only (latest) revision for that key.
+	// Compaction preserves the latest revision per key, so "b" should still be readable.
+	kvB, err := s.Get([]byte("b"))
+	if err != nil {
+		t.Fatalf("Get b after compaction: %v", err)
+	}
+	if !bytes.Equal(kvB.Value, []byte("v2")) {
+		t.Errorf("Value b: got %q, want %q", kvB.Value, "v2")
 	}
 }
 
@@ -1237,26 +1236,26 @@ func TestPut_EmptyKey(t *testing.T) {
 
 func TestNew_CorruptRevisionData_ReturnsError(t *testing.T) {
 	dir := t.TempDir()
-	db, err := pebble.Open(dir, &pebble.Options{})
+	store, err := pebblestorage.New(pebblestorage.TestConfig(dir))
 	if err != nil {
-		t.Fatalf("open pebble: %v", err)
+		t.Fatalf("open storage: %v", err)
 	}
 
 	// Write corrupt revision data (wrong size).
-	if err := db.Set(revisionKey(), []byte{0x01, 0x02}, pebble.Sync); err != nil {
+	if err := store.Set(RevisionKey(), []byte{0x01, 0x02}); err != nil {
 		t.Fatalf("Set corrupt revision: %v", err)
 	}
-	if err := db.Close(); err != nil {
+	if err := store.Close(); err != nil {
 		t.Fatalf("close: %v", err)
 	}
 
-	db2, err := pebble.Open(dir, &pebble.Options{})
+	store2, err := pebblestorage.New(pebblestorage.TestConfig(dir))
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
-	t.Cleanup(func() { _ = db2.Close() })
+	t.Cleanup(func() { _ = store2.Close() })
 
-	_, err = New(db2)
+	_, err = New(store2)
 	if err == nil {
 		t.Fatal("New: expected error for corrupt revision data, got nil")
 	}
@@ -1268,29 +1267,29 @@ func TestNew_CorruptRevisionData_ReturnsError(t *testing.T) {
 
 func TestNew_CorruptCompactedData_ReturnsError(t *testing.T) {
 	dir := t.TempDir()
-	db, err := pebble.Open(dir, &pebble.Options{})
+	store, err := pebblestorage.New(pebblestorage.TestConfig(dir))
 	if err != nil {
-		t.Fatalf("open pebble: %v", err)
+		t.Fatalf("open storage: %v", err)
 	}
 
 	// Write valid revision but corrupt compacted data.
-	if err := db.Set(revisionKey(), encodeRevision(5), pebble.Sync); err != nil {
+	if err := store.Set(RevisionKey(), EncodeRevision(5)); err != nil {
 		t.Fatalf("Set revision: %v", err)
 	}
-	if err := db.Set(compactedKey(), []byte{0xFF}, pebble.Sync); err != nil {
+	if err := store.Set(CompactedKey(), []byte{0xFF}); err != nil {
 		t.Fatalf("Set corrupt compacted: %v", err)
 	}
-	if err := db.Close(); err != nil {
+	if err := store.Close(); err != nil {
 		t.Fatalf("close: %v", err)
 	}
 
-	db2, err := pebble.Open(dir, &pebble.Options{})
+	store2, err := pebblestorage.New(pebblestorage.TestConfig(dir))
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
-	t.Cleanup(func() { _ = db2.Close() })
+	t.Cleanup(func() { _ = store2.Close() })
 
-	_, err = New(db2)
+	_, err = New(store2)
 	if err == nil {
 		t.Fatal("New: expected error for corrupt compacted data, got nil")
 	}
@@ -1492,12 +1491,12 @@ func TestDeleteInBatch_CommitAndVerify(t *testing.T) {
 		t.Fatalf("Put: %v", err)
 	}
 
-	batch := s.DB().NewBatch()
+	batch := s.Storage().Batch()
 	prev, err := s.DeleteInBatch(batch, []byte("dk"), 50)
 	if err != nil {
 		t.Fatalf("DeleteInBatch: %v", err)
 	}
-	if err := batch.Commit(pebble.Sync); err != nil {
+	if err := batch.Commit(); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
 	_ = batch.Close()
@@ -1553,39 +1552,47 @@ func TestRange_WithRevision_MultipleKeys(t *testing.T) {
 // Delete after compaction - getDataAtRevision error path
 // ---------------------------------------------------------------------------
 
-func TestDelete_AfterCompaction_DataMissing(t *testing.T) {
+func TestDelete_AfterCompaction_SingleRevisionPreserved(t *testing.T) {
 	s := newTestStore(t)
 	// Put only once (so metadata and data are at same revision).
 	_, err := s.Put([]byte("k"), []byte("v"), 0) // rev 1
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	// Compact removes the data entry at rev 1.
+	// Compaction preserves the latest revision per key, so the single
+	// revision at rev 1 is preserved even though rev 1 <= compaction point.
 	if err := s.Compact(1); err != nil {
 		t.Fatalf("Compact: %v", err)
 	}
-	// Metadata still exists but data is gone. Delete should hit the
-	// getDataAtRevision error path.
-	_, err = s.Delete([]byte("k"))
-	if err == nil {
-		t.Fatal("Delete after compaction of data: expected error, got nil")
+	// Data is still present because it's the latest revision for this key.
+	// Delete should succeed.
+	prev, err := s.Delete([]byte("k"))
+	if err != nil {
+		t.Fatalf("Delete after compaction: %v", err)
+	}
+	if !bytes.Equal(prev.Value, []byte("v")) {
+		t.Errorf("Delete prev value: got %q, want %q", prev.Value, "v")
 	}
 }
 
-func TestGet_AfterCompaction_DataMissing(t *testing.T) {
+func TestGet_AfterCompaction_SingleRevisionPreserved(t *testing.T) {
 	s := newTestStore(t)
 	_, err := s.Put([]byte("k"), []byte("v"), 0) // rev 1
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	// Compact removes data at rev 1 but metadata remains.
+	// Compaction preserves the latest revision per key, so the single
+	// revision at rev 1 is preserved.
 	if err := s.Compact(1); err != nil {
 		t.Fatalf("Compact: %v", err)
 	}
-	// Get should fail because data at rev 1 was compacted.
-	_, err = s.Get([]byte("k"))
-	if err == nil {
-		t.Fatal("Get after compaction of data: expected error, got nil")
+	// Get should succeed because compaction preserved the latest (only) revision.
+	kv, err := s.Get([]byte("k"))
+	if err != nil {
+		t.Fatalf("Get after compaction: %v", err)
+	}
+	if !bytes.Equal(kv.Value, []byte("v")) {
+		t.Errorf("Value: got %q, want %q", kv.Value, "v")
 	}
 }
 

@@ -311,8 +311,8 @@ func Test_DecodeBatch_truncatedSecondPrefix(t *testing.T) {
 	// First command valid (length=1, data=0xFF), then 2 bytes of garbage.
 	data := []byte{
 		0x00, 0x00, 0x00, 0x01, // length = 1
-		0xFF,                   // 1 byte of data
-		0x00, 0x01,             // truncated second prefix
+		0xFF,       // 1 byte of data
+		0x00, 0x01, // truncated second prefix
 	}
 	_, err := DecodeBatch(data)
 	if err == nil {
@@ -429,7 +429,7 @@ func Test_NewAggregator_defaultsProduceWorkingAggregator(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAggregator failed: %v", err)
 	}
-	defer agg.Close()
+	defer func() { _ = agg.Close() }()
 
 	submitErr := agg.Submit(context.Background(), 1, []byte("default-cfg-test"))
 	if submitErr != nil {
@@ -502,7 +502,7 @@ func Test_Submit_afterCloseMatchesSentinel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAggregator failed: %v", err)
 	}
-	agg.Close()
+	_ = agg.Close()
 
 	submitErr := agg.Submit(context.Background(), 1, []byte("data"))
 	if !errors.Is(submitErr, ErrClosed) {
@@ -529,7 +529,7 @@ func Test_WithConfig_customValuesAccepted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAggregator with custom config failed: %v", err)
 	}
-	defer agg.Close()
+	defer func() { _ = agg.Close() }()
 
 	// Verify the aggregator is functional with the custom config.
 	submitErr := agg.Submit(context.Background(), 1, []byte("custom-cfg"))
@@ -550,7 +550,7 @@ func Test_WithConfig_zeroFieldsDoNotPanic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAggregator with zero config failed: %v", err)
 	}
-	defer agg.Close()
+	defer func() { _ = agg.Close() }()
 
 	submitErr := agg.Submit(context.Background(), 1, []byte("zero-cfg"))
 	if submitErr != nil {
@@ -574,7 +574,7 @@ func Test_WithLogger_customLoggerAccepted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAggregator with custom logger failed: %v", err)
 	}
-	defer agg.Close()
+	defer func() { _ = agg.Close() }()
 
 	submitErr := agg.Submit(context.Background(), 1, []byte("logger-test"))
 	if submitErr != nil {
@@ -593,7 +593,7 @@ func Test_WithLogger_nilDoesNotPanic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAggregator with nil logger failed: %v", err)
 	}
-	defer agg.Close()
+	defer func() { _ = agg.Close() }()
 
 	submitErr := agg.Submit(context.Background(), 1, []byte("nil-logger-test"))
 	if submitErr != nil {
@@ -614,7 +614,7 @@ func Test_WithRegistry_customRegistryAccepted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAggregator with custom registry failed: %v", err)
 	}
-	defer agg.Close()
+	defer func() { _ = agg.Close() }()
 
 	submitErr := agg.Submit(context.Background(), 1, []byte("registry-test"))
 	if submitErr != nil {
@@ -633,7 +633,7 @@ func Test_WithRegistry_nilFallsBackToDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAggregator with nil+real registry failed: %v", err)
 	}
-	defer agg.Close()
+	defer func() { _ = agg.Close() }()
 
 	submitErr := agg.Submit(context.Background(), 1, []byte("nil-registry-test"))
 	if submitErr != nil {

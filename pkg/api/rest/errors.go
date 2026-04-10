@@ -193,3 +193,98 @@ func (e *SnapshotRequestError) Error() string {
 func (e *SnapshotRequestError) Unwrap() error {
 	return e.Err
 }
+
+// ServiceNotImplementedError is returned when a request targets a service
+// that was not configured on the server. Optional services (MVCC,
+// Transaction, Batch, Watch, Lease, Index, TimeSeries) return this when
+// their corresponding ServerOption was not applied.
+type ServiceNotImplementedError struct {
+	Service string
+}
+
+// Error returns a human-readable description.
+func (e *ServiceNotImplementedError) Error() string {
+	return "rest: service not implemented: " + e.Service
+}
+
+// MissingParameterError is returned when a required query parameter is
+// absent from the request.
+type MissingParameterError struct {
+	Param string
+}
+
+// Error returns a human-readable description.
+func (e *MissingParameterError) Error() string {
+	return "rest: missing required parameter: " + e.Param
+}
+
+// InvalidParameterError is returned when a query parameter cannot be
+// parsed to its expected type.
+type InvalidParameterError struct {
+	Param string
+	Err   error
+}
+
+// Error returns a human-readable description.
+func (e *InvalidParameterError) Error() string {
+	return "rest: invalid parameter " + e.Param + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying parse error.
+func (e *InvalidParameterError) Unwrap() error {
+	return e.Err
+}
+
+// SSENotSupportedError is returned when the HTTP ResponseWriter does not
+// support the http.Flusher interface required for Server-Sent Events.
+type SSENotSupportedError struct{}
+
+// Error returns a human-readable description.
+func (e *SSENotSupportedError) Error() string {
+	return "rest: server-sent events not supported by response writer"
+}
+
+// InvalidAggFuncError is returned when an unrecognized aggregation function
+// name is provided for a time-series aggregate request.
+type InvalidAggFuncError struct {
+	Func string
+}
+
+// Error returns a human-readable description.
+func (e *InvalidAggFuncError) Error() string {
+	return "rest: invalid aggregation function: " + e.Func
+}
+
+// InvalidRetentionDurationError is returned when a retention policy
+// duration is zero or negative.
+type InvalidRetentionDurationError struct{}
+
+// Error returns a human-readable description.
+func (e *InvalidRetentionDurationError) Error() string {
+	return "rest: retention duration must be positive"
+}
+
+// EmbeddingEmptyTextsError is returned when an embedding request contains
+// no input texts.
+type EmbeddingEmptyTextsError struct{}
+
+// Error returns a human-readable description.
+func (e *EmbeddingEmptyTextsError) Error() string {
+	return "rest: embedding request must contain at least one text"
+}
+
+// SQLQueryError is returned when a SQL query execution fails.
+type SQLQueryError struct {
+	Query string
+	Err   error
+}
+
+// Error returns a human-readable description.
+func (e *SQLQueryError) Error() string {
+	return "rest: sql query failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *SQLQueryError) Unwrap() error {
+	return e.Err
+}

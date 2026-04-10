@@ -1,0 +1,97 @@
+// Copyright 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package sdk
+
+import "github.com/jeremyhahn/go-qrdb/pkg/service"
+
+// ---------------------------------------------------------------------------
+// Service interfaces
+// ---------------------------------------------------------------------------
+
+// KVServicer is the service-layer interface for key-value operations.
+type KVServicer = service.KVServicer
+
+// AdminServicer is the service-layer interface for admin/cluster operations.
+type AdminServicer = service.AdminServicer
+
+// Host is the interface for the backend host that services operate on.
+type Host = service.Host
+
+// ---------------------------------------------------------------------------
+// Service types
+// ---------------------------------------------------------------------------
+
+// KVService is the concrete KV service implementation.
+type KVService = service.KVService
+
+// KVServiceOption configures a KVService at construction time.
+type KVServiceOption = service.KVServiceOption
+
+// AdminService is the concrete admin service implementation.
+type AdminService = service.AdminService
+
+// AdminServiceOption configures an AdminService at construction time.
+type AdminServiceOption = service.AdminServiceOption
+
+// BackendKVService is a KVServicer backed directly by a database.Backend.
+type BackendKVService = service.BackendKVService
+
+// ---------------------------------------------------------------------------
+// Service info types
+// ---------------------------------------------------------------------------
+
+// HealthStatus reports the health of the cluster.
+type HealthStatus = service.HealthStatus
+
+// StatusInfo provides detailed cluster status.
+type StatusInfo = service.StatusInfo
+
+// PeerInfo describes a single cluster peer.
+type PeerInfo = service.PeerInfo
+
+// ShardPeers describes the peers of a single shard.
+type ShardPeers = service.ShardPeers
+
+// PeersInfo describes all shard peers in the cluster.
+type PeersInfo = service.PeersInfo
+
+// ---------------------------------------------------------------------------
+// Constructors
+// ---------------------------------------------------------------------------
+
+// NewKVService creates a new KVService.
+var NewKVService = service.NewKVService
+
+// NewAdminService creates a new AdminService.
+var NewAdminService = service.NewAdminService
+
+// NewBackendKVService creates a new BackendKVService.
+var NewBackendKVService = service.NewBackendKVService
+
+// ---------------------------------------------------------------------------
+// Database service types
+// ---------------------------------------------------------------------------
+
+// DatabaseServicer defines CRUD operations for database management.
+type DatabaseServicer = service.DatabaseServicer
+
+// DatabaseService implements DatabaseServicer using a database.Manager.
+type DatabaseService = service.DatabaseService
+
+// DatabaseServiceOption configures optional DatabaseService behavior.
+type DatabaseServiceOption = service.DatabaseServiceOption
+
+// NewDatabaseService creates a new DatabaseService backed by the given manager.
+var NewDatabaseService = service.NewDatabaseService

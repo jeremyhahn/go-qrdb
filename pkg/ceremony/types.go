@@ -1,0 +1,192 @@
+// Copyright (c) 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package ceremony
+
+import (
+	"crypto"
+	"crypto/x509"
+	"time"
+)
+
+// CeremonyState represents the current phase of the initialization ceremony.
+type CeremonyState string
+
+const (
+	// StateAwaitingInit is the initial state before the ceremony begins.
+	StateAwaitingInit CeremonyState = "awaiting_init"
+
+	// StateEnrolling is the state during M-of-N officer enrollment,
+	// where officers claim their certificates and key shares.
+	StateEnrolling CeremonyState = "enrolling"
+
+	// StateOperational is the final state after the ceremony is complete
+	// and the system is ready for normal operations.
+	StateOperational CeremonyState = "operational"
+)
+
+// OfficerConfig holds the configuration for a single ceremony officer.
+type OfficerConfig struct {
+	// Username is the unique identifier for the officer.
+	Username string
+
+	// CSRPEM is the PEM-encoded certificate signing request from the officer.
+	CSRPEM []byte
+}
+
+// CeremonyConfig holds the configuration for an initialization ceremony.
+type CeremonyConfig struct {
+	// SOPin is the Security Officer PIN used for administrative operations.
+	SOPin string
+
+	// UserPin is the user-level PIN that protects day-to-day operations.
+	UserPin string
+
+	// CredentialSealStrategy identifies how credentials are sealed at rest.
+	CredentialSealStrategy string
+
+	// Threshold is the minimum number of officers (M) required to
+	// reconstruct the secret in M-of-N Shamir splitting.
+	Threshold int
+
+	// Officers is the list of officer configurations for M-of-N enrollment.
+	Officers []OfficerConfig
+
+	// Hostname is the primary hostname for TLS certificate generation.
+	Hostname string
+
+	// SANs is the list of Subject Alternative Names for TLS certificates.
+	SANs []string
+
+	// DataDir is the directory for ceremony-related data storage.
+	DataDir string
+}
+
+// PendingCert holds a certificate that has been issued but not yet
+// claimed by its officer.
+type PendingCert struct {
+	// Username is the officer who owns this certificate.
+	Username string
+
+	// CertPEM is the PEM-encoded certificate.
+	CertPEM []byte
+
+	// CSRPubKey is the public key extracted from the officer's CSR,
+	// used for nonce signature verification during claim.
+	CSRPubKey crypto.PublicKey
+
+	// Claimed indicates whether the officer has claimed this certificate.
+	Claimed bool
+}
+
+// ChallengeResponse holds the challenge nonce issued during the
+// certificate claim handshake.
+type ChallengeResponse struct {
+	// Nonce is the random challenge bytes the officer must sign.
+	Nonce []byte
+
+	// Username is the officer being challenged.
+	Username string
+
+	// ExpiresAt is the deadline by which the officer must respond.
+	ExpiresAt time.Time
+}
+
+// InitResult contains the output of a successful ceremony initialization.
+type InitResult struct {
+	// SPKIPin is the base64-encoded SHA-256 hash of the CA certificate's
+	// SubjectPublicKeyInfo, used for certificate pinning.
+	SPKIPin string
+
+	// CACertPEM is the PEM-encoded CA certificate.
+	CACertPEM []byte
+
+	// TLSCertPEM is the PEM-encoded TLS certificate issued for the server.
+	TLSCertPEM []byte
+
+	// SOCertPEM is the PEM-encoded Security Officer certificate.
+	SOCertPEM []byte
+
+	// SOKeyPEM is the PEM-encoded Security Officer private key.
+	SOKeyPEM []byte
+
+	// State is the ceremony state after initialization.
+	State CeremonyState
+
+	// ShareCount is the number of Shamir shares generated (0 for single admin).
+	ShareCount int
+}
+
+// ClaimCertResult contains the output of a successful certificate claim.
+type ClaimCertResult struct {
+	// CertPEM is the PEM-encoded officer certificate.
+	CertPEM []byte
+
+	// CACertPEM is the PEM-encoded CA certificate for trust chain verification.
+	CACertPEM []byte
+}
+
+// SignCSRInitResult contains the output of a successful CSR signing operation.
+type SignCSRInitResult struct {
+	// CertPEM is the PEM-encoded certificate issued from the CSR.
+	CertPEM []byte
+}
+
+// roleProfile maps a role name to its certificate profile parameters.
+type roleProfile struct {
+	profile      string
+	validityDays int
+	keyUsage     x509.KeyUsage
+	extKeyUsage  []x509.ExtKeyUsage
+}
+
+// roleProfileMap maps recognized role names to their certificate profiles.
+var roleProfileMap = map[string]*roleProfile{
+	"so": {
+		profile:      "security-officer",
+		validityDays: 365,
+		keyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		extKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	},
+	"admin": {
+		profile:      "administrator",
+		validityDays: 365,
+		keyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		extKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	},
+	"operator": {
+		profile:      "operator",
+		validityDays: 180,
+		keyUsage:     x509.KeyUsageDigitalSignature,
+		extKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	},
+	"user": {
+		profile:      "user",
+		validityDays: 90,
+		keyUsage:     x509.KeyUsageDigitalSignature,
+		extKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	},
+	"auditor": {
+		profile:      "auditor",
+		validityDays: 180,
+		keyUsage:     x509.KeyUsageDigitalSignature,
+		extKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	},
+	"custodian": {
+		profile:      "custodian",
+		validityDays: 365,
+		keyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		extKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	},
+}

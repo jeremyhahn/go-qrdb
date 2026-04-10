@@ -23,16 +23,17 @@ const (
 	ProtocolREST ProtocolType = "rest"
 	ProtocolGRPC ProtocolType = "grpc"
 	ProtocolMCP  ProtocolType = "mcp"
+	ProtocolQUIC ProtocolType = "quic"
 )
 
 // AllProtocols returns all supported protocols.
 func AllProtocols() []ProtocolType {
-	return []ProtocolType{ProtocolUnix, ProtocolREST, ProtocolGRPC, ProtocolMCP}
+	return []ProtocolType{ProtocolUnix, ProtocolREST, ProtocolGRPC, ProtocolMCP, ProtocolQUIC}
 }
 
 // CLIProtocols returns protocols supported by the CLI for remote server connections.
 func CLIProtocols() []ProtocolType {
-	return []ProtocolType{ProtocolUnix, ProtocolREST, ProtocolGRPC, ProtocolMCP}
+	return []ProtocolType{ProtocolUnix, ProtocolREST, ProtocolGRPC, ProtocolMCP, ProtocolQUIC}
 }
 
 // TestRunner provides utilities for running CLI commands in tests.
@@ -42,9 +43,12 @@ type TestRunner struct {
 	RESTBaseURL    string
 	GRPCAddr       string
 	MCPAddr        string
+	QUICAddr       string
 	Timeout        time.Duration
 	Verbose        bool
 	TLSCACert      string
+	TLSCert        string
+	TLSKey         string
 }
 
 // NewTestRunner creates a new test runner with default configuration.
@@ -58,9 +62,12 @@ func NewTestRunner() *TestRunner {
 		RESTBaseURL:    getEnv("QRDB_REST_URL", "https://localhost:63002"),
 		GRPCAddr:       getEnv("QRDB_GRPC_ADDR", "localhost:63003"),
 		MCPAddr:        getEnv("QRDB_MCP_ADDR", "localhost:63005"),
+		QUICAddr:       getEnv("QRDB_QUIC_ADDR", "localhost:63004"),
 		Timeout:        30 * time.Second,
 		Verbose:        getEnv("VERBOSE", "") != "",
-		TLSCACert:      getEnv("QRDB_TLS_CA", "/etc/qrdb/certs/ca.crt"),
+		TLSCACert:      getEnv("QRDB_TLS_CA", "/data/raft/ca.pem"),
+		TLSCert:        getEnv("QRDB_TLS_CERT", ""),
+		TLSKey:         getEnv("QRDB_TLS_KEY", ""),
 	}
 }
 
@@ -81,6 +88,8 @@ func (r *TestRunner) GetServerURL(protocol ProtocolType) string {
 		return "grpcs://" + r.GRPCAddr
 	case ProtocolMCP:
 		return "mcp://" + r.MCPAddr
+	case ProtocolQUIC:
+		return "quics://" + r.QUICAddr
 	default:
 		return ""
 	}
@@ -92,7 +101,7 @@ func (r *TestRunner) IsCLIAvailable(t *testing.T) bool {
 	if _, err := os.Stat(r.CLIBinPath); os.IsNotExist(err) {
 		return false
 	}
-	cmd := exec.Command(r.CLIBinPath, "version")
+	cmd := exec.Command(r.CLIBinPath, "version") // #nosec G204 -- CLIBinPath is a controlled test binary path
 	return cmd.Run() == nil
 }
 
@@ -100,7 +109,7 @@ func (r *TestRunner) IsCLIAvailable(t *testing.T) bool {
 func (r *TestRunner) RequireCLI(t *testing.T) {
 	t.Helper()
 	if !r.IsCLIAvailable(t) {
-		t.Fatalf("CLI binary not available. Run 'make build-cli' first.")
+		t.Fatalf("CLI binary not available. Run 'make build-client' first.")
 	}
 }
 
@@ -108,7 +117,7 @@ func (r *TestRunner) RequireCLI(t *testing.T) {
 func (r *TestRunner) RunCommand(t *testing.T, args ...string) (string, string, error) {
 	t.Helper()
 
-	cmd := exec.Command(r.CLIBinPath, args...)
+	cmd := exec.Command(r.CLIBinPath, args...) // #nosec G204 -- CLIBinPath is a controlled test binary path
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -135,12 +144,19 @@ func (r *TestRunner) RunCommandWithProtocol(t *testing.T, protocol ProtocolType,
 		prefixArgs = append(prefixArgs, "--server", serverURL)
 	}
 
-	// Add TLS CA for protocols that use TLS.
+	// Add TLS flags for protocols that use TLS.
 	needsTLS := protocol == ProtocolREST && strings.HasPrefix(r.RESTBaseURL, "https://") ||
-		protocol == ProtocolGRPC
+		protocol == ProtocolGRPC ||
+		protocol == ProtocolMCP ||
+		protocol == ProtocolQUIC
 
-	if needsTLS && r.TLSCACert != "" {
-		prefixArgs = append(prefixArgs, "--ca-file", r.TLSCACert)
+	if needsTLS {
+		if r.TLSCACert != "" {
+			prefixArgs = append(prefixArgs, "--ca-file", r.TLSCACert)
+		}
+		if r.TLSCert != "" && r.TLSKey != "" {
+			prefixArgs = append(prefixArgs, "--cert-file", r.TLSCert, "--key-file", r.TLSKey)
+		}
 	}
 
 	args = append(prefixArgs, args...)

@@ -8,7 +8,7 @@
 
 package seal
 
-// BarrierConfig configures a Barrier instance.
+// BarrierConfig configures a StorageBarrier instance.
 type BarrierConfig struct {
 	// PreferenceOrder specifies the order in which sealing strategies are
 	// evaluated. The first available strategy is used to seal the root key.
@@ -27,14 +27,31 @@ type BarrierConfig struct {
 	// When set, InitializeShamir and UnsealWithShare/UnsealWithShares methods
 	// become available.
 	Shamir *ShamirConfig
-}
 
-// ShamirConfig configures Shamir secret sharing for barrier operations.
-type ShamirConfig struct {
-	// Threshold is the minimum number of shares (M) needed to reconstruct.
-	Threshold int `json:"threshold"`
-	// TotalShares is the total number of shares (N) to generate.
-	TotalShares int `json:"total_shares"`
+	// DeploymentID identifies the deployment for future EpochBarrier
+	// integration. A value of 0 means unset.
+	DeploymentID uint64
+
+	// InvocationCounter allows injection of a custom invocation counter.
+	// Nil = default InMemoryInvocationCounter.
+	InvocationCounter InvocationCounter
+
+	// NonceTrackerProvider allows injection of a custom nonce tracker.
+	// Nil = default InMemoryNonceTracker.
+	NonceTrackerProvider NonceTrackerProvider
+
+	// AEADProvider allows injection of a custom cipher.AEAD factory.
+	// Nil = default SoftwareAEADProvider.
+	AEADProvider AEADProvider
+
+	// InvocationLimit is the max encrypt operations per key epoch.
+	// Default: 2^32 (NIST SP 800-38D for random 96-bit nonces).
+	// Set to 0 for default; -1 to disable.
+	InvocationLimit int64
+
+	// RotationThreshold is the percentage of InvocationLimit at which
+	// ShouldRotate() returns true. Default: 95.0.
+	RotationThreshold float64
 }
 
 // TenantBarrierConfig configures per-tenant barrier behavior.

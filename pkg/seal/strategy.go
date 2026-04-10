@@ -7,148 +7,128 @@
 //     http://www.apache.org/licenses/LICENSE-2.0
 
 // Package seal provides barrier encryption for go-qrdb's storage layer.
-// The Barrier wraps a StorageBackend with transparent authenticated encryption,
-// supporting multiple sealing strategies (software, Shamir, hardware via go-xkms),
-// multi-tenant isolation, and disaster recovery operations.
+// The StorageBarrier wraps a StorageBackend with transparent authenticated
+// encryption, supporting multiple sealing strategies (software, Shamir,
+// hardware via go-xkms), multi-tenant isolation, and disaster recovery
+// operations.
+//
+// Core types (StrategyID, SealingStrategy, SymmetricEncrypter, etc.) are
+// defined in go-quicraft/pkg/seal and re-exported here as type aliases so
+// that go-qrdb consumers do not need to import go-quicraft directly.
 package seal
 
 import (
-	"context"
 	"time"
+
+	quicraftseal "github.com/jeremyhahn/go-quicraft/pkg/seal"
 )
+
+// --- Re-exported types from go-quicraft/pkg/seal ---
 
 // StrategyID uniquely identifies a sealing strategy.
-type StrategyID string
-
-const (
-	// StrategyTPM2 uses TPM 2.0 hardware for root key protection.
-	StrategyTPM2 StrategyID = "tpm2"
-
-	// StrategyPKCS11 uses PKCS#11 HSM tokens for root key protection.
-	StrategyPKCS11 StrategyID = "pkcs11"
-
-	// StrategyAWSKMS uses AWS Key Management Service for root key protection.
-	StrategyAWSKMS StrategyID = "awskms"
-
-	// StrategyGCPKMS uses Google Cloud KMS for root key protection.
-	StrategyGCPKMS StrategyID = "gcpkms"
-
-	// StrategyAzureKV uses Azure Key Vault for root key protection.
-	StrategyAzureKV StrategyID = "azurekv"
-
-	// StrategyVault uses HashiCorp Vault for root key protection.
-	StrategyVault StrategyID = "vault"
-
-	// StrategyShamir splits the root key itself into M-of-N Shamir shares.
-	// No password is required; the root key IS the Shamir secret.
-	StrategyShamir StrategyID = "shamir"
-
-	// StrategySoftware uses password-based encryption (Argon2id + AES-256-GCM)
-	// as a software-only fallback for root key protection.
-	StrategySoftware StrategyID = "software"
-)
-
-// DefaultPreferenceOrder defines the default strategy selection order.
-// Hardware-backed strategies are preferred over software-only fallback.
-var DefaultPreferenceOrder = []StrategyID{
-	StrategyTPM2,
-	StrategyPKCS11,
-	StrategyAWSKMS,
-	StrategyGCPKMS,
-	StrategyAzureKV,
-	StrategyVault,
-	StrategyShamir,
-	StrategySoftware,
-}
+type StrategyID = quicraftseal.StrategyID
 
 // SealingStrategy defines the interface for root key seal/unseal operations.
-// Each strategy wraps a different protection mechanism (TPM, HSM, cloud KMS,
-// or software-based encryption).
-type SealingStrategy interface {
-	// ID returns the unique identifier for this strategy.
-	ID() StrategyID
-
-	// Available reports whether this strategy can currently be used.
-	// For hardware strategies, this checks device availability.
-	Available() bool
-
-	// HardwareBacked returns true if this strategy uses dedicated
-	// cryptographic hardware rather than software-only protection.
-	HardwareBacked() bool
-
-	// SealRootKey encrypts the root key using the strategy's native
-	// protection mechanism.
-	SealRootKey(ctx context.Context, rootKey []byte, creds Credentials) (*SealedRootKey, error)
-
-	// UnsealRootKey decrypts a previously sealed root key.
-	UnsealRootKey(ctx context.Context, sealed *SealedRootKey, creds Credentials) ([]byte, error)
-
-	// BarrierEncryptor returns a SymmetricEncrypter for barrier data operations.
-	// For hardware-backed strategies, keys never leave hardware.
-	// For software strategies, a DEK is derived from the root key.
-	BarrierEncryptor(ctx context.Context, rootKey []byte) (SymmetricEncrypter, error)
-}
+type SealingStrategy = quicraftseal.SealingStrategy
 
 // SymmetricEncrypter provides symmetric encryption/decryption operations.
-// Implementations handle nonce generation and wire format internally.
-type SymmetricEncrypter interface {
-	Encrypt(plaintext []byte) ([]byte, error)
-	Decrypt(ciphertext []byte) ([]byte, error)
-}
+type SymmetricEncrypter = quicraftseal.SymmetricEncrypter
 
-// StorageBackend is a minimal interface for key-value storage.
-// go-qrdb's storage.Engine satisfies this via Go duck typing.
-type StorageBackend interface {
-	Get(key string) ([]byte, error)
-	Put(key string, data []byte) error
-	Delete(key string) error
-	List(prefix string) ([]string, error)
-	Exists(key string) (bool, error)
-	Close() error
-}
+// StorageBackend is a context-aware interface for key-value storage using
+// string keys. All methods accept context.Context and use string keys.
+type StorageBackend = quicraftseal.StorageBackend
 
 // Credentials holds authentication material for seal/unseal operations.
-type Credentials struct {
-	Secret string
-}
+type Credentials = quicraftseal.Credentials
 
-// SealedRootKey is the JSON-serializable envelope stored in the backend
-// that contains the sealed root key and metadata about how it was sealed.
-type SealedRootKey struct {
-	// Version is the format version of this sealed root key blob.
-	Version int `json:"version"`
+// SealedRootKey is the persisted form of an encrypted root key.
+type SealedRootKey = quicraftseal.SealedRootKey
 
-	// Strategy identifies which sealing strategy created this blob.
-	Strategy StrategyID `json:"strategy"`
+// ShareAccumulator collects shares until the quorum threshold is met.
+type ShareAccumulator = quicraftseal.ShareAccumulator
 
-	// KDFVersion records which password hashing version was used for
-	// software-based sealing. 0 (or absent) implies legacy Argon2id (V1).
-	KDFVersion int `json:"kdf_version,omitempty"`
+// ShareSplitter splits a secret into M-of-N Shamir shares.
+type ShareSplitter = quicraftseal.ShareSplitter
 
-	// Salt is the KDF salt for software-based sealing.
-	Salt []byte `json:"salt,omitempty"`
+// QuorumProgress reports the current state of a quorum accumulator.
+type QuorumProgress = quicraftseal.QuorumProgress
 
-	// Nonce is the AES-GCM nonce for software-based sealing.
-	Nonce []byte `json:"nonce,omitempty"`
+// ShamirInitResult contains the output of Shamir initialization.
+type ShamirInitResult = quicraftseal.ShamirInitResult
 
-	// Ciphertext is the encrypted root key for software-based sealing.
-	Ciphertext []byte `json:"ciphertext,omitempty"`
+// ShamirConfig configures Shamir secret sharing for barrier operations.
+type ShamirConfig = quicraftseal.ShamirConfig
 
-	// ShamirThreshold records the M value when sealed with StrategyShamir.
-	ShamirThreshold int `json:"shamir_threshold,omitempty"`
+// SoftwareStrategy is a type alias for go-quicraft's SoftwareStrategy.
+// This enables go-qrdb consumers to use the software sealing strategy
+// without importing go-quicraft directly.
+type SoftwareStrategy = quicraftseal.SoftwareStrategy
 
-	// ShamirTotal records the N value when sealed with StrategyShamir.
-	ShamirTotal int `json:"shamir_total,omitempty"`
+// NewSoftwareStrategy is a constructor alias for go-quicraft's software
+// strategy. It creates a SoftwareStrategy that auto-selects the KDF
+// based on FIPS mode: PBKDF2-SHA256 when GOFIPS140 is set, Argon2id otherwise.
+var NewSoftwareStrategy = quicraftseal.NewSoftwareStrategy
 
-	// HardwarePayload holds strategy-specific data for hardware strategies
-	// (TPM2, PKCS#11, cloud KMS). Opaque to the barrier.
-	HardwarePayload []byte `json:"hardware_payload,omitempty"`
+// EpochBarrier is a type alias for go-quicraft's Barrier. The EpochBarrier
+// provides algorithm-agile authenticated encryption with epoch-based key
+// rotation, HKDF DEK derivation, and AEAD safety tracking.
+type EpochBarrier = quicraftseal.Barrier
 
-	// CreatedAt records when the root key was sealed.
-	CreatedAt time.Time `json:"created_at"`
-}
+// BarrierConfig is a type alias for go-quicraft's BarrierConfig.
+type EpochBarrierConfig = quicraftseal.BarrierConfig
 
-// BarrierStatus reports the current state of a Barrier.
+// DefaultBarrierConfig is a constructor alias for go-quicraft's
+// DefaultBarrierConfig.
+var DefaultEpochBarrierConfig = quicraftseal.DefaultBarrierConfig
+
+// InvocationCounter tracks AEAD encrypt operations and enforces limits.
+type InvocationCounter = quicraftseal.InvocationCounter
+
+// NonceTrackerProvider provides nonce reuse detection for AEAD ciphers.
+type NonceTrackerProvider = quicraftseal.NonceTrackerProvider
+
+// AEADProvider creates cipher.AEAD instances for a given algorithm and key.
+type AEADProvider = quicraftseal.AEADProvider
+
+// SymmetricAlgorithm identifies a symmetric encryption algorithm.
+type SymmetricAlgorithm = quicraftseal.SymmetricAlgorithm
+
+// NewInvocationCounter creates an InMemoryInvocationCounter.
+var NewInvocationCounter = quicraftseal.NewInvocationCounter
+
+// NewNonceTracker creates an InMemoryNonceTracker.
+var NewNonceTracker = quicraftseal.NewNonceTracker
+
+// NewSoftwareAEADProvider creates a software AEAD provider.
+var NewSoftwareAEADProvider = quicraftseal.NewSoftwareAEADProvider
+
+// ErrInvocationLimitExceeded is returned when the AEAD invocation limit is exceeded.
+var ErrInvocationLimitExceeded = quicraftseal.ErrInvocationLimitExceeded
+
+// ErrNonceReuse is returned when nonce reuse is detected.
+var ErrNonceReuse = quicraftseal.ErrNonceReuse
+
+// --- Re-exported constants ---
+
+const (
+	StrategyTPM2     = quicraftseal.StrategyTPM2
+	StrategyPKCS11   = quicraftseal.StrategyPKCS11
+	StrategyAWSKMS   = quicraftseal.StrategyAWSKMS
+	StrategyGCPKMS   = quicraftseal.StrategyGCPKMS
+	StrategyAzureKV  = quicraftseal.StrategyAzureKV
+	StrategyVault    = quicraftseal.StrategyVault
+	StrategyShamir   = quicraftseal.StrategyShamir
+	StrategySoftware = quicraftseal.StrategySoftware
+)
+
+// DefaultPreferenceOrder defines strategy selection priority.
+var DefaultPreferenceOrder = quicraftseal.DefaultPreferenceOrder
+
+// DefaultQuorumTTL is the default time-to-live for a quorum accumulator
+// session, re-exported from go-quicraft.
+const DefaultQuorumTTL = quicraftseal.DefaultQuorumTTL
+
+// BarrierStatus reports the current state of a StorageBarrier.
 type BarrierStatus struct {
 	// Sealed is true when the barrier is in sealed state.
 	Sealed bool `json:"sealed"`

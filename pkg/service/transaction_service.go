@@ -19,8 +19,10 @@ import (
 	"errors"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
+	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
+	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
 
 // TransactionServicer provides atomic compare-and-swap transactions over
@@ -33,6 +35,19 @@ type TransactionServicer interface {
 	// are applied; otherwise failureOps are applied. Both sets are
 	// executed atomically within a single MVCC revision.
 	Execute(ctx context.Context, compares []Compare, successOps, failureOps []Op) (*TransactionResponse, error)
+
+	// ExecuteWithMode atomically evaluates compares and executes the
+	// corresponding operation set with the specified write durability.
+	// When all compares succeed, successOps are applied; otherwise
+	// failureOps are applied.
+	ExecuteWithMode(ctx context.Context, compares []Compare, successOps, failureOps []Op, mode writemode.Mode) (*TransactionResponse, error)
+
+	// ExecuteEntity atomically evaluates entity-typed compares and
+	// executes the corresponding entity-typed operation set. Entity
+	// keys are constructed from the EntityType and ID fields. When all
+	// compares succeed, the success operations are applied; otherwise
+	// the failure operations are applied.
+	ExecuteEntity(ctx context.Context, req *TransactionEntityRequest) (*TransactionEntityResponse, error)
 }
 
 // TransactionService implements TransactionServicer backed by a QuicRaft host
@@ -56,6 +71,32 @@ func NewTransactionService(host Host, shardID uint64) TransactionServicer {
 // operation set through Raft consensus. When all compares succeed, successOps
 // are applied; otherwise failureOps are applied.
 func (s *TransactionService) Execute(ctx context.Context, compares []Compare, successOps, failureOps []Op) (*TransactionResponse, error) {
+	cmd := s.encodeTransactionCommand(compares, successOps, failureOps)
+	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+	if err != nil {
+		return nil, s.translateProposeError(err)
+	}
+
+	return s.buildTransactionResponse(result, successOps, failureOps), nil
+}
+
+// ExecuteWithMode atomically evaluates compares and executes the
+// corresponding operation set with the specified write durability through
+// Raft consensus. When all compares succeed, successOps are applied;
+// otherwise failureOps are applied.
+func (s *TransactionService) ExecuteWithMode(ctx context.Context, compares []Compare, successOps, failureOps []Op, mode writemode.Mode) (*TransactionResponse, error) {
+	cmd := s.encodeTransactionCommand(compares, successOps, failureOps)
+	result, err := s.host.ProposeWithMode(ctx, s.shardID, cmd, mode)
+	if err != nil {
+		return nil, s.translateProposeError(err)
+	}
+
+	return s.buildTransactionResponse(result, successOps, failureOps), nil
+}
+
+// encodeTransactionCommand encodes compares, success ops, and failure ops
+// into a single transaction command for Raft proposal.
+func (s *TransactionService) encodeTransactionCommand(compares []Compare, successOps, failureOps []Op) []byte {
 	// Encode compares.
 	encodedCompares := make([][]byte, len(compares))
 	for i, c := range compares {
@@ -82,12 +123,12 @@ func (s *TransactionService) Execute(ctx context.Context, compares []Compare, su
 		encodedFailure[i] = encodeServiceOp(op)
 	}
 
-	cmd := protocol.EncodeTransaction(encodedCompares, encodedSuccess, encodedFailure)
-	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
-	if err != nil {
-		return nil, s.translateProposeError(err)
-	}
+	return protocol.EncodeTransaction(encodedCompares, encodedSuccess, encodedFailure)
+}
 
+// buildTransactionResponse constructs a TransactionResponse from the Raft
+// proposal result and the original operation sets.
+func (s *TransactionService) buildTransactionResponse(result sm.Result, successOps, failureOps []Op) *TransactionResponse {
 	// Parse result: Value = revision, Data[0] = succeeded flag.
 	succeeded := len(result.Data) > 0 && result.Data[0] == 1
 	revision := int64(result.Value)
@@ -109,7 +150,102 @@ func (s *TransactionService) Execute(ctx context.Context, compares []Compare, su
 		Succeeded: succeeded,
 		Revision:  revision,
 		Responses: responses,
+	}
+}
+
+// ExecuteEntity atomically evaluates entity-typed compares and executes
+// the corresponding entity-typed operations through Raft consensus.
+// Entity keys are constructed as "{entityType}/{id}".
+func (s *TransactionService) ExecuteEntity(ctx context.Context, req *TransactionEntityRequest) (*TransactionEntityResponse, error) {
+	if req == nil {
+		return nil, &EntityEmptyTypeError{}
+	}
+
+	// Encode entity compares to raw compares.
+	encodedCompares := make([][]byte, len(req.Compares))
+	for i, c := range req.Compares {
+		if c.EntityType == "" {
+			return nil, &EntityEmptyTypeError{}
+		}
+		if c.ID == "" {
+			return nil, &EntityEmptyIDError{EntityType: c.EntityType}
+		}
+		key := []byte(entityKey(c.EntityType, c.ID))
+		encodedCompares[i] = protocol.EncodeCompare(
+			key,
+			byte(c.Target),
+			byte(c.Result),
+			c.Value,
+			0, // version
+			0, // createRevision
+			0, // modRevision
+		)
+	}
+
+	// Encode entity success operations.
+	encodedSuccess, err := encodeEntityOps(req.Success)
+	if err != nil {
+		return nil, err
+	}
+
+	// Encode entity failure operations.
+	encodedFailure, err := encodeEntityOps(req.Failure)
+	if err != nil {
+		return nil, err
+	}
+
+	cmd := protocol.EncodeTransaction(encodedCompares, encodedSuccess, encodedFailure)
+
+	shardID := s.shardID
+	if req.ShardID != 0 {
+		shardID = req.ShardID
+	}
+
+	result, proposeErr := s.host.SyncPropose(ctx, shardID, cmd)
+	if proposeErr != nil {
+		return nil, s.translateProposeError(proposeErr)
+	}
+
+	// Parse result: Value = revision, Data[0] = succeeded flag.
+	succeeded := len(result.Data) > 0 && result.Data[0] == 1
+
+	// Build per-operation response data for the executed branch.
+	var executedCount int
+	if succeeded {
+		executedCount = len(req.Success)
+	} else {
+		executedCount = len(req.Failure)
+	}
+
+	responses := make([][]byte, executedCount)
+
+	return &TransactionEntityResponse{
+		Succeeded: succeeded,
+		Responses: responses,
 	}, nil
+}
+
+// encodeEntityOps validates and encodes a slice of TransactionEntityOp
+// into binary protocol representations.
+func encodeEntityOps(ops []TransactionEntityOp) ([][]byte, error) {
+	encoded := make([][]byte, len(ops))
+	for i, op := range ops {
+		if op.EntityType == "" {
+			return nil, &EntityEmptyTypeError{}
+		}
+		if op.ID == "" {
+			return nil, &EntityEmptyIDError{EntityType: op.EntityType}
+		}
+
+		protocolOp, ok := entityOpTypeHandlers[op.Type]
+		if !ok {
+			return nil, &InvalidEntityOpTypeError{OpType: op.Type}
+		}
+
+		key := []byte(entityKey(op.EntityType, op.ID))
+		encoded[i] = protocol.EncodeOp(protocolOp, key, op.Data, nil, 0)
+	}
+	return encoded, nil
 }
 
 // translateProposeError converts QuicRaft proposal errors to service-level

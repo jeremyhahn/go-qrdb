@@ -891,6 +891,7 @@ func TestIndexCreateRoundtrip(t *testing.T) {
 		fieldName string
 		unique    bool
 		sparse    bool
+		numeric   bool
 	}{
 		{
 			name:      "unique index",
@@ -898,6 +899,7 @@ func TestIndexCreateRoundtrip(t *testing.T) {
 			fieldName: "email",
 			unique:    true,
 			sparse:    false,
+			numeric:   false,
 		},
 		{
 			name:      "sparse index",
@@ -905,6 +907,7 @@ func TestIndexCreateRoundtrip(t *testing.T) {
 			fieldName: "optional_field",
 			unique:    false,
 			sparse:    true,
+			numeric:   false,
 		},
 		{
 			name:      "both flags",
@@ -912,6 +915,7 @@ func TestIndexCreateRoundtrip(t *testing.T) {
 			fieldName: "field",
 			unique:    true,
 			sparse:    true,
+			numeric:   false,
 		},
 		{
 			name:      "no flags",
@@ -919,6 +923,7 @@ func TestIndexCreateRoundtrip(t *testing.T) {
 			fieldName: "name",
 			unique:    false,
 			sparse:    false,
+			numeric:   false,
 		},
 		{
 			name:      "empty name and field",
@@ -926,11 +931,28 @@ func TestIndexCreateRoundtrip(t *testing.T) {
 			fieldName: "",
 			unique:    false,
 			sparse:    false,
+			numeric:   false,
+		},
+		{
+			name:      "numeric index",
+			indexName: "idx_score",
+			fieldName: "score",
+			unique:    false,
+			sparse:    false,
+			numeric:   true,
+		},
+		{
+			name:      "unique numeric index",
+			indexName: "idx_rank",
+			fieldName: "rank",
+			unique:    true,
+			sparse:    false,
+			numeric:   true,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoded := EncodeIndexCreate(tt.indexName, tt.fieldName, tt.unique, tt.sparse)
+			encoded := EncodeIndexCreate(tt.indexName, tt.fieldName, tt.unique, tt.sparse, tt.numeric)
 			if encoded[0] != OpIndexCreate {
 				t.Fatalf("op byte = %d, want %d", encoded[0], OpIndexCreate)
 			}
@@ -940,7 +962,7 @@ func TestIndexCreateRoundtrip(t *testing.T) {
 				t.Fatalf("DecodeCommand: %v", err)
 			}
 
-			name, fieldName, unique, sparse, err := DecodeIndexCreate(cmd.Payload)
+			name, fieldName, unique, sparse, numeric, err := DecodeIndexCreate(cmd.Payload)
 			if err != nil {
 				t.Fatalf("DecodeIndexCreate: %v", err)
 			}
@@ -955,6 +977,9 @@ func TestIndexCreateRoundtrip(t *testing.T) {
 			}
 			if sparse != tt.sparse {
 				t.Errorf("sparse = %v, want %v", sparse, tt.sparse)
+			}
+			if numeric != tt.numeric {
+				t.Errorf("numeric = %v, want %v", numeric, tt.numeric)
 			}
 		})
 	}
@@ -999,7 +1024,7 @@ func TestDecodeIndexCreate_Errors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, _, _, _, err := DecodeIndexCreate(tt.payload)
+			_, _, _, _, _, err := DecodeIndexCreate(tt.payload)
 			if err == nil {
 				t.Fatal("expected error, got nil")
 			}
@@ -1262,7 +1287,7 @@ func TestDecodeTSWrite_Errors(t *testing.T) {
 			name: "truncated tag value length",
 			payload: func() []byte {
 				b := make([]byte, 2+0+8+8+2+2+1) // metric(2), ts(8), val(8), tagCount(2), keyLen(2), key(1)
-				b[18] = 0x01                       // tagCount = 1
+				b[18] = 0x01                     // tagCount = 1
 				b[19] = 0x00
 				b[20] = 0x01 // keyLen = 1
 				b[21] = 0x00
@@ -1275,7 +1300,7 @@ func TestDecodeTSWrite_Errors(t *testing.T) {
 			name: "tag value exceeds payload",
 			payload: func() []byte {
 				b := make([]byte, 2+0+8+8+2+2+1+2) // +valLen
-				b[18] = 0x01                         // tagCount = 1
+				b[18] = 0x01                       // tagCount = 1
 				b[19] = 0x00
 				b[20] = 0x01 // keyLen = 1
 				b[21] = 0x00
@@ -1417,13 +1442,13 @@ func TestDecodeOp_Errors(t *testing.T) {
 			wantMsg: "missing range end length",
 		},
 		{
-			name: "range end exceeds data",
-			data: []byte{OpMVCCPut, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x00},
+			name:    "range end exceeds data",
+			data:    []byte{OpMVCCPut, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x00},
 			wantMsg: "range end exceeds data",
 		},
 		{
-			name: "missing lease ID",
-			data: []byte{OpMVCCPut, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+			name:    "missing lease ID",
+			data:    []byte{OpMVCCPut, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
 			wantMsg: "missing lease ID",
 		},
 	}
@@ -1573,8 +1598,8 @@ func TestDecodeCompare_Errors(t *testing.T) {
 			wantMsg: "value exceeds data",
 		},
 		{
-			name: "missing version/revisions",
-			data: []byte{0x00, 0x00, 0x01, 0x02, 0x00, 0x00}, // keyLen=0, t, r, valLen=0, need 24 more
+			name:    "missing version/revisions",
+			data:    []byte{0x00, 0x00, 0x01, 0x02, 0x00, 0x00}, // keyLen=0, t, r, valLen=0, need 24 more
 			wantMsg: "missing version/revisions",
 		},
 	}
@@ -2045,7 +2070,7 @@ func TestEncodedOpCodes(t *testing.T) {
 		},
 		{
 			name:   "EncodeIndexCreate",
-			encode: func() []byte { return EncodeIndexCreate("idx", "field", true, false) },
+			encode: func() []byte { return EncodeIndexCreate("idx", "field", true, false, false) },
 			wantOp: OpIndexCreate,
 		},
 		{
@@ -2438,7 +2463,7 @@ func TestEncodeLeaseKeepAlive_BufferSize(t *testing.T) {
 }
 
 func TestEncodeIndexCreate_BufferSize(t *testing.T) {
-	encoded := EncodeIndexCreate("idx", "fld", false, false)
+	encoded := EncodeIndexCreate("idx", "fld", false, false, false)
 	// Expected: 1 (op) + 2 (nameLen) + 3 (name) + 2 (fieldLen) + 3 (field) + 1 (flags) = 12
 	if len(encoded) != 12 {
 		t.Errorf("encoded length = %d, want 12", len(encoded))
@@ -2514,16 +2539,19 @@ func TestIndexCreate_FlagEncoding(t *testing.T) {
 		name     string
 		unique   bool
 		sparse   bool
+		numeric  bool
 		wantFlag byte
 	}{
-		{name: "no flags", unique: false, sparse: false, wantFlag: 0},
-		{name: "unique only", unique: true, sparse: false, wantFlag: IndexFlagUnique},
-		{name: "sparse only", unique: false, sparse: true, wantFlag: IndexFlagSparse},
-		{name: "both flags", unique: true, sparse: true, wantFlag: IndexFlagUnique | IndexFlagSparse},
+		{name: "no flags", unique: false, sparse: false, numeric: false, wantFlag: 0},
+		{name: "unique only", unique: true, sparse: false, numeric: false, wantFlag: IndexFlagUnique},
+		{name: "sparse only", unique: false, sparse: true, numeric: false, wantFlag: IndexFlagSparse},
+		{name: "both flags", unique: true, sparse: true, numeric: false, wantFlag: IndexFlagUnique | IndexFlagSparse},
+		{name: "numeric only", unique: false, sparse: false, numeric: true, wantFlag: IndexFlagNumeric},
+		{name: "unique+numeric", unique: true, sparse: false, numeric: true, wantFlag: IndexFlagUnique | IndexFlagNumeric},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoded := EncodeIndexCreate("n", "f", tt.unique, tt.sparse)
+			encoded := EncodeIndexCreate("n", "f", tt.unique, tt.sparse, tt.numeric)
 			// Flags byte is the last byte.
 			gotFlag := encoded[len(encoded)-1]
 			if gotFlag != tt.wantFlag {
@@ -2603,5 +2631,332 @@ func TestDecodeCompare_ConsumedBytes(t *testing.T) {
 	}
 	if !bytes.Equal(cmp.Key, []byte("ckey")) {
 		t.Errorf("Key = %q, want %q", cmp.Key, "ckey")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Time-Series WriteBatch encode/decode
+// ---------------------------------------------------------------------------
+
+func TestEncodeTSWriteBatch_RoundTrip(t *testing.T) {
+	points := []TSWriteParams{
+		{Metric: "cpu.usage", Timestamp: 1000000, Value: 42.5, Tags: map[string]string{"host": "node1"}},
+		{Metric: "mem.free", Timestamp: 2000000, Value: 1024.0, Tags: nil},
+	}
+
+	encoded := EncodeTSWriteBatch(points)
+	if encoded[0] != OpTSWriteBatch {
+		t.Fatalf("opcode = 0x%02x, want 0x%02x", encoded[0], OpTSWriteBatch)
+	}
+
+	decoded, err := DecodeTSWriteBatch(encoded[1:])
+	if err != nil {
+		t.Fatalf("DecodeTSWriteBatch: %v", err)
+	}
+	if len(decoded) != len(points) {
+		t.Fatalf("decoded %d points, want %d", len(decoded), len(points))
+	}
+
+	if decoded[0].Metric != "cpu.usage" {
+		t.Errorf("decoded[0].Metric = %q, want %q", decoded[0].Metric, "cpu.usage")
+	}
+	if decoded[0].Timestamp != 1000000 {
+		t.Errorf("decoded[0].Timestamp = %d, want 1000000", decoded[0].Timestamp)
+	}
+	if decoded[0].Value != 42.5 {
+		t.Errorf("decoded[0].Value = %f, want 42.5", decoded[0].Value)
+	}
+	if decoded[0].Tags["host"] != "node1" {
+		t.Errorf("decoded[0].Tags[host] = %q, want %q", decoded[0].Tags["host"], "node1")
+	}
+
+	if decoded[1].Metric != "mem.free" {
+		t.Errorf("decoded[1].Metric = %q, want %q", decoded[1].Metric, "mem.free")
+	}
+	if decoded[1].Value != 1024.0 {
+		t.Errorf("decoded[1].Value = %f, want 1024.0", decoded[1].Value)
+	}
+}
+
+func TestEncodeTSWriteBatch_EmptyPoints(t *testing.T) {
+	encoded := EncodeTSWriteBatch(nil)
+	decoded, err := DecodeTSWriteBatch(encoded[1:])
+	if err != nil {
+		t.Fatalf("DecodeTSWriteBatch: %v", err)
+	}
+	if len(decoded) != 0 {
+		t.Errorf("decoded %d points, want 0", len(decoded))
+	}
+}
+
+func TestDecodeTSWriteBatch_PayloadTooShort(t *testing.T) {
+	_, err := DecodeTSWriteBatch([]byte{0x01})
+	if err == nil {
+		t.Fatal("expected error for short payload")
+	}
+	var cmdErr *InvalidCommandError
+	if !errors.As(err, &cmdErr) {
+		t.Errorf("expected InvalidCommandError, got %T", err)
+	}
+}
+
+func TestDecodeTSWriteBatch_TruncatedPointLength(t *testing.T) {
+	// Encode 2 points claimed but only provide data for first
+	points := []TSWriteParams{
+		{Metric: "cpu", Timestamp: 1000, Value: 1.0, Tags: nil},
+	}
+	encoded := EncodeTSWriteBatch(points)
+	// Overwrite point count to 2 but don't add second point
+	encoded[1] = 2
+	encoded[2] = 0
+	_, err := DecodeTSWriteBatch(encoded[1:])
+	if err == nil {
+		t.Fatal("expected error for truncated point")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Time-Series WritePoint encode/decode
+// ---------------------------------------------------------------------------
+
+func TestEncodeTSWritePoint_RoundTrip(t *testing.T) {
+	encoded := EncodeTSWritePoint("disk.io", 5000000, 99.9, map[string]string{"dev": "sda1"})
+	if encoded[0] != OpTSWritePoint {
+		t.Fatalf("opcode = 0x%02x, want 0x%02x", encoded[0], OpTSWritePoint)
+	}
+
+	// Decode the payload (after opcode) using DecodeTSWrite
+	decoded, err := DecodeTSWrite(encoded[1:])
+	if err != nil {
+		t.Fatalf("DecodeTSWrite: %v", err)
+	}
+	if decoded.Metric != "disk.io" {
+		t.Errorf("Metric = %q, want %q", decoded.Metric, "disk.io")
+	}
+	if decoded.Timestamp != 5000000 {
+		t.Errorf("Timestamp = %d, want 5000000", decoded.Timestamp)
+	}
+	if decoded.Value != 99.9 {
+		t.Errorf("Value = %f, want 99.9", decoded.Value)
+	}
+	if decoded.Tags["dev"] != "sda1" {
+		t.Errorf("Tags[dev] = %q, want %q", decoded.Tags["dev"], "sda1")
+	}
+}
+
+func TestEncodeTSWritePoint_NoTags(t *testing.T) {
+	encoded := EncodeTSWritePoint("net.rx", 1234, 100.0, nil)
+	decoded, err := DecodeTSWrite(encoded[1:])
+	if err != nil {
+		t.Fatalf("DecodeTSWrite: %v", err)
+	}
+	if decoded.Metric != "net.rx" {
+		t.Errorf("Metric = %q, want %q", decoded.Metric, "net.rx")
+	}
+	if len(decoded.Tags) != 0 {
+		t.Errorf("expected 0 tags, got %d", len(decoded.Tags))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Time-Series DeleteSeries encode/decode
+// ---------------------------------------------------------------------------
+
+func TestEncodeTSDeleteSeries_RoundTrip(t *testing.T) {
+	tags := map[string]string{"region": "us-east", "env": "prod"}
+	encoded := EncodeTSDeleteSeries("cpu.usage", 1000, 2000, tags)
+
+	if encoded[0] != OpTSDeleteSeries {
+		t.Fatalf("opcode = 0x%02x, want 0x%02x", encoded[0], OpTSDeleteSeries)
+	}
+
+	decoded, err := DecodeTSDeleteSeries(encoded[1:])
+	if err != nil {
+		t.Fatalf("DecodeTSDeleteSeries: %v", err)
+	}
+	if decoded.Metric != "cpu.usage" {
+		t.Errorf("Metric = %q, want %q", decoded.Metric, "cpu.usage")
+	}
+	if decoded.StartNs != 1000 {
+		t.Errorf("StartNs = %d, want 1000", decoded.StartNs)
+	}
+	if decoded.EndNs != 2000 {
+		t.Errorf("EndNs = %d, want 2000", decoded.EndNs)
+	}
+	if len(decoded.Tags) != 2 {
+		t.Fatalf("tag count = %d, want 2", len(decoded.Tags))
+	}
+	if decoded.Tags["region"] != "us-east" {
+		t.Errorf("Tags[region] = %q, want %q", decoded.Tags["region"], "us-east")
+	}
+	if decoded.Tags["env"] != "prod" {
+		t.Errorf("Tags[env] = %q, want %q", decoded.Tags["env"], "prod")
+	}
+}
+
+func TestEncodeTSDeleteSeries_NoTags(t *testing.T) {
+	encoded := EncodeTSDeleteSeries("mem.free", 0, 9999, nil)
+	decoded, err := DecodeTSDeleteSeries(encoded[1:])
+	if err != nil {
+		t.Fatalf("DecodeTSDeleteSeries: %v", err)
+	}
+	if decoded.Metric != "mem.free" {
+		t.Errorf("Metric = %q, want %q", decoded.Metric, "mem.free")
+	}
+	if len(decoded.Tags) != 0 {
+		t.Errorf("expected 0 tags, got %d", len(decoded.Tags))
+	}
+}
+
+func TestDecodeTSDeleteSeries_PayloadTooShort(t *testing.T) {
+	_, err := DecodeTSDeleteSeries([]byte{0x01})
+	if err == nil {
+		t.Fatal("expected error for short payload")
+	}
+	var cmdErr *InvalidCommandError
+	if !errors.As(err, &cmdErr) {
+		t.Errorf("expected InvalidCommandError, got %T", err)
+	}
+}
+
+func TestDecodeTSDeleteSeries_MetricExceedsPayload(t *testing.T) {
+	// Claim metric length 100 but only provide 5 bytes total
+	payload := make([]byte, 5)
+	payload[0] = 0x64 // metric len = 100 LE
+	_, err := DecodeTSDeleteSeries(payload)
+	if err == nil {
+		t.Fatal("expected error for metric exceeding payload")
+	}
+}
+
+func TestDecodeTSDeleteSeries_MissingTimestamps(t *testing.T) {
+	// Valid metric but missing startNs/endNs/tagCount
+	metric := "cpu"
+	payload := make([]byte, 2+len(metric))
+	payload[0] = byte(len(metric))
+	payload[1] = 0
+	copy(payload[2:], metric)
+	_, err := DecodeTSDeleteSeries(payload)
+	if err == nil {
+		t.Fatal("expected error for missing timestamps")
+	}
+}
+
+func TestDecodeTSDeleteSeries_TruncatedTagKey(t *testing.T) {
+	// Build a valid payload up to tags, then claim 1 tag but truncate
+	encoded := EncodeTSDeleteSeries("m", 0, 0, map[string]string{"k": "v"})
+	// Truncate payload to cut into tag section
+	truncated := encoded[1 : len(encoded)-3]
+	_, err := DecodeTSDeleteSeries(truncated)
+	if err == nil {
+		t.Fatal("expected error for truncated tag")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Time-Series SetRetention encode/decode
+// ---------------------------------------------------------------------------
+
+func TestEncodeTSSetRetention_RoundTrip(t *testing.T) {
+	encoded := EncodeTSSetRetention("cpu.usage", 86400000000000, 60000000000, 1)
+
+	if encoded[0] != OpTSSetRetention {
+		t.Fatalf("opcode = 0x%02x, want 0x%02x", encoded[0], OpTSSetRetention)
+	}
+
+	decoded, err := DecodeTSSetRetention(encoded[1:])
+	if err != nil {
+		t.Fatalf("DecodeTSSetRetention: %v", err)
+	}
+	if decoded.Metric != "cpu.usage" {
+		t.Errorf("Metric = %q, want %q", decoded.Metric, "cpu.usage")
+	}
+	if decoded.DurationNs != 86400000000000 {
+		t.Errorf("DurationNs = %d, want 86400000000000", decoded.DurationNs)
+	}
+	if decoded.ResolutionNs != 60000000000 {
+		t.Errorf("ResolutionNs = %d, want 60000000000", decoded.ResolutionNs)
+	}
+	if decoded.Aggregation != 1 {
+		t.Errorf("Aggregation = %d, want 1", decoded.Aggregation)
+	}
+}
+
+func TestDecodeTSSetRetention_PayloadTooShort(t *testing.T) {
+	_, err := DecodeTSSetRetention([]byte{0x01})
+	if err == nil {
+		t.Fatal("expected error for short payload")
+	}
+	var cmdErr *InvalidCommandError
+	if !errors.As(err, &cmdErr) {
+		t.Errorf("expected InvalidCommandError, got %T", err)
+	}
+}
+
+func TestDecodeTSSetRetention_MetricExceedsPayload(t *testing.T) {
+	payload := make([]byte, 5)
+	payload[0] = 0x64 // metric len = 100 LE
+	_, err := DecodeTSSetRetention(payload)
+	if err == nil {
+		t.Fatal("expected error for metric exceeding payload")
+	}
+}
+
+func TestDecodeTSSetRetention_MissingFields(t *testing.T) {
+	// Valid metric but missing duration/resolution/aggregation fields
+	metric := "cpu"
+	payload := make([]byte, 2+len(metric))
+	payload[0] = byte(len(metric))
+	payload[1] = 0
+	copy(payload[2:], metric)
+	_, err := DecodeTSSetRetention(payload)
+	if err == nil {
+		t.Fatal("expected error for missing fields")
+	}
+}
+
+func TestEncodeTSWriteBatch_MultipleTags(t *testing.T) {
+	tags := map[string]string{"host": "a", "dc": "us1", "env": "prod"}
+	points := []TSWriteParams{
+		{Metric: "m1", Timestamp: 100, Value: math.Pi, Tags: tags},
+	}
+	encoded := EncodeTSWriteBatch(points)
+	decoded, err := DecodeTSWriteBatch(encoded[1:])
+	if err != nil {
+		t.Fatalf("DecodeTSWriteBatch: %v", err)
+	}
+	if len(decoded) != 1 {
+		t.Fatalf("decoded %d points, want 1", len(decoded))
+	}
+	if len(decoded[0].Tags) != 3 {
+		t.Fatalf("tag count = %d, want 3", len(decoded[0].Tags))
+	}
+	if decoded[0].Value != math.Pi {
+		t.Errorf("Value = %v, want %v", decoded[0].Value, math.Pi)
+	}
+}
+
+func TestEncodeTSSetRetention_EmptyMetric(t *testing.T) {
+	encoded := EncodeTSSetRetention("", 1000, 100, 0)
+	decoded, err := DecodeTSSetRetention(encoded[1:])
+	if err != nil {
+		t.Fatalf("DecodeTSSetRetention: %v", err)
+	}
+	if decoded.Metric != "" {
+		t.Errorf("Metric = %q, want empty", decoded.Metric)
+	}
+}
+
+func TestEncodeTSDeleteSeries_LargeTimestamps(t *testing.T) {
+	encoded := EncodeTSDeleteSeries("metric", math.MinInt64, math.MaxInt64, nil)
+	decoded, err := DecodeTSDeleteSeries(encoded[1:])
+	if err != nil {
+		t.Fatalf("DecodeTSDeleteSeries: %v", err)
+	}
+	if decoded.StartNs != math.MinInt64 {
+		t.Errorf("StartNs = %d, want MinInt64", decoded.StartNs)
+	}
+	if decoded.EndNs != math.MaxInt64 {
+		t.Errorf("EndNs = %d, want MaxInt64", decoded.EndNs)
 	}
 }

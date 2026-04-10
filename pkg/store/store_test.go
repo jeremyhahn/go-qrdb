@@ -25,15 +25,16 @@ import (
 
 	"github.com/cockroachdb/pebble/v2"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 )
 
 // openStore is a test helper that creates, opens, and registers cleanup for
-// a PebbleStore. It fails the test immediately on error.
-func openStore(t *testing.T) *PebbleStore {
+// a PebbleStateMachine. It fails the test immediately on error.
+func openStore(t *testing.T) *PebbleStateMachine {
 	t.Helper()
-	s := NewPebbleStore(nil)
+	s := NewPebbleStateMachine(nil)
 	dir := t.TempDir()
 	idx, err := s.Open(context.Background(), filepath.Join(dir, "db"), nil)
 	if err != nil {
@@ -52,22 +53,30 @@ func openStore(t *testing.T) *PebbleStore {
 
 // putEntry builds an sm.Entry with a Put command.
 func putEntry(index uint64, key, value string) sm.Entry {
+	cmd, err := kv.EncodePut([]byte(key), []byte(value))
+	if err != nil {
+		panic("putEntry: " + err.Error())
+	}
 	return sm.Entry{
 		Index: index,
-		Cmd:   kv.EncodePut([]byte(key), []byte(value)),
+		Cmd:   cmd,
 	}
 }
 
 // deleteEntry builds an sm.Entry with a Delete command.
 func deleteEntry(index uint64, key string) sm.Entry {
+	cmd, err := kv.EncodeDelete([]byte(key))
+	if err != nil {
+		panic("deleteEntry: " + err.Error())
+	}
 	return sm.Entry{
 		Index: index,
-		Cmd:   kv.EncodeDelete([]byte(key)),
+		Cmd:   cmd,
 	}
 }
 
 // applyEntries is a helper that applies entries to the store and returns results.
-func applyEntries(t *testing.T, s *PebbleStore, entries []sm.Entry) []sm.Result {
+func applyEntries(t *testing.T, s *PebbleStateMachine, entries []sm.Entry) []sm.Result {
 	t.Helper()
 	results := make([]sm.Result, len(entries))
 	if err := s.Update(context.Background(), entries, results); err != nil {
@@ -77,11 +86,11 @@ func applyEntries(t *testing.T, s *PebbleStore, entries []sm.Entry) []sm.Result 
 }
 
 // ---------------------------------------------------------------------------
-// PebbleStore lifecycle
+// PebbleStateMachine lifecycle
 // ---------------------------------------------------------------------------
 
-func TestPebbleStore_OpenCreatesDB(t *testing.T) {
-	s := NewPebbleStore(nil)
+func TestPebbleStateMachine_OpenCreatesDB(t *testing.T) {
+	s := NewPebbleStateMachine(nil)
 	dir := filepath.Join(t.TempDir(), "db")
 	idx, err := s.Open(context.Background(), dir, nil)
 	if err != nil {
@@ -95,11 +104,11 @@ func TestPebbleStore_OpenCreatesDB(t *testing.T) {
 	}
 }
 
-func TestPebbleStore_OpenReturnsLastApplied(t *testing.T) {
+func TestPebbleStateMachine_OpenReturnsLastApplied(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "db")
 
 	// Open, apply entries, close.
-	s := NewPebbleStore(nil)
+	s := NewPebbleStateMachine(nil)
 	if _, err := s.Open(context.Background(), dir, nil); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -109,7 +118,7 @@ func TestPebbleStore_OpenReturnsLastApplied(t *testing.T) {
 	}
 
 	// Reopen: last applied index must be 42.
-	s2 := NewPebbleStore(nil)
+	s2 := NewPebbleStateMachine(nil)
 	idx, err := s2.Open(context.Background(), dir, nil)
 	if err != nil {
 		t.Fatalf("Reopen: %v", err)
@@ -122,8 +131,8 @@ func TestPebbleStore_OpenReturnsLastApplied(t *testing.T) {
 	}
 }
 
-func TestPebbleStore_OpenInvalidDirReturnsOpenError(t *testing.T) {
-	s := NewPebbleStore(nil)
+func TestPebbleStateMachine_OpenInvalidDirReturnsOpenError(t *testing.T) {
+	s := NewPebbleStateMachine(nil)
 	// Attempt to open in a non-existent nested path that can't be created.
 	_, err := s.Open(context.Background(), "/dev/null/invalid/path", nil)
 	if err == nil {
@@ -135,8 +144,8 @@ func TestPebbleStore_OpenInvalidDirReturnsOpenError(t *testing.T) {
 	}
 }
 
-func TestPebbleStore_UpdateBeforeOpenReturnsNotOpenError(t *testing.T) {
-	s := NewPebbleStore(nil)
+func TestPebbleStateMachine_UpdateBeforeOpenReturnsNotOpenError(t *testing.T) {
+	s := NewPebbleStateMachine(nil)
 	entries := []sm.Entry{putEntry(1, "k", "v")}
 	results := make([]sm.Result, 1)
 	err := s.Update(context.Background(), entries, results)
@@ -149,8 +158,8 @@ func TestPebbleStore_UpdateBeforeOpenReturnsNotOpenError(t *testing.T) {
 	}
 }
 
-func TestPebbleStore_LookupBeforeOpenReturnsNotOpenError(t *testing.T) {
-	s := NewPebbleStore(nil)
+func TestPebbleStateMachine_LookupBeforeOpenReturnsNotOpenError(t *testing.T) {
+	s := NewPebbleStateMachine(nil)
 	_, err := s.Lookup(context.Background(), []byte("k"))
 	if err == nil {
 		t.Fatal("expected error")
@@ -161,8 +170,8 @@ func TestPebbleStore_LookupBeforeOpenReturnsNotOpenError(t *testing.T) {
 	}
 }
 
-func TestPebbleStore_SyncBeforeOpenReturnsNotOpenError(t *testing.T) {
-	s := NewPebbleStore(nil)
+func TestPebbleStateMachine_SyncBeforeOpenReturnsNotOpenError(t *testing.T) {
+	s := NewPebbleStateMachine(nil)
 	err := s.Sync()
 	if err == nil {
 		t.Fatal("expected error")
@@ -173,8 +182,8 @@ func TestPebbleStore_SyncBeforeOpenReturnsNotOpenError(t *testing.T) {
 	}
 }
 
-func TestPebbleStore_PrepareSnapshotBeforeOpenReturnsNotOpenError(t *testing.T) {
-	s := NewPebbleStore(nil)
+func TestPebbleStateMachine_PrepareSnapshotBeforeOpenReturnsNotOpenError(t *testing.T) {
+	s := NewPebbleStateMachine(nil)
 	_, err := s.PrepareSnapshot()
 	if err == nil {
 		t.Fatal("expected error")
@@ -185,8 +194,8 @@ func TestPebbleStore_PrepareSnapshotBeforeOpenReturnsNotOpenError(t *testing.T) 
 	}
 }
 
-func TestPebbleStore_RecoverFromSnapshotBeforeOpenReturnsNotOpenError(t *testing.T) {
-	s := NewPebbleStore(nil)
+func TestPebbleStateMachine_RecoverFromSnapshotBeforeOpenReturnsNotOpenError(t *testing.T) {
+	s := NewPebbleStateMachine(nil)
 	err := s.RecoverFromSnapshot(context.Background(), &bytes.Buffer{}, nil)
 	if err == nil {
 		t.Fatal("expected error")
@@ -197,8 +206,8 @@ func TestPebbleStore_RecoverFromSnapshotBeforeOpenReturnsNotOpenError(t *testing
 	}
 }
 
-func TestPebbleStore_GetHashBeforeOpenReturnsNotOpenError(t *testing.T) {
-	s := NewPebbleStore(nil)
+func TestPebbleStateMachine_GetHashBeforeOpenReturnsNotOpenError(t *testing.T) {
+	s := NewPebbleStateMachine(nil)
 	_, err := s.GetHash()
 	if err == nil {
 		t.Fatal("expected error")
@@ -209,8 +218,8 @@ func TestPebbleStore_GetHashBeforeOpenReturnsNotOpenError(t *testing.T) {
 	}
 }
 
-func TestPebbleStore_BytesLookupBeforeOpenReturnsNotOpenError(t *testing.T) {
-	s := NewPebbleStore(nil)
+func TestPebbleStateMachine_BytesLookupBeforeOpenReturnsNotOpenError(t *testing.T) {
+	s := NewPebbleStateMachine(nil)
 	_, err := s.BytesLookup([]byte("k"))
 	if err == nil {
 		t.Fatal("expected error")
@@ -221,15 +230,15 @@ func TestPebbleStore_BytesLookupBeforeOpenReturnsNotOpenError(t *testing.T) {
 	}
 }
 
-func TestPebbleStore_CloseWithoutOpenIsNoop(t *testing.T) {
-	s := NewPebbleStore(nil)
+func TestPebbleStateMachine_CloseWithoutOpenIsNoop(t *testing.T) {
+	s := NewPebbleStateMachine(nil)
 	if err := s.Close(context.Background()); err != nil {
 		t.Fatalf("Close on unopened store: unexpected error: %v", err)
 	}
 }
 
-func TestPebbleStore_DoubleCloseIsNoop(t *testing.T) {
-	s := NewPebbleStore(nil)
+func TestPebbleStateMachine_DoubleCloseIsNoop(t *testing.T) {
+	s := NewPebbleStateMachine(nil)
 	dir := filepath.Join(t.TempDir(), "db")
 	if _, err := s.Open(context.Background(), dir, nil); err != nil {
 		t.Fatalf("Open: %v", err)
@@ -247,7 +256,7 @@ func TestPebbleStore_DoubleCloseIsNoop(t *testing.T) {
 // KV operations via Update
 // ---------------------------------------------------------------------------
 
-func TestPebbleStore_PutThenLookup(t *testing.T) {
+func TestPebbleStateMachine_PutThenLookup(t *testing.T) {
 	s := openStore(t)
 	applyEntries(t, s, []sm.Entry{putEntry(1, "greeting", "hello")})
 
@@ -260,7 +269,7 @@ func TestPebbleStore_PutThenLookup(t *testing.T) {
 	}
 }
 
-func TestPebbleStore_PutMultipleThenLookupEach(t *testing.T) {
+func TestPebbleStateMachine_PutMultipleThenLookupEach(t *testing.T) {
 	s := openStore(t)
 
 	entries := []sm.Entry{
@@ -294,7 +303,7 @@ func TestPebbleStore_PutMultipleThenLookupEach(t *testing.T) {
 	}
 }
 
-func TestPebbleStore_DeleteThenLookupReturnsKeyNotFound(t *testing.T) {
+func TestPebbleStateMachine_DeleteThenLookupReturnsKeyNotFound(t *testing.T) {
 	s := openStore(t)
 
 	applyEntries(t, s, []sm.Entry{putEntry(1, "key", "value")})
@@ -314,7 +323,7 @@ func TestPebbleStore_DeleteThenLookupReturnsKeyNotFound(t *testing.T) {
 	}
 }
 
-func TestPebbleStore_OverwriteKey(t *testing.T) {
+func TestPebbleStateMachine_OverwriteKey(t *testing.T) {
 	s := openStore(t)
 
 	applyEntries(t, s, []sm.Entry{putEntry(1, "key", "v1")})
@@ -329,17 +338,21 @@ func TestPebbleStore_OverwriteKey(t *testing.T) {
 	}
 }
 
-func TestPebbleStore_GetEntryIsNoop(t *testing.T) {
+func TestPebbleStateMachine_GetEntryIsNoop(t *testing.T) {
 	s := openStore(t)
 
-	entries := []sm.Entry{{Index: 1, Cmd: kv.EncodeGet([]byte("nonexistent"))}}
+	getCmd, err := kv.EncodeGet([]byte("nonexistent"))
+	if err != nil {
+		t.Fatalf("EncodeGet: %v", err)
+	}
+	entries := []sm.Entry{{Index: 1, Cmd: getCmd}}
 	results := applyEntries(t, s, entries)
 	if results[0].Value != 0 {
 		t.Fatalf("Get result: expected 0, got %d", results[0].Value)
 	}
 }
 
-func TestPebbleStore_UpdateInvalidCommandReturnsError(t *testing.T) {
+func TestPebbleStateMachine_UpdateInvalidCommandReturnsError(t *testing.T) {
 	s := openStore(t)
 	entries := []sm.Entry{{Index: 1, Cmd: []byte{0xFF}}} // invalid op
 	results := make([]sm.Result, 1)
@@ -347,13 +360,13 @@ func TestPebbleStore_UpdateInvalidCommandReturnsError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for invalid command")
 	}
-	var ice *kv.InvalidCommandError
-	if !errors.As(err, &ice) {
-		t.Fatalf("expected *InvalidCommandError, got %T: %v", err, err)
+	var uoe *protocol.UnknownOpError
+	if !errors.As(err, &uoe) {
+		t.Fatalf("expected *protocol.UnknownOpError, got %T: %v", err, err)
 	}
 }
 
-func TestPebbleStore_UpdateEmptyEntries(t *testing.T) {
+func TestPebbleStateMachine_UpdateEmptyEntries(t *testing.T) {
 	s := openStore(t)
 	results := applyEntries(t, s, []sm.Entry{})
 	if len(results) != 0 {
@@ -365,7 +378,7 @@ func TestPebbleStore_UpdateEmptyEntries(t *testing.T) {
 // Lookup types
 // ---------------------------------------------------------------------------
 
-func TestPebbleStore_LookupByteSlice(t *testing.T) {
+func TestPebbleStateMachine_LookupByteSlice(t *testing.T) {
 	s := openStore(t)
 	applyEntries(t, s, []sm.Entry{putEntry(1, "key", "val")})
 
@@ -378,7 +391,7 @@ func TestPebbleStore_LookupByteSlice(t *testing.T) {
 	}
 }
 
-func TestPebbleStore_LookupString(t *testing.T) {
+func TestPebbleStateMachine_LookupString(t *testing.T) {
 	s := openStore(t)
 	applyEntries(t, s, []sm.Entry{putEntry(1, "key", "val")})
 
@@ -391,7 +404,7 @@ func TestPebbleStore_LookupString(t *testing.T) {
 	}
 }
 
-func TestPebbleStore_LookupListQueryAll(t *testing.T) {
+func TestPebbleStateMachine_LookupListQueryAll(t *testing.T) {
 	s := openStore(t)
 
 	entries := []sm.Entry{
@@ -418,7 +431,7 @@ func TestPebbleStore_LookupListQueryAll(t *testing.T) {
 	}
 }
 
-func TestPebbleStore_LookupListQueryWithPrefix(t *testing.T) {
+func TestPebbleStateMachine_LookupListQueryWithPrefix(t *testing.T) {
 	s := openStore(t)
 
 	entries := []sm.Entry{
@@ -444,7 +457,7 @@ func TestPebbleStore_LookupListQueryWithPrefix(t *testing.T) {
 	}
 }
 
-func TestPebbleStore_LookupListQueryNoResults(t *testing.T) {
+func TestPebbleStateMachine_LookupListQueryNoResults(t *testing.T) {
 	s := openStore(t)
 
 	val, err := s.Lookup(context.Background(), kv.ListQuery{Prefix: "nonexistent:"})
@@ -457,7 +470,7 @@ func TestPebbleStore_LookupListQueryNoResults(t *testing.T) {
 	}
 }
 
-func TestPebbleStore_LookupListQueryExcludesMetadata(t *testing.T) {
+func TestPebbleStateMachine_LookupListQueryExcludesMetadata(t *testing.T) {
 	s := openStore(t)
 
 	// Apply an entry so the metadata key is written.
@@ -478,7 +491,7 @@ func TestPebbleStore_LookupListQueryExcludesMetadata(t *testing.T) {
 	}
 }
 
-func TestPebbleStore_LookupInvalidQueryType(t *testing.T) {
+func TestPebbleStateMachine_LookupInvalidQueryType(t *testing.T) {
 	s := openStore(t)
 	_, err := s.Lookup(context.Background(), 12345)
 	if err == nil {
@@ -490,7 +503,7 @@ func TestPebbleStore_LookupInvalidQueryType(t *testing.T) {
 	}
 }
 
-func TestPebbleStore_LookupKeyNotFound(t *testing.T) {
+func TestPebbleStateMachine_LookupKeyNotFound(t *testing.T) {
 	s := openStore(t)
 	_, err := s.Lookup(context.Background(), []byte("nonexistent"))
 	if err == nil {
@@ -502,7 +515,7 @@ func TestPebbleStore_LookupKeyNotFound(t *testing.T) {
 	}
 }
 
-func TestPebbleStore_BytesLookup(t *testing.T) {
+func TestPebbleStateMachine_BytesLookup(t *testing.T) {
 	s := openStore(t)
 	applyEntries(t, s, []sm.Entry{putEntry(1, "key", "val")})
 
@@ -515,7 +528,7 @@ func TestPebbleStore_BytesLookup(t *testing.T) {
 	}
 }
 
-func TestPebbleStore_BytesLookupKeyNotFound(t *testing.T) {
+func TestPebbleStateMachine_BytesLookupKeyNotFound(t *testing.T) {
 	s := openStore(t)
 	_, err := s.BytesLookup([]byte("nope"))
 	if err == nil {
@@ -531,7 +544,7 @@ func TestPebbleStore_BytesLookupKeyNotFound(t *testing.T) {
 // Snapshot save and recover
 // ---------------------------------------------------------------------------
 
-func TestPebbleStore_SnapshotSaveAndRecover(t *testing.T) {
+func TestPebbleStateMachine_SnapshotSaveAndRecover(t *testing.T) {
 	s := openStore(t)
 
 	entries := []sm.Entry{
@@ -591,7 +604,7 @@ func TestPebbleStore_SnapshotSaveAndRecover(t *testing.T) {
 	}
 }
 
-func TestPebbleStore_SnapshotEmptyDB(t *testing.T) {
+func TestPebbleStateMachine_SnapshotEmptyDB(t *testing.T) {
 	s := openStore(t)
 
 	if err := s.Sync(); err != nil {
@@ -620,7 +633,7 @@ func TestPebbleStore_SnapshotEmptyDB(t *testing.T) {
 	}
 }
 
-func TestPebbleStore_SaveSnapshotInvalidContext(t *testing.T) {
+func TestPebbleStateMachine_SaveSnapshotInvalidContext(t *testing.T) {
 	s := openStore(t)
 
 	var buf bytes.Buffer
@@ -634,7 +647,7 @@ func TestPebbleStore_SaveSnapshotInvalidContext(t *testing.T) {
 	}
 }
 
-func TestPebbleStore_SaveSnapshotCancellation(t *testing.T) {
+func TestPebbleStateMachine_SaveSnapshotCancellation(t *testing.T) {
 	s := openStore(t)
 
 	// Add enough data so the loop iterates.
@@ -663,7 +676,7 @@ func TestPebbleStore_SaveSnapshotCancellation(t *testing.T) {
 	}
 }
 
-func TestPebbleStore_RecoverFromSnapshotCancellation(t *testing.T) {
+func TestPebbleStateMachine_RecoverFromSnapshotCancellation(t *testing.T) {
 	s := openStore(t)
 
 	// Build a valid snapshot with data.
@@ -694,7 +707,7 @@ func TestPebbleStore_RecoverFromSnapshotCancellation(t *testing.T) {
 	}
 }
 
-func TestPebbleStore_RecoverFromSnapshotInvalidData(t *testing.T) {
+func TestPebbleStateMachine_RecoverFromSnapshotInvalidData(t *testing.T) {
 	s := openStore(t)
 
 	// Empty reader: binary.Read will fail.
@@ -712,7 +725,7 @@ func TestPebbleStore_RecoverFromSnapshotInvalidData(t *testing.T) {
 // GetHash
 // ---------------------------------------------------------------------------
 
-func TestPebbleStore_GetHashConsistent(t *testing.T) {
+func TestPebbleStateMachine_GetHashConsistent(t *testing.T) {
 	s := openStore(t)
 	applyEntries(t, s, []sm.Entry{
 		putEntry(1, "a", "1"),
@@ -732,7 +745,7 @@ func TestPebbleStore_GetHashConsistent(t *testing.T) {
 	}
 }
 
-func TestPebbleStore_GetHashChangesAfterUpdate(t *testing.T) {
+func TestPebbleStateMachine_GetHashChangesAfterUpdate(t *testing.T) {
 	s := openStore(t)
 	applyEntries(t, s, []sm.Entry{putEntry(1, "a", "1")})
 
@@ -753,7 +766,7 @@ func TestPebbleStore_GetHashChangesAfterUpdate(t *testing.T) {
 	}
 }
 
-func TestPebbleStore_GetHashEmptyDB(t *testing.T) {
+func TestPebbleStateMachine_GetHashEmptyDB(t *testing.T) {
 	s := openStore(t)
 	h, err := s.GetHash()
 	if err != nil {
@@ -769,7 +782,7 @@ func TestPebbleStore_GetHashEmptyDB(t *testing.T) {
 	}
 }
 
-func TestPebbleStore_GetHashExcludesMetadata(t *testing.T) {
+func TestPebbleStateMachine_GetHashExcludesMetadata(t *testing.T) {
 	// Two stores with same user data but different lastApplied indexes
 	// should produce the same hash.
 	s1 := openStore(t)
@@ -795,7 +808,7 @@ func TestPebbleStore_GetHashExcludesMetadata(t *testing.T) {
 // Update with mixed operations (put + delete in one batch)
 // ---------------------------------------------------------------------------
 
-func TestPebbleStore_UpdateMixedOperations(t *testing.T) {
+func TestPebbleStateMachine_UpdateMixedOperations(t *testing.T) {
 	s := openStore(t)
 
 	// First batch: put two keys.
@@ -832,10 +845,10 @@ func TestPebbleStore_UpdateMixedOperations(t *testing.T) {
 	}
 }
 
-func TestPebbleStore_LastAppliedTracksHighestIndex(t *testing.T) {
+func TestPebbleStateMachine_LastAppliedTracksHighestIndex(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "db")
 
-	s := NewPebbleStore(nil)
+	s := NewPebbleStateMachine(nil)
 	if _, err := s.Open(context.Background(), dir, nil); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -851,7 +864,7 @@ func TestPebbleStore_LastAppliedTracksHighestIndex(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	s2 := NewPebbleStore(nil)
+	s2 := NewPebbleStateMachine(nil)
 	idx, err := s2.Open(context.Background(), dir, nil)
 	if err != nil {
 		t.Fatalf("Reopen: %v", err)
@@ -868,7 +881,7 @@ func TestPebbleStore_LastAppliedTracksHighestIndex(t *testing.T) {
 // Sync
 // ---------------------------------------------------------------------------
 
-func TestPebbleStore_SyncSuccess(t *testing.T) {
+func TestPebbleStateMachine_SyncSuccess(t *testing.T) {
 	s := openStore(t)
 	applyEntries(t, s, []sm.Entry{putEntry(1, "key", "val")})
 	if err := s.Sync(); err != nil {
@@ -880,43 +893,25 @@ func TestPebbleStore_SyncSuccess(t *testing.T) {
 // Factory
 // ---------------------------------------------------------------------------
 
-func TestNewPebbleCreateFunc_ReturnsNonNilCreateFunc(t *testing.T) {
-	cf := NewPebbleCreateFunc()
-	if cf == nil {
-		t.Fatal("expected non-nil CreateFunc")
+func TestNewPebbleStateMachine_ReturnsNonNil(t *testing.T) {
+	s := NewPebbleStateMachine(nil)
+	if s == nil {
+		t.Fatal("expected non-nil PebbleStateMachine")
 	}
-
-	// Invoke the factory and verify it returns a DiskStateMachine.
-	result := cf(1, 1)
-	if result == nil {
-		t.Fatal("CreateFunc returned nil")
-	}
-	if _, ok := result.(sm.DiskStateMachine); !ok {
-		t.Fatalf("expected sm.DiskStateMachine, got %T", result)
-	}
+	// Verify it satisfies sm.DiskStateMachine.
+	var _ sm.DiskStateMachine = s
 }
 
-func TestNewPebbleCreateFunc_WithOptions(t *testing.T) {
-	cf := NewPebbleCreateFunc(
-		WithCacheSize(8<<20),
-		WithWALDir(t.TempDir()),
-		WithMaxOpenFiles(256),
-	)
-	if cf == nil {
-		t.Fatal("expected non-nil CreateFunc")
+func TestNewPebbleStateMachine_WithOptions(t *testing.T) {
+	opts := &pebble.Options{
+		MaxOpenFiles: 256,
 	}
-
-	result := cf(1, 1)
-	if result == nil {
-		t.Fatal("CreateFunc returned nil")
-	}
-	dsm, ok := result.(sm.DiskStateMachine)
-	if !ok {
-		t.Fatalf("expected sm.DiskStateMachine, got %T", result)
+	ps := NewPebbleStateMachine(opts)
+	if ps == nil {
+		t.Fatal("expected non-nil PebbleStateMachine")
 	}
 
 	// Verify the created store can open and function.
-	ps := dsm.(*PebbleStore)
 	dir := filepath.Join(t.TempDir(), "db")
 	idx, err := ps.Open(context.Background(), dir, nil)
 	if err != nil {
@@ -930,14 +925,11 @@ func TestNewPebbleCreateFunc_WithOptions(t *testing.T) {
 	}
 }
 
-func TestNewPebbleCreateFunc_DifferentShardReplica(t *testing.T) {
-	cf := NewPebbleCreateFunc()
-
-	// Each invocation should return a distinct instance.
-	r1 := cf(1, 1)
-	r2 := cf(2, 2)
-	if r1 == r2 {
-		t.Fatal("expected distinct instances for different shard/replica IDs")
+func TestNewPebbleStateMachine_DistinctInstances(t *testing.T) {
+	s1 := NewPebbleStateMachine(nil)
+	s2 := NewPebbleStateMachine(nil)
+	if s1 == s2 {
+		t.Fatal("expected distinct instances")
 	}
 }
 
@@ -1054,24 +1046,24 @@ func TestPrefixUpperBound(t *testing.T) {
 // Interface compliance
 // ---------------------------------------------------------------------------
 
-func TestPebbleStore_ImplementsDiskStateMachine(t *testing.T) {
-	var _ sm.DiskStateMachine = (*PebbleStore)(nil)
+func TestPebbleStateMachine_ImplementsDiskStateMachine(t *testing.T) {
+	var _ sm.DiskStateMachine = (*PebbleStateMachine)(nil)
 }
 
-func TestPebbleStore_ImplementsHasher(t *testing.T) {
-	var _ sm.Hasher = (*PebbleStore)(nil)
+func TestPebbleStateMachine_ImplementsHasher(t *testing.T) {
+	var _ sm.Hasher = (*PebbleStateMachine)(nil)
 }
 
-func TestPebbleStore_ImplementsNALookup(t *testing.T) {
-	var _ sm.NALookup = (*PebbleStore)(nil)
+func TestPebbleStateMachine_ImplementsNALookup(t *testing.T) {
+	var _ sm.NALookup = (*PebbleStateMachine)(nil)
 }
 
 // ---------------------------------------------------------------------------
-// NewPebbleStore
+// NewPebbleStateMachine
 // ---------------------------------------------------------------------------
 
-func TestNewPebbleStore_NilOpts(t *testing.T) {
-	s := NewPebbleStore(nil)
+func TestNewPebbleStateMachine_NilOpts(t *testing.T) {
+	s := NewPebbleStateMachine(nil)
 	if s == nil {
 		t.Fatal("expected non-nil store")
 	}
@@ -1080,8 +1072,8 @@ func TestNewPebbleStore_NilOpts(t *testing.T) {
 	}
 }
 
-func TestNewPebbleStore_CustomOpts(t *testing.T) {
-	s := NewPebbleStore(&customTestOpts)
+func TestNewPebbleStateMachine_CustomOpts(t *testing.T) {
+	s := NewPebbleStateMachine(&customTestOpts)
 	if s == nil {
 		t.Fatal("expected non-nil store")
 	}
@@ -1095,7 +1087,7 @@ var customTestOpts = pebble.Options{MaxOpenFiles: 128}
 // Snapshot roundtrip across stores
 // ---------------------------------------------------------------------------
 
-func TestPebbleStore_SnapshotCrossStoreRestore(t *testing.T) {
+func TestPebbleStateMachine_SnapshotCrossStoreRestore(t *testing.T) {
 	// Create store A with data.
 	s1 := openStore(t)
 	applyEntries(t, s1, []sm.Entry{
@@ -1154,7 +1146,7 @@ func TestPebbleStore_SnapshotCrossStoreRestore(t *testing.T) {
 // Defensive copy verification
 // ---------------------------------------------------------------------------
 
-func TestPebbleStore_LookupReturnsDefensiveCopy(t *testing.T) {
+func TestPebbleStateMachine_LookupReturnsDefensiveCopy(t *testing.T) {
 	s := openStore(t)
 	applyEntries(t, s, []sm.Entry{putEntry(1, "key", "original")})
 
@@ -1177,7 +1169,7 @@ func TestPebbleStore_LookupReturnsDefensiveCopy(t *testing.T) {
 	}
 }
 
-func TestPebbleStore_BytesLookupReturnsDefensiveCopy(t *testing.T) {
+func TestPebbleStateMachine_BytesLookupReturnsDefensiveCopy(t *testing.T) {
 	s := openStore(t)
 	applyEntries(t, s, []sm.Entry{putEntry(1, "key", "original")})
 
@@ -1201,7 +1193,7 @@ func TestPebbleStore_BytesLookupReturnsDefensiveCopy(t *testing.T) {
 // Delete non-existent key (idempotent)
 // ---------------------------------------------------------------------------
 
-func TestPebbleStore_DeleteNonExistentKeyIsIdempotent(t *testing.T) {
+func TestPebbleStateMachine_DeleteNonExistentKeyIsIdempotent(t *testing.T) {
 	s := openStore(t)
 	results := applyEntries(t, s, []sm.Entry{deleteEntry(1, "ghost")})
 	if results[0].Value != 1 {
@@ -1213,7 +1205,7 @@ func TestPebbleStore_DeleteNonExistentKeyIsIdempotent(t *testing.T) {
 // Large value handling
 // ---------------------------------------------------------------------------
 
-func TestPebbleStore_LargeValue(t *testing.T) {
+func TestPebbleStateMachine_LargeValue(t *testing.T) {
 	s := openStore(t)
 
 	largeVal := make([]byte, 1<<20) // 1 MiB
@@ -1221,9 +1213,13 @@ func TestPebbleStore_LargeValue(t *testing.T) {
 		largeVal[i] = byte(i % 256)
 	}
 
+	bigCmd, err := kv.EncodePut([]byte("big"), largeVal)
+	if err != nil {
+		t.Fatalf("EncodePut: %v", err)
+	}
 	entries := []sm.Entry{{
 		Index: 1,
-		Cmd:   kv.EncodePut([]byte("big"), largeVal),
+		Cmd:   bigCmd,
 	}}
 	results := applyEntries(t, s, entries)
 	if results[0].Value != uint64(len(largeVal)) {
@@ -1243,7 +1239,7 @@ func TestPebbleStore_LargeValue(t *testing.T) {
 // GetHash determinism across identical stores
 // ---------------------------------------------------------------------------
 
-func TestPebbleStore_GetHashDeterministicAcrossStores(t *testing.T) {
+func TestPebbleStateMachine_GetHashDeterministicAcrossStores(t *testing.T) {
 	entries := []sm.Entry{
 		putEntry(1, "foo", "bar"),
 		putEntry(2, "baz", "qux"),
@@ -1272,7 +1268,7 @@ func TestPebbleStore_GetHashDeterministicAcrossStores(t *testing.T) {
 // readLastApplied edge case: short value (< 8 bytes)
 // ---------------------------------------------------------------------------
 
-func TestPebbleStore_ReadLastAppliedShortValue(t *testing.T) {
+func TestPebbleStateMachine_ReadLastAppliedShortValue(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "db")
 
 	// Write a short (4-byte) value for the metadata key directly via PebbleDB.
@@ -1288,8 +1284,8 @@ func TestPebbleStore_ReadLastAppliedShortValue(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	// Open via PebbleStore: readLastApplied should return 0 for short value.
-	s := NewPebbleStore(nil)
+	// Open via PebbleStateMachine: readLastApplied should return 0 for short value.
+	s := NewPebbleStateMachine(nil)
 	idx, err := s.Open(context.Background(), dir, nil)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -1306,7 +1302,7 @@ func TestPebbleStore_ReadLastAppliedShortValue(t *testing.T) {
 // RecoverFromSnapshot truncated data at various points
 // ---------------------------------------------------------------------------
 
-func TestPebbleStore_RecoverFromSnapshotTruncatedKeyLen(t *testing.T) {
+func TestPebbleStateMachine_RecoverFromSnapshotTruncatedKeyLen(t *testing.T) {
 	s := openStore(t)
 
 	// Build a snapshot buffer with count=1 but truncate before keyLen.
@@ -1327,7 +1323,7 @@ func TestPebbleStore_RecoverFromSnapshotTruncatedKeyLen(t *testing.T) {
 	}
 }
 
-func TestPebbleStore_RecoverFromSnapshotTruncatedKeyData(t *testing.T) {
+func TestPebbleStateMachine_RecoverFromSnapshotTruncatedKeyData(t *testing.T) {
 	s := openStore(t)
 
 	var buf bytes.Buffer
@@ -1350,7 +1346,7 @@ func TestPebbleStore_RecoverFromSnapshotTruncatedKeyData(t *testing.T) {
 	}
 }
 
-func TestPebbleStore_RecoverFromSnapshotTruncatedValLen(t *testing.T) {
+func TestPebbleStateMachine_RecoverFromSnapshotTruncatedValLen(t *testing.T) {
 	s := openStore(t)
 
 	var buf bytes.Buffer
@@ -1375,7 +1371,7 @@ func TestPebbleStore_RecoverFromSnapshotTruncatedValLen(t *testing.T) {
 	}
 }
 
-func TestPebbleStore_RecoverFromSnapshotTruncatedValData(t *testing.T) {
+func TestPebbleStateMachine_RecoverFromSnapshotTruncatedValData(t *testing.T) {
 	s := openStore(t)
 
 	var buf bytes.Buffer
@@ -1407,16 +1403,20 @@ func TestPebbleStore_RecoverFromSnapshotTruncatedValData(t *testing.T) {
 // verifies the second-pass iteration exits early
 // ---------------------------------------------------------------------------
 
-func TestPebbleStore_SaveSnapshotStopperDuringSecondPass(t *testing.T) {
+func TestPebbleStateMachine_SaveSnapshotStopperDuringSecondPass(t *testing.T) {
 	s := openStore(t)
 
 	// Insert enough data so the second-pass loop runs at least one iteration
 	// before checking stopper.
 	for i := 0; i < 200; i++ {
 		key := []byte{byte('A' + i%26), byte('a' + i/26)}
+		cmd, err := kv.EncodePut(key, []byte("data"))
+		if err != nil {
+			t.Fatalf("EncodePut: %v", err)
+		}
 		applyEntries(t, s, []sm.Entry{{
 			Index: uint64(i + 1),
-			Cmd:   kv.EncodePut(key, []byte("data")),
+			Cmd:   cmd,
 		}})
 	}
 
@@ -1442,7 +1442,7 @@ func TestPebbleStore_SaveSnapshotStopperDuringSecondPass(t *testing.T) {
 // SaveSnapshot correctly excludes metadata in count and data
 // ---------------------------------------------------------------------------
 
-func TestPebbleStore_SaveSnapshotCountExcludesMetadata(t *testing.T) {
+func TestPebbleStateMachine_SaveSnapshotCountExcludesMetadata(t *testing.T) {
 	s := openStore(t)
 
 	// Apply 3 user keys (which also writes the metadata key internally).
@@ -1479,7 +1479,7 @@ func TestPebbleStore_SaveSnapshotCountExcludesMetadata(t *testing.T) {
 // clearAll on empty DB is a no-op
 // ---------------------------------------------------------------------------
 
-func TestPebbleStore_RecoverFromSnapshotOnEmptyDB(t *testing.T) {
+func TestPebbleStateMachine_RecoverFromSnapshotOnEmptyDB(t *testing.T) {
 	s := openStore(t)
 
 	// Build a valid snapshot with 1 key.
@@ -1514,11 +1514,15 @@ func TestPebbleStore_RecoverFromSnapshotOnEmptyDB(t *testing.T) {
 // Update lastIndex=0 when no entries have Index > 0
 // ---------------------------------------------------------------------------
 
-func TestPebbleStore_UpdateZeroIndexSkipsMetaWrite(t *testing.T) {
+func TestPebbleStateMachine_UpdateZeroIndexSkipsMetaWrite(t *testing.T) {
 	s := openStore(t)
 
 	// Apply entries with Index=0 (edge case).
-	entries := []sm.Entry{{Index: 0, Cmd: kv.EncodePut([]byte("z"), []byte("zero"))}}
+	zeroCmd, err := kv.EncodePut([]byte("z"), []byte("zero"))
+	if err != nil {
+		t.Fatalf("EncodePut: %v", err)
+	}
+	entries := []sm.Entry{{Index: 0, Cmd: zeroCmd}}
 	results := applyEntries(t, s, entries)
 	if results[0].Value != uint64(len("zero")) {
 		t.Fatalf("expected %d, got %d", len("zero"), results[0].Value)
@@ -1555,7 +1559,7 @@ func (w *limitedWriter) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
-func TestPebbleStore_SaveSnapshotWriterFailsOnCount(t *testing.T) {
+func TestPebbleStateMachine_SaveSnapshotWriterFailsOnCount(t *testing.T) {
 	s := openStore(t)
 	applyEntries(t, s, []sm.Entry{putEntry(1, "key", "val")})
 
@@ -1579,7 +1583,7 @@ func TestPebbleStore_SaveSnapshotWriterFailsOnCount(t *testing.T) {
 	}
 }
 
-func TestPebbleStore_SaveSnapshotWriterFailsOnKeyLen(t *testing.T) {
+func TestPebbleStateMachine_SaveSnapshotWriterFailsOnKeyLen(t *testing.T) {
 	s := openStore(t)
 	applyEntries(t, s, []sm.Entry{putEntry(1, "key", "val")})
 
@@ -1603,7 +1607,7 @@ func TestPebbleStore_SaveSnapshotWriterFailsOnKeyLen(t *testing.T) {
 	}
 }
 
-func TestPebbleStore_SaveSnapshotWriterFailsOnKeyData(t *testing.T) {
+func TestPebbleStateMachine_SaveSnapshotWriterFailsOnKeyData(t *testing.T) {
 	s := openStore(t)
 	applyEntries(t, s, []sm.Entry{putEntry(1, "key", "val")})
 
@@ -1627,7 +1631,7 @@ func TestPebbleStore_SaveSnapshotWriterFailsOnKeyData(t *testing.T) {
 	}
 }
 
-func TestPebbleStore_SaveSnapshotWriterFailsOnValLen(t *testing.T) {
+func TestPebbleStateMachine_SaveSnapshotWriterFailsOnValLen(t *testing.T) {
 	s := openStore(t)
 	applyEntries(t, s, []sm.Entry{putEntry(1, "key", "val")})
 
@@ -1651,7 +1655,7 @@ func TestPebbleStore_SaveSnapshotWriterFailsOnValLen(t *testing.T) {
 	}
 }
 
-func TestPebbleStore_SaveSnapshotWriterFailsOnValData(t *testing.T) {
+func TestPebbleStateMachine_SaveSnapshotWriterFailsOnValData(t *testing.T) {
 	s := openStore(t)
 	applyEntries(t, s, []sm.Entry{putEntry(1, "key", "val")})
 
@@ -1679,7 +1683,7 @@ func TestPebbleStore_SaveSnapshotWriterFailsOnValData(t *testing.T) {
 // Update with command too short (< headerSize)
 // ---------------------------------------------------------------------------
 
-func TestPebbleStore_UpdateCommandTooShort(t *testing.T) {
+func TestPebbleStateMachine_UpdateCommandTooShort(t *testing.T) {
 	s := openStore(t)
 	entries := []sm.Entry{{Index: 1, Cmd: []byte{0x01}}} // only 1 byte, need 3
 	results := make([]sm.Result, 1)
@@ -1689,7 +1693,7 @@ func TestPebbleStore_UpdateCommandTooShort(t *testing.T) {
 	}
 	var ice *kv.InvalidCommandError
 	if !errors.As(err, &ice) {
-		t.Fatalf("expected *InvalidCommandError, got %T: %v", err, err)
+		t.Fatalf("expected *kv.InvalidCommandError, got %T: %v", err, err)
 	}
 }
 
@@ -1697,7 +1701,7 @@ func TestPebbleStore_UpdateCommandTooShort(t *testing.T) {
 // Snapshot roundtrip preserves value integrity for many keys
 // ---------------------------------------------------------------------------
 
-func TestPebbleStore_SnapshotManyKeys(t *testing.T) {
+func TestPebbleStateMachine_SnapshotManyKeys(t *testing.T) {
 	s := openStore(t)
 
 	const numKeys = 50
@@ -1705,9 +1709,13 @@ func TestPebbleStore_SnapshotManyKeys(t *testing.T) {
 	for i := 0; i < numKeys; i++ {
 		key := []byte{byte('A' + i/26), byte('a' + i%26)}
 		val := []byte{byte(i), byte(i + 1)}
+		cmd, err := kv.EncodePut(key, val)
+		if err != nil {
+			t.Fatalf("EncodePut: %v", err)
+		}
 		entries[i] = sm.Entry{
 			Index: uint64(i + 1),
-			Cmd:   kv.EncodePut(key, val),
+			Cmd:   cmd,
 		}
 	}
 	applyEntries(t, s, entries)
@@ -1748,7 +1756,7 @@ func TestPebbleStore_SnapshotManyKeys(t *testing.T) {
 // ListQuery on prefix that matches exactly one key boundary
 // ---------------------------------------------------------------------------
 
-func TestPebbleStore_LookupListQueryPrefixBoundary(t *testing.T) {
+func TestPebbleStateMachine_LookupListQueryPrefixBoundary(t *testing.T) {
 	s := openStore(t)
 	applyEntries(t, s, []sm.Entry{
 		putEntry(1, "test", "exact"),
@@ -1776,18 +1784,18 @@ func TestPebbleStore_LookupListQueryPrefixBoundary(t *testing.T) {
 // Read-only database error paths
 // ---------------------------------------------------------------------------
 
-// openReadOnlyStore creates a PebbleStore backed by a read-only PebbleDB. It
+// openReadOnlyStore creates a PebbleStateMachine backed by a read-only PebbleDB. It
 // first creates a normal database with the supplied entries, closes it, then
 // reopens it with ReadOnly: true. Write operations against the returned store
 // will fail with PebbleDB's "read-only" error, exercising internal error paths.
-func openReadOnlyStore(t *testing.T, entries []sm.Entry) *PebbleStore {
+func openReadOnlyStore(t *testing.T, entries []sm.Entry) *PebbleStateMachine {
 	t.Helper()
 
 	dir := t.TempDir()
 	dbDir := filepath.Join(dir, "db")
 
 	// Phase 1: create and populate a writable database.
-	writable := NewPebbleStore(nil)
+	writable := NewPebbleStateMachine(nil)
 	if _, err := writable.Open(context.Background(), dbDir, nil); err != nil {
 		t.Fatalf("Open writable: %v", err)
 	}
@@ -1805,7 +1813,7 @@ func openReadOnlyStore(t *testing.T, entries []sm.Entry) *PebbleStore {
 	}
 
 	// Phase 2: reopen the same directory as read-only.
-	ro := NewPebbleStore(&pebble.Options{ReadOnly: true})
+	ro := NewPebbleStateMachine(&pebble.Options{ReadOnly: true})
 	if _, err := ro.Open(context.Background(), dbDir, nil); err != nil {
 		t.Fatalf("Open read-only: %v", err)
 	}
@@ -1817,7 +1825,7 @@ func openReadOnlyStore(t *testing.T, entries []sm.Entry) *PebbleStore {
 	return ro
 }
 
-func TestPebbleStore_SyncFlushError(t *testing.T) {
+func TestPebbleStateMachine_SyncFlushError(t *testing.T) {
 	s := openReadOnlyStore(t, []sm.Entry{putEntry(1, "k", "v")})
 
 	err := s.Sync()
@@ -1830,7 +1838,7 @@ func TestPebbleStore_SyncFlushError(t *testing.T) {
 	}
 }
 
-func TestPebbleStore_UpdateCommitError(t *testing.T) {
+func TestPebbleStateMachine_UpdateCommitError(t *testing.T) {
 	s := openReadOnlyStore(t, []sm.Entry{putEntry(1, "k", "v")})
 
 	entries := []sm.Entry{putEntry(2, "k2", "v2")}
@@ -1845,7 +1853,7 @@ func TestPebbleStore_UpdateCommitError(t *testing.T) {
 	}
 }
 
-func TestPebbleStore_RecoverFromSnapshotClearAllError(t *testing.T) {
+func TestPebbleStateMachine_RecoverFromSnapshotClearAllError(t *testing.T) {
 	s := openReadOnlyStore(t, []sm.Entry{putEntry(1, "k", "v")})
 
 	// Build a minimal valid snapshot buffer (count=1, one key-value pair).

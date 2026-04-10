@@ -1,0 +1,32 @@
+{
+  "name": "@qrdb/sdk",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for QRDB distributed key-value database",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run build"
+  },
+  "files": ["dist", "src"],
+  "license": "Apache-2.0",
+  "peerDependencies": {
+    "@wailsapp/runtime": "^2.x"
+  },
+  "peerDependenciesMeta": {
+    "@wailsapp/runtime": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  }
+}

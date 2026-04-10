@@ -116,6 +116,102 @@ func (s *TimeSeriesService) Aggregate(ctx context.Context, metric string, start,
 	return results, nil
 }
 
+// WritePoint stores a single validated data point through Raft consensus.
+func (s *TimeSeriesService) WritePoint(ctx context.Context, point *DataPoint) error {
+	cmd := protocol.EncodeTSWritePoint(point.Metric, point.Timestamp.UnixNano(), point.Value, point.Tags)
+	_, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+	if err != nil {
+		return s.translateProposeError(err)
+	}
+	return nil
+}
+
+// QueryRich performs a rich query with filtering, aggregation,
+// downsampling, and grouping through linearizable read.
+func (s *TimeSeriesService) QueryRich(ctx context.Context, req *QueryRequest) (*QueryResult, error) {
+	result, err := s.host.SyncRead(ctx, s.shardID, TSRichQueryRequest{
+		Request: req,
+	})
+	if err != nil {
+		return nil, s.translateReadError(err)
+	}
+
+	qr, ok := result.(*QueryResult)
+	if !ok {
+		return nil, &unexpectedResultTypeError{}
+	}
+	return qr, nil
+}
+
+// DeleteSeries deletes data points matching the request criteria through
+// Raft consensus.
+func (s *TimeSeriesService) DeleteSeries(ctx context.Context, req *DeleteRequest) error {
+	var startNs, endNs int64
+	if !req.StartTime.IsZero() {
+		startNs = req.StartTime.UnixNano()
+	}
+	if !req.EndTime.IsZero() {
+		endNs = req.EndTime.UnixNano()
+	}
+	cmd := protocol.EncodeTSDeleteSeries(req.Metric, startNs, endNs, req.Tags)
+	_, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+	if err != nil {
+		return s.translateProposeError(err)
+	}
+	return nil
+}
+
+// GetRetentionPolicy retrieves the retention policy for a metric through
+// linearizable read.
+func (s *TimeSeriesService) GetRetentionPolicy(metric string) (*RetentionPolicy, error) {
+	result, err := s.host.SyncRead(context.Background(), s.shardID, TSGetRetentionRequest{
+		Metric: metric,
+	})
+	if err != nil {
+		return nil, s.translateReadError(err)
+	}
+
+	policy, ok := result.(*RetentionPolicy)
+	if !ok {
+		return nil, &unexpectedResultTypeError{}
+	}
+	return policy, nil
+}
+
+// SetRetentionPolicy sets the retention policy for a metric through
+// Raft consensus.
+func (s *TimeSeriesService) SetRetentionPolicy(metric string, policy *RetentionPolicy) error {
+	cmd := protocol.EncodeTSSetRetention(
+		metric,
+		int64(policy.Duration),
+		int64(policy.Resolution),
+		byte(policy.Aggregation),
+	)
+	_, err := s.host.SyncPropose(context.Background(), s.shardID, cmd)
+	if err != nil {
+		return s.translateProposeError(err)
+	}
+	return nil
+}
+
+// ListMetrics returns metric names matching the optional prefix through
+// linearizable read.
+func (s *TimeSeriesService) ListMetrics(prefix string, limit int) ([]string, error) {
+	result, err := s.host.SyncRead(context.Background(), s.shardID, TSListMetricsRequest{
+		Prefix: prefix,
+		Limit:  limit,
+	})
+	if err != nil {
+		return nil, s.translateReadError(err)
+	}
+
+	metrics, ok := result.([]string)
+	if !ok {
+		return nil, &unexpectedResultTypeError{}
+	}
+	return metrics, nil
+}
+
 // translateProposeError converts QuicRaft proposal errors to service-level
 // typed errors.
 func (s *TimeSeriesService) translateProposeError(err error) error {

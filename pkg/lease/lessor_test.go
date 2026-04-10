@@ -675,7 +675,7 @@ func TestRevokeNoKeysReturnsEmptySlice(t *testing.T) {
 func TestExpiredLeaseIDsEmptyLessor(t *testing.T) {
 	lr := NewLessor()
 	expired := lr.ExpiredLeaseIDs()
-	if expired != nil && len(expired) != 0 {
+	if len(expired) != 0 {
 		t.Errorf("ExpiredLeaseIDs() on empty lessor returned %d IDs, want 0", len(expired))
 	}
 }

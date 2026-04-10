@@ -1,196 +1,175 @@
-# QRDB vs TiKV KV Performance Comparison
+# QRDB KV Performance Comparison
 
-**Date**: 2026-02-24
-**CPU**: Intel Xeon Platinum 8260 @ 2.40GHz (96 cores)
-**Benchtime**: 30s per scenario, single run, isolated sequential Docker containers
-**TLS**: Both systems use TLS 1.3, ECDSA P-256, self-signed certificates
-**Payload**: 128 bytes per value
+**Date**: 2026-03-29 04:29:56  
+**Payload**: 128 bytes  
+**TLS**: true  
+
+![Comparison](charts/comparison.svg)
 
 ## System Configuration
 
-| Parameter | QRDB (H2) | QRDB (H3) | TiKV |
-|---|---|---|---|
-| Version | dev (QuicRaft) | dev (QuicRaft) | v8.5.0 |
-| Client Protocol | HTTP/2 + TLS 1.3 | HTTP/3 + QUIC | gRPC + TLS 1.3 (rawkv) |
-| Consensus | QuicRaft (Go, QUIC) | QuicRaft (Go, QUIC) | raft-rs (Rust, gRPC) |
-| Storage Engine | PebbleDB (disk LSM) | PebbleDB (disk LSM) | RocksDB (disk LSM) |
-| API Layer | HTTP/2 REST (JSON) | HTTP/3 REST (JSON) | gRPC (protobuf) |
-| MVCC | None (pure KV) | None (pure KV) | None (RawKV V1 bypasses MVCC) |
-| Client Pooling | 128 idle conns/host | QUIC streams | gRPC multiplexed streams |
-| Deployment | Docker (native) | Docker (native) | Docker (PD + TiKV, host net) |
-| 1N Topology | 1 QRDB process | 1 QRDB process | 1 PD + 1 TiKV store |
-| 3N Topology | 3 QRDB (Raft group) | 3 QRDB (Raft group) | 1 PD + 3 TiKV (3 replicas) |
+| | QRDB | TiKV |
+|---|---|---|
+| Storage Engine | PebbleDB (Go-native LSM) | RocksDB (C++ LSM via CGO) |
+| Consensus | Multi-group Raft (QUIC transport) | Multi-group Raft (gRPC transport) |
+| Client APIs | REST (HTTP/2, HTTP/3), gRPC, gRPC coalesced, native QUIC | gRPC (rawkv) |
+| Version | dev | v8.5.0 |
 
-## Single-Node (1N) Results
+## Throughput Comparison (ops/sec, higher is better)
 
-### Throughput
+| Scenario | QRDB REST | QRDB gRPC | QRDB Coalesced | QRDB QUIC | TiKV | Winner |
+|---|---|---|---|---|---|---|
+| PUT Sequential | 165.3 | 170.4 | — | 174.0 | 255.2 | TiKV 1.5x |
+| PUT Concurrent/8 | 692.2 | 716.2 | 1.05K | 700.1 | 1.89K | **TiKV 1.8x** |
+| GET Sequential | 14.01K | 19.17K | — | 23.54K | 13.34K | **QRDB 1.8x** |
+| GET Concurrent/8 | 55.11K | 75.68K | N/A | 123.39K | 127.62K | TiKV 1.0x |
+| DELETE Sequential | 166.2 | 169.5 | — | 170.1 | 274.7 | **TiKV 1.6x** |
+| DELETE Concurrent/8 | 734.6 | 740.2 | 1.08K | 723.9 | 2.16K | **TiKV 2.0x** |
+| Batch PUT 10K | 164.8 | 127.33K | — | — | 55.6 | **QRDB 2291.9x** |
+| Prefix Scan 10K | 803.0 | 142.9 | — | — | 208.9 | **QRDB 3.8x** |
 
-| Scenario | QRDB H2 | QRDB H3 | TiKV gRPC | Best QRDB vs TiKV |
-|---|---|---|---|---|
-| PUT Sequential | 310 | 297 | 540 | **TiKV 1.74x** |
-| PUT Concurrent/8 | 1,530 | 1,560 | 4,250 | **TiKV 2.72x** |
-| GET Sequential | 2,210 | **2,390** | 1,430 | **QRDB H3 1.67x** |
-| GET Concurrent/8 | 12,060 | **12,940** | 23,640 | **TiKV 1.83x** |
-| DELETE Sequential | 315 | **324** | 547 | **TiKV 1.69x** |
-| DELETE Concurrent/8 | 1,650 | **1,670** | 5,340 | **TiKV 3.20x** |
-| Batch PUT 10K | **333** | 303 | 20 | **QRDB H2 16.55x** |
-| Prefix Scan 10K | **193** | 170 | 38 | **QRDB H2 5.10x** |
+**Throughput**: 3 scenarios won by QRDB, 5 scenarios won by TiKV
 
-**Score: TiKV 4, QRDB 4** (single-node throughput, best protocol per scenario)
+## Latency P50 Comparison (lower is better)
 
-### Latency (p50)
+| Scenario | QRDB REST | QRDB gRPC | QRDB Coalesced | QRDB QUIC | TiKV | Winner |
+|---|---|---|---|---|---|---|
+| PUT Sequential | 5.91ms | 5.72ms | — | 5.61ms | 3.64ms | **TiKV 1.5x** |
+| PUT Concurrent/8 | 11.44ms | 10.97ms | 7.22ms | 11.28ms | 3.76ms | **TiKV 1.9x** |
+| GET Sequential | 45.1us | 36.3us | — | 29.3us | 45.2us | **QRDB 1.5x** |
+| GET Concurrent/8 | 133.1us | 95.4us | N/A | 59.9us | 59.5us | TiKV 1.0x |
+| DELETE Sequential | 5.93ms | 5.80ms | — | 5.79ms | 3.55ms | **TiKV 1.6x** |
+| DELETE Concurrent/8 | 10.65ms | 10.57ms | 6.97ms | 10.81ms | 3.55ms | **TiKV 2.0x** |
+| Batch PUT 10K | 5.85ms | 7.8us | — | — | 16.43ms | **QRDB 2097.9x** |
+| Prefix Scan 10K | 1.20ms | 7.10ms | — | — | 4.75ms | **QRDB 4.0x** |
 
-| Scenario | QRDB H2 | QRDB H3 | TiKV gRPC | Best QRDB vs TiKV |
-|---|---|---|---|---|
-| PUT Sequential | 3.12 ms | 3.26 ms | **1.72 ms** | TiKV 1.81x |
-| PUT Concurrent/8 | 5.08 ms | **4.94 ms** | **1.68 ms** | TiKV 2.94x |
-| GET Sequential | 423 us | **378 us** | 672 us | **QRDB H3 1.78x** |
-| GET Concurrent/8 | 591 us | **534 us** | **305 us** | TiKV 1.75x |
-| DELETE Sequential | 3.09 ms | **2.94 ms** | **1.72 ms** | TiKV 1.71x |
-| DELETE Concurrent/8 | 4.60 ms | **4.59 ms** | **1.32 ms** | TiKV 3.48x |
-| Batch PUT 10K | **2.82 ms** | 3.20 ms | 42.52 ms | **QRDB H2 15.08x** |
-| Prefix Scan 10K | **4.68 ms** | 5.38 ms | 26.48 ms | **QRDB H2 5.66x** |
+## QRDB Protocol Comparison
 
-### Latency (p99)
+| Scenario | QRDB (H2) | QRDB (H3) | QRDB (gRPC) | QRDB (QUIC) | Best |
+|---|---|---|---|---|---|
+| PUT Sequential (1N) | 157.8 | 165.3 | N/A | N/A | QRDB (H3) |
+| PUT Concurrent/8 (1N) | 661.6 | 692.2 | N/A | N/A | QRDB (H3) |
+| GET Sequential (1N) | 14.01K | 12.34K | N/A | N/A | QRDB (H2) |
+| GET Concurrent/8 (1N) | 48.72K | 55.11K | N/A | N/A | QRDB (H3) |
+| DELETE Sequential (1N) | 164.1 | 166.2 | N/A | N/A | QRDB (H3) |
+| DELETE Concurrent/8 (1N) | 690.8 | 734.6 | N/A | N/A | QRDB (H3) |
+| Batch PUT 10K (1N) | 163.0 | 164.8 | N/A | N/A | QRDB (H3) |
+| Prefix Scan 10K (1N) | 803.0 | 721.2 | N/A | N/A | QRDB (H2) |
+| gRPC PUT Sequential (1N) | 164.8 | 170.4 | 167.0 | N/A | QRDB (H3) |
+| gRPC PUT Concurrent/8 (1N) | 716.2 | 712.0 | 708.1 | N/A | QRDB (H2) |
+| gRPC GET Sequential (1N) | 19.17K | 18.11K | 17.79K | N/A | QRDB (H2) |
+| gRPC GET Concurrent/8 (1N) | 74.85K | 75.27K | 75.68K | N/A | QRDB (gRPC) |
+| gRPC DELETE Sequential (1N) | 169.5 | 168.9 | 162.1 | N/A | QRDB (H2) |
+| gRPC DELETE Concurrent/8 (1N) | 740.2 | 735.1 | 736.9 | N/A | QRDB (H2) |
+| gRPC Batch PUT 10K (1N) | 126.21K | 123.55K | 127.33K | N/A | QRDB (gRPC) |
+| gRPC Prefix Scan 10K (1N) | 142.9 | 142.6 | 136.4 | N/A | QRDB (H2) |
+| gRPC PUT Coalesced/8 (1N) | 1.03K | 971.6 | 1.05K | N/A | QRDB (gRPC) |
+| gRPC DELETE Coalesced/8 (1N) | 1.07K | 1.04K | 1.08K | N/A | QRDB (gRPC) |
+| QUIC PUT Sequential (1N) | 172.5 | 167.5 | N/A | 174.0 | QRDB (QUIC) |
+| QUIC PUT Concurrent/8 (1N) | 669.5 | 687.6 | N/A | 700.1 | QRDB (QUIC) |
+| QUIC GET Sequential (1N) | 23.54K | 20.65K | N/A | 22.23K | QRDB (H2) |
+| QUIC GET Concurrent/8 (1N) | 123.39K | 119.13K | N/A | 117.63K | QRDB (H2) |
+| QUIC DELETE Sequential (1N) | 170.1 | 169.1 | N/A | 163.3 | QRDB (H2) |
+| QUIC DELETE Concurrent/8 (1N) | 719.6 | 685.8 | N/A | 723.9 | QRDB (QUIC) |
 
-| Scenario | QRDB H2 | QRDB H3 | TiKV gRPC | Best QRDB vs TiKV |
-|---|---|---|---|---|
-| PUT Sequential | 5.42 ms | 5.57 ms | **3.81 ms** | TiKV 1.42x |
-| PUT Concurrent/8 | **8.57 ms** | 8.57 ms | **4.02 ms** | TiKV 2.13x |
-| GET Sequential | **961 us** | 1.05 ms | 1.30 ms | **QRDB H2 1.35x** |
-| GET Concurrent/8 | **2.02 ms** | 2.27 ms | **959 us** | TiKV 2.11x |
-| DELETE Sequential | **5.08 ms** | 5.56 ms | **3.66 ms** | TiKV 1.39x |
-| DELETE Concurrent/8 | **8.49 ms** | 8.40 ms | **3.51 ms** | TiKV 2.39x |
-| Batch PUT 10K | **5.50 ms** | 5.51 ms | 73.38 ms | **QRDB H2 13.34x** |
-| Prefix Scan 10K | **10.78 ms** | 11.72 ms | 35.66 ms | **QRDB H2 3.31x** |
+## Full Results
 
-## Protocol Comparison: HTTP/2 vs HTTP/3 (1N)
-
-| Scenario | H2 ops/s | H3 ops/s | Winner | Ratio |
-|---|---|---|---|---|
-| PUT Sequential | 310 | 297 | H2 | 1.04x |
-| PUT Concurrent/8 | 1,530 | 1,560 | **H3** | **1.02x** |
-| GET Sequential | 2,210 | 2,390 | **H3** | **1.08x** |
-| GET Concurrent/8 | 12,060 | 12,940 | **H3** | **1.07x** |
-| DELETE Sequential | 315 | 324 | **H3** | **1.03x** |
-| DELETE Concurrent/8 | 1,650 | 1,670 | **H3** | **1.01x** |
-| Batch PUT 10K | 333 | 303 | H2 | 1.10x |
-| Prefix Scan 10K | 193 | 170 | H2 | 1.13x |
-
-**Score: H3 5, H2 3** (H3 wins all per-op scenarios except batch/scan)
-
-## Multi-Node (3N) Results
-
-Both systems tested with 3-way Raft replication:
-- QRDB: 3 QRDB processes forming a single Raft group
-- TiKV: 1 PD + 3 TiKV stores (3 replicas per region, PD default)
-
-### Throughput
-
-| Scenario | QRDB H2 | QRDB H3 | TiKV gRPC | Best QRDB vs TiKV |
-|---|---|---|---|---|
-| PUT Sequential | 201 | 192 | 370 | **TiKV 1.84x** |
-| PUT Concurrent/8 | 1,140 | **1,220** | 3,580 | **TiKV 2.93x** |
-| GET Sequential | **281** | 244 | 1,420 | **TiKV 5.05x** |
-| GET Concurrent/8 | **1,990** | 1,940 | 23,250 | **TiKV 11.68x** |
-
-**Score: TiKV 4, QRDB 0** (multi-node throughput)
-
-### Latency (p50)
-
-| Scenario | QRDB H2 | QRDB H3 | TiKV gRPC |
-|---|---|---|---|
-| PUT Sequential | 4.56 ms | 4.83 ms | **2.63 ms** |
-| PUT Concurrent/8 | 6.56 ms | **6.11 ms** | **2.11 ms** |
-| GET Sequential | **3.13 ms** | 3.66 ms | **688 us** |
-| GET Concurrent/8 | **3.61 ms** | 3.71 ms | **308 us** |
-
-### Latency (p99)
-
-| Scenario | QRDB H2 | QRDB H3 | TiKV gRPC |
-|---|---|---|---|
-| PUT Sequential | **10.55 ms** | 11.22 ms | **4.31 ms** |
-| PUT Concurrent/8 | **13.97 ms** | **13.62 ms** | **4.21 ms** |
-| GET Sequential | **8.81 ms** | 9.75 ms | **1.20 ms** |
-| GET Concurrent/8 | **9.52 ms** | 9.62 ms | **1.01 ms** |
-
-### Replication Overhead (3N/1N)
-
-| Scenario | QRDB H2 | QRDB H3 | TiKV | Notes |
-|---|---|---|---|---|
-| PUT Sequential | 0.65x | 0.65x | 0.69x | All systems lose ~33% under replication |
-| PUT Concurrent/8 | 0.74x | 0.78x | 0.84x | H3 retains slightly more than H2 |
-| GET Sequential | 0.13x | 0.10x | 1.00x | **QRDB ReadIndex RTT** vs TiKV follower reads |
-| GET Concurrent/8 | 0.17x | 0.15x | 0.98x | Same ReadIndex penalty for QRDB |
+| Scenario | System | Ops/sec | P50 | P99 | Mean |
+|---|---|---|---|---|---|
+| PUT Sequential (1N) | QRDB (H2) | 157.8 | 6.01ms | 11.60ms | 6.33ms |
+|  | QRDB (H3) | 165.3 | 5.91ms | 8.41ms | 6.05ms |
+|  | tikv-1n | 255.2 | 3.64ms | 7.73ms | 3.92ms |
+| PUT Concurrent/8 (1N) | QRDB (H2) | 661.6 | 11.92ms | 16.22ms | 12.09ms |
+|  | QRDB (H3) | 692.2 | 11.44ms | 14.93ms | 11.55ms |
+|  | tikv-1n | 1.89K | 3.76ms | 6.59ms | 4.24ms |
+| GET Sequential (1N) | QRDB (H2) | 14.01K | 45.1us | 404.2us | 71.0us |
+|  | QRDB (H3) | 12.34K | 57.7us | 347.1us | 80.7us |
+|  | tikv-1n | 13.34K | 45.2us | 513.2us | 74.6us |
+| GET Concurrent/8 (1N) | QRDB (H2) | 48.72K | 155.4us | 375.0us | 163.8us |
+|  | QRDB (H3) | 55.11K | 133.1us | 384.4us | 144.8us |
+|  | tikv-1n | 127.62K | 59.5us | 129.8us | 62.3us |
+| DELETE Sequential (1N) | QRDB (H2) | 164.1 | 5.99ms | 8.39ms | 6.09ms |
+|  | QRDB (H3) | 166.2 | 5.93ms | 8.34ms | 6.02ms |
+|  | tikv-1n | 274.7 | 3.55ms | 5.99ms | 3.64ms |
+| DELETE Concurrent/8 (1N) | QRDB (H2) | 690.8 | 11.44ms | 14.80ms | 11.58ms |
+|  | QRDB (H3) | 734.6 | 10.65ms | 14.16ms | 10.89ms |
+|  | tikv-1n | 2.16K | 3.55ms | 6.09ms | 3.71ms |
+| Batch PUT 10K (1N) | QRDB (H2) | 163.0 | 6.02ms | 8.60ms | 6.13ms |
+|  | QRDB (H3) | 164.8 | 5.85ms | 10.01ms | 6.07ms |
+|  | tikv-1n | 55.6 | 16.43ms | 34.78ms | 17.00ms |
+| Prefix Scan 10K (1N) | QRDB (H2) | 803.0 | 1.20ms | 2.48ms | 1.25ms |
+|  | QRDB (H3) | 721.2 | 1.36ms | 2.46ms | 1.39ms |
+|  | tikv-1n | 208.9 | 4.75ms | 6.14ms | 4.79ms |
+| PUT Sequential (3N) | TiKV (3N) | 234.4 | 3.95ms | 8.70ms | 4.26ms |
+| PUT Concurrent/8 (3N) | TiKV (3N) | 1.07K | 7.45ms | 12.68ms | 7.50ms |
+| GET Sequential (3N) | TiKV (3N) | 15.66K | 42.5us | 391.1us | 63.5us |
+| GET Concurrent/8 (3N) | TiKV (3N) | 123.56K | 60.0us | 173.4us | 64.4us |
+| gRPC PUT Sequential (1N) | QRDB (H2) | 164.8 | 5.94ms | 8.53ms | 6.06ms |
+|  | QRDB (H3) | 170.4 | 5.72ms | 8.24ms | 5.86ms |
+|  | qrdb-pebble-grpc | 167.0 | 5.85ms | 8.50ms | 5.98ms |
+| gRPC PUT Concurrent/8 (1N) | QRDB (H2) | 716.2 | 10.97ms | 14.51ms | 11.17ms |
+|  | QRDB (H3) | 712.0 | 11.02ms | 14.47ms | 11.23ms |
+|  | qrdb-pebble-grpc | 708.1 | 11.10ms | 14.43ms | 11.29ms |
+| gRPC GET Sequential (1N) | QRDB (H2) | 19.17K | 36.8us | 270.3us | 51.3us |
+|  | QRDB (H3) | 18.11K | 36.3us | 303.4us | 54.4us |
+|  | qrdb-pebble-grpc | 17.79K | 46.5us | 242.8us | 55.3us |
+| gRPC GET Concurrent/8 (1N) | QRDB (H2) | 74.85K | 96.0us | 329.4us | 106.1us |
+|  | QRDB (H3) | 75.27K | 95.9us | 325.3us | 105.5us |
+|  | qrdb-pebble-grpc | 75.68K | 95.4us | 309.2us | 104.9us |
+| gRPC DELETE Sequential (1N) | QRDB (H2) | 169.5 | 5.80ms | 8.07ms | 5.90ms |
+|  | QRDB (H3) | 168.9 | 5.85ms | 8.15ms | 5.92ms |
+|  | qrdb-pebble-grpc | 162.1 | 5.89ms | 11.16ms | 6.16ms |
+| gRPC DELETE Concurrent/8 (1N) | QRDB (H2) | 740.2 | 10.57ms | 13.80ms | 10.80ms |
+|  | QRDB (H3) | 735.1 | 10.65ms | 14.26ms | 10.88ms |
+|  | qrdb-pebble-grpc | 736.9 | 10.60ms | 13.95ms | 10.85ms |
+| gRPC Batch PUT 10K (1N) | QRDB (H2) | 126.21K | 7.9us | 10.0us | 7.8us |
+|  | QRDB (H3) | 123.55K | 8.0us | 10.6us | 8.0us |
+|  | qrdb-pebble-grpc | 127.33K | 7.8us | 9.8us | 7.8us |
+| gRPC Prefix Scan 10K (1N) | QRDB (H2) | 142.9 | 7.13ms | 10.47ms | 7.00ms |
+|  | QRDB (H3) | 142.6 | 7.10ms | 11.25ms | 7.01ms |
+|  | qrdb-pebble-grpc | 136.4 | 7.38ms | 12.21ms | 7.33ms |
+| gRPC PUT Coalesced/8 (1N) | QRDB (H2) | 1.03K | 7.33ms | 15.03ms | 7.73ms |
+|  | QRDB (H3) | 971.6 | 7.75ms | 20.07ms | 8.23ms |
+|  | qrdb-pebble-grpc | 1.05K | 7.22ms | 13.90ms | 7.61ms |
+| gRPC DELETE Coalesced/8 (1N) | QRDB (H2) | 1.07K | 7.12ms | 16.56ms | 7.45ms |
+|  | QRDB (H3) | 1.04K | 7.23ms | 19.05ms | 7.66ms |
+|  | qrdb-pebble-grpc | 1.08K | 6.97ms | 15.30ms | 7.42ms |
+| QUIC PUT Sequential (1N) | QRDB (H2) | 172.5 | 5.62ms | 8.30ms | 5.79ms |
+|  | QRDB (H3) | 167.5 | 5.80ms | 8.52ms | 5.97ms |
+|  | qrdb-pebble-quic | 174.0 | 5.61ms | 8.03ms | 5.74ms |
+| QUIC PUT Concurrent/8 (1N) | QRDB (H2) | 669.5 | 11.52ms | 22.92ms | 11.94ms |
+|  | QRDB (H3) | 687.6 | 11.51ms | 14.88ms | 11.63ms |
+|  | qrdb-pebble-quic | 700.1 | 11.28ms | 14.58ms | 11.42ms |
+| QUIC GET Sequential (1N) | QRDB (H2) | 23.54K | 29.3us | 286.4us | 41.7us |
+|  | QRDB (H3) | 20.65K | 38.2us | 218.3us | 47.5us |
+|  | qrdb-pebble-quic | 22.23K | 30.1us | 267.2us | 44.2us |
+| QUIC GET Concurrent/8 (1N) | QRDB (H2) | 123.39K | 59.9us | 185.0us | 64.0us |
+|  | QRDB (H3) | 119.13K | 61.0us | 219.5us | 66.3us |
+|  | qrdb-pebble-quic | 117.63K | 61.4us | 227.2us | 67.1us |
+| QUIC DELETE Sequential (1N) | QRDB (H2) | 170.1 | 5.79ms | 8.05ms | 5.87ms |
+|  | QRDB (H3) | 169.1 | 5.82ms | 8.16ms | 5.91ms |
+|  | qrdb-pebble-quic | 163.3 | 5.84ms | 10.98ms | 6.12ms |
+| QUIC DELETE Concurrent/8 (1N) | QRDB (H2) | 719.6 | 10.87ms | 14.14ms | 11.11ms |
+|  | QRDB (H3) | 685.8 | 11.09ms | 21.28ms | 11.66ms |
+|  | qrdb-pebble-quic | 723.9 | 10.81ms | 14.30ms | 11.04ms |
 
 ## Analysis
 
-### Protocol Findings (HTTP/2 vs HTTP/3 vs gRPC)
+### Fair Comparison
 
-1. **HTTP/3 beats HTTP/2 for per-op throughput**: H3 wins 5/8 scenarios on throughput (GET SEQ +8%, GET Conc8 +7%, PUT Conc8 +2%, DEL SEQ +3%, DEL Conc8 +1%). QUIC's stream multiplexing provides a measurable advantage over HTTP/2's TCP-based connection pool, even on localhost with zero packet loss.
+Both systems are benchmarked as **pure key-value stores without MVCC**. QRDB uses its PebbleDB state machine (`--sm pebble`) which writes directly to PebbleDB with no revision tracking or version history. TiKV uses its RawKV API (V1 mode) which bypasses TiKV's MVCC layer entirely. Both systems commit every write through Raft consensus before acknowledging.
 
-2. **HTTP/2 beats HTTP/3 for bulk operations**: H2 wins batch PUT (+10%) and prefix scan (+13%). QUIC's per-stream framing adds overhead that accumulates over 10K sequential operations. HTTP/2's TCP-based connection reuse is more efficient for sustained sequential workloads.
+### Write Performance
 
-3. **gRPC dominates concurrent writes**: TiKV's gRPC client uses `BatchCommands` to coalesce concurrent operations into single RPCs with protobuf encoding (~0.3KB/op). QRDB's REST API sends individual HTTP requests per operation (~1.5-2KB/op). This 5x protocol overhead explains the 2.7x concurrent write gap.
+The write gap is driven by **Raft consensus round-trip latency**: ~6ms per proposal in QRDB vs ~3.8ms in TiKV. Both systems propose each write through Raft and wait for quorum acknowledgment before responding. The latency difference comes from the transport layer (QUIC over UDP vs gRPC over TCP) and runtime overhead (Go vs Rust). Client-side batch coalescing amortizes the per-proposal overhead by grouping concurrent operations into single Raft entries.
 
-4. **QRDB reads outperform gRPC (1N)**: Both H2 and H3 beat TiKV gRPC for sequential reads (1.55-1.67x). PebbleDB's Go-native block cache avoids CGo crossing overhead. H3's p50 of 378us vs gRPC's 672us is a 44% latency advantage.
+### Read Performance
 
-### QRDB Strengths
-- **Sequential reads (1N)**: H3 1.67x faster than gRPC -- PebbleDB Go-native block cache + QUIC stream efficiency
-- **Batch writes**: H2 16.55x faster -- PebbleDB efficient write batching vs RocksDB write stall under 30s sustained load
-- **Prefix scan**: H2 5.10x faster -- PebbleDB iterator with sorted key space vs RocksDB range scan over Default CF
-- **Read p99 tail (1N)**: H2 961us vs gRPC 1.30ms -- more predictable latency under load
+QRDB outperforms TiKV on sequential reads through two advantages: (1) **PebbleDB's Go-native block cache** avoids CGO boundary crossings that RocksDB incurs on every lookup, and (2) **LeaseRead** allows the leader to serve reads immediately when its leadership lease is valid, eliminating the ReadIndex heartbeat round-trip. TiKV wins concurrent reads due to RocksDB's highly optimized parallel read path with bloom filters and sharded block cache.
 
-### TiKV Strengths
-- **Concurrent writes (1N)**: 2.72x PUT, 3.20x DELETE at 8 goroutines -- gRPC `BatchCommands` + protobuf + RocksDB concurrent memtable writes
-- **Sequential writes (1N)**: 1.74x faster PUT -- lower protocol overhead (protobuf vs JSON+REST)
-- **Multi-node reads (3N)**: TiKV wins all GET scenarios at 3N (5.05x seq, 11.68x conc8) due to QRDB's ReadIndex RTT penalty. TiKV's follower reads maintain near-1N throughput
+### Protocol Impact
 
-### Key Observations
+gRPC/protobuf provides ~30–45% higher read throughput compared to REST/JSON due to compact binary encoding and lower serialization overhead. Write throughput differences between protocols are minimal because Raft consensus latency (~6ms) dominates the round-trip, not serialization. Batch coalescing provides the largest concurrent write improvement by amortizing consensus overhead across multiple operations per Raft entry.
 
-1. **Fair storage comparison**: Both systems use disk-backed LSM-tree engines (QRDB: PebbleDB, TiKV: RocksDB). Both use RawKV-level access (no MVCC). PebbleDB is CockroachDB's RocksDB successor, written in Go. RocksDB is the original C++ implementation.
-
-2. **Protocol overhead dominates writes**: The 5x per-op overhead difference between REST/JSON and gRPC/protobuf accounts for most of TiKV's write advantage. QRDB could close this gap by implementing a binary RPC protocol or gRPC frontend.
-
-3. **3N read gap is ReadIndex**: QRDB's 3N read throughput drops to 0.10-0.17x of 1N due to ReadIndex requiring a heartbeat round-trip to confirm leadership before serving each read. TiKV's follower reads maintain near-1N throughput. QRDB's LeaseRead optimization (available but not used in this KV benchmark) would close this gap by avoiding the heartbeat RTT.
-
-4. **QUIC advantage is real but modest**: H3 provides 2-8% throughput improvement over H2 for per-op workloads on localhost. The advantage would be larger over real networks where QUIC's 0-RTT connection resumption and head-of-line blocking prevention matter.
-
-5. **QUIC overhead on bulk operations**: H3's per-stream framing adds measurable overhead for sequential bulk operations (batch PUT -10%, scan -13%). For these workloads, TCP's lower per-byte overhead wins.
-
-6. **Replication efficiency**: All three protocols lose similar throughput going to 3N for writes (~65-84% retention). The gap widens for reads due to QRDB's ReadIndex overhead vs TiKV's follower reads.
-
-## Methodology
-
-- All systems ran inside Docker containers on the same host (no network hops)
-- QRDB ran as native Go processes inside a minimal Debian container
-- TiKV 1N: docker-compose (1 PD + 1 TiKV store) with host networking
-- TiKV 3N: docker-compose (1 PD + 3 TiKV stores) with host networking, 3 replicas per region
-- Each benchmark used Go's `testing.B` framework with 30s duration
-- Read/delete benchmarks seed a fixed pool of 10K keys concurrently before measurement
-- Results extracted via `perfresult.BenchmarkSuite` JSON between sentinel markers
-- Latency measured per-operation using `time.Now()` / `time.Since()`
-- Results include p50/p99 percentiles computed via sorted latency arrays
-- TLS certificate generation used identical parameters (ECDSA P-256, 24h validity)
-- Tests ran sequentially (QRDB H2, QRDB H3, TiKV 1N, TiKV 3N) to avoid resource contention
-- QRDB HTTP/2 client: connection pooling (128 idle conns/host, 256 max idle, 64KB buffers)
-- QRDB HTTP/3 client: QUIC transport with quic-go, shared TLS config
-
-## Reproducing
-
-```bash
-# Fair comparison (H2 + H3 + TiKV, 1N + 3N, 30s benchtime)
-make bench-qrdb-kv-fair
-
-# Protocol comparison only (HTTP/2 vs HTTP/3)
-make bench-qrdb-kv-protocol
-
-# Storage comparison (PebbleDB vs Memory, HTTP/2)
-make bench-qrdb-kv-storage
-
-# All 5 system variants
-make bench-qrdb-vs-tikv
-
-# With custom benchtime
-make bench-qrdb-kv-fair KV_BENCHTIME=5s
-```
+---
+*Generated by kvcompare on 2026-03-29 04:29:56*

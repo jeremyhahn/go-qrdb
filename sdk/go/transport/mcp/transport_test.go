@@ -25,7 +25,10 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
 	mcpapi "github.com/jeremyhahn/go-qrdb/pkg/api/mcp"
+	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
+	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -41,6 +44,7 @@ type mockKVService struct {
 	getErr  error
 	delErr  error
 	listErr error
+	scanErr error
 }
 
 func newMockKVService() *mockKVService {
@@ -95,6 +99,98 @@ func (m *mockKVService) List(_ context.Context, prefix string) ([]string, error)
 	return keys, nil
 }
 
+func (m *mockKVService) Scan(_ context.Context, prefix string) (map[string][]byte, error) {
+	if m.scanErr != nil {
+		return nil, m.scanErr
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	result := make(map[string][]byte)
+	for k, v := range m.store {
+		if prefix == "" || strings.HasPrefix(k, prefix) {
+			result[k] = v
+		}
+	}
+	return result, nil
+}
+
+func (m *mockKVService) PutEntity(ctx context.Context, req *service.PutEntityRequest) (*service.PutEntityResponse, error) {
+	key := string(req.EntityType) + "/" + req.ID
+	if err := m.Put(ctx, key, req.Data); err != nil {
+		return nil, err
+	}
+	return &service.PutEntityResponse{Version: 1, Revision: 1}, nil
+}
+
+func (m *mockKVService) GetEntity(ctx context.Context, req *service.GetEntityRequest) (*service.GetEntityResponse, error) {
+	key := string(req.EntityType) + "/" + req.ID
+	data, err := m.Get(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	return &service.GetEntityResponse{Data: data, Version: 1, Revision: 1}, nil
+}
+
+func (m *mockKVService) DeleteEntity(ctx context.Context, req *service.DeleteEntityRequest) (*service.DeleteEntityResponse, error) {
+	key := string(req.EntityType) + "/" + req.ID
+	if err := m.Delete(ctx, key); err != nil {
+		return nil, err
+	}
+	return &service.DeleteEntityResponse{Deleted: true, Revision: 1}, nil
+}
+
+func (m *mockKVService) ListEntities(ctx context.Context, req *service.ListEntitiesRequest) (*service.ListEntitiesResponse, error) {
+	prefix := string(req.EntityType) + "/"
+	keys, err := m.List(ctx, prefix)
+	if err != nil {
+		return nil, err
+	}
+	stripped := make([]string, 0, len(keys))
+	for _, k := range keys {
+		stripped = append(stripped, strings.TrimPrefix(k, prefix))
+	}
+	return &service.ListEntitiesResponse{Keys: stripped, TotalCount: int64(len(stripped))}, nil
+}
+
+func (m *mockKVService) GetStale(ctx context.Context, key string) ([]byte, error) {
+	return m.Get(ctx, key)
+}
+
+func (m *mockKVService) ListStale(ctx context.Context, prefix string) ([]string, error) {
+	return m.List(ctx, prefix)
+}
+
+func (m *mockKVService) ScanStale(ctx context.Context, prefix string) (map[string][]byte, error) {
+	return m.Scan(ctx, prefix)
+}
+func (m *mockKVService) PutWithMode(ctx context.Context, key string, value []byte, _ writemode.Mode) error {
+	return m.Put(ctx, key, value)
+}
+
+func (m *mockKVService) DeleteWithMode(ctx context.Context, key string, _ writemode.Mode) error {
+	return m.Delete(ctx, key)
+}
+
+func (m *mockKVService) GetWithConsistency(ctx context.Context, key string, _ consistency.ReadOptions) ([]byte, error) {
+	return m.Get(ctx, key)
+}
+
+func (m *mockKVService) ListWithConsistency(ctx context.Context, prefix string, _ consistency.ReadOptions) ([]string, error) {
+	return m.List(ctx, prefix)
+}
+
+func (m *mockKVService) ScanWithConsistency(ctx context.Context, prefix string, _ consistency.ReadOptions) (map[string][]byte, error) {
+	return m.Scan(ctx, prefix)
+}
+
+func (m *mockKVService) ExistsWithConsistency(ctx context.Context, key string, _ consistency.ReadOptions) (bool, error) {
+	_, err := m.Get(ctx, key)
+	if err != nil {
+		return false, nil
+	}
+	return true, nil
+}
+
 type mockAdminService struct {
 	healthResult    *service.HealthStatus
 	statusResult    *service.StatusInfo
@@ -106,6 +202,10 @@ type mockAdminService struct {
 	removeMemberErr error
 	snapshotErr     error
 	drainErr        error
+	startShardErr   error
+	stopShardErr    error
+	shardStateErr   error
+	topologyErr     error
 }
 
 func newMockAdminService() *mockAdminService {
@@ -169,6 +269,59 @@ func (m *mockAdminService) RequestSnapshot(_ context.Context, _ uint64) error {
 
 func (m *mockAdminService) Drain(_ context.Context) error {
 	return m.drainErr
+}
+
+func (m *mockAdminService) Capabilities(_ context.Context) (*capabilities.Capabilities, error) {
+	return &capabilities.Capabilities{
+		KV:          true,
+		MVCC:        true,
+		Transaction: true,
+		Batch:       true,
+		Watch:       true,
+		Lease:       true,
+		Index:       true,
+	}, nil
+}
+
+func (m *mockAdminService) StartShard(_ context.Context, _ *service.StartShardRequest) error {
+	return m.startShardErr
+}
+
+func (m *mockAdminService) StopShard(_ context.Context, _ uint64) error {
+	return m.stopShardErr
+}
+
+func (m *mockAdminService) GetShardState(_ context.Context, shardID uint64) (*service.ShardStateResponse, error) {
+	if m.shardStateErr != nil {
+		return nil, m.shardStateErr
+	}
+	return &service.ShardStateResponse{
+		ShardID:           shardID,
+		ConfigChangeIndex: 1,
+		Term:              2,
+		LeaderID:          1,
+		HasLeader:         true,
+	}, nil
+}
+
+func (m *mockAdminService) GetTopology(_ context.Context) (*service.TopologyResponse, error) {
+	if m.topologyErr != nil {
+		return nil, m.topologyErr
+	}
+	return &service.TopologyResponse{
+		NodeID:      "test-node",
+		RaftAddress: "127.0.0.1:63001",
+		ShardCount:  1,
+		Shards: []service.TopologyShardInfo{
+			{
+				ShardID:   1,
+				ReplicaID: 1,
+				IsLeader:  true,
+				LeaderID:  1,
+				Nodes:     map[uint64]string{1: "127.0.0.1:63001"},
+			},
+		},
+	}, nil
 }
 
 // Compile-time interface assertions for mock services.
@@ -1099,5 +1252,217 @@ func TestTransport_ImplementsClientInterface(t *testing.T) {
 	}
 	if resp.Status != "ok" {
 		t.Fatalf("expected status %q, got %q", "ok", resp.Status)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Shard management tests
+// ---------------------------------------------------------------------------
+
+func TestStartShard(t *testing.T) {
+	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
+	defer cleanup()
+
+	err := tr.StartShard(context.Background(), &transport.StartShardRequest{
+		ShardID:   1,
+		ReplicaID: 1,
+		Members:   map[uint64]string{1: "127.0.0.1:63001"},
+	})
+	if err != nil {
+		t.Fatalf("StartShard: %v", err)
+	}
+}
+
+func TestStartShard_ServiceError(t *testing.T) {
+	adminSvc := newMockAdminService()
+	adminSvc.startShardErr = errors.New("shard start failed")
+	tr, cleanup := connectInProcess(t, newMockKVService(), adminSvc)
+	defer cleanup()
+
+	err := tr.StartShard(context.Background(), &transport.StartShardRequest{
+		ShardID:   1,
+		ReplicaID: 1,
+		Members:   map[uint64]string{1: "127.0.0.1:63001"},
+	})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) {
+		t.Fatalf("expected *transport.RequestError, got %T: %v", err, err)
+	}
+}
+
+func TestStartShard_OnClosedTransport(t *testing.T) {
+	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
+	defer cleanup()
+
+	_ = tr.Close()
+	err := tr.StartShard(context.Background(), &transport.StartShardRequest{
+		ShardID:   1,
+		ReplicaID: 1,
+	})
+	if err == nil {
+		t.Fatal("expected error on closed transport")
+	}
+	var closedErr *transport.ClosedError
+	if !errors.As(err, &closedErr) {
+		t.Fatalf("expected *transport.ClosedError, got %T: %v", err, err)
+	}
+}
+
+func TestStopShard(t *testing.T) {
+	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
+	defer cleanup()
+
+	err := tr.StopShard(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("StopShard: %v", err)
+	}
+}
+
+func TestStopShard_ServiceError(t *testing.T) {
+	adminSvc := newMockAdminService()
+	adminSvc.stopShardErr = errors.New("shard stop failed")
+	tr, cleanup := connectInProcess(t, newMockKVService(), adminSvc)
+	defer cleanup()
+
+	err := tr.StopShard(context.Background(), 1)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) {
+		t.Fatalf("expected *transport.RequestError, got %T: %v", err, err)
+	}
+}
+
+func TestStopShard_OnClosedTransport(t *testing.T) {
+	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
+	defer cleanup()
+
+	_ = tr.Close()
+	err := tr.StopShard(context.Background(), 1)
+	if err == nil {
+		t.Fatal("expected error on closed transport")
+	}
+	var closedErr *transport.ClosedError
+	if !errors.As(err, &closedErr) {
+		t.Fatalf("expected *transport.ClosedError, got %T: %v", err, err)
+	}
+}
+
+func TestGetShardState(t *testing.T) {
+	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
+	defer cleanup()
+
+	resp, err := tr.GetShardState(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("GetShardState: %v", err)
+	}
+	if resp.ShardID != 1 {
+		t.Fatalf("expected ShardID=1, got %d", resp.ShardID)
+	}
+	if resp.ConfigChangeIndex != 1 {
+		t.Fatalf("expected ConfigChangeIndex=1, got %d", resp.ConfigChangeIndex)
+	}
+	if resp.Term != 2 {
+		t.Fatalf("expected Term=2, got %d", resp.Term)
+	}
+	if resp.LeaderID != 1 {
+		t.Fatalf("expected LeaderID=1, got %d", resp.LeaderID)
+	}
+	if !resp.HasLeader {
+		t.Fatal("expected HasLeader=true")
+	}
+}
+
+func TestGetShardState_ServiceError(t *testing.T) {
+	adminSvc := newMockAdminService()
+	adminSvc.shardStateErr = errors.New("shard state unavailable")
+	tr, cleanup := connectInProcess(t, newMockKVService(), adminSvc)
+	defer cleanup()
+
+	_, err := tr.GetShardState(context.Background(), 1)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) {
+		t.Fatalf("expected *transport.RequestError, got %T: %v", err, err)
+	}
+}
+
+func TestGetShardState_OnClosedTransport(t *testing.T) {
+	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
+	defer cleanup()
+
+	_ = tr.Close()
+	_, err := tr.GetShardState(context.Background(), 1)
+	if err == nil {
+		t.Fatal("expected error on closed transport")
+	}
+	var closedErr *transport.ClosedError
+	if !errors.As(err, &closedErr) {
+		t.Fatalf("expected *transport.ClosedError, got %T: %v", err, err)
+	}
+}
+
+func TestGetTopology(t *testing.T) {
+	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
+	defer cleanup()
+
+	resp, err := tr.GetTopology(context.Background())
+	if err != nil {
+		t.Fatalf("GetTopology: %v", err)
+	}
+	if resp.NodeID != "test-node" {
+		t.Fatalf("expected NodeID %q, got %q", "test-node", resp.NodeID)
+	}
+	if resp.RaftAddress != "127.0.0.1:63001" {
+		t.Fatalf("expected RaftAddress %q, got %q", "127.0.0.1:63001", resp.RaftAddress)
+	}
+	if resp.ShardCount != 1 {
+		t.Fatalf("expected ShardCount=1, got %d", resp.ShardCount)
+	}
+	if len(resp.Shards) != 1 {
+		t.Fatalf("expected 1 shard, got %d", len(resp.Shards))
+	}
+	if resp.Shards[0].ShardID != 1 {
+		t.Fatalf("expected shard ID=1, got %d", resp.Shards[0].ShardID)
+	}
+	if !resp.Shards[0].IsLeader {
+		t.Fatal("expected shard IsLeader=true")
+	}
+}
+
+func TestGetTopology_ServiceError(t *testing.T) {
+	adminSvc := newMockAdminService()
+	adminSvc.topologyErr = errors.New("topology unavailable")
+	tr, cleanup := connectInProcess(t, newMockKVService(), adminSvc)
+	defer cleanup()
+
+	_, err := tr.GetTopology(context.Background())
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) {
+		t.Fatalf("expected *transport.RequestError, got %T: %v", err, err)
+	}
+}
+
+func TestGetTopology_OnClosedTransport(t *testing.T) {
+	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
+	defer cleanup()
+
+	_ = tr.Close()
+	_, err := tr.GetTopology(context.Background())
+	if err == nil {
+		t.Fatal("expected error on closed transport")
+	}
+	var closedErr *transport.ClosedError
+	if !errors.As(err, &closedErr) {
+		t.Fatalf("expected *transport.ClosedError, got %T: %v", err, err)
 	}
 }

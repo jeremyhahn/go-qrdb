@@ -36,9 +36,19 @@ func TestLevelString(t *testing.T) {
 			expected: "linearizable",
 		},
 		{
+			name:     "lease_read level",
+			level:    LeaseRead,
+			expected: "lease_read",
+		},
+		{
 			name:     "eventual level",
 			level:    Eventual,
 			expected: "eventual",
+		},
+		{
+			name:     "follower_read level",
+			level:    FollowerRead,
+			expected: "follower_read",
 		},
 	}
 
@@ -107,6 +117,26 @@ func TestParseLevelValid(t *testing.T) {
 			expected: Linearizable,
 		},
 		{
+			name:     "lease_read lowercase",
+			input:    "lease_read",
+			expected: LeaseRead,
+		},
+		{
+			name:     "lease_read uppercase",
+			input:    "LEASE_READ",
+			expected: LeaseRead,
+		},
+		{
+			name:     "leaseread no underscore",
+			input:    "leaseread",
+			expected: LeaseRead,
+		},
+		{
+			name:     "LEASEREAD no underscore uppercase",
+			input:    "LEASEREAD",
+			expected: LeaseRead,
+		},
+		{
 			name:     "eventual lowercase",
 			input:    "eventual",
 			expected: Eventual,
@@ -125,6 +155,26 @@ func TestParseLevelValid(t *testing.T) {
 			name:     "stale uppercase alias",
 			input:    "STALE",
 			expected: Eventual,
+		},
+		{
+			name:     "follower_read lowercase",
+			input:    "follower_read",
+			expected: FollowerRead,
+		},
+		{
+			name:     "follower_read uppercase",
+			input:    "FOLLOWER_READ",
+			expected: FollowerRead,
+		},
+		{
+			name:     "followerread no underscore",
+			input:    "followerread",
+			expected: FollowerRead,
+		},
+		{
+			name:     "FOLLOWERREAD no underscore uppercase",
+			input:    "FOLLOWERREAD",
+			expected: FollowerRead,
 		},
 		{
 			name:     "empty string defaults to linearizable",
@@ -205,8 +255,16 @@ func TestIsValidTrue(t *testing.T) {
 			level: Linearizable,
 		},
 		{
+			name:  "lease_read is valid",
+			level: LeaseRead,
+		},
+		{
 			name:  "eventual is valid",
 			level: Eventual,
+		},
+		{
+			name:  "follower_read is valid",
+			level: FollowerRead,
 		},
 	}
 
@@ -230,7 +288,7 @@ func TestIsValidFalse(t *testing.T) {
 		},
 		{
 			name:  "out of range level is invalid",
-			level: Level(3),
+			level: Level(5),
 		},
 		{
 			name:  "large out of range level is invalid",

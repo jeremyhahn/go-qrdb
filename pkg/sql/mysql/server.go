@@ -1,0 +1,202 @@
+// Copyright 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+//go:build qrdb_mysql
+
+package mysql
+
+import (
+	"crypto/tls"
+	"log/slog"
+	"net"
+
+	sqle "github.com/dolthub/go-mysql-server"
+	"github.com/dolthub/go-mysql-server/server"
+	"github.com/dolthub/go-mysql-server/sql"
+
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/sql/engine"
+	"github.com/jeremyhahn/go-qrdb/pkg/sql/provider"
+)
+
+// defaultDBName is the database name used when none is configured.
+const defaultDBName = "qrdb"
+
+// Server wraps go-mysql-server to provide a MySQL wire protocol server
+// backed by the QRDB key-value store. It delegates SQL operations to the
+// service layer through the provider and engine packages.
+type Server struct {
+	addr      string
+	listener  net.Listener
+	sqlEngine *sqle.Engine
+	mysqlSrv  *server.Server
+	kvSvc     service.KVServicer
+	adminSvc  service.AdminServicer
+	tlsConfig *tls.Config
+	authMW    *authmw.AuthMiddleware
+	dbName    string
+	logger    *slog.Logger
+	dbManager *database.Manager
+}
+
+// ServerOption configures optional Server dependencies.
+type ServerOption func(*Server)
+
+// WithTLS configures the server with TLS for encrypted MySQL connections.
+func WithTLS(cfg *tls.Config) ServerOption {
+	return func(s *Server) {
+		s.tlsConfig = cfg
+	}
+}
+
+// WithAuthMiddleware attaches authentication and authorization middleware
+// for mTLS-based session authentication.
+func WithAuthMiddleware(mw *authmw.AuthMiddleware) ServerOption {
+	return func(s *Server) {
+		s.authMW = mw
+	}
+}
+
+// WithDatabaseName configures the database name exposed by the MySQL
+// server. Defaults to "qrdb".
+func WithDatabaseName(name string) ServerOption {
+	return func(s *Server) {
+		s.dbName = name
+	}
+}
+
+// WithDatabaseManager configures the server with a database.Manager for
+// multi-database support. When set, the server uses
+// provider.NewManagerProvider instead of provider.NewProvider, enabling
+// CREATE DATABASE / DROP DATABASE operations.
+func WithDatabaseManager(manager *database.Manager) ServerOption {
+	return func(s *Server) {
+		s.dbManager = manager
+	}
+}
+
+// WithLogger configures a structured logger for the server. Defaults to
+// slog.Default().
+func WithLogger(logger *slog.Logger) ServerOption {
+	return func(s *Server) {
+		s.logger = logger
+	}
+}
+
+// NewServer creates a new MySQL wire protocol server that delegates SQL
+// operations to the provided KV and admin services.
+func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr string, opts ...ServerOption) *Server {
+	s := &Server{
+		kvSvc:    kvSvc,
+		adminSvc: adminSvc,
+		addr:     addr,
+		dbName:   defaultDBName,
+		logger:   slog.Default(),
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
+}
+
+// Start initializes the SQL engine, binds to the configured address, and
+// begins accepting MySQL protocol connections in the background. Returns
+// a ServerStartError if the server fails to start.
+func (s *Server) Start() error {
+	// Build the QRDB database provider and SQL engine. When a database
+	// manager is configured, use the manager-backed provider for
+	// multi-database support; otherwise fall back to the legacy
+	// single-database provider.
+	var prov *provider.Provider
+	if s.dbManager != nil {
+		prov = provider.NewManagerProvider(s.dbManager, s.kvSvc,
+			provider.WithProtocol(provider.ProtocolMySQL))
+	} else {
+		prov = provider.NewProvider(s.dbName, s.kvSvc)
+	}
+	s.sqlEngine = engine.New(engine.Config{Provider: prov})
+
+	// Build the session builder for connection authentication.
+	sb := newSessionBuilder(s.authMW)
+
+	// Configure the go-mysql-server server.
+	cfg := server.Config{
+		Protocol:  "tcp",
+		Address:   s.addr,
+		TLSConfig: s.tlsConfig,
+	}
+
+	// Bind a TCP listener so we can capture the resolved address
+	// (important when port 0 is used in tests).
+	ln, err := net.Listen("tcp", s.addr)
+	if err != nil {
+		return &ServerStartError{Err: err}
+	}
+	s.listener = ln
+	cfg.Listener = ln
+
+	// Create the go-mysql-server server.
+	mysqlSrv, err := server.NewServer(
+		cfg,
+		s.sqlEngine,
+		sql.NewContext,
+		sb.Build,
+		nil,
+	)
+	if err != nil {
+		if closeErr := ln.Close(); closeErr != nil {
+			s.logger.Error("failed to close listener after server creation failure", "error", closeErr)
+		}
+		return &ServerStartError{Err: err}
+	}
+	s.mysqlSrv = mysqlSrv
+
+	s.logger.Info("MySQL server started",
+		"addr", ln.Addr().String(),
+		"database", s.dbName,
+		"tls", s.tlsConfig != nil,
+	)
+
+	// server.Start() blocks on Accept(), so run it in a goroutine.
+	go func() {
+		if startErr := s.mysqlSrv.Start(); startErr != nil {
+			s.logger.Error("MySQL server error", "error", startErr)
+		}
+	}()
+
+	return nil
+}
+
+// Stop gracefully shuts down the MySQL server by closing the protocol
+// listener.
+func (s *Server) Stop() {
+	if s.mysqlSrv == nil {
+		return
+	}
+	if err := s.mysqlSrv.Close(); err != nil {
+		s.logger.Error("MySQL server close error", "error", err)
+	}
+	s.logger.Info("MySQL server stopped")
+}
+
+// Addr returns the listener address. This is useful for tests that bind
+// to port 0 to get an ephemeral port.
+func (s *Server) Addr() string {
+	if s.listener != nil {
+		return s.listener.Addr().String()
+	}
+	return s.addr
+}

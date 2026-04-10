@@ -1,38 +1,45 @@
 services:
-  # QRDB server with all protocols enabled
+  # QRDB server with all protocols enabled.
+  # Uses the devcontainer image and mounts source + sibling repos so the
+  # server binary can be built with access to replace-directive dependencies.
   qrdbd:
     build:
       context: ../../..
-      dockerfile: Dockerfile
-    image: go-qrdb-integration:latest
+      dockerfile: .devcontainer/Dockerfile
+    image: go-qrdb-dev:latest
+    hostname: qrdbd
     container_name: qrdb-integration-server
     expose:
       - "63001/udp"  # Raft/QUIC (UDP)
       - "63001/tcp"  # Raft fallback (TCP)
       - "63002"      # REST API
       - "63003"      # gRPC
+      - "63004/udp"  # QUIC API
       - "63005"      # MCP
     # Required for QUIC UDP buffer settings
     privileged: true
     volumes:
+      - ../../..:/workspace/go-qrdb
+      - ../../../../go-quicraft:/workspace/go-quicraft
+      - ../../../../go-truststrap:/workspace/go-truststrap
       - qrdb-data:/data
       - qrdb-socket:/var/run/qrdbd
-      - qrdb-certs:/etc/qrdb/certs
       - ./config.test.yaml:/etc/qrdb/qrdbd.yaml
-      - ./scripts:/scripts:ro
+      - server-build:/app/build
     environment:
       - QRDB_CONFIG=/etc/qrdb/qrdbd.yaml
       - QRDB_LOG_LEVEL=debug
-      - CERT_DIR=/etc/qrdb/certs
+      - CGO_ENABLED=1
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "--no-check-certificate", "https://localhost:63002/health"]
+      test: ["CMD", "curl", "--silent", "--fail", "--insecure", "https://localhost:63002/health"]
       interval: 5s
       timeout: 5s
       retries: 15
-      start_period: 20s
+      start_period: 30s
     networks:
       - qrdb-integration
     user: root
+    working_dir: /workspace/go-qrdb
     entrypoint:
       - /bin/sh
       - -c
@@ -42,20 +49,39 @@ services:
         echo 2500000 > /proc/sys/net/core/rmem_max 2>/dev/null || echo "Warning: Could not set rmem_max"
         echo 2500000 > /proc/sys/net/core/wmem_max 2>/dev/null || echo "Warning: Could not set wmem_max"
         # Ensure directories exist
-        mkdir -p /etc/qrdb/certs /var/run/qrdbd /data
-        # Generate TLS certificates
-        echo "Generating TLS certificates..."
-        /scripts/generate-test-certs.sh
-        # Verify certificates were created
-        ls -la /etc/qrdb/certs/
+        mkdir -p /var/run/qrdbd /data /app/build/bin
+        # Build server binary with all feature tags
+        echo "Building qrdbd server..."
+        CGO_ENABLED=1 go build -buildvcs=false \
+          -tags 'codec_json raft qrdb_ts qrdb_vector' \
+          -ldflags '-X main.version=test -X main.gitCommit=test -X main.buildDate=test' \
+          -o /app/build/bin/qrdbd ./cmd/qrdbd
         echo "Starting qrdbd server..."
-        exec /app/qrdbd start --config /etc/qrdb/qrdbd.yaml
+        exec /app/build/bin/qrdbd start --config /etc/qrdb/qrdbd.yaml
+
+  # Ollama sidecar for embedding integration tests.
+  # Provides an OpenAI-compatible /v1/embeddings endpoint used by the
+  # embedding and RAG integration test suites.
+  ollama:
+    image: ollama/ollama:latest
+    expose:
+      - "11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/11434' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    networks:
+      - qrdb-integration
 
   # Integration test runner
   integration-tests:
     build:
       context: ../../..
-      dockerfile: build/docker/devcontainer/Dockerfile
+      dockerfile: .devcontainer/Dockerfile
     image: go-qrdb-dev:latest
     container_name: qrdb-integration-tests
     privileged: true
@@ -63,10 +89,14 @@ services:
     depends_on:
       qrdbd:
         condition: service_healthy
+      ollama:
+        condition: service_healthy
     volumes:
-      - ../../..:/workspace
+      - ../../..:/workspace/go-qrdb
+      - ../../../../go-quicraft:/workspace/go-quicraft
+      - ../../../../go-truststrap:/workspace/go-truststrap
       - qrdb-socket:/var/run/qrdbd
-      - qrdb-certs:/etc/qrdb/certs:ro
+      - qrdb-data:/data:ro
       - cli-build:/app/build
       - go-cache:/root/go
       - go-build-cache:/root/.cache/go-build
@@ -76,10 +106,14 @@ services:
       - QRDB_REST_URL=https://qrdbd:63002
       - QRDB_GRPC_ADDR=qrdbd:63003
       - QRDB_MCP_ADDR=qrdbd:63005
+      - QRDB_QUIC_ADDR=qrdbd:63004
       - QRDB_CLI_BIN=/app/build/bin/qrdb
-      - QRDB_TLS_CA=/etc/qrdb/certs/ca.crt
+      - QRDB_TLS_CA=/data/raft/ca.pem
+      - QRDB_TLS_CERT=/data/raft/admin-cert.pem
+      - QRDB_TLS_KEY=/data/raft/admin-key.pem
       - INTEGRATION_TIMEOUT=60s
-    working_dir: /workspace
+      - OLLAMA_URL=http://ollama:11434/v1
+    working_dir: /workspace/go-qrdb
     networks:
       - qrdb-integration
     command: >
@@ -92,12 +126,12 @@ services:
       echo 'Checking Unix socket...' &&
       ls -la /var/run/qrdbd/ || true &&
       echo 'Checking TLS certificates...' &&
-      ls -la /etc/qrdb/certs/ || true &&
+      ls -la /data/raft/*.pem || true &&
       echo 'Building CLI binary...' &&
       mkdir -p /app/build/bin &&
-      CGO_ENABLED=0 go build -buildvcs=false -ldflags '-X main.version=test -X main.gitCommit=test -X main.buildDate=test' -o /app/build/bin/qrdb ./cmd/qrdb &&
+      CGO_ENABLED=0 go build -buildvcs=false -tags 'qrdb_ts qrdb_vector' -ldflags '-X main.version=test -X main.gitCommit=test -X main.buildDate=test' -o /app/build/bin/qrdb ./cmd/qrdb &&
       echo 'Running integration tests...' &&
-      go test -v -tags=integration ./test/integration/api/... -timeout 15m
+      go test -v -tags=integration ./test/integration/... -timeout 45m
       "
 
 volumes:
@@ -105,13 +139,15 @@ volumes:
     driver: local
   qrdb-socket:
     driver: local
-  qrdb-certs:
-    driver: local
   cli-build:
+    driver: local
+  server-build:
     driver: local
   go-cache:
     driver: local
   go-build-cache:
+    driver: local
+  ollama-data:
     driver: local
 
 networks:

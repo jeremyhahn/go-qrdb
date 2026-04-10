@@ -20,3 +20,18 @@ type HubClosedError struct{}
 func (e *HubClosedError) Error() string {
 	return "watch hub is closed"
 }
+
+// WatchCreateError is returned when creating a watch fails.
+type WatchCreateError struct {
+	Cause error
+}
+
+// Error implements the error interface.
+func (e *WatchCreateError) Error() string {
+	return "failed to create watch: " + e.Cause.Error()
+}
+
+// Unwrap returns the underlying error for errors.Is/As support.
+func (e *WatchCreateError) Unwrap() error {
+	return e.Cause
+}

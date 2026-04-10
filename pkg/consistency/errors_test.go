@@ -39,16 +39,18 @@ func TestUnknownLevelErrorContainsValidOptions(t *testing.T) {
 	if !strings.Contains(got, "linearizable") {
 		t.Errorf("UnknownLevelError.Error() = %q, want it to contain %q", got, "linearizable")
 	}
+	if !strings.Contains(got, "lease_read") {
+		t.Errorf("UnknownLevelError.Error() = %q, want it to contain %q", got, "lease_read")
+	}
 	if !strings.Contains(got, "eventual") {
 		t.Errorf("UnknownLevelError.Error() = %q, want it to contain %q", got, "eventual")
 	}
 }
 
 func TestUnknownLevelErrorImplementsError(t *testing.T) {
-	var err error = &UnknownLevelError{Level: "test"}
-	if err == nil {
-		t.Fatal("expected non-nil error")
-	}
+	err := &UnknownLevelError{Level: "test"}
+	// Verify the concrete type satisfies the error interface.
+	var _ error = err
 }
 
 func TestInvalidLevelErrorMessage(t *testing.T) {
@@ -71,10 +73,9 @@ func TestInvalidLevelErrorWithNegativeLevel(t *testing.T) {
 }
 
 func TestInvalidLevelErrorImplementsError(t *testing.T) {
-	var err error = &InvalidLevelError{Level: Level(10)}
-	if err == nil {
-		t.Fatal("expected non-nil error")
-	}
+	err := &InvalidLevelError{Level: Level(10)}
+	// Verify the concrete type satisfies the error interface.
+	var _ error = err
 }
 
 func TestInvalidTimeoutErrorMessage(t *testing.T) {
@@ -97,8 +98,7 @@ func TestInvalidTimeoutErrorWithLargeNegative(t *testing.T) {
 }
 
 func TestInvalidTimeoutErrorImplementsError(t *testing.T) {
-	var err error = &InvalidTimeoutError{Timeout: -1}
-	if err == nil {
-		t.Fatal("expected non-nil error")
-	}
+	err := &InvalidTimeoutError{Timeout: -1}
+	// Verify the concrete type satisfies the error interface.
+	var _ error = err
 }

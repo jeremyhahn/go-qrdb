@@ -1,0 +1,195 @@
+// Copyright 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package mcp
+
+import (
+	"context"
+	"encoding/json"
+
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+)
+
+// Compile-time interface assertion.
+var _ transport.CeremonyClient = (*Transport)(nil)
+
+// ---------------------------------------------------------------------------
+// CeremonyClient implementation
+// ---------------------------------------------------------------------------
+
+// CeremonyInitialize starts the initialization ceremony by calling the
+// qrdb_ceremony_initialize MCP tool. Request parameters are passed as tool
+// arguments for forward compatibility.
+func (t *Transport) CeremonyInitialize(ctx context.Context, req *transport.CeremonyInitializeRequest) (*transport.CeremonyInitializeResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	args := map[string]any{
+		"so_pin":    req.SOPin,
+		"user_pin":  req.UserPin,
+		"threshold": req.Threshold,
+	}
+
+	if req.CredentialSealStrategy != "" {
+		args["credential_seal_strategy"] = req.CredentialSealStrategy
+	}
+	if len(req.Officers) > 0 {
+		officersJSON, marshalErr := json.Marshal(req.Officers)
+		if marshalErr != nil {
+			return nil, &transport.RequestError{Method: "CeremonyInitialize", Err: &jsonDecodeError{Err: marshalErr}}
+		}
+		args["officers"] = string(officersJSON)
+	}
+	if req.Hostname != "" {
+		args["hostname"] = req.Hostname
+	}
+	if len(req.SANs) > 0 {
+		sansJSON, marshalErr := json.Marshal(req.SANs)
+		if marshalErr != nil {
+			return nil, &transport.RequestError{Method: "CeremonyInitialize", Err: &jsonDecodeError{Err: marshalErr}}
+		}
+		args["sans"] = string(sansJSON)
+	}
+
+	text, err := t.callTool(ctx, "qrdb_ceremony_initialize", args)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "CeremonyInitialize", Err: err}
+	}
+
+	var resp transport.CeremonyInitializeResponse
+	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "CeremonyInitialize", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+
+	return &resp, nil
+}
+
+// CeremonyStatus returns the current ceremony state by calling the
+// qrdb_ceremony_status MCP tool.
+func (t *Transport) CeremonyStatus(ctx context.Context) (*transport.CeremonyStatusResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	text, err := t.callTool(ctx, "qrdb_ceremony_status", nil)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "CeremonyStatus", Err: err}
+	}
+
+	var resp transport.CeremonyStatusResponse
+	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "CeremonyStatus", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+
+	return &resp, nil
+}
+
+// CeremonyClaimCertBegin starts a certificate claim challenge for the named
+// officer by calling the qrdb_ceremony_claim_cert_begin MCP tool.
+func (t *Transport) CeremonyClaimCertBegin(ctx context.Context, req *transport.ClaimCertBeginRequest) (*transport.ClaimCertBeginResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	text, err := t.callTool(ctx, "qrdb_ceremony_claim_cert_begin", map[string]any{
+		"username": req.Username,
+	})
+	if err != nil {
+		return nil, &transport.RequestError{Method: "CeremonyClaimCertBegin", Err: err}
+	}
+
+	var resp transport.ClaimCertBeginResponse
+	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "CeremonyClaimCertBegin", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+
+	return &resp, nil
+}
+
+// CeremonyClaimCertComplete completes a certificate claim by submitting the
+// signed nonce. Calls the qrdb_ceremony_claim_cert_complete MCP tool.
+func (t *Transport) CeremonyClaimCertComplete(ctx context.Context, req *transport.ClaimCertCompleteRequest) (*transport.ClaimCertCompleteResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	text, err := t.callTool(ctx, "qrdb_ceremony_claim_cert_complete", map[string]any{
+		"username":  req.Username,
+		"nonce_hex": req.NonceHex,
+		"signature": req.Signature,
+	})
+	if err != nil {
+		return nil, &transport.RequestError{Method: "CeremonyClaimCertComplete", Err: err}
+	}
+
+	var resp transport.ClaimCertCompleteResponse
+	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "CeremonyClaimCertComplete", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+
+	return &resp, nil
+}
+
+// CeremonyClaimShare retrieves the Shamir share for an officer by calling the
+// qrdb_ceremony_claim_share MCP tool. The server returns a base64-encoded
+// share in the "share" field which is mapped to the ShareJSON response field.
+func (t *Transport) CeremonyClaimShare(ctx context.Context, req *transport.ClaimShareRequest) (*transport.ClaimShareResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	text, err := t.callTool(ctx, "qrdb_ceremony_claim_share", map[string]any{
+		"username": req.Username,
+	})
+	if err != nil {
+		return nil, &transport.RequestError{Method: "CeremonyClaimShare", Err: err}
+	}
+
+	var wire struct {
+		Share string `json:"share"`
+	}
+	if jsonErr := json.Unmarshal([]byte(text), &wire); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "CeremonyClaimShare", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+
+	return &transport.ClaimShareResponse{
+		ShareJSON: wire.Share,
+	}, nil
+}
+
+// CeremonySignCSR submits a CSR for signing during or after the ceremony by
+// calling the qrdb_ceremony_sign_csr MCP tool.
+func (t *Transport) CeremonySignCSR(ctx context.Context, req *transport.SignCSRInitRequest) (*transport.SignCSRInitResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	text, err := t.callTool(ctx, "qrdb_ceremony_sign_csr", map[string]any{
+		"username": req.Username,
+		"so_pin":   req.SOPin,
+		"csr_pem":  req.CSRPEM,
+		"role":     req.Role,
+	})
+	if err != nil {
+		return nil, &transport.RequestError{Method: "CeremonySignCSR", Err: err}
+	}
+
+	var resp transport.SignCSRInitResponse
+	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "CeremonySignCSR", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+
+	return &resp, nil
+}

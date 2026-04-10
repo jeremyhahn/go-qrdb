@@ -39,6 +39,9 @@ service QRDBService {
     // List returns sorted keys matching a prefix.
     rpc List(ListRequest) returns (ListResponse);
 
+    // Scan returns key-value pairs matching a prefix.
+    rpc Scan(ScanRequest) returns (ScanResponse);
+
     // -----------------------------------------------------------------------
     // MVCC operations
     // -----------------------------------------------------------------------
@@ -103,6 +106,29 @@ service QRDBService {
     rpc LeaseList(google.protobuf.Empty) returns (LeaseListResponse);
 
     // -----------------------------------------------------------------------
+    // Distributed lock operations
+    // -----------------------------------------------------------------------
+
+    // LockAcquire acquires a distributed lock, blocking until acquired or
+    // the context is cancelled.
+    rpc LockAcquire(LockAcquireRequest) returns (LockAcquireResponse);
+
+    // LockTryLock attempts to acquire a lock immediately without blocking.
+    rpc LockTryLock(LockTryLockRequest) returns (LockTryLockResponse);
+
+    // LockRelease releases a held lock. The fencing token must match.
+    rpc LockRelease(LockReleaseRequest) returns (google.protobuf.Empty);
+
+    // LockExtend refreshes the TTL on a held lock without releasing it.
+    rpc LockExtend(LockExtendRequest) returns (LockExtendResponse);
+
+    // LockStatus returns the current lock state for a key.
+    rpc LockStatus(LockStatusRequest) returns (LockStatusResponse);
+
+    // LockList returns all active locks, optionally filtered by prefix.
+    rpc LockList(LockListRequest) returns (LockListResponse);
+
+    // -----------------------------------------------------------------------
     // Index operations (Tier 2)
     // -----------------------------------------------------------------------
 
@@ -117,6 +143,9 @@ service QRDBService {
 
     // IndexScan returns entries in an index within a value range.
     rpc IndexScan(IndexScanRequest) returns (IndexScanResponse);
+
+    // IndexList returns the names of all registered indexes.
+    rpc IndexList(google.protobuf.Empty) returns (IndexListResponse);
 
     // -----------------------------------------------------------------------
     // Time-series operations (Tier 2)
@@ -133,6 +162,88 @@ service QRDBService {
 
     // TSAggregate computes an aggregation over data points in a time range.
     rpc TSAggregate(TSAggregateRequest) returns (TSAggregateResponse);
+
+    // TSWritePoint stores a single validated data point.
+    rpc TSWritePoint(TSWriteRequest) returns (google.protobuf.Empty);
+
+    // TSRichQuery performs a rich query with aggregation, downsampling, and grouping.
+    rpc TSRichQuery(TSRichQueryRequest) returns (TSRichQueryResponse);
+
+    // TSDeleteSeries deletes time-series data matching the criteria.
+    rpc TSDeleteSeries(TSDeleteSeriesRequest) returns (google.protobuf.Empty);
+
+    // TSGetRetention retrieves the retention policy for a metric.
+    rpc TSGetRetention(TSGetRetentionRequest) returns (TSRetentionPolicyResponse);
+
+    // TSSetRetention sets the retention policy for a metric.
+    rpc TSSetRetention(TSSetRetentionRequest) returns (google.protobuf.Empty);
+
+    // TSListMetrics lists metric names matching a prefix.
+    rpc TSListMetrics(TSListMetricsRequest) returns (TSListMetricsResponse);
+
+    // -----------------------------------------------------------------------
+    // Vector operations (Tier 2)
+    // -----------------------------------------------------------------------
+
+    // VectorCreateNamespace creates a new vector namespace.
+    rpc VectorCreateNamespace(VectorCreateNamespaceRequest) returns (VectorCreateNamespaceResponse);
+
+    // VectorDeleteNamespace removes a namespace and all its vectors.
+    rpc VectorDeleteNamespace(VectorDeleteNamespaceRequest) returns (google.protobuf.Empty);
+
+    // VectorListNamespaces returns all vector namespace names.
+    rpc VectorListNamespaces(VectorListNamespacesRequest) returns (VectorListNamespacesResponse);
+
+    // VectorGetNamespaceInfo returns metadata about a namespace.
+    rpc VectorGetNamespaceInfo(VectorGetNamespaceInfoRequest) returns (VectorNamespaceInfo);
+
+    // VectorUpsert inserts or updates a vector in a namespace.
+    rpc VectorUpsert(VectorUpsertRequest) returns (VectorUpsertResponse);
+
+    // VectorGet retrieves a single vector by ID.
+    rpc VectorGet(VectorGetRequest) returns (VectorDataProto);
+
+    // VectorDelete removes a single vector by ID.
+    rpc VectorDelete(VectorDeleteRequest) returns (google.protobuf.Empty);
+
+    // VectorBatchUpsert inserts or updates multiple vectors.
+    rpc VectorBatchUpsert(VectorBatchUpsertRequest) returns (VectorBatchUpsertResponse);
+
+    // VectorBatchDelete removes multiple vectors by ID.
+    rpc VectorBatchDelete(VectorBatchDeleteRequest) returns (VectorBatchDeleteResponse);
+
+    // VectorList returns a paginated list of vectors in a namespace.
+    rpc VectorList(VectorListRequest) returns (VectorListResponse);
+
+    // VectorUpdateMetadata updates vector metadata without modifying vector data.
+    rpc VectorUpdateMetadata(VectorUpdateMetadataRequest) returns (google.protobuf.Empty);
+
+    // VectorSearchSimilar performs k-nearest-neighbor search using a query vector.
+    rpc VectorSearchSimilar(VectorSearchSimilarRequest) returns (VectorSearchSimilarResponse);
+
+    // VectorSearchByMetadata returns vectors matching metadata filters.
+    rpc VectorSearchByMetadata(VectorSearchByMetadataRequest) returns (VectorSearchByMetadataResponse);
+
+    // VectorHybridSearch combines vector similarity and metadata filtering.
+    rpc VectorHybridSearch(VectorHybridSearchRequest) returns (VectorHybridSearchResponse);
+
+    // VectorSearchByID searches using an existing vector's ID as the query.
+    rpc VectorSearchByID(VectorSearchByIDRequest) returns (VectorSearchSimilarResponse);
+
+    // VectorRebuildIndex triggers an asynchronous index rebuild for a namespace.
+    rpc VectorRebuildIndex(VectorRebuildIndexRequest) returns (VectorRebuildIndexResponse);
+
+    // VectorGetRebuildProgress returns the progress of an index rebuild job.
+    rpc VectorGetRebuildProgress(VectorGetRebuildProgressRequest) returns (VectorRebuildProgress);
+
+    // VectorGetIndexStats returns statistics about a namespace's vector index.
+    rpc VectorGetIndexStats(VectorGetIndexStatsRequest) returns (VectorIndexStats);
+
+    // VectorCompactNamespace triggers asynchronous compaction for a namespace.
+    rpc VectorCompactNamespace(VectorCompactNamespaceRequest) returns (VectorCompactNamespaceResponse);
+
+    // VectorGetCompactionProgress returns the progress of a compaction job.
+    rpc VectorGetCompactionProgress(VectorGetCompactionProgressRequest) returns (VectorCompactionProgress);
 
     // -----------------------------------------------------------------------
     // Admin operations (unchanged)
@@ -158,6 +269,231 @@ service QRDBService {
 
     // Drain transitions the node into drain mode.
     rpc Drain(google.protobuf.Empty) returns (google.protobuf.Empty);
+
+    // Capabilities returns the compile-time feature set of the node.
+    rpc Capabilities(CapabilitiesRequest) returns (CapabilitiesResponse);
+
+    // StartShard initializes and starts a Raft group for the given shard.
+    rpc StartShard(StartShardRequest) returns (google.protobuf.Empty);
+
+    // StopShard stops the Raft group for the given shard.
+    rpc StopShard(StopShardRequest) returns (google.protobuf.Empty);
+
+    // GetShardState returns the Raft state for a shard.
+    rpc GetShardState(GetShardStateRequest) returns (ShardStateResponse);
+
+    // GetTopology returns the full cluster topology.
+    rpc GetTopology(google.protobuf.Empty) returns (TopologyResponse);
+
+    // -----------------------------------------------------------------------
+    // User management
+    // -----------------------------------------------------------------------
+
+    // CreateUser creates a new passwordless user.
+    rpc CreateUser(CreateUserRequest) returns (UserResponse);
+
+    // GetUser retrieves a user by ID.
+    rpc GetUser(GetUserRequest) returns (UserResponse);
+
+    // UpdateUser applies partial updates to an existing user.
+    rpc UpdateUser(UpdateUserProtoRequest) returns (UserResponse);
+
+    // DeleteUser removes a non-system user by ID.
+    rpc DeleteUser(DeleteUserRequest) returns (google.protobuf.Empty);
+
+    // ListUsers returns a paginated list of users.
+    rpc ListUsers(ListUsersRequest) returns (ListUsersResponse);
+
+    // EnableUser activates a user account.
+    rpc EnableUser(EnableUserRequest) returns (google.protobuf.Empty);
+
+    // DisableUser deactivates a user account.
+    rpc DisableUser(DisableUserRequest) returns (google.protobuf.Empty);
+
+    // -----------------------------------------------------------------------
+    // Role management
+    // -----------------------------------------------------------------------
+
+    // CreateRole creates a new role.
+    rpc CreateRole(CreateRoleRequest) returns (RoleResponse);
+
+    // GetRole retrieves a role by ID.
+    rpc GetRole(GetRoleRequest) returns (RoleResponse);
+
+    // UpdateRole applies partial updates to an existing role.
+    rpc UpdateRole(UpdateRoleProtoRequest) returns (RoleResponse);
+
+    // DeleteRole removes a non-system role by ID.
+    rpc DeleteRole(DeleteRoleRequest) returns (google.protobuf.Empty);
+
+    // ListRoles returns a paginated list of roles.
+    rpc ListRoles(ListRolesRequest) returns (ListRolesResponse);
+
+    // AssignRole assigns a role to a user.
+    rpc AssignRole(AssignRoleRequest) returns (google.protobuf.Empty);
+
+    // UnassignRole removes a role assignment.
+    rpc UnassignRole(UnassignRoleRequest) returns (google.protobuf.Empty);
+
+    // ListPermissions returns all available permission categories.
+    rpc ListPermissions(google.protobuf.Empty) returns (ListPermissionsResponse);
+
+    // -----------------------------------------------------------------------
+    // Certificate management
+    // -----------------------------------------------------------------------
+
+    // GenerateCert creates a client certificate.
+    rpc GenerateCert(GenerateCertRequest) returns (CertBundleResponse);
+
+    // ExportCert exports a certificate as PKCS#12.
+    rpc ExportCert(ExportCertRequest) returns (ExportCertResponse);
+
+    // RevokeCert marks a certificate serial as revoked.
+    rpc RevokeCert(RevokeCertRequest) returns (google.protobuf.Empty);
+
+    // ListCerts lists all issued client certificates for a tenant.
+    rpc ListCerts(ListCertsRequest) returns (ListCertsResponse);
+
+    // -----------------------------------------------------------------------
+    // Collection operations
+    // -----------------------------------------------------------------------
+
+    // CreateCollection creates a new document collection in a database.
+    rpc CreateCollection(CreateCollectionRequest) returns (CollectionInfoResponse);
+
+    // GetCollectionInfo returns metadata about a specific collection.
+    rpc GetCollectionInfo(GetCollectionInfoRequest) returns (CollectionInfoResponse);
+
+    // ListCollections returns all collections within a database.
+    rpc ListCollections(ListCollectionsRequest) returns (ListCollectionsResponse);
+
+    // DropCollection removes a collection and all its documents.
+    rpc DropCollection(DropCollectionRequest) returns (google.protobuf.Empty);
+
+    // InsertDocument inserts a document into a collection.
+    rpc InsertDocument(InsertDocumentRequest) returns (InsertDocumentResponse);
+
+    // GetDocument retrieves a single document by ID.
+    rpc GetDocument(GetDocumentRequest) returns (DocumentResponse);
+
+    // UpdateDocument replaces an existing document in a collection.
+    rpc UpdateDocument(UpdateDocumentRequest) returns (google.protobuf.Empty);
+
+    // DeleteDocument removes a document from a collection by ID.
+    rpc DeleteDocument(DeleteDocumentRequest) returns (google.protobuf.Empty);
+
+    // ListDocuments returns a paginated list of documents in a collection.
+    rpc ListDocuments(ListDocumentsRequest) returns (ListDocumentsResponse);
+
+    // -----------------------------------------------------------------------
+    // Database management operations
+    // -----------------------------------------------------------------------
+
+    // DatabaseCreate creates a new database with the specified configuration.
+    rpc DatabaseCreate(DatabaseCreateRequest) returns (DatabaseInfoResponse);
+
+    // DatabaseGet returns information about a specific database.
+    rpc DatabaseGet(DatabaseGetRequest) returns (DatabaseInfoResponse);
+
+    // DatabaseList returns information about all open databases.
+    rpc DatabaseList(google.protobuf.Empty) returns (DatabaseListResponse);
+
+    // DatabaseDrop closes and removes a database.
+    rpc DatabaseDrop(DatabaseDropRequest) returns (google.protobuf.Empty);
+
+    // DatabaseUpdateProtocol updates the wire protocol configuration.
+    rpc DatabaseUpdateProtocol(DatabaseUpdateProtocolRequest) returns (DatabaseInfoResponse);
+
+    // DatabaseUpdateEtcd updates the etcd wire protocol configuration.
+    rpc DatabaseUpdateEtcd(DatabaseUpdateEtcdRequest) returns (DatabaseInfoResponse);
+
+    // DatabaseUpdateRaft updates the Raft consensus configuration.
+    rpc DatabaseUpdateRaft(DatabaseUpdateRaftRequest) returns (DatabaseInfoResponse);
+
+    // DatabaseUpdateBarrier updates the encryption barrier configuration.
+    rpc DatabaseUpdateBarrier(DatabaseUpdateBarrierRequest) returns (DatabaseInfoResponse);
+
+    // DatabaseUpdateConnection updates the remote connection configuration.
+    rpc DatabaseUpdateConnection(DatabaseUpdateConnectionRequest) returns (DatabaseInfoResponse);
+
+    // -----------------------------------------------------------------------
+    // Barrier operations
+    // -----------------------------------------------------------------------
+
+    // BarrierInitialize initializes the cryptographic barrier with a single
+    // master key.
+    rpc BarrierInitialize(BarrierInitializeRequest) returns (google.protobuf.Empty);
+
+    // BarrierUnseal unseals the barrier using the master key.
+    rpc BarrierUnseal(BarrierUnsealRequest) returns (google.protobuf.Empty);
+
+    // BarrierSeal seals the barrier, preventing data access until unsealed.
+    rpc BarrierSeal(google.protobuf.Empty) returns (google.protobuf.Empty);
+
+    // BarrierStatus returns the current barrier state.
+    rpc BarrierStatus(google.protobuf.Empty) returns (BarrierStatusResponse);
+
+    // BarrierShamirInitialize initializes the barrier with Shamir secret sharing.
+    rpc BarrierShamirInitialize(BarrierShamirInitializeRequest) returns (BarrierShamirInitializeResponse);
+
+    // BarrierShamirUnsealShare submits a single Shamir share toward the unseal threshold.
+    rpc BarrierShamirUnsealShare(BarrierShamirUnsealShareRequest) returns (BarrierShamirUnsealShareResponse);
+
+    // BarrierShamirUnsealShares submits multiple Shamir shares to unseal in one call.
+    rpc BarrierShamirUnsealShares(BarrierShamirUnsealSharesRequest) returns (google.protobuf.Empty);
+
+    // BarrierShamirListShares returns metadata about stored Shamir shares.
+    rpc BarrierShamirListShares(google.protobuf.Empty) returns (BarrierShamirSharesResponse);
+
+    // BarrierShamirDeleteShare deletes a single Shamir share by index.
+    rpc BarrierShamirDeleteShare(BarrierShamirDeleteShareRequest) returns (google.protobuf.Empty);
+
+    // BarrierShamirDeleteAllShares deletes all stored Shamir shares.
+    rpc BarrierShamirDeleteAllShares(google.protobuf.Empty) returns (google.protobuf.Empty);
+
+    // BarrierShamirVerify verifies the integrity of stored Shamir shares.
+    rpc BarrierShamirVerify(google.protobuf.Empty) returns (google.protobuf.Empty);
+
+    // BarrierRekey generates new Shamir shares with the specified parameters.
+    rpc BarrierRekey(BarrierRekeyRequest) returns (BarrierShamirInitializeResponse);
+
+    // BarrierRecoveryGenerate generates recovery keys for disaster recovery.
+    rpc BarrierRecoveryGenerate(BarrierRecoveryGenerateRequest) returns (BarrierRecoveryKeysResponse);
+
+    // BarrierRecoveryRecover unseals the barrier using recovery keys.
+    rpc BarrierRecoveryRecover(BarrierRecoveryRecoverRequest) returns (google.protobuf.Empty);
+
+    // BarrierRecoveryDelete deletes all stored recovery keys.
+    rpc BarrierRecoveryDelete(google.protobuf.Empty) returns (google.protobuf.Empty);
+
+    // BarrierRecoveryStatus checks whether recovery keys have been generated.
+    rpc BarrierRecoveryStatus(google.protobuf.Empty) returns (BarrierRecoveryStatusResponse);
+
+    // BarrierRootToken generates a new root token using Shamir shares.
+    rpc BarrierRootToken(BarrierRootTokenRequest) returns (BarrierRootTokenResponse);
+
+    // -----------------------------------------------------------------------
+    // Ceremony operations
+    // -----------------------------------------------------------------------
+
+    // CeremonyInitialize starts the initialization ceremony.
+    rpc CeremonyInitialize(CeremonyInitializeRequest) returns (CeremonyInitializeResponse);
+
+    // CeremonyStatus returns the current ceremony state.
+    rpc CeremonyStatus(google.protobuf.Empty) returns (CeremonyStatusResponse);
+
+    // CeremonyClaimCertBegin starts a certificate claim challenge for an officer.
+    rpc CeremonyClaimCertBegin(CeremonyClaimCertBeginRequest) returns (CeremonyClaimCertBeginResponse);
+
+    // CeremonyClaimCertComplete completes a certificate claim by submitting the signed nonce.
+    rpc CeremonyClaimCertComplete(CeremonyClaimCertCompleteRequest) returns (CeremonyClaimCertCompleteResponse);
+
+    // CeremonyClaimShare retrieves the Shamir share for an officer.
+    rpc CeremonyClaimShare(CeremonyClaimShareRequest) returns (CeremonyClaimShareResponse);
+
+    // CeremonySignCSR submits a CSR for signing during the ceremony.
+    rpc CeremonySignCSR(CeremonySignCSRRequest) returns (CeremonySignCSRResponse);
+
 }
 
 // ===========================================================================
@@ -199,6 +535,16 @@ message ListRequest {
 // ListResponse is the response payload for List.
 message ListResponse {
     repeated string keys = 1;
+}
+
+// ScanRequest is the request payload for Scan.
+message ScanRequest {
+    string prefix = 1;
+}
+
+// ScanResponse is the response payload for Scan.
+message ScanResponse {
+    map<string, bytes> pairs = 1;
 }
 
 // ===========================================================================
@@ -467,6 +813,85 @@ message LeaseListResponse {
 }
 
 // ===========================================================================
+// Distributed lock messages
+// ===========================================================================
+
+// LockInfo describes an acquired distributed lock.
+message LockInfo {
+    string key = 1;
+    int64 fencing_token = 2;
+    int64 lease_id = 3;
+    string holder_id = 4;
+    bool reentrant = 5;
+    int32 acquire_count = 6;
+    int64 ttl = 7;
+    int64 acquired_at = 8;
+}
+
+// LockAcquireRequest acquires a lock, blocking until acquired.
+message LockAcquireRequest {
+    string key = 1;
+    string holder_id = 2;
+    int64 ttl = 3;
+    bool reentrant = 4;
+}
+
+// LockAcquireResponse returns the acquired lock.
+message LockAcquireResponse {
+    LockInfo lock = 1;
+}
+
+// LockTryLockRequest attempts to acquire a lock without blocking.
+message LockTryLockRequest {
+    string key = 1;
+    string holder_id = 2;
+    int64 ttl = 3;
+    bool reentrant = 4;
+}
+
+// LockTryLockResponse returns the acquired lock.
+message LockTryLockResponse {
+    LockInfo lock = 1;
+}
+
+// LockReleaseRequest releases a held lock.
+message LockReleaseRequest {
+    string key = 1;
+    int64 fencing_token = 2;
+}
+
+// LockExtendRequest refreshes the TTL on a held lock.
+message LockExtendRequest {
+    string key = 1;
+    int64 fencing_token = 2;
+}
+
+// LockExtendResponse returns the updated lock state.
+message LockExtendResponse {
+    LockInfo lock = 1;
+}
+
+// LockStatusRequest queries the current state of a lock.
+message LockStatusRequest {
+    string key = 1;
+}
+
+// LockStatusResponse returns the lock state.
+message LockStatusResponse {
+    LockInfo lock = 1;
+}
+
+// LockListRequest lists active locks filtered by key prefix.
+message LockListRequest {
+    string prefix = 1;
+}
+
+// LockListResponse returns active locks.
+message LockListResponse {
+    repeated LockInfo locks = 1;
+}
+
+// ===========================================================================
 // Index messages (Tier 2)
 // ===========================================================================
 
@@ -489,9 +914,9 @@ message IndexQueryRequest {
     bytes value = 2;
 }
 
-// IndexQueryResponse returns matching entry IDs.
+// IndexQueryResponse returns matching entry keys.
 message IndexQueryResponse {
-    repeated uint64 ids = 1;
+    repeated bytes keys = 1;
 }
 
 // IndexScanRequest scans an index within a value range.
@@ -501,15 +926,20 @@ message IndexScanRequest {
     bytes end = 3;
 }
 
-// IndexScanEntry maps an index value to its matching entry IDs.
+// IndexScanEntry maps an index value to its matching entry keys.
 message IndexScanEntry {
     string value = 1;
-    repeated uint64 ids = 2;
+    repeated bytes keys = 2;
 }
 
 // IndexScanResponse returns the scan results.
 message IndexScanResponse {
     repeated IndexScanEntry entries = 1;
+}
+
+// IndexListResponse returns the names of all registered indexes.
+message IndexListResponse {
+    repeated string names = 1;
 }
 
 // ===========================================================================
@@ -586,6 +1016,76 @@ message TSAggregateResponse {
     repeated TSAggResult results = 1;
 }
 
+// TSRichQueryRequest performs a rich query with aggregation, downsampling, and grouping.
+message TSRichQueryRequest {
+    string metric = 1;
+    repeated TSTag tags = 2;
+    int64 start_ns = 3;
+    int64 end_ns = 4;
+    AggFunc aggregation = 5;
+    int64 interval_ns = 6;
+    repeated string group_by = 7;
+    int32 limit = 8;
+    double percentile = 9;
+}
+
+// TSRichQueryResponse returns the result of a rich query.
+message TSRichQueryResponse {
+    string metric = 1;
+    repeated TSTag tags = 2;
+    repeated TSDataPoint points = 3;
+    double aggregated_value = 4;
+    bool has_aggregated_value = 5;
+    repeated TSGroupedResult grouped_results = 6;
+}
+
+// TSGroupedResult is a grouped query result containing tags, points, and optional aggregation.
+message TSGroupedResult {
+    repeated TSTag tags = 1;
+    repeated TSDataPoint points = 2;
+    double aggregated_value = 3;
+    bool has_aggregated_value = 4;
+}
+
+// TSDeleteSeriesRequest deletes time-series data matching the criteria.
+message TSDeleteSeriesRequest {
+    string metric = 1;
+    repeated TSTag tags = 2;
+    int64 start_ns = 3;
+    int64 end_ns = 4;
+}
+
+// TSGetRetentionRequest retrieves the retention policy for a metric.
+message TSGetRetentionRequest {
+    string metric = 1;
+}
+
+// TSRetentionPolicyResponse returns the retention policy for a metric.
+message TSRetentionPolicyResponse {
+    int64 duration_ns = 1;
+    int64 resolution_ns = 2;
+    AggFunc aggregation = 3;
+}
+
+// TSSetRetentionRequest sets the retention policy for a metric.
+message TSSetRetentionRequest {
+    string metric = 1;
+    int64 duration_ns = 2;
+    int64 resolution_ns = 3;
+    AggFunc aggregation = 4;
+}
+
+// TSListMetricsRequest lists metric names matching a prefix.
+message TSListMetricsRequest {
+    string prefix = 1;
+    int32 limit = 2;
+}
+
+// TSListMetricsResponse returns matching metric names.
+message TSListMetricsResponse {
+    repeated string metrics = 1;
+}
+
 // ===========================================================================
 // Admin messages (unchanged)
 // ===========================================================================
@@ -641,4 +1141,1045 @@ message RemoveMemberRequest {
 // RequestSnapshotMessage is the request payload for RequestSnapshot.
 message RequestSnapshotMessage {
     uint64 shard_id = 1;
+}
+
+// CapabilitiesRequest is the request payload for Capabilities.
+message CapabilitiesRequest {}
+
+// CapabilitiesResponse describes the compile-time feature set of the node.
+message CapabilitiesResponse {
+    bool kv = 1;
+    bool mvcc = 2;
+    bool transaction = 3;
+    bool batch = 4;
+    bool watch = 5;
+    bool lease = 6;
+    bool index = 7;
+    bool time_series = 8;
+    bool vector = 9;
+}
+
+// StartShardRequest is the request payload for StartShard.
+message StartShardRequest {
+    uint64 shard_id = 1;
+    uint64 replica_id = 2;
+    map<uint64, string> members = 3;
+    bool join = 4;
+}
+
+// StopShardRequest is the request payload for StopShard.
+message StopShardRequest {
+    uint64 shard_id = 1;
+}
+
+// GetShardStateRequest is the request payload for GetShardState.
+message GetShardStateRequest {
+    uint64 shard_id = 1;
+}
+
+// ShardStateResponse describes the Raft state of a single shard.
+message ShardStateResponse {
+    uint64 shard_id = 1;
+    uint64 config_change_index = 2;
+    uint64 term = 3;
+    uint64 leader_id = 4;
+    bool has_leader = 5;
+}
+
+// TopologyResponse describes the full cluster topology.
+message TopologyResponse {
+    string node_id = 1;
+    string raft_address = 2;
+    int32 shard_count = 3;
+    repeated ShardInfoProto shards = 4;
+}
+
+// ShardInfoProto describes a single shard in the topology.
+message ShardInfoProto {
+    uint64 shard_id = 1;
+    uint64 replica_id = 2;
+    bool is_leader = 3;
+    uint64 leader_id = 4;
+    map<uint64, string> nodes = 5;
+}
+
+// ===========================================================================
+// Vector messages (Tier 2)
+// ===========================================================================
+
+// DistanceMetric specifies how vector similarity is measured.
+enum DistanceMetric {
+    // DISTANCE_COSINE measures the cosine of the angle between vectors.
+    DISTANCE_COSINE = 0;
+
+    // DISTANCE_EUCLIDEAN measures the straight-line distance between vectors.
+    DISTANCE_EUCLIDEAN = 1;
+
+    // DISTANCE_DOT_PRODUCT measures similarity via the dot product.
+    DISTANCE_DOT_PRODUCT = 2;
+}
+
+// VectorIndexType specifies the vector index algorithm.
+enum VectorIndexType {
+    // INDEX_HNSW uses hierarchical navigable small world graphs.
+    INDEX_HNSW = 0;
+
+    // INDEX_FLAT uses brute-force exact search.
+    INDEX_FLAT = 1;
+
+    // INDEX_IVF_FLAT uses inverted file index with flat quantization.
+    INDEX_IVF_FLAT = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Namespace messages
+// ---------------------------------------------------------------------------
+
+// VectorCreateNamespaceRequest creates a new vector namespace.
+message VectorCreateNamespaceRequest {
+    string namespace = 1;
+    int32 dimension = 2;
+    DistanceMetric distance_metric = 3;
+    VectorIndexType index_type = 4;
+    string index_params_json = 5;
+    uint64 shard_id = 6;
+}
+
+// VectorCreateNamespaceResponse is the result of a namespace creation.
+message VectorCreateNamespaceResponse {
+    bool created = 1;
+    int64 timestamp = 2;
+}
+
+// VectorDeleteNamespaceRequest removes a namespace and all its vectors.
+message VectorDeleteNamespaceRequest {
+    string namespace = 1;
+    uint64 shard_id = 2;
+}
+
+// VectorListNamespacesRequest lists all vector namespaces.
+message VectorListNamespacesRequest {
+    uint64 shard_id = 1;
+}
+
+// VectorListNamespacesResponse returns all namespace names.
+message VectorListNamespacesResponse {
+    repeated string namespaces = 1;
+}
+
+// VectorGetNamespaceInfoRequest retrieves namespace metadata.
+message VectorGetNamespaceInfoRequest {
+    string namespace = 1;
+    uint64 shard_id = 2;
+}
+
+// VectorNamespaceInfo contains metadata about a vector namespace.
+message VectorNamespaceInfo {
+    string namespace = 1;
+    int32 dimension = 2;
+    DistanceMetric distance_metric = 3;
+    VectorIndexType index_type = 4;
+    int64 vector_count = 5;
+    int64 created_at = 6;
+    int64 updated_at = 7;
+}
+
+// ---------------------------------------------------------------------------
+// Vector CRUD messages
+// ---------------------------------------------------------------------------
+
+// VectorDataProto represents a single vector with metadata and versioning.
+message VectorDataProto {
+    string id = 1;
+    repeated float vector = 2;
+    string metadata_json = 3;
+    int64 version = 4;
+    int64 created_at = 5;
+    int64 updated_at = 6;
+}
+
+// VectorUpsertRequest inserts or updates a vector.
+message VectorUpsertRequest {
+    string namespace = 1;
+    string id = 2;
+    repeated float vector = 3;
+    string metadata_json = 4;
+    uint64 shard_id = 5;
+}
+
+// VectorUpsertResponse is the result of a vector upsert.
+message VectorUpsertResponse {
+    int64 version = 1;
+    int64 timestamp = 2;
+    bool created = 3;
+}
+
+// VectorGetRequest retrieves a single vector by ID.
+message VectorGetRequest {
+    string namespace = 1;
+    string id = 2;
+    int32 consistency = 3;
+    uint64 shard_id = 4;
+}
+
+// VectorDeleteRequest removes a single vector by ID.
+message VectorDeleteRequest {
+    string namespace = 1;
+    string id = 2;
+    uint64 shard_id = 3;
+}
+
+// VectorBatchError describes a failure for a single vector in a batch.
+message VectorBatchError {
+    string id = 1;
+    string error = 2;
+}
+
+// VectorBatchUpsertRequest inserts or updates multiple vectors.
+message VectorBatchUpsertRequest {
+    string namespace = 1;
+    repeated VectorDataProto vectors = 2;
+    uint64 shard_id = 3;
+}
+
+// VectorBatchUpsertResponse is the result of a batch upsert.
+message VectorBatchUpsertResponse {
+    int32 succeeded = 1;
+    int32 failed = 2;
+    repeated VectorBatchError errors = 3;
+}
+
+// VectorBatchDeleteRequest removes multiple vectors by ID.
+message VectorBatchDeleteRequest {
+    string namespace = 1;
+    repeated string ids = 2;
+    uint64 shard_id = 3;
+}
+
+// VectorBatchDeleteResponse is the result of a batch delete.
+message VectorBatchDeleteResponse {
+    int32 deleted = 1;
+    int32 failed = 2;
+    repeated VectorBatchError errors = 3;
+}
+
+// VectorListRequest returns a paginated list of vectors.
+message VectorListRequest {
+    string namespace = 1;
+    int32 limit = 2;
+    int32 offset = 3;
+    string cursor = 4;
+    uint64 shard_id = 5;
+}
+
+// VectorListResponse contains a paginated list of vectors.
+message VectorListResponse {
+    repeated VectorDataProto vectors = 1;
+    string next_cursor = 2;
+    int64 total = 3;
+}
+
+// VectorUpdateMetadataRequest updates vector metadata without modifying data.
+message VectorUpdateMetadataRequest {
+    string namespace = 1;
+    string id = 2;
+    string metadata_json = 3;
+    uint64 shard_id = 4;
+}
+
+// ---------------------------------------------------------------------------
+// Vector search messages
+// ---------------------------------------------------------------------------
+
+// VectorSearchResultProto is a single result from a similarity search.
+message VectorSearchResultProto {
+    string id = 1;
+    double score = 2;
+    repeated float vector = 3;
+    string metadata_json = 4;
+}
+
+// VectorSearchSimilarRequest performs k-nearest-neighbor search.
+message VectorSearchSimilarRequest {
+    string namespace = 1;
+    repeated float vector = 2;
+    int32 k = 3;
+    int32 ef_search = 4;
+    double min_score = 5;
+    int32 consistency = 6;
+    uint64 shard_id = 7;
+}
+
+// VectorSearchSimilarResponse contains similarity search results.
+message VectorSearchSimilarResponse {
+    repeated VectorSearchResultProto results = 1;
+    int64 took = 2;
+}
+
+// VectorSearchByMetadataRequest returns vectors matching metadata filters.
+message VectorSearchByMetadataRequest {
+    string namespace = 1;
+    string filters_json = 2;
+    int32 limit = 3;
+    int32 offset = 4;
+    int32 consistency = 5;
+    uint64 shard_id = 6;
+}
+
+// VectorSearchByMetadataResponse contains metadata search results.
+message VectorSearchByMetadataResponse {
+    repeated VectorDataProto results = 1;
+    int64 total = 2;
+}
+
+// VectorHybridSearchRequest combines vector similarity and metadata filtering.
+message VectorHybridSearchRequest {
+    string namespace = 1;
+    repeated float vector = 2;
+    string metadata_filters_json = 3;
+    int32 k = 4;
+    double vector_weight = 5;
+    double metadata_weight = 6;
+    int32 consistency = 7;
+    uint64 shard_id = 8;
+}
+
+// VectorHybridSearchResponse contains hybrid search results.
+message VectorHybridSearchResponse {
+    repeated VectorSearchResultProto results = 1;
+    int64 took = 2;
+}
+
+// VectorSearchByIDRequest searches using an existing vector's ID.
+message VectorSearchByIDRequest {
+    string namespace = 1;
+    string id = 2;
+    int32 k = 3;
+    int32 consistency = 4;
+    uint64 shard_id = 5;
+}
+
+// ---------------------------------------------------------------------------
+// Vector index management messages
+// ---------------------------------------------------------------------------
+
+// VectorRebuildIndexRequest triggers an asynchronous index rebuild.
+message VectorRebuildIndexRequest {
+    string namespace = 1;
+    uint64 shard_id = 2;
+}
+
+// VectorRebuildIndexResponse is the result of an index rebuild request.
+message VectorRebuildIndexResponse {
+    string job_id = 1;
+    bool started = 2;
+    int64 timestamp = 3;
+}
+
+// VectorGetRebuildProgressRequest queries rebuild progress.
+message VectorGetRebuildProgressRequest {
+    string namespace = 1;
+    string job_id = 2;
+    uint64 shard_id = 3;
+}
+
+// VectorRebuildProgress describes the current state of a rebuild job.
+message VectorRebuildProgress {
+    string job_id = 1;
+    string status = 2;
+    double progress = 3;
+    int64 started_at = 4;
+    int64 finished_at = 5;
+    string error = 6;
+}
+
+// VectorGetIndexStatsRequest queries index statistics.
+message VectorGetIndexStatsRequest {
+    string namespace = 1;
+    uint64 shard_id = 2;
+}
+
+// VectorIndexStats describes the current state of a namespace's vector index.
+message VectorIndexStats {
+    int64 vector_count = 1;
+    int32 dimension = 2;
+    DistanceMetric distance_metric = 3;
+    VectorIndexType index_type = 4;
+    int64 memory_usage = 5;
+    int64 disk_usage = 6;
+}
+
+// ---------------------------------------------------------------------------
+// Vector compaction messages
+// ---------------------------------------------------------------------------
+
+// VectorCompactNamespaceRequest triggers asynchronous namespace compaction.
+message VectorCompactNamespaceRequest {
+    string namespace = 1;
+    uint64 shard_id = 2;
+}
+
+// VectorCompactNamespaceResponse is the result of a compaction request.
+message VectorCompactNamespaceResponse {
+    string job_id = 1;
+    bool started = 2;
+}
+
+// VectorGetCompactionProgressRequest queries compaction progress.
+message VectorGetCompactionProgressRequest {
+    string namespace = 1;
+    string job_id = 2;
+    uint64 shard_id = 3;
+}
+
+// VectorCompactionProgress describes the current state of a compaction job.
+message VectorCompactionProgress {
+    string job_id = 1;
+    string status = 2;
+    double progress = 3;
+    int64 started_at = 4;
+    int64 finished_at = 5;
+    string error = 6;
+}
+
+// ===========================================================================
+// User management messages
+// ===========================================================================
+
+// CreateUserRequest creates a new passwordless user.
+message CreateUserRequest {
+    string tenant_id = 1;
+    string username = 2;
+    repeated string role_ids = 3;
+}
+
+// GetUserRequest retrieves a user by ID.
+message GetUserRequest {
+    string id = 1;
+}
+
+// UpdateUserProtoRequest applies partial updates to an existing user.
+// Named with "Proto" suffix to avoid collision with the Go domain type.
+message UpdateUserProtoRequest {
+    string id = 1;
+    string username = 2;
+    repeated string role_ids = 3;
+}
+
+// DeleteUserRequest removes a user by ID.
+message DeleteUserRequest {
+    string id = 1;
+}
+
+// ListUsersRequest returns a paginated list of users.
+message ListUsersRequest {
+    string tenant_id = 1;
+    int32 page = 2;
+    int32 page_size = 3;
+}
+
+// ListUsersResponse holds the paginated user list.
+message ListUsersResponse {
+    repeated UserResponse users = 1;
+    int32 total = 2;
+    bool has_more = 3;
+}
+
+// EnableUserRequest activates a user account.
+message EnableUserRequest {
+    string id = 1;
+}
+
+// DisableUserRequest deactivates a user account.
+message DisableUserRequest {
+    string id = 1;
+}
+
+// UserResponse is the response payload for user operations.
+message UserResponse {
+    string id = 1;
+    string tenant_id = 2;
+    string username = 3;
+    repeated string role_ids = 4;
+    bool enabled = 5;
+    bool system = 6;
+    string created_at = 7;
+    string updated_at = 8;
+}
+
+// ===========================================================================
+// Role management messages
+// ===========================================================================
+
+// CreateRoleRequest creates a new role.
+message CreateRoleRequest {
+    string tenant_id = 1;
+    string name = 2;
+    repeated string permissions = 3;
+}
+
+// GetRoleRequest retrieves a role by ID.
+message GetRoleRequest {
+    string id = 1;
+}
+
+// UpdateRoleProtoRequest applies partial updates to an existing role.
+// Named with "Proto" suffix to avoid collision with the Go domain type.
+message UpdateRoleProtoRequest {
+    string id = 1;
+    string name = 2;
+    repeated string permissions = 3;
+}
+
+// DeleteRoleRequest removes a role by ID.
+message DeleteRoleRequest {
+    string id = 1;
+}
+
+// ListRolesRequest returns a paginated list of roles.
+message ListRolesRequest {
+    string tenant_id = 1;
+    int32 page = 2;
+    int32 page_size = 3;
+}
+
+// ListRolesResponse holds the paginated role list.
+message ListRolesResponse {
+    repeated RoleResponse roles = 1;
+    int32 total = 2;
+    bool has_more = 3;
+}
+
+// AssignRoleRequest assigns a role to a user.
+message AssignRoleRequest {
+    string user_id = 1;
+    string role_id = 2;
+}
+
+// UnassignRoleRequest removes a role assignment from a user.
+message UnassignRoleRequest {
+    string user_id = 1;
+    string role_id = 2;
+}
+
+// RoleResponse is the response payload for role operations.
+message RoleResponse {
+    string id = 1;
+    string tenant_id = 2;
+    string name = 3;
+    repeated string permissions = 4;
+    bool system = 5;
+    string created_at = 6;
+    string updated_at = 7;
+}
+
+// PermissionCategory groups related permissions under a display name.
+message PermissionCategory {
+    string name = 1;
+    string group = 2;
+    repeated string permissions = 3;
+}
+
+// ListPermissionsResponse holds all permission categories.
+message ListPermissionsResponse {
+    repeated PermissionCategory categories = 1;
+}
+
+// ===========================================================================
+// Certificate management messages
+// ===========================================================================
+
+// GenerateCertRequest creates a client certificate.
+message GenerateCertRequest {
+    string username = 1;
+    string tenant_id = 2;
+    string ttl = 3;
+}
+
+// CertBundleResponse holds the generated certificate bundle.
+message CertBundleResponse {
+    string cert_pem = 1;
+    string key_pem = 2;
+    string serial = 3;
+}
+
+// ExportCertRequest exports a certificate as PKCS#12.
+message ExportCertRequest {
+    string cert_pem = 1;
+    string key_pem = 2;
+    string passphrase = 3;
+}
+
+// ExportCertResponse holds the base64-encoded PKCS#12 archive.
+message ExportCertResponse {
+    string pkcs12 = 1;
+}
+
+// RevokeCertRequest marks a certificate serial as revoked.
+message RevokeCertRequest {
+    string serial = 1;
+}
+
+// ListCertsRequest lists all issued certificates for a tenant.
+message ListCertsRequest {
+    string tenant_id = 1;
+}
+
+// CertRecord is the metadata for an issued certificate.
+message CertRecord {
+    string serial = 1;
+    string username = 2;
+    string tenant_id = 3;
+    string issued_at = 4;
+    string expires_at = 5;
+    bool revoked = 6;
+}
+
+// ListCertsResponse holds a list of issued certificate records.
+message ListCertsResponse {
+    repeated CertRecord certs = 1;
+}
+
+// ===========================================================================
+// Collection messages
+// ===========================================================================
+
+// CreateCollectionRequest contains parameters for creating a collection.
+message CreateCollectionRequest {
+    string database = 1;
+    string name = 2;
+    string id_strategy = 3;
+    string field_hash = 4;
+}
+
+// GetCollectionInfoRequest retrieves metadata for a specific collection.
+message GetCollectionInfoRequest {
+    string database = 1;
+    string name = 2;
+}
+
+// ListCollectionsRequest lists all collections in a database.
+message ListCollectionsRequest {
+    string database = 1;
+}
+
+// DropCollectionRequest removes a collection and all its documents.
+message DropCollectionRequest {
+    string database = 1;
+    string name = 2;
+}
+
+// CollectionInfoResponse holds metadata about a collection.
+message CollectionInfoResponse {
+    string name = 1;
+    string database = 2;
+    string id_strategy = 3;
+    string field_hash = 4;
+    map<string, string> schema = 5;
+    int64 document_count = 6;
+    string created_at = 7;
+}
+
+// ListCollectionsResponse holds a list of collection metadata.
+message ListCollectionsResponse {
+    repeated CollectionInfoResponse collections = 1;
+}
+
+// InsertDocumentRequest inserts a document into a collection.
+message InsertDocumentRequest {
+    string database = 1;
+    string collection = 2;
+    string document = 3;
+}
+
+// InsertDocumentResponse holds the ID of the inserted document.
+message InsertDocumentResponse {
+    uint64 id = 1;
+}
+
+// GetDocumentRequest retrieves a document by ID.
+message GetDocumentRequest {
+    string database = 1;
+    string collection = 2;
+    uint64 id = 3;
+}
+
+// DocumentResponse holds a document and its ID.
+message DocumentResponse {
+    uint64 id = 1;
+    string document = 2;
+}
+
+// UpdateDocumentRequest replaces an existing document.
+message UpdateDocumentRequest {
+    string database = 1;
+    string collection = 2;
+    uint64 id = 3;
+    string document = 4;
+}
+
+// DeleteDocumentRequest removes a document by ID.
+message DeleteDocumentRequest {
+    string database = 1;
+    string collection = 2;
+    uint64 id = 3;
+}
+
+// ListDocumentsRequest retrieves a paginated list of documents.
+message ListDocumentsRequest {
+    string database = 1;
+    string collection = 2;
+    int32 page_size = 3;
+    string page_token = 4;
+}
+
+// ListDocumentsResponse holds a page of documents.
+message ListDocumentsResponse {
+    repeated DocumentResponse documents = 1;
+    string next_page_token = 2;
+    int64 total_count = 3;
+}
+
+// ===========================================================================
+// Database management messages
+// ===========================================================================
+
+// DatabaseCreateRequest contains parameters for creating a new database.
+message DatabaseCreateRequest {
+    string name = 1;
+    string engine = 2;
+    string backend = 3;
+    string data_dir = 4;
+    DatabaseProtocolConfig protocol = 5;
+    DatabaseRaftConfig raft = 6;
+}
+
+// DatabaseGetRequest retrieves information about a specific database.
+message DatabaseGetRequest {
+    string name = 1;
+}
+
+// DatabaseDropRequest removes a database by name.
+message DatabaseDropRequest {
+    string name = 1;
+}
+
+// DatabaseListResponse holds a list of database information entries.
+message DatabaseListResponse {
+    repeated DatabaseInfoResponse databases = 1;
+}
+
+// DatabaseInfoResponse holds runtime information about a database.
+message DatabaseInfoResponse {
+    string name = 1;
+    string engine = 2;
+    string backend = 3;
+    string status = 4;
+    DatabaseProtocolConfig protocol = 5;
+    string data_dir = 6;
+    uint64 shard_id = 7;
+    string mode = 8;
+    DatabaseRaftConfig raft = 9;
+    DatabaseBarrierConfig barrier = 10;
+    DatabaseConnectionConfig connection = 11;
+    string tenant_id = 12;
+}
+
+// DatabaseProtocolConfig holds wire protocol settings for a database.
+message DatabaseProtocolConfig {
+    bool mysql = 1;
+    bool postgresql = 2;
+    DatabaseEtcdConfig etcd = 3;
+}
+
+// DatabaseEtcdConfig holds etcd wire protocol settings.
+message DatabaseEtcdConfig {
+    bool enabled = 1;
+    string listen_addr = 2;
+    repeated string advertise_client_urls = 3;
+}
+
+// DatabaseRaftConfig holds Raft consensus settings for a database.
+message DatabaseRaftConfig {
+    string cluster_mode = 1;
+    uint64 shard_id = 2;
+    uint64 replica_id = 3;
+    string raft_address = 4;
+    repeated string peers = 5;
+    int32 local_node_count = 6;
+    string discovery = 7;
+    DatabaseStaticDiscovery static = 8;
+    DatabaseMulticastDiscovery multicast = 9;
+    DatabaseDNSDiscovery dns = 10;
+    DatabaseTokenDiscovery token = 11;
+}
+
+// DatabaseStaticDiscovery holds static peer discovery configuration.
+message DatabaseStaticDiscovery {
+    repeated string peers = 1;
+    string shared_secret = 2;
+}
+
+// DatabaseMulticastDiscovery holds multicast peer discovery configuration.
+message DatabaseMulticastDiscovery {
+    string shared_secret = 1;
+    string multicast_group = 2;
+    string iface = 3 [json_name = "interface"];
+    int32 min_peers = 4;
+    string announce_interval = 5;
+    string discover_timeout = 6;
+}
+
+// DatabaseDNSDiscovery holds DNS SRV record peer discovery configuration.
+message DatabaseDNSDiscovery {
+    string service = 1;
+    string proto = 2;
+    string domain = 3;
+    string lookup_timeout = 4;
+}
+
+// DatabaseTokenDiscovery holds token-based discovery configuration.
+message DatabaseTokenDiscovery {
+    string endpoint = 1;
+    string token = 2;
+    int32 cluster_size = 3;
+    string timeout = 4;
+}
+
+// DatabaseBarrierConfig holds encryption barrier settings.
+message DatabaseBarrierConfig {
+    bool enabled = 1;
+}
+
+// DatabaseConnectionConfig holds remote connection settings.
+message DatabaseConnectionConfig {
+    string remote_address = 1;
+    bool use_tls = 2;
+    string transport = 3;
+    string ca_file = 4;
+    string cert_file = 5;
+    string key_file = 6;
+}
+
+// DatabaseUpdateProtocolRequest updates the wire protocol configuration.
+message DatabaseUpdateProtocolRequest {
+    string name = 1;
+    bool mysql = 2;
+    bool postgresql = 3;
+}
+
+// DatabaseUpdateEtcdRequest updates the etcd wire protocol configuration.
+message DatabaseUpdateEtcdRequest {
+    string name = 1;
+    bool enabled = 2;
+    string listen_addr = 3;
+    repeated string advertise_client_urls = 4;
+}
+
+// DatabaseUpdateRaftRequest updates the Raft consensus configuration.
+message DatabaseUpdateRaftRequest {
+    string name = 1;
+    DatabaseRaftConfig raft = 2;
+}
+
+// DatabaseUpdateBarrierRequest updates the encryption barrier configuration.
+message DatabaseUpdateBarrierRequest {
+    string name = 1;
+    DatabaseBarrierConfig barrier = 2;
+}
+
+// DatabaseUpdateConnectionRequest updates the remote connection configuration.
+message DatabaseUpdateConnectionRequest {
+    string name = 1;
+    DatabaseConnectionConfig connection = 2;
+}
+
+// ===========================================================================
+// Barrier messages
+// ===========================================================================
+
+// BarrierInitializeRequest initializes the barrier with a single master key.
+message BarrierInitializeRequest {
+    string secret = 1;
+}
+
+// BarrierUnsealRequest unseals the barrier with a master key.
+message BarrierUnsealRequest {
+    string secret = 1;
+}
+
+// BarrierStatusResponse describes the current barrier state.
+message BarrierStatusResponse {
+    bool sealed = 1;
+    string strategy = 2;
+    bool hardware_backed = 3;
+    string initialized_at = 4;
+}
+
+// BarrierShamirInitializeRequest initializes the barrier with Shamir secret sharing.
+message BarrierShamirInitializeRequest {
+    string secret = 1;
+    int32 threshold = 2;
+    int32 total_shares = 3;
+}
+
+// BarrierShamirInitializeResponse returns the generated key shares.
+message BarrierShamirInitializeResponse {
+    repeated string shares = 1;
+    int32 threshold = 2;
+    int32 total_shares = 3;
+}
+
+// BarrierShamirUnsealShareRequest submits a single Shamir share.
+message BarrierShamirUnsealShareRequest {
+    string share = 1;
+}
+
+// BarrierShamirUnsealShareResponse reports unseal progress.
+message BarrierShamirUnsealShareResponse {
+    int32 required = 1;
+    int32 submitted = 2;
+    bool complete = 3;
+}
+
+// BarrierShamirUnsealSharesRequest submits multiple Shamir shares.
+message BarrierShamirUnsealSharesRequest {
+    repeated string shares = 1;
+}
+
+// BarrierShamirSharesResponse describes stored Shamir share metadata.
+message BarrierShamirSharesResponse {
+    int32 count = 1;
+    int32 threshold = 2;
+    int32 total = 3;
+}
+
+// BarrierShamirDeleteShareRequest deletes a single share by index.
+message BarrierShamirDeleteShareRequest {
+    int32 index = 1;
+}
+
+// BarrierRekeyRequest generates new Shamir shares.
+message BarrierRekeyRequest {
+    int32 threshold = 1;
+    int32 total = 2;
+}
+
+// BarrierRecoveryGenerateRequest generates recovery keys.
+message BarrierRecoveryGenerateRequest {
+    int32 threshold = 1;
+    int32 total = 2;
+}
+
+// BarrierRecoveryKeysResponse returns generated recovery keys.
+message BarrierRecoveryKeysResponse {
+    repeated string keys = 1;
+    int32 threshold = 2;
+    int32 total = 3;
+}
+
+// BarrierRecoveryRecoverRequest unseals the barrier using recovery keys.
+message BarrierRecoveryRecoverRequest {
+    repeated string keys = 1;
+}
+
+// BarrierRecoveryStatusResponse indicates whether recovery keys exist.
+message BarrierRecoveryStatusResponse {
+    bool has_recovery_keys = 1;
+}
+
+// BarrierRootTokenRequest generates a root token using Shamir shares.
+message BarrierRootTokenRequest {
+    repeated string shares = 1;
+}
+
+// BarrierRootTokenResponse returns a newly generated root token.
+message BarrierRootTokenResponse {
+    string token = 1;
+    string created_at = 2;
+}
+
+// ===========================================================================
+// Ceremony messages
+// ===========================================================================
+
+// CeremonyOfficer describes a single officer for M-of-N initialization.
+message CeremonyOfficer {
+    string username = 1;
+    string csr_pem = 2;
+}
+
+// CeremonyInitializeRequest starts the initialization ceremony.
+message CeremonyInitializeRequest {
+    string so_pin = 1;
+    string user_pin = 2;
+    int32 threshold = 3;
+    string credential_seal_strategy = 4;
+    repeated CeremonyOfficer officers = 5;
+    string hostname = 6;
+    repeated string sans = 7;
+}
+
+// CeremonyInitializeResponse returns the result of ceremony initialization.
+message CeremonyInitializeResponse {
+    string spki_pin = 1;
+    string ca_cert_pem = 2;
+    string tls_cert_pem = 3;
+    string so_cert_pem = 4;
+    string so_key_pem = 5;
+    string state = 6;
+    int32 share_count = 7;
+}
+
+// CeremonyStatusResponse describes the current ceremony state.
+message CeremonyStatusResponse {
+    string state = 1;
+    string spki_pin = 2;
+}
+
+// CeremonyClaimCertBeginRequest starts a certificate claim challenge.
+message CeremonyClaimCertBeginRequest {
+    string username = 1;
+}
+
+// CeremonyClaimCertBeginResponse returns the challenge nonce.
+message CeremonyClaimCertBeginResponse {
+    string nonce_hex = 1;
+    string expires_at = 2;
+}
+
+// CeremonyClaimCertCompleteRequest completes a certificate claim.
+message CeremonyClaimCertCompleteRequest {
+    string username = 1;
+    string nonce_hex = 2;
+    string signature = 3;
+}
+
+// CeremonyClaimCertCompleteResponse returns the issued certificate.
+message CeremonyClaimCertCompleteResponse {
+    string cert_pem = 1;
+    string ca_cert_pem = 2;
+}
+
+// CeremonyClaimShareRequest requests the Shamir share for an officer.
+message CeremonyClaimShareRequest {
+    string username = 1;
+}
+
+// CeremonyClaimShareResponse returns the officer's Shamir share.
+message CeremonyClaimShareResponse {
+    string share = 1;
+}
+
+// CeremonySignCSRRequest submits a CSR for signing during the ceremony.
+message CeremonySignCSRRequest {
+    string username = 1;
+    string so_pin = 2;
+    string csr_pem = 3;
+    string role = 4;
+}
+
+// CeremonySignCSRResponse returns the signed certificate.
+message CeremonySignCSRResponse {
+    string cert_pem = 1;
 }

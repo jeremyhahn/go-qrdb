@@ -27,6 +27,7 @@ type AuditEvent struct {
 // AuditLogger receives audit events for barrier operations.
 type AuditLogger interface {
 	Log(ctx context.Context, event *AuditEvent) error
+	Close() error
 }
 
 // emitAudit sends an audit event to the logger. If logger is nil the

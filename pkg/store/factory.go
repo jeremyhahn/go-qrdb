@@ -17,10 +17,12 @@ package store
 import (
 	"github.com/cockroachdb/pebble/v2"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/lease"
+	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 )
 
-// Option configures a PebbleStore created by NewPebbleCreateFunc.
+// Option configures the underlying PebbleDB database for state machine factories.
 type Option func(*pebble.Options)
 
 // WithCacheSize sets the PebbleDB block cache size in bytes.
@@ -44,17 +46,42 @@ func WithMaxOpenFiles(n int) Option {
 	}
 }
 
-// NewPebbleCreateFunc returns a sm.CreateFunc that creates PebbleStore instances.
-// Options configure the underlying PebbleDB database.
-func NewPebbleCreateFunc(opts ...Option) sm.CreateFunc {
-	return sm.NewDiskCreateFunc(func(_, _ uint64) sm.DiskStateMachine {
-		pOpts := &pebble.Options{}
-		for _, opt := range opts {
-			opt(pOpts)
-		}
-		return NewPebbleStore(pOpts)
-	})
+// ---------------------------------------------------------------------------
+// MVCCOption -- configures an MVCCStateMachine
+// ---------------------------------------------------------------------------
+
+// MVCCOption configures an MVCCStateMachine created by NewMVCCCreateFuncWith.
+type MVCCOption func(*MVCCStateMachine)
+
+// WithLessor attaches a lease.Lessor to the MVCC state machine. The lessor
+// manages lease lifecycle (grant/revoke/keep-alive) and key-lease bindings.
+func WithLessor(lr *lease.Lessor) MVCCOption {
+	return func(s *MVCCStateMachine) {
+		s.SetLessor(lr)
+	}
 }
+
+// WithWatchHub attaches a watch.Hub to the MVCC state machine. When set,
+// the state machine emits watch notifications after each committed batch.
+// The hub instance must be shared with the WatchService to deliver events.
+func WithWatchHub(hub *watch.Hub) MVCCOption {
+	return func(s *MVCCStateMachine) {
+		s.SetWatchHub(hub)
+	}
+}
+
+// WithTimeSeriesEnabled instructs the MVCC state machine to create a
+// time-series storage engine when the database is opened. The storage
+// is backed by the same PebbleDB instance as the MVCC store.
+func WithTimeSeriesEnabled() MVCCOption {
+	return func(s *MVCCStateMachine) {
+		s.enableTimeSeries = true
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Factory functions
+// ---------------------------------------------------------------------------
 
 // NewMVCCCreateFunc returns a sm.CreateFunc that creates MVCCStateMachine
 // instances. The MVCC state machine provides versioned key-value storage
@@ -67,5 +94,23 @@ func NewMVCCCreateFunc(opts ...Option) sm.CreateFunc {
 			opt(pOpts)
 		}
 		return NewMVCCStateMachine(pOpts)
+	})
+}
+
+// NewMVCCCreateFuncWith returns a sm.CreateFunc that creates
+// MVCCStateMachine instances with subsystem configuration. pebbleOpts
+// configure the underlying PebbleDB database. mvccOpts configure the
+// MVCCStateMachine subsystems (lessor, watch hub, time-series).
+func NewMVCCCreateFuncWith(pebbleOpts []Option, mvccOpts ...MVCCOption) sm.CreateFunc {
+	return sm.NewDiskCreateFunc(func(_, _ uint64) sm.DiskStateMachine {
+		pOpts := &pebble.Options{}
+		for _, opt := range pebbleOpts {
+			opt(pOpts)
+		}
+		s := NewMVCCStateMachine(pOpts)
+		for _, opt := range mvccOpts {
+			opt(s)
+		}
+		return s
 	})
 }

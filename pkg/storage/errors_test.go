@@ -16,8 +16,13 @@ package storage
 
 import (
 	"errors"
+	"io"
 	"testing"
 )
+
+// ---------------------------------------------------------------------------
+// StorageError (sentinels)
+// ---------------------------------------------------------------------------
 
 func TestStorageError_Error(t *testing.T) {
 	err := &StorageError{Code: "test_code", Message: "test message"}
@@ -58,5 +63,149 @@ func TestStorageError_Is(t *testing.T) {
 	other := &StorageError{Code: "key_not_found", Message: "key does not exist"}
 	if errors.Is(other, ErrKeyNotFound) {
 		t.Fatal("different instances should not be equal via errors.Is without Is method")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// OpError
+// ---------------------------------------------------------------------------
+
+func TestOpError_Error(t *testing.T) {
+	err := &OpError{Op: "get", Err: io.ErrUnexpectedEOF}
+	want := "storage get: unexpected EOF"
+	if err.Error() != want {
+		t.Fatalf("Error(): got %q, want %q", err.Error(), want)
+	}
+}
+
+func TestOpError_Unwrap(t *testing.T) {
+	inner := io.ErrClosedPipe
+	err := &OpError{Op: "set", Err: inner}
+	if !errors.Is(err, inner) {
+		t.Fatal("Unwrap should allow errors.Is to match the inner error")
+	}
+
+	var target *OpError
+	if !errors.As(err, &target) {
+		t.Fatal("errors.As should match *OpError")
+	}
+	if target.Op != "set" {
+		t.Fatalf("Op: got %q, want %q", target.Op, "set")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// KeyNotFoundError
+// ---------------------------------------------------------------------------
+
+func TestKeyNotFoundError_Error(t *testing.T) {
+	err := &KeyNotFoundError{Key: []byte("test-key")}
+	want := "key not found: test-key"
+	if err.Error() != want {
+		t.Fatalf("Error(): got %q, want %q", err.Error(), want)
+	}
+}
+
+func TestKeyNotFoundError_EmptyKey(t *testing.T) {
+	err := &KeyNotFoundError{Key: []byte{}}
+	want := "key not found: "
+	if err.Error() != want {
+		t.Fatalf("Error(): got %q, want %q", err.Error(), want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ClosedError
+// ---------------------------------------------------------------------------
+
+func TestClosedError_Error(t *testing.T) {
+	err := &ClosedError{}
+	want := "storage is closed"
+	if err.Error() != want {
+		t.Fatalf("Error(): got %q, want %q", err.Error(), want)
+	}
+}
+
+func TestClosedError_As(t *testing.T) {
+	var err error = &ClosedError{}
+	var target *ClosedError
+	if !errors.As(err, &target) {
+		t.Fatal("errors.As should match *ClosedError")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// BatchError
+// ---------------------------------------------------------------------------
+
+func TestBatchError_Error(t *testing.T) {
+	err := &BatchError{Op: "commit", Err: io.ErrShortWrite}
+	want := "storage batch commit: short write"
+	if err.Error() != want {
+		t.Fatalf("Error(): got %q, want %q", err.Error(), want)
+	}
+}
+
+func TestBatchError_Unwrap(t *testing.T) {
+	inner := io.ErrShortBuffer
+	err := &BatchError{Op: "set", Err: inner}
+	if !errors.Is(err, inner) {
+		t.Fatal("Unwrap should allow errors.Is to match the inner error")
+	}
+
+	var target *BatchError
+	if !errors.As(err, &target) {
+		t.Fatal("errors.As should match *BatchError")
+	}
+	if target.Op != "set" {
+		t.Fatalf("Op: got %q, want %q", target.Op, "set")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// IteratorError
+// ---------------------------------------------------------------------------
+
+func TestIteratorError_Error(t *testing.T) {
+	err := &IteratorError{Err: io.EOF}
+	want := "storage iterator: EOF"
+	if err.Error() != want {
+		t.Fatalf("Error(): got %q, want %q", err.Error(), want)
+	}
+}
+
+func TestIteratorError_Unwrap(t *testing.T) {
+	inner := io.ErrNoProgress
+	err := &IteratorError{Err: inner}
+	if !errors.Is(err, inner) {
+		t.Fatal("Unwrap should allow errors.Is to match the inner error")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SnapshotError
+// ---------------------------------------------------------------------------
+
+func TestSnapshotError_Error(t *testing.T) {
+	err := &SnapshotError{Op: "create", Err: io.ErrUnexpectedEOF}
+	want := "storage snapshot create: unexpected EOF"
+	if err.Error() != want {
+		t.Fatalf("Error(): got %q, want %q", err.Error(), want)
+	}
+}
+
+func TestSnapshotError_Unwrap(t *testing.T) {
+	inner := io.ErrClosedPipe
+	err := &SnapshotError{Op: "read", Err: inner}
+	if !errors.Is(err, inner) {
+		t.Fatal("Unwrap should allow errors.Is to match the inner error")
+	}
+
+	var target *SnapshotError
+	if !errors.As(err, &target) {
+		t.Fatal("errors.As should match *SnapshotError")
+	}
+	if target.Op != "read" {
+		t.Fatalf("Op: got %q, want %q", target.Op, "read")
 	}
 }

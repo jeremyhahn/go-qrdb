@@ -1,0 +1,221 @@
+// Copyright (c) 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package mcp
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"time"
+
+	"github.com/mark3labs/mcp-go/mcp"
+	mcpserver "github.com/mark3labs/mcp-go/server"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+)
+
+// certTools returns the MCP tool registrations for certificate management
+// operations.
+func certTools(svc cert.CertProvider) []mcpserver.ServerTool {
+	return []mcpserver.ServerTool{
+		{
+			Tool:    toolCertGenerate(),
+			Handler: handleCertGenerate(svc),
+		},
+		{
+			Tool:    toolCertExport(),
+			Handler: handleCertExport(svc),
+		},
+		{
+			Tool:    toolCertRevoke(),
+			Handler: handleCertRevoke(svc),
+		},
+		{
+			Tool:    toolCertList(),
+			Handler: handleCertList(svc),
+		},
+	}
+}
+
+// toolCertGenerate defines the qrdb_cert_generate tool schema.
+func toolCertGenerate() mcp.Tool {
+	return mcp.NewTool("qrdb_cert_generate",
+		mcp.WithDescription("Generate a client X.509 certificate signed by the internal CA for mTLS authentication."),
+		mcp.WithString("username",
+			mcp.Required(),
+			mcp.Description("The username to set as the certificate Common Name (CN)."),
+		),
+		mcp.WithString("tenant_id",
+			mcp.Description("The tenant ID to set as the certificate Organizational Unit (OU). Defaults to the system default tenant when empty."),
+		),
+		mcp.WithString("ttl",
+			mcp.Description(`Certificate validity period as a Go duration string (e.g., "8760h" for one year). Defaults to the provider's default when empty.`),
+		),
+	)
+}
+
+// handleCertGenerate returns a tool handler that delegates to
+// svc.GenerateClientCert.
+func handleCertGenerate(svc cert.CertProvider) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		username := mcp.ParseString(req, "username", "")
+		if username == "" {
+			return mcp.NewToolResultError("username is required"), nil
+		}
+
+		genReq := &cert.GenerateRequest{
+			Username: username,
+			TenantID: mcp.ParseString(req, "tenant_id", ""),
+		}
+
+		ttlStr := mcp.ParseString(req, "ttl", "")
+		if ttlStr != "" {
+			ttl, err := time.ParseDuration(ttlStr)
+			if err != nil {
+				return mcp.NewToolResultError("invalid ttl duration: " + err.Error()), nil
+			}
+			genReq.TTL = ttl
+		}
+
+		bundle, err := svc.GenerateClientCert(ctx, genReq)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_cert_generate", Err: err}
+		}
+
+		data, jsonErr := json.Marshal(bundle)
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_cert_generate", Err: jsonErr}
+		}
+
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// toolCertExport defines the qrdb_cert_export tool schema.
+func toolCertExport() mcp.Tool {
+	return mcp.NewTool("qrdb_cert_export",
+		mcp.WithDescription("Export a certificate and private key as a PKCS#12 (.p12) bundle for browser import. Returns the bundle as base64-encoded data."),
+		mcp.WithString("cert_pem",
+			mcp.Required(),
+			mcp.Description("The PEM-encoded X.509 client certificate."),
+		),
+		mcp.WithString("key_pem",
+			mcp.Required(),
+			mcp.Description("The PEM-encoded private key."),
+		),
+		mcp.WithString("passphrase",
+			mcp.Required(),
+			mcp.Description("The passphrase to protect the PKCS#12 bundle."),
+		),
+	)
+}
+
+// certExportResponse is the JSON envelope for a PKCS#12 export result.
+type certExportResponse struct {
+	// P12Base64 is the PKCS#12 bundle encoded as base64.
+	P12Base64 string `json:"p12_base64"`
+}
+
+// handleCertExport returns a tool handler that delegates to
+// svc.ExportPKCS12.
+func handleCertExport(svc cert.CertProvider) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		certPEM := mcp.ParseString(req, "cert_pem", "")
+		if certPEM == "" {
+			return mcp.NewToolResultError("cert_pem is required"), nil
+		}
+		keyPEM := mcp.ParseString(req, "key_pem", "")
+		if keyPEM == "" {
+			return mcp.NewToolResultError("key_pem is required"), nil
+		}
+		passphrase := mcp.ParseString(req, "passphrase", "")
+		if passphrase == "" {
+			return mcp.NewToolResultError("passphrase is required"), nil
+		}
+
+		p12, err := svc.ExportPKCS12(ctx, []byte(certPEM), []byte(keyPEM), passphrase)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_cert_export", Err: err}
+		}
+
+		resp := certExportResponse{
+			P12Base64: base64.StdEncoding.EncodeToString(p12),
+		}
+
+		data, jsonErr := json.Marshal(resp)
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_cert_export", Err: jsonErr}
+		}
+
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// toolCertRevoke defines the qrdb_cert_revoke tool schema.
+func toolCertRevoke() mcp.Tool {
+	return mcp.NewTool("qrdb_cert_revoke",
+		mcp.WithDescription("Revoke a certificate by its hexadecimal serial number."),
+		mcp.WithString("serial",
+			mcp.Required(),
+			mcp.Description("The hexadecimal serial number of the certificate to revoke."),
+		),
+	)
+}
+
+// handleCertRevoke returns a tool handler that delegates to
+// svc.RevokeCert.
+func handleCertRevoke(svc cert.CertProvider) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		serial := mcp.ParseString(req, "serial", "")
+		if serial == "" {
+			return mcp.NewToolResultError("serial is required"), nil
+		}
+
+		if err := svc.RevokeCert(ctx, serial); err != nil {
+			return nil, &ToolError{Tool: "qrdb_cert_revoke", Err: err}
+		}
+
+		return mcp.NewToolResultText("ok"), nil
+	}
+}
+
+// toolCertList defines the qrdb_cert_list tool schema.
+func toolCertList() mcp.Tool {
+	return mcp.NewTool("qrdb_cert_list",
+		mcp.WithDescription("List all issued client certificates for a tenant."),
+		mcp.WithString("tenant_id",
+			mcp.Description(`The tenant ID to list certificates for. Defaults to "default" when empty.`),
+		),
+	)
+}
+
+// handleCertList returns a tool handler that delegates to svc.ListCerts.
+func handleCertList(svc cert.CertProvider) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		tenantID := mcp.ParseString(req, "tenant_id", "default")
+
+		records, err := svc.ListCerts(ctx, tenantID)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_cert_list", Err: err}
+		}
+
+		data, jsonErr := json.Marshal(records)
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_cert_list", Err: jsonErr}
+		}
+
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}

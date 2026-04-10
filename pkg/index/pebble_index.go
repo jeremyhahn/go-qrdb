@@ -15,6 +15,7 @@
 package index
 
 import (
+	"bytes"
 	"encoding/binary"
 	"sort"
 	"sync/atomic"
@@ -22,8 +23,9 @@ import (
 	"github.com/cockroachdb/pebble/v2"
 )
 
-// entityIDLen is the byte length of a big-endian encoded uint64 entity ID.
-const entityIDLen = 8
+// entityKeyLenSize is the byte length of the uint32 big-endian length suffix
+// that trails every entity key in a composite index key.
+const entityKeyLenSize = 4
 
 // keyPrefix is the index key namespace prefix.
 const keyPrefix = "idx:"
@@ -34,20 +36,32 @@ const keySeparator = ":"
 // PebbleIndex is a PebbleDB-backed implementation of the Index interface.
 // Keys are stored with the composite format:
 //
-//	"idx:" + name + ":" + fieldValue + ":" + entityID(8 bytes big-endian)
+//	"idx:" + name + ":" + fieldValue + ":" + entityKey + uint32BE(len(entityKey))
 //
-// PebbleIndex does not own the PebbleDB instance and will not close it.
+// The trailing 4-byte length suffix allows the parser to read backward and
+// extract the variable-length entity key. PebbleIndex does not own the
+// PebbleDB instance and will not close it.
+//
+// When valueType is IndexValueTypeNumeric, field values are encoded as 8-byte
+// big-endian fixed-width integers (with sign-bit flip) so that byte ordering
+// matches numeric ordering. This makes range scans like [1, 222) correct —
+// lexicographic comparison of raw strings would incorrectly include 1234.
 type PebbleIndex struct {
-	db     *pebble.DB
-	name   string
-	unique bool
-	closed atomic.Bool
+	db        *pebble.DB
+	name      string
+	unique    bool
+	valueType IndexValueType
+	closed    atomic.Bool
 }
 
 // NewPebbleIndex creates a new PebbleDB-backed index with the given name.
 // The caller retains ownership of the PebbleDB instance. Returns a
 // NilDBError if db is nil or an EmptyNameError if name is empty.
-func NewPebbleIndex(db *pebble.DB, name string, unique bool) (*PebbleIndex, error) {
+//
+// When valueType is IndexValueTypeNumeric, field values are encoded as
+// fixed-width 8-byte big-endian integers with a sign-bit flip so that
+// byte ordering matches numeric ordering.
+func NewPebbleIndex(db *pebble.DB, name string, unique bool, valueType IndexValueType) (*PebbleIndex, error) {
 	if db == nil {
 		return nil, &NilDBError{}
 	}
@@ -55,10 +69,39 @@ func NewPebbleIndex(db *pebble.DB, name string, unique bool) (*PebbleIndex, erro
 		return nil, &EmptyNameError{}
 	}
 	return &PebbleIndex{
-		db:     db,
-		name:   name,
-		unique: unique,
+		db:        db,
+		name:      name,
+		unique:    unique,
+		valueType: valueType,
 	}, nil
+}
+
+// encodeValue encodes a raw field value according to the index value type.
+// Returns the encoded value and true on success. Returns nil and false when
+// the value cannot be encoded (e.g. a non-numeric string for a numeric index);
+// callers must skip the index entry in that case.
+func (p *PebbleIndex) encodeValue(raw []byte) ([]byte, bool) {
+	if p.valueType != IndexValueTypeNumeric {
+		return raw, true
+	}
+	encoded, err := EncodeNumericValue(string(raw))
+	if err != nil {
+		return nil, false
+	}
+	return encoded, true
+}
+
+// decodeValue reverses the encoding applied by encodeValue. For numeric
+// indexes it converts the 8-byte representation back to a decimal string.
+func (p *PebbleIndex) decodeValue(encoded []byte) string {
+	if p.valueType != IndexValueTypeNumeric {
+		return string(encoded)
+	}
+	s, err := DecodeNumericValue(encoded)
+	if err != nil {
+		return string(encoded)
+	}
+	return s
 }
 
 // Name returns the index name.
@@ -71,11 +114,13 @@ func (p *PebbleIndex) IsUnique() bool {
 	return p.unique
 }
 
-// Put adds an index entry mapping fieldValue to entityID. If the index
+// Put adds an index entry mapping fieldValue to entityKey. If the index
 // enforces uniqueness and a different entity already maps to the same
 // field value, a UniqueViolationError is returned. The entry is stored
 // with an empty value; the composite key encodes all information.
-func (p *PebbleIndex) Put(entityID uint64, fieldValue []byte) error {
+// For numeric indexes, fieldValue is encoded as a fixed-width 8-byte
+// big-endian integer. Non-numeric values are silently skipped.
+func (p *PebbleIndex) Put(entityKey []byte, fieldValue []byte) error {
 	if p.closed.Load() {
 		return &ClosedError{Name: p.name}
 	}
@@ -83,31 +128,38 @@ func (p *PebbleIndex) Put(entityID uint64, fieldValue []byte) error {
 		return &NilFieldValueError{Op: "put"}
 	}
 
+	encoded, ok := p.encodeValue(fieldValue)
+	if !ok {
+		return nil // non-numeric value; skip silently
+	}
+
 	if p.unique {
-		existing, err := p.getEntityIDs(fieldValue)
+		existing, err := p.getEntityKeys(encoded)
 		if err != nil {
 			return err
 		}
-		for _, id := range existing {
-			if id == entityID {
-				return nil
-			}
+		if len(existing) > 0 && bytes.Equal(existing[0], entityKey) {
+			// Same entity key already indexed; idempotent put.
+			return nil
+		}
+		if len(existing) > 0 {
 			return &UniqueViolationError{
-				IndexName:  p.name,
-				FieldValue: fieldValue,
-				ExistingID: id,
-				NewID:      entityID,
+				IndexName:   p.name,
+				FieldValue:  fieldValue,
+				ExistingKey: existing[0],
+				NewKey:      entityKey,
 			}
 		}
 	}
 
-	key := p.buildKey(fieldValue, entityID)
+	key := p.buildKey(encoded, entityKey)
 	return p.db.Set(key, nil, pebble.Sync)
 }
 
-// Get retrieves all entity IDs associated with the given field value.
-// Returns an empty slice if no entities are found.
-func (p *PebbleIndex) Get(fieldValue []byte) ([]uint64, error) {
+// Get retrieves all entity keys associated with the given field value.
+// Returns an empty slice if no entities are found. For numeric indexes,
+// fieldValue is encoded before the lookup.
+func (p *PebbleIndex) Get(fieldValue []byte) ([][]byte, error) {
 	if p.closed.Load() {
 		return nil, &ClosedError{Name: p.name}
 	}
@@ -115,18 +167,24 @@ func (p *PebbleIndex) Get(fieldValue []byte) ([]uint64, error) {
 		return nil, &NilFieldValueError{Op: "get"}
 	}
 
-	ids, err := p.getEntityIDs(fieldValue)
+	encoded, ok := p.encodeValue(fieldValue)
+	if !ok {
+		return [][]byte{}, nil // non-numeric value; nothing to find
+	}
+
+	keys, err := p.getEntityKeys(encoded)
 	if err != nil {
 		return nil, err
 	}
-	if len(ids) == 0 {
-		return []uint64{}, nil
+	if len(keys) == 0 {
+		return [][]byte{}, nil
 	}
-	return ids, nil
+	return keys, nil
 }
 
-// Delete removes the index entry for the given entity ID and field value.
-func (p *PebbleIndex) Delete(entityID uint64, fieldValue []byte) error {
+// Delete removes the index entry for the given entity key and field value.
+// For numeric indexes, fieldValue is encoded before building the delete key.
+func (p *PebbleIndex) Delete(entityKey []byte, fieldValue []byte) error {
 	if p.closed.Load() {
 		return &ClosedError{Name: p.name}
 	}
@@ -134,14 +192,21 @@ func (p *PebbleIndex) Delete(entityID uint64, fieldValue []byte) error {
 		return &NilFieldValueError{Op: "delete"}
 	}
 
-	key := p.buildKey(fieldValue, entityID)
+	encoded, ok := p.encodeValue(fieldValue)
+	if !ok {
+		return nil // non-numeric value; nothing to delete
+	}
+
+	key := p.buildKey(encoded, entityKey)
 	return p.db.Delete(key, pebble.Sync)
 }
 
 // Scan retrieves all index entries with field values in the half-open
 // interval [start, end). Returns a map of field value strings to entity
-// ID slices.
-func (p *PebbleIndex) Scan(start, end []byte) (map[string][]uint64, error) {
+// key slices. For numeric indexes, start and end are encoded before use
+// so that the byte-range comparison is numerically correct; the result
+// map keys are decoded back to decimal strings.
+func (p *PebbleIndex) Scan(start, end []byte) (map[string][][]byte, error) {
 	if p.closed.Load() {
 		return nil, &ClosedError{Name: p.name}
 	}
@@ -152,8 +217,17 @@ func (p *PebbleIndex) Scan(start, end []byte) (map[string][]uint64, error) {
 		return nil, &NilFieldValueError{Op: "scan end"}
 	}
 
-	lower := p.buildValuePrefix(start)
-	upper := p.buildValuePrefix(end)
+	encodedStart, ok := p.encodeValue(start)
+	if !ok {
+		return map[string][][]byte{}, nil
+	}
+	encodedEnd, ok := p.encodeValue(end)
+	if !ok {
+		return map[string][][]byte{}, nil
+	}
+
+	lower := p.buildScanBound(encodedStart)
+	upper := p.buildScanBound(encodedEnd)
 
 	iter, err := p.db.NewIter(&pebble.IterOptions{
 		LowerBound: lower,
@@ -164,14 +238,14 @@ func (p *PebbleIndex) Scan(start, end []byte) (map[string][]uint64, error) {
 	}
 	defer func() { _ = iter.Close() }()
 
-	result := make(map[string][]uint64)
+	result := make(map[string][][]byte)
 	for iter.First(); iter.Valid(); iter.Next() {
-		fv, eid, parseErr := p.parseKey(iter.Key())
+		fv, ek, parseErr := p.parseKey(iter.Key())
 		if parseErr != nil {
 			return nil, parseErr
 		}
-		key := string(fv)
-		result[key] = append(result[key], eid)
+		key := p.decodeValue(fv)
+		result[key] = append(result[key], ek)
 	}
 	if err := iter.Error(); err != nil {
 		return nil, err
@@ -180,9 +254,9 @@ func (p *PebbleIndex) Scan(start, end []byte) (map[string][]uint64, error) {
 	return result, nil
 }
 
-// GetAll retrieves all entity IDs in the index, deduplicated and sorted
+// GetAll retrieves all entity keys in the index, deduplicated and sorted
 // for deterministic output.
-func (p *PebbleIndex) GetAll() ([]uint64, error) {
+func (p *PebbleIndex) GetAll() ([][]byte, error) {
 	if p.closed.Load() {
 		return nil, &ClosedError{Name: p.name}
 	}
@@ -199,27 +273,30 @@ func (p *PebbleIndex) GetAll() ([]uint64, error) {
 	}
 	defer func() { _ = iter.Close() }()
 
-	seen := make(map[uint64]struct{})
+	seen := make(map[string]struct{})
+	var keys [][]byte
 	for iter.First(); iter.Valid(); iter.Next() {
-		eid, extractErr := extractEntityID(iter.Key())
+		ek, extractErr := extractEntityKey(iter.Key())
 		if extractErr != nil {
 			return nil, extractErr
 		}
-		seen[eid] = struct{}{}
+		s := string(ek)
+		if _, exists := seen[s]; !exists {
+			seen[s] = struct{}{}
+			keyCopy := make([]byte, len(ek))
+			copy(keyCopy, ek)
+			keys = append(keys, keyCopy)
+		}
 	}
 	if err := iter.Error(); err != nil {
 		return nil, err
 	}
 
-	result := make([]uint64, 0, len(seen))
-	for id := range seen {
-		result = append(result, id)
-	}
-	sort.Slice(result, func(i, j int) bool {
-		return result[i] < result[j]
+	sort.Slice(keys, func(i, j int) bool {
+		return bytes.Compare(keys[i], keys[j]) < 0
 	})
 
-	return result, nil
+	return keys, nil
 }
 
 // Clear removes all entries from the index using a batch deletion over
@@ -266,9 +343,9 @@ func (p *PebbleIndex) Close() error {
 	return nil
 }
 
-// getEntityIDs scans all entity IDs for a specific field value using
+// getEntityKeys scans all entity keys for a specific field value using
 // a prefix iterator.
-func (p *PebbleIndex) getEntityIDs(fieldValue []byte) ([]uint64, error) {
+func (p *PebbleIndex) getEntityKeys(fieldValue []byte) ([][]byte, error) {
 	prefix := p.buildValuePrefix(fieldValue)
 	upper := incrementBytes(prefix)
 
@@ -281,28 +358,31 @@ func (p *PebbleIndex) getEntityIDs(fieldValue []byte) ([]uint64, error) {
 	}
 	defer func() { _ = iter.Close() }()
 
-	var ids []uint64
+	var keys [][]byte
 	for iter.First(); iter.Valid(); iter.Next() {
-		eid, extractErr := extractEntityID(iter.Key())
+		ek, extractErr := extractEntityKey(iter.Key())
 		if extractErr != nil {
 			return nil, extractErr
 		}
-		ids = append(ids, eid)
+		keyCopy := make([]byte, len(ek))
+		copy(keyCopy, ek)
+		keys = append(keys, keyCopy)
 	}
 	if err := iter.Error(); err != nil {
 		return nil, err
 	}
 
-	return ids, nil
+	return keys, nil
 }
 
 // buildKey constructs the full composite index key:
-// "idx:" + name + ":" + fieldValue + ":" + entityID(8 bytes big-endian).
-func (p *PebbleIndex) buildKey(fieldValue []byte, entityID uint64) []byte {
+// "idx:" + name + ":" + fieldValue + ":" + entityKey + uint32BE(len(entityKey)).
+func (p *PebbleIndex) buildKey(fieldValue []byte, entityKey []byte) []byte {
 	prefix := p.buildValuePrefix(fieldValue)
-	key := make([]byte, len(prefix)+entityIDLen)
-	copy(key, prefix)
-	binary.BigEndian.PutUint64(key[len(prefix):], entityID)
+	key := make([]byte, len(prefix)+len(entityKey)+entityKeyLenSize)
+	n := copy(key, prefix)
+	n += copy(key[n:], entityKey)
+	binary.BigEndian.PutUint32(key[n:], uint32(len(entityKey)))
 	return key
 }
 
@@ -317,6 +397,19 @@ func (p *PebbleIndex) buildValuePrefix(fieldValue []byte) []byte {
 	return prefix
 }
 
+// buildScanBound constructs a range bound for scan operations without
+// a trailing ':' separator. The ':' separator (0x3A) sorts after digits
+// (0x30-0x39), which breaks lexicographic range scans when values share
+// common prefixes of different lengths.
+// Format: "idx:" + name + ":" + fieldValue.
+func (p *PebbleIndex) buildScanBound(fieldValue []byte) []byte {
+	indexPrefix := p.buildIndexPrefix()
+	bound := make([]byte, len(indexPrefix)+len(fieldValue))
+	n := copy(bound, indexPrefix)
+	copy(bound[n:], fieldValue)
+	return bound
+}
+
 // buildIndexPrefix constructs the prefix for the entire index:
 // "idx:" + name + ":".
 func (p *PebbleIndex) buildIndexPrefix() []byte {
@@ -327,50 +420,75 @@ func (p *PebbleIndex) buildIndexPrefix() []byte {
 	return prefix
 }
 
-// extractEntityID extracts the uint64 entity ID from the last 8 bytes
-// of a composite index key.
-func extractEntityID(key []byte) (uint64, error) {
-	if len(key) < entityIDLen {
-		return 0, &KeyTooShortError{}
+// extractEntityKey extracts the variable-length entity key from the end
+// of a composite index key. The last 4 bytes encode the entity key length
+// as a uint32 big-endian value. The entity key occupies the preceding
+// keyLen bytes.
+func extractEntityKey(key []byte) ([]byte, error) {
+	if len(key) < entityKeyLenSize {
+		return nil, &KeyTooShortError{}
 	}
-	return binary.BigEndian.Uint64(key[len(key)-entityIDLen:]), nil
+	keyLen := binary.BigEndian.Uint32(key[len(key)-entityKeyLenSize:])
+	if uint32(len(key)) < keyLen+entityKeyLenSize {
+		return nil, &KeyTooShortError{}
+	}
+	start := len(key) - entityKeyLenSize - int(keyLen)
+	return key[start : start+int(keyLen)], nil
 }
 
 // parseKey parses a full composite index key into its field value and
-// entity ID components. The key must begin with the index prefix and
-// contain at least the separator and 8-byte entity ID suffix.
-func (p *PebbleIndex) parseKey(key []byte) (fieldValue []byte, entityID uint64, err error) {
+// entity key components. The key must begin with the index prefix. After
+// the prefix, the remaining bytes are:
+//
+//	fieldValue + ":" + entityKey + uint32BE(len(entityKey))
+//
+// The parser reads the trailing length suffix backward to locate the
+// entity key, then expects a ":" separator before it. Everything before
+// the separator is the field value.
+func (p *PebbleIndex) parseKey(key []byte) (fieldValue []byte, entityKey []byte, err error) {
 	prefix := p.buildIndexPrefix()
 	if len(key) < len(prefix) {
-		return nil, 0, &KeyPrefixMismatchError{}
+		return nil, nil, &KeyPrefixMismatchError{}
 	}
 
 	for i := range prefix {
 		if key[i] != prefix[i] {
-			return nil, 0, &KeyPrefixMismatchError{}
+			return nil, nil, &KeyPrefixMismatchError{}
 		}
 	}
 
 	// After the index prefix, the remaining bytes are:
-	// fieldValue + ":" + entityID(8 bytes)
+	// fieldValue + ":" + entityKey + uint32BE(len(entityKey))
 	rest := key[len(prefix):]
-	// Minimum: 1 byte separator + 8 bytes entityID = 9
-	if len(rest) < len(keySeparator)+entityIDLen {
-		return nil, 0, &KeyTooShortError{}
+	// Minimum: 1 byte separator + 0 byte entityKey + 4 bytes length = 5
+	if len(rest) < len(keySeparator)+entityKeyLenSize {
+		return nil, nil, &KeyTooShortError{}
 	}
 
-	// The separator before the entity ID is the last ":" before the
-	// trailing 8 bytes. Find it by computing the offset.
-	sepIdx := len(rest) - entityIDLen - len(keySeparator)
+	// Read the trailing 4-byte length suffix.
+	keyLen := binary.BigEndian.Uint32(rest[len(rest)-entityKeyLenSize:])
+
+	// Validate there are enough bytes for separator + entityKey + length suffix.
+	if uint32(len(rest)) < uint32(len(keySeparator))+keyLen+entityKeyLenSize {
+		return nil, nil, &KeyTooShortError{}
+	}
+
+	// Extract the entity key (keyLen bytes before the length suffix).
+	ekStart := len(rest) - entityKeyLenSize - int(keyLen)
+	entityKey = make([]byte, keyLen)
+	copy(entityKey, rest[ekStart:ekStart+int(keyLen)])
+
+	// The byte immediately before the entity key must be the separator ":".
+	sepIdx := ekStart - len(keySeparator)
 	if sepIdx < 0 {
-		return nil, 0, &KeyTooShortError{}
+		return nil, nil, &KeyTooShortError{}
 	}
 
+	// Extract the field value (everything before the separator).
 	fieldValue = make([]byte, sepIdx)
 	copy(fieldValue, rest[:sepIdx])
 
-	entityID = binary.BigEndian.Uint64(rest[sepIdx+len(keySeparator):])
-	return fieldValue, entityID, nil
+	return fieldValue, entityKey, nil
 }
 
 // incrementBytes returns a copy of b with its value incremented by one

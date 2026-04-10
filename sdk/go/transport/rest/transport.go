@@ -23,10 +23,12 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -36,10 +38,10 @@ import (
 
 // Compile-time interface assertions.
 var (
-	_ transport.Transport   = (*Transport)(nil)
-	_ transport.KVClient    = (*Transport)(nil)
-	_ transport.AdminClient = (*Transport)(nil)
-	_ transport.Client      = (*Transport)(nil)
+	_ transport.Transport        = (*Transport)(nil)
+	_ transport.KVClient         = (*Transport)(nil)
+	_ transport.AdminClient      = (*Transport)(nil)
+	_ transport.TimeSeriesClient = (*Transport)(nil)
 )
 
 // Transport implements the QRDB SDK transport interface using HTTP/2 REST
@@ -49,6 +51,8 @@ var (
 //	KV:    PUT /kv/{key}, GET /kv/{key}, DELETE /kv/{key}, GET /kv?prefix=X
 //	Admin: GET /health, GET /status, GET /peers
 //	       POST /membership/add, POST /membership/remove, POST /snapshot, POST /drain
+//	       POST /admin/shards, DELETE /admin/shards/{id}, GET /admin/shards/{id}/state
+//	       GET /admin/topology
 type Transport struct {
 	config  *transport.Config
 	client  *http.Client
@@ -198,7 +202,7 @@ func (t *Transport) Request(ctx context.Context, method string, req, resp any) e
 
 // Put stores a key-value pair. Maps to PUT /kv/{key} with the raw value
 // as the request body.
-func (t *Transport) Put(ctx context.Context, key string, value []byte) error {
+func (t *Transport) Put(ctx context.Context, key string, value []byte, opts ...transport.WriteOption) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -207,6 +211,11 @@ func (t *Transport) Put(ctx context.Context, key string, value []byte) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, reqURL, bytes.NewReader(value))
 	if err != nil {
 		return &transport.RequestError{Method: "Put", Err: err}
+	}
+
+	wo := transport.ResolveWriteOptions(opts...)
+	if wo.ModeSet {
+		req.Header.Set("X-QRDB-Write-Mode", wo.Mode.String())
 	}
 
 	resp, err := t.client.Do(req)
@@ -227,7 +236,7 @@ func (t *Transport) Put(ctx context.Context, key string, value []byte) error {
 
 // Get retrieves a value by key. Maps to GET /kv/{key}. Returns
 // KeyNotFoundError when the server responds with 404.
-func (t *Transport) Get(ctx context.Context, key string) ([]byte, error) {
+func (t *Transport) Get(ctx context.Context, key string, opts ...transport.ReadOption) ([]byte, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -237,6 +246,8 @@ func (t *Transport) Get(ctx context.Context, key string) ([]byte, error) {
 	if err != nil {
 		return nil, &transport.RequestError{Method: "Get", Err: err}
 	}
+
+	applyReadHeaders(req, opts...)
 
 	resp, err := t.client.Do(req)
 	if err != nil {
@@ -261,7 +272,7 @@ func (t *Transport) Get(ctx context.Context, key string) ([]byte, error) {
 }
 
 // Delete removes a key. Maps to DELETE /kv/{key}.
-func (t *Transport) Delete(ctx context.Context, key string) error {
+func (t *Transport) Delete(ctx context.Context, key string, opts ...transport.WriteOption) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -270,6 +281,11 @@ func (t *Transport) Delete(ctx context.Context, key string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, reqURL, nil)
 	if err != nil {
 		return &transport.RequestError{Method: "Delete", Err: err}
+	}
+
+	wo := transport.ResolveWriteOptions(opts...)
+	if wo.ModeSet {
+		req.Header.Set("X-QRDB-Write-Mode", wo.Mode.String())
 	}
 
 	resp, err := t.client.Do(req)
@@ -290,7 +306,7 @@ func (t *Transport) Delete(ctx context.Context, key string) error {
 
 // List returns sorted keys matching the given prefix. Maps to
 // GET /kv?prefix=X.
-func (t *Transport) List(ctx context.Context, prefix string) ([]string, error) {
+func (t *Transport) List(ctx context.Context, prefix string, opts ...transport.ReadOption) ([]string, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -304,6 +320,8 @@ func (t *Transport) List(ctx context.Context, prefix string) ([]string, error) {
 	if err != nil {
 		return nil, &transport.RequestError{Method: "List", Err: err}
 	}
+
+	applyReadHeaders(req, opts...)
 
 	resp, err := t.client.Do(req)
 	if err != nil {
@@ -321,6 +339,56 @@ func (t *Transport) List(ctx context.Context, prefix string) ([]string, error) {
 	}
 
 	return listResp.Keys, nil
+}
+
+// Scan returns all key-value pairs matching the given prefix. Maps to
+// GET /kv/scan?prefix=X.
+func (t *Transport) Scan(ctx context.Context, prefix string, opts ...transport.ReadOption) (map[string][]byte, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	reqURL := t.baseURL + "/kv/scan"
+	if prefix != "" {
+		reqURL += "?prefix=" + url.QueryEscape(prefix)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "Scan", Err: err}
+	}
+
+	applyReadHeaders(req, opts...)
+
+	resp, err := t.client.Do(req)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "Scan", Err: err}
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, t.decodeErrorResponse("Scan", resp)
+	}
+
+	var scanResp transport.KVScanResponse
+	if decErr := json.NewDecoder(resp.Body).Decode(&scanResp); decErr != nil {
+		return nil, &transport.RequestError{Method: "Scan", Err: &jsonDecodeError{Err: decErr}}
+	}
+
+	return scanResp.Pairs, nil
+}
+
+// Exists checks whether a key exists. Performs a HEAD-like check via Get.
+func (t *Transport) Exists(ctx context.Context, key string, opts ...transport.ReadOption) (bool, error) {
+	_, err := t.Get(ctx, key, opts...)
+	if err != nil {
+		var knf *transport.KeyNotFoundError
+		if errors.As(err, &knf) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -456,6 +524,36 @@ func (t *Transport) RequestSnapshot(ctx context.Context, shardID uint64) error {
 	return t.postJSON(ctx, "RequestSnapshot", "/snapshot", payload)
 }
 
+// Capabilities returns the compile-time feature set of the QRDB node.
+// Maps to GET /capabilities.
+func (t *Transport) Capabilities(ctx context.Context) (*transport.CapabilitiesResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, t.baseURL+"/capabilities", nil)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "Capabilities", Err: err}
+	}
+
+	resp, err := t.client.Do(req)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "Capabilities", Err: err}
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, t.decodeErrorResponse("Capabilities", resp)
+	}
+
+	var capsResp transport.CapabilitiesResponse
+	if err := json.NewDecoder(resp.Body).Decode(&capsResp); err != nil {
+		return nil, &transport.RequestError{Method: "Capabilities", Err: &jsonDecodeError{Err: err}}
+	}
+
+	return &capsResp, nil
+}
+
 // Drain transitions the host into drain mode. Maps to POST /drain.
 func (t *Transport) Drain(ctx context.Context) error {
 	if t.closed.Load() {
@@ -487,6 +585,106 @@ func (t *Transport) Drain(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// StartShard initializes and starts a Raft group for the given shard.
+// Maps to POST /admin/shards with a JSON request body.
+func (t *Transport) StartShard(ctx context.Context, req *transport.StartShardRequest) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	return t.postJSON(ctx, "StartShard", "/admin/shards", req)
+}
+
+// StopShard stops the Raft group for the given shard. Maps to
+// DELETE /admin/shards/{shardID}.
+func (t *Transport) StopShard(ctx context.Context, shardID uint64) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	reqURL := t.baseURL + "/admin/shards/" + strconv.FormatUint(shardID, 10)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, reqURL, nil)
+	if err != nil {
+		return &transport.RequestError{Method: "StopShard", Err: err}
+	}
+
+	resp, err := t.client.Do(req)
+	if err != nil {
+		return &transport.RequestError{Method: "StopShard", Err: err}
+	}
+	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}()
+
+	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
+
+	return t.decodeErrorResponse("StopShard", resp)
+}
+
+// GetShardState returns the Raft state for a shard. Maps to
+// GET /admin/shards/{shardID}/state.
+func (t *Transport) GetShardState(ctx context.Context, shardID uint64) (*transport.ShardStateResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	reqURL := t.baseURL + "/admin/shards/" + strconv.FormatUint(shardID, 10) + "/state"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "GetShardState", Err: err}
+	}
+
+	resp, err := t.client.Do(req)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "GetShardState", Err: err}
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, t.decodeErrorResponse("GetShardState", resp)
+	}
+
+	var stateResp transport.ShardStateResponse
+	if err := json.NewDecoder(resp.Body).Decode(&stateResp); err != nil {
+		return nil, &transport.RequestError{Method: "GetShardState", Err: &jsonDecodeError{Err: err}}
+	}
+
+	return &stateResp, nil
+}
+
+// GetTopology returns the full cluster topology. Maps to
+// GET /admin/topology.
+func (t *Transport) GetTopology(ctx context.Context) (*transport.TopologyResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, t.baseURL+"/admin/topology", nil)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "GetTopology", Err: err}
+	}
+
+	resp, err := t.client.Do(req)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "GetTopology", Err: err}
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, t.decodeErrorResponse("GetTopology", resp)
+	}
+
+	var topoResp transport.TopologyResponse
+	if err := json.NewDecoder(resp.Body).Decode(&topoResp); err != nil {
+		return nil, &transport.RequestError{Method: "GetTopology", Err: &jsonDecodeError{Err: err}}
+	}
+
+	return &topoResp, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -584,5 +782,20 @@ func (t *Transport) decodeErrorResponse(method string, resp *http.Response) erro
 		Method:     method,
 		StatusCode: resp.StatusCode,
 		Err:        &serverError{Message: msg},
+	}
+}
+
+// applyReadHeaders resolves read options and sets the corresponding
+// HTTP headers on the request.
+func applyReadHeaders(req *http.Request, opts ...transport.ReadOption) {
+	ro := transport.ResolveReadOptions(opts...)
+	if ro.ConsistencySet {
+		req.Header.Set("X-QRDB-Consistency", ro.Consistency.String())
+	}
+	if ro.TimeoutMs > 0 {
+		req.Header.Set("X-QRDB-Read-Timeout", strconv.FormatInt(ro.TimeoutMs, 10))
+	}
+	if ro.AllowStale {
+		req.Header.Set("X-QRDB-Allow-Stale", "true")
 	}
 }

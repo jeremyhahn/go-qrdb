@@ -8,7 +8,10 @@
 
 package seal
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 var (
 	// ErrSealed is returned when an operation is attempted on a sealed barrier.
@@ -170,4 +173,66 @@ var (
 	// ErrNilStorageBackend is returned when a nil storage backend is
 	// provided to the tenant barrier constructor.
 	ErrNilStorageBackend = errors.New("qrdb/seal: storage backend must not be nil")
+
+	// ErrInvalidPassphrase is returned when an empty password is provided
+	// to ChangePassword.
+	ErrInvalidPassphrase = errors.New("qrdb/seal: passphrase must not be empty")
+
+	// ErrSealStoreSecretNotFound is returned when a named secret does
+	// not exist in the seal store.
+	ErrSealStoreSecretNotFound = errors.New("qrdb/seal: sealstore secret not found")
+
+	// ErrSealStoreBarrierSealed is returned when a seal store operation
+	// is attempted while the underlying barrier is sealed.
+	ErrSealStoreBarrierSealed = errors.New("qrdb/seal: sealstore barrier is sealed")
 )
+
+// GetError is returned when a barrier Get operation fails during decryption.
+type GetError struct {
+	Key string
+	Err error
+}
+
+// Error returns a human-readable description of the get failure.
+func (e *GetError) Error() string {
+	return fmt.Sprintf("qrdb/seal: get failed for key %q: %v", e.Key, e.Err)
+}
+
+// Unwrap returns the underlying error.
+func (e *GetError) Unwrap() error {
+	return e.Err
+}
+
+// PutError is returned when a barrier Put operation fails during encryption.
+type PutError struct {
+	Key string
+	Err error
+}
+
+// Error returns a human-readable description of the put failure.
+func (e *PutError) Error() string {
+	return fmt.Sprintf("qrdb/seal: put failed for key %q: %v", e.Key, e.Err)
+}
+
+// Unwrap returns the underlying error.
+func (e *PutError) Unwrap() error {
+	return e.Err
+}
+
+// SealStoreError is returned when a seal store operation fails.
+type SealStoreError struct {
+	Op  string // operation name (put, get, delete, list, reseal, status)
+	Key string // secret name (empty for list/status)
+	Err error  // underlying error
+}
+
+// Error returns a human-readable description of the seal store failure.
+func (e *SealStoreError) Error() string {
+	if e.Key != "" {
+		return "sealstore: " + e.Op + " " + e.Key + ": " + e.Err.Error()
+	}
+	return "sealstore: " + e.Op + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *SealStoreError) Unwrap() error { return e.Err }

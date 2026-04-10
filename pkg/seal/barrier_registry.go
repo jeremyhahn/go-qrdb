@@ -19,13 +19,13 @@ import (
 // looking up tenant-specific barriers.
 type BarrierRegistry struct {
 	logger  *slog.Logger
-	system  *Barrier
+	system  *StorageBarrier
 	tenants sync.Map // map[string]*TenantBarrier
 }
 
 // NewBarrierRegistry creates a new BarrierRegistry with the given system
 // barrier. The system barrier must not be nil.
-func NewBarrierRegistry(logger *slog.Logger, system *Barrier) (*BarrierRegistry, error) {
+func NewBarrierRegistry(logger *slog.Logger, system *StorageBarrier) (*BarrierRegistry, error) {
 	if system == nil {
 		return nil, ErrNilSystemBarrier
 	}
@@ -36,7 +36,7 @@ func NewBarrierRegistry(logger *slog.Logger, system *Barrier) (*BarrierRegistry,
 }
 
 // SystemBarrier returns the system-level barrier.
-func (r *BarrierRegistry) SystemBarrier() *Barrier { return r.system }
+func (r *BarrierRegistry) SystemBarrier() *StorageBarrier { return r.system }
 
 // RegisterTenant creates and registers a new tenant barrier with the given
 // storage backend, config, and strategies. Returns ErrTenantAlreadyExists
@@ -67,6 +67,22 @@ func (r *BarrierRegistry) RegisterTenant(
 	return tb, nil
 }
 
+// RegisterTenantDefault creates and registers a tenant barrier with default
+// in-memory storage and the system barrier's strategies. This is a convenience
+// shorthand for RegisterTenant with sensible defaults.
+func (r *BarrierRegistry) RegisterTenantDefault(tenantID string) (*TenantBarrier, error) {
+	base := NewMemoryBackend()
+	config := BarrierConfig{
+		RootKeyPath: "tenant/" + tenantID + "/root-key",
+	}
+	strategies := r.system.Strategies()
+	strategySlice := make([]SealingStrategy, 0, len(strategies))
+	for _, s := range strategies {
+		strategySlice = append(strategySlice, s)
+	}
+	return r.RegisterTenant(tenantID, base, config, strategySlice...)
+}
+
 // GetTenant looks up a registered tenant barrier by ID. Returns
 // ErrEmptyTenantID if tenantID is empty, or ErrTenantNotFound if the
 // tenant is not registered.
@@ -81,6 +97,11 @@ func (r *BarrierRegistry) GetTenant(tenantID string) (*TenantBarrier, error) {
 	return val.(*TenantBarrier), nil
 }
 
+// Tenant is a convenience alias for GetTenant.
+func (r *BarrierRegistry) Tenant(tenantID string) (*TenantBarrier, error) {
+	return r.GetTenant(tenantID)
+}
+
 // RemoveTenant seals and removes the tenant barrier for the given ID.
 // Returns ErrTenantNotFound if the tenant is not registered.
 func (r *BarrierRegistry) RemoveTenant(tenantID string) error {
@@ -89,6 +110,11 @@ func (r *BarrierRegistry) RemoveTenant(tenantID string) error {
 		return ErrTenantNotFound
 	}
 	return val.(*TenantBarrier).Close()
+}
+
+// UnregisterTenant is a convenience alias for RemoveTenant.
+func (r *BarrierRegistry) UnregisterTenant(tenantID string) error {
+	return r.RemoveTenant(tenantID)
 }
 
 // InitializeTenant initializes the tenant barrier identified by tenantID.

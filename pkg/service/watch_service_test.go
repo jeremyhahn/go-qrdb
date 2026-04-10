@@ -105,8 +105,7 @@ func TestWatchService_NewWatchService_ReturnsNonNil(t *testing.T) {
 
 func TestWatchService_NewWatchService_ImplementsInterface(t *testing.T) {
 	hub := &mockWatchHub{}
-	svc := NewWatchService(hub)
-	var _ WatchServicer = svc
+	var _ WatchServicer = NewWatchService(hub) //nolint:staticcheck // QF1011: explicit interface assertion
 }
 
 // ---------------------------------------------------------------------------

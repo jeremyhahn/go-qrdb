@@ -29,14 +29,17 @@ type IndexServicer interface {
 	// IndexNotFoundError if the index does not exist.
 	DropIndex(ctx context.Context, name string) error
 
-	// Query returns the IDs of all entries matching the exact value
+	// Query returns the keys of all entries matching the exact value
 	// in the specified index. Returns IndexNotFoundError if the index
 	// does not exist.
-	Query(ctx context.Context, indexName string, value []byte) ([]uint64, error)
+	Query(ctx context.Context, indexName string, value []byte) ([][]byte, error)
 
 	// Scan returns entries in the specified index with values in the
 	// half-open interval [start, end). The result maps index values
-	// to their matching entry IDs. Returns IndexNotFoundError if the
+	// to their matching entry keys. Returns IndexNotFoundError if the
 	// index does not exist.
-	Scan(ctx context.Context, indexName string, start, end []byte) (map[string][]uint64, error)
+	Scan(ctx context.Context, indexName string, start, end []byte) (map[string][][]byte, error)
+
+	// ListIndexes returns the names of all registered indexes.
+	ListIndexes(ctx context.Context) ([]string, error)
 }

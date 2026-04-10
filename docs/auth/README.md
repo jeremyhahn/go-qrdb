@@ -46,6 +46,66 @@ The authenticator is wired into protocol middleware:
 - **Unix**: No auth required (inherently local)
 - **MCP**: OAuth 2.1 Bearer token validation via external mux
 
+## RBAC Authorizer
+
+The `pkg/auth/rbac/` package implements the `auth.Authorizer` interface with role-based access control.
+
+```go
+type RBACAuthorizer struct {
+    roleStore   RoleStore
+    permCache   sync.Map       // permission cache: userID -> cachedPerms
+    cacheTTL    time.Duration  // default 30s
+}
+```
+
+### Behavior
+
+- Loads the user's assigned roles from the `RoleStore`
+- Collects all permissions across all assigned roles
+- Checks whether the requested `resource:action` pair is present
+- **Superadmin bypass**: users with the `superadmin` role skip permission checks entirely
+- **Permission cache**: a `sync.Map` caches resolved permissions per user with a configurable TTL (default 30 seconds) to avoid repeated store lookups on every request
+
+## Auth Middleware
+
+The `pkg/auth/middleware/` package provides protocol-specific middleware that wires authentication and authorization into the request path.
+
+### AuthMiddleware
+
+`AuthMiddleware` accepts one or more `Authenticator` implementations and an `Authorizer`. It tries each authenticator in order until one succeeds.
+
+| File | Description |
+|------|-------------|
+| `middleware/grpc.go` | gRPC unary + stream interceptors that extract TLS peer state and invoke the auth chain |
+| `middleware/rest.go` | REST middleware wrapping the HTTP dispatch mux |
+| `middleware/mapping.go` | Route-to-permission mapping: maps each HTTP route or gRPC method to a `resource:action` permission string |
+
+### Auth Chain Flow
+
+```
+Request
+  -> Extract TLS State (peer certificates)
+  -> Authenticator Chain (mTLS -> next -> ...)
+  -> User Lookup (UserStore.GetByUsername)
+  -> Enabled Check (reject disabled users)
+  -> RBAC Authorization (Authorizer.Authorize)
+  -> Handler
+```
+
+If any step fails, the request is rejected with the appropriate error (401 Unauthorized or 403 Forbidden).
+
+## Admin Bootstrap
+
+The `cmd/qrdbd/start.go` startup sequence bootstraps the authentication and authorization system:
+
+1. **TLS setup**: Generate or load CA certificate and server TLS credentials
+2. **Admin client certificate**: Generate an admin client certificate with `CN=admin`, `OU=default`
+3. **Store creation**: Create `UserStore`, `RoleStore`, and `DefaultCertProvider` backed by the KVStore
+4. **Bootstrap**: Create built-in roles (`superadmin`, `admin`, `reader`, `writer`), create the initial admin user with the `superadmin` role
+5. **Wire middleware**: Construct `AuthMiddleware` with `MTLSAuthenticator` and `RBACAuthorizer`, inject into REST and gRPC server constructors
+
+The admin client certificate is written to the data directory so the CLI can authenticate immediately after first start.
+
 ## go-xkms Integration
 
 go-xkms passes its own `Authenticator` (JWT with tenant claims, adaptive auth) to go-qrdb's server constructor. go-qrdb accepts any implementation of the interface.

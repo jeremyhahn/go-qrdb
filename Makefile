@@ -5,10 +5,9 @@
 
 # Project metadata
 MODULE        := github.com/jeremyhahn/go-qrdb
-BINARY        := qrdbd
-BUILD_DIR     := build
-DOCKER_DIR    := $(BUILD_DIR)/docker
-COVER_DIR     := $(BUILD_DIR)/coverage
+SERVER_BINARY := qrdbd
+CLIENT_BINARY := qrdb
+COVER_DIR     := coverage
 VERSION       := $(shell cat VERSION 2>/dev/null || echo "0.0.1-alpha")
 GIT_COMMIT    := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BUILD_DATE    := $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
@@ -31,7 +30,9 @@ GOVULNCHECK   := govulncheck
 #   G304: file path via variable (config paths constructed internally)
 #   G704: SSRF taint analysis (leader forwarding URL from internal peer registry, not user input)
 #   G705: XSS taint analysis (KV GET returns application/octet-stream, not HTML)
-GOSEC_EXCLUDE := G103,G104,G115,G304,G704,G705
+#   G118: context.Background in goroutine / cancel returned to caller (intentional patterns)
+#   G122: filepath.Walk TOCTOU (internal storage directories only)
+GOSEC_EXCLUDE := G103,G104,G115,G118,G122,G304,G704,G705
 
 # Coverage
 COVER_MIN     := 91
@@ -39,28 +40,126 @@ COVER_MIN     := 91
 # Docker
 DOCKER_IMAGE  := go-qrdb-dev
 DOCKER_TAG    := latest
-COMPOSE_FILE  := $(DOCKER_DIR)/docker-compose.yml
+COMPOSE_FILE  := .devcontainer/docker-compose.yml
 
 # Benchmarks
 KV_BENCHTIME  ?= 5s
+QUICRAFT_ROOT ?= $(shell cd .. && pwd)/go-quicraft
+
+# Optional feature flags (1 = enabled, 0 = disabled)
+WITH_QRDB_TS     ?= 1
+WITH_QRDB_VECTOR ?= 1
+WITH_QRDB_MYSQL  ?= 1
+WITH_QRDB_PGSQL  ?= 1
+WITH_QRDB_ETCD   ?= 1
+WITH_QRDB_GPU      ?= 0
+WITH_QRDB_EMBEDDED ?= 1
+WITH_QRDBD_WEBUI   ?= 0
+
+# Optional codec flags (1 = enabled, 0 = disabled; all default ON)
+WITH_CODEC_MSGPACK  ?= 1
+WITH_CODEC_YAML     ?= 1
+WITH_CODEC_BSON     ?= 1
+WITH_CODEC_AVRO     ?= 1
+WITH_CODEC_PROTOBUF ?= 1
+
+# Compute build tags from feature flags
+BUILD_TAGS := codec_json raft
+ifeq ($(WITH_QRDB_TS),1)
+  BUILD_TAGS += qrdb_ts
+endif
+ifeq ($(WITH_QRDB_VECTOR),1)
+  BUILD_TAGS += qrdb_vector
+endif
+ifeq ($(WITH_QRDB_MYSQL),1)
+  BUILD_TAGS += qrdb_mysql
+endif
+ifeq ($(WITH_QRDB_PGSQL),1)
+  BUILD_TAGS += qrdb_pgsql
+endif
+ifeq ($(WITH_QRDB_ETCD),1)
+  BUILD_TAGS += qrdb_etcd
+endif
+ifeq ($(WITH_QRDB_GPU),1)
+  BUILD_TAGS += gpu
+endif
+ifeq ($(WITH_QRDB_EMBEDDED),1)
+  BUILD_TAGS += qrdb_embedded
+endif
+ifeq ($(WITH_QRDBD_WEBUI),1)
+  BUILD_TAGS += qrdbd_webui
+endif
+ifeq ($(WITH_CODEC_MSGPACK),1)
+  BUILD_TAGS += codec_msgpack
+endif
+ifeq ($(WITH_CODEC_YAML),1)
+  BUILD_TAGS += codec_yaml
+endif
+ifeq ($(WITH_CODEC_BSON),1)
+  BUILD_TAGS += codec_bson
+endif
+ifeq ($(WITH_CODEC_AVRO),1)
+  BUILD_TAGS += codec_avro
+endif
+ifeq ($(WITH_CODEC_PROTOBUF),1)
+  BUILD_TAGS += codec_protobuf
+endif
+DESKTOP_TAGS := desktop production webkit2_41 $(BUILD_TAGS)
+
+# Build tag flags for go commands
+TAG_FLAG         := $(if $(strip $(BUILD_TAGS)),-tags "$(strip $(BUILD_TAGS))",)
+DESKTOP_TAG_FLAG := -tags "$(strip $(DESKTOP_TAGS))"
 
 # Package paths
-PKG_CONFIG     := ./pkg/config/...
-PKG_SERVICE    := ./pkg/service/...
-PKG_STORE      := ./pkg/store/...
-PKG_REST       := ./pkg/api/rest/...
-PKG_GRPC       := ./pkg/api/grpc/...
-PKG_SERVER     := ./pkg/server/...
-PKG_CMD        := ./cmd/qrdbd/...
-PKG_PROTOCOL   := ./pkg/protocol/...
-PKG_MVCC       := ./pkg/mvcc/...
-PKG_WATCH      := ./pkg/watch/...
-PKG_CONSISTENCY := ./pkg/consistency/...
-PKG_LEASE      := ./pkg/lease/...
-PKG_INDEX      := ./pkg/index/...
-PKG_TIMESERIES := ./pkg/timeseries/...
-PKG_WRITEMODE  := ./pkg/writemode/...
-PKG_BATCH      := ./pkg/batch/...
+PKG_CONFIG         := ./pkg/config/...
+PKG_DAO            := ./pkg/dao/...
+PKG_SERVICE        := ./pkg/service/...
+PKG_STORE          := ./pkg/store/...
+PKG_REST           := ./pkg/api/rest/...
+PKG_GRPC           := ./pkg/api/grpc/...
+PKG_SERVER         := ./pkg/server/...
+PKG_CMD            := ./cmd/qrdbd/...
+PKG_PROTOCOL       := ./pkg/protocol/...
+PKG_MVCC           := ./pkg/mvcc/...
+PKG_WATCH          := ./pkg/watch/...
+PKG_CONSISTENCY    := ./pkg/consistency/...
+PKG_LEASE          := ./pkg/lease/...
+PKG_INDEX          := ./pkg/index/...
+PKG_TIMESERIES     := ./pkg/timeseries/...
+PKG_WRITEMODE      := ./pkg/writemode/...
+PKG_BATCH          := ./pkg/batch/...
+PKG_CRYPTO_AESGCM  := ./pkg/crypto/aesgcm/...
+PKG_CRYPTO_MEM     := ./pkg/crypto/mem/...
+PKG_CRYPTO_SHAMIR  := ./pkg/crypto/shamir/...
+PKG_STATEMACHINE   := ./pkg/statemachine/...
+PKG_SEAL           := ./pkg/seal/...
+PKG_CEREMONY       := ./pkg/ceremony/...
+PKG_CREDENTIALS    := ./pkg/credentials/...
+PKG_TENANT         := ./pkg/tenant/...
+PKG_KVSTORE        := ./pkg/kvstore/...
+PKG_STORAGE        := ./pkg/storage/...
+PKG_STORAGE_FILE      := ./pkg/storage/file/...
+PKG_STORAGE_PARTITION := ./pkg/storage/partition/...
+PKG_SHARD          := ./pkg/shard/...
+PKG_CAPABILITIES   := ./pkg/capabilities/...
+PKG_PERMISSION     := ./pkg/permission/...
+PKG_ROLE           := ./pkg/role/...
+PKG_AUTH_RBAC      := ./pkg/auth/rbac/...
+PKG_AUTH_MIDDLEWARE := ./pkg/auth/middleware/...
+PKG_CERT           := ./pkg/cert/...
+PKG_CLI            := ./cmd/qrdb/...
+PKG_SQL_PROVIDER   := ./pkg/sql/provider/...
+PKG_SQL_ENGINE     := ./pkg/sql/engine/...
+PKG_SQL_MYSQL      := ./pkg/sql/mysql/...
+PKG_SQL_PGSQL      := ./pkg/sql/pgsql/...
+PKG_CODEC          := ./pkg/codec/...
+PKG_ETCD           := ./pkg/api/etcd/...
+PKG_DATABASE       := ./pkg/database/...
+PKG_QUIC           := ./pkg/api/quic/...
+PKG_MCP            := ./pkg/api/mcp/...
+
+# SDK (separate Go module)
+SDK_DIR            := sdk/go
 
 # Integration test paths
 INT_TEST_DIR  := ./test/integration
@@ -73,17 +172,60 @@ INT_TEST_DIR  := ./test/integration
 all: build test lint
 
 .PHONY: build
-build:
-	$(GOBUILD) -o bin/$(BINARY) ./cmd/qrdbd
+build: build-server build-client
 
-.PHONY: build-cli
-build-cli:
-	$(GOBUILD) -o bin/qrdb ./cmd/qrdb
+.PHONY: build-server
+build-server:
+	$(GOBUILD) -o bin/$(SERVER_BINARY) ./cmd/qrdbd
+
+# Build server with embedded web UI. Requires frontend to be built first.
+.PHONY: build-server-webui
+build-server-webui: build-frontend _stage-webui
+	WITH_QRDBD_WEBUI=1 $(MAKE) build-server
+
+# Copy frontend dist into cmd/qrdbd/webui_dist/ for go:embed.
+.PHONY: _stage-webui
+_stage-webui:
+	@rm -rf cmd/qrdbd/webui_dist
+	@cp -r cmd/qrdb/frontend/dist cmd/qrdbd/webui_dist
+
+.PHONY: build-client
+build-client:
+	@echo "==> Building client binary in devcontainer..."
+	docker compose -f $(COMPOSE_FILE) run --rm --build client-build
+
+.PHONY: _build-client
+_build-client: build-frontend
+	CGO_ENABLED=1 $(GOBUILD) $(DESKTOP_TAG_FLAG) -o bin/$(CLIENT_BINARY) ./cmd/qrdb
+
+# TypeScript SDK and frontend build targets
+.PHONY: install-sdk
+install-sdk:
+	cd sdk/typescript && npm install
+
+.PHONY: install-frontend
+install-frontend: install-sdk
+	cd cmd/qrdb/frontend && npm install
+
+.PHONY: build-sdk
+build-sdk: install-sdk
+	cd sdk/typescript && npm run build
+
+.PHONY: build-frontend
+build-frontend: build-sdk install-frontend
+	cd cmd/qrdb/frontend && npm run build
+
+.PHONY: dev-gui
+dev-gui:
+	cd cmd/qrdb && wails dev $(DESKTOP_TAG_FLAG)
 
 .PHONY: clean
 clean:
 	$(GO) clean ./...
-	rm -rf bin/ $(COVER_DIR) *.log *.test *.out qrdb qrdbd
+	rm -rf bin/ $(COVER_DIR)/ *.log *.test *.out qrdb qrdbd
+	rm -rf sdk/typescript/node_modules sdk/typescript/dist
+	rm -rf cmd/qrdb/frontend/node_modules cmd/qrdb/frontend/dist
+	rm -rf cmd/qrdb/frontend/test-results cmd/qrdb/frontend/playwright-report
 
 .PHONY: proto
 proto:
@@ -97,117 +239,334 @@ proto:
 
 .PHONY: test
 test:
-	$(GOTEST) ./pkg/... ./cmd/...
+	$(GOTEST) $(TAG_FLAG) ./pkg/... ./cmd/...
+
+.PHONY: test-stubs
+test-stubs:
+	$(GOTEST) ./cmd/qrdb/...
 
 .PHONY: test-config
 test-config:
-	$(GOTEST) $(PKG_CONFIG)
+	$(GOTEST) $(TAG_FLAG) $(PKG_CONFIG)
+
+.PHONY: test-dao
+test-dao:
+	$(GOTEST) $(TAG_FLAG) $(PKG_DAO)
 
 .PHONY: test-service
 test-service:
-	$(GOTEST) $(PKG_SERVICE)
+	$(GOTEST) $(TAG_FLAG) $(PKG_SERVICE)
 
 .PHONY: test-store
 test-store:
-	$(GOTEST) $(PKG_STORE)
+	$(GOTEST) $(TAG_FLAG) $(PKG_STORE)
 
 .PHONY: test-rest
 test-rest:
-	$(GOTEST) $(PKG_REST)
+	$(GOTEST) $(TAG_FLAG) $(PKG_REST)
 
 .PHONY: test-grpc
 test-grpc:
-	$(GOTEST) $(PKG_GRPC)
+	$(GOTEST) $(TAG_FLAG) $(PKG_GRPC)
 
 .PHONY: test-server
 test-server:
-	$(GOTEST) $(PKG_SERVER)
+	$(GOTEST) $(TAG_FLAG) $(PKG_SERVER)
 
 .PHONY: test-cmd
 test-cmd:
-	$(GOTEST) $(PKG_CMD)
+	$(GOTEST) $(TAG_FLAG) $(PKG_CMD)
 
 .PHONY: test-protocol
 test-protocol:
-	$(GOTEST) $(PKG_PROTOCOL)
+	$(GOTEST) $(TAG_FLAG) $(PKG_PROTOCOL)
 
 .PHONY: test-mvcc
 test-mvcc:
-	$(GOTEST) $(PKG_MVCC)
+	$(GOTEST) $(TAG_FLAG) $(PKG_MVCC)
 
 .PHONY: test-watch
 test-watch:
-	$(GOTEST) $(PKG_WATCH)
+	$(GOTEST) $(TAG_FLAG) $(PKG_WATCH)
 
 .PHONY: test-consistency
 test-consistency:
-	$(GOTEST) $(PKG_CONSISTENCY)
+	$(GOTEST) $(TAG_FLAG) $(PKG_CONSISTENCY)
 
 .PHONY: test-lease
 test-lease:
-	$(GOTEST) $(PKG_LEASE)
+	$(GOTEST) $(TAG_FLAG) $(PKG_LEASE)
 
 .PHONY: test-index
 test-index:
-	$(GOTEST) $(PKG_INDEX)
+	$(GOTEST) $(TAG_FLAG) $(PKG_INDEX)
 
 .PHONY: test-timeseries
 test-timeseries:
-	$(GOTEST) $(PKG_TIMESERIES)
+	$(GOTEST) $(TAG_FLAG) $(PKG_TIMESERIES)
 
 .PHONY: test-writemode
 test-writemode:
-	$(GOTEST) $(PKG_WRITEMODE)
+	$(GOTEST) $(TAG_FLAG) $(PKG_WRITEMODE)
 
 .PHONY: test-batch
 test-batch:
-	$(GOTEST) $(PKG_BATCH)
+	$(GOTEST) $(TAG_FLAG) $(PKG_BATCH)
+
+.PHONY: test-crypto-aesgcm
+test-crypto-aesgcm:
+	$(GOTEST) $(TAG_FLAG) $(PKG_CRYPTO_AESGCM)
+
+.PHONY: test-crypto-mem
+test-crypto-mem:
+	$(GOTEST) $(TAG_FLAG) $(PKG_CRYPTO_MEM)
+
+.PHONY: test-crypto-shamir
+test-crypto-shamir:
+	$(GOTEST) $(TAG_FLAG) $(PKG_CRYPTO_SHAMIR)
+
+.PHONY: test-statemachine
+test-statemachine:
+	$(GOTEST) $(TAG_FLAG) $(PKG_STATEMACHINE)
+
+.PHONY: test-seal
+test-seal:
+	$(GOTEST) $(TAG_FLAG) $(PKG_SEAL)
+
+.PHONY: test-ceremony
+test-ceremony:
+	$(GOTEST) $(TAG_FLAG) $(PKG_CEREMONY)
+
+.PHONY: test-credentials
+test-credentials:
+	$(GOTEST) $(TAG_FLAG) $(PKG_CREDENTIALS)
+
+.PHONY: test-tenant
+test-tenant:
+	$(GOTEST) $(TAG_FLAG) $(PKG_TENANT)
+
+.PHONY: test-kvstore
+test-kvstore:
+	$(GOTEST) $(TAG_FLAG) $(PKG_KVSTORE)
+
+.PHONY: test-storage
+test-storage:
+	$(GOTEST) $(TAG_FLAG) $(PKG_STORAGE)
+
+.PHONY: test-storage-file
+test-storage-file:
+	$(GOTEST) $(TAG_FLAG) $(PKG_STORAGE_FILE)
+
+.PHONY: test-storage-partition
+test-storage-partition:
+	$(GOTEST) $(TAG_FLAG) $(PKG_STORAGE_PARTITION)
+
+.PHONY: test-shard
+test-shard:
+	$(GOTEST) $(TAG_FLAG) $(PKG_SHARD)
+
+.PHONY: test-capabilities
+test-capabilities:
+	$(GOTEST) $(TAG_FLAG) $(PKG_CAPABILITIES)
+
+.PHONY: test-permission
+test-permission:
+	$(GOTEST) $(TAG_FLAG) $(PKG_PERMISSION)
+
+.PHONY: test-role
+test-role:
+	$(GOTEST) $(TAG_FLAG) $(PKG_ROLE)
+
+.PHONY: test-auth-rbac
+test-auth-rbac:
+	$(GOTEST) $(TAG_FLAG) $(PKG_AUTH_RBAC)
+
+.PHONY: test-auth-middleware
+test-auth-middleware:
+	$(GOTEST) $(TAG_FLAG) $(PKG_AUTH_MIDDLEWARE)
+
+.PHONY: test-cert
+test-cert:
+	$(GOTEST) $(TAG_FLAG) $(PKG_CERT)
+
+.PHONY: test-cli
+test-cli:
+	$(GOTEST) $(TAG_FLAG) $(PKG_CLI)
+
+.PHONY: test-sql-provider
+test-sql-provider:
+	$(GOTEST) $(TAG_FLAG) $(PKG_SQL_PROVIDER)
+
+.PHONY: test-sql-engine
+test-sql-engine:
+	$(GOTEST) $(TAG_FLAG) $(PKG_SQL_ENGINE)
+
+.PHONY: test-sql-mysql
+test-sql-mysql:
+	$(GOTEST) $(TAG_FLAG) $(PKG_SQL_MYSQL)
+
+.PHONY: test-sql-pgsql
+test-sql-pgsql:
+	$(GOTEST) $(TAG_FLAG) $(PKG_SQL_PGSQL)
+
+.PHONY: test-codec
+test-codec:
+	$(GOTEST) $(TAG_FLAG) $(PKG_CODEC)
+
+.PHONY: test-etcd
+test-etcd:
+	$(GOTEST) $(TAG_FLAG) $(PKG_ETCD)
+
+.PHONY: test-database
+test-database:
+	$(GOTEST) $(TAG_FLAG) $(PKG_DATABASE)
+
+.PHONY: test-quic
+test-quic:
+	$(GOTEST) $(TAG_FLAG) $(PKG_QUIC)
+
+.PHONY: test-mcp
+test-mcp:
+	$(GOTEST) $(TAG_FLAG) $(PKG_MCP)
+
+.PHONY: test-sql
+test-sql: test-sql-provider test-sql-engine test-sql-mysql test-sql-pgsql
+
+.PHONY: test-sdk
+test-sdk:
+	cd $(SDK_DIR) && $(GOTEST) ./...
 
 # ============================================================================
-# Integration tests (always run in devcontainer)
+# E2E tests (Playwright – always run in devcontainer)
 # ============================================================================
 
-# Public target: build devcontainer image and run tests inside it.
-.PHONY: integration-test
-integration-test:
-	@echo "==> Building integration container..."
-	@docker compose -f $(COMPOSE_FILE) build --quiet integration
-	@echo "==> Running integration tests..."
-	docker compose -f $(COMPOSE_FILE) run --rm integration make _integration-test
+# Public target: build E2E container and run Playwright tests inside it.
+.PHONY: test-e2e
+test-e2e:
+	@echo "==> Building E2E container..."
+	@docker compose -f $(COMPOSE_FILE) build --quiet e2e
+	@echo "==> Running E2E tests..."
+	docker compose -f $(COMPOSE_FILE) run --rm e2e make _test-e2e
 
 # Internal target: executed inside the devcontainer. Not intended for host use.
-# Note: runs only the top-level integration package. The API sub-suite
-# (test/integration/api/) requires its own docker-compose stack and is
-# exercised separately via the integration-test-api target.
-.PHONY: _integration-test
-_integration-test:
-	$(GOTEST) -tags integration -timeout=300s $(INT_TEST_DIR)
+.PHONY: _test-e2e
+_test-e2e: build-sdk install-frontend
+	cd cmd/qrdb/frontend && npx playwright install chromium
+	cd cmd/qrdb/frontend && npx playwright test
 
-# Multi-protocol API integration tests (docker compose with qrdbd server).
+.PHONY: test-playwright
+test-playwright: test-e2e
+
+# ============================================================================
+# Integration tests (run in devcontainer with qrdbd server + all protocols)
+# ============================================================================
+
+# All integration tests run in a docker compose stack with a qrdbd server
+# that has ALL protocols enabled (REST, gRPC, QUIC, Unix, MCP).
+# This is the single entry point for all integration tests.
+INT_COMPOSE := test/integration/api/docker-compose.yml
+
+.PHONY: integration-test
+integration-test:
+	@echo "==> Running ALL integration tests (qrdbd + all protocols)..."
+	@cd test/integration/api && docker compose down -v 2>/dev/null; true
+	@cd test/integration/api && \
+		docker compose up --build --abort-on-container-exit integration-tests; \
+		rc=$$?; \
+		docker compose down -v; \
+		exit $$rc
+
+# Backward-compatible alias for integration-test-api.
 .PHONY: integration-test-api
-integration-test-api:
-	@echo "==> Running multi-protocol API integration tests..."
-	cd test/integration/api && docker compose up --build --abort-on-container-exit integration-tests
-	cd test/integration/api && docker compose down -v
+integration-test-api: integration-test
 
-# Run multi-protocol API tests locally (requires running qrdbd server).
-.PHONY: integration-test-api-local
-integration-test-api-local:
-	$(GOTEST) -tags integration -timeout=15m ./test/integration/api/...
+# GPU-accelerated integration tests.
+# Auto-detects GPU: uses GPU compose overlay when nvidia-smi is present,
+# otherwise falls back to the standard CPU-only test stack.
+INT_GPU_COMPOSE := test/integration/api/docker-compose.gpu.yml
+HAS_GPU := $(shell command -v nvidia-smi >/dev/null 2>&1 && echo 1 || echo 0)
+
+.PHONY: integration-test-gpu
+integration-test-gpu:
+	@echo "==> Running GPU integration tests (qrdbd + all protocols + NVIDIA GPU)..."
+	@cd test/integration/api && docker compose down -v 2>/dev/null; true
+	@cd test/integration/api && \
+		docker compose -f docker-compose.yml -f docker-compose.gpu.yml \
+			up --build --abort-on-container-exit integration-tests; \
+		rc=$$?; \
+		docker compose -f docker-compose.yml -f docker-compose.gpu.yml down -v; \
+		exit $$rc
+
+# Auto-detecting variant: uses GPU when nvidia-smi is in PATH, CPU otherwise.
+.PHONY: integration-test-auto
+integration-test-auto:
+ifeq ($(HAS_GPU),1)
+	@echo "==> NVIDIA GPU detected — running GPU-accelerated integration tests..."
+	@$(MAKE) integration-test-gpu
+else
+	@echo "==> No NVIDIA GPU detected — falling back to CPU integration tests..."
+	@$(MAKE) integration-test
+endif
+
+# Run integration tests locally (requires running qrdbd server with all protocols).
+.PHONY: integration-test-local
+integration-test-local:
+	$(GOTEST) -tags integration -timeout=25m ./test/integration/...
 
 # ============================================================================
 # Benchmarks (always run in devcontainer)
 # ============================================================================
 
-# Public target: build devcontainer image and run benchmarks inside it.
-.PHONY: bench-qrdb-kv-fair
-bench-qrdb-kv-fair:
+# Public target: build devcontainer image and run fair KV benchmarks inside it.
+.PHONY: bench-qrdb-kv
+bench-qrdb-kv:
 	docker compose -f $(COMPOSE_FILE) run --rm --build -e KV_BENCHTIME=$(KV_BENCHTIME) benchmark make _bench-qrdb-kv-fair
 
 # Internal target: executed inside the devcontainer. Not intended for host use.
 .PHONY: _bench-qrdb-kv-fair
 _bench-qrdb-kv-fair:
 	$(GOTEST) -tags benchmark -bench=. -benchtime=$(KV_BENCHTIME) ./test/performance/qrdb/...
+
+# Run native QUIC KV benchmarks only.
+.PHONY: bench-qrdb-kv-quic
+bench-qrdb-kv-quic: _kvcompare-build
+	cd test/performance && QUICRAFT_ROOT="$(QUICRAFT_ROOT)" ./kvcompare --benchtime=$(KV_BENCHTIME) quic
+
+# Stage go-qrdb as contrib/qrdb inside go-quicraft (required for Docker build context
+# and kvcompare replace directives). Uses rsync because Docker COPY ignores symlinks.
+.PHONY: _stage-contrib
+_stage-contrib:
+	@test -d "$(QUICRAFT_ROOT)" || (echo "QUICRAFT_ROOT=$(QUICRAFT_ROOT) not found; set QUICRAFT_ROOT" && exit 1)
+	@rm -rf "$(QUICRAFT_ROOT)/contrib/qrdb"
+	@rsync -a --exclude='.git' --exclude='coverage/' --exclude='*.log' \
+		--exclude='.claude/' --exclude='.cursor/' --exclude='.codex/' \
+		"$(CURDIR)/" "$(QUICRAFT_ROOT)/contrib/qrdb/"
+
+# Build the kvcompare orchestrator from go-quicraft context.
+.PHONY: _kvcompare-build
+_kvcompare-build: _stage-contrib
+	cd "$(QUICRAFT_ROOT)/contrib/qrdb/test/performance/cmd/kvcompare" && $(GO) build -a -o "$(CURDIR)/test/performance/kvcompare" .
+
+# Run QRDB etcd API vs real etcd comparison via kvcompare orchestrator.
+.PHONY: bench-etcd-compare
+bench-etcd-compare: _kvcompare-build
+	cd test/performance && QUICRAFT_ROOT="$(QUICRAFT_ROOT)" ./kvcompare --benchtime=$(KV_BENCHTIME) etcd-compare
+
+# Run QRDB etcd API benchmarks only (no real etcd server needed).
+.PHONY: bench-etcd-qrdb
+bench-etcd-qrdb: _kvcompare-build
+	cd test/performance && QUICRAFT_ROOT="$(QUICRAFT_ROOT)" ./kvcompare --benchtime=$(KV_BENCHTIME) qrdb-etcd
+
+# Run real etcd server benchmarks only.
+.PHONY: bench-etcd-server
+bench-etcd-server: _kvcompare-build
+	cd test/performance && QUICRAFT_ROOT="$(QUICRAFT_ROOT)" ./kvcompare --benchtime=$(KV_BENCHTIME) etcd
+
+# Run perf-docs: full fair comparison with SVG charts and markdown report, then update docs.
+.PHONY: perf-docs
+perf-docs: _kvcompare-build
+	cd test/performance && QUICRAFT_ROOT="$(QUICRAFT_ROOT)" ./kvcompare \
+		--benchtime=$(KV_BENCHTIME) --chart-dir charts --report RESULTS.md fair
 
 # ============================================================================
 # Coverage
@@ -225,92 +584,250 @@ define check-coverage
 endef
 
 .PHONY: coverage
-coverage: | $(COVER_DIR)
-	$(GOTEST) -coverprofile=$(COVER_DIR)/total.out $$($(GO) list ./pkg/... ./cmd/... | grep -v '/proto/')
+coverage: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/total.out $$($(GO) list ./pkg/... ./cmd/... | grep -v '/proto/')
 	$(call check-coverage,$(COVER_DIR)/total.out,total)
 
 .PHONY: coverage-config
-coverage-config: | $(COVER_DIR)
-	$(GOTEST) -coverprofile=$(COVER_DIR)/config.out $(PKG_CONFIG)
+coverage-config: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/config.out $(PKG_CONFIG)
 	$(call check-coverage,$(COVER_DIR)/config.out,config)
 
+.PHONY: coverage-dao
+coverage-dao: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/dao.out $(PKG_DAO)
+	$(call check-coverage,$(COVER_DIR)/dao.out,dao)
+
 .PHONY: coverage-service
-coverage-service: | $(COVER_DIR)
-	$(GOTEST) -coverprofile=$(COVER_DIR)/service.out $(PKG_SERVICE)
+coverage-service: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/service.out $(PKG_SERVICE)
 	$(call check-coverage,$(COVER_DIR)/service.out,service)
 
 .PHONY: coverage-store
-coverage-store: | $(COVER_DIR)
-	$(GOTEST) -coverprofile=$(COVER_DIR)/store.out $(PKG_STORE)
+coverage-store: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/store.out $(PKG_STORE)
 	$(call check-coverage,$(COVER_DIR)/store.out,store)
 
 .PHONY: coverage-rest
-coverage-rest: | $(COVER_DIR)
-	$(GOTEST) -coverprofile=$(COVER_DIR)/rest.out $(PKG_REST)
+coverage-rest: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/rest.out $(PKG_REST)
 	$(call check-coverage,$(COVER_DIR)/rest.out,rest)
 
 .PHONY: coverage-grpc
-coverage-grpc: | $(COVER_DIR)
-	$(GOTEST) -coverprofile=$(COVER_DIR)/grpc.out $(PKG_GRPC)
+coverage-grpc: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/grpc.out $$($(GO) list $(PKG_GRPC) | grep -v '/proto/')
 	$(call check-coverage,$(COVER_DIR)/grpc.out,grpc)
 
 .PHONY: coverage-server
-coverage-server: | $(COVER_DIR)
-	$(GOTEST) -coverprofile=$(COVER_DIR)/server.out $(PKG_SERVER)
+coverage-server: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/server.out $(PKG_SERVER)
 	$(call check-coverage,$(COVER_DIR)/server.out,server)
 
 .PHONY: coverage-cmd
-coverage-cmd: | $(COVER_DIR)
-	$(GOTEST) -coverprofile=$(COVER_DIR)/cmd.out $(PKG_CMD)
+coverage-cmd: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/cmd.out $(PKG_CMD)
 	$(call check-coverage,$(COVER_DIR)/cmd.out,cmd)
 
 .PHONY: coverage-protocol
-coverage-protocol: | $(COVER_DIR)
-	$(GOTEST) -coverprofile=$(COVER_DIR)/protocol.out $(PKG_PROTOCOL)
+coverage-protocol: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/protocol.out $(PKG_PROTOCOL)
 	$(call check-coverage,$(COVER_DIR)/protocol.out,protocol)
 
 .PHONY: coverage-mvcc
-coverage-mvcc: | $(COVER_DIR)
-	$(GOTEST) -coverprofile=$(COVER_DIR)/mvcc.out $(PKG_MVCC)
+coverage-mvcc: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/mvcc.out $(PKG_MVCC)
 	$(call check-coverage,$(COVER_DIR)/mvcc.out,mvcc)
 
 .PHONY: coverage-watch
-coverage-watch: | $(COVER_DIR)
-	$(GOTEST) -coverprofile=$(COVER_DIR)/watch.out $(PKG_WATCH)
+coverage-watch: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/watch.out $(PKG_WATCH)
 	$(call check-coverage,$(COVER_DIR)/watch.out,watch)
 
 .PHONY: coverage-consistency
-coverage-consistency: | $(COVER_DIR)
-	$(GOTEST) -coverprofile=$(COVER_DIR)/consistency.out $(PKG_CONSISTENCY)
+coverage-consistency: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/consistency.out $(PKG_CONSISTENCY)
 	$(call check-coverage,$(COVER_DIR)/consistency.out,consistency)
 
 .PHONY: coverage-lease
-coverage-lease: | $(COVER_DIR)
-	$(GOTEST) -coverprofile=$(COVER_DIR)/lease.out $(PKG_LEASE)
+coverage-lease: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/lease.out $(PKG_LEASE)
 	$(call check-coverage,$(COVER_DIR)/lease.out,lease)
 
 .PHONY: coverage-index
-coverage-index: | $(COVER_DIR)
-	$(GOTEST) -coverprofile=$(COVER_DIR)/index.out $(PKG_INDEX)
+coverage-index: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/index.out $(PKG_INDEX)
 	$(call check-coverage,$(COVER_DIR)/index.out,index)
 
 .PHONY: coverage-timeseries
-coverage-timeseries: | $(COVER_DIR)
-	$(GOTEST) -coverprofile=$(COVER_DIR)/timeseries.out $(PKG_TIMESERIES)
+coverage-timeseries: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/timeseries.out $(PKG_TIMESERIES)
 	$(call check-coverage,$(COVER_DIR)/timeseries.out,timeseries)
 
 .PHONY: coverage-writemode
-coverage-writemode: | $(COVER_DIR)
-	$(GOTEST) -coverprofile=$(COVER_DIR)/writemode.out $(PKG_WRITEMODE)
+coverage-writemode: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/writemode.out $(PKG_WRITEMODE)
 	$(call check-coverage,$(COVER_DIR)/writemode.out,writemode)
 
 .PHONY: coverage-batch
-coverage-batch: | $(COVER_DIR)
-	$(GOTEST) -coverprofile=$(COVER_DIR)/batch.out $(PKG_BATCH)
+coverage-batch: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/batch.out $(PKG_BATCH)
 	$(call check-coverage,$(COVER_DIR)/batch.out,batch)
 
-$(COVER_DIR):
-	mkdir -p $(COVER_DIR)
+.PHONY: coverage-crypto-aesgcm
+coverage-crypto-aesgcm: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/crypto-aesgcm.out $(PKG_CRYPTO_AESGCM)
+	$(call check-coverage,$(COVER_DIR)/crypto-aesgcm.out,crypto-aesgcm)
+
+.PHONY: coverage-crypto-mem
+coverage-crypto-mem: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/crypto-mem.out $(PKG_CRYPTO_MEM)
+	$(call check-coverage,$(COVER_DIR)/crypto-mem.out,crypto-mem)
+
+.PHONY: coverage-crypto-shamir
+coverage-crypto-shamir: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/crypto-shamir.out $(PKG_CRYPTO_SHAMIR)
+	$(call check-coverage,$(COVER_DIR)/crypto-shamir.out,crypto-shamir)
+
+.PHONY: coverage-statemachine
+coverage-statemachine: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/statemachine.out $(PKG_STATEMACHINE)
+	$(call check-coverage,$(COVER_DIR)/statemachine.out,statemachine)
+
+.PHONY: coverage-seal
+coverage-seal: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/seal.out $(PKG_SEAL)
+	$(call check-coverage,$(COVER_DIR)/seal.out,seal)
+
+.PHONY: coverage-ceremony
+coverage-ceremony: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/ceremony.out $(PKG_CEREMONY)
+	$(call check-coverage,$(COVER_DIR)/ceremony.out,ceremony)
+
+.PHONY: coverage-credentials
+coverage-credentials: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/credentials.out $(PKG_CREDENTIALS)
+	$(call check-coverage,$(COVER_DIR)/credentials.out,credentials)
+
+.PHONY: coverage-tenant
+coverage-tenant: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/tenant.out $(PKG_TENANT)
+	$(call check-coverage,$(COVER_DIR)/tenant.out,tenant)
+
+.PHONY: coverage-kvstore
+coverage-kvstore: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/kvstore.out $(PKG_KVSTORE)
+	$(call check-coverage,$(COVER_DIR)/kvstore.out,kvstore)
+
+.PHONY: coverage-storage
+coverage-storage: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/storage.out $(PKG_STORAGE)
+	$(call check-coverage,$(COVER_DIR)/storage.out,storage)
+
+.PHONY: coverage-storage-file
+coverage-storage-file: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/storage-file.out $(PKG_STORAGE_FILE)
+	$(call check-coverage,$(COVER_DIR)/storage-file.out,storage-file)
+
+.PHONY: coverage-storage-partition
+coverage-storage-partition: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/storage-partition.out $(PKG_STORAGE_PARTITION)
+	$(call check-coverage,$(COVER_DIR)/storage-partition.out,storage-partition)
+
+.PHONY: coverage-shard
+coverage-shard: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/shard.out $(PKG_SHARD)
+	$(call check-coverage,$(COVER_DIR)/shard.out,shard)
+
+.PHONY: coverage-capabilities
+coverage-capabilities: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/capabilities.out $(PKG_CAPABILITIES)
+	$(call check-coverage,$(COVER_DIR)/capabilities.out,capabilities)
+
+.PHONY: coverage-permission
+coverage-permission: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/permission.out $(PKG_PERMISSION)
+	$(call check-coverage,$(COVER_DIR)/permission.out,permission)
+
+.PHONY: coverage-role
+coverage-role: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/role.out $(PKG_ROLE)
+	$(call check-coverage,$(COVER_DIR)/role.out,role)
+
+.PHONY: coverage-auth-rbac
+coverage-auth-rbac: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/auth-rbac.out $(PKG_AUTH_RBAC)
+	$(call check-coverage,$(COVER_DIR)/auth-rbac.out,auth-rbac)
+
+.PHONY: coverage-auth-middleware
+coverage-auth-middleware: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/auth-middleware.out $(PKG_AUTH_MIDDLEWARE)
+	$(call check-coverage,$(COVER_DIR)/auth-middleware.out,auth-middleware)
+
+.PHONY: coverage-cert
+coverage-cert: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/cert.out $(PKG_CERT)
+	$(call check-coverage,$(COVER_DIR)/cert.out,cert)
+
+.PHONY: coverage-cli
+coverage-cli: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/cli.out $(PKG_CLI)
+	$(call check-coverage,$(COVER_DIR)/cli.out,cli)
+
+.PHONY: coverage-sql-provider
+coverage-sql-provider: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/sql-provider.out $(PKG_SQL_PROVIDER)
+	$(call check-coverage,$(COVER_DIR)/sql-provider.out,sql-provider)
+
+.PHONY: coverage-sql-engine
+coverage-sql-engine: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/sql-engine.out $(PKG_SQL_ENGINE)
+	$(call check-coverage,$(COVER_DIR)/sql-engine.out,sql-engine)
+
+.PHONY: coverage-sql-mysql
+coverage-sql-mysql: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/sql-mysql.out $(PKG_SQL_MYSQL)
+	$(call check-coverage,$(COVER_DIR)/sql-mysql.out,sql-mysql)
+
+.PHONY: coverage-sql-pgsql
+coverage-sql-pgsql: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/sql-pgsql.out $(PKG_SQL_PGSQL)
+	$(call check-coverage,$(COVER_DIR)/sql-pgsql.out,sql-pgsql)
+
+.PHONY: coverage-codec
+coverage-codec: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/codec.out $(PKG_CODEC)
+	$(call check-coverage,$(COVER_DIR)/codec.out,codec)
+
+.PHONY: coverage-etcd
+coverage-etcd: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/etcd.out $(PKG_ETCD)
+	$(call check-coverage,$(COVER_DIR)/etcd.out,etcd)
+
+.PHONY: coverage-database
+coverage-database: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/database.out $(PKG_DATABASE)
+	$(call check-coverage,$(COVER_DIR)/database.out,database)
+
+.PHONY: coverage-quic
+coverage-quic: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/quic.out $(PKG_QUIC)
+	$(call check-coverage,$(COVER_DIR)/quic.out,quic)
+
+.PHONY: coverage-mcp
+coverage-mcp: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/mcp.out $(PKG_MCP)
+	$(call check-coverage,$(COVER_DIR)/mcp.out,mcp)
+
+.PHONY: coverage-sql
+coverage-sql: coverage-sql-provider coverage-sql-engine coverage-sql-mysql coverage-sql-pgsql
+
+.PHONY: coverage-sdk
+coverage-sdk: | _cover-dir
+	cd $(SDK_DIR) && $(GOTEST) -coverprofile=../../$(COVER_DIR)/sdk.out ./...
+	$(call check-coverage,$(COVER_DIR)/sdk.out,sdk)
+
+_cover-dir:
+	@mkdir -p $(COVER_DIR)
 
 # ============================================================================
 # CI pipeline (runs in devcontainer with all tools pre-installed)
@@ -321,7 +838,7 @@ ci:
 	docker compose -f $(COMPOSE_FILE) run --rm --build devcontainer make _ci
 
 .PHONY: _ci
-_ci: fmt vet lint gosec vuln build test
+_ci: fmt vet lint gosec vuln build-server test
 	@echo "CI pipeline passed"
 
 # ============================================================================
@@ -368,7 +885,7 @@ docker-build:
 
 .PHONY: docker-build-integration
 docker-build-integration:
-	docker build -t go-qrdb-integration:$(DOCKER_TAG) -f $(DOCKER_DIR)/devcontainer/Dockerfile .
+	docker build -t go-qrdb-integration:$(DOCKER_TAG) -f .devcontainer/Dockerfile .
 
 .PHONY: docker-run
 docker-run:
@@ -377,6 +894,273 @@ docker-run:
 .PHONY: docker-run-devcontainer
 docker-run-devcontainer:
 	docker compose -f $(COMPOSE_FILE) run --rm --build devcontainer
+
+# ============================================================================
+# Dev Cluster (local 3-node cluster for testing)
+# ============================================================================
+
+DEV_CLUSTER_DATA := ./data
+
+.PHONY: dev-cluster
+dev-cluster: build-server
+	@echo "==> Starting 3-node dev cluster..."
+	@mkdir -p $(DEV_CLUSTER_DATA)
+	@./bin/qrdbd start \
+		--discovery static \
+		--peers "1=127.0.0.1:63001,2=127.0.0.1:63011,3=127.0.0.1:63021" \
+		--replica-id 1 --shard-id 1 \
+		--listen 0.0.0.0:63001 --raft-address 127.0.0.1:63001 \
+		--admin-port 63002 --grpc-port 63003 \
+		--data-dir $(DEV_CLUSTER_DATA)/1 \
+		--log-level info &
+	@sleep 1
+	@./bin/qrdbd start \
+		--discovery static \
+		--peers "1=127.0.0.1:63001,2=127.0.0.1:63011,3=127.0.0.1:63021" \
+		--replica-id 2 --shard-id 1 \
+		--listen 0.0.0.0:63011 --raft-address 127.0.0.1:63011 \
+		--admin-port 63012 --grpc-port 63013 \
+		--data-dir $(DEV_CLUSTER_DATA)/2 \
+		--log-level info &
+	@sleep 1
+	@./bin/qrdbd start \
+		--discovery static \
+		--peers "1=127.0.0.1:63001,2=127.0.0.1:63011,3=127.0.0.1:63021" \
+		--replica-id 3 --shard-id 1 \
+		--listen 0.0.0.0:63021 --raft-address 127.0.0.1:63021 \
+		--admin-port 63022 --grpc-port 63023 \
+		--data-dir $(DEV_CLUSTER_DATA)/3 \
+		--log-level info &
+	@echo "Dev cluster started (PIDs: $$(pgrep -f 'qrdbd start' | tr '\n' ' '))"
+	@echo "  Node 1: admin=:63002 grpc=:63003 raft=:63001"
+	@echo "  Node 2: admin=:63012 grpc=:63013 raft=:63011"
+	@echo "  Node 3: admin=:63022 grpc=:63023 raft=:63021"
+
+.PHONY: dev-cluster-stop
+dev-cluster-stop:
+	@echo "==> Stopping dev cluster..."
+	@pkill -f 'qrdbd start' 2>/dev/null || true
+	@echo "Dev cluster stopped"
+
+.PHONY: dev-cluster-clean
+dev-cluster-clean: dev-cluster-stop
+	@echo "==> Cleaning dev cluster data..."
+	@rm -rf $(DEV_CLUSTER_DATA)/1 $(DEV_CLUSTER_DATA)/2 $(DEV_CLUSTER_DATA)/3
+	@echo "Dev cluster data cleaned"
+
+
+
+# ============================================================================
+# Vector GPU
+# ============================================================================
+
+PKG_VECTOR_GPU     := ./pkg/vector/gpu/...
+PKG_EMBEDDING      := ./pkg/embedding/...
+PKG_RAG            := ./pkg/rag/...
+PKG_RAG_CHUNKER    := ./pkg/rag/chunker/...
+
+.PHONY: test-vector-gpu
+test-vector-gpu: ## Run GPU stub/detection unit tests
+	$(GOTEST) $(TAG_FLAG) $(PKG_VECTOR_GPU)
+
+.PHONY: test-vector-gpu-real
+test-vector-gpu-real: ## Run GPU tests against real NVIDIA hardware (requires gpu build tag)
+	$(GOTEST) -tags "$(strip $(BUILD_TAGS)) gpu" $(PKG_VECTOR_GPU)
+
+.PHONY: bench-vector-gpu
+bench-vector-gpu: ## Run GPU index benchmarks (requires gpu build tag and NVIDIA hardware)
+	$(GO) test -tags "$(strip $(BUILD_TAGS)) gpu" -bench=. -benchmem $(PKG_VECTOR_GPU)
+
+.PHONY: coverage-vector-gpu
+coverage-vector-gpu: | _cover-dir ## Generate GPU package coverage
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/vector-gpu.out $(PKG_VECTOR_GPU)
+	$(call check-coverage,$(COVER_DIR)/vector-gpu.out,vector-gpu)
+
+# ============================================================================
+# Embedding
+# ============================================================================
+
+.PHONY: test-embedding
+test-embedding: ## Run embedding package unit tests
+	$(GOTEST) $(TAG_FLAG) $(PKG_EMBEDDING)
+
+.PHONY: bench-embedding
+bench-embedding: ## Run embedding package benchmarks
+	$(GO) test $(TAG_FLAG) -bench=. -benchmem $(PKG_EMBEDDING)
+
+.PHONY: coverage-embedding
+coverage-embedding: | _cover-dir ## Generate embedding package coverage
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/embedding.out $(PKG_EMBEDDING)
+	$(call check-coverage,$(COVER_DIR)/embedding.out,embedding)
+
+# ============================================================================
+# RAG
+# ============================================================================
+
+.PHONY: test-rag
+test-rag: ## Run RAG package unit tests
+	$(GOTEST) $(TAG_FLAG) $(PKG_RAG)
+
+.PHONY: test-rag-chunker
+test-rag-chunker: ## Run RAG chunker unit tests
+	$(GOTEST) $(TAG_FLAG) $(PKG_RAG_CHUNKER)
+
+.PHONY: bench-rag
+bench-rag: ## Run RAG package benchmarks
+	$(GO) test $(TAG_FLAG) -bench=. -benchmem $(PKG_RAG)
+
+.PHONY: bench-rag-chunker
+bench-rag-chunker: ## Run RAG chunker benchmarks
+	$(GO) test $(TAG_FLAG) -bench=. -benchmem $(PKG_RAG_CHUNKER)
+
+.PHONY: coverage-rag
+coverage-rag: | _cover-dir ## Generate RAG package coverage
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/rag.out $(PKG_RAG)
+	$(call check-coverage,$(COVER_DIR)/rag.out,rag)
+
+.PHONY: coverage-rag-chunker
+coverage-rag-chunker: | _cover-dir ## Generate RAG chunker coverage
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/rag-chunker.out $(PKG_RAG_CHUNKER)
+	$(call check-coverage,$(COVER_DIR)/rag-chunker.out,rag-chunker)
+
+# ============================================================================
+# Integration test targets for embedding, RAG, and GPU
+# ============================================================================
+
+.PHONY: integration-test-embedding
+integration-test-embedding: ## Run embedding integration tests inside docker compose stack
+	@echo "==> Running embedding integration tests..."
+	@cd test/integration/api && docker compose down -v 2>/dev/null; true
+	@cd test/integration/api && \
+		docker compose up --build --abort-on-container-exit \
+			--exit-code-from integration-tests integration-tests \
+			-e INTEGRATION_FILTER=TestEmbedding; \
+		rc=$$?; \
+		docker compose down -v; \
+		exit $$rc
+
+.PHONY: integration-test-rag
+integration-test-rag: ## Run RAG integration tests inside docker compose stack
+	@echo "==> Running RAG integration tests..."
+	@cd test/integration/api && docker compose down -v 2>/dev/null; true
+	@cd test/integration/api && \
+		docker compose up --build --abort-on-container-exit \
+			--exit-code-from integration-tests integration-tests \
+			-e INTEGRATION_FILTER=TestRAG; \
+		rc=$$?; \
+		docker compose down -v; \
+		exit $$rc
+
+# ============================================================================
+# Combined new-package targets
+# ============================================================================
+
+.PHONY: test-all-new
+test-all-new: test-embedding test-rag test-rag-chunker coverage-vector-gpu ## Run all new-package tests and GPU coverage
+
+# ============================================================================
+# Vector FLAT Index
+# ============================================================================
+
+.PHONY: test-vector-flat
+test-vector-flat: ## Run FLAT index unit tests
+	$(GOTEST) -tags qrdb_vector -count=1 ./pkg/vector/flat/...
+
+.PHONY: bench-vector-flat
+bench-vector-flat: ## Run FLAT index benchmarks
+	go test -tags qrdb_vector -bench=. -benchmem -count=3 ./pkg/vector/flat/...
+
+.PHONY: coverage-vector-flat
+coverage-vector-flat: ## Generate FLAT index coverage
+	go test -tags qrdb_vector -coverprofile=coverage-vector-flat.out -covermode=atomic ./pkg/vector/flat/...
+	go tool cover -func=coverage-vector-flat.out
+
+
+# ============================================================================
+# Scalar Index
+# ============================================================================
+
+.PHONY: test-vector-scalar-index
+test-vector-scalar-index: ## Run scalar index unit tests
+	$(GOTEST) $(TAG_FLAG) ./pkg/vector/scalar/...
+
+.PHONY: bench-vector-scalar-index
+bench-vector-scalar-index: ## Run scalar index benchmarks
+	$(GO) test $(TAG_FLAG) -bench='Benchmark.*' -benchmem -count=3 ./pkg/vector/scalar/...
+
+.PHONY: coverage-vector-scalar-index
+coverage-vector-scalar-index: | _cover-dir ## Generate scalar index coverage report
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/vector-scalar-index.out ./pkg/vector/scalar/...
+	$(call check-coverage,$(COVER_DIR)/vector-scalar-index.out,vector-scalar-index)
+
+# ============================================================================
+# Vector Quantization
+# ============================================================================
+
+.PHONY: test-vector-quantization
+test-vector-quantization: ## Run quantization unit tests
+	$(GOTEST) $(TAG_FLAG) ./pkg/vector/quantization/...
+
+.PHONY: bench-vector-quantization
+bench-vector-quantization: ## Run quantization benchmarks
+	$(GO) test $(TAG_FLAG) -bench=. -benchmem -count=3 ./pkg/vector/quantization/...
+
+.PHONY: coverage-vector-quantization
+coverage-vector-quantization: | _cover-dir ## Generate quantization coverage report
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/vector-quantization.out ./pkg/vector/quantization/...
+	$(call check-coverage,$(COVER_DIR)/vector-quantization.out,vector-quantization)
+
+# ============================================================================
+# Bloom Filter
+# ============================================================================
+
+.PHONY: test-vector-bloom
+test-vector-bloom: ## Run bloom filter unit tests
+	$(GOTEST) $(TAG_FLAG) ./pkg/vector/bloom/...
+
+.PHONY: bench-vector-bloom
+bench-vector-bloom: ## Run bloom filter benchmarks
+	$(GO) test $(TAG_FLAG) -bench="Benchmark.*" -benchmem -count=3 ./pkg/vector/bloom/...
+
+.PHONY: coverage-vector-bloom
+coverage-vector-bloom: | _cover-dir ## Generate bloom filter coverage report
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/vector-bloom.out ./pkg/vector/bloom/...
+	$(call check-coverage,$(COVER_DIR)/vector-bloom.out,vector-bloom)
+
+# ============================================================================
+# SQLite Gateway
+# ============================================================================
+# The qrdb-sqlite binary lives in a separate Go module (cmd/qrdb-sqlite)
+# because it requires CGo via mattn/go-sqlite3. All targets below
+# operate within that module directory.
+
+SQLITE_DIR  := cmd/qrdb-sqlite
+SQLITE_TAGS := sqlite_vtable
+SQLITE_BIN  := bin/qrdb-sqlite
+
+.PHONY: build-sqlite-gateway
+build-sqlite-gateway:
+	cd $(SQLITE_DIR) && CGO_ENABLED=1 go build -tags $(SQLITE_TAGS) \
+		-ldflags "-X main.version=$(VERSION) -X main.gitCommit=$(GIT_COMMIT) -X main.buildDate=$(BUILD_DATE)" \
+		-o ../../$(SQLITE_BIN) .
+
+.PHONY: test-sqlite-gateway
+test-sqlite-gateway:
+	cd $(SQLITE_DIR) && CGO_ENABLED=1 go test -tags $(SQLITE_TAGS) -race -count=1 ./... 2>&1 | tee ../../test-sqlite-gateway.log
+
+.PHONY: integration-test-sqlite-gateway
+integration-test-sqlite-gateway:
+	cd $(SQLITE_DIR) && CGO_ENABLED=1 go test -tags "$(SQLITE_TAGS) integration" -race -count=1 ./integration/... 2>&1 | tee ../../integration-test-sqlite-gateway.log
+
+.PHONY: bench-sqlite-gateway
+bench-sqlite-gateway:
+	cd $(SQLITE_DIR) && CGO_ENABLED=1 go test -tags "$(SQLITE_TAGS) integration" -bench=. -benchmem -count=1 ./integration/... 2>&1 | tee ../../bench-sqlite-gateway.log
+
+.PHONY: coverage-sqlite-gateway
+coverage-sqlite-gateway:
+	cd $(SQLITE_DIR) && CGO_ENABLED=1 go test -tags $(SQLITE_TAGS) -coverprofile=coverage.out -covermode=atomic ./... && \
+	go tool cover -func=coverage.out && \
+	cp coverage.out ../../$(COVER_DIR)/sqlite-gateway.out
 
 # ============================================================================
 # Help
@@ -388,32 +1172,66 @@ help:
 	@echo ""
 	@echo "Primary:"
 	@echo "  all                    Build, test, and lint (default)"
-	@echo "  build                  Compile daemon binary to bin/qrdbd"
-	@echo "  build-cli              Compile client CLI binary to bin/qrdb"
-	@echo "  clean                  Remove build artifacts and coverage reports"
+	@echo "  build                  Compile server and client binaries"
+	@echo "  build-server           Compile daemon binary to bin/qrdbd"
+	@echo "  build-client           Compile client binary in devcontainer (CLI + GUI)"
+	@echo "  clean                  Remove build artifacts, coverage, and frontend"
 	@echo "  proto                  Regenerate protobuf code"
+	@echo ""
+	@echo "Frontend & SDK:"
+	@echo "  install-sdk            Install TypeScript SDK dependencies"
+	@echo "  build-sdk              Build TypeScript SDK"
+	@echo "  install-frontend       Install frontend dependencies"
+	@echo "  build-frontend         Build frontend (Svelte + Vite)"
+	@echo "  dev-gui                Start Wails dev server with hot reload"
+	@echo ""
+	@echo "Feature flags (default: enabled):"
+	@echo "  WITH_QRDB_TS=0         Disable time-series support"
+	@echo "  WITH_QRDB_VECTOR=0     Disable vector support"
+	@echo "  WITH_QRDB_MYSQL=0      Disable MySQL wire protocol support"
+	@echo "  WITH_QRDB_PGSQL=0      Disable PostgreSQL wire protocol support"
+	@echo "  WITH_QRDB_ETCD=0       Disable etcd wire protocol support"
+	@echo "  WITH_QRDB_GPU=1        Enable GPU acceleration (requires NVIDIA)"
 	@echo ""
 	@echo "Unit Tests:"
 	@echo "  test                   Run all unit tests with race detector"
 	@echo "  test-<pkg>             Run tests for a specific package"
-	@echo "    packages: config, service, store, rest, grpc, server, cmd,"
-	@echo "              protocol, mvcc, watch, consistency, lease, index, timeseries,"
-	@echo "              writemode, batch"
+	@echo "    packages: config, dao, service, store, rest, grpc, quic, mcp, server,"
+	@echo "              cmd, database, protocol, mvcc, watch, consistency, lease, index,"
+	@echo "              timeseries, writemode, batch, crypto-aesgcm, crypto-mem,"
+	@echo "              crypto-shamir, statemachine, seal, tenant, kvstore, storage,"
+	@echo "              storage-file, shard, sdk, embedding, rag, rag-chunker,"
+	@echo "              vector-gpu, vector-gpu-real"
 	@echo ""
-	@echo "Integration Tests (run in devcontainer automatically):"
-	@echo "  integration-test           Run all integration tests in devcontainer"
-	@echo "  integration-test-api       Run multi-protocol API tests (docker compose)"
-	@echo "  integration-test-api-local Run multi-protocol API tests locally"
+	@echo "E2E Tests (Playwright):"
+	@echo "  test-e2e               Install Playwright browsers and run all E2E tests"
+	@echo "  test-playwright        Alias for test-e2e"
+	@echo ""
+	@echo "Integration Tests (devcontainer with qrdbd + all protocols):"
+	@echo "  integration-test           Run ALL integration tests (docker compose)"
+	@echo "  integration-test-api       Alias for integration-test"
+	@echo "  integration-test-gpu       Run GPU-accelerated integration tests"
+	@echo "  integration-test-embedding Run embedding integration tests"
+	@echo "  integration-test-rag       Run RAG integration tests"
+	@echo "  integration-test-auto      Auto-detect GPU, fallback to CPU"
+	@echo "  integration-test-local     Run integration tests locally (requires running qrdbd)"
 	@echo ""
 	@echo "Benchmarks (run in devcontainer automatically):"
-	@echo "  bench-qrdb-kv-fair    Run KV fair benchmarks (KV_BENCHTIME=5s)"
+	@echo "  bench-qrdb-kv         Run fair KV benchmarks (KV_BENCHTIME=5s)"
+	@echo "  bench-qrdb-kv-quic    Run native QUIC KV benchmarks"
+	@echo "  bench-etcd-compare    Run QRDB etcd API vs real etcd comparison"
+	@echo "  bench-etcd-qrdb       Run QRDB etcd API benchmarks only"
+	@echo "  bench-etcd-server     Run real etcd server benchmarks only"
+	@echo "  perf-docs             Run full fair comparison, generate charts + RESULTS.md"
 	@echo ""
 	@echo "Coverage (minimum $(COVER_MIN)%):"
 	@echo "  coverage               Run total coverage report"
 	@echo "  coverage-<pkg>         Run coverage for a specific package"
-	@echo "    packages: config, service, store, rest, grpc, server, cmd,"
-	@echo "              protocol, mvcc, watch, consistency, lease, index, timeseries,"
-	@echo "              writemode, batch"
+	@echo "    packages: config, dao, service, store, rest, grpc, quic, mcp, server,"
+	@echo "              cmd, database, protocol, mvcc, watch, consistency, lease, index,"
+	@echo "              timeseries, writemode, batch, crypto-aesgcm, crypto-mem,"
+	@echo "              crypto-shamir, statemachine, seal, tenant, kvstore, storage,"
+	@echo "              storage-file, shard, sdk, embedding, rag, rag-chunker, vector-gpu"
 	@echo ""
 	@echo "CI Pipeline (runs in devcontainer):"
 	@echo "  ci                     Run full CI pipeline (fmt, vet, lint, gosec, vuln, build, test)"
@@ -427,8 +1245,20 @@ help:
 	@echo "  gosec                  Run gosec security scanner"
 	@echo "  vuln                   Run govulncheck vulnerability scanner"
 	@echo ""
+	@echo "Dev Cluster:"
+	@echo "  dev-cluster              Start a local 3-node cluster"
+	@echo "  dev-cluster-stop         Stop the local dev cluster"
+	@echo "  dev-cluster-clean        Stop and remove dev cluster data"
+	@echo ""
 	@echo "Docker:"
 	@echo "  docker-build                 Build production image"
 	@echo "  docker-build-integration     Build integration test image"
 	@echo "  docker-run                   Run production container"
 	@echo "  docker-run-devcontainer      Run devcontainer shell"
+	@echo ""
+	@echo "SQLite Gateway (CGo, separate module at cmd/qrdb-sqlite):"
+	@echo "  build-sqlite-gateway             Build qrdb-sqlite binary to bin/qrdb-sqlite"
+	@echo "  test-sqlite-gateway              Run unit tests (CGO_ENABLED=1, sqlite_vtable tag)"
+	@echo "  integration-test-sqlite-gateway  Run integration tests"
+	@echo "  bench-sqlite-gateway             Run benchmarks"
+	@echo "  coverage-sqlite-gateway          Generate coverage report"

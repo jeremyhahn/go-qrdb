@@ -16,19 +16,37 @@ package server
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	crand "crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"math/big"
 	"net"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/config"
+	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
+	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
 
 // mockKVService implements service.KVServicer for testing.
@@ -58,6 +76,49 @@ func (m *mockKVService) Delete(_ context.Context, key string) error {
 	return nil
 }
 
+func (m *mockKVService) DeleteWithMode(_ context.Context, key string, _ writemode.Mode) error {
+	delete(m.store, key)
+	return nil
+}
+
+func (m *mockKVService) PutWithMode(_ context.Context, key string, value []byte, _ writemode.Mode) error {
+	m.store[key] = value
+	return nil
+}
+
+func (m *mockKVService) GetWithConsistency(_ context.Context, key string, _ consistency.ReadOptions) ([]byte, error) {
+	v, ok := m.store[key]
+	if !ok {
+		return nil, &service.KeyNotFoundError{Key: key}
+	}
+	return v, nil
+}
+
+func (m *mockKVService) ListWithConsistency(_ context.Context, prefix string, _ consistency.ReadOptions) ([]string, error) {
+	var keys []string
+	for k := range m.store {
+		if prefix == "" || strings.HasPrefix(k, prefix) {
+			keys = append(keys, k)
+		}
+	}
+	return keys, nil
+}
+
+func (m *mockKVService) ScanWithConsistency(_ context.Context, prefix string, _ consistency.ReadOptions) (map[string][]byte, error) {
+	result := make(map[string][]byte)
+	for k, v := range m.store {
+		if prefix == "" || strings.HasPrefix(k, prefix) {
+			result[k] = v
+		}
+	}
+	return result, nil
+}
+
+func (m *mockKVService) ExistsWithConsistency(_ context.Context, key string, _ consistency.ReadOptions) (bool, error) {
+	_, ok := m.store[key]
+	return ok, nil
+}
+
 func (m *mockKVService) List(_ context.Context, prefix string) ([]string, error) {
 	var keys []string
 	for k := range m.store {
@@ -66,6 +127,44 @@ func (m *mockKVService) List(_ context.Context, prefix string) ([]string, error)
 		}
 	}
 	return keys, nil
+}
+
+func (m *mockKVService) Scan(_ context.Context, prefix string) (map[string][]byte, error) {
+	result := make(map[string][]byte)
+	for k, v := range m.store {
+		if prefix == "" || strings.HasPrefix(k, prefix) {
+			result[k] = v
+		}
+	}
+	return result, nil
+}
+
+func (m *mockKVService) PutEntity(_ context.Context, _ *service.PutEntityRequest) (*service.PutEntityResponse, error) {
+	return nil, nil
+}
+
+func (m *mockKVService) GetEntity(_ context.Context, _ *service.GetEntityRequest) (*service.GetEntityResponse, error) {
+	return nil, nil
+}
+
+func (m *mockKVService) DeleteEntity(_ context.Context, _ *service.DeleteEntityRequest) (*service.DeleteEntityResponse, error) {
+	return nil, nil
+}
+
+func (m *mockKVService) ListEntities(_ context.Context, _ *service.ListEntitiesRequest) (*service.ListEntitiesResponse, error) {
+	return nil, nil
+}
+
+func (m *mockKVService) GetStale(ctx context.Context, key string) ([]byte, error) {
+	return m.Get(ctx, key)
+}
+
+func (m *mockKVService) ListStale(ctx context.Context, prefix string) ([]string, error) {
+	return m.List(ctx, prefix)
+}
+
+func (m *mockKVService) ScanStale(ctx context.Context, prefix string) (map[string][]byte, error) {
+	return m.Scan(ctx, prefix)
 }
 
 // mockAdminService implements service.AdminServicer for testing.
@@ -109,6 +208,34 @@ func (m *mockAdminService) Drain(_ context.Context) error {
 	return nil
 }
 
+func (m *mockAdminService) Capabilities(_ context.Context) (*capabilities.Capabilities, error) {
+	return &capabilities.Capabilities{
+		KV:          true,
+		MVCC:        true,
+		Transaction: true,
+		Batch:       true,
+		Watch:       true,
+		Lease:       true,
+		Index:       true,
+	}, nil
+}
+
+func (m *mockAdminService) GetShardState(_ context.Context, shardID uint64) (*service.ShardStateResponse, error) {
+	return &service.ShardStateResponse{ShardID: shardID}, nil
+}
+
+func (m *mockAdminService) StartShard(_ context.Context, _ *service.StartShardRequest) error {
+	return nil
+}
+
+func (m *mockAdminService) StopShard(_ context.Context, _ uint64) error {
+	return nil
+}
+
+func (m *mockAdminService) GetTopology(_ context.Context) (*service.TopologyResponse, error) {
+	return &service.TopologyResponse{}, nil
+}
+
 // mockHost implements rest.Host for testing.
 type mockHost struct{}
 
@@ -124,6 +251,7 @@ func (m *mockLeaderAdminResolver) Register(_, _ string)            {}
 type protocolFlags struct {
 	rest bool
 	grpc bool
+	quic bool
 	unix bool
 	mcp  bool
 }
@@ -146,11 +274,13 @@ func testConfigFull(flags protocolFlags, socketPath string) *config.Config {
 		Server: config.ServerConfig{
 			AdminPort: 0,
 			GRPCPort:  0,
+			QUICPort:  0,
 			Host:      "127.0.0.1",
 		},
 		Protocols: config.ProtocolsConfig{
 			REST: flags.rest,
 			GRPC: flags.grpc,
+			QUIC: flags.quic,
 			Unix: flags.unix,
 			MCP:  flags.mcp,
 		},
@@ -898,11 +1028,1215 @@ func TestStart_MCPAddrResolved(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// ServerOption coverage tests
+// ---------------------------------------------------------------------------
+
+func TestWithUserService(t *testing.T) {
+	var opts serverOptions
+	opt := WithUserService(nil)
+	opt(&opts)
+	if opts.userSvc != nil {
+		t.Error("expected nil userSvc")
+	}
+}
+
+func TestWithRoleService(t *testing.T) {
+	var opts serverOptions
+	opt := WithRoleService(nil)
+	opt(&opts)
+	if opts.roleSvc != nil {
+		t.Error("expected nil roleSvc")
+	}
+}
+
+func TestWithCertProvider(t *testing.T) {
+	var opts serverOptions
+	opt := WithCertProvider(nil)
+	opt(&opts)
+	if opts.certProv != nil {
+		t.Error("expected nil certProv")
+	}
+}
+
+func TestWithAuthMiddleware(t *testing.T) {
+	var opts serverOptions
+	opt := WithAuthMiddleware(nil)
+	opt(&opts)
+	if opts.authMW != nil {
+		t.Error("expected nil authMW")
+	}
+}
+
+func TestWithDatabaseManager(t *testing.T) {
+	var opts serverOptions
+	opt := WithDatabaseManager(nil)
+	opt(&opts)
+	if opts.dbManager != nil {
+		t.Error("expected nil dbManager")
+	}
+}
+
+func TestWithDatabaseManager_NonNil(t *testing.T) {
+	dataDir := t.TempDir()
+	mgr := database.NewManager(nil, dataDir)
+	defer func() { _ = mgr.Close() }()
+
+	var opts serverOptions
+	opt := WithDatabaseManager(mgr)
+	opt(&opts)
+	if opts.dbManager != mgr {
+		t.Error("expected dbManager to be set")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Start with all optional dependencies (exercises all if-branches in start*)
+// ---------------------------------------------------------------------------
+
+// stubUserService is a minimal user.UserServicer for option propagation tests.
+type stubUserService struct{}
+
+func (s *stubUserService) CreateUser(_ context.Context, _ *user.CreateUserRequest) (*user.User, error) {
+	return nil, nil
+}
+func (s *stubUserService) GetUser(_ context.Context, _ string) (*user.User, error) { return nil, nil }
+func (s *stubUserService) GetUserByUsername(_ context.Context, _, _ string) (*user.User, error) {
+	return nil, nil
+}
+func (s *stubUserService) UpdateUser(_ context.Context, _ *user.UpdateUserRequest) (*user.User, error) {
+	return nil, nil
+}
+func (s *stubUserService) DeleteUser(_ context.Context, _ string) error { return nil }
+func (s *stubUserService) ListUsers(_ context.Context, _ *user.ListUsersRequest) (*user.ListUsersResponse, error) {
+	return nil, nil
+}
+func (s *stubUserService) EnableUser(_ context.Context, _ string) error  { return nil }
+func (s *stubUserService) DisableUser(_ context.Context, _ string) error { return nil }
+
+// stubRoleService is a minimal role.RoleServicer for option propagation tests.
+type stubRoleService struct{}
+
+func (s *stubRoleService) CreateRole(_ context.Context, _ *role.CreateRoleRequest) (*role.Role, error) {
+	return nil, nil
+}
+func (s *stubRoleService) GetRole(_ context.Context, _ string) (*role.Role, error) { return nil, nil }
+func (s *stubRoleService) GetRoleByName(_ context.Context, _, _ string) (*role.Role, error) {
+	return nil, nil
+}
+func (s *stubRoleService) UpdateRole(_ context.Context, _ *role.UpdateRoleRequest) (*role.Role, error) {
+	return nil, nil
+}
+func (s *stubRoleService) DeleteRole(_ context.Context, _ string) error { return nil }
+func (s *stubRoleService) ListRoles(_ context.Context, _ *role.ListRolesRequest) (*role.ListRolesResponse, error) {
+	return nil, nil
+}
+func (s *stubRoleService) ResolvePermissions(_ context.Context, _ []string) ([]permission.Permission, error) {
+	return nil, nil
+}
+
+// stubCertProvider is a minimal cert.CertProvider for option propagation tests.
+type stubCertProvider struct{}
+
+func (s *stubCertProvider) GenerateClientCert(_ context.Context, _ *cert.GenerateRequest) (*cert.CertBundle, error) {
+	return nil, nil
+}
+func (s *stubCertProvider) ExportPKCS12(_ context.Context, _, _ []byte, _ string) ([]byte, error) {
+	return nil, nil
+}
+func (s *stubCertProvider) RevokeCert(_ context.Context, _ string) error        { return nil }
+func (s *stubCertProvider) IsRevoked(_ context.Context, _ string) (bool, error) { return false, nil }
+func (s *stubCertProvider) ListCerts(_ context.Context, _ string) ([]*cert.CertRecord, error) {
+	return nil, nil
+}
+func (s *stubCertProvider) CACertPEM() []byte { return nil }
+
+func TestStart_AllProtocols_WithAllOptions(t *testing.T) {
+	socketPath := filepath.Join(t.TempDir(), "opts.sock")
+	cfg := testConfigFull(protocolFlags{
+		rest: true,
+		grpc: true,
+		unix: true,
+		mcp:  true,
+	}, socketPath)
+
+	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS13}
+	gatherer := prometheus.NewRegistry()
+	caPool := x509.NewCertPool()
+	resolver := &mockLeaderAdminResolver{}
+	host := &mockHost{}
+	userSvc := &stubUserService{}
+	roleSvc := &stubRoleService{}
+	certProv := &stubCertProvider{}
+	authMW := authmw.New(&auth.NoopAuthorizer{})
+
+	srv := New(cfg, newMockKVService(), &mockAdminService{},
+		WithTLS(tlsCfg),
+		WithGatherer(gatherer),
+		WithCACertPool(caPool),
+		WithLeaderForwarding(resolver),
+		WithHost(host),
+		WithUserService(userSvc),
+		WithRoleService(roleSvc),
+		WithCertProvider(certProv),
+		WithAuthMiddleware(authMW),
+	)
+
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer srv.Stop()
+
+	if srv.RESTAddr() == "" {
+		t.Fatal("expected non-empty RESTAddr")
+	}
+	if srv.GRPCAddr() == "" {
+		t.Fatal("expected non-empty GRPCAddr")
+	}
+	if srv.UnixAddr() == "" {
+		t.Fatal("expected non-empty UnixAddr")
+	}
+	if srv.MCPAddr() == "" {
+		t.Fatal("expected non-empty MCPAddr")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Verify interface compliance at compile time
 // ---------------------------------------------------------------------------
 
 var _ rest.LeaderAdminResolver = (*mockLeaderAdminResolver)(nil)
 var _ rest.Host = (*mockHost)(nil)
+var _ user.UserServicer = (*stubUserService)(nil)
+var _ role.RoleServicer = (*stubRoleService)(nil)
+var _ cert.CertProvider = (*stubCertProvider)(nil)
 
 // Suppress unused import warning for os package.
 var _ = os.Remove
+
+// ---------------------------------------------------------------------------
+// TLS helper for QUIC tests
+// ---------------------------------------------------------------------------
+
+// selfSignedTLSConfig generates a self-signed ECDSA P-256 TLS config
+// valid for 127.0.0.1 and localhost. Used for QUIC tests that require
+// a valid TLS configuration.
+func selfSignedTLSConfig(t *testing.T) *tls.Config {
+	t.Helper()
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), crand.Reader)
+	if err != nil {
+		t.Fatalf("generate ECDSA key: %v", err)
+	}
+
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "localhost"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")},
+		DNSNames:              []string{"localhost"},
+	}
+
+	certDER, err := x509.CreateCertificate(crand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create certificate: %v", err)
+	}
+
+	parsedCert, err := x509.ParseCertificate(certDER)
+	if err != nil {
+		t.Fatalf("parse certificate: %v", err)
+	}
+
+	pool := x509.NewCertPool()
+	pool.AddCert(parsedCert)
+
+	return &tls.Config{
+		Certificates: []tls.Certificate{
+			{
+				Certificate: [][]byte{certDER},
+				PrivateKey:  key,
+			},
+		},
+		RootCAs:    pool,
+		MinVersion: tls.VersionTLS13,
+	}
+}
+
+// ---------------------------------------------------------------------------
+// QUICAddr tests
+// ---------------------------------------------------------------------------
+
+func TestQUICAddr_BeforeStart(t *testing.T) {
+	cfg := testConfigFull(protocolFlags{quic: true}, "")
+	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	if addr := srv.QUICAddr(); addr != "" {
+		t.Fatalf("expected empty QUICAddr before start, got %q", addr)
+	}
+}
+
+func TestQUICAddr_NilQuicSrv(t *testing.T) {
+	srv := New(testConfig(false, false), newMockKVService(), &mockAdminService{})
+	if addr := srv.QUICAddr(); addr != "" {
+		t.Fatalf("expected empty QUICAddr when QUIC not configured, got %q", addr)
+	}
+}
+
+func TestQUICAddr_AfterStart(t *testing.T) {
+	tlsCfg := selfSignedTLSConfig(t)
+	cfg := testConfigFull(protocolFlags{quic: true}, "")
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithTLS(tlsCfg))
+
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer srv.Stop()
+
+	addr := srv.QUICAddr()
+	if addr == "" {
+		t.Fatal("expected non-empty QUICAddr after start")
+	}
+	if addr == "127.0.0.1:0" {
+		t.Fatal("QUICAddr returned unresolved :0")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Start/Stop with QUIC only
+// ---------------------------------------------------------------------------
+
+func TestStart_QUICOnly(t *testing.T) {
+	tlsCfg := selfSignedTLSConfig(t)
+	cfg := testConfigFull(protocolFlags{quic: true}, "")
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithTLS(tlsCfg))
+
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer srv.Stop()
+
+	quicAddr := srv.QUICAddr()
+	if quicAddr == "" {
+		t.Fatal("expected non-empty QUICAddr")
+	}
+
+	// Other protocols should be empty.
+	if addr := srv.RESTAddr(); addr != "" {
+		t.Fatalf("expected empty RESTAddr, got %q", addr)
+	}
+	if addr := srv.GRPCAddr(); addr != "" {
+		t.Fatalf("expected empty GRPCAddr, got %q", addr)
+	}
+	if addr := srv.UnixAddr(); addr != "" {
+		t.Fatalf("expected empty UnixAddr, got %q", addr)
+	}
+	if addr := srv.MCPAddr(); addr != "" {
+		t.Fatalf("expected empty MCPAddr, got %q", addr)
+	}
+}
+
+func TestStart_QUICOnly_NoTLS(t *testing.T) {
+	// QUIC requires TLS; starting without it should fail.
+	cfg := testConfigFull(protocolFlags{quic: true}, "")
+	srv := New(cfg, newMockKVService(), &mockAdminService{})
+
+	err := srv.Start()
+	if err == nil {
+		srv.Stop()
+		t.Fatal("expected QUIC start to fail without TLS")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// QUIC with all options
+// ---------------------------------------------------------------------------
+
+func TestStart_QUICOnly_WithAllOptions(t *testing.T) {
+	tlsCfg := selfSignedTLSConfig(t)
+	cfg := testConfigFull(protocolFlags{quic: true}, "")
+	userSvc := &stubUserService{}
+	roleSvc := &stubRoleService{}
+	certProv := &stubCertProvider{}
+	authMW := authmw.New(&auth.NoopAuthorizer{})
+
+	srv := New(cfg, newMockKVService(), &mockAdminService{},
+		WithTLS(tlsCfg),
+		WithUserService(userSvc),
+		WithRoleService(roleSvc),
+		WithCertProvider(certProv),
+		WithAuthMiddleware(authMW),
+	)
+
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer srv.Stop()
+
+	if srv.QUICAddr() == "" {
+		t.Fatal("expected non-empty QUICAddr")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Start error: QUIC fails, REST + GRPC roll back
+// ---------------------------------------------------------------------------
+
+func TestStart_QUICFail_RESTAndGRPCRollback(t *testing.T) {
+	// QUIC requires TLS; enable REST + GRPC + QUIC without TLS.
+	// REST and GRPC start fine without TLS, but QUIC will fail.
+	cfg := testConfigFull(protocolFlags{
+		rest: true,
+		grpc: true,
+		quic: true,
+	}, "")
+	srv := New(cfg, newMockKVService(), &mockAdminService{})
+
+	startErr := srv.Start()
+	if startErr == nil {
+		srv.Stop()
+		t.Fatal("expected QUIC start to fail without TLS")
+	}
+
+	// REST and GRPC should have been created before the QUIC failure.
+	if srv.restSrv == nil {
+		t.Fatal("expected restSrv to have been created before rollback")
+	}
+	if srv.grpcSrv == nil {
+		t.Fatal("expected grpcSrv to have been created before rollback")
+	}
+}
+
+func TestStart_QUICFail_NoOtherProtocols(t *testing.T) {
+	// QUIC only, no TLS -> fails, no rollback needed.
+	cfg := testConfigFull(protocolFlags{quic: true}, "")
+	srv := New(cfg, newMockKVService(), &mockAdminService{})
+
+	startErr := srv.Start()
+	if startErr == nil {
+		srv.Stop()
+		t.Fatal("expected QUIC start to fail without TLS")
+	}
+
+	// No other servers should have been created.
+	if srv.restSrv != nil {
+		t.Fatal("expected restSrv to be nil")
+	}
+	if srv.grpcSrv != nil {
+		t.Fatal("expected grpcSrv to be nil")
+	}
+	if srv.unixSrv != nil {
+		t.Fatal("expected unixSrv to be nil")
+	}
+	if srv.mcpSrv != nil {
+		t.Fatal("expected mcpSrv to be nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Start error: Unix fails, REST + GRPC + QUIC roll back
+// ---------------------------------------------------------------------------
+
+func TestStart_UnixFail_RESTGRPCQUICRollback(t *testing.T) {
+	// Create an invalid socket path to force Unix failure.
+	tmpDir := t.TempDir()
+	blockerFile := filepath.Join(tmpDir, "blocker")
+	if err := writeTestFile(blockerFile); err != nil {
+		t.Fatalf("failed to create blocker file: %v", err)
+	}
+	badSocketPath := filepath.Join(blockerFile, "sub", "qrdb.sock")
+
+	tlsCfg := selfSignedTLSConfig(t)
+	cfg := testConfigFull(protocolFlags{
+		rest: true,
+		grpc: true,
+		quic: true,
+		unix: true,
+	}, badSocketPath)
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithTLS(tlsCfg))
+
+	startErr := srv.Start()
+	if startErr == nil {
+		srv.Stop()
+		t.Fatal("expected Unix start to fail with invalid socket path")
+	}
+
+	// REST, GRPC, and QUIC should have been created before the Unix failure.
+	if srv.restSrv == nil {
+		t.Fatal("expected restSrv to have been created before rollback")
+	}
+	if srv.grpcSrv == nil {
+		t.Fatal("expected grpcSrv to have been created before rollback")
+	}
+	if srv.quicSrv == nil {
+		t.Fatal("expected quicSrv to have been created before rollback")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Start error: MCP fails, REST + GRPC + QUIC + Unix roll back
+// ---------------------------------------------------------------------------
+
+func TestStart_MCPFail_AllRollback(t *testing.T) {
+	// Occupy a port so MCP cannot bind to it.
+	blocker, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to create blocker listener: %v", err)
+	}
+	defer func() { _ = blocker.Close() }()
+
+	_, portStr, _ := net.SplitHostPort(blocker.Addr().String())
+	blockedPort, _ := strconv.Atoi(portStr)
+
+	socketPath := filepath.Join(t.TempDir(), "qrdb.sock")
+	tlsCfg := selfSignedTLSConfig(t)
+	cfg := testConfigFull(protocolFlags{
+		rest: true,
+		grpc: true,
+		quic: true,
+		unix: true,
+		mcp:  true,
+	}, socketPath)
+	cfg.MCP.Port = blockedPort
+
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithTLS(tlsCfg))
+	startErr := srv.Start()
+	if startErr == nil {
+		srv.Stop()
+		t.Fatal("expected MCP start to fail on occupied port")
+	}
+
+	// All four earlier servers should have been created before MCP failed.
+	if srv.restSrv == nil {
+		t.Fatal("expected restSrv to have been created before rollback")
+	}
+	if srv.grpcSrv == nil {
+		t.Fatal("expected grpcSrv to have been created before rollback")
+	}
+	if srv.quicSrv == nil {
+		t.Fatal("expected quicSrv to have been created before rollback")
+	}
+	if srv.unixSrv == nil {
+		t.Fatal("expected unixSrv to have been created before rollback")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Start/Stop with all five protocols
+// ---------------------------------------------------------------------------
+
+func TestStart_AllFiveProtocols(t *testing.T) {
+	socketPath := filepath.Join(t.TempDir(), "all5.sock")
+	tlsCfg := selfSignedTLSConfig(t)
+	cfg := testConfigFull(protocolFlags{
+		rest: true,
+		grpc: true,
+		quic: true,
+		unix: true,
+		mcp:  true,
+	}, socketPath)
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithTLS(tlsCfg))
+
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer srv.Stop()
+
+	restAddr := srv.RESTAddr()
+	if restAddr == "" {
+		t.Fatal("expected non-empty RESTAddr")
+	}
+
+	grpcAddr := srv.GRPCAddr()
+	if grpcAddr == "" {
+		t.Fatal("expected non-empty GRPCAddr")
+	}
+
+	quicAddr := srv.QUICAddr()
+	if quicAddr == "" {
+		t.Fatal("expected non-empty QUICAddr")
+	}
+
+	unixAddr := srv.UnixAddr()
+	if unixAddr == "" {
+		t.Fatal("expected non-empty UnixAddr")
+	}
+
+	mcpAddr := srv.MCPAddr()
+	if mcpAddr == "" {
+		t.Fatal("expected non-empty MCPAddr")
+	}
+
+	// All TCP/UDP addresses should be on different ports.
+	addrs := map[string]string{
+		"REST": restAddr,
+		"gRPC": grpcAddr,
+		"QUIC": quicAddr,
+		"MCP":  mcpAddr,
+	}
+	ports := make(map[string]string)
+	for name, addr := range addrs {
+		_, port, _ := net.SplitHostPort(addr)
+		if existing, ok := ports[port]; ok {
+			t.Fatalf("%s and %s share port %s", existing, name, port)
+		}
+		ports[port] = name
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Stop all five protocols gracefully
+// ---------------------------------------------------------------------------
+
+func TestStop_AllFiveProtocols(t *testing.T) {
+	socketPath := filepath.Join(t.TempDir(), "stop5.sock")
+	tlsCfg := selfSignedTLSConfig(t)
+	cfg := testConfigFull(protocolFlags{
+		rest: true,
+		grpc: true,
+		quic: true,
+		unix: true,
+		mcp:  true,
+	}, socketPath)
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithTLS(tlsCfg))
+
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// Verify all five are running.
+	if srv.restSrv == nil {
+		t.Fatal("expected restSrv to be created")
+	}
+	if srv.grpcSrv == nil {
+		t.Fatal("expected grpcSrv to be created")
+	}
+	if srv.quicSrv == nil {
+		t.Fatal("expected quicSrv to be created")
+	}
+	if srv.unixSrv == nil {
+		t.Fatal("expected unixSrv to be created")
+	}
+	if srv.mcpSrv == nil {
+		t.Fatal("expected mcpSrv to be created")
+	}
+
+	// Stop should complete without panic or hang.
+	srv.Stop()
+}
+
+// ---------------------------------------------------------------------------
+// Start/Stop with all five protocols and all options
+// ---------------------------------------------------------------------------
+
+func TestStart_AllFiveProtocols_WithAllOptions(t *testing.T) {
+	socketPath := filepath.Join(t.TempDir(), "all5opts.sock")
+	tlsCfg := selfSignedTLSConfig(t)
+	caPool := x509.NewCertPool()
+	gatherer := prometheus.NewRegistry()
+	resolver := &mockLeaderAdminResolver{}
+	host := &mockHost{}
+	userSvc := &stubUserService{}
+	roleSvc := &stubRoleService{}
+	certProv := &stubCertProvider{}
+	authMW := authmw.New(&auth.NoopAuthorizer{})
+
+	cfg := testConfigFull(protocolFlags{
+		rest: true,
+		grpc: true,
+		quic: true,
+		unix: true,
+		mcp:  true,
+	}, socketPath)
+
+	srv := New(cfg, newMockKVService(), &mockAdminService{},
+		WithTLS(tlsCfg),
+		WithGatherer(gatherer),
+		WithCACertPool(caPool),
+		WithLeaderForwarding(resolver),
+		WithHost(host),
+		WithUserService(userSvc),
+		WithRoleService(roleSvc),
+		WithCertProvider(certProv),
+		WithAuthMiddleware(authMW),
+	)
+
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer srv.Stop()
+
+	if srv.RESTAddr() == "" {
+		t.Fatal("expected non-empty RESTAddr")
+	}
+	if srv.GRPCAddr() == "" {
+		t.Fatal("expected non-empty GRPCAddr")
+	}
+	if srv.QUICAddr() == "" {
+		t.Fatal("expected non-empty QUICAddr")
+	}
+	if srv.UnixAddr() == "" {
+		t.Fatal("expected non-empty UnixAddr")
+	}
+	if srv.MCPAddr() == "" {
+		t.Fatal("expected non-empty MCPAddr")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// stopQUIC when quicSrv is nil (nil guard path)
+// ---------------------------------------------------------------------------
+
+func TestStopQUIC_NilQuicSrv(t *testing.T) {
+	srv := New(testConfig(false, false), newMockKVService(), &mockAdminService{})
+	// stopQUIC should not panic when quicSrv is nil.
+	srv.stopQUIC()
+}
+
+// ---------------------------------------------------------------------------
+// stopQUIC when quicSrv is non-nil (active server path)
+// ---------------------------------------------------------------------------
+
+func TestStopQUIC_ActiveServer(t *testing.T) {
+	tlsCfg := selfSignedTLSConfig(t)
+	cfg := testConfigFull(protocolFlags{quic: true}, "")
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithTLS(tlsCfg))
+
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// Verify QUIC server is running.
+	if srv.quicSrv == nil {
+		t.Fatal("expected quicSrv to be non-nil")
+	}
+
+	// Stop should complete without panic or hang.
+	srv.stopQUIC()
+}
+
+// ---------------------------------------------------------------------------
+// Stub service implementations for option propagation tests.
+// These satisfy the interface contracts without providing any real behavior.
+// Methods are never invoked during server startup, so panicking stubs suffice.
+// ---------------------------------------------------------------------------
+
+// stubBatchService satisfies service.BatchServicer.
+type stubBatchService struct{ service.BatchServicer }
+
+// stubTimeSeriesService satisfies service.TimeSeriesServicer via the alias
+// in pkg/service; the underlying interface lives in pkg/timeseries.
+type stubTimeSeriesService struct{ service.TimeSeriesServicer }
+
+// stubIndexService satisfies service.IndexServicer via the alias
+// in pkg/service; the underlying interface lives in pkg/index.
+type stubIndexService struct{ service.IndexServicer }
+
+// stubVectorService satisfies service.VectorServicer (= service.VectorService).
+type stubVectorService struct{ service.VectorServicer }
+
+// stubDatabaseService satisfies service.DatabaseServicer.
+type stubDatabaseService struct{ service.DatabaseServicer }
+
+// stubBarrierService satisfies service.BarrierServicer.
+type stubBarrierService struct{ service.BarrierServicer }
+
+// stubCeremonyService satisfies service.CeremonyServicer.
+type stubCeremonyService struct{ service.CeremonyServicer }
+
+// stubCredentialService satisfies service.CredentialServicer.
+type stubCredentialService struct{ service.CredentialServicer }
+
+// stubCeremonyCA satisfies ceremony.CeremonyCA.
+type stubCeremonyCA struct{ ceremony.CeremonyCA }
+
+// stubCollectionService satisfies service.CollectionServicer.
+type stubCollectionService struct{ service.CollectionServicer }
+
+// stubMVCCService satisfies service.MVCCKVServicer.
+type stubMVCCService struct{ service.MVCCKVServicer }
+
+// stubTransactionService satisfies service.TransactionServicer.
+type stubTransactionService struct{ service.TransactionServicer }
+
+// stubWatchService satisfies service.WatchServicer.
+type stubWatchService struct{ service.WatchServicer }
+
+// stubLeaseService satisfies service.LeaseServicer.
+type stubLeaseService struct{ service.LeaseServicer }
+
+// Compile-time interface compliance checks.
+var _ service.BatchServicer = (*stubBatchService)(nil)
+var _ service.TimeSeriesServicer = (*stubTimeSeriesService)(nil)
+var _ service.IndexServicer = (*stubIndexService)(nil)
+var _ service.VectorServicer = (*stubVectorService)(nil)
+var _ service.DatabaseServicer = (*stubDatabaseService)(nil)
+var _ service.BarrierServicer = (*stubBarrierService)(nil)
+var _ service.CeremonyServicer = (*stubCeremonyService)(nil)
+var _ service.CredentialServicer = (*stubCredentialService)(nil)
+var _ ceremony.CeremonyCA = (*stubCeremonyCA)(nil)
+var _ service.CollectionServicer = (*stubCollectionService)(nil)
+var _ service.MVCCKVServicer = (*stubMVCCService)(nil)
+var _ service.TransactionServicer = (*stubTransactionService)(nil)
+var _ service.WatchServicer = (*stubWatchService)(nil)
+var _ service.LeaseServicer = (*stubLeaseService)(nil)
+
+// ---------------------------------------------------------------------------
+// ServerOption unit tests: zero-coverage option functions
+// ---------------------------------------------------------------------------
+
+func TestWithCABootstrap_Applied(t *testing.T) {
+	certPEM := []byte("cert")
+	keyPEM := []byte("key")
+	var opts serverOptions
+	opt := WithCABootstrap(certPEM, keyPEM)
+	opt(&opts)
+	if string(opts.caBootstrapCert) != "cert" {
+		t.Errorf("expected caBootstrapCert %q, got %q", "cert", opts.caBootstrapCert)
+	}
+	if string(opts.caBootstrapKey) != "key" {
+		t.Errorf("expected caBootstrapKey %q, got %q", "key", opts.caBootstrapKey)
+	}
+}
+
+func TestWithBatch_Applied(t *testing.T) {
+	svc := &stubBatchService{}
+	var opts serverOptions
+	opt := WithBatch(svc)
+	opt(&opts)
+	if opts.batchSvc != svc {
+		t.Error("expected batchSvc to be set")
+	}
+}
+
+func TestWithTimeSeries_Applied(t *testing.T) {
+	svc := &stubTimeSeriesService{}
+	var opts serverOptions
+	opt := WithTimeSeries(svc)
+	opt(&opts)
+	if opts.tsSvc != svc {
+		t.Error("expected tsSvc to be set")
+	}
+}
+
+func TestWithIndex_Applied(t *testing.T) {
+	svc := &stubIndexService{}
+	var opts serverOptions
+	opt := WithIndex(svc)
+	opt(&opts)
+	if opts.indexSvc != svc {
+		t.Error("expected indexSvc to be set")
+	}
+}
+
+func TestWithVector_Applied(t *testing.T) {
+	svc := &stubVectorService{}
+	var opts serverOptions
+	opt := WithVector(svc)
+	opt(&opts)
+	if opts.vectorSvc != svc {
+		t.Error("expected vectorSvc to be set")
+	}
+}
+
+func TestWithDatabaseService_Applied(t *testing.T) {
+	svc := &stubDatabaseService{}
+	var opts serverOptions
+	opt := WithDatabaseService(svc)
+	opt(&opts)
+	if opts.databaseSvc != svc {
+		t.Error("expected databaseSvc to be set")
+	}
+}
+
+func TestWithBarrierService_Applied(t *testing.T) {
+	svc := &stubBarrierService{}
+	var opts serverOptions
+	opt := WithBarrierService(svc)
+	opt(&opts)
+	if opts.barrierSvc != svc {
+		t.Error("expected barrierSvc to be set")
+	}
+}
+
+func TestWithCeremonyService_Applied(t *testing.T) {
+	svc := &stubCeremonyService{}
+	var opts serverOptions
+	opt := WithCeremonyService(svc)
+	opt(&opts)
+	if opts.ceremonySvc != svc {
+		t.Error("expected ceremonySvc to be set")
+	}
+}
+
+func TestWithCredentialService_Applied(t *testing.T) {
+	svc := &stubCredentialService{}
+	var opts serverOptions
+	opt := WithCredentialService(svc)
+	opt(&opts)
+	if opts.credentialSvc != svc {
+		t.Error("expected credentialSvc to be set")
+	}
+}
+
+func TestWithCeremonyCA_Applied(t *testing.T) {
+	ca := &stubCeremonyCA{}
+	var opts serverOptions
+	opt := WithCeremonyCA(ca)
+	opt(&opts)
+	if opts.ceremonyCA != ca {
+		t.Error("expected ceremonyCA to be set")
+	}
+}
+
+func TestWithCollectionService_Applied(t *testing.T) {
+	svc := &stubCollectionService{}
+	var opts serverOptions
+	opt := WithCollectionService(svc)
+	opt(&opts)
+	if opts.collectionSvc != svc {
+		t.Error("expected collectionSvc to be set")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Start with all optional service dependencies to cover every if-branch in
+// startREST, startGRPC, startQUIC, startUnix, and startMCP.
+// ---------------------------------------------------------------------------
+
+func TestStart_AllProtocols_WithAllServiceOptions(t *testing.T) {
+	socketPath := filepath.Join(t.TempDir(), "allsvcs.sock")
+	tlsCfg := selfSignedTLSConfig(t)
+	caPool := x509.NewCertPool()
+	gatherer := prometheus.NewRegistry()
+	resolver := &mockLeaderAdminResolver{}
+	host := &mockHost{}
+	userSvc := &stubUserService{}
+	roleSvc := &stubRoleService{}
+	certProv := &stubCertProvider{}
+	authMW := authmw.New(&auth.NoopAuthorizer{})
+
+	batchSvc := &stubBatchService{}
+	tsSvc := &stubTimeSeriesService{}
+	indexSvc := &stubIndexService{}
+	vectorSvc := &stubVectorService{}
+	dbSvc := &stubDatabaseService{}
+	barrierSvc := &stubBarrierService{}
+	ceremonySvc := &stubCeremonyService{}
+	credentialSvc := &stubCredentialService{}
+	ca := &stubCeremonyCA{}
+	collectionSvc := &stubCollectionService{}
+	mvccSvc := &stubMVCCService{}
+	txSvc := &stubTransactionService{}
+	watchSvc := &stubWatchService{}
+	leaseSvc := &stubLeaseService{}
+
+	cfg := testConfigFull(protocolFlags{
+		rest: true,
+		grpc: true,
+		quic: true,
+		unix: true,
+		mcp:  true,
+	}, socketPath)
+
+	srv := New(cfg, newMockKVService(), &mockAdminService{},
+		WithTLS(tlsCfg),
+		WithGatherer(gatherer),
+		WithCACertPool(caPool),
+		WithLeaderForwarding(resolver),
+		WithHost(host),
+		WithUserService(userSvc),
+		WithRoleService(roleSvc),
+		WithCertProvider(certProv),
+		WithAuthMiddleware(authMW),
+		WithBatch(batchSvc),
+		WithTimeSeries(tsSvc),
+		WithIndex(indexSvc),
+		WithVector(vectorSvc),
+		WithDatabaseService(dbSvc),
+		WithBarrierService(barrierSvc),
+		WithCeremonyService(ceremonySvc),
+		WithCredentialService(credentialSvc),
+		WithCeremonyCA(ca),
+		WithCollectionService(collectionSvc),
+		WithMVCC(mvccSvc),
+		WithTransaction(txSvc),
+		WithWatch(watchSvc),
+		WithLease(leaseSvc),
+		WithCABootstrap([]byte("cert"), []byte("key")),
+	)
+
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start with all service options failed: %v", err)
+	}
+	defer srv.Stop()
+
+	if srv.RESTAddr() == "" {
+		t.Fatal("expected non-empty RESTAddr")
+	}
+	if srv.GRPCAddr() == "" {
+		t.Fatal("expected non-empty GRPCAddr")
+	}
+	if srv.QUICAddr() == "" {
+		t.Fatal("expected non-empty QUICAddr")
+	}
+	if srv.UnixAddr() == "" {
+		t.Fatal("expected non-empty UnixAddr")
+	}
+	if srv.MCPAddr() == "" {
+		t.Fatal("expected non-empty MCPAddr")
+	}
+
+	// Verify all options were stored.
+	if srv.opts.batchSvc != batchSvc {
+		t.Error("expected batchSvc to be stored")
+	}
+	if srv.opts.tsSvc != tsSvc {
+		t.Error("expected tsSvc to be stored")
+	}
+	if srv.opts.indexSvc != indexSvc {
+		t.Error("expected indexSvc to be stored")
+	}
+	if srv.opts.vectorSvc != vectorSvc {
+		t.Error("expected vectorSvc to be stored")
+	}
+	if srv.opts.databaseSvc != dbSvc {
+		t.Error("expected databaseSvc to be stored")
+	}
+	if srv.opts.barrierSvc != barrierSvc {
+		t.Error("expected barrierSvc to be stored")
+	}
+	if srv.opts.ceremonySvc != ceremonySvc {
+		t.Error("expected ceremonySvc to be stored")
+	}
+	if srv.opts.credentialSvc != credentialSvc {
+		t.Error("expected credentialSvc to be stored")
+	}
+	if srv.opts.ceremonyCA != ca {
+		t.Error("expected ceremonyCA to be stored")
+	}
+	if srv.opts.collectionSvc != collectionSvc {
+		t.Error("expected collectionSvc to be stored")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// StartEtcd and StopEtcd on Server: exercises the startEtcdServerFn /
+// stopEtcdServerFn dispatch paths.
+// ---------------------------------------------------------------------------
+
+// saveEtcdFns saves the package-level etcd function pointers and returns
+// a restore function that should be deferred by the caller.
+func saveEtcdFns() func() {
+	origStart := startEtcdServerFn
+	origStop := stopEtcdServerFn
+	return func() {
+		startEtcdServerFn = origStart
+		stopEtcdServerFn = origStop
+	}
+}
+
+// mockEtcdServer implements EtcdProtocolServer for testing.
+type mockEtcdServer struct {
+	addr    string
+	stopped bool
+}
+
+func (m *mockEtcdServer) Start() error { return nil }
+func (m *mockEtcdServer) Stop()        { m.stopped = true }
+func (m *mockEtcdServer) Addr() string { return m.addr }
+
+// Compile-time interface compliance.
+var _ EtcdProtocolServer = (*mockEtcdServer)(nil)
+
+func TestStartEtcd_NilFn(t *testing.T) {
+	restore := saveEtcdFns()
+	defer restore()
+
+	startEtcdServerFn = nil
+
+	cfg := testConfig(false, false)
+	srv := New(cfg, newMockKVService(), &mockAdminService{})
+
+	// StartEtcd should return nil silently when startEtcdServerFn is nil.
+	if err := srv.StartEtcd("testdb", &database.EtcdConfig{}); err != nil {
+		t.Fatalf("expected nil error when startEtcdServerFn is nil, got: %v", err)
+	}
+
+	// EtcdAddr should still return empty.
+	if addr := srv.EtcdAddr("testdb"); addr != "" {
+		t.Fatalf("expected empty EtcdAddr, got %q", addr)
+	}
+}
+
+func TestServerStartEtcd_Success(t *testing.T) {
+	restore := saveEtcdFns()
+	defer restore()
+
+	mockSrv := &mockEtcdServer{addr: "127.0.0.1:2379"}
+	startEtcdServerFn = func(s *Server, dbName string, cfg *database.EtcdConfig) (EtcdProtocolServer, error) {
+		s.etcdServers.Store(dbName, EtcdProtocolServer(mockSrv))
+		return mockSrv, nil
+	}
+	stopEtcdServerFn = func(srv EtcdProtocolServer) {
+		srv.Stop()
+	}
+
+	cfg := testConfig(false, false)
+	srv := New(cfg, newMockKVService(), &mockAdminService{})
+
+	if err := srv.StartEtcd("testdb", &database.EtcdConfig{}); err != nil {
+		t.Fatalf("StartEtcd failed: %v", err)
+	}
+
+	addr := srv.EtcdAddr("testdb")
+	if addr != "127.0.0.1:2379" {
+		t.Fatalf("expected EtcdAddr %q, got %q", "127.0.0.1:2379", addr)
+	}
+}
+
+func TestStopEtcd_NilFn(t *testing.T) {
+	restore := saveEtcdFns()
+	defer restore()
+
+	stopEtcdServerFn = nil
+
+	cfg := testConfig(false, false)
+	srv := New(cfg, newMockKVService(), &mockAdminService{})
+
+	// StopEtcd should not panic when stopEtcdServerFn is nil.
+	srv.StopEtcd("testdb")
+}
+
+func TestStopEtcd_NotRunning(t *testing.T) {
+	restore := saveEtcdFns()
+	defer restore()
+
+	stopped := false
+	stopEtcdServerFn = func(srv EtcdProtocolServer) {
+		stopped = true
+		srv.Stop()
+	}
+
+	cfg := testConfig(false, false)
+	srv := New(cfg, newMockKVService(), &mockAdminService{})
+
+	// StopEtcd for a non-existent database should not call stopEtcdServerFn.
+	srv.StopEtcd("nonexistent")
+
+	if stopped {
+		t.Fatal("expected stopEtcdServerFn not to be called for non-existent database")
+	}
+}
+
+func TestStopEtcd_Running(t *testing.T) {
+	restore := saveEtcdFns()
+	defer restore()
+
+	mockSrv := &mockEtcdServer{addr: "127.0.0.1:2379"}
+
+	stopEtcdServerFn = func(srv EtcdProtocolServer) {
+		srv.Stop()
+	}
+
+	cfg := testConfig(false, false)
+	srv := New(cfg, newMockKVService(), &mockAdminService{})
+
+	// Manually inject a running etcd server into the map.
+	srv.etcdServers.Store("testdb", EtcdProtocolServer(mockSrv))
+
+	srv.StopEtcd("testdb")
+
+	if !mockSrv.stopped {
+		t.Fatal("expected etcd mock server to be stopped")
+	}
+
+	// Verify the entry was removed from the map.
+	if addr := srv.EtcdAddr("testdb"); addr != "" {
+		t.Fatalf("expected EtcdAddr to be empty after StopEtcd, got %q", addr)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// stopAllEtcd: exercises the Range branch when etcd servers are present.
+// ---------------------------------------------------------------------------
+
+func TestStopAllEtcd_MultipleServers(t *testing.T) {
+	restore := saveEtcdFns()
+	defer restore()
+
+	stoppedDBs := make(map[string]bool)
+	mock1 := &mockEtcdServer{addr: "127.0.0.1:2379"}
+	mock2 := &mockEtcdServer{addr: "127.0.0.1:2380"}
+
+	stopEtcdServerFn = func(srv EtcdProtocolServer) {
+		srv.Stop()
+		switch srv.Addr() {
+		case "127.0.0.1:2379":
+			stoppedDBs["db1"] = true
+		case "127.0.0.1:2380":
+			stoppedDBs["db2"] = true
+		}
+	}
+
+	cfg := testConfig(false, false)
+	srv := New(cfg, newMockKVService(), &mockAdminService{})
+
+	// Inject two etcd servers directly into the sync.Map.
+	srv.etcdServers.Store("db1", EtcdProtocolServer(mock1))
+	srv.etcdServers.Store("db2", EtcdProtocolServer(mock2))
+
+	// Stop() calls stopAllEtcd internally.
+	srv.Stop()
+
+	if !mock1.stopped {
+		t.Error("expected db1 etcd server to be stopped")
+	}
+	if !mock2.stopped {
+		t.Error("expected db2 etcd server to be stopped")
+	}
+
+	// Both entries should have been removed from the map.
+	if addr := srv.EtcdAddr("db1"); addr != "" {
+		t.Fatalf("expected EtcdAddr for db1 to be empty after Stop, got %q", addr)
+	}
+	if addr := srv.EtcdAddr("db2"); addr != "" {
+		t.Fatalf("expected EtcdAddr for db2 to be empty after Stop, got %q", addr)
+	}
+}
+
+func TestStopAllEtcd_NilFn(t *testing.T) {
+	restore := saveEtcdFns()
+	defer restore()
+
+	startEtcdServerFn = nil
+	stopEtcdServerFn = nil
+
+	cfg := testConfig(false, false)
+	srv := New(cfg, newMockKVService(), &mockAdminService{})
+
+	// stopAllEtcd should not panic when stopEtcdServerFn is nil.
+	srv.stopAllEtcd()
+}
+
+func TestStopAllEtcd_EmptyMap(t *testing.T) {
+	restore := saveEtcdFns()
+	defer restore()
+
+	called := false
+	stopEtcdServerFn = func(srv EtcdProtocolServer) {
+		called = true
+		srv.Stop()
+	}
+
+	cfg := testConfig(false, false)
+	srv := New(cfg, newMockKVService(), &mockAdminService{})
+
+	// No etcd servers in the map; Range body should never execute.
+	srv.stopAllEtcd()
+
+	if called {
+		t.Fatal("expected stopEtcdServerFn not to be called when map is empty")
+	}
+}

@@ -1,0 +1,2046 @@
+// Copyright 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+import type {
+    AdminClient,
+    BackupClient,
+    BatchClient,
+    CertClient,
+    Client,
+    CollectionClient,
+    ConnectionClient,
+    ConnectionManagerClient,
+    DaemonClient,
+    DatabaseClient,
+    EmbeddedServerClient,
+    IndexClient,
+    KVClient,
+    LeaseClient,
+    LockClient,
+    MVCCClient,
+    RebalanceClient,
+    RoleClient,
+    SealClient,
+    ServerConfigClient,
+    SQLClient,
+    TenantClient,
+    TimeSeriesClient,
+    TransactionClient,
+    UserClient,
+    VectorClient,
+    WatchClient,
+    WatchHandle,
+} from './interfaces.js';
+import type {
+    BatchDeleteVectorsRequest,
+    BatchDeleteVectorsResponse,
+    BatchResponse,
+    BatchUpsertRequest,
+    BatchUpsertResponse,
+    BootstrapResult,
+    ImportOptions,
+    ImportResult,
+    CapabilitiesResponse,
+    CertBundle,
+    CompactNamespaceRequest,
+    CompactNamespaceResponse,
+    CompactionProgress,
+    CreateDatabaseRequest,
+    CreateNamespaceRequest,
+    DaemonStatus,
+    DatabaseBarrierConfig,
+    DatabaseConnectionConfig,
+    DatabaseRaftConfig,
+    DatabaseSQLConfig,
+    CreateNamespaceResponse,
+    CreateRoleRequest,
+    CreateUserRequest,
+    CollectionInfo,
+    CreateCollectionRequest,
+    CurrentRevisionResponse,
+    DatabaseInfo,
+    DocumentResponse,
+    InsertDocumentRequest,
+    InsertDocumentResponse,
+    ListCollectionsResponse,
+    ListDocumentsRequest,
+    ListDocumentsResponse,
+    SQLQueryResult,
+    UpdateDocumentRequest,
+    DeleteNamespaceRequest,
+    DeleteVectorRequest,
+    EmbeddedConfig,
+    ExportCertRequest,
+    ExportCertResponse,
+    GenerateCertRequest,
+    GetCompactionProgressRequest,
+    GetIndexStatsRequest,
+    GetNamespaceInfoRequest,
+    GetRebuildProgressRequest,
+    GetVectorRequest,
+    HealthResponse,
+    HybridSearchRequest,
+    HybridSearchResponse,
+    IndexCreateRequest,
+    IndexListResponse,
+    IndexQueryResponse,
+    IndexScanResponse,
+    IndexStats,
+    KVListResponse,
+    KVScanResponse,
+    LeaseInfo,
+    LeaseListResponse,
+    LockInfo,
+    LockAcquireRequest,
+    LockReleaseRequest,
+    LockExtendRequest,
+    LockListResponse,
+    ListCertsResponse,
+    ListNamespacesRequest,
+    ListNamespacesResponse,
+    ListPermissionsResponse,
+    ListRolesRequest,
+    ListRolesResponse,
+    ListUsersRequest,
+    ListUsersResponse,
+    ListVectorsRequest,
+    ListVectorsResponse,
+    MVCCKeyValue,
+    NamespaceInfo,
+    Op,
+    PeersResponse,
+    RangeOptions,
+    RangeResponse,
+    RebuildIndexRequest,
+    RebuildIndexResponse,
+    RebuildProgress,
+    Role,
+    SealStatus,
+    SearchByIDRequest,
+    SearchByMetadataRequest,
+    SearchByMetadataResponse,
+    SearchSimilarRequest,
+    SearchSimilarResponse,
+    StatusResponse,
+    TSAggregateRequest,
+    TSAggregateResponse,
+    TSDataPoint,
+    TSDeleteRequest,
+    TSDeleteResponse,
+    TSGetRetentionRequest,
+    TSGetRetentionResponse,
+    TSListMetricsRequest,
+    TSListMetricsResponse,
+    TSQueryRequest,
+    TSQueryResponse,
+    TSRichQueryRequest,
+    TSRichQueryResponse,
+    TSSetRetentionRequest,
+    TransactionRequest,
+    TransactionResponse,
+    UnsealProgress,
+    UpdateMetadataRequest,
+    UpdateRoleRequest,
+    UpdateUserRequest,
+    UpsertVectorRequest,
+    UpsertVectorResponse,
+    User,
+    VectorData,
+    WatchEvent,
+    WatchOptions,
+    WatchResponse,
+    CreateTenantRequest,
+    CreateTenantResponse,
+    GetTenantResponse,
+    ListTenantsResponse,
+    TenantBarrierInitRequest,
+    TenantBarrierUnsealRequest,
+    UpdateTenantQuotasRequest,
+    UpdateTenantQuotasResponse,
+    ConfigInitializedResponse,
+    BackupRequest,
+    BackupInfo,
+    RestoreRequest,
+    RestoreResult,
+    VerifyResult,
+    ListBackupsResponse,
+    ShardStatsResponse,
+    RebalancePlanRequest,
+    RebalancePlan,
+    RebalanceResult,
+    ImbalanceReport,
+    ConnectionProfile,
+    ConnectionState,
+} from './types.js';
+import {
+    DesktopOnlyError,
+    KeyNotFoundError,
+    NotConnectedError,
+    TransportError,
+} from './errors.js';
+
+// ---------------------------------------------------------------------------
+// SDK version constant
+// ---------------------------------------------------------------------------
+
+/** Current SDK version string. */
+const SDK_VERSION = '0.1.0';
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Issues a fetch request and parses the JSON response body.
+ * Throws {@link TransportError} on non-OK status codes.
+ */
+async function fetchJSON<T>(baseUrl: string, path: string, init?: RequestInit): Promise<T> {
+    const url = baseUrl + path;
+    const method = init?.method ?? 'GET';
+    let resp: Response;
+    try {
+        resp = await fetch(url, init);
+    } catch (err: unknown) {
+        throw new TransportError(
+            `${method} ${path}`,
+            undefined,
+            err instanceof Error ? err : new Error(String(err)),
+        );
+    }
+    if (!resp.ok) {
+        const body = await resp.text();
+        throw new TransportError(
+            `${method} ${path}`,
+            resp.status,
+            new Error(body),
+        );
+    }
+    return resp.json() as Promise<T>;
+}
+
+/**
+ * Issues a fetch request and returns nothing. Used for endpoints that
+ * return 204 No Content or 200 with an ignored body.
+ * Throws {@link TransportError} on non-OK status.
+ */
+async function fetchVoid(baseUrl: string, path: string, init?: RequestInit): Promise<void> {
+    const url = baseUrl + path;
+    const method = init?.method ?? 'GET';
+    let resp: Response;
+    try {
+        resp = await fetch(url, init);
+    } catch (err: unknown) {
+        throw new TransportError(
+            `${method} ${path}`,
+            undefined,
+            err instanceof Error ? err : new Error(String(err)),
+        );
+    }
+    if (!resp.ok) {
+        const body = await resp.text();
+        throw new TransportError(
+            `${method} ${path}`,
+            resp.status,
+            new Error(body),
+        );
+    }
+}
+
+/**
+ * Issues a fetch request and returns the response body as a raw text string.
+ * Throws {@link TransportError} on non-OK status codes.
+ */
+async function fetchText(baseUrl: string, path: string, init?: RequestInit): Promise<string> {
+    const url = baseUrl + path;
+    const method = init?.method ?? 'GET';
+    let resp: Response;
+    try {
+        resp = await fetch(url, init);
+    } catch (err: unknown) {
+        throw new TransportError(
+            `${method} ${path}`,
+            undefined,
+            err instanceof Error ? err : new Error(String(err)),
+        );
+    }
+    if (!resp.ok) {
+        const body = await resp.text();
+        throw new TransportError(
+            `${method} ${path}`,
+            resp.status,
+            new Error(body),
+        );
+    }
+    return resp.text();
+}
+
+/** Builds a query string from a record of optional key-value pairs. */
+function buildQuery(params: Record<string, string | number | boolean | undefined>): string {
+    const parts: string[] = [];
+    for (const [k, v] of Object.entries(params)) {
+        if (v !== undefined && v !== '') {
+            parts.push(`${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`);
+        }
+    }
+    return parts.length > 0 ? `?${parts.join('&')}` : '';
+}
+
+/** Encodes an object as a JSON request body with the appropriate content type header. */
+function jsonBody(data: unknown): RequestInit {
+    return {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+    };
+}
+
+// ---------------------------------------------------------------------------
+// RestClient
+// ---------------------------------------------------------------------------
+
+/**
+ * REST transport implementation of the QRDB {@link Client} interface.
+ * Communicates with the QRDB REST API using the browser-native `fetch()` API.
+ */
+export class RestClient implements Client {
+    private baseUrl: string;
+    private connected = false;
+    private serverVersion = '';
+
+    /**
+     * @param baseUrl - The base URL of the QRDB REST API (e.g. `https://localhost:8443`).
+     *   Trailing slashes are stripped automatically.
+     */
+    constructor(baseUrl: string) {
+        this.baseUrl = baseUrl.replace(/\/$/, '');
+    }
+
+    // -----------------------------------------------------------------------
+    // Connection
+    // -----------------------------------------------------------------------
+
+    /** @inheritdoc */
+    get connection(): ConnectionClient {
+        return {
+            connect: async (address: string): Promise<void> => {
+                this.baseUrl = address.replace(/\/$/, '');
+                const health = await fetchJSON<HealthResponse>(this.baseUrl, '/health');
+                if (health.status) {
+                    this.connected = true;
+                }
+                // Attempt to retrieve server version from status endpoint.
+                try {
+                    const status = await fetchJSON<StatusResponse>(this.baseUrl, '/status');
+                    this.serverVersion = status.nodeId ?? '';
+                } catch {
+                    // Non-fatal: version remains empty.
+                }
+            },
+            disconnect: async (): Promise<void> => {
+                this.connected = false;
+            },
+            isConnected: (): boolean => {
+                return this.connected;
+            },
+            getVersion: (): Record<string, string> => {
+                return {
+                    sdk: SDK_VERSION,
+                    server: this.serverVersion,
+                };
+            },
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // KV
+    // -----------------------------------------------------------------------
+
+    /** @inheritdoc */
+    get kv(): KVClient {
+        return {
+            put: async (key: string, value: string): Promise<void> => {
+                this.ensureConnected();
+                await fetchVoid(this.baseUrl, `/kv/${encodeURIComponent(key)}`, {
+                    method: 'PUT',
+                    body: value,
+                });
+            },
+            get: async (key: string): Promise<string> => {
+                this.ensureConnected();
+                try {
+                    return await fetchText(this.baseUrl, `/kv/${encodeURIComponent(key)}`);
+                } catch (err: unknown) {
+                    if (err instanceof TransportError && err.statusCode === 404) {
+                        throw new KeyNotFoundError(key);
+                    }
+                    throw err;
+                }
+            },
+            delete: async (key: string): Promise<void> => {
+                this.ensureConnected();
+                await fetchVoid(this.baseUrl, `/kv/${encodeURIComponent(key)}`, {
+                    method: 'DELETE',
+                });
+            },
+            list: async (prefix: string): Promise<string[]> => {
+                this.ensureConnected();
+                const resp = await fetchJSON<KVListResponse>(
+                    this.baseUrl,
+                    `/kv${buildQuery({ prefix })}`,
+                );
+                return resp.keys as string[];
+            },
+            exists: async (key: string): Promise<boolean> => {
+                this.ensureConnected();
+                try {
+                    await fetchText(this.baseUrl, `/kv/${encodeURIComponent(key)}`);
+                    return true;
+                } catch (err: unknown) {
+                    if (err instanceof TransportError && err.statusCode === 404) {
+                        return false;
+                    }
+                    throw err;
+                }
+            },
+            scan: async (prefix: string): Promise<Record<string, string>> => {
+                this.ensureConnected();
+                const resp = await fetchJSON<KVScanResponse>(
+                    this.baseUrl,
+                    `/kv/scan${buildQuery({ prefix })}`,
+                );
+                return resp.pairs as Record<string, string>;
+            },
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // Admin
+    // -----------------------------------------------------------------------
+
+    /** @inheritdoc */
+    get admin(): AdminClient {
+        return {
+            health: async (): Promise<HealthResponse> => {
+                this.ensureConnected();
+                return fetchJSON<HealthResponse>(this.baseUrl, '/health');
+            },
+            status: async (): Promise<StatusResponse> => {
+                this.ensureConnected();
+                return fetchJSON<StatusResponse>(this.baseUrl, '/status');
+            },
+            peers: async (): Promise<PeersResponse> => {
+                this.ensureConnected();
+                return fetchJSON<PeersResponse>(this.baseUrl, '/peers');
+            },
+            addMember: async (
+                shardId: number,
+                replicaId: number,
+                raftAddr: string,
+            ): Promise<void> => {
+                this.ensureConnected();
+                await fetchVoid(this.baseUrl, '/membership/add', {
+                    method: 'POST',
+                    ...jsonBody({ shardId, replicaId, address: raftAddr }),
+                });
+            },
+            removeMember: async (shardId: number, replicaId: number): Promise<void> => {
+                this.ensureConnected();
+                await fetchVoid(this.baseUrl, '/membership/remove', {
+                    method: 'POST',
+                    ...jsonBody({ shardId, replicaId }),
+                });
+            },
+            requestSnapshot: async (shardId: number): Promise<void> => {
+                this.ensureConnected();
+                await fetchVoid(this.baseUrl, '/snapshot', {
+                    method: 'POST',
+                    ...jsonBody({ shardId }),
+                });
+            },
+            drain: async (): Promise<void> => {
+                this.ensureConnected();
+                await fetchVoid(this.baseUrl, '/drain', {
+                    method: 'POST',
+                });
+            },
+            capabilities: async (): Promise<CapabilitiesResponse> => {
+                this.ensureConnected();
+                return fetchJSON<CapabilitiesResponse>(this.baseUrl, '/capabilities');
+            },
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // MVCC
+    // -----------------------------------------------------------------------
+
+    /** @inheritdoc */
+    get mvcc(): MVCCClient {
+        return {
+            putWithLease: async (
+                key: string,
+                value: string,
+                leaseId: number,
+            ): Promise<MVCCKeyValue> => {
+                this.ensureConnected();
+                return fetchJSON<MVCCKeyValue>(
+                    this.baseUrl,
+                    `/kv/${encodeURIComponent(key)}${buildQuery({ 'lease-id': leaseId })}`,
+                    { method: 'PUT', body: value },
+                );
+            },
+            getRevision: async (key: string): Promise<MVCCKeyValue> => {
+                this.ensureConnected();
+                return fetchJSON<MVCCKeyValue>(
+                    this.baseUrl,
+                    `/kv/${encodeURIComponent(key)}?revision=true`,
+                );
+            },
+            getAtRevision: async (key: string, revision: number): Promise<MVCCKeyValue> => {
+                this.ensureConnected();
+                return fetchJSON<MVCCKeyValue>(
+                    this.baseUrl,
+                    `/kv/${encodeURIComponent(key)}${buildQuery({ 'at-revision': revision })}`,
+                );
+            },
+            range: async (
+                start: string,
+                end: string,
+                opts: RangeOptions,
+            ): Promise<RangeResponse> => {
+                this.ensureConnected();
+                return fetchJSON<RangeResponse>(
+                    this.baseUrl,
+                    `/kv/range${buildQuery({
+                        start,
+                        end,
+                        limit: opts.limit,
+                        revision: opts.revision,
+                        'count-only': opts.countOnly ? 'true' : undefined,
+                        'keys-only': opts.keysOnly ? 'true' : undefined,
+                        'sort-order': sortOrderToString(opts.sortOrder),
+                        'sort-target': sortTargetToString(opts.sortTarget),
+                    })}`,
+                );
+            },
+            compact: async (revision: number): Promise<void> => {
+                this.ensureConnected();
+                await fetchVoid(this.baseUrl, '/kv/compact', {
+                    method: 'POST',
+                    ...jsonBody({ revision }),
+                });
+            },
+            currentRevision: async (): Promise<number> => {
+                this.ensureConnected();
+                const resp = await fetchJSON<CurrentRevisionResponse>(
+                    this.baseUrl,
+                    '/kv/revision',
+                );
+                return resp.revision;
+            },
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // Transaction
+    // -----------------------------------------------------------------------
+
+    /** @inheritdoc */
+    get transaction(): TransactionClient {
+        return {
+            execute: async (req: TransactionRequest): Promise<TransactionResponse> => {
+                this.ensureConnected();
+                return fetchJSON<TransactionResponse>(this.baseUrl, '/tx', {
+                    method: 'POST',
+                    ...jsonBody({
+                        compares: req.compares,
+                        successOps: req.successOps,
+                        failureOps: req.failureOps,
+                    }),
+                });
+            },
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // Batch
+    // -----------------------------------------------------------------------
+
+    /** @inheritdoc */
+    get batch(): BatchClient {
+        return {
+            execute: async (ops: readonly Op[]): Promise<BatchResponse> => {
+                this.ensureConnected();
+                return fetchJSON<BatchResponse>(this.baseUrl, '/batch', {
+                    method: 'POST',
+                    ...jsonBody({ ops }),
+                });
+            },
+            importFile: async (_filePath: string, _opts: ImportOptions): Promise<ImportResult> => {
+                throw new DesktopOnlyError('batch.importFile');
+            },
+            availableCodecs: async (): Promise<readonly string[]> => {
+                throw new DesktopOnlyError('batch.availableCodecs');
+            },
+            availableImportFormats: async (): Promise<readonly string[]> => {
+                throw new DesktopOnlyError('batch.availableImportFormats');
+            },
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // Watch (Server-Sent Events)
+    // -----------------------------------------------------------------------
+
+    /** @inheritdoc */
+    get watch(): WatchClient {
+        return {
+            watch: async (key: string, opts: WatchOptions): Promise<WatchHandle> => {
+                this.ensureConnected();
+                return this.createSSEWatchHandle(
+                    buildQuery({
+                        key,
+                        'start-revision': opts.startRevision,
+                        'prev-kv': opts.prevKV ? 'true' : undefined,
+                        'progress-notify': opts.progressNotify ? 'true' : undefined,
+                    }),
+                );
+            },
+            watchPrefix: async (prefix: string, opts: WatchOptions): Promise<WatchHandle> => {
+                this.ensureConnected();
+                return this.createSSEWatchHandle(
+                    buildQuery({
+                        prefix,
+                        'start-revision': opts.startRevision,
+                        'prev-kv': opts.prevKV ? 'true' : undefined,
+                        'progress-notify': opts.progressNotify ? 'true' : undefined,
+                    }),
+                );
+            },
+        };
+    }
+
+    /**
+     * Creates a {@link WatchHandle} backed by a Server-Sent Events stream.
+     * The SSE stream is consumed in the background and events are dispatched
+     * to registered callbacks.
+     */
+    private createSSEWatchHandle(query: string): WatchHandle {
+        const controller = new AbortController();
+        const eventCallbacks: Array<(events: readonly WatchEvent[]) => void> = [];
+        const cancelCallbacks: Array<(response: WatchResponse) => void> = [];
+        let watchId = 0;
+
+        const url = `${this.baseUrl}/watch${query}`;
+
+        // Start the SSE stream asynchronously.
+        void this.consumeSSE(
+            url,
+            controller.signal,
+            (response: WatchResponse) => {
+                if (watchId === 0 && response.watchId > 0) {
+                    watchId = response.watchId;
+                }
+                if (response.canceled) {
+                    for (const cb of cancelCallbacks) {
+                        cb(response);
+                    }
+                } else if (response.events.length > 0) {
+                    for (const cb of eventCallbacks) {
+                        cb(response.events);
+                    }
+                }
+            },
+        );
+
+        return {
+            get id(): number {
+                return watchId;
+            },
+            onEvent(callback: (events: readonly WatchEvent[]) => void): () => void {
+                eventCallbacks.push(callback);
+                return () => {
+                    const idx = eventCallbacks.indexOf(callback);
+                    if (idx >= 0) {
+                        eventCallbacks.splice(idx, 1);
+                    }
+                };
+            },
+            onCancel(callback: (response: WatchResponse) => void): () => void {
+                cancelCallbacks.push(callback);
+                return () => {
+                    const idx = cancelCallbacks.indexOf(callback);
+                    if (idx >= 0) {
+                        cancelCallbacks.splice(idx, 1);
+                    }
+                };
+            },
+            cancel: async (): Promise<void> => {
+                controller.abort();
+            },
+        };
+    }
+
+    /**
+     * Consumes a Server-Sent Events stream from the given URL and dispatches
+     * parsed events to the callback. The stream is terminated when the abort
+     * signal fires or the server closes the connection.
+     */
+    private async consumeSSE(
+        url: string,
+        signal: AbortSignal,
+        callback: (response: WatchResponse) => void,
+    ): Promise<void> {
+        try {
+            const resp = await fetch(url, { signal });
+            if (!resp.ok) {
+                const body = await resp.text();
+                throw new TransportError(
+                    'GET /watch',
+                    resp.status,
+                    new Error(body),
+                );
+            }
+            if (!resp.body) {
+                return;
+            }
+
+            const reader = resp.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+
+            for (;;) {
+                const { done, value } = await reader.read();
+                if (done) {
+                    break;
+                }
+
+                buffer += decoder.decode(value, { stream: true });
+
+                // SSE frames are delimited by double newlines.
+                const frames = buffer.split('\n\n');
+                // Keep the last potentially-incomplete frame in the buffer.
+                buffer = frames.pop() ?? '';
+
+                for (const frame of frames) {
+                    if (!frame.trim()) {
+                        continue;
+                    }
+                    // Extract "data: {...}" lines.
+                    for (const line of frame.split('\n')) {
+                        if (line.startsWith('data: ')) {
+                            const json = line.slice(6);
+                            try {
+                                const event = JSON.parse(json) as WatchResponse;
+                                callback(event);
+                            } catch {
+                                // Skip malformed JSON frames.
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (err: unknown) {
+            // AbortError is expected when the caller cancels the watch.
+            if (err instanceof DOMException && err.name === 'AbortError') {
+                return;
+            }
+            throw err;
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Lease
+    // -----------------------------------------------------------------------
+
+    /** @inheritdoc */
+    get lease(): LeaseClient {
+        return {
+            grant: async (ttl: number): Promise<LeaseInfo> => {
+                this.ensureConnected();
+                return fetchJSON<LeaseInfo>(
+                    this.baseUrl,
+                    '/lease/grant',
+                    { method: 'POST', ...jsonBody({ ttl }) },
+                );
+            },
+            revoke: async (leaseId: number): Promise<void> => {
+                this.ensureConnected();
+                await fetchVoid(this.baseUrl, '/lease/revoke', {
+                    method: 'POST',
+                    ...jsonBody({ lease_id: leaseId }),
+                });
+            },
+            keepAlive: async (leaseId: number): Promise<LeaseInfo> => {
+                this.ensureConnected();
+                return fetchJSON<LeaseInfo>(
+                    this.baseUrl,
+                    '/lease/keepalive',
+                    { method: 'POST', ...jsonBody({ lease_id: leaseId }) },
+                );
+            },
+            timeToLive: async (leaseId: number): Promise<LeaseInfo> => {
+                this.ensureConnected();
+                return fetchJSON<LeaseInfo>(
+                    this.baseUrl,
+                    `/lease/ttl${buildQuery({ lease_id: leaseId })}`,
+                );
+            },
+            list: async (): Promise<readonly LeaseInfo[]> => {
+                this.ensureConnected();
+                const resp = await fetchJSON<LeaseListResponse>(
+                    this.baseUrl,
+                    '/lease/list',
+                );
+                return resp.leases;
+            },
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // Lock
+    // -----------------------------------------------------------------------
+
+    /** @inheritdoc */
+    get lock(): LockClient {
+        return {
+            acquire: async (req: LockAcquireRequest): Promise<LockInfo> => {
+                this.ensureConnected();
+                return fetchJSON<LockInfo>(
+                    this.baseUrl,
+                    '/lock/acquire',
+                    { method: 'POST', ...jsonBody(req) },
+                );
+            },
+            tryLock: async (req: LockAcquireRequest): Promise<LockInfo> => {
+                this.ensureConnected();
+                return fetchJSON<LockInfo>(
+                    this.baseUrl,
+                    '/lock/trylock',
+                    { method: 'POST', ...jsonBody(req) },
+                );
+            },
+            release: async (req: LockReleaseRequest): Promise<void> => {
+                this.ensureConnected();
+                await fetchVoid(this.baseUrl, '/lock/release', {
+                    method: 'POST',
+                    ...jsonBody(req),
+                });
+            },
+            extend: async (req: LockExtendRequest): Promise<LockInfo> => {
+                this.ensureConnected();
+                return fetchJSON<LockInfo>(
+                    this.baseUrl,
+                    '/lock/extend',
+                    { method: 'POST', ...jsonBody(req) },
+                );
+            },
+            status: async (key: string): Promise<LockInfo | null> => {
+                this.ensureConnected();
+                try {
+                    return await fetchJSON<LockInfo>(
+                        this.baseUrl,
+                        `/lock/status${buildQuery({ key })}`,
+                    );
+                } catch (err: unknown) {
+                    if (err instanceof TransportError && err.statusCode === 404) {
+                        return null;
+                    }
+                    throw err;
+                }
+            },
+            list: async (prefix?: string): Promise<LockListResponse> => {
+                this.ensureConnected();
+                return fetchJSON<LockListResponse>(
+                    this.baseUrl,
+                    `/lock/list${prefix ? buildQuery({ prefix }) : ''}`,
+                );
+            },
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // Index
+    // -----------------------------------------------------------------------
+
+    /** @inheritdoc */
+    get index(): IndexClient {
+        return {
+            create: async (req: IndexCreateRequest): Promise<void> => {
+                this.ensureConnected();
+                await fetchVoid(this.baseUrl, '/index/create', {
+                    method: 'POST',
+                    ...jsonBody(req),
+                });
+            },
+            drop: async (name: string): Promise<void> => {
+                this.ensureConnected();
+                await fetchVoid(this.baseUrl, '/index/drop', {
+                    method: 'POST',
+                    ...jsonBody({ name }),
+                });
+            },
+            query: async (indexName: string, value: string): Promise<IndexQueryResponse> => {
+                this.ensureConnected();
+                return fetchJSON<IndexQueryResponse>(
+                    this.baseUrl,
+                    `/index/query${buildQuery({ indexName, value })}`,
+                );
+            },
+            scan: async (
+                indexName: string,
+                start: string,
+                end: string,
+            ): Promise<IndexScanResponse> => {
+                this.ensureConnected();
+                return fetchJSON<IndexScanResponse>(
+                    this.baseUrl,
+                    `/index/scan${buildQuery({ indexName, start, end })}`,
+                );
+            },
+            list: async (): Promise<IndexListResponse> => {
+                this.ensureConnected();
+                return fetchJSON<IndexListResponse>(this.baseUrl, '/index/list');
+            },
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // TimeSeries
+    // -----------------------------------------------------------------------
+
+    /** @inheritdoc */
+    get timeSeries(): TimeSeriesClient | null {
+        return {
+            write: async (point: TSDataPoint): Promise<void> => {
+                this.ensureConnected();
+                await fetchVoid(this.baseUrl, '/ts/write', {
+                    method: 'POST',
+                    ...jsonBody({
+                        metric: point.metric,
+                        value: point.value,
+                        timestamp: point.timestampNs,
+                        tags: tagsArrayToMap(point.tags),
+                    }),
+                });
+            },
+            writeBatch: async (points: readonly TSDataPoint[]): Promise<void> => {
+                this.ensureConnected();
+                await fetchVoid(this.baseUrl, '/ts/write-batch', {
+                    method: 'POST',
+                    ...jsonBody({
+                        points: points.map((p) => ({
+                            metric: p.metric,
+                            value: p.value,
+                            timestamp: p.timestampNs,
+                            tags: tagsArrayToMap(p.tags),
+                        })),
+                    }),
+                });
+            },
+            query: async (req: TSQueryRequest): Promise<TSQueryResponse> => {
+                this.ensureConnected();
+                const tagsStr = req.tags
+                    ? req.tags.map((t) => `${t.key}=${t.value}`).join(',')
+                    : undefined;
+                interface RawTSPoint {
+                    metric: string;
+                    value: number;
+                    timestamp: number;
+                    tags?: Record<string, string>;
+                }
+                const raw = await fetchJSON<{ points: RawTSPoint[] }>(
+                    this.baseUrl,
+                    `/ts/query${buildQuery({
+                        metric: req.metric,
+                        start_ns: req.startNs,
+                        end_ns: req.endNs,
+                        tags: tagsStr,
+                        limit: req.limit,
+                        descending: req.descending ? 'true' : undefined,
+                    })}`,
+                );
+                return {
+                    points: (raw.points ?? []).map((p) => ({
+                        metric: p.metric,
+                        timestampNs: p.timestamp,
+                        value: p.value,
+                        tags: p.tags
+                            ? Object.entries(p.tags).map(([key, value]) => ({ key, value }))
+                            : [],
+                    })),
+                };
+            },
+            aggregate: async (req: TSAggregateRequest): Promise<TSAggregateResponse> => {
+                this.ensureConnected();
+                return fetchJSON<TSAggregateResponse>(
+                    this.baseUrl,
+                    `/ts/aggregate${buildQuery({
+                        metric: req.metric,
+                        start_ns: req.startNs,
+                        end_ns: req.endNs,
+                        function: aggFuncToString(req.function),
+                        interval_ns: req.intervalNs,
+                    })}`,
+                );
+            },
+            writePoint: async (point: TSDataPoint): Promise<void> => {
+                this.ensureConnected();
+                await fetchVoid(this.baseUrl, '/ts/write', {
+                    method: 'POST',
+                    ...jsonBody({
+                        metric: point.metric,
+                        value: point.value,
+                        timestamp: point.timestampNs,
+                        tags: tagsArrayToMap(point.tags),
+                    }),
+                });
+            },
+            richQuery: async (req: TSRichQueryRequest): Promise<TSRichQueryResponse> => {
+                this.ensureConnected();
+                return fetchJSON<TSRichQueryResponse>(this.baseUrl, '/ts/rich-query', {
+                    method: 'POST',
+                    ...jsonBody(req),
+                });
+            },
+            deleteSeries: async (req: TSDeleteRequest): Promise<TSDeleteResponse> => {
+                this.ensureConnected();
+                return fetchJSON<TSDeleteResponse>(this.baseUrl, '/ts/delete', {
+                    method: 'POST',
+                    ...jsonBody(req),
+                });
+            },
+            getRetention: async (req: TSGetRetentionRequest): Promise<TSGetRetentionResponse> => {
+                this.ensureConnected();
+                return fetchJSON<TSGetRetentionResponse>(
+                    this.baseUrl,
+                    `/ts/retention${buildQuery({ metric: req.metric })}`,
+                );
+            },
+            setRetention: async (req: TSSetRetentionRequest): Promise<void> => {
+                this.ensureConnected();
+                await fetchVoid(this.baseUrl, '/ts/retention', {
+                    method: 'POST',
+                    ...jsonBody(req),
+                });
+            },
+            listMetrics: async (req: TSListMetricsRequest): Promise<TSListMetricsResponse> => {
+                this.ensureConnected();
+                return fetchJSON<TSListMetricsResponse>(
+                    this.baseUrl,
+                    `/ts/metrics${buildQuery({
+                        prefix: req.prefix,
+                        limit: req.limit,
+                    })}`,
+                );
+            },
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // Vector
+    // -----------------------------------------------------------------------
+
+    /** @inheritdoc */
+    get vector(): VectorClient | null {
+        return {
+            createNamespace: async (
+                req: CreateNamespaceRequest,
+            ): Promise<CreateNamespaceResponse> => {
+                this.ensureConnected();
+                return fetchJSON<CreateNamespaceResponse>(
+                    this.baseUrl,
+                    '/vector/namespace',
+                    { method: 'POST', ...jsonBody(req) },
+                );
+            },
+            deleteNamespace: async (req: DeleteNamespaceRequest): Promise<void> => {
+                this.ensureConnected();
+                await fetchVoid(
+                    this.baseUrl,
+                    '/vector/namespace/delete',
+                    { method: 'POST', ...jsonBody(req) },
+                );
+            },
+            listNamespaces: async (
+                req: ListNamespacesRequest,
+            ): Promise<ListNamespacesResponse> => {
+                this.ensureConnected();
+                return fetchJSON<ListNamespacesResponse>(
+                    this.baseUrl,
+                    `/vector/namespaces${buildQuery({ shard_id: req.shardId })}`,
+                );
+            },
+            getNamespaceInfo: async (req: GetNamespaceInfoRequest): Promise<NamespaceInfo> => {
+                this.ensureConnected();
+                return fetchJSON<NamespaceInfo>(
+                    this.baseUrl,
+                    `/vector/namespace/info${buildQuery({
+                        namespace: req.namespace,
+                        shard_id: req.shardId,
+                    })}`,
+                );
+            },
+            upsertVector: async (req: UpsertVectorRequest): Promise<UpsertVectorResponse> => {
+                this.ensureConnected();
+                return fetchJSON<UpsertVectorResponse>(this.baseUrl, '/vector/upsert', {
+                    method: 'POST',
+                    ...jsonBody(req),
+                });
+            },
+            getVector: async (req: GetVectorRequest): Promise<VectorData> => {
+                this.ensureConnected();
+                return fetchJSON<VectorData>(
+                    this.baseUrl,
+                    `/vector/get${buildQuery({
+                        namespace: req.namespace,
+                        id: req.id,
+                        consistency: req.consistency,
+                        shard_id: req.shardId,
+                    })}`,
+                );
+            },
+            deleteVector: async (req: DeleteVectorRequest): Promise<void> => {
+                this.ensureConnected();
+                await fetchVoid(this.baseUrl, '/vector/delete', {
+                    method: 'POST',
+                    ...jsonBody(req),
+                });
+            },
+            batchUpsert: async (req: BatchUpsertRequest): Promise<BatchUpsertResponse> => {
+                this.ensureConnected();
+                return fetchJSON<BatchUpsertResponse>(
+                    this.baseUrl,
+                    '/vector/batch/upsert',
+                    { method: 'POST', ...jsonBody(req) },
+                );
+            },
+            batchDeleteVectors: async (
+                req: BatchDeleteVectorsRequest,
+            ): Promise<BatchDeleteVectorsResponse> => {
+                this.ensureConnected();
+                return fetchJSON<BatchDeleteVectorsResponse>(
+                    this.baseUrl,
+                    '/vector/batch/delete',
+                    { method: 'POST', ...jsonBody(req) },
+                );
+            },
+            listVectors: async (req: ListVectorsRequest): Promise<ListVectorsResponse> => {
+                this.ensureConnected();
+                return fetchJSON<ListVectorsResponse>(
+                    this.baseUrl,
+                    `/vector/list${buildQuery({
+                        namespace: req.namespace,
+                        limit: req.limit,
+                        offset: req.offset,
+                        cursor: req.cursor,
+                        shard_id: req.shardId,
+                    })}`,
+                );
+            },
+            updateMetadata: async (req: UpdateMetadataRequest): Promise<void> => {
+                this.ensureConnected();
+                await fetchVoid(this.baseUrl, '/vector/metadata', {
+                    method: 'POST',
+                    ...jsonBody(req),
+                });
+            },
+            searchSimilar: async (
+                req: SearchSimilarRequest,
+            ): Promise<SearchSimilarResponse> => {
+                this.ensureConnected();
+                return fetchJSON<SearchSimilarResponse>(
+                    this.baseUrl,
+                    '/vector/search/similar',
+                    { method: 'POST', ...jsonBody(req) },
+                );
+            },
+            searchByMetadata: async (
+                req: SearchByMetadataRequest,
+            ): Promise<SearchByMetadataResponse> => {
+                this.ensureConnected();
+                return fetchJSON<SearchByMetadataResponse>(
+                    this.baseUrl,
+                    '/vector/search/metadata',
+                    { method: 'POST', ...jsonBody(req) },
+                );
+            },
+            hybridSearch: async (
+                req: HybridSearchRequest,
+            ): Promise<HybridSearchResponse> => {
+                this.ensureConnected();
+                return fetchJSON<HybridSearchResponse>(
+                    this.baseUrl,
+                    '/vector/search/hybrid',
+                    { method: 'POST', ...jsonBody(req) },
+                );
+            },
+            searchByID: async (req: SearchByIDRequest): Promise<SearchSimilarResponse> => {
+                this.ensureConnected();
+                return fetchJSON<SearchSimilarResponse>(
+                    this.baseUrl,
+                    '/vector/search/by-id',
+                    { method: 'POST', ...jsonBody(req) },
+                );
+            },
+            rebuildIndex: async (
+                req: RebuildIndexRequest,
+            ): Promise<RebuildIndexResponse> => {
+                this.ensureConnected();
+                return fetchJSON<RebuildIndexResponse>(
+                    this.baseUrl,
+                    '/vector/index/rebuild',
+                    { method: 'POST', ...jsonBody(req) },
+                );
+            },
+            getRebuildProgress: async (
+                req: GetRebuildProgressRequest,
+            ): Promise<RebuildProgress> => {
+                this.ensureConnected();
+                return fetchJSON<RebuildProgress>(
+                    this.baseUrl,
+                    `/vector/index/rebuild/progress${buildQuery({
+                        namespace: req.namespace,
+                        job_id: req.jobId,
+                        shard_id: req.shardId,
+                    })}`,
+                );
+            },
+            getIndexStats: async (req: GetIndexStatsRequest): Promise<IndexStats> => {
+                this.ensureConnected();
+                return fetchJSON<IndexStats>(
+                    this.baseUrl,
+                    `/vector/index/stats${buildQuery({
+                        namespace: req.namespace,
+                        shard_id: req.shardId,
+                    })}`,
+                );
+            },
+            compactNamespace: async (
+                req: CompactNamespaceRequest,
+            ): Promise<CompactNamespaceResponse> => {
+                this.ensureConnected();
+                return fetchJSON<CompactNamespaceResponse>(
+                    this.baseUrl,
+                    '/vector/compact',
+                    { method: 'POST', ...jsonBody(req) },
+                );
+            },
+            getCompactionProgress: async (
+                req: GetCompactionProgressRequest,
+            ): Promise<CompactionProgress> => {
+                this.ensureConnected();
+                return fetchJSON<CompactionProgress>(
+                    this.baseUrl,
+                    `/vector/compact/progress${buildQuery({
+                        namespace: req.namespace,
+                        job_id: req.jobId,
+                        shard_id: req.shardId,
+                    })}`,
+                );
+            },
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // Users
+    // -----------------------------------------------------------------------
+
+    /** @inheritdoc */
+    get users(): UserClient {
+        return {
+            create: async (req: CreateUserRequest): Promise<User> => {
+                this.ensureConnected();
+                return fetchJSON<User>(this.baseUrl, '/users', {
+                    method: 'POST',
+                    ...jsonBody(req),
+                });
+            },
+            get: async (id: string): Promise<User> => {
+                this.ensureConnected();
+                return fetchJSON<User>(
+                    this.baseUrl,
+                    `/users/${encodeURIComponent(id)}`,
+                );
+            },
+            update: async (req: UpdateUserRequest): Promise<User> => {
+                this.ensureConnected();
+                return fetchJSON<User>(
+                    this.baseUrl,
+                    `/users/${encodeURIComponent(req.id)}`,
+                    { method: 'PUT', ...jsonBody(req) },
+                );
+            },
+            delete: async (id: string): Promise<void> => {
+                this.ensureConnected();
+                await fetchVoid(
+                    this.baseUrl,
+                    `/users/${encodeURIComponent(id)}`,
+                    { method: 'DELETE' },
+                );
+            },
+            list: async (req: ListUsersRequest): Promise<ListUsersResponse> => {
+                this.ensureConnected();
+                return fetchJSON<ListUsersResponse>(
+                    this.baseUrl,
+                    `/users/list${buildQuery({
+                        tenantID: req.tenantId,
+                        page: req.page,
+                        pageSize: req.pageSize,
+                    })}`,
+                );
+            },
+            enable: async (id: string): Promise<void> => {
+                this.ensureConnected();
+                await fetchVoid(
+                    this.baseUrl,
+                    `/users/${encodeURIComponent(id)}/enable`,
+                    { method: 'POST' },
+                );
+            },
+            disable: async (id: string): Promise<void> => {
+                this.ensureConnected();
+                await fetchVoid(
+                    this.baseUrl,
+                    `/users/${encodeURIComponent(id)}/disable`,
+                    { method: 'POST' },
+                );
+            },
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // Roles
+    // -----------------------------------------------------------------------
+
+    /** @inheritdoc */
+    get roles(): RoleClient {
+        return {
+            create: async (req: CreateRoleRequest): Promise<Role> => {
+                this.ensureConnected();
+                return fetchJSON<Role>(this.baseUrl, '/roles', {
+                    method: 'POST',
+                    ...jsonBody(req),
+                });
+            },
+            get: async (id: string): Promise<Role> => {
+                this.ensureConnected();
+                return fetchJSON<Role>(
+                    this.baseUrl,
+                    `/roles/${encodeURIComponent(id)}`,
+                );
+            },
+            update: async (req: UpdateRoleRequest): Promise<Role> => {
+                this.ensureConnected();
+                return fetchJSON<Role>(
+                    this.baseUrl,
+                    `/roles/${encodeURIComponent(req.id)}`,
+                    { method: 'PUT', ...jsonBody(req) },
+                );
+            },
+            delete: async (id: string): Promise<void> => {
+                this.ensureConnected();
+                await fetchVoid(
+                    this.baseUrl,
+                    `/roles/${encodeURIComponent(id)}`,
+                    { method: 'DELETE' },
+                );
+            },
+            list: async (req: ListRolesRequest): Promise<ListRolesResponse> => {
+                this.ensureConnected();
+                return fetchJSON<ListRolesResponse>(
+                    this.baseUrl,
+                    `/roles/list${buildQuery({
+                        tenantID: req.tenantId,
+                        page: req.page,
+                        pageSize: req.pageSize,
+                    })}`,
+                );
+            },
+            assign: async (userId: string, roleId: string): Promise<void> => {
+                this.ensureConnected();
+                await fetchVoid(this.baseUrl, '/roles/assign', {
+                    method: 'POST',
+                    ...jsonBody({ userId, roleId }),
+                });
+            },
+            unassign: async (userId: string, roleId: string): Promise<void> => {
+                this.ensureConnected();
+                await fetchVoid(this.baseUrl, '/roles/unassign', {
+                    method: 'POST',
+                    ...jsonBody({ userId, roleId }),
+                });
+            },
+            listPermissions: async (): Promise<ListPermissionsResponse> => {
+                this.ensureConnected();
+                return fetchJSON<ListPermissionsResponse>(
+                    this.baseUrl,
+                    '/permissions',
+                );
+            },
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // Certs
+    // -----------------------------------------------------------------------
+
+    /** @inheritdoc */
+    get certs(): CertClient {
+        return {
+            generate: async (req: GenerateCertRequest): Promise<CertBundle> => {
+                this.ensureConnected();
+                return fetchJSON<CertBundle>(this.baseUrl, '/certs/generate', {
+                    method: 'POST',
+                    ...jsonBody(req),
+                });
+            },
+            export: async (req: ExportCertRequest): Promise<ExportCertResponse> => {
+                this.ensureConnected();
+                return fetchJSON<ExportCertResponse>(this.baseUrl, '/certs/export', {
+                    method: 'POST',
+                    ...jsonBody(req),
+                });
+            },
+            revoke: async (serial: string): Promise<void> => {
+                this.ensureConnected();
+                await fetchVoid(this.baseUrl, '/certs/revoke', {
+                    method: 'POST',
+                    ...jsonBody({ serial }),
+                });
+            },
+            list: async (tenantId: string): Promise<ListCertsResponse> => {
+                this.ensureConnected();
+                return fetchJSON<ListCertsResponse>(
+                    this.baseUrl,
+                    `/certs/list${buildQuery({ tenantID: tenantId })}`,
+                );
+            },
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // Database
+    // -----------------------------------------------------------------------
+
+    /** @inheritdoc */
+    get database(): DatabaseClient {
+        return {
+            create: async (req: CreateDatabaseRequest): Promise<DatabaseInfo> => {
+                this.ensureConnected();
+                return fetchJSON<DatabaseInfo>(this.baseUrl, '/v1/databases', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(req),
+                });
+            },
+            get: async (name: string): Promise<DatabaseInfo> => {
+                this.ensureConnected();
+                return fetchJSON<DatabaseInfo>(
+                    this.baseUrl,
+                    `/v1/databases/${encodeURIComponent(name)}`,
+                );
+            },
+            list: async (): Promise<DatabaseInfo[]> => {
+                this.ensureConnected();
+                const resp = await fetchJSON<{ databases: DatabaseInfo[] }>(
+                    this.baseUrl,
+                    '/v1/databases/list',
+                );
+                return resp.databases;
+            },
+            drop: async (name: string): Promise<void> => {
+                this.ensureConnected();
+                await fetchVoid(
+                    this.baseUrl,
+                    `/v1/databases/${encodeURIComponent(name)}`,
+                    { method: 'DELETE' },
+                );
+            },
+            updateSQL: async (name: string, sql: DatabaseSQLConfig): Promise<DatabaseInfo> => {
+                this.ensureConnected();
+                return fetchJSON<DatabaseInfo>(
+                    this.baseUrl,
+                    `/databases/${encodeURIComponent(name)}/sql`,
+                    {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(sql),
+                    },
+                );
+            },
+            updateRaft: async (name: string, raft: DatabaseRaftConfig): Promise<DatabaseInfo> => {
+                this.ensureConnected();
+                return fetchJSON<DatabaseInfo>(
+                    this.baseUrl,
+                    `/databases/${encodeURIComponent(name)}/raft`,
+                    {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(raft),
+                    },
+                );
+            },
+            updateBarrier: async (name: string, barrier: DatabaseBarrierConfig): Promise<DatabaseInfo> => {
+                this.ensureConnected();
+                return fetchJSON<DatabaseInfo>(
+                    this.baseUrl,
+                    `/databases/${encodeURIComponent(name)}/barrier`,
+                    {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(barrier),
+                    },
+                );
+            },
+            updateConnection: async (name: string, connection: DatabaseConnectionConfig): Promise<DatabaseInfo> => {
+                this.ensureConnected();
+                return fetchJSON<DatabaseInfo>(
+                    this.baseUrl,
+                    `/databases/${encodeURIComponent(name)}/connection`,
+                    {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(connection),
+                    },
+                );
+            },
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // Collection
+    // -----------------------------------------------------------------------
+
+    /** @inheritdoc */
+    get collection(): CollectionClient {
+        return {
+            create: async (req: CreateCollectionRequest): Promise<CollectionInfo> => {
+                this.ensureConnected();
+                return fetchJSON<CollectionInfo>(this.baseUrl, '/v1/collections', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(req),
+                });
+            },
+            get: async (database: string, name: string): Promise<CollectionInfo> => {
+                this.ensureConnected();
+                return fetchJSON<CollectionInfo>(
+                    this.baseUrl,
+                    `/v1/collections/${encodeURIComponent(database)}/${encodeURIComponent(name)}`,
+                );
+            },
+            list: async (database: string): Promise<CollectionInfo[]> => {
+                this.ensureConnected();
+                const resp = await fetchJSON<ListCollectionsResponse>(
+                    this.baseUrl,
+                    `/v1/collections/list${buildQuery({ database })}`,
+                );
+                return resp.collections as CollectionInfo[];
+            },
+            drop: async (database: string, name: string): Promise<void> => {
+                this.ensureConnected();
+                await fetchVoid(
+                    this.baseUrl,
+                    `/v1/collections/${encodeURIComponent(database)}/${encodeURIComponent(name)}`,
+                    { method: 'DELETE' },
+                );
+            },
+            insertDocument: async (req: InsertDocumentRequest): Promise<InsertDocumentResponse> => {
+                this.ensureConnected();
+                return fetchJSON<InsertDocumentResponse>(
+                    this.baseUrl,
+                    `/v1/collections/${encodeURIComponent(req.database)}/${encodeURIComponent(req.collection)}/documents`,
+                    {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ document: req.document }),
+                    },
+                );
+            },
+            getDocument: async (
+                database: string,
+                collection: string,
+                id: string,
+            ): Promise<DocumentResponse> => {
+                this.ensureConnected();
+                return fetchJSON<DocumentResponse>(
+                    this.baseUrl,
+                    `/v1/collections/${encodeURIComponent(database)}/${encodeURIComponent(collection)}/documents/${encodeURIComponent(String(id))}`,
+                );
+            },
+            updateDocument: async (req: UpdateDocumentRequest): Promise<void> => {
+                this.ensureConnected();
+                await fetchVoid(
+                    this.baseUrl,
+                    `/v1/collections/${encodeURIComponent(req.database)}/${encodeURIComponent(req.collection)}/documents/${encodeURIComponent(String(req.id))}`,
+                    {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ document: req.document }),
+                    },
+                );
+            },
+            deleteDocument: async (
+                database: string,
+                collection: string,
+                id: string,
+            ): Promise<void> => {
+                this.ensureConnected();
+                await fetchVoid(
+                    this.baseUrl,
+                    `/v1/collections/${encodeURIComponent(database)}/${encodeURIComponent(collection)}/documents/${encodeURIComponent(String(id))}`,
+                    { method: 'DELETE' },
+                );
+            },
+            listDocuments: async (req: ListDocumentsRequest): Promise<ListDocumentsResponse> => {
+                this.ensureConnected();
+                return fetchJSON<ListDocumentsResponse>(
+                    this.baseUrl,
+                    `/v1/collections/${encodeURIComponent(req.database)}/${encodeURIComponent(req.collection)}/documents${buildQuery({
+                        page_size: req.page_size,
+                        page_token: req.page_token,
+                    })}`,
+                );
+            },
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // SQL
+    // -----------------------------------------------------------------------
+
+    /** @inheritdoc */
+    get sql(): SQLClient {
+        return {
+            query: async (query: string, database: string): Promise<SQLQueryResult> => {
+                this.ensureConnected();
+                return fetchJSON<SQLQueryResult>(this.baseUrl, '/sql/query', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ query, database }),
+                });
+            },
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // Seal
+    // -----------------------------------------------------------------------
+
+    /** @inheritdoc */
+    get seal(): SealClient {
+        return {
+            bootstrap: async (): Promise<BootstrapResult> => {
+                throw new DesktopOnlyError('seal.bootstrap');
+            },
+            initialize: async (_secret: string): Promise<void> => {
+                throw new DesktopOnlyError('seal.initialize');
+            },
+            initializeShamir: async (_secret: string, _threshold: number, _totalShares: number): Promise<BootstrapResult> => {
+                throw new DesktopOnlyError('seal.initializeShamir');
+            },
+            unseal: async (share: string): Promise<UnsealProgress> => {
+                this.ensureConnected();
+                interface UnsealShareProgressResponse {
+                    readonly required: number;
+                    readonly submitted: number;
+                    readonly complete: boolean;
+                }
+                const resp = await fetchJSON<UnsealShareProgressResponse>(
+                    this.baseUrl,
+                    '/v1/barrier/shamir/unseal-share',
+                    { method: 'POST', ...jsonBody({ share }) },
+                );
+                return {
+                    sealed: !resp.complete,
+                    sharesProvided: resp.submitted,
+                    sharesRequired: resp.required,
+                };
+            },
+            seal: async (): Promise<void> => {
+                this.ensureConnected();
+                await fetchVoid(this.baseUrl, '/v1/barrier/seal', { method: 'POST' });
+            },
+            status: async (): Promise<SealStatus> => {
+                this.ensureConnected();
+                interface BarrierStatusResponse {
+                    readonly sealed: boolean;
+                    readonly strategy: string;
+                    readonly hardware_backed: boolean;
+                    readonly initialized_at?: string;
+                }
+                try {
+                    const resp = await fetchJSON<BarrierStatusResponse>(
+                        this.baseUrl,
+                        '/v1/barrier/status',
+                    );
+                    return {
+                        sealed: resp.sealed,
+                        initialized: resp.initialized_at !== undefined && resp.initialized_at !== '',
+                        sharesRequired: 0,
+                        sharesProvided: 0,
+                        sharesTotal: 0,
+                    };
+                } catch (err: unknown) {
+                    if (err instanceof TransportError && err.statusCode === 404) {
+                        // Barrier service not configured on this server.
+                        return {
+                            sealed: false,
+                            initialized: false,
+                            sharesRequired: 0,
+                            sharesProvided: 0,
+                            sharesTotal: 0,
+                        };
+                    }
+                    throw err;
+                }
+            },
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // Embedded server (desktop-only, not available via REST)
+    // -----------------------------------------------------------------------
+
+    /** @inheritdoc */
+    get embeddedServer(): EmbeddedServerClient {
+        return {
+            startEmbedded: async (_config: EmbeddedConfig): Promise<void> => {
+                throw new DesktopOnlyError('embeddedServer.startEmbedded');
+            },
+            stopEmbedded: async (): Promise<void> => {
+                throw new DesktopOnlyError('embeddedServer.stopEmbedded');
+            },
+            isEmbedded: (): boolean => {
+                return false;
+            },
+            hasSavedConfig: async (): Promise<boolean> => {
+                return false;
+            },
+            restoreEmbedded: async (): Promise<void> => {
+                throw new DesktopOnlyError('embeddedServer.restoreEmbedded');
+            },
+            clearSavedConfig: async (): Promise<void> => {
+                throw new DesktopOnlyError('embeddedServer.clearSavedConfig');
+            },
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // Daemon (desktop-only, not available via REST)
+    // -----------------------------------------------------------------------
+
+    /** @inheritdoc */
+    get daemon(): DaemonClient {
+        return {
+            startDaemon: async (_configPath: string): Promise<void> => {
+                throw new DesktopOnlyError('daemon.startDaemon');
+            },
+            stopDaemon: async (): Promise<void> => {
+                throw new DesktopOnlyError('daemon.stopDaemon');
+            },
+            restartDaemon: async (_configPath: string): Promise<void> => {
+                throw new DesktopOnlyError('daemon.restartDaemon');
+            },
+            daemonStatus: async (): Promise<DaemonStatus> => {
+                throw new DesktopOnlyError('daemon.daemonStatus');
+            },
+            daemonLogs: async (_maxLines: number): Promise<string> => {
+                throw new DesktopOnlyError('daemon.daemonLogs');
+            },
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // Tenants
+    // -----------------------------------------------------------------------
+
+    /** @inheritdoc */
+    get tenants(): TenantClient {
+        return {
+            create: async (req: CreateTenantRequest): Promise<CreateTenantResponse> => {
+                this.ensureConnected();
+                return fetchJSON<CreateTenantResponse>(this.baseUrl, '/v1/tenants', {
+                    method: 'POST',
+                    ...jsonBody(req),
+                });
+            },
+            get: async (tenantId: string): Promise<GetTenantResponse> => {
+                this.ensureConnected();
+                return fetchJSON<GetTenantResponse>(
+                    this.baseUrl,
+                    `/v1/tenants/${encodeURIComponent(tenantId)}`,
+                );
+            },
+            list: async (): Promise<ListTenantsResponse> => {
+                this.ensureConnected();
+                return fetchJSON<ListTenantsResponse>(this.baseUrl, '/v1/tenants');
+            },
+            delete: async (tenantId: string): Promise<void> => {
+                this.ensureConnected();
+                await fetchJSON<unknown>(
+                    this.baseUrl,
+                    `/v1/tenants/${encodeURIComponent(tenantId)}`,
+                    { method: 'DELETE' },
+                );
+            },
+            barrierInit: async (req: TenantBarrierInitRequest): Promise<void> => {
+                this.ensureConnected();
+                await fetchJSON<unknown>(
+                    this.baseUrl,
+                    `/v1/tenants/${encodeURIComponent(req.tenantId)}/barrier/init`,
+                    { method: 'POST', ...jsonBody(req) },
+                );
+            },
+            barrierUnseal: async (req: TenantBarrierUnsealRequest): Promise<void> => {
+                this.ensureConnected();
+                await fetchJSON<unknown>(
+                    this.baseUrl,
+                    `/v1/tenants/${encodeURIComponent(req.tenantId)}/barrier/unseal`,
+                    { method: 'POST', ...jsonBody(req) },
+                );
+            },
+            updateQuotas: async (req: UpdateTenantQuotasRequest): Promise<UpdateTenantQuotasResponse> => {
+                this.ensureConnected();
+                return fetchJSON<UpdateTenantQuotasResponse>(
+                    this.baseUrl,
+                    `/v1/tenants/${encodeURIComponent(req.tenantId)}/quotas`,
+                    { method: 'PUT', ...jsonBody(req) },
+                );
+            },
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // Server Config
+    // -----------------------------------------------------------------------
+
+    /** @inheritdoc */
+    get config(): ServerConfigClient {
+        return {
+            initialized: async (): Promise<ConfigInitializedResponse> => {
+                this.ensureConnected();
+                return fetchJSON<ConfigInitializedResponse>(
+                    this.baseUrl,
+                    '/v1/config/initialized',
+                );
+            },
+            isEmbeddedAvailable: async (): Promise<boolean> => false,
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // Backups
+    // -----------------------------------------------------------------------
+
+    /** @inheritdoc */
+    get backups(): BackupClient {
+        return {
+            create: async (req: BackupRequest): Promise<BackupInfo> => {
+                this.ensureConnected();
+                return fetchJSON<BackupInfo>(this.baseUrl, '/v1/backups', {
+                    method: 'POST',
+                    ...jsonBody(req),
+                });
+            },
+            list: async (): Promise<ListBackupsResponse> => {
+                this.ensureConnected();
+                return fetchJSON<ListBackupsResponse>(this.baseUrl, '/v1/backups');
+            },
+            get: async (id: string): Promise<BackupInfo> => {
+                this.ensureConnected();
+                return fetchJSON<BackupInfo>(
+                    this.baseUrl,
+                    `/v1/backups/${encodeURIComponent(id)}`,
+                );
+            },
+            delete: async (id: string): Promise<void> => {
+                this.ensureConnected();
+                await fetchJSON<unknown>(
+                    this.baseUrl,
+                    `/v1/backups/${encodeURIComponent(id)}`,
+                    { method: 'DELETE' },
+                );
+            },
+            restore: async (req: RestoreRequest): Promise<RestoreResult> => {
+                this.ensureConnected();
+                return fetchJSON<RestoreResult>(
+                    this.baseUrl,
+                    `/v1/backups/${encodeURIComponent(req.backupId)}/restore`,
+                    { method: 'POST', ...jsonBody(req) },
+                );
+            },
+            verify: async (id: string): Promise<VerifyResult> => {
+                this.ensureConnected();
+                return fetchJSON<VerifyResult>(
+                    this.baseUrl,
+                    `/v1/backups/${encodeURIComponent(id)}/verify`,
+                    { method: 'POST' },
+                );
+            },
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // Rebalance
+    // -----------------------------------------------------------------------
+
+    /** @inheritdoc */
+    get rebalance(): RebalanceClient {
+        return {
+            getShardStats: async (shardId: number): Promise<ShardStatsResponse> => {
+                this.ensureConnected();
+                return fetchJSON<ShardStatsResponse>(
+                    this.baseUrl,
+                    `/v1/rebalance/shards/${encodeURIComponent(String(shardId))}/stats`,
+                );
+            },
+            createPlan: async (req: RebalancePlanRequest): Promise<RebalancePlan> => {
+                this.ensureConnected();
+                return fetchJSON<RebalancePlan>(this.baseUrl, '/v1/rebalance/plan', {
+                    method: 'POST',
+                    ...jsonBody(req),
+                });
+            },
+            execute: async (plan: RebalancePlan): Promise<RebalanceResult> => {
+                this.ensureConnected();
+                return fetchJSON<RebalanceResult>(this.baseUrl, '/v1/rebalance/execute', {
+                    method: 'POST',
+                    ...jsonBody(plan),
+                });
+            },
+            getImbalanceReport: async (): Promise<ImbalanceReport> => {
+                this.ensureConnected();
+                return fetchJSON<ImbalanceReport>(this.baseUrl, '/v1/rebalance/report');
+            },
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // Connection Manager
+    // -----------------------------------------------------------------------
+
+    /** @inheritdoc */
+    get connectionManager(): ConnectionManagerClient {
+        return {
+            listProfiles: async (): Promise<ConnectionProfile[]> => {
+                throw new DesktopOnlyError('connectionManager.listProfiles');
+            },
+            saveProfile: async (_profile: ConnectionProfile): Promise<void> => {
+                throw new DesktopOnlyError('connectionManager.saveProfile');
+            },
+            deleteProfile: async (_id: string): Promise<void> => {
+                throw new DesktopOnlyError('connectionManager.deleteProfile');
+            },
+            connect: async (_profileId: string): Promise<ConnectionState> => {
+                throw new DesktopOnlyError('connectionManager.connect');
+            },
+            disconnect: async (_profileId: string): Promise<void> => {
+                throw new DesktopOnlyError('connectionManager.disconnect');
+            },
+            getState: async (_profileId: string): Promise<ConnectionState | null> => {
+                throw new DesktopOnlyError('connectionManager.getState');
+            },
+            setActive: async (_profileId: string): Promise<void> => {
+                throw new DesktopOnlyError('connectionManager.setActive');
+            },
+            getActiveProfileId: async (): Promise<string> => {
+                throw new DesktopOnlyError('connectionManager.getActiveProfileId');
+            },
+            isEmbeddedAvailable: async (): Promise<boolean> => false,
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // Internal
+    // -----------------------------------------------------------------------
+
+    /**
+     * Throws {@link NotConnectedError} if the client has not been connected
+     * via {@link ConnectionClient.connect}.
+     */
+    private ensureConnected(): void {
+        if (!this.connected) {
+            throw new NotConnectedError();
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Conversion helpers
+// ---------------------------------------------------------------------------
+
+/** Maps numeric SortOrder values to their REST API query parameter strings. */
+const SORT_ORDER_STRINGS: Record<number, string> = {
+    0: 'none',
+    1: 'ascend',
+    2: 'descend',
+};
+
+/** Maps numeric SortTarget values to their REST API query parameter strings. */
+const SORT_TARGET_STRINGS: Record<number, string> = {
+    0: 'key',
+    1: 'version',
+    2: 'create_revision',
+    3: 'mod_revision',
+    4: 'value',
+};
+
+/** Maps numeric AggFunc values to their REST API query parameter strings. */
+const AGG_FUNC_STRINGS: Record<number, string> = {
+    0: 'none',
+    1: 'avg',
+    2: 'sum',
+    3: 'min',
+    4: 'max',
+    5: 'count',
+    6: 'percentile',
+    7: 'first',
+    8: 'last',
+};
+
+/** Converts a numeric SortOrder to its REST API string, or undefined. */
+function sortOrderToString(order: number | undefined): string | undefined {
+    if (order === undefined || order === 0) {
+        return undefined;
+    }
+    return SORT_ORDER_STRINGS[order];
+}
+
+/** Converts a numeric SortTarget to its REST API string, or undefined. */
+function sortTargetToString(target: number | undefined): string | undefined {
+    if (target === undefined || target === 0) {
+        return undefined;
+    }
+    return SORT_TARGET_STRINGS[target];
+}
+
+/** Converts a numeric AggFunc to its REST API string. */
+function aggFuncToString(fn: number): string {
+    return AGG_FUNC_STRINGS[fn] ?? 'avg';
+}
+
+/** Converts a TSTag array to a Record<string, string> map for the REST API. */
+function tagsArrayToMap(
+    tags: readonly { readonly key: string; readonly value: string }[] | undefined,
+): Record<string, string> | undefined {
+    if (!tags || tags.length === 0) {
+        return undefined;
+    }
+    const result: Record<string, string> = {};
+    for (const tag of tags) {
+        result[tag.key] = tag.value;
+    }
+    return result;
+}

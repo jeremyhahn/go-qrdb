@@ -21,7 +21,9 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"os"
+	"strconv"
 	"strings"
 	"sync/atomic"
 
@@ -30,6 +32,7 @@ import (
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 
@@ -42,7 +45,6 @@ var (
 	_ transport.Transport   = (*Transport)(nil)
 	_ transport.KVClient    = (*Transport)(nil)
 	_ transport.AdminClient = (*Transport)(nil)
-	_ transport.Client      = (*Transport)(nil)
 )
 
 // Transport implements the QRDB SDK transport interface using gRPC. It
@@ -148,10 +150,12 @@ func (t *Transport) Request(ctx context.Context, method string, req, resp any) e
 // ---------------------------------------------------------------------------
 
 // Put stores a key-value pair through Raft consensus.
-func (t *Transport) Put(ctx context.Context, key string, value []byte) error {
+func (t *Transport) Put(ctx context.Context, key string, value []byte, opts ...transport.WriteOption) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
+
+	ctx = applyWriteMetadata(ctx, opts...)
 
 	_, err := t.client.Put(ctx, &pb.PutRequest{Key: key, Value: value})
 	if err != nil {
@@ -162,10 +166,12 @@ func (t *Transport) Put(ctx context.Context, key string, value []byte) error {
 
 // Get retrieves a value by key with a linearizable read. Returns
 // KeyNotFoundError when the server responds with NotFound.
-func (t *Transport) Get(ctx context.Context, key string) ([]byte, error) {
+func (t *Transport) Get(ctx context.Context, key string, opts ...transport.ReadOption) ([]byte, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+
+	ctx = applyReadMetadata(ctx, opts...)
 
 	resp, err := t.client.Get(ctx, &pb.GetRequest{Key: key})
 	if err != nil {
@@ -175,10 +181,12 @@ func (t *Transport) Get(ctx context.Context, key string) ([]byte, error) {
 }
 
 // Delete removes a key through Raft consensus.
-func (t *Transport) Delete(ctx context.Context, key string) error {
+func (t *Transport) Delete(ctx context.Context, key string, opts ...transport.WriteOption) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
+
+	ctx = applyWriteMetadata(ctx, opts...)
 
 	_, err := t.client.Delete(ctx, &pb.DeleteRequest{Key: key})
 	if err != nil {
@@ -189,16 +197,51 @@ func (t *Transport) Delete(ctx context.Context, key string) error {
 
 // List returns sorted keys matching the given prefix. An empty prefix
 // returns all keys.
-func (t *Transport) List(ctx context.Context, prefix string) ([]string, error) {
+func (t *Transport) List(ctx context.Context, prefix string, opts ...transport.ReadOption) ([]string, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+
+	ctx = applyReadMetadata(ctx, opts...)
 
 	resp, err := t.client.List(ctx, &pb.ListRequest{Prefix: prefix})
 	if err != nil {
 		return nil, mapGRPCError("List", err)
 	}
 	return resp.GetKeys(), nil
+}
+
+// Scan returns all key-value pairs matching the given prefix.
+func (t *Transport) Scan(ctx context.Context, prefix string, opts ...transport.ReadOption) (map[string][]byte, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	ctx = applyReadMetadata(ctx, opts...)
+
+	resp, err := t.client.Scan(ctx, &pb.ScanRequest{Prefix: prefix})
+	if err != nil {
+		return nil, mapGRPCError("Scan", err)
+	}
+
+	result := make(map[string][]byte, len(resp.GetPairs()))
+	for k, v := range resp.GetPairs() {
+		result[k] = v
+	}
+	return result, nil
+}
+
+// Exists checks whether a key exists. Performs a check via Get.
+func (t *Transport) Exists(ctx context.Context, key string, opts ...transport.ReadOption) (bool, error) {
+	_, err := t.Get(ctx, key, opts...)
+	if err != nil {
+		var knf *transport.KeyNotFoundError
+		if errors.As(err, &knf) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -335,6 +378,115 @@ func (t *Transport) Drain(ctx context.Context) error {
 	return nil
 }
 
+// Capabilities returns the compile-time feature set of the QRDB node.
+func (t *Transport) Capabilities(ctx context.Context) (*transport.CapabilitiesResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	resp, err := t.client.Capabilities(ctx, &pb.CapabilitiesRequest{})
+	if err != nil {
+		return nil, mapGRPCError("Capabilities", err)
+	}
+
+	return &transport.CapabilitiesResponse{
+		KV:          resp.GetKv(),
+		MVCC:        resp.GetMvcc(),
+		Transaction: resp.GetTransaction(),
+		Batch:       resp.GetBatch(),
+		Watch:       resp.GetWatch(),
+		Lease:       resp.GetLease(),
+		Index:       resp.GetIndex(),
+		TimeSeries:  resp.GetTimeSeries(),
+		Vector:      resp.GetVector(),
+	}, nil
+}
+
+// StartShard initializes and starts a Raft group for the given shard.
+func (t *Transport) StartShard(ctx context.Context, req *transport.StartShardRequest) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	_, err := t.client.StartShard(ctx, &pb.StartShardRequest{
+		ShardId:   req.ShardID,
+		ReplicaId: req.ReplicaID,
+		Members:   req.Members,
+		Join:      req.Join,
+	})
+	if err != nil {
+		return mapGRPCError("StartShard", err)
+	}
+	return nil
+}
+
+// StopShard stops the Raft group for the given shard.
+func (t *Transport) StopShard(ctx context.Context, shardID uint64) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	_, err := t.client.StopShard(ctx, &pb.StopShardRequest{
+		ShardId: shardID,
+	})
+	if err != nil {
+		return mapGRPCError("StopShard", err)
+	}
+	return nil
+}
+
+// GetShardState returns the Raft state for a shard.
+func (t *Transport) GetShardState(ctx context.Context, shardID uint64) (*transport.ShardStateResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	resp, err := t.client.GetShardState(ctx, &pb.GetShardStateRequest{
+		ShardId: shardID,
+	})
+	if err != nil {
+		return nil, mapGRPCError("GetShardState", err)
+	}
+
+	return &transport.ShardStateResponse{
+		ShardID:           resp.GetShardId(),
+		ConfigChangeIndex: resp.GetConfigChangeIndex(),
+		Term:              resp.GetTerm(),
+		LeaderID:          resp.GetLeaderId(),
+		HasLeader:         resp.GetHasLeader(),
+	}, nil
+}
+
+// GetTopology returns the full cluster topology.
+func (t *Transport) GetTopology(ctx context.Context) (*transport.TopologyResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	resp, err := t.client.GetTopology(ctx, &emptypb.Empty{})
+	if err != nil {
+		return nil, mapGRPCError("GetTopology", err)
+	}
+
+	shards := make([]transport.ShardInfo, 0, len(resp.GetShards()))
+	for _, si := range resp.GetShards() {
+		shards = append(shards, transport.ShardInfo{
+			ShardID:   si.GetShardId(),
+			ReplicaID: si.GetReplicaId(),
+			IsLeader:  si.GetIsLeader(),
+			LeaderID:  si.GetLeaderId(),
+			Nodes:     si.GetNodes(),
+		})
+	}
+
+	return &transport.TopologyResponse{
+		NodeID:      resp.GetNodeId(),
+		RaftAddress: resp.GetRaftAddress(),
+		ShardCount:  int(resp.GetShardCount()),
+		Shards:      shards,
+	}, nil
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -425,4 +577,30 @@ func (t *Transport) ConnState() connectivity.State {
 		return connectivity.Shutdown
 	}
 	return t.conn.GetState()
+}
+
+// applyWriteMetadata resolves write options and appends gRPC metadata
+// to the outgoing context.
+func applyWriteMetadata(ctx context.Context, opts ...transport.WriteOption) context.Context {
+	wo := transport.ResolveWriteOptions(opts...)
+	if wo.ModeSet {
+		ctx = metadata.AppendToOutgoingContext(ctx, "x-qrdb-write-mode", wo.Mode.String())
+	}
+	return ctx
+}
+
+// applyReadMetadata resolves read options and appends gRPC metadata
+// to the outgoing context.
+func applyReadMetadata(ctx context.Context, opts ...transport.ReadOption) context.Context {
+	ro := transport.ResolveReadOptions(opts...)
+	if ro.ConsistencySet {
+		ctx = metadata.AppendToOutgoingContext(ctx, "x-qrdb-consistency", ro.Consistency.String())
+	}
+	if ro.TimeoutMs > 0 {
+		ctx = metadata.AppendToOutgoingContext(ctx, "x-qrdb-read-timeout", strconv.FormatInt(ro.TimeoutMs, 10))
+	}
+	if ro.AllowStale {
+		ctx = metadata.AppendToOutgoingContext(ctx, "x-qrdb-allow-stale", "true")
+	}
+	return ctx
 }

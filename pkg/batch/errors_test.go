@@ -60,10 +60,9 @@ func Test_ClosedError_errorsAs(t *testing.T) {
 
 func Test_ClosedError_implementsErrorInterface(t *testing.T) {
 	t.Parallel()
-	var err error = &ClosedError{}
-	if err == nil {
-		t.Fatal("expected non-nil error")
-	}
+	err := &ClosedError{}
+	// Verify the concrete type satisfies the error interface.
+	var _ error = err
 }
 
 // ---------------------------------------------------------------------------
@@ -166,10 +165,9 @@ func Test_NilProposerError_errorsAs(t *testing.T) {
 
 func Test_NilProposerError_implementsErrorInterface(t *testing.T) {
 	t.Parallel()
-	var err error = &NilProposerError{}
-	if err == nil {
-		t.Fatal("expected non-nil error")
-	}
+	err := &NilProposerError{}
+	// Verify the concrete type satisfies the error interface.
+	var _ error = err
 }
 
 // ---------------------------------------------------------------------------
@@ -316,10 +314,9 @@ func Test_DecodeError_errorsAs(t *testing.T) {
 
 func Test_DecodeError_implementsErrorInterface(t *testing.T) {
 	t.Parallel()
-	var err error = &DecodeError{Reason: "test"}
-	if err == nil {
-		t.Fatal("expected non-nil error")
-	}
+	err := &DecodeError{Reason: "test"}
+	// Verify the concrete type satisfies the error interface.
+	var _ error = err
 }
 
 func Test_DecodeError_containsReasonInMessage(t *testing.T) {

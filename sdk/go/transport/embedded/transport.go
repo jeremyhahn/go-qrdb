@@ -13,25 +13,58 @@
 // limitations under the License.
 
 // Package embedded implements the in-process transport for the QRDB SDK.
-// It wraps the service.KVServicer and service.AdminServicer interfaces
-// directly, bypassing network serialization for maximum performance when
-// the QRDB engine is embedded in the same process.
+// It wraps the service layer interfaces directly, bypassing network
+// serialization for maximum performance when the QRDB engine is embedded
+// in the same process.
 package embedded
 
 import (
 	"context"
+	"errors"
+	"io"
 	"sync/atomic"
+	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
+	"github.com/jeremyhahn/go-qrdb/pkg/lease"
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
+	"github.com/jeremyhahn/go-qrdb/pkg/watch"
+	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // Compile-time interface assertions.
 var (
-	_ transport.Transport   = (*Transport)(nil)
-	_ transport.KVClient    = (*Transport)(nil)
-	_ transport.AdminClient = (*Transport)(nil)
-	_ transport.Client      = (*Transport)(nil)
+	_ transport.Transport            = (*Transport)(nil)
+	_ transport.KVClient             = (*Transport)(nil)
+	_ transport.AdminClient          = (*Transport)(nil)
+	_ transport.MVCCClient           = (*Transport)(nil)
+	_ transport.TransactionClient    = (*Transport)(nil)
+	_ transport.BatchClient          = (*Transport)(nil)
+	_ transport.WatchClient          = (*Transport)(nil)
+	_ transport.LeaseClient          = (*Transport)(nil)
+	_ transport.IndexClient          = (*Transport)(nil)
+	_ transport.TimeSeriesClient     = (*Transport)(nil)
+	_ transport.VectorClient         = (*Transport)(nil)
+	_ transport.CeremonyClient       = (*Transport)(nil)
+	_ transport.CredentialClient     = (*Transport)(nil)
+	_ transport.BackupClient         = (*Transport)(nil)
+	_ transport.RebalanceClient      = (*Transport)(nil)
+	_ transport.DEKClient            = (*Transport)(nil)
+	_ transport.CollectionClient     = (*Transport)(nil)
+	_ transport.SealStoreClient      = (*Transport)(nil)
+	_ transport.CustodianGroupClient = (*Transport)(nil)
+	_ transport.ShareClient          = (*Transport)(nil)
+	_ transport.TenantClient         = (*Transport)(nil)
+	_ transport.LockClient           = (*Transport)(nil)
+	_ transport.Client               = (*Transport)(nil)
 )
 
 // Transport implements the QRDB SDK transport interface by delegating
@@ -39,24 +72,148 @@ var (
 // performed, making this the fastest possible transport for embedded
 // usage.
 type Transport struct {
-	kvSvc    service.KVServicer
-	adminSvc service.AdminServicer
-	closed   atomic.Bool
+	kvSvc             service.KVServicer
+	adminSvc          service.AdminServicer
+	mvccSvc           service.MVCCKVServicer
+	txSvc             service.TransactionServicer
+	batchSvc          service.BatchServicer
+	watchSvc          service.WatchServicer
+	leaseSvc          service.LeaseServicer
+	indexSvc          service.IndexServicer
+	tsSvc             service.TimeSeriesServicer
+	vectorSvc         service.VectorServicer
+	userSvc           user.UserServicer
+	roleSvc           role.RoleServicer
+	certProv          cert.CertProvider
+	dbSvc             service.DatabaseServicer
+	barrierSvc        service.BarrierServicer
+	dekSvc            service.DEKServicer
+	ceremonySvc       service.CeremonyServicer
+	ceremonyCA        ceremony.CeremonyCA
+	credentialSvc     service.CredentialServicer
+	backupSvc         service.BackupServicer
+	rebalanceSvc      service.RebalanceServicer
+	collectionSvc     service.CollectionServicer
+	sealStoreSvc      *seal.SealStore
+	tenantSvc         tenant.TenantServicer
+	lockSvc           service.LockServicer
+	custodianGroupSvc ceremony.CustodianGroupServicer
+	shareSvc          ceremony.ShareServicer
+	closed            atomic.Bool
+}
+
+// Option configures an embedded transport.
+type Option func(*Transport)
+
+// WithMVCCService injects an MVCCKVServicer into the transport.
+func WithMVCCService(svc service.MVCCKVServicer) Option {
+	return func(t *Transport) {
+		t.mvccSvc = svc
+	}
+}
+
+// WithTransactionService injects a TransactionServicer into the transport.
+func WithTransactionService(svc service.TransactionServicer) Option {
+	return func(t *Transport) {
+		t.txSvc = svc
+	}
+}
+
+// WithBatchService injects a BatchServicer into the transport.
+func WithBatchService(svc service.BatchServicer) Option {
+	return func(t *Transport) {
+		t.batchSvc = svc
+	}
+}
+
+// WithWatchService injects a WatchServicer into the transport.
+func WithWatchService(svc service.WatchServicer) Option {
+	return func(t *Transport) {
+		t.watchSvc = svc
+	}
+}
+
+// WithLeaseService injects a LeaseServicer into the transport.
+func WithLeaseService(svc service.LeaseServicer) Option {
+	return func(t *Transport) {
+		t.leaseSvc = svc
+	}
+}
+
+// WithIndexService injects an IndexServicer into the transport.
+func WithIndexService(svc service.IndexServicer) Option {
+	return func(t *Transport) {
+		t.indexSvc = svc
+	}
+}
+
+// WithTimeSeriesService injects a TimeSeriesServicer into the transport.
+func WithTimeSeriesService(svc service.TimeSeriesServicer) Option {
+	return func(t *Transport) {
+		t.tsSvc = svc
+	}
+}
+
+// WithVectorService injects a VectorServicer into the transport.
+func WithVectorService(svc service.VectorServicer) Option {
+	return func(t *Transport) {
+		t.vectorSvc = svc
+	}
+}
+
+// WithUserService injects a UserServicer into the transport.
+func WithUserService(svc user.UserServicer) Option {
+	return func(t *Transport) {
+		t.userSvc = svc
+	}
+}
+
+// WithRoleService injects a RoleServicer into the transport.
+func WithRoleService(svc role.RoleServicer) Option {
+	return func(t *Transport) {
+		t.roleSvc = svc
+	}
+}
+
+// WithCertProvider injects a CertProvider into the transport.
+func WithCertProvider(prov cert.CertProvider) Option {
+	return func(t *Transport) {
+		t.certProv = prov
+	}
+}
+
+// WithDatabaseService injects a DatabaseServicer into the transport.
+func WithDatabaseService(svc service.DatabaseServicer) Option {
+	return func(t *Transport) {
+		t.dbSvc = svc
+	}
+}
+
+// WithCollectionService injects a CollectionServicer into the transport.
+func WithCollectionService(svc service.CollectionServicer) Option {
+	return func(t *Transport) {
+		t.collectionSvc = svc
+	}
 }
 
 // New creates a new embedded transport that delegates to the given
-// service implementations. Both services must be non-nil.
-func New(kvSvc service.KVServicer, adminSvc service.AdminServicer) (*Transport, error) {
+// service implementations. The kvSvc and adminSvc parameters must be
+// non-nil. Optional services are injected via functional options.
+func New(kvSvc service.KVServicer, adminSvc service.AdminServicer, opts ...Option) (*Transport, error) {
 	if kvSvc == nil {
 		return nil, &NilServiceError{Service: "KVServicer"}
 	}
 	if adminSvc == nil {
 		return nil, &NilServiceError{Service: "AdminServicer"}
 	}
-	return &Transport{
+	t := &Transport{
 		kvSvc:    kvSvc,
 		adminSvc: adminSvc,
-	}, nil
+	}
+	for _, opt := range opts {
+		opt(t)
+	}
+	return t, nil
 }
 
 // Connect is a no-op for embedded transports since the service layer
@@ -103,35 +260,200 @@ type requestHandler func(ctx context.Context, t *Transport, req, resp any) error
 // requestHandlers maps method names to their handler functions for O(1)
 // dispatch in the generic Request method.
 var requestHandlers = map[string]requestHandler{
-	"Put":             handlePut,
-	"Get":             handleGet,
-	"Delete":          handleDelete,
-	"List":            handleList,
-	"Health":          handleHealth,
-	"Status":          handleStatus,
-	"Peers":           handlePeers,
-	"AddMember":       handleAddMember,
-	"RemoveMember":    handleRemoveMember,
-	"RequestSnapshot": handleRequestSnapshot,
-	"Drain":           handleDrain,
+	"Put":                          handlePut,
+	"Get":                          handleGet,
+	"Delete":                       handleDelete,
+	"List":                         handleList,
+	"Health":                       handleHealth,
+	"Status":                       handleStatus,
+	"Peers":                        handlePeers,
+	"AddMember":                    handleAddMember,
+	"RemoveMember":                 handleRemoveMember,
+	"RequestSnapshot":              handleRequestSnapshot,
+	"Drain":                        handleDrain,
+	"PutWithLease":                 handlePutWithLease,
+	"GetRevision":                  handleGetRevision,
+	"GetAtRevision":                handleGetAtRevision,
+	"Range":                        handleRange,
+	"Compact":                      handleCompact,
+	"CurrentRevision":              handleCurrentRevision,
+	"ExecuteTransaction":           handleExecuteTransaction,
+	"ExecuteBatch":                 handleExecuteBatch,
+	"Watch":                        handleWatch,
+	"WatchPrefix":                  handleWatchPrefix,
+	"LeaseGrant":                   handleLeaseGrant,
+	"LeaseRevoke":                  handleLeaseRevoke,
+	"LeaseKeepAlive":               handleLeaseKeepAlive,
+	"LeaseTimeToLive":              handleLeaseTimeToLive,
+	"LeaseList":                    handleLeaseList,
+	"TSWrite":                      handleTSWrite,
+	"TSWriteBatch":                 handleTSWriteBatch,
+	"TSQuery":                      handleTSQuery,
+	"TSAggregate":                  handleTSAggregate,
+	"TSWritePoint":                 handleTSWritePoint,
+	"TSRichQuery":                  handleTSRichQuery,
+	"TSDeleteSeries":               handleTSDeleteSeries,
+	"TSGetRetention":               handleTSGetRetention,
+	"TSSetRetention":               handleTSSetRetention,
+	"TSListMetrics":                handleTSListMetrics,
+	"Capabilities":                 handleCapabilities,
+	"StartShard":                   handleStartShard,
+	"StopShard":                    handleStopShard,
+	"GetShardState":                handleGetShardState,
+	"GetTopology":                  handleGetTopology,
+	"CreateNamespace":              handleCreateNamespace,
+	"DeleteNamespace":              handleDeleteNamespace,
+	"ListNamespaces":               handleListNamespaces,
+	"GetNamespaceInfo":             handleGetNamespaceInfo,
+	"UpsertVector":                 handleUpsertVector,
+	"GetVector":                    handleGetVector,
+	"DeleteVector":                 handleDeleteVector,
+	"BatchUpsert":                  handleBatchUpsert,
+	"BatchDeleteVectors":           handleBatchDeleteVectors,
+	"ListVectors":                  handleListVectors,
+	"UpdateMetadata":               handleUpdateMetadata,
+	"SearchSimilar":                handleSearchSimilar,
+	"SearchByMetadata":             handleSearchByMetadata,
+	"HybridSearch":                 handleHybridSearch,
+	"SearchByID":                   handleSearchByID,
+	"RebuildIndex":                 handleRebuildIndex,
+	"GetRebuildProgress":           handleGetRebuildProgress,
+	"GetIndexStats":                handleGetIndexStats,
+	"CompactNamespace":             handleCompactNamespace,
+	"GetCompactionProgress":        handleGetCompactionProgress,
+	"DEKInitialize":                handleDEKInitialize,
+	"DEKGetStatus":                 handleDEKGetStatus,
+	"DEKRotate":                    handleDEKRotate,
+	"DEKGetCurrent":                handleDEKGetCurrent,
+	"DEKSyncToNode":                handleDEKSyncToNode,
+	"TenantDEKGetOrCreate":         handleTenantDEKGetOrCreate,
+	"TenantDEKRotate":              handleTenantDEKRotate,
+	"TenantDEKDelete":              handleTenantDEKDelete,
+	"TenantDEKList":                handleTenantDEKList,
+	"TenantDEKGetStatus":           handleTenantDEKGetStatus,
+	"BarrierInitialize":            handleBarrierInitialize,
+	"BarrierUnseal":                handleBarrierUnseal,
+	"BarrierSeal":                  handleBarrierSeal,
+	"BarrierStatus":                handleBarrierStatus,
+	"BarrierInitializeShamir":      handleBarrierInitializeShamir,
+	"BarrierUnsealWithShare":       handleBarrierUnsealWithShare,
+	"BarrierUnsealWithShares":      handleBarrierUnsealWithShares,
+	"BarrierShamirListShares":      handleBarrierShamirListShares,
+	"BarrierShamirDeleteShare":     handleBarrierShamirDeleteShare,
+	"BarrierShamirDeleteAllShares": handleBarrierShamirDeleteAllShares,
+	"BarrierShamirVerify":          handleBarrierShamirVerify,
+	"BarrierRekey":                 handleBarrierRekey,
+	"BarrierGenerateRecoveryKeys":  handleBarrierGenerateRecoveryKeys,
+	"BarrierRecoverWithKeys":       handleBarrierRecoverWithKeys,
+	"BarrierDeleteRecoveryKeys":    handleBarrierDeleteRecoveryKeys,
+	"BarrierHasRecoveryKeys":       handleBarrierHasRecoveryKeys,
+	"BarrierGenerateRootToken":     handleBarrierGenerateRootToken,
+	"CeremonyInitialize":           handleCeremonyInitialize,
+	"CeremonyStatus":               handleCeremonyStatus,
+	"CeremonyClaimCertBegin":       handleCeremonyClaimCertBegin,
+	"CeremonyClaimCertComplete":    handleCeremonyClaimCertComplete,
+	"CeremonyClaimShare":           handleCeremonyClaimShare,
+	"CeremonySignCSR":              handleCeremonySignCSR,
+	"CredentialSubmit":             handleCredentialSubmit,
+	"CredentialStrategy":           handleCredentialStrategy,
+	"CredentialDelete":             handleCredentialDelete,
+	"IndexCreate":                  handleIndexCreate,
+	"IndexDrop":                    handleIndexDrop,
+	"IndexQuery":                   handleIndexQuery,
+	"IndexScan":                    handleIndexScan,
+	"IndexList":                    handleIndexList,
 }
 
 // ---------------------------------------------------------------------------
+// SDK option to service-layer mapping helpers
+// ---------------------------------------------------------------------------
+
+// writeModeMap provides O(1) mapping from transport-layer WriteMode to
+// the service-layer writemode.Mode.
+var writeModeMap = map[transport.WriteMode]writemode.Mode{
+	transport.WriteModeSync:       writemode.Sync,
+	transport.WriteModeWALDurable: writemode.WALDurable,
+	transport.WriteModeBatched:    writemode.Batched,
+}
+
+// mapWriteMode converts a transport-layer WriteMode to the corresponding
+// service-layer writemode.Mode. Unrecognized modes default to Sync.
+func mapWriteMode(m transport.WriteMode) writemode.Mode {
+	if mode, ok := writeModeMap[m]; ok {
+		return mode
+	}
+	return writemode.Sync
+}
+
+// consistencyMap provides O(1) mapping from transport-layer ConsistencyLevel
+// to the service-layer consistency.Level.
+var consistencyMap = map[transport.ConsistencyLevel]consistency.Level{
+	transport.ConsistencyStrong:       consistency.Strong,
+	transport.ConsistencyLinearizable: consistency.Linearizable,
+	transport.ConsistencyEventual:     consistency.Eventual,
+}
+
+// mapConsistencyLevel converts a transport-layer ConsistencyLevel to the
+// corresponding service-layer consistency.Level. Unrecognized levels
+// default to Linearizable.
+func mapConsistencyLevel(l transport.ConsistencyLevel) consistency.Level {
+	if level, ok := consistencyMap[l]; ok {
+		return level
+	}
+	return consistency.Linearizable
+}
+
+// resolveWriteMode resolves the variadic WriteOption slice and returns the
+// mapped writemode.Mode and whether a mode was explicitly set.
+func resolveWriteMode(opts []transport.WriteOption) (writemode.Mode, bool) {
+	wo := transport.ResolveWriteOptions(opts...)
+	if !wo.ModeSet {
+		return writemode.Sync, false
+	}
+	return mapWriteMode(wo.Mode), true
+}
+
+// resolveReadConsistency resolves the variadic ReadOption slice and returns
+// the mapped consistency.ReadOptions and whether consistency was explicitly set.
+func resolveReadConsistency(opts []transport.ReadOption) (consistency.ReadOptions, bool) {
+	ro := transport.ResolveReadOptions(opts...)
+	if !ro.ConsistencySet {
+		return consistency.ReadOptions{}, false
+	}
+	return consistency.ReadOptions{
+		Consistency: mapConsistencyLevel(ro.Consistency),
+		Timeout:     ro.TimeoutMs,
+		AllowStale:  ro.AllowStale,
+	}, true
+}
+
 // KVClient implementation
 // ---------------------------------------------------------------------------
 
 // Put stores a key-value pair through the embedded KV service.
-func (t *Transport) Put(ctx context.Context, key string, value []byte) error {
+// Optional WriteOption controls the durability guarantee.
+func (t *Transport) Put(ctx context.Context, key string, value []byte, opts ...transport.WriteOption) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
+	}
+	if mode, ok := resolveWriteMode(opts); ok {
+		return translateError(t.kvSvc.PutWithMode(ctx, key, value, mode))
 	}
 	return translateError(t.kvSvc.Put(ctx, key, value))
 }
 
 // Get retrieves a value by key through the embedded KV service.
-func (t *Transport) Get(ctx context.Context, key string) ([]byte, error) {
+// Optional ReadOption controls the consistency level.
+func (t *Transport) Get(ctx context.Context, key string, opts ...transport.ReadOption) ([]byte, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
+	}
+	if ro, ok := resolveReadConsistency(opts); ok {
+		data, err := t.kvSvc.GetWithConsistency(ctx, key, ro)
+		if err != nil {
+			return nil, translateError(err)
+		}
+		return data, nil
 	}
 	data, err := t.kvSvc.Get(ctx, key)
 	if err != nil {
@@ -141,24 +463,79 @@ func (t *Transport) Get(ctx context.Context, key string) ([]byte, error) {
 }
 
 // Delete removes a key through the embedded KV service.
-func (t *Transport) Delete(ctx context.Context, key string) error {
+// Optional WriteOption controls the durability guarantee.
+func (t *Transport) Delete(ctx context.Context, key string, opts ...transport.WriteOption) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
+	}
+	if mode, ok := resolveWriteMode(opts); ok {
+		return translateError(t.kvSvc.DeleteWithMode(ctx, key, mode))
 	}
 	return translateError(t.kvSvc.Delete(ctx, key))
 }
 
 // List returns sorted keys matching the given prefix through the
-// embedded KV service.
-func (t *Transport) List(ctx context.Context, prefix string) ([]string, error) {
+// embedded KV service. Optional ReadOption controls the consistency level.
+func (t *Transport) List(ctx context.Context, prefix string, opts ...transport.ReadOption) ([]string, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
+	}
+	if ro, ok := resolveReadConsistency(opts); ok {
+		keys, err := t.kvSvc.ListWithConsistency(ctx, prefix, ro)
+		if err != nil {
+			return nil, translateError(err)
+		}
+		return keys, nil
 	}
 	keys, err := t.kvSvc.List(ctx, prefix)
 	if err != nil {
 		return nil, translateError(err)
 	}
 	return keys, nil
+}
+
+// Scan returns all key-value pairs matching the given prefix through
+// the embedded KV service. Optional ReadOption controls the consistency level.
+func (t *Transport) Scan(ctx context.Context, prefix string, opts ...transport.ReadOption) (map[string][]byte, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if ro, ok := resolveReadConsistency(opts); ok {
+		data, err := t.kvSvc.ScanWithConsistency(ctx, prefix, ro)
+		if err != nil {
+			return nil, translateError(err)
+		}
+		return data, nil
+	}
+	data, err := t.kvSvc.Scan(ctx, prefix)
+	if err != nil {
+		return nil, translateError(err)
+	}
+	return data, nil
+}
+
+// Exists checks whether a key exists. Performs a check via Get.
+// Optional ReadOption controls the consistency level.
+func (t *Transport) Exists(ctx context.Context, key string, opts ...transport.ReadOption) (bool, error) {
+	if t.closed.Load() {
+		return false, &transport.ClosedError{}
+	}
+	if ro, ok := resolveReadConsistency(opts); ok {
+		exists, err := t.kvSvc.ExistsWithConsistency(ctx, key, ro)
+		if err != nil {
+			return false, translateError(err)
+		}
+		return exists, nil
+	}
+	_, err := t.Get(ctx, key)
+	if err != nil {
+		var knf *transport.KeyNotFoundError
+		if errors.As(err, &knf) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -261,6 +638,1716 @@ func (t *Transport) Drain(ctx context.Context) error {
 		return &transport.ClosedError{}
 	}
 	return translateError(t.adminSvc.Drain(ctx))
+}
+
+// Capabilities returns the compile-time feature set through the embedded
+// admin service.
+func (t *Transport) Capabilities(ctx context.Context) (*transport.CapabilitiesResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	caps, err := t.adminSvc.Capabilities(ctx)
+	if err != nil {
+		return nil, translateError(err)
+	}
+	return &transport.CapabilitiesResponse{
+		KV:          caps.KV,
+		MVCC:        caps.MVCC,
+		Transaction: caps.Transaction,
+		Batch:       caps.Batch,
+		Watch:       caps.Watch,
+		Lease:       caps.Lease,
+		Index:       caps.Index,
+		TimeSeries:  caps.TimeSeries,
+		Vector:      caps.Vector,
+	}, nil
+}
+
+// StartShard initializes and starts a Raft group for the given shard
+// through the embedded admin service.
+func (t *Transport) StartShard(ctx context.Context, req *transport.StartShardRequest) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	svcReq := &service.StartShardRequest{
+		ShardID:   req.ShardID,
+		ReplicaID: req.ReplicaID,
+		Members:   req.Members,
+		Join:      req.Join,
+	}
+	if err := t.adminSvc.StartShard(ctx, svcReq); err != nil {
+		return &transport.ShardStartError{ShardID: req.ShardID, Err: err}
+	}
+	return nil
+}
+
+// StopShard stops the Raft group for the given shard through the
+// embedded admin service.
+func (t *Transport) StopShard(ctx context.Context, shardID uint64) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	if err := t.adminSvc.StopShard(ctx, shardID); err != nil {
+		return &transport.ShardStopError{ShardID: shardID, Err: err}
+	}
+	return nil
+}
+
+// GetShardState returns the Raft state for a shard through the
+// embedded admin service.
+func (t *Transport) GetShardState(ctx context.Context, shardID uint64) (*transport.ShardStateResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	resp, err := t.adminSvc.GetShardState(ctx, shardID)
+	if err != nil {
+		return nil, &transport.ShardStateError{ShardID: shardID, Err: err}
+	}
+	return &transport.ShardStateResponse{
+		ShardID:           resp.ShardID,
+		ConfigChangeIndex: resp.ConfigChangeIndex,
+		Term:              resp.Term,
+		LeaderID:          resp.LeaderID,
+		HasLeader:         resp.HasLeader,
+	}, nil
+}
+
+// GetTopology returns the full cluster topology through the embedded
+// admin service.
+func (t *Transport) GetTopology(ctx context.Context) (*transport.TopologyResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	resp, err := t.adminSvc.GetTopology(ctx)
+	if err != nil {
+		return nil, &transport.TopologyError{Err: err}
+	}
+	shards := make([]transport.ShardInfo, len(resp.Shards))
+	for i, s := range resp.Shards {
+		shards[i] = transport.ShardInfo{
+			ShardID:   s.ShardID,
+			ReplicaID: s.ReplicaID,
+			IsLeader:  s.IsLeader,
+			LeaderID:  s.LeaderID,
+			Nodes:     s.Nodes,
+		}
+	}
+	return &transport.TopologyResponse{
+		NodeID:      resp.NodeID,
+		RaftAddress: resp.RaftAddress,
+		ShardCount:  resp.ShardCount,
+		Shards:      shards,
+	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// MVCCClient implementation
+// ---------------------------------------------------------------------------
+
+// PutWithLease stores a key-value pair with an attached lease through
+// the embedded MVCC service. Optional WriteOption controls the durability
+// guarantee.
+func (t *Transport) PutWithLease(ctx context.Context, key string, value []byte, leaseID int64, opts ...transport.WriteOption) (*transport.MVCCKeyValue, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.mvccSvc == nil {
+		return nil, &NilServiceError{Service: "MVCCKVServicer"}
+	}
+	if mode, ok := resolveWriteMode(opts); ok {
+		kv, err := t.mvccSvc.PutWithLeaseAndMode(ctx, key, value, leaseID, mode)
+		if err != nil {
+			return nil, translateError(err)
+		}
+		return toTransportKV(kv), nil
+	}
+	kv, err := t.mvccSvc.PutWithLease(ctx, key, value, leaseID)
+	if err != nil {
+		return nil, translateError(err)
+	}
+	return toTransportKV(kv), nil
+}
+
+// GetRevision retrieves a key-value pair with full MVCC revision metadata
+// through the embedded MVCC service. Optional ReadOption controls the
+// consistency level.
+func (t *Transport) GetRevision(ctx context.Context, key string, opts ...transport.ReadOption) (*transport.MVCCKeyValue, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.mvccSvc == nil {
+		return nil, &NilServiceError{Service: "MVCCKVServicer"}
+	}
+	if ro, ok := resolveReadConsistency(opts); ok {
+		kv, err := t.mvccSvc.GetRevisionWithConsistency(ctx, key, ro)
+		if err != nil {
+			return nil, translateError(err)
+		}
+		return toTransportKV(kv), nil
+	}
+	kv, err := t.mvccSvc.GetRevision(ctx, key)
+	if err != nil {
+		return nil, translateError(err)
+	}
+	return toTransportKV(kv), nil
+}
+
+// GetAtRevision retrieves a key-value pair at a historical MVCC revision
+// through the embedded MVCC service. Optional ReadOption controls the
+// consistency level.
+func (t *Transport) GetAtRevision(ctx context.Context, key string, revision int64, opts ...transport.ReadOption) (*transport.MVCCKeyValue, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.mvccSvc == nil {
+		return nil, &NilServiceError{Service: "MVCCKVServicer"}
+	}
+	if ro, ok := resolveReadConsistency(opts); ok {
+		kv, err := t.mvccSvc.GetAtRevisionWithConsistency(ctx, key, revision, ro)
+		if err != nil {
+			return nil, translateError(err)
+		}
+		return toTransportKV(kv), nil
+	}
+	kv, err := t.mvccSvc.GetAtRevision(ctx, key, revision)
+	if err != nil {
+		return nil, translateError(err)
+	}
+	return toTransportKV(kv), nil
+}
+
+// Range returns key-value pairs in the half-open interval [start, end)
+// through the embedded MVCC service. Optional ReadOption controls the
+// consistency level.
+func (t *Transport) Range(ctx context.Context, start, end []byte, rangeOpts transport.RangeOptions, opts ...transport.ReadOption) (*transport.RangeResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.mvccSvc == nil {
+		return nil, &NilServiceError{Service: "MVCCKVServicer"}
+	}
+	if ro, ok := resolveReadConsistency(opts); ok {
+		kvs, count, err := t.mvccSvc.RangeWithConsistency(ctx, start, end, ro, toServiceRangeOpts(rangeOpts)...)
+		if err != nil {
+			return nil, translateError(err)
+		}
+		return &transport.RangeResponse{
+			Kvs:   toTransportKVSlice(kvs),
+			Count: count,
+		}, nil
+	}
+	kvs, count, err := t.mvccSvc.Range(ctx, start, end, toServiceRangeOpts(rangeOpts)...)
+	if err != nil {
+		return nil, translateError(err)
+	}
+	return &transport.RangeResponse{
+		Kvs:   toTransportKVSlice(kvs),
+		Count: count,
+	}, nil
+}
+
+// Compact discards all MVCC revisions older than the specified revision
+// through the embedded MVCC service.
+func (t *Transport) Compact(ctx context.Context, revision int64) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	if t.mvccSvc == nil {
+		return &NilServiceError{Service: "MVCCKVServicer"}
+	}
+	return translateError(t.mvccSvc.Compact(ctx, revision))
+}
+
+// CurrentRevision returns the latest committed MVCC revision through
+// the embedded MVCC service.
+func (t *Transport) CurrentRevision(ctx context.Context) (int64, error) {
+	if t.closed.Load() {
+		return 0, &transport.ClosedError{}
+	}
+	if t.mvccSvc == nil {
+		return 0, &NilServiceError{Service: "MVCCKVServicer"}
+	}
+	rev, err := t.mvccSvc.CurrentRevision(ctx)
+	if err != nil {
+		return 0, translateError(err)
+	}
+	return rev, nil
+}
+
+// ---------------------------------------------------------------------------
+// TransactionClient implementation
+// ---------------------------------------------------------------------------
+
+// ExecuteTransaction atomically evaluates compares and executes the
+// corresponding operation set through the embedded transaction service.
+// Optional WriteOption controls the durability guarantee.
+func (t *Transport) ExecuteTransaction(ctx context.Context, req *transport.TransactionRequest, opts ...transport.WriteOption) (*transport.TransactionResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.txSvc == nil {
+		return nil, &NilServiceError{Service: "TransactionServicer"}
+	}
+
+	if mode, ok := resolveWriteMode(opts); ok {
+		resp, err := t.txSvc.ExecuteWithMode(ctx,
+			toServiceCompares(req.Compares),
+			toServiceOps(req.SuccessOps),
+			toServiceOps(req.FailureOps),
+			mode,
+		)
+		if err != nil {
+			return nil, translateError(err)
+		}
+		return &transport.TransactionResponse{
+			Succeeded: resp.Succeeded,
+			Responses: toTransportOpResponses(resp.Responses),
+		}, nil
+	}
+
+	resp, err := t.txSvc.Execute(ctx,
+		toServiceCompares(req.Compares),
+		toServiceOps(req.SuccessOps),
+		toServiceOps(req.FailureOps),
+	)
+	if err != nil {
+		return nil, translateError(err)
+	}
+
+	return &transport.TransactionResponse{
+		Succeeded: resp.Succeeded,
+		Responses: toTransportOpResponses(resp.Responses),
+	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// BatchClient implementation
+// ---------------------------------------------------------------------------
+
+// ExecuteBatch applies the given operations atomically through the
+// embedded batch service. Optional WriteOption controls the durability
+// guarantee.
+func (t *Transport) ExecuteBatch(ctx context.Context, ops []transport.Op, opts ...transport.WriteOption) (*transport.BatchResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.batchSvc == nil {
+		return nil, &NilServiceError{Service: "BatchServicer"}
+	}
+
+	if mode, ok := resolveWriteMode(opts); ok {
+		resps, err := t.batchSvc.ExecuteWithMode(ctx, toServiceOps(ops), mode)
+		if err != nil {
+			return nil, translateError(err)
+		}
+		return &transport.BatchResponse{
+			Responses: toTransportOpResponses(resps),
+		}, nil
+	}
+
+	resps, err := t.batchSvc.Execute(ctx, toServiceOps(ops))
+	if err != nil {
+		return nil, translateError(err)
+	}
+
+	return &transport.BatchResponse{
+		Responses: toTransportOpResponses(resps),
+	}, nil
+}
+
+// ImportFile parses and imports key-value pairs from the given reader
+// through the embedded batch service. The filename parameter is used
+// for format auto-detection when opts.Format is "auto" or empty.
+func (t *Transport) ImportFile(ctx context.Context, filename string, data io.Reader, opts transport.ImportOptions) (*transport.ImportResult, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.batchSvc == nil {
+		return nil, &NilServiceError{Service: "BatchServicer"}
+	}
+
+	svcOpts := service.ImportOptions{
+		Format:        opts.Format,
+		Filename:      filename,
+		KeyField:      opts.KeyField,
+		ValueMode:     opts.ValueMode,
+		ValueField:    opts.ValueField,
+		SkipHeader:    opts.SkipHeader,
+		Transactional: opts.Transactional,
+	}
+
+	result, err := t.batchSvc.Import(ctx, data, svcOpts)
+	if err != nil {
+		return nil, translateError(err)
+	}
+	if result == nil {
+		return &transport.ImportResult{}, nil
+	}
+
+	errs := make([]transport.ImportError, len(result.Errors))
+	for i, e := range result.Errors {
+		errs[i] = transport.ImportError{
+			Row:     e.Row,
+			Key:     e.Key,
+			Message: e.Message,
+		}
+	}
+
+	return &transport.ImportResult{
+		Total:     result.Total,
+		Succeeded: result.Succeeded,
+		Failed:    result.Failed,
+		Errors:    errs,
+	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// WatchClient implementation
+// ---------------------------------------------------------------------------
+
+// Watch creates a watcher that delivers events for the specified key
+// through the embedded watch service.
+func (t *Transport) Watch(ctx context.Context, key string, opts transport.WatchOptions) (<-chan transport.WatchResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.watchSvc == nil {
+		return nil, &NilServiceError{Service: "WatchServicer"}
+	}
+
+	watcher, err := t.watchSvc.Watch(ctx, key, toServiceWatchOpts(opts)...)
+	if err != nil {
+		return nil, translateError(err)
+	}
+
+	ch := make(chan transport.WatchResponse)
+	go func() {
+		defer close(ch)
+		for resp := range watcher.Events() {
+			ch <- toTransportWatchResponse(resp)
+		}
+	}()
+
+	return ch, nil
+}
+
+// WatchPrefix creates a watcher that delivers events for all keys
+// matching the given prefix through the embedded watch service.
+func (t *Transport) WatchPrefix(ctx context.Context, prefix string, opts transport.WatchOptions) (<-chan transport.WatchResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.watchSvc == nil {
+		return nil, &NilServiceError{Service: "WatchServicer"}
+	}
+
+	watcher, err := t.watchSvc.WatchPrefix(ctx, prefix, toServiceWatchOpts(opts)...)
+	if err != nil {
+		return nil, translateError(err)
+	}
+
+	ch := make(chan transport.WatchResponse)
+	go func() {
+		defer close(ch)
+		for resp := range watcher.Events() {
+			ch <- toTransportWatchResponse(resp)
+		}
+	}()
+
+	return ch, nil
+}
+
+// ---------------------------------------------------------------------------
+// LeaseClient implementation
+// ---------------------------------------------------------------------------
+
+// LeaseGrant creates a new lease with the specified TTL through the
+// embedded lease service.
+func (t *Transport) LeaseGrant(ctx context.Context, ttl int64) (*transport.LeaseInfo, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.leaseSvc == nil {
+		return nil, &NilServiceError{Service: "LeaseServicer"}
+	}
+	l, err := t.leaseSvc.Grant(ctx, ttl)
+	if err != nil {
+		return nil, translateError(err)
+	}
+	return toTransportLease(l), nil
+}
+
+// LeaseRevoke immediately expires a lease and deletes attached keys
+// through the embedded lease service.
+func (t *Transport) LeaseRevoke(ctx context.Context, leaseID int64) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	if t.leaseSvc == nil {
+		return &NilServiceError{Service: "LeaseServicer"}
+	}
+	return translateError(t.leaseSvc.Revoke(ctx, leaseID))
+}
+
+// LeaseKeepAlive resets the TTL on an existing lease through the
+// embedded lease service.
+func (t *Transport) LeaseKeepAlive(ctx context.Context, leaseID int64) (*transport.LeaseInfo, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.leaseSvc == nil {
+		return nil, &NilServiceError{Service: "LeaseServicer"}
+	}
+	l, err := t.leaseSvc.KeepAlive(ctx, leaseID)
+	if err != nil {
+		return nil, translateError(err)
+	}
+	return toTransportLease(l), nil
+}
+
+// LeaseTimeToLive returns the current state of a lease through the
+// embedded lease service.
+func (t *Transport) LeaseTimeToLive(ctx context.Context, leaseID int64) (*transport.LeaseInfo, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.leaseSvc == nil {
+		return nil, &NilServiceError{Service: "LeaseServicer"}
+	}
+	l, err := t.leaseSvc.TimeToLive(ctx, leaseID)
+	if err != nil {
+		return nil, translateError(err)
+	}
+	return toTransportLease(l), nil
+}
+
+// LeaseList returns all active leases through the embedded lease
+// service.
+func (t *Transport) LeaseList(ctx context.Context) ([]*transport.LeaseInfo, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.leaseSvc == nil {
+		return nil, &NilServiceError{Service: "LeaseServicer"}
+	}
+	leases, err := t.leaseSvc.Leases(ctx)
+	if err != nil {
+		return nil, translateError(err)
+	}
+	return toTransportLeaseSlice(leases), nil
+}
+
+// ---------------------------------------------------------------------------
+// TimeSeriesClient implementation
+// ---------------------------------------------------------------------------
+
+// TSWrite stores a single time-series data point through the embedded
+// time-series service.
+func (t *Transport) TSWrite(ctx context.Context, point *transport.TSDataPoint) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	if t.tsSvc == nil {
+		return &NilServiceError{Service: "TimeSeriesServicer"}
+	}
+	tags := tagsToMap(point.Tags)
+	ts := time.Unix(0, point.TimestampNs)
+	return translateError(t.tsSvc.Write(ctx, point.Metric, point.Value, ts, tags))
+}
+
+// TSWriteBatch stores multiple time-series data points atomically
+// through the embedded time-series service.
+func (t *Transport) TSWriteBatch(ctx context.Context, points []transport.TSDataPoint) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	if t.tsSvc == nil {
+		return &NilServiceError{Service: "TimeSeriesServicer"}
+	}
+	servicePoints := make([]service.DataPoint, len(points))
+	for i, p := range points {
+		servicePoints[i] = service.DataPoint{
+			Metric:    p.Metric,
+			Value:     p.Value,
+			Timestamp: time.Unix(0, p.TimestampNs),
+			Tags:      tagsToMap(p.Tags),
+		}
+	}
+	return translateError(t.tsSvc.WriteBatch(ctx, servicePoints))
+}
+
+// TSQuery retrieves data points for a metric within a time range
+// through the embedded time-series service.
+func (t *Transport) TSQuery(ctx context.Context, req *transport.TSQueryRequest) (*transport.TSQueryResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.tsSvc == nil {
+		return nil, &NilServiceError{Service: "TimeSeriesServicer"}
+	}
+
+	start := time.Unix(0, req.StartNs)
+	end := time.Unix(0, req.EndNs)
+
+	var opts []service.TSQueryOption
+	if len(req.Tags) > 0 {
+		opts = append(opts, service.WithTags(tagsToMap(req.Tags)))
+	}
+	if req.Limit > 0 {
+		opts = append(opts, service.WithTSLimit(int(req.Limit)))
+	}
+	if req.Descending {
+		opts = append(opts, service.WithDescending())
+	}
+
+	points, err := t.tsSvc.Query(ctx, req.Metric, start, end, opts...)
+	if err != nil {
+		return nil, translateError(err)
+	}
+
+	return &transport.TSQueryResponse{
+		Points: toTransportDataPoints(points),
+	}, nil
+}
+
+// TSAggregate computes an aggregation over data points in a time range
+// through the embedded time-series service.
+func (t *Transport) TSAggregate(ctx context.Context, req *transport.TSAggregateRequest) (*transport.TSAggregateResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.tsSvc == nil {
+		return nil, &NilServiceError{Service: "TimeSeriesServicer"}
+	}
+
+	start := time.Unix(0, req.StartNs)
+	end := time.Unix(0, req.EndNs)
+	fn := service.AggFunc(req.Function)
+	interval := time.Duration(req.IntervalNs)
+
+	results, err := t.tsSvc.Aggregate(ctx, req.Metric, start, end, fn, interval)
+	if err != nil {
+		return nil, translateError(err)
+	}
+
+	return &transport.TSAggregateResponse{
+		Results: toTransportAggResults(results),
+	}, nil
+}
+
+// TSWritePoint stores a single validated data point through the
+// embedded time-series service.
+func (t *Transport) TSWritePoint(ctx context.Context, point *transport.TSDataPoint) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	if t.tsSvc == nil {
+		return &NilServiceError{Service: "TimeSeriesServicer"}
+	}
+	dp := &timeseries.DataPoint{
+		Metric:    point.Metric,
+		Value:     point.Value,
+		Timestamp: time.Unix(0, point.TimestampNs),
+		Tags:      tagsToMap(point.Tags),
+	}
+	return translateError(t.tsSvc.WritePoint(ctx, dp))
+}
+
+// TSRichQuery performs a rich query with aggregation, downsampling, and
+// grouping through the embedded time-series service.
+func (t *Transport) TSRichQuery(ctx context.Context, req *transport.TSRichQueryRequest) (*transport.TSRichQueryResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.tsSvc == nil {
+		return nil, &NilServiceError{Service: "TimeSeriesServicer"}
+	}
+
+	svcReq := &timeseries.QueryRequest{
+		Metric:      req.Metric,
+		Tags:        tagsToMap(req.Tags),
+		StartTime:   time.Unix(0, req.StartNs),
+		EndTime:     time.Unix(0, req.EndNs),
+		Aggregation: timeseries.AggFunc(req.Aggregation),
+		Interval:    time.Duration(req.IntervalNs),
+		GroupBy:     req.GroupBy,
+		Limit:       req.Limit,
+		Percentile:  req.Percentile,
+	}
+
+	result, err := t.tsSvc.QueryRich(ctx, svcReq)
+	if err != nil {
+		return nil, translateError(err)
+	}
+
+	return toTransportRichQueryResponse(result), nil
+}
+
+// TSDeleteSeries deletes time-series data matching the criteria through
+// the embedded time-series service.
+func (t *Transport) TSDeleteSeries(ctx context.Context, req *transport.TSDeleteRequest) (*transport.TSDeleteResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.tsSvc == nil {
+		return nil, &NilServiceError{Service: "TimeSeriesServicer"}
+	}
+
+	svcReq := &timeseries.DeleteRequest{
+		Metric: req.Metric,
+		Tags:   tagsToMap(req.Tags),
+	}
+	if req.StartNs != 0 {
+		svcReq.StartTime = time.Unix(0, req.StartNs)
+	}
+	if req.EndNs != 0 {
+		svcReq.EndTime = time.Unix(0, req.EndNs)
+	}
+
+	err := t.tsSvc.DeleteSeries(ctx, svcReq)
+	if err != nil {
+		return nil, translateError(err)
+	}
+	return &transport.TSDeleteResponse{}, nil
+}
+
+// TSGetRetention retrieves the retention policy for a metric through
+// the embedded time-series service.
+func (t *Transport) TSGetRetention(ctx context.Context, req *transport.TSGetRetentionRequest) (*transport.TSGetRetentionResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.tsSvc == nil {
+		return nil, &NilServiceError{Service: "TimeSeriesServicer"}
+	}
+
+	policy, err := t.tsSvc.GetRetentionPolicy(req.Metric)
+	if err != nil {
+		return nil, translateError(err)
+	}
+
+	return &transport.TSGetRetentionResponse{
+		Policy: toTransportRetentionPolicy(policy),
+	}, nil
+}
+
+// TSSetRetention sets the retention policy for a metric through
+// the embedded time-series service.
+func (t *Transport) TSSetRetention(ctx context.Context, req *transport.TSSetRetentionRequest) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	if t.tsSvc == nil {
+		return &NilServiceError{Service: "TimeSeriesServicer"}
+	}
+
+	policy := toServiceRetentionPolicy(req.Policy)
+	return translateError(t.tsSvc.SetRetentionPolicy(req.Metric, policy))
+}
+
+// TSListMetrics lists metric names matching a prefix through the
+// embedded time-series service.
+func (t *Transport) TSListMetrics(ctx context.Context, req *transport.TSListMetricsRequest) (*transport.TSListMetricsResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.tsSvc == nil {
+		return nil, &NilServiceError{Service: "TimeSeriesServicer"}
+	}
+
+	metrics, err := t.tsSvc.ListMetrics(req.Prefix, int(req.Limit))
+	if err != nil {
+		return nil, translateError(err)
+	}
+
+	return &transport.TSListMetricsResponse{
+		Metrics: metrics,
+	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// VectorClient implementation
+// ---------------------------------------------------------------------------
+
+// CreateNamespace creates a new vector namespace through the embedded
+// vector service.
+func (t *Transport) CreateNamespace(ctx context.Context, req *transport.CreateNamespaceRequest) (*transport.CreateNamespaceResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.vectorSvc == nil {
+		return nil, &NilServiceError{Service: "VectorServicer"}
+	}
+	svcReq := &service.CreateNamespaceRequest{
+		Namespace:      req.Namespace,
+		Dimension:      req.Dimension,
+		DistanceMetric: req.DistanceMetric,
+		IndexType:      req.IndexType,
+		IndexConfig:    req.IndexConfig,
+		Metadata:       req.Metadata,
+		ShardID:        req.ShardID,
+	}
+	resp, err := t.vectorSvc.CreateNamespace(ctx, svcReq)
+	if err != nil {
+		return nil, translateError(err)
+	}
+	return &transport.CreateNamespaceResponse{
+		Namespace: resp.Namespace,
+		Dimension: resp.Dimension,
+		Timestamp: resp.Timestamp,
+		Success:   resp.Success,
+	}, nil
+}
+
+// DeleteNamespace removes a namespace and all its vectors through the
+// embedded vector service.
+func (t *Transport) DeleteNamespace(ctx context.Context, req *transport.DeleteNamespaceRequest) (*transport.DeleteNamespaceResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.vectorSvc == nil {
+		return nil, &NilServiceError{Service: "VectorServicer"}
+	}
+	resp, err := t.vectorSvc.DeleteNamespace(ctx, &service.DeleteNamespaceRequest{
+		Namespace: req.Namespace,
+		ShardID:   req.ShardID,
+	})
+	if err != nil {
+		return nil, translateError(err)
+	}
+	return &transport.DeleteNamespaceResponse{
+		Success:        resp.Success,
+		VectorsDeleted: resp.VectorsDeleted,
+		Timestamp:      resp.Timestamp,
+	}, nil
+}
+
+// ListNamespaces returns all vector namespaces through the embedded
+// vector service.
+func (t *Transport) ListNamespaces(ctx context.Context, req *transport.ListNamespacesRequest) (*transport.ListNamespacesResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.vectorSvc == nil {
+		return nil, &NilServiceError{Service: "VectorServicer"}
+	}
+	resp, err := t.vectorSvc.ListNamespaces(ctx, &service.ListNamespacesRequest{
+		Prefix:  req.Prefix,
+		Limit:   req.Limit,
+		Offset:  req.Offset,
+		ShardID: req.ShardID,
+	})
+	if err != nil {
+		return nil, translateError(err)
+	}
+	return &transport.ListNamespacesResponse{
+		Namespaces: toTransportNamespaceInfoSlice(resp.Namespaces),
+		TotalCount: resp.TotalCount,
+		Timestamp:  resp.Timestamp,
+	}, nil
+}
+
+// GetNamespaceInfo returns metadata about a namespace through the
+// embedded vector service.
+func (t *Transport) GetNamespaceInfo(ctx context.Context, req *transport.GetNamespaceInfoRequest) (*transport.GetNamespaceInfoResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.vectorSvc == nil {
+		return nil, &NilServiceError{Service: "VectorServicer"}
+	}
+	resp, err := t.vectorSvc.GetNamespaceInfo(ctx, &service.GetNamespaceInfoRequest{
+		Namespace: req.Namespace,
+		ShardID:   req.ShardID,
+	})
+	if err != nil {
+		return nil, translateError(err)
+	}
+	return &transport.GetNamespaceInfoResponse{
+		Namespace:      resp.Namespace,
+		Dimension:      resp.Dimension,
+		VectorCount:    resp.VectorCount,
+		DistanceMetric: resp.DistanceMetric,
+		IndexType:      resp.IndexType,
+		IndexConfig:    resp.IndexConfig,
+		Metadata:       resp.Metadata,
+		CreatedAt:      resp.CreatedAt,
+		UpdatedAt:      resp.UpdatedAt,
+	}, nil
+}
+
+// UpsertVector inserts or updates a vector through the embedded vector
+// service.
+func (t *Transport) UpsertVector(ctx context.Context, req *transport.UpsertVectorRequest) (*transport.UpsertVectorResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.vectorSvc == nil {
+		return nil, &NilServiceError{Service: "VectorServicer"}
+	}
+	resp, err := t.vectorSvc.UpsertVector(ctx, &service.UpsertVectorRequest{
+		Namespace: req.Namespace,
+		ID:        req.ID,
+		Vector:    req.Vector,
+		Metadata:  req.Metadata,
+		ShardID:   req.ShardID,
+	})
+	if err != nil {
+		return nil, translateError(err)
+	}
+	return &transport.UpsertVectorResponse{
+		ID:        resp.ID,
+		Version:   resp.Version,
+		Timestamp: resp.Timestamp,
+		Success:   resp.Success,
+	}, nil
+}
+
+// GetVector retrieves a single vector by ID through the embedded vector
+// service.
+func (t *Transport) GetVector(ctx context.Context, req *transport.GetVectorRequest) (*transport.GetVectorResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.vectorSvc == nil {
+		return nil, &NilServiceError{Service: "VectorServicer"}
+	}
+	resp, err := t.vectorSvc.GetVector(ctx, &service.GetVectorRequest{
+		Namespace:       req.Namespace,
+		ID:              req.ID,
+		IncludeVector:   req.IncludeVector,
+		IncludeMetadata: req.IncludeMetadata,
+		ShardID:         req.ShardID,
+		Consistency:     service.ConsistencyLevel(req.Consistency),
+	})
+	if err != nil {
+		return nil, translateError(err)
+	}
+	return &transport.GetVectorResponse{
+		ID:        resp.ID,
+		Vector:    resp.Vector,
+		Metadata:  resp.Metadata,
+		Version:   resp.Version,
+		CreatedAt: resp.CreatedAt,
+		UpdatedAt: resp.UpdatedAt,
+		Found:     resp.Found,
+	}, nil
+}
+
+// DeleteVector removes a single vector by ID through the embedded
+// vector service.
+func (t *Transport) DeleteVector(ctx context.Context, req *transport.DeleteVectorRequest) (*transport.DeleteVectorResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.vectorSvc == nil {
+		return nil, &NilServiceError{Service: "VectorServicer"}
+	}
+	resp, err := t.vectorSvc.DeleteVector(ctx, &service.DeleteVectorRequest{
+		Namespace: req.Namespace,
+		ID:        req.ID,
+		ShardID:   req.ShardID,
+	})
+	if err != nil {
+		return nil, translateError(err)
+	}
+	return &transport.DeleteVectorResponse{
+		Success:   resp.Success,
+		Timestamp: resp.Timestamp,
+	}, nil
+}
+
+// BatchUpsert inserts or updates multiple vectors through the embedded
+// vector service.
+func (t *Transport) BatchUpsert(ctx context.Context, req *transport.BatchUpsertRequest) (*transport.BatchUpsertResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.vectorSvc == nil {
+		return nil, &NilServiceError{Service: "VectorServicer"}
+	}
+	svcVectors := toServiceVectorDataPtrSlice(req.Vectors)
+	resp, err := t.vectorSvc.BatchUpsert(ctx, &service.BatchUpsertRequest{
+		Namespace: req.Namespace,
+		Vectors:   svcVectors,
+		ShardID:   req.ShardID,
+	})
+	if err != nil {
+		return nil, translateError(err)
+	}
+	return &transport.BatchUpsertResponse{
+		IDs:           resp.IDs,
+		Versions:      resp.Versions,
+		Timestamp:     resp.Timestamp,
+		Success:       resp.Success,
+		InsertedCount: resp.InsertedCount,
+	}, nil
+}
+
+// BatchDeleteVectors removes multiple vectors by ID through the embedded
+// vector service.
+func (t *Transport) BatchDeleteVectors(ctx context.Context, req *transport.BatchDeleteVectorsRequest) (*transport.BatchDeleteVectorsResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.vectorSvc == nil {
+		return nil, &NilServiceError{Service: "VectorServicer"}
+	}
+	resp, err := t.vectorSvc.BatchDeleteVectors(ctx, &service.BatchDeleteVectorsRequest{
+		Namespace: req.Namespace,
+		IDs:       req.IDs,
+		ShardID:   req.ShardID,
+	})
+	if err != nil {
+		return nil, translateError(err)
+	}
+	return &transport.BatchDeleteVectorsResponse{
+		DeletedCount: resp.DeletedCount,
+		FailedIDs:    resp.FailedIDs,
+		Timestamp:    resp.Timestamp,
+		Success:      resp.Success,
+	}, nil
+}
+
+// ListVectors returns a paginated list of vectors through the embedded
+// vector service.
+func (t *Transport) ListVectors(ctx context.Context, req *transport.ListVectorsRequest) (*transport.ListVectorsResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.vectorSvc == nil {
+		return nil, &NilServiceError{Service: "VectorServicer"}
+	}
+	resp, err := t.vectorSvc.ListVectors(ctx, &service.ListVectorsRequest{
+		Namespace:       req.Namespace,
+		Limit:           req.Limit,
+		Cursor:          req.Cursor,
+		IDPrefix:        req.IDPrefix,
+		IncludeVectors:  req.IncludeVectors,
+		IncludeMetadata: req.IncludeMetadata,
+		ShardID:         req.ShardID,
+		Consistency:     service.ConsistencyLevel(req.Consistency),
+	})
+	if err != nil {
+		return nil, translateError(err)
+	}
+	return &transport.ListVectorsResponse{
+		Vectors:    toTransportVectorDataPtrSlice(resp.Vectors),
+		NextCursor: resp.NextCursor,
+		TotalCount: resp.TotalCount,
+		Timestamp:  resp.Timestamp,
+	}, nil
+}
+
+// UpdateMetadata updates the metadata for an existing vector through
+// the embedded vector service.
+func (t *Transport) UpdateMetadata(ctx context.Context, req *transport.UpdateVectorMetadataRequest) (*transport.UpdateVectorMetadataResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.vectorSvc == nil {
+		return nil, &NilServiceError{Service: "VectorServicer"}
+	}
+	resp, err := t.vectorSvc.UpdateMetadata(ctx, &service.UpdateVectorMetadataRequest{
+		Namespace:     req.Namespace,
+		ID:            req.ID,
+		Metadata:      req.Metadata,
+		MergeMetadata: req.MergeMetadata,
+		DeleteKeys:    req.DeleteKeys,
+		ShardID:       req.ShardID,
+	})
+	if err != nil {
+		return nil, translateError(err)
+	}
+	return &transport.UpdateVectorMetadataResponse{
+		ID:        resp.ID,
+		Version:   resp.Version,
+		Timestamp: resp.Timestamp,
+		Success:   resp.Success,
+	}, nil
+}
+
+// SearchSimilar performs a k-nearest-neighbor search through the
+// embedded vector service.
+func (t *Transport) SearchSimilar(ctx context.Context, req *transport.SearchSimilarRequest) (*transport.SearchSimilarResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.vectorSvc == nil {
+		return nil, &NilServiceError{Service: "VectorServicer"}
+	}
+	resp, err := t.vectorSvc.SearchSimilar(ctx, &service.SearchSimilarRequest{
+		Namespace:       req.Namespace,
+		QueryVector:     req.QueryVector,
+		K:               req.K,
+		EfSearch:        req.EfSearch,
+		MinScore:        req.MinScore,
+		IncludeVectors:  req.IncludeVectors,
+		IncludeMetadata: req.IncludeMetadata,
+		MetadataFilter:  req.MetadataFilter,
+		ShardID:         req.ShardID,
+		Consistency:     service.ConsistencyLevel(req.Consistency),
+	})
+	if err != nil {
+		return nil, translateError(err)
+	}
+	return &transport.SearchSimilarResponse{
+		Results:       toTransportSearchResults(resp.Results),
+		Timestamp:     resp.Timestamp,
+		QueryDuration: resp.QueryDuration,
+	}, nil
+}
+
+// SearchByMetadata returns vectors matching metadata filters through
+// the embedded vector service.
+func (t *Transport) SearchByMetadata(ctx context.Context, req *transport.SearchByMetadataRequest) (*transport.SearchByMetadataResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.vectorSvc == nil {
+		return nil, &NilServiceError{Service: "VectorServicer"}
+	}
+	resp, err := t.vectorSvc.SearchByMetadata(ctx, &service.SearchByMetadataRequest{
+		Namespace:       req.Namespace,
+		Filters:         req.Filters,
+		FilterOperator:  req.FilterOperator,
+		Limit:           req.Limit,
+		Offset:          req.Offset,
+		IncludeVectors:  req.IncludeVectors,
+		IncludeMetadata: req.IncludeMetadata,
+		ShardID:         req.ShardID,
+		Consistency:     service.ConsistencyLevel(req.Consistency),
+	})
+	if err != nil {
+		return nil, translateError(err)
+	}
+	return &transport.SearchByMetadataResponse{
+		Results:    toTransportVectorDataPtrSlice(resp.Results),
+		TotalCount: resp.TotalCount,
+		Timestamp:  resp.Timestamp,
+		NextCursor: resp.NextCursor,
+	}, nil
+}
+
+// HybridSearch combines vector similarity and metadata filtering
+// through the embedded vector service.
+func (t *Transport) HybridSearch(ctx context.Context, req *transport.HybridSearchRequest) (*transport.HybridSearchResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.vectorSvc == nil {
+		return nil, &NilServiceError{Service: "VectorServicer"}
+	}
+	resp, err := t.vectorSvc.HybridSearch(ctx, &service.HybridSearchRequest{
+		Namespace:          req.Namespace,
+		QueryVector:        req.QueryVector,
+		K:                  req.K,
+		EfSearch:           req.EfSearch,
+		MinScore:           req.MinScore,
+		MetadataFilter:     req.MetadataFilter,
+		FilterOperator:     req.FilterOperator,
+		RerankingAlgorithm: req.RerankingAlgorithm,
+		IncludeVectors:     req.IncludeVectors,
+		IncludeMetadata:    req.IncludeMetadata,
+		ShardID:            req.ShardID,
+		Consistency:        service.ConsistencyLevel(req.Consistency),
+	})
+	if err != nil {
+		return nil, translateError(err)
+	}
+	return &transport.HybridSearchResponse{
+		Results:         toTransportSearchResults(resp.Results),
+		TotalCandidates: resp.TotalCandidates,
+		TotalFiltered:   resp.TotalFiltered,
+		Timestamp:       resp.Timestamp,
+		QueryDuration:   resp.QueryDuration,
+	}, nil
+}
+
+// SearchByID searches using an existing vector's ID as the query
+// through the embedded vector service.
+func (t *Transport) SearchByID(ctx context.Context, req *transport.SearchByIDRequest) (*transport.SearchByIDResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.vectorSvc == nil {
+		return nil, &NilServiceError{Service: "VectorServicer"}
+	}
+	resp, err := t.vectorSvc.SearchByID(ctx, &service.SearchByIDRequest{
+		Namespace:       req.Namespace,
+		ID:              req.ID,
+		K:               req.K,
+		EfSearch:        req.EfSearch,
+		MinScore:        req.MinScore,
+		IncludeVectors:  req.IncludeVectors,
+		IncludeMetadata: req.IncludeMetadata,
+		MetadataFilter:  req.MetadataFilter,
+		ExcludeSelf:     req.ExcludeSelf,
+		ShardID:         req.ShardID,
+		Consistency:     service.ConsistencyLevel(req.Consistency),
+	})
+	if err != nil {
+		return nil, translateError(err)
+	}
+	return &transport.SearchByIDResponse{
+		SourceID:      resp.SourceID,
+		Results:       toTransportSearchResults(resp.Results),
+		Timestamp:     resp.Timestamp,
+		QueryDuration: resp.QueryDuration,
+	}, nil
+}
+
+// RebuildIndex triggers an asynchronous index rebuild through the
+// embedded vector service.
+func (t *Transport) RebuildIndex(ctx context.Context, req *transport.RebuildIndexRequest) (*transport.RebuildIndexResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.vectorSvc == nil {
+		return nil, &NilServiceError{Service: "VectorServicer"}
+	}
+	resp, err := t.vectorSvc.RebuildIndex(ctx, &service.RebuildIndexRequest{
+		Namespace:   req.Namespace,
+		IndexConfig: req.IndexConfig,
+		Async:       req.Async,
+		ShardID:     req.ShardID,
+	})
+	if err != nil {
+		return nil, translateError(err)
+	}
+	return &transport.RebuildIndexResponse{
+		JobID:                  resp.JobID,
+		Status:                 resp.Status,
+		VectorsProcessed:       resp.VectorsProcessed,
+		TotalVectors:           resp.TotalVectors,
+		PercentComplete:        resp.PercentComplete,
+		EstimatedTimeRemaining: resp.EstimatedTimeRemaining,
+		Timestamp:              resp.Timestamp,
+		Success:                resp.Success,
+	}, nil
+}
+
+// GetRebuildProgress returns the current progress of an index rebuild
+// through the embedded vector service.
+func (t *Transport) GetRebuildProgress(ctx context.Context, req *transport.GetRebuildProgressRequest) (*transport.GetRebuildProgressResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.vectorSvc == nil {
+		return nil, &NilServiceError{Service: "VectorServicer"}
+	}
+	resp, err := t.vectorSvc.GetRebuildProgress(ctx, &service.GetRebuildProgressRequest{
+		JobID:     req.JobID,
+		Namespace: req.Namespace,
+	})
+	if err != nil {
+		return nil, translateError(err)
+	}
+	return &transport.GetRebuildProgressResponse{
+		JobID:                    resp.JobID,
+		Namespace:                resp.Namespace,
+		Status:                   resp.Status,
+		VectorsProcessed:         resp.VectorsProcessed,
+		TotalVectors:             resp.TotalVectors,
+		PercentComplete:          resp.PercentComplete,
+		ElapsedTimeMs:            resp.ElapsedTimeMs,
+		EstimatedTimeRemainingMs: resp.EstimatedTimeRemainingMs,
+		StartedAt:                resp.StartedAt,
+		CompletedAt:              resp.CompletedAt,
+		Error:                    resp.Error,
+	}, nil
+}
+
+// GetIndexStats returns statistics about a namespace's vector index
+// through the embedded vector service.
+func (t *Transport) GetIndexStats(ctx context.Context, req *transport.GetIndexStatsRequest) (*transport.GetIndexStatsResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.vectorSvc == nil {
+		return nil, &NilServiceError{Service: "VectorServicer"}
+	}
+	resp, err := t.vectorSvc.GetIndexStats(ctx, &service.GetIndexStatsRequest{
+		Namespace: req.Namespace,
+		ShardID:   req.ShardID,
+	})
+	if err != nil {
+		return nil, translateError(err)
+	}
+	return &transport.GetIndexStatsResponse{
+		Namespace:         resp.Namespace,
+		IndexType:         resp.IndexType,
+		VectorCount:       resp.VectorCount,
+		Dimension:         resp.Dimension,
+		IndexSizeBytes:    resp.IndexSizeBytes,
+		MemoryUsageBytes:  resp.MemoryUsageBytes,
+		IndexConfig:       resp.IndexConfig,
+		SearchPerformance: toTransportIndexPerformanceMetrics(resp.SearchPerformance),
+		Timestamp:         resp.Timestamp,
+	}, nil
+}
+
+// CompactNamespace triggers compaction of a namespace's storage through
+// the embedded vector service.
+func (t *Transport) CompactNamespace(ctx context.Context, req *transport.CompactNamespaceRequest) (*transport.CompactNamespaceResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.vectorSvc == nil {
+		return nil, &NilServiceError{Service: "VectorServicer"}
+	}
+	resp, err := t.vectorSvc.CompactNamespace(ctx, &service.CompactNamespaceRequest{
+		Namespace: req.Namespace,
+		Async:     req.Async,
+		TimeoutMs: req.TimeoutMs,
+		ShardID:   req.ShardID,
+	})
+	if err != nil {
+		return nil, translateError(err)
+	}
+	return &transport.CompactNamespaceResponse{
+		OperationID:    resp.OperationID,
+		StartedAt:      resp.StartedAt,
+		CompletedAt:    resp.CompletedAt,
+		BytesCompacted: resp.BytesCompacted,
+		Success:        resp.Success,
+	}, nil
+}
+
+// GetCompactionProgress returns the current progress of a compaction
+// through the embedded vector service.
+func (t *Transport) GetCompactionProgress(ctx context.Context, req *transport.GetCompactionProgressRequest) (*transport.GetCompactionProgressResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.vectorSvc == nil {
+		return nil, &NilServiceError{Service: "VectorServicer"}
+	}
+	resp, err := t.vectorSvc.GetCompactionProgress(ctx, &service.GetCompactionProgressRequest{
+		Namespace:   req.Namespace,
+		OperationID: req.OperationID,
+		ShardID:     req.ShardID,
+	})
+	if err != nil {
+		return nil, translateError(err)
+	}
+	return &transport.GetCompactionProgressResponse{
+		OperationID:     resp.OperationID,
+		Namespace:       resp.Namespace,
+		BytesCompacted:  resp.BytesCompacted,
+		TotalBytes:      resp.TotalBytes,
+		PercentComplete: resp.PercentComplete,
+		InProgress:      resp.InProgress,
+		StartedAt:       resp.StartedAt,
+		CompletedAt:     resp.CompletedAt,
+		Error:           resp.Error,
+	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Type conversion helpers
+// ---------------------------------------------------------------------------
+
+// toTransportKV converts a service-layer KeyValue to a transport-layer
+// MVCCKeyValue.
+func toTransportKV(kv *service.KeyValue) *transport.MVCCKeyValue {
+	if kv == nil {
+		return nil
+	}
+	return &transport.MVCCKeyValue{
+		Key:            kv.Key,
+		Value:          kv.Value,
+		CreateRevision: kv.CreateRevision,
+		ModRevision:    kv.ModRevision,
+		Version:        kv.Version,
+		LeaseID:        kv.LeaseID,
+	}
+}
+
+// toTransportKVSlice converts a slice of service-layer KeyValue pointers
+// to a slice of transport-layer MVCCKeyValue pointers.
+func toTransportKVSlice(kvs []*service.KeyValue) []*transport.MVCCKeyValue {
+	if kvs == nil {
+		return nil
+	}
+	out := make([]*transport.MVCCKeyValue, len(kvs))
+	for i, kv := range kvs {
+		out[i] = toTransportKV(kv)
+	}
+	return out
+}
+
+// toServiceCompares converts transport-layer Compare values to
+// service-layer Compare values.
+func toServiceCompares(compares []transport.Compare) []service.Compare {
+	out := make([]service.Compare, len(compares))
+	for i, c := range compares {
+		out[i] = service.Compare{
+			Key:            c.Key,
+			Target:         service.CompareTarget(c.Target),
+			Result:         service.CompareResult(c.Result),
+			Value:          c.Value,
+			Version:        c.Version,
+			CreateRevision: c.CreateRevision,
+			ModRevision:    c.ModRevision,
+		}
+	}
+	return out
+}
+
+// toServiceOps converts transport-layer Op values to service-layer
+// Op values.
+func toServiceOps(ops []transport.Op) []service.Op {
+	out := make([]service.Op, len(ops))
+	for i, op := range ops {
+		out[i] = service.Op{
+			Type:     service.OpType(op.Type),
+			Key:      op.Key,
+			Value:    op.Value,
+			RangeEnd: op.RangeEnd,
+			LeaseID:  op.LeaseID,
+		}
+	}
+	return out
+}
+
+// toTransportOpResponses converts service-layer OpResponse values to
+// transport-layer OpResponse values.
+func toTransportOpResponses(resps []service.OpResponse) []transport.OpResponse {
+	out := make([]transport.OpResponse, len(resps))
+	for i, r := range resps {
+		out[i] = transport.OpResponse{
+			Kvs:       toTransportKVSlice(r.Kvs),
+			Count:     r.Count,
+			Succeeded: r.Succeeded,
+		}
+	}
+	return out
+}
+
+// toServiceRangeOpts converts transport-layer RangeOptions to a
+// variadic slice of service-layer RangeOption functions.
+func toServiceRangeOpts(opts transport.RangeOptions) []service.RangeOption {
+	var out []service.RangeOption
+	if opts.Limit != 0 {
+		out = append(out, service.WithLimit(opts.Limit))
+	}
+	if opts.Revision != 0 {
+		out = append(out, service.WithRevision(opts.Revision))
+	}
+	if opts.CountOnly {
+		out = append(out, service.WithCountOnly())
+	}
+	if opts.KeysOnly {
+		out = append(out, service.WithKeysOnly())
+	}
+	if opts.SortOrder != transport.SortNone || opts.SortTarget != transport.SortByKey {
+		out = append(out, service.WithSort(
+			service.SortOrder(opts.SortOrder),
+			service.SortTarget(opts.SortTarget),
+		))
+	}
+	return out
+}
+
+// toServiceWatchOpts converts transport-layer WatchOptions to a
+// variadic slice of service-layer WatchOption functions.
+func toServiceWatchOpts(opts transport.WatchOptions) []watch.WatchOption {
+	var out []watch.WatchOption
+	if opts.StartRevision != 0 {
+		out = append(out, watch.WithStartRevision(opts.StartRevision))
+	}
+	if opts.PrevKV {
+		out = append(out, watch.WithPrevKV())
+	}
+	if opts.ProgressNotify {
+		out = append(out, watch.WithProgressNotify())
+	}
+	return out
+}
+
+// toTransportWatchResponse converts a service-layer WatchResponse to a
+// transport-layer WatchResponse.
+func toTransportWatchResponse(resp watch.WatchResponse) transport.WatchResponse {
+	events := make([]*transport.WatchEvent, 0, len(resp.Events))
+	for _, evt := range resp.Events {
+		if evt == nil {
+			continue
+		}
+		events = append(events, &transport.WatchEvent{
+			Type:   transport.EventType(evt.Type),
+			Kv:     toTransportKV(evt.Kv),
+			PrevKv: toTransportKV(evt.PrevKv),
+		})
+	}
+	return transport.WatchResponse{
+		WatchID:      resp.WatchID,
+		Events:       events,
+		Canceled:     resp.Canceled,
+		CancelReason: resp.CancelReason,
+		Revision:     resp.Revision,
+	}
+}
+
+// toTransportLease converts a service-layer Lease to a transport-layer
+// LeaseInfo.
+func toTransportLease(l *lease.Lease) *transport.LeaseInfo {
+	if l == nil {
+		return nil
+	}
+	return &transport.LeaseInfo{
+		ID:           l.ID,
+		TTL:          l.TTL,
+		GrantedTTL:   l.GrantedTTL,
+		RemainingTTL: l.RemainingTTL,
+		Keys:         l.Keys,
+	}
+}
+
+// toTransportLeaseSlice converts a slice of service-layer Lease pointers
+// to a slice of transport-layer LeaseInfo pointers.
+func toTransportLeaseSlice(ls []*lease.Lease) []*transport.LeaseInfo {
+	if ls == nil {
+		return nil
+	}
+	out := make([]*transport.LeaseInfo, len(ls))
+	for i, l := range ls {
+		out[i] = toTransportLease(l)
+	}
+	return out
+}
+
+// tagsToMap converts a slice of transport TSTag values to a map.
+func tagsToMap(tags []transport.TSTag) map[string]string {
+	if len(tags) == 0 {
+		return nil
+	}
+	m := make(map[string]string, len(tags))
+	for _, tag := range tags {
+		m[tag.Key] = tag.Value
+	}
+	return m
+}
+
+// mapToTags converts a map of tags to a slice of transport TSTag values.
+func mapToTags(m map[string]string) []transport.TSTag {
+	if len(m) == 0 {
+		return nil
+	}
+	tags := make([]transport.TSTag, 0, len(m))
+	for k, v := range m {
+		tags = append(tags, transport.TSTag{Key: k, Value: v})
+	}
+	return tags
+}
+
+// toTransportDataPoints converts a slice of service-layer DataPoint
+// values to a slice of transport-layer TSDataPoint values.
+func toTransportDataPoints(points []service.DataPoint) []transport.TSDataPoint {
+	out := make([]transport.TSDataPoint, len(points))
+	for i, p := range points {
+		out[i] = transport.TSDataPoint{
+			Metric:      p.Metric,
+			Value:       p.Value,
+			TimestampNs: p.Timestamp.UnixNano(),
+			Tags:        mapToTags(p.Tags),
+		}
+	}
+	return out
+}
+
+// toTransportDataPointPtrs converts a slice of service-layer DataPoint
+// pointers to a slice of transport-layer TSDataPoint values.
+func toTransportDataPointPtrs(points []*timeseries.DataPoint) []transport.TSDataPoint {
+	out := make([]transport.TSDataPoint, len(points))
+	for i, p := range points {
+		out[i] = transport.TSDataPoint{
+			Metric:      p.Metric,
+			Value:       p.Value,
+			TimestampNs: p.Timestamp.UnixNano(),
+			Tags:        mapToTags(p.Tags),
+		}
+	}
+	return out
+}
+
+// toTransportAggResults converts a slice of service-layer AggResult
+// values to a slice of transport-layer TSAggResult values.
+func toTransportAggResults(results []service.AggResult) []transport.TSAggResult {
+	out := make([]transport.TSAggResult, len(results))
+	for i, r := range results {
+		out[i] = transport.TSAggResult{
+			TimestampNs: r.Timestamp.UnixNano(),
+			Value:       r.Value,
+			Count:       r.Count,
+		}
+	}
+	return out
+}
+
+// toTransportRichQueryResponse converts a service-layer QueryResult to
+// a transport-layer TSRichQueryResponse.
+func toTransportRichQueryResponse(result *timeseries.QueryResult) *transport.TSRichQueryResponse {
+	resp := &transport.TSRichQueryResponse{
+		Metric:          result.Metric,
+		Tags:            mapToTags(result.Tags),
+		Points:          toTransportDataPointPtrs(result.Points),
+		AggregatedValue: result.AggregatedValue,
+	}
+
+	if len(result.GroupedResults) > 0 {
+		resp.GroupedResults = make([]transport.TSGroupedResult, len(result.GroupedResults))
+		for i, gr := range result.GroupedResults {
+			resp.GroupedResults[i] = transport.TSGroupedResult{
+				Tags:            mapToTags(gr.Tags),
+				Points:          toTransportDataPointPtrs(gr.Points),
+				AggregatedValue: gr.AggregatedValue,
+			}
+		}
+	}
+
+	return resp
+}
+
+// toTransportRetentionPolicy converts a service-layer RetentionPolicy
+// to a transport-layer TSRetentionPolicy.
+func toTransportRetentionPolicy(p *timeseries.RetentionPolicy) *transport.TSRetentionPolicy {
+	if p == nil {
+		return nil
+	}
+	return &transport.TSRetentionPolicy{
+		DurationNs:   int64(p.Duration),
+		ResolutionNs: int64(p.Resolution),
+		Aggregation:  transport.AggFunc(p.Aggregation),
+	}
+}
+
+// toServiceRetentionPolicy converts a transport-layer TSRetentionPolicy
+// to a service-layer RetentionPolicy.
+func toServiceRetentionPolicy(p *transport.TSRetentionPolicy) *timeseries.RetentionPolicy {
+	if p == nil {
+		return nil
+	}
+	return &timeseries.RetentionPolicy{
+		Duration:    time.Duration(p.DurationNs),
+		Resolution:  time.Duration(p.ResolutionNs),
+		Aggregation: timeseries.AggFunc(p.Aggregation),
+	}
+}
+
+// toTransportNamespaceInfo converts a service-layer NamespaceInfo to a
+// transport-layer NamespaceInfo.
+func toTransportNamespaceInfo(info *service.NamespaceInfo) *transport.NamespaceInfo {
+	if info == nil {
+		return nil
+	}
+	return &transport.NamespaceInfo{
+		Namespace:      info.Namespace,
+		Dimension:      info.Dimension,
+		VectorCount:    info.VectorCount,
+		DistanceMetric: info.DistanceMetric,
+		IndexType:      info.IndexType,
+		IndexConfig:    info.IndexConfig,
+		Metadata:       info.Metadata,
+		CreatedAt:      info.CreatedAt,
+		UpdatedAt:      info.UpdatedAt,
+	}
+}
+
+// toTransportNamespaceInfoSlice converts a slice of service-layer
+// NamespaceInfo pointers to a slice of transport-layer NamespaceInfo pointers.
+func toTransportNamespaceInfoSlice(infos []*service.NamespaceInfo) []*transport.NamespaceInfo {
+	if infos == nil {
+		return nil
+	}
+	out := make([]*transport.NamespaceInfo, len(infos))
+	for i, info := range infos {
+		out[i] = toTransportNamespaceInfo(info)
+	}
+	return out
+}
+
+// toTransportVectorData converts a service-layer VectorData pointer to a
+// transport-layer VectorData pointer.
+func toTransportVectorData(v *service.VectorData) *transport.VectorData {
+	if v == nil {
+		return nil
+	}
+	return &transport.VectorData{
+		ID:        v.ID,
+		Vector:    v.Vector,
+		Metadata:  v.Metadata,
+		Version:   v.Version,
+		CreatedAt: v.CreatedAt,
+		UpdatedAt: v.UpdatedAt,
+	}
+}
+
+// toTransportVectorDataPtrSlice converts a slice of service-layer VectorData
+// pointers to a slice of transport-layer VectorData pointers.
+func toTransportVectorDataPtrSlice(vs []*service.VectorData) []*transport.VectorData {
+	if vs == nil {
+		return nil
+	}
+	out := make([]*transport.VectorData, len(vs))
+	for i, v := range vs {
+		out[i] = toTransportVectorData(v)
+	}
+	return out
+}
+
+// toServiceVectorDataPtrSlice converts a slice of transport-layer VectorData
+// pointers to a slice of service-layer VectorData pointers.
+func toServiceVectorDataPtrSlice(vs []*transport.VectorData) []*service.VectorData {
+	if vs == nil {
+		return nil
+	}
+	out := make([]*service.VectorData, len(vs))
+	for i, v := range vs {
+		out[i] = &service.VectorData{
+			ID:       v.ID,
+			Vector:   v.Vector,
+			Metadata: v.Metadata,
+			Version:  v.Version,
+		}
+	}
+	return out
+}
+
+// toTransportSearchResults converts a slice of service-layer
+// VectorSearchResult pointers to a slice of transport-layer VectorSearchResult pointers.
+func toTransportSearchResults(results []*service.VectorSearchResult) []*transport.VectorSearchResult {
+	if results == nil {
+		return nil
+	}
+	out := make([]*transport.VectorSearchResult, len(results))
+	for i, r := range results {
+		out[i] = &transport.VectorSearchResult{
+			ID:       r.ID,
+			Score:    r.Score,
+			Vector:   r.Vector,
+			Metadata: r.Metadata,
+			Distance: r.Distance,
+			Rank:     r.Rank,
+		}
+	}
+	return out
+}
+
+// toTransportIndexPerformanceMetrics converts a service-layer
+// IndexPerformanceMetrics to a transport-layer IndexPerformanceMetrics.
+func toTransportIndexPerformanceMetrics(m *service.IndexPerformanceMetrics) *transport.IndexPerformanceMetrics {
+	if m == nil {
+		return nil
+	}
+	return &transport.IndexPerformanceMetrics{
+		AverageSearchTimeMs: m.AverageSearchTimeMs,
+		P50SearchTimeMs:     m.P50SearchTimeMs,
+		P95SearchTimeMs:     m.P95SearchTimeMs,
+		P99SearchTimeMs:     m.P99SearchTimeMs,
+		TotalSearches:       m.TotalSearches,
+		CacheHitRate:        m.CacheHitRate,
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -374,6 +2461,684 @@ func handleDrain(ctx context.Context, t *Transport, _, _ any) error {
 	return t.Drain(ctx)
 }
 
+func handleCapabilities(ctx context.Context, t *Transport, _, resp any) error {
+	caps, err := t.Capabilities(ctx)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(**transport.CapabilitiesResponse); ok {
+		*out = caps
+	}
+	return nil
+}
+
+func handleStartShard(ctx context.Context, t *Transport, req, _ any) error {
+	r, ok := req.(*transport.StartShardRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "StartShard"}
+	}
+	return t.StartShard(ctx, r)
+}
+
+func handleStopShard(ctx context.Context, t *Transport, req, _ any) error {
+	r, ok := req.(*transport.StopShardRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "StopShard"}
+	}
+	return t.StopShard(ctx, r.ShardID)
+}
+
+func handleGetShardState(ctx context.Context, t *Transport, req, resp any) error {
+	shardID, ok := req.(uint64)
+	if !ok {
+		return &InvalidRequestError{Method: "GetShardState"}
+	}
+	state, err := t.GetShardState(ctx, shardID)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(**transport.ShardStateResponse); ok {
+		*out = state
+	}
+	return nil
+}
+
+func handleGetTopology(ctx context.Context, t *Transport, _, resp any) error {
+	topo, err := t.GetTopology(ctx)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(**transport.TopologyResponse); ok {
+		*out = topo
+	}
+	return nil
+}
+
+func handlePutWithLease(ctx context.Context, t *Transport, req, resp any) error {
+	r, ok := req.(*putWithLeaseRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "PutWithLease"}
+	}
+	kv, err := t.PutWithLease(ctx, r.Key, r.Value, r.LeaseID)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(**transport.MVCCKeyValue); ok {
+		*out = kv
+	}
+	return nil
+}
+
+func handleGetRevision(ctx context.Context, t *Transport, req, resp any) error {
+	r, ok := req.(*getRevisionRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "GetRevision"}
+	}
+	kv, err := t.GetRevision(ctx, r.Key)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(**transport.MVCCKeyValue); ok {
+		*out = kv
+	}
+	return nil
+}
+
+func handleGetAtRevision(ctx context.Context, t *Transport, req, resp any) error {
+	r, ok := req.(*getAtRevisionRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "GetAtRevision"}
+	}
+	kv, err := t.GetAtRevision(ctx, r.Key, r.Revision)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(**transport.MVCCKeyValue); ok {
+		*out = kv
+	}
+	return nil
+}
+
+func handleRange(ctx context.Context, t *Transport, req, resp any) error {
+	r, ok := req.(*rangeRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "Range"}
+	}
+	result, err := t.Range(ctx, r.Start, r.End, r.Opts)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(**transport.RangeResponse); ok {
+		*out = result
+	}
+	return nil
+}
+
+func handleCompact(ctx context.Context, t *Transport, req, _ any) error {
+	r, ok := req.(*compactRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "Compact"}
+	}
+	return t.Compact(ctx, r.Revision)
+}
+
+func handleCurrentRevision(ctx context.Context, t *Transport, _, resp any) error {
+	rev, err := t.CurrentRevision(ctx)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(*int64); ok {
+		*out = rev
+	}
+	return nil
+}
+
+func handleExecuteTransaction(ctx context.Context, t *Transport, req, resp any) error {
+	r, ok := req.(*transport.TransactionRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "ExecuteTransaction"}
+	}
+	result, err := t.ExecuteTransaction(ctx, r)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(**transport.TransactionResponse); ok {
+		*out = result
+	}
+	return nil
+}
+
+func handleExecuteBatch(ctx context.Context, t *Transport, req, resp any) error {
+	r, ok := req.(*transport.BatchRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "ExecuteBatch"}
+	}
+	result, err := t.ExecuteBatch(ctx, r.Ops)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(**transport.BatchResponse); ok {
+		*out = result
+	}
+	return nil
+}
+
+func handleWatch(ctx context.Context, t *Transport, req, resp any) error {
+	r, ok := req.(*watchRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "Watch"}
+	}
+	ch, err := t.Watch(ctx, r.Key, r.Opts)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(*<-chan transport.WatchResponse); ok {
+		*out = ch
+	}
+	return nil
+}
+
+func handleWatchPrefix(ctx context.Context, t *Transport, req, resp any) error {
+	r, ok := req.(*watchPrefixRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "WatchPrefix"}
+	}
+	ch, err := t.WatchPrefix(ctx, r.Prefix, r.Opts)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(*<-chan transport.WatchResponse); ok {
+		*out = ch
+	}
+	return nil
+}
+
+func handleLeaseGrant(ctx context.Context, t *Transport, req, resp any) error {
+	r, ok := req.(*leaseGrantRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "LeaseGrant"}
+	}
+	info, err := t.LeaseGrant(ctx, r.TTL)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(**transport.LeaseInfo); ok {
+		*out = info
+	}
+	return nil
+}
+
+func handleLeaseRevoke(ctx context.Context, t *Transport, req, _ any) error {
+	r, ok := req.(*leaseRevokeRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "LeaseRevoke"}
+	}
+	return t.LeaseRevoke(ctx, r.LeaseID)
+}
+
+func handleLeaseKeepAlive(ctx context.Context, t *Transport, req, resp any) error {
+	r, ok := req.(*leaseKeepAliveRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "LeaseKeepAlive"}
+	}
+	info, err := t.LeaseKeepAlive(ctx, r.LeaseID)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(**transport.LeaseInfo); ok {
+		*out = info
+	}
+	return nil
+}
+
+func handleLeaseTimeToLive(ctx context.Context, t *Transport, req, resp any) error {
+	r, ok := req.(*leaseTimeToLiveRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "LeaseTimeToLive"}
+	}
+	info, err := t.LeaseTimeToLive(ctx, r.LeaseID)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(**transport.LeaseInfo); ok {
+		*out = info
+	}
+	return nil
+}
+
+func handleLeaseList(ctx context.Context, t *Transport, _, resp any) error {
+	leases, err := t.LeaseList(ctx)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(*[]*transport.LeaseInfo); ok {
+		*out = leases
+	}
+	return nil
+}
+
+func handleTSWrite(ctx context.Context, t *Transport, req, _ any) error {
+	r, ok := req.(*transport.TSDataPoint)
+	if !ok {
+		return &InvalidRequestError{Method: "TSWrite"}
+	}
+	return t.TSWrite(ctx, r)
+}
+
+func handleTSWriteBatch(ctx context.Context, t *Transport, req, _ any) error {
+	r, ok := req.(*tsWriteBatchRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "TSWriteBatch"}
+	}
+	return t.TSWriteBatch(ctx, r.Points)
+}
+
+func handleTSQuery(ctx context.Context, t *Transport, req, resp any) error {
+	r, ok := req.(*transport.TSQueryRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "TSQuery"}
+	}
+	result, err := t.TSQuery(ctx, r)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(**transport.TSQueryResponse); ok {
+		*out = result
+	}
+	return nil
+}
+
+func handleTSAggregate(ctx context.Context, t *Transport, req, resp any) error {
+	r, ok := req.(*transport.TSAggregateRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "TSAggregate"}
+	}
+	result, err := t.TSAggregate(ctx, r)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(**transport.TSAggregateResponse); ok {
+		*out = result
+	}
+	return nil
+}
+
+func handleTSWritePoint(ctx context.Context, t *Transport, req, _ any) error {
+	r, ok := req.(*transport.TSDataPoint)
+	if !ok {
+		return &InvalidRequestError{Method: "TSWritePoint"}
+	}
+	return t.TSWritePoint(ctx, r)
+}
+
+func handleTSRichQuery(ctx context.Context, t *Transport, req, resp any) error {
+	r, ok := req.(*transport.TSRichQueryRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "TSRichQuery"}
+	}
+	result, err := t.TSRichQuery(ctx, r)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(**transport.TSRichQueryResponse); ok {
+		*out = result
+	}
+	return nil
+}
+
+func handleTSDeleteSeries(ctx context.Context, t *Transport, req, resp any) error {
+	r, ok := req.(*transport.TSDeleteRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "TSDeleteSeries"}
+	}
+	result, err := t.TSDeleteSeries(ctx, r)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(**transport.TSDeleteResponse); ok {
+		*out = result
+	}
+	return nil
+}
+
+func handleTSGetRetention(ctx context.Context, t *Transport, req, resp any) error {
+	r, ok := req.(*transport.TSGetRetentionRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "TSGetRetention"}
+	}
+	result, err := t.TSGetRetention(ctx, r)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(**transport.TSGetRetentionResponse); ok {
+		*out = result
+	}
+	return nil
+}
+
+func handleTSSetRetention(ctx context.Context, t *Transport, req, _ any) error {
+	r, ok := req.(*transport.TSSetRetentionRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "TSSetRetention"}
+	}
+	return t.TSSetRetention(ctx, r)
+}
+
+func handleTSListMetrics(ctx context.Context, t *Transport, req, resp any) error {
+	r, ok := req.(*transport.TSListMetricsRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "TSListMetrics"}
+	}
+	result, err := t.TSListMetrics(ctx, r)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(**transport.TSListMetricsResponse); ok {
+		*out = result
+	}
+	return nil
+}
+
+func handleCreateNamespace(ctx context.Context, t *Transport, req, resp any) error {
+	r, ok := req.(*transport.CreateNamespaceRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "CreateNamespace"}
+	}
+	result, err := t.CreateNamespace(ctx, r)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(**transport.CreateNamespaceResponse); ok {
+		*out = result
+	}
+	return nil
+}
+
+func handleDeleteNamespace(ctx context.Context, t *Transport, req, resp any) error {
+	r, ok := req.(*transport.DeleteNamespaceRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "DeleteNamespace"}
+	}
+	result, err := t.DeleteNamespace(ctx, r)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(**transport.DeleteNamespaceResponse); ok {
+		*out = result
+	}
+	return nil
+}
+
+func handleListNamespaces(ctx context.Context, t *Transport, req, resp any) error {
+	r, ok := req.(*transport.ListNamespacesRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "ListNamespaces"}
+	}
+	result, err := t.ListNamespaces(ctx, r)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(**transport.ListNamespacesResponse); ok {
+		*out = result
+	}
+	return nil
+}
+
+func handleGetNamespaceInfo(ctx context.Context, t *Transport, req, resp any) error {
+	r, ok := req.(*transport.GetNamespaceInfoRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "GetNamespaceInfo"}
+	}
+	result, err := t.GetNamespaceInfo(ctx, r)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(**transport.GetNamespaceInfoResponse); ok {
+		*out = result
+	}
+	return nil
+}
+
+func handleUpsertVector(ctx context.Context, t *Transport, req, resp any) error {
+	r, ok := req.(*transport.UpsertVectorRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "UpsertVector"}
+	}
+	result, err := t.UpsertVector(ctx, r)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(**transport.UpsertVectorResponse); ok {
+		*out = result
+	}
+	return nil
+}
+
+func handleGetVector(ctx context.Context, t *Transport, req, resp any) error {
+	r, ok := req.(*transport.GetVectorRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "GetVector"}
+	}
+	result, err := t.GetVector(ctx, r)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(**transport.GetVectorResponse); ok {
+		*out = result
+	}
+	return nil
+}
+
+func handleDeleteVector(ctx context.Context, t *Transport, req, resp any) error {
+	r, ok := req.(*transport.DeleteVectorRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "DeleteVector"}
+	}
+	result, err := t.DeleteVector(ctx, r)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(**transport.DeleteVectorResponse); ok {
+		*out = result
+	}
+	return nil
+}
+
+func handleBatchUpsert(ctx context.Context, t *Transport, req, resp any) error {
+	r, ok := req.(*transport.BatchUpsertRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "BatchUpsert"}
+	}
+	result, err := t.BatchUpsert(ctx, r)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(**transport.BatchUpsertResponse); ok {
+		*out = result
+	}
+	return nil
+}
+
+func handleBatchDeleteVectors(ctx context.Context, t *Transport, req, resp any) error {
+	r, ok := req.(*transport.BatchDeleteVectorsRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "BatchDeleteVectors"}
+	}
+	result, err := t.BatchDeleteVectors(ctx, r)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(**transport.BatchDeleteVectorsResponse); ok {
+		*out = result
+	}
+	return nil
+}
+
+func handleListVectors(ctx context.Context, t *Transport, req, resp any) error {
+	r, ok := req.(*transport.ListVectorsRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "ListVectors"}
+	}
+	result, err := t.ListVectors(ctx, r)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(**transport.ListVectorsResponse); ok {
+		*out = result
+	}
+	return nil
+}
+
+func handleUpdateMetadata(ctx context.Context, t *Transport, req, resp any) error {
+	r, ok := req.(*transport.UpdateVectorMetadataRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "UpdateMetadata"}
+	}
+	result, err := t.UpdateMetadata(ctx, r)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(**transport.UpdateVectorMetadataResponse); ok {
+		*out = result
+	}
+	return nil
+}
+
+func handleSearchSimilar(ctx context.Context, t *Transport, req, resp any) error {
+	r, ok := req.(*transport.SearchSimilarRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "SearchSimilar"}
+	}
+	result, err := t.SearchSimilar(ctx, r)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(**transport.SearchSimilarResponse); ok {
+		*out = result
+	}
+	return nil
+}
+
+func handleSearchByMetadata(ctx context.Context, t *Transport, req, resp any) error {
+	r, ok := req.(*transport.SearchByMetadataRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "SearchByMetadata"}
+	}
+	result, err := t.SearchByMetadata(ctx, r)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(**transport.SearchByMetadataResponse); ok {
+		*out = result
+	}
+	return nil
+}
+
+func handleHybridSearch(ctx context.Context, t *Transport, req, resp any) error {
+	r, ok := req.(*transport.HybridSearchRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "HybridSearch"}
+	}
+	result, err := t.HybridSearch(ctx, r)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(**transport.HybridSearchResponse); ok {
+		*out = result
+	}
+	return nil
+}
+
+func handleSearchByID(ctx context.Context, t *Transport, req, resp any) error {
+	r, ok := req.(*transport.SearchByIDRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "SearchByID"}
+	}
+	result, err := t.SearchByID(ctx, r)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(**transport.SearchByIDResponse); ok {
+		*out = result
+	}
+	return nil
+}
+
+func handleRebuildIndex(ctx context.Context, t *Transport, req, resp any) error {
+	r, ok := req.(*transport.RebuildIndexRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "RebuildIndex"}
+	}
+	result, err := t.RebuildIndex(ctx, r)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(**transport.RebuildIndexResponse); ok {
+		*out = result
+	}
+	return nil
+}
+
+func handleGetRebuildProgress(ctx context.Context, t *Transport, req, resp any) error {
+	r, ok := req.(*transport.GetRebuildProgressRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "GetRebuildProgress"}
+	}
+	result, err := t.GetRebuildProgress(ctx, r)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(**transport.GetRebuildProgressResponse); ok {
+		*out = result
+	}
+	return nil
+}
+
+func handleGetIndexStats(ctx context.Context, t *Transport, req, resp any) error {
+	r, ok := req.(*transport.GetIndexStatsRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "GetIndexStats"}
+	}
+	result, err := t.GetIndexStats(ctx, r)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(**transport.GetIndexStatsResponse); ok {
+		*out = result
+	}
+	return nil
+}
+
+func handleCompactNamespace(ctx context.Context, t *Transport, req, resp any) error {
+	r, ok := req.(*transport.CompactNamespaceRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "CompactNamespace"}
+	}
+	result, err := t.CompactNamespace(ctx, r)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(**transport.CompactNamespaceResponse); ok {
+		*out = result
+	}
+	return nil
+}
+
+func handleGetCompactionProgress(ctx context.Context, t *Transport, req, resp any) error {
+	r, ok := req.(*transport.GetCompactionProgressRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "GetCompactionProgress"}
+	}
+	result, err := t.GetCompactionProgress(ctx, r)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(**transport.GetCompactionProgressResponse); ok {
+		*out = result
+	}
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // Generic request types for Request dispatch
 // ---------------------------------------------------------------------------
@@ -393,4 +3158,59 @@ type deleteRequest struct {
 
 type listRequest struct {
 	Prefix string
+}
+
+type putWithLeaseRequest struct {
+	Key     string
+	Value   []byte
+	LeaseID int64
+}
+
+type getRevisionRequest struct {
+	Key string
+}
+
+type getAtRevisionRequest struct {
+	Key      string
+	Revision int64
+}
+
+type rangeRequest struct {
+	Start []byte
+	End   []byte
+	Opts  transport.RangeOptions
+}
+
+type compactRequest struct {
+	Revision int64
+}
+
+type watchRequest struct {
+	Key  string
+	Opts transport.WatchOptions
+}
+
+type watchPrefixRequest struct {
+	Prefix string
+	Opts   transport.WatchOptions
+}
+
+type leaseGrantRequest struct {
+	TTL int64
+}
+
+type leaseRevokeRequest struct {
+	LeaseID int64
+}
+
+type leaseKeepAliveRequest struct {
+	LeaseID int64
+}
+
+type leaseTimeToLiveRequest struct {
+	LeaseID int64
+}
+
+type tsWriteBatchRequest struct {
+	Points []transport.TSDataPoint
 }

@@ -23,11 +23,15 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/kv"
+	"github.com/jeremyhahn/go-qrdb/pkg/lock"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -74,6 +78,19 @@ type healthResponse struct {
 	IsLeader bool   `json:"is_leader"`
 }
 
+// capabilitiesResponse is the JSON payload returned by GET /capabilities.
+type capabilitiesResponse struct {
+	KV          bool `json:"kv"`
+	MVCC        bool `json:"mvcc"`
+	Transaction bool `json:"transaction"`
+	Batch       bool `json:"batch"`
+	Watch       bool `json:"watch"`
+	Lease       bool `json:"lease"`
+	Index       bool `json:"index"`
+	TimeSeries  bool `json:"timeSeries"`
+	Vector      bool `json:"vector"`
+}
+
 // drainResponse is the JSON payload returned by POST /drain.
 type drainResponse struct {
 	Status string `json:"status"`
@@ -83,6 +100,11 @@ type drainResponse struct {
 // kvListResponse is the JSON payload returned by GET /kv?prefix=X.
 type kvListResponse struct {
 	Keys []string `json:"keys"`
+}
+
+// kvScanResponse is the JSON payload returned by GET /kv/scan?prefix=X.
+type kvScanResponse struct {
+	Pairs map[string][]byte `json:"pairs"`
 }
 
 // okResponse is a simple JSON success response.
@@ -212,6 +234,27 @@ func (s *Server) handleDrain(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, drainResponse{Status: "drained"})
 }
 
+// handleCapabilities returns the compile-time feature set of the QRDB binary.
+func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
+	caps, err := s.adminSvc.Capabilities(r.Context())
+	if err != nil {
+		writeErrorJSON(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	writeJSON(w, capabilitiesResponse{
+		KV:          caps.KV,
+		MVCC:        caps.MVCC,
+		Transaction: caps.Transaction,
+		Batch:       caps.Batch,
+		Watch:       caps.Watch,
+		Lease:       caps.Lease,
+		Index:       caps.Index,
+		TimeSeries:  caps.TimeSeries,
+		Vector:      caps.Vector,
+	})
+}
+
 // handleMetrics serves Prometheus metrics from the configured gatherer.
 func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	promhttp.HandlerFor(s.gatherer, promhttp.HandlerOpts{}).ServeHTTP(w, r)
@@ -249,8 +292,10 @@ func (s *Server) handleKV(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleKVPut handles PUT /kv/{key} -- stores a key-value pair. When the
-// local node is not the leader and leader forwarding is configured, the
-// request is transparently proxied to the leader.
+// lease-id query parameter is present and the MVCC service is configured,
+// the value is stored with the specified lease attachment. When the local
+// node is not the leader and leader forwarding is configured, the request
+// is transparently proxied to the leader.
 func (s *Server) handleKVPut(w http.ResponseWriter, r *http.Request, key string) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -259,6 +304,30 @@ func (s *Server) handleKVPut(w http.ResponseWriter, r *http.Request, key string)
 	}
 
 	ctx := r.Context()
+
+	// Check for lease-id query parameter for PutWithLease.
+	if leaseIDStr := r.URL.Query().Get("lease-id"); leaseIDStr != "" {
+		if s.mvccSvc == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "mvcc"})
+			return
+		}
+		leaseID, parseErr := strconv.ParseInt(leaseIDStr, 10, 64)
+		if parseErr != nil {
+			writeErrorJSON(w, http.StatusBadRequest, &InvalidParameterError{Param: "lease-id", Err: parseErr})
+			return
+		}
+		kv, putErr := s.mvccSvc.PutWithLease(ctx, key, body, leaseID)
+		if putErr != nil {
+			if s.tryForwardWrite(w, r, key, body, putErr) {
+				return
+			}
+			writeErrorJSON(w, mapHTTPError(putErr), putErr)
+			return
+		}
+		writeJSON(w, kvToResponse(kv))
+		return
+	}
+
 	if err := s.kvSvc.Put(ctx, key, body); err != nil {
 		if s.tryForwardWrite(w, r, key, body, err) {
 			return
@@ -270,10 +339,59 @@ func (s *Server) handleKVPut(w http.ResponseWriter, r *http.Request, key string)
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleKVGet handles GET /kv/{key} -- retrieves a value by key.
+// handleKVGet handles GET /kv/{key} -- retrieves a value by key. When the
+// revision=true query parameter is present, returns the full KeyValue with
+// MVCC metadata. When at-revision=N is present, returns the key as it
+// existed at that historical revision.
 func (s *Server) handleKVGet(w http.ResponseWriter, r *http.Request, key string) {
 	ctx := r.Context()
-	data, err := s.kvSvc.Get(ctx, key)
+	q := r.URL.Query()
+
+	// GET /kv/{key}?at-revision=N -- historical revision read.
+	if atRevStr := q.Get("at-revision"); atRevStr != "" {
+		if s.mvccSvc == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "mvcc"})
+			return
+		}
+		rev, parseErr := strconv.ParseInt(atRevStr, 10, 64)
+		if parseErr != nil {
+			writeErrorJSON(w, http.StatusBadRequest, &InvalidParameterError{Param: "at-revision", Err: parseErr})
+			return
+		}
+		kv, getErr := s.mvccSvc.GetAtRevision(ctx, key, rev)
+		if getErr != nil {
+			writeErrorJSON(w, mapHTTPError(getErr), getErr)
+			return
+		}
+		writeJSON(w, kvToResponse(kv))
+		return
+	}
+
+	// GET /kv/{key}?revision=true -- full KeyValue with MVCC metadata.
+	if q.Get("revision") == "true" {
+		if s.mvccSvc == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "mvcc"})
+			return
+		}
+		kv, getErr := s.mvccSvc.GetRevision(ctx, key)
+		if getErr != nil {
+			writeErrorJSON(w, mapHTTPError(getErr), getErr)
+			return
+		}
+		writeJSON(w, kvToResponse(kv))
+		return
+	}
+
+	// Default: simple byte value retrieval. When ?stale=true, reads from
+	// the local state machine without Raft coordination for sub-millisecond
+	// latency (may return stale data).
+	var data []byte
+	var err error
+	if q.Get("stale") == "true" {
+		data, err = s.kvSvc.GetStale(ctx, key)
+	} else {
+		data, err = s.kvSvc.Get(ctx, key)
+	}
 	if err != nil {
 		var knf *service.KeyNotFoundError
 		if errors.As(err, &knf) {
@@ -305,18 +423,42 @@ func (s *Server) handleKVDelete(w http.ResponseWriter, r *http.Request, key stri
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleKVList handles GET /kv?prefix=X -- lists keys by prefix.
+// handleKVList handles GET /kv?prefix=X -- lists keys by prefix. When
+// ?stale=true, reads from the local state machine without Raft coordination
+// for sub-millisecond latency (may return stale data).
 func (s *Server) handleKVList(w http.ResponseWriter, r *http.Request) {
-	prefix := r.URL.Query().Get("prefix")
+	q := r.URL.Query()
+	prefix := q.Get("prefix")
 
 	ctx := r.Context()
-	keys, err := s.kvSvc.List(ctx, prefix)
+	var keys []string
+	var err error
+	if q.Get("stale") == "true" {
+		keys, err = s.kvSvc.ListStale(ctx, prefix)
+	} else {
+		keys, err = s.kvSvc.List(ctx, prefix)
+	}
 	if err != nil {
 		writeErrorJSON(w, http.StatusInternalServerError, &ReadError{Err: err})
 		return
 	}
 
 	writeJSON(w, kvListResponse{Keys: keys})
+}
+
+// handleKVScan handles GET /kv/scan?prefix=X -- returns key-value pairs
+// matching the given prefix.
+func (s *Server) handleKVScan(w http.ResponseWriter, r *http.Request) {
+	prefix := r.URL.Query().Get("prefix")
+
+	ctx := r.Context()
+	pairs, err := s.kvSvc.Scan(ctx, prefix)
+	if err != nil {
+		writeErrorJSON(w, http.StatusInternalServerError, &ReadError{Err: err})
+		return
+	}
+
+	writeJSON(w, kvScanResponse{Pairs: pairs})
 }
 
 // ---------------------------------------------------------------------------
@@ -496,20 +638,221 @@ func writeErrorJSON(w http.ResponseWriter, code int, err error) {
 }
 
 // ---------------------------------------------------------------------------
+// Error mapping
+// ---------------------------------------------------------------------------
+
+// mapHTTPError maps service-layer errors to the appropriate HTTP status code.
+// Returns 500 Internal Server Error for unrecognized errors.
+func mapHTTPError(err error) int {
+	var knf *service.KeyNotFoundError
+	var rce *service.RevisionCompactedError
+	var rnf *service.RevisionNotFoundError
+	var tc *service.TransactionConflictError
+	var wc *service.WatchCanceledError
+	var lnf *service.LeaseNotFoundError
+	var le *service.LeaseExpiredError
+	var lex *service.LeaseExistsError
+	var be *service.BatchError
+	var inf *service.IndexNotFoundError
+	var ie *service.IndexExistsError
+	var tse *service.TimeSeriesError
+	var ce *service.ConsistencyError
+	var nle *service.NotLeaderError
+	var vnf *service.VectorNotFoundError
+	var nsnf *service.NamespaceNotFoundError
+	var nse *service.NamespaceExistsError
+	var dme *service.DimensionMismatchError
+	var ive *service.InvalidVectorError
+	var iif *service.ImportInvalidFormatError
+	var ivm *service.ImportInvalidValueModeError
+	var imk *service.ImportMissingKeyFieldError
+	var imv *service.ImportMissingValueFieldError
+	var ipe *service.ImportParseError
+	var iae *service.ImportArchiveError
+	var ita *service.ImportTransactionAbortedError
+	var dbae *database.AlreadyExistsError
+	var dbnf *database.NotFoundError
+	var dbine *database.InvalidNameError
+	var dbiene *database.InvalidEngineError
+	var dbibe *database.InvalidBackendError
+	var cae *service.CollectionAlreadyExistsError
+	var cnf *service.CollectionNotFoundError
+	var cen *service.CollectionEmptyNameError
+	var ced *service.CollectionEmptyDatabaseError
+	var cis *service.CollectionInvalidIDStrategyError
+	var cmf *service.CollectionMissingFieldHashError
+	var cdnf *service.CollectionDocumentNotFoundError
+	var cedc *service.CollectionEmptyDocumentError
+	var cidi *service.CollectionInvalidDocumentIDError
+	var cme *service.CollectionMetadataError
+	var lhe *lock.LockHeldError
+	var nlhe *lock.NotLockHolderError
+	var lnfe *lock.LockNotFoundError
+
+	switch {
+	case errors.As(err, &knf):
+		return http.StatusNotFound
+	case errors.As(err, &rce):
+		return http.StatusRequestedRangeNotSatisfiable
+	case errors.As(err, &rnf):
+		return http.StatusNotFound
+	case errors.As(err, &tc):
+		return http.StatusConflict
+	case errors.As(err, &wc):
+		return http.StatusInternalServerError
+	case errors.As(err, &lnf):
+		return http.StatusNotFound
+	case errors.As(err, &le):
+		return http.StatusNotFound
+	case errors.As(err, &lex):
+		return http.StatusConflict
+	case errors.As(err, &be):
+		return http.StatusInternalServerError
+	case errors.As(err, &inf):
+		return http.StatusNotFound
+	case errors.As(err, &ie):
+		return http.StatusConflict
+	case errors.As(err, &tse):
+		return http.StatusInternalServerError
+	case errors.As(err, &ce):
+		return http.StatusPreconditionFailed
+	case errors.As(err, &nle):
+		return http.StatusServiceUnavailable
+	case errors.As(err, &vnf):
+		return http.StatusNotFound
+	case errors.As(err, &nsnf):
+		return http.StatusNotFound
+	case errors.As(err, &nse):
+		return http.StatusConflict
+	case errors.As(err, &dme):
+		return http.StatusBadRequest
+	case errors.As(err, &ive):
+		return http.StatusBadRequest
+	case errors.As(err, &iif):
+		return http.StatusBadRequest
+	case errors.As(err, &ivm):
+		return http.StatusBadRequest
+	case errors.As(err, &imk):
+		return http.StatusBadRequest
+	case errors.As(err, &imv):
+		return http.StatusBadRequest
+	case errors.As(err, &ipe):
+		return http.StatusBadRequest
+	case errors.As(err, &iae):
+		return http.StatusBadRequest
+	case errors.As(err, &ita):
+		return http.StatusConflict
+	case errors.As(err, &dbae):
+		return http.StatusConflict
+	case errors.As(err, &dbnf):
+		return http.StatusNotFound
+	case errors.As(err, &dbine):
+		return http.StatusBadRequest
+	case errors.As(err, &dbiene):
+		return http.StatusBadRequest
+	case errors.As(err, &dbibe):
+		return http.StatusBadRequest
+	case errors.As(err, &cae):
+		return http.StatusConflict
+	case errors.As(err, &cnf):
+		return http.StatusNotFound
+	case errors.As(err, &cen):
+		return http.StatusBadRequest
+	case errors.As(err, &ced):
+		return http.StatusBadRequest
+	case errors.As(err, &cis):
+		return http.StatusBadRequest
+	case errors.As(err, &cmf):
+		return http.StatusBadRequest
+	case errors.As(err, &cdnf):
+		return http.StatusNotFound
+	case errors.As(err, &cedc):
+		return http.StatusBadRequest
+	case errors.As(err, &cidi):
+		return http.StatusBadRequest
+	case errors.As(err, &cme):
+		return http.StatusInternalServerError
+	case errors.As(err, &lhe):
+		return http.StatusConflict
+	case errors.As(err, &nlhe):
+		return http.StatusForbidden
+	case errors.As(err, &lnfe):
+		return http.StatusNotFound
+	default:
+		// Allow build-tagged packages to extend the error mapping.
+		if ragErrorMapperFn != nil {
+			if code, ok := ragErrorMapperFn(err); ok {
+				return code
+			}
+		}
+		return http.StatusInternalServerError
+	}
+}
+
+// ragErrorMapperFn is optionally populated by a build-tagged init() to map
+// RAG-specific typed errors to HTTP status codes without creating a build
+// dependency on qrdb_vector types in this file.
+var ragErrorMapperFn func(err error) (int, bool)
+
+// ---------------------------------------------------------------------------
+// KeyValue JSON response
+// ---------------------------------------------------------------------------
+
+// kvResponse is the JSON representation of an MVCC key-value pair.
+type kvResponse struct {
+	Key            string `json:"key"`
+	Value          string `json:"value"`
+	CreateRevision int64  `json:"create_revision"`
+	ModRevision    int64  `json:"mod_revision"`
+	Version        int64  `json:"version"`
+	LeaseID        int64  `json:"lease_id"`
+}
+
+// kvToResponse converts a kv.KeyValue to its JSON response representation.
+// Key and Value are encoded as base64 via the standard JSON string encoding
+// of []byte.
+func kvToResponse(kv *kv.KeyValue) *kvResponse {
+	if kv == nil {
+		return nil
+	}
+	return &kvResponse{
+		Key:            string(kv.Key),
+		Value:          string(kv.Value),
+		CreateRevision: kv.CreateRevision,
+		ModRevision:    kv.ModRevision,
+		Version:        kv.Version,
+		LeaseID:        kv.LeaseID,
+	}
+}
+
+// kvsToResponse converts a slice of kv.KeyValue to JSON response format.
+func kvsToResponse(kvs []*kv.KeyValue) []*kvResponse {
+	resp := make([]*kvResponse, len(kvs))
+	for i, v := range kvs {
+		resp[i] = kvToResponse(v)
+	}
+	return resp
+}
+
+// ---------------------------------------------------------------------------
 // fetchJSON
 // ---------------------------------------------------------------------------
 
 // fetchJSON issues an HTTP GET to the given URL and decodes the JSON
 // response into dst. The caCertPool is used to verify the server's TLS
 // certificate; when nil the system pool is used.
-func fetchJSON(url string, dst any, caCertPool *x509.CertPool) error {
+func fetchJSON(url string, dst any, caCertPool *x509.CertPool, clientCerts ...tls.Certificate) error {
+	tlsCfg := &tls.Config{
+		RootCAs:    caCertPool,
+		MinVersion: tls.VersionTLS13,
+	}
+	if len(clientCerts) > 0 {
+		tlsCfg.Certificates = clientCerts
+	}
 	client := &http.Client{
 		Timeout: 5 * time.Second,
 		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				RootCAs:    caCertPool,
-				MinVersion: tls.VersionTLS13,
-			},
+			TLSClientConfig:   tlsCfg,
 			ForceAttemptHTTP2: true,
 		},
 	}

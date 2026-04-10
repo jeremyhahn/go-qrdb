@@ -1,0 +1,89 @@
+# Copyright 2026 Jeremy Hahn
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+services:
+  devcontainer:
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
+    image: go-qrdb-dev:latest
+    volumes:
+      - ..:/workspace/go-qrdb
+      - ../../go-quicraft:/workspace/go-quicraft
+      - ../../go-truststrap:/workspace/go-truststrap
+    working_dir: /workspace/go-qrdb
+    cap_add:
+      - NET_ADMIN
+
+  client-build:
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
+    image: go-qrdb-dev:latest
+    volumes:
+      - ..:/workspace/go-qrdb
+      - ../../go-quicraft:/workspace/go-quicraft
+      - ../../go-truststrap:/workspace/go-truststrap
+    working_dir: /workspace/go-qrdb
+    command: ["make", "_build-client"]
+
+  e2e:
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
+    image: go-qrdb-e2e:latest
+    volumes:
+      - ..:/workspace/go-qrdb
+      - ../../go-quicraft:/workspace/go-quicraft
+      - ../../go-truststrap:/workspace/go-truststrap
+    working_dir: /workspace/go-qrdb
+    environment:
+      - CI=true
+    command: ["make", "_test-e2e"]
+
+  devcontainer-gpu:
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile.gpu
+    image: go-qrdb-gpu-dev:latest
+    volumes:
+      - ..:/workspace/go-qrdb
+      - ../../go-quicraft:/workspace/go-quicraft
+      - ../../go-truststrap:/workspace/go-truststrap
+    working_dir: /workspace/go-qrdb
+    cap_add:
+      - NET_ADMIN
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  benchmark:
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
+    image: go-qrdb-dev:latest
+    volumes:
+      - ..:/workspace/go-qrdb
+      - ../../go-quicraft:/workspace/go-quicraft
+      - ../../go-truststrap:/workspace/go-truststrap
+    working_dir: /workspace/go-qrdb
+    cap_add:
+      - NET_ADMIN

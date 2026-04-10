@@ -26,7 +26,10 @@ import (
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
 	"github.com/spf13/cobra"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
+	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
 
 // ---------------------------------------------------------------------------
@@ -70,6 +73,74 @@ func (m *mockKVService) List(_ context.Context, prefix string) ([]string, error)
 	return keys, nil
 }
 
+func (m *mockKVService) Scan(_ context.Context, prefix string) (map[string][]byte, error) {
+	result := make(map[string][]byte)
+	for k, v := range m.store {
+		if prefix == "" || strings.HasPrefix(k, prefix) {
+			result[k] = v
+		}
+	}
+	return result, nil
+}
+
+func (m *mockKVService) PutEntity(_ context.Context, _ *service.PutEntityRequest) (*service.PutEntityResponse, error) {
+	return nil, nil
+}
+
+func (m *mockKVService) GetEntity(_ context.Context, _ *service.GetEntityRequest) (*service.GetEntityResponse, error) {
+	return nil, nil
+}
+
+func (m *mockKVService) DeleteEntity(_ context.Context, _ *service.DeleteEntityRequest) (*service.DeleteEntityResponse, error) {
+	return nil, nil
+}
+
+func (m *mockKVService) ListEntities(_ context.Context, _ *service.ListEntitiesRequest) (*service.ListEntitiesResponse, error) {
+	return nil, nil
+}
+
+func (m *mockKVService) GetStale(ctx context.Context, key string) ([]byte, error) {
+	return m.Get(ctx, key)
+}
+
+func (m *mockKVService) ListStale(ctx context.Context, prefix string) ([]string, error) {
+	return m.List(ctx, prefix)
+}
+
+func (m *mockKVService) ScanStale(ctx context.Context, prefix string) (map[string][]byte, error) {
+	return m.Scan(ctx, prefix)
+}
+
+func (m *mockKVService) PutWithMode(_ context.Context, key string, value []byte, _ writemode.Mode) error {
+	m.store[key] = value
+	return nil
+}
+
+func (m *mockKVService) DeleteWithMode(_ context.Context, key string, _ writemode.Mode) error {
+	delete(m.store, key)
+	return nil
+}
+
+func (m *mockKVService) GetWithConsistency(ctx context.Context, key string, _ consistency.ReadOptions) ([]byte, error) {
+	return m.Get(ctx, key)
+}
+
+func (m *mockKVService) ListWithConsistency(ctx context.Context, prefix string, _ consistency.ReadOptions) ([]string, error) {
+	return m.List(ctx, prefix)
+}
+
+func (m *mockKVService) ScanWithConsistency(ctx context.Context, prefix string, _ consistency.ReadOptions) (map[string][]byte, error) {
+	return m.Scan(ctx, prefix)
+}
+
+func (m *mockKVService) ExistsWithConsistency(ctx context.Context, key string, _ consistency.ReadOptions) (bool, error) {
+	v, err := m.Get(ctx, key)
+	if err != nil {
+		return false, nil
+	}
+	return v != nil, nil
+}
+
 // errorKVService implements service.KVServicer that returns errors.
 type errorKVService struct{}
 
@@ -87,6 +158,62 @@ func (e *errorKVService) Delete(_ context.Context, _ string) error {
 
 func (e *errorKVService) List(_ context.Context, _ string) ([]string, error) {
 	return nil, &service.ReadError{Err: errors.New("read failed")}
+}
+
+func (e *errorKVService) Scan(_ context.Context, _ string) (map[string][]byte, error) {
+	return nil, &service.ReadError{Err: errors.New("scan failed")}
+}
+
+func (e *errorKVService) PutEntity(_ context.Context, _ *service.PutEntityRequest) (*service.PutEntityResponse, error) {
+	return nil, nil
+}
+
+func (e *errorKVService) GetEntity(_ context.Context, _ *service.GetEntityRequest) (*service.GetEntityResponse, error) {
+	return nil, nil
+}
+
+func (e *errorKVService) DeleteEntity(_ context.Context, _ *service.DeleteEntityRequest) (*service.DeleteEntityResponse, error) {
+	return nil, nil
+}
+
+func (e *errorKVService) ListEntities(_ context.Context, _ *service.ListEntitiesRequest) (*service.ListEntitiesResponse, error) {
+	return nil, nil
+}
+
+func (e *errorKVService) GetStale(ctx context.Context, key string) ([]byte, error) {
+	return e.Get(ctx, key)
+}
+
+func (e *errorKVService) ListStale(ctx context.Context, prefix string) ([]string, error) {
+	return e.List(ctx, prefix)
+}
+
+func (e *errorKVService) ScanStale(ctx context.Context, prefix string) (map[string][]byte, error) {
+	return e.Scan(ctx, prefix)
+}
+
+func (e *errorKVService) PutWithMode(_ context.Context, _ string, _ []byte, _ writemode.Mode) error {
+	return &service.ProposeError{Err: errors.New("raft unavailable")}
+}
+
+func (e *errorKVService) DeleteWithMode(_ context.Context, _ string, _ writemode.Mode) error {
+	return &service.ProposeError{Err: errors.New("raft unavailable")}
+}
+
+func (e *errorKVService) GetWithConsistency(_ context.Context, _ string, _ consistency.ReadOptions) ([]byte, error) {
+	return nil, &service.ReadError{Err: errors.New("read failed")}
+}
+
+func (e *errorKVService) ListWithConsistency(_ context.Context, _ string, _ consistency.ReadOptions) ([]string, error) {
+	return nil, &service.ReadError{Err: errors.New("read failed")}
+}
+
+func (e *errorKVService) ScanWithConsistency(_ context.Context, _ string, _ consistency.ReadOptions) (map[string][]byte, error) {
+	return nil, &service.ReadError{Err: errors.New("scan failed")}
+}
+
+func (e *errorKVService) ExistsWithConsistency(_ context.Context, _ string, _ consistency.ReadOptions) (bool, error) {
+	return false, &service.ReadError{Err: errors.New("read failed")}
 }
 
 // mockAdminService implements service.AdminServicer for testing.
@@ -145,6 +272,34 @@ func (m *mockAdminService) Drain(_ context.Context) error {
 	return m.drainErr
 }
 
+func (m *mockAdminService) Capabilities(_ context.Context) (*capabilities.Capabilities, error) {
+	return &capabilities.Capabilities{
+		KV:          true,
+		MVCC:        true,
+		Transaction: true,
+		Batch:       true,
+		Watch:       true,
+		Lease:       true,
+		Index:       true,
+	}, nil
+}
+
+func (m *mockAdminService) StartShard(_ context.Context, _ *service.StartShardRequest) error {
+	return nil
+}
+
+func (m *mockAdminService) StopShard(_ context.Context, _ uint64) error {
+	return nil
+}
+
+func (m *mockAdminService) GetShardState(_ context.Context, _ uint64) (*service.ShardStateResponse, error) {
+	return &service.ShardStateResponse{}, nil
+}
+
+func (m *mockAdminService) GetTopology(_ context.Context) (*service.TopologyResponse, error) {
+	return &service.TopologyResponse{}, nil
+}
+
 // errorAdminService implements service.AdminServicer that returns errors.
 type errorAdminService struct{}
 
@@ -174,6 +329,26 @@ func (e *errorAdminService) RequestSnapshot(_ context.Context, _ uint64) error {
 
 func (e *errorAdminService) Drain(_ context.Context) error {
 	return &service.DrainError{Err: errors.New("already draining")}
+}
+
+func (e *errorAdminService) Capabilities(_ context.Context) (*capabilities.Capabilities, error) {
+	return nil, errors.New("capabilities unavailable")
+}
+
+func (e *errorAdminService) StartShard(_ context.Context, _ *service.StartShardRequest) error {
+	return errors.New("start shard unavailable")
+}
+
+func (e *errorAdminService) StopShard(_ context.Context, _ uint64) error {
+	return errors.New("stop shard unavailable")
+}
+
+func (e *errorAdminService) GetShardState(_ context.Context, _ uint64) (*service.ShardStateResponse, error) {
+	return nil, errors.New("get shard state unavailable")
+}
+
+func (e *errorAdminService) GetTopology(_ context.Context) (*service.TopologyResponse, error) {
+	return nil, errors.New("get topology unavailable")
 }
 
 // yamlBrokenMarshaler implements yaml.Marshaler to trigger a marshal
@@ -884,6 +1059,20 @@ func TestResolveTransportExplicit(t *testing.T) {
 			wantType:      "rest",
 			wantAddr:      defaultGRPCAddress,
 		},
+		{
+			name:          "explicit quic with address",
+			serverFlag:    "myhost:63004",
+			transportFlag: "quic",
+			wantType:      "quic",
+			wantAddr:      "myhost:63004",
+		},
+		{
+			name:          "explicit quic no address defaults",
+			serverFlag:    "",
+			transportFlag: "quic",
+			wantType:      "quic",
+			wantAddr:      defaultQUICAddress,
+		},
 	}
 
 	for _, tt := range tests {
@@ -929,6 +1118,36 @@ func TestResolveTransportAutoFromScheme(t *testing.T) {
 			server:   "myhost:9999",
 			wantType: "grpc",
 			wantAddr: "myhost:9999",
+		},
+		{
+			name:     "quic:// scheme",
+			server:   "quic://myhost:63004",
+			wantType: "quic",
+			wantAddr: "myhost:63004",
+		},
+		{
+			name:     "quics:// scheme",
+			server:   "quics://myhost:63004",
+			wantType: "quic",
+			wantAddr: "myhost:63004",
+		},
+		{
+			name:     "grpcs:// scheme",
+			server:   "grpcs://myhost:63003",
+			wantType: "grpc",
+			wantAddr: "myhost:63003",
+		},
+		{
+			name:     "grpc:// scheme",
+			server:   "grpc://myhost:63003",
+			wantType: "grpc",
+			wantAddr: "myhost:63003",
+		},
+		{
+			name:     "mcp:// scheme",
+			server:   "mcp://myhost:63005",
+			wantType: "mcp",
+			wantAddr: "https://myhost:63005/mcp",
 		},
 	}
 
@@ -1173,6 +1392,7 @@ func TestNewTransportAllBuilders(t *testing.T) {
 		{"grpc builder", transportGRPC},
 		{"unix builder", transportUnix},
 		{"mcp builder", transportMCP},
+		{"quic builder", transportQUIC},
 	}
 
 	for _, tt := range tests {

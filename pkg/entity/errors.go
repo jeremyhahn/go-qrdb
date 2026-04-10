@@ -1,0 +1,49 @@
+// Copyright 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package entity
+
+// AlreadyRegisteredError is returned when an entity type is re-registered
+// with a different struct type.
+type AlreadyRegisteredError struct {
+	EntityType string
+}
+
+// Error implements the error interface.
+func (e *AlreadyRegisteredError) Error() string {
+	return "entity: already registered with different type: " + e.EntityType
+}
+
+// NotRegisteredError is returned when a lookup finds no registration
+// for the requested entity type.
+type NotRegisteredError struct {
+	EntityType string
+}
+
+// Error implements the error interface.
+func (e *NotRegisteredError) Error() string {
+	return "entity: not registered: " + e.EntityType
+}
+
+// InvalidRegistrationError is returned when a Registration is missing
+// required fields.
+type InvalidRegistrationError struct {
+	Field  string
+	Reason string
+}
+
+// Error implements the error interface.
+func (e *InvalidRegistrationError) Error() string {
+	return "entity: invalid registration: " + e.Field + ": " + e.Reason
+}

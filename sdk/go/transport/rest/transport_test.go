@@ -91,6 +91,21 @@ func newTestServer(t *testing.T) *httptest.Server {
 			return
 		}
 
+		// Capabilities endpoint.
+		if r.URL.Path == "/capabilities" && r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(transport.CapabilitiesResponse{
+				KV:          true,
+				MVCC:        true,
+				Transaction: true,
+				Batch:       true,
+				Watch:       true,
+				Lease:       true,
+				Index:       true,
+			})
+			return
+		}
+
 		// Drain endpoint.
 		if r.URL.Path == "/drain" && r.Method == http.MethodPost {
 			w.Header().Set("Content-Type", "application/json")
@@ -183,6 +198,56 @@ func newTestServer(t *testing.T) *httptest.Server {
 			}
 		}
 
+		// StartShard endpoint: POST /admin/shards
+		if r.URL.Path == "/admin/shards" && r.Method == http.MethodPost {
+			var req transport.StartShardRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(transport.OKResponse{Status: "ok"})
+			return
+		}
+
+		// StopShard endpoint: DELETE /admin/shards/{shardID}
+		if strings.HasPrefix(r.URL.Path, "/admin/shards/") && !strings.HasSuffix(r.URL.Path, "/state") && r.Method == http.MethodDelete {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		// GetShardState endpoint: GET /admin/shards/{shardID}/state
+		if strings.HasSuffix(r.URL.Path, "/state") && strings.HasPrefix(r.URL.Path, "/admin/shards/") && r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(transport.ShardStateResponse{
+				ShardID:   1,
+				LeaderID:  1,
+				Term:      5,
+				HasLeader: true,
+			})
+			return
+		}
+
+		// GetTopology endpoint: GET /admin/topology
+		if r.URL.Path == "/admin/topology" && r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(transport.TopologyResponse{
+				NodeID:      "test-node",
+				RaftAddress: "127.0.0.1:63001",
+				ShardCount:  1,
+				Shards: []transport.ShardInfo{
+					{
+						ShardID:   1,
+						ReplicaID: 1,
+						IsLeader:  true,
+						LeaderID:  1,
+						Nodes:     map[uint64]string{1: "127.0.0.1:63001"},
+					},
+				},
+			})
+			return
+		}
+
 		http.NotFound(w, r)
 	})
 
@@ -229,12 +294,12 @@ func generateSelfSignedCert(t *testing.T, dir string) (certFile, keyFile, caFile
 	}
 
 	template := &x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: "test"},
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(time.Hour),
-		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
-		IsCA:         true,
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "test"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		IsCA:                  true,
 		BasicConstraintsValid: true,
 	}
 
@@ -2134,5 +2199,254 @@ func TestPostJSON_ClientDoError(t *testing.T) {
 	var reqErr *transport.RequestError
 	if !errors.As(err, &reqErr) {
 		t.Errorf("expected RequestError, got %T: %v", err, err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Shard management tests
+// ---------------------------------------------------------------------------
+
+func TestStartShard(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	rt := newTestTransport(t, srv.URL)
+	defer rt.Close()
+
+	err := rt.StartShard(context.Background(), &transport.StartShardRequest{
+		ShardID:   1,
+		ReplicaID: 1,
+		Members:   map[uint64]string{1: "127.0.0.1:63001"},
+		Join:      false,
+	})
+	if err != nil {
+		t.Fatalf("StartShard: %v", err)
+	}
+}
+
+func TestStartShard_OnClosedTransport(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	rt := newTestTransport(t, srv.URL)
+	_ = rt.Close()
+
+	err := rt.StartShard(context.Background(), &transport.StartShardRequest{
+		ShardID:   1,
+		ReplicaID: 1,
+	})
+	if err == nil {
+		t.Fatal("expected error on closed transport")
+	}
+	var closedErr *transport.ClosedError
+	if !errors.As(err, &closedErr) {
+		t.Fatalf("expected *transport.ClosedError, got %T: %v", err, err)
+	}
+}
+
+func TestStopShard(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	rt := newTestTransport(t, srv.URL)
+	defer rt.Close()
+
+	err := rt.StopShard(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("StopShard: %v", err)
+	}
+}
+
+func TestStopShard_OnClosedTransport(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	rt := newTestTransport(t, srv.URL)
+	_ = rt.Close()
+
+	err := rt.StopShard(context.Background(), 1)
+	if err == nil {
+		t.Fatal("expected error on closed transport")
+	}
+	var closedErr *transport.ClosedError
+	if !errors.As(err, &closedErr) {
+		t.Fatalf("expected *transport.ClosedError, got %T: %v", err, err)
+	}
+}
+
+func TestGetShardState(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	rt := newTestTransport(t, srv.URL)
+	defer rt.Close()
+
+	resp, err := rt.GetShardState(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("GetShardState: %v", err)
+	}
+	if resp.ShardID != 1 {
+		t.Fatalf("expected ShardID=1, got %d", resp.ShardID)
+	}
+	if resp.LeaderID != 1 {
+		t.Fatalf("expected LeaderID=1, got %d", resp.LeaderID)
+	}
+	if resp.Term != 5 {
+		t.Fatalf("expected Term=5, got %d", resp.Term)
+	}
+	if !resp.HasLeader {
+		t.Fatal("expected HasLeader=true")
+	}
+}
+
+func TestGetShardState_OnClosedTransport(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	rt := newTestTransport(t, srv.URL)
+	_ = rt.Close()
+
+	_, err := rt.GetShardState(context.Background(), 1)
+	if err == nil {
+		t.Fatal("expected error on closed transport")
+	}
+	var closedErr *transport.ClosedError
+	if !errors.As(err, &closedErr) {
+		t.Fatalf("expected *transport.ClosedError, got %T: %v", err, err)
+	}
+}
+
+func TestGetTopology(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	rt := newTestTransport(t, srv.URL)
+	defer rt.Close()
+
+	resp, err := rt.GetTopology(context.Background())
+	if err != nil {
+		t.Fatalf("GetTopology: %v", err)
+	}
+	if resp.NodeID != "test-node" {
+		t.Fatalf("expected NodeID %q, got %q", "test-node", resp.NodeID)
+	}
+	if resp.RaftAddress != "127.0.0.1:63001" {
+		t.Fatalf("expected RaftAddress %q, got %q", "127.0.0.1:63001", resp.RaftAddress)
+	}
+	if resp.ShardCount != 1 {
+		t.Fatalf("expected ShardCount=1, got %d", resp.ShardCount)
+	}
+	if len(resp.Shards) != 1 {
+		t.Fatalf("expected 1 shard, got %d", len(resp.Shards))
+	}
+	if resp.Shards[0].ShardID != 1 {
+		t.Fatalf("expected shard[0].ShardID=1, got %d", resp.Shards[0].ShardID)
+	}
+}
+
+func TestGetTopology_OnClosedTransport(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	rt := newTestTransport(t, srv.URL)
+	_ = rt.Close()
+
+	_, err := rt.GetTopology(context.Background())
+	if err == nil {
+		t.Fatal("expected error on closed transport")
+	}
+	var closedErr *transport.ClosedError
+	if !errors.As(err, &closedErr) {
+		t.Fatalf("expected *transport.ClosedError, got %T: %v", err, err)
+	}
+}
+
+func TestGetShardState_ServerError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" && r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(transport.HealthResponse{Status: "ok"})
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/state") && strings.HasPrefix(r.URL.Path, "/admin/shards/") {
+			http.Error(w, `{"error":"shard not found"}`, http.StatusNotFound)
+			return
+		}
+		http.NotFound(w, r)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	rt := newTestTransport(t, srv.URL)
+	defer rt.Close()
+
+	_, err := rt.GetShardState(context.Background(), 999)
+	if err == nil {
+		t.Fatal("expected error for nonexistent shard")
+	}
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) {
+		t.Fatalf("expected *transport.RequestError, got %T: %v", err, err)
+	}
+}
+
+func TestGetTopology_ServerError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" && r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(transport.HealthResponse{Status: "ok"})
+			return
+		}
+		if r.URL.Path == "/admin/topology" {
+			http.Error(w, `{"error":"internal"}`, http.StatusInternalServerError)
+			return
+		}
+		http.NotFound(w, r)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	rt := newTestTransport(t, srv.URL)
+	defer rt.Close()
+
+	_, err := rt.GetTopology(context.Background())
+	if err == nil {
+		t.Fatal("expected error for server error")
+	}
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) {
+		t.Fatalf("expected *transport.RequestError, got %T: %v", err, err)
+	}
+}
+
+func TestStopShard_ServerError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" && r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(transport.HealthResponse{Status: "ok"})
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/admin/shards/") && r.Method == http.MethodDelete {
+			http.Error(w, `{"error":"shard not found"}`, http.StatusNotFound)
+			return
+		}
+		http.NotFound(w, r)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	rt := newTestTransport(t, srv.URL)
+	defer rt.Close()
+
+	err := rt.StopShard(context.Background(), 999)
+	if err == nil {
+		t.Fatal("expected error for nonexistent shard")
+	}
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) {
+		t.Fatalf("expected *transport.RequestError, got %T: %v", err, err)
 	}
 }

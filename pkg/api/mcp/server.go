@@ -27,19 +27,45 @@ import (
 
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
-// Server is the MCP server for QRDB. It registers KV and admin operations
-// as MCP tools and serves them over HTTP using the Streamable HTTP transport.
+// Server is the MCP server for QRDB. It registers KV, admin, MVCC,
+// transaction, batch, watch, lease, index, time-series, vector, user,
+// role, and certificate operations as MCP tools and serves them over
+// HTTP using the Streamable HTTP transport.
 type Server struct {
-	kvSvc     service.KVServicer
-	adminSvc  service.AdminServicer
-	addr      string
-	tlsConfig *tls.Config
-	mcpSrv    *mcpserver.MCPServer
-	httpSrv   *http.Server
-	listener  net.Listener
+	kvSvc         service.KVServicer
+	adminSvc      service.AdminServicer
+	mvccSvc       service.MVCCKVServicer
+	txSvc         service.TransactionServicer
+	batchSvc      service.BatchServicer
+	watchSvc      service.WatchServicer
+	leaseSvc      service.LeaseServicer
+	lockSvc       service.LockServicer
+	indexSvc      service.IndexServicer
+	tsSvc         service.TimeSeriesServicer
+	vectorSvc     service.VectorServicer
+	embeddingSvc  service.EmbeddingServicer
+	ragSvc        service.RAGServicer
+	userSvc       user.UserServicer
+	roleSvc       role.RoleServicer
+	certProv      cert.CertProvider
+	collectionSvc service.CollectionServicer
+	dbSvc         service.DatabaseServicer
+	barrierSvc    service.BarrierServicer
+	ceremonySvc   service.CeremonyServicer
+	credentialSvc service.CredentialServicer
+	ceremonyCA    ceremony.CeremonyCA
+	addr          string
+	tlsConfig     *tls.Config
+	mcpSrv        *mcpserver.MCPServer
+	httpSrv       *http.Server
+	listener      net.Listener
 }
 
 // ServerOption configures optional Server dependencies.
@@ -52,9 +78,165 @@ func WithTLS(cfg *tls.Config) ServerOption {
 	}
 }
 
+// WithMVCC registers MVCC key-value tools on the MCP server.
+func WithMVCC(svc service.MVCCKVServicer) ServerOption {
+	return func(s *Server) {
+		s.mvccSvc = svc
+	}
+}
+
+// WithTransaction registers transaction tools on the MCP server.
+func WithTransaction(svc service.TransactionServicer) ServerOption {
+	return func(s *Server) {
+		s.txSvc = svc
+	}
+}
+
+// WithBatch registers batch operation tools on the MCP server.
+func WithBatch(svc service.BatchServicer) ServerOption {
+	return func(s *Server) {
+		s.batchSvc = svc
+	}
+}
+
+// WithWatch registers watch tools on the MCP server.
+func WithWatch(svc service.WatchServicer) ServerOption {
+	return func(s *Server) {
+		s.watchSvc = svc
+	}
+}
+
+// WithLease registers lease management tools on the MCP server.
+func WithLease(svc service.LeaseServicer) ServerOption {
+	return func(s *Server) {
+		s.leaseSvc = svc
+	}
+}
+
+// WithLock registers distributed lock tools on the MCP server.
+func WithLock(svc service.LockServicer) ServerOption {
+	return func(s *Server) {
+		s.lockSvc = svc
+	}
+}
+
+// WithIndex registers secondary index tools on the MCP server.
+func WithIndex(svc service.IndexServicer) ServerOption {
+	return func(s *Server) {
+		s.indexSvc = svc
+	}
+}
+
+// WithTimeSeries registers time-series tools on the MCP server.
+func WithTimeSeries(svc service.TimeSeriesServicer) ServerOption {
+	return func(s *Server) {
+		s.tsSvc = svc
+	}
+}
+
+// WithVector registers vector database tools on the MCP server.
+func WithVector(svc service.VectorServicer) ServerOption {
+	return func(s *Server) {
+		s.vectorSvc = svc
+	}
+}
+
+// WithEmbedding registers embedding tools on the MCP server.
+func WithEmbedding(svc service.EmbeddingServicer) ServerOption {
+	return func(s *Server) {
+		s.embeddingSvc = svc
+	}
+}
+
+// WithRAG registers RAG (Retrieval-Augmented Generation) tools on the MCP
+// server. When nil, no RAG tools are registered.
+func WithRAG(svc service.RAGServicer) ServerOption {
+	return func(s *Server) {
+		s.ragSvc = svc
+	}
+}
+
+// WithUserService registers user management tools on the MCP server.
+func WithUserService(svc user.UserServicer) ServerOption {
+	return func(s *Server) {
+		s.userSvc = svc
+	}
+}
+
+// WithRoleService registers role management tools on the MCP server.
+func WithRoleService(svc role.RoleServicer) ServerOption {
+	return func(s *Server) {
+		s.roleSvc = svc
+	}
+}
+
+// WithCertProvider registers certificate management tools on the MCP server.
+func WithCertProvider(prov cert.CertProvider) ServerOption {
+	return func(s *Server) {
+		s.certProv = prov
+	}
+}
+
+// WithCollectionService registers collection management tools on the MCP server.
+func WithCollectionService(svc service.CollectionServicer) ServerOption {
+	return func(s *Server) {
+		s.collectionSvc = svc
+	}
+}
+
+// WithDatabaseService registers database management tools on the MCP server.
+func WithDatabaseService(svc service.DatabaseServicer) ServerOption {
+	return func(s *Server) {
+		s.dbSvc = svc
+	}
+}
+
+// WithBarrierService registers barrier lifecycle tools on the MCP server.
+func WithBarrierService(svc service.BarrierServicer) ServerOption {
+	return func(s *Server) {
+		s.barrierSvc = svc
+	}
+}
+
+// WithCeremonyService registers ceremony lifecycle tools on the MCP server.
+func WithCeremonyService(svc service.CeremonyServicer) ServerOption {
+	return func(s *Server) {
+		s.ceremonySvc = svc
+	}
+}
+
+// WithCredentialService registers credential management tools on the MCP server.
+func WithCredentialService(svc service.CredentialServicer) ServerOption {
+	return func(s *Server) {
+		s.credentialSvc = svc
+	}
+}
+
+// WithCeremonyCA configures the ceremony CA used for ceremony initialization.
+func WithCeremonyCA(ca ceremony.CeremonyCA) ServerOption {
+	return func(s *Server) {
+		s.ceremonyCA = ca
+	}
+}
+
+// WithKVService registers KV tools on the MCP server. This is an alternative
+// to passing kvSvc as a positional parameter and is useful when constructing
+// a server that handles only barrier, cert, or auth services.
+func WithKVService(svc service.KVServicer) ServerOption {
+	return func(s *Server) { s.kvSvc = svc }
+}
+
+// WithAdminService registers admin tools on the MCP server. This is an
+// alternative to passing adminSvc as a positional parameter and is useful
+// when constructing a server without a KV engine.
+func WithAdminService(svc service.AdminServicer) ServerOption {
+	return func(s *Server) { s.adminSvc = svc }
+}
+
 // NewServer creates a new MCP server that listens on the given address
-// and delegates to the provided service implementations. All KV and admin
-// operations are registered as MCP tools.
+// and delegates to the provided service implementations. kvSvc and adminSvc
+// may be nil when only non-KV services (barrier, cert, auth) are needed;
+// their tools are registered only when the respective service is non-nil.
 func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr string, opts ...ServerOption) *Server {
 	s := &Server{
 		kvSvc:    kvSvc,
@@ -73,9 +255,72 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 		mcpserver.WithToolCapabilities(false),
 	)
 
-	// Register all KV and admin tools.
-	s.mcpSrv.AddTools(kvTools(kvSvc)...)
-	s.mcpSrv.AddTools(adminTools(adminSvc)...)
+	// Register KV and admin tools only when the respective service is provided.
+	if s.kvSvc != nil {
+		s.mcpSrv.AddTools(kvTools(s.kvSvc)...)
+	}
+	if s.adminSvc != nil {
+		s.mcpSrv.AddTools(adminTools(s.adminSvc)...)
+	}
+
+	// Register optional feature tools when their services are provided.
+	if s.mvccSvc != nil {
+		s.mcpSrv.AddTools(mvccTools(s.mvccSvc)...)
+	}
+	if s.txSvc != nil {
+		s.mcpSrv.AddTools(transactionTools(s.txSvc)...)
+	}
+	if s.batchSvc != nil {
+		s.mcpSrv.AddTools(batchTools(s.batchSvc)...)
+	}
+	if s.watchSvc != nil {
+		s.mcpSrv.AddTools(watchTools(s.watchSvc)...)
+	}
+	if s.leaseSvc != nil {
+		s.mcpSrv.AddTools(leaseTools(s.leaseSvc)...)
+	}
+	if s.lockSvc != nil {
+		s.mcpSrv.AddTools(lockTools(s.lockSvc)...)
+	}
+	if s.indexSvc != nil {
+		s.mcpSrv.AddTools(indexTools(s.indexSvc)...)
+	}
+	if s.tsSvc != nil {
+		s.mcpSrv.AddTools(timeSeriesTools(s.tsSvc)...)
+	}
+	if s.vectorSvc != nil {
+		s.mcpSrv.AddTools(vectorTools(s.vectorSvc)...)
+	}
+	if s.embeddingSvc != nil {
+		s.mcpSrv.AddTools(embeddingTools(s.embeddingSvc)...)
+	}
+	if s.ragSvc != nil {
+		s.mcpSrv.AddTools(ragTools(s.ragSvc)...)
+	}
+	if s.userSvc != nil {
+		s.mcpSrv.AddTools(userTools(s.userSvc)...)
+	}
+	if s.roleSvc != nil && s.userSvc != nil {
+		s.mcpSrv.AddTools(roleTools(s.roleSvc, s.userSvc)...)
+	}
+	if s.certProv != nil {
+		s.mcpSrv.AddTools(certTools(s.certProv)...)
+	}
+	if s.collectionSvc != nil {
+		s.mcpSrv.AddTools(collectionTools(s.collectionSvc)...)
+	}
+	if s.dbSvc != nil {
+		s.mcpSrv.AddTools(databaseTools(s.dbSvc)...)
+	}
+	if s.barrierSvc != nil {
+		s.mcpSrv.AddTools(barrierTools(s.barrierSvc)...)
+	}
+	if s.ceremonySvc != nil {
+		s.mcpSrv.AddTools(ceremonyTools(s.ceremonySvc, s.ceremonyCA)...)
+	}
+	if s.credentialSvc != nil {
+		s.mcpSrv.AddTools(credentialTools(s.credentialSvc)...)
+	}
 
 	return s
 }

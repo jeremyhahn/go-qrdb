@@ -10,45 +10,56 @@ package seal
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/json"
-	"io"
 	"log/slog"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 
-	"github.com/awnumar/memguard"
+	quicraftseal "github.com/jeremyhahn/go-quicraft/pkg/seal"
+)
+
+// stateSealed and stateUnsealed are the two possible states for the barrier.
+const (
+	stateSealed   int32 = 0
+	stateUnsealed int32 = 1
 )
 
 // Compile-time interface check.
-var _ StorageBackend = (*Barrier)(nil)
+var _ StorageBackend = (*StorageBarrier)(nil)
 
-// Barrier wraps a StorageBackend with transparent authenticated encryption.
-// All values are encrypted before being written to the underlying backend
-// and decrypted on read. Keys remain in plaintext.
+// Barrier is a backward-compatible alias for StorageBarrier.
+type Barrier = StorageBarrier
+
+// NewBarrier is a backward-compatible alias for NewStorageBarrier.
+var NewBarrier = NewStorageBarrier
+
+// StorageBarrier wraps a StorageBackend with transparent authenticated
+// encryption. All values are encrypted before being written to the
+// underlying backend and decrypted on read. Keys remain in plaintext.
 //
-// The encryption is delegated to the active strategy's SymmetricEncrypter.
-// Hardware-backed strategies (TPM2, PKCS#11, cloud KMS) use hardware-resident
-// keys for data encryption. Software strategies derive a DEK from the root key.
+// Encryption is delegated to go-quicraft's EpochBarrier, which provides
+// algorithm-agile AEAD with epoch-based key rotation, HKDF DEK derivation,
+// and AEAD safety tracking (nonce reuse detection, byte limits).
+//
+// Hardware-backed strategies (TPM2, PKCS#11, cloud KMS) are supported
+// through the EpochBarrier's hardware encryptor delegation.
 //
 // The barrier lifecycle is:
 //  1. Initialize: generate root key, seal with best strategy, obtain encryptor
 //  2. Unseal: load sealed root key, unseal, obtain encryptor
 //  3. Seal: release encryptor, block further operations
-type Barrier struct {
+type StorageBarrier struct {
 	logger     *slog.Logger
 	base       StorageBackend
+	barrier    *quicraftseal.Barrier
 	config     BarrierConfig
 	strategies map[StrategyID]SealingStrategy
 	prefOrder  []StrategyID
 
 	// state: 0 = sealed, 1 = unsealed
 	state atomic.Int32
-
-	// encryptor holds the active SymmetricEncrypter. Only set while unsealed.
-	encryptor atomic.Value
 
 	// activeStrategy is the strategy ID that sealed the root key.
 	activeStrategy atomic.Value
@@ -57,14 +68,17 @@ type Barrier struct {
 	accumulator atomic.Value
 }
 
-// NewBarrier creates a new Barrier that encrypts all values stored in
-// base. At least one SealingStrategy must be provided.
-func NewBarrier(
+// NewStorageBarrier creates a new StorageBarrier that encrypts all values
+// stored in base. At least one SealingStrategy must be provided.
+//
+// The EpochBarrier is configured with the deployment ID from the BarrierConfig.
+// If DeploymentID is 0, the default epoch barrier config is used.
+func NewStorageBarrier(
 	logger *slog.Logger,
 	base StorageBackend,
 	config BarrierConfig,
 	strategies ...SealingStrategy,
-) (*Barrier, error) {
+) (*StorageBarrier, error) {
 	if len(strategies) == 0 {
 		return nil, ErrNoAvailableStrategy
 	}
@@ -79,9 +93,28 @@ func NewBarrier(
 		prefOrder = DefaultPreferenceOrder
 	}
 
-	b := &Barrier{
+	epochConfig := quicraftseal.DefaultBarrierConfig(config.DeploymentID)
+	if config.InvocationLimit != 0 {
+		epochConfig.InvocationLimit = config.InvocationLimit
+	}
+	if config.RotationThreshold != 0 {
+		epochConfig.RotationThreshold = config.RotationThreshold
+	}
+	if config.InvocationCounter != nil {
+		epochConfig.InvocationCounter = config.InvocationCounter
+	}
+	if config.NonceTrackerProvider != nil {
+		epochConfig.NonceTrackerProvider = config.NonceTrackerProvider
+	}
+	if config.AEADProvider != nil {
+		epochConfig.AEADProvider = config.AEADProvider
+	}
+	epochBarrier := quicraftseal.NewBarrier(epochConfig)
+
+	b := &StorageBarrier{
 		logger:     logger,
 		base:       base,
+		barrier:    epochBarrier,
 		config:     config,
 		strategies: stratMap,
 		prefOrder:  prefOrder,
@@ -90,14 +123,14 @@ func NewBarrier(
 	return b, nil
 }
 
-// Initialize generates a new 32-byte root key, seals it with the best
-// available strategy, stores the sealed blob in the backend, and obtains
-// the strategy's encryptor. The barrier transitions to unsealed state.
+// Initialize generates a new root key, seals it with the best available
+// strategy, stores the sealed blob in the backend, and transitions the
+// barrier to the unsealed state via the EpochBarrier.
 //
 // This must be called exactly once for a new barrier. Subsequent calls
 // return ErrAlreadyInitialized.
-func (b *Barrier) Initialize(ctx context.Context, creds Credentials) error {
-	exists, err := b.base.Exists(b.config.RootKeyPath)
+func (b *StorageBarrier) Initialize(ctx context.Context, creds Credentials) error {
+	exists, err := b.base.Exists(ctx, b.config.RootKeyPath)
 	if err != nil {
 		return err
 	}
@@ -112,46 +145,27 @@ func (b *Barrier) Initialize(ctx context.Context, creds Credentials) error {
 		return err
 	}
 
-	// Generate root key.
-	rootKey := make([]byte, aesKeySize)
-	if _, err := io.ReadFull(rand.Reader, rootKey); err != nil {
-		return err
-	}
-
-	// Seal the root key.
-	sealed, err := strategy.SealRootKey(ctx, rootKey, creds)
-	if err != nil {
+	// Delegate initialization to the EpochBarrier. It generates the root
+	// key, derives the initial DEK, and seals the root key via the strategy.
+	if err := b.barrier.Initialize(ctx, strategy, creds); err != nil {
 		emitAudit(b.config.AuditLogger, "initialize", "barrier", b.config.RootKeyPath,
 			"deny", map[string]string{"error": err.Error(), "strategy": string(strategy.ID())})
-		memguard.WipeBytes(rootKey)
 		return err
 	}
 
-	// Persist the sealed blob.
+	// Persist the sealed root key blob.
+	sealed := b.barrier.SealedRootKeyData()
 	blob, err := json.Marshal(sealed)
 	if err != nil {
-		memguard.WipeBytes(rootKey)
 		return err
 	}
-	if err := b.base.Put(b.config.RootKeyPath, blob); err != nil {
-		memguard.WipeBytes(rootKey)
+	if err := b.base.Put(ctx, b.config.RootKeyPath, blob); err != nil {
 		return err
 	}
-
-	// Obtain the strategy's encryptor for data operations.
-	enc, err := strategy.BarrierEncryptor(ctx, rootKey)
-	if err != nil {
-		memguard.WipeBytes(rootKey)
-		return err
-	}
-
-	// Zero root key.
-	memguard.WipeBytes(rootKey)
 
 	// Transition to unsealed.
-	b.encryptor.Store(enc)
 	b.activeStrategy.Store(strategy.ID())
-	b.state.Store(1)
+	b.state.Store(stateUnsealed)
 
 	emitAudit(b.config.AuditLogger, "initialize", "barrier", b.config.RootKeyPath,
 		"allow", map[string]string{"strategy": string(strategy.ID())})
@@ -164,13 +178,14 @@ func (b *Barrier) Initialize(ctx context.Context, creds Credentials) error {
 }
 
 // Unseal loads the sealed root key blob from the backend, unseals it
-// with the matching strategy, and obtains the strategy's encryptor.
-func (b *Barrier) Unseal(ctx context.Context, creds Credentials) error {
-	if b.state.Load() == 1 {
+// with the matching strategy via the EpochBarrier, and transitions
+// the barrier to the unsealed state.
+func (b *StorageBarrier) Unseal(ctx context.Context, creds Credentials) error {
+	if b.state.Load() == stateUnsealed {
 		return ErrAlreadyUnsealed
 	}
 
-	blob, err := b.base.Get(b.config.RootKeyPath)
+	blob, err := b.base.Get(ctx, b.config.RootKeyPath)
 	if err != nil {
 		if err == ErrSecretNotFound {
 			return ErrNotInitialized
@@ -190,26 +205,35 @@ func (b *Barrier) Unseal(ctx context.Context, creds Credentials) error {
 		return ErrStrategyNotFound
 	}
 
-	rootKey, err := strategy.UnsealRootKey(ctx, &sealed, creds)
-	if err != nil {
+	// Load the sealed root key data into the EpochBarrier for unseal.
+	if err := b.barrier.SetSealedRootKey(&sealed); err != nil {
+		return err
+	}
+
+	// Delegate unseal to the EpochBarrier.
+	if err := b.barrier.Unseal(ctx, strategy, creds); err != nil {
 		emitAudit(b.config.AuditLogger, "unseal", "barrier", b.config.RootKeyPath,
 			"deny", map[string]string{"error": err.Error(), "strategy": string(sealed.Strategy)})
 		return err
 	}
 
-	// Obtain the strategy's encryptor for data operations.
-	enc, err := strategy.BarrierEncryptor(ctx, rootKey)
-	if err != nil {
-		memguard.WipeBytes(rootKey)
-		return err
-	}
-
-	// Zero root key immediately.
-	memguard.WipeBytes(rootKey)
-
-	b.encryptor.Store(enc)
 	b.activeStrategy.Store(sealed.Strategy)
-	b.state.Store(1)
+	b.state.Store(stateUnsealed)
+
+	// Seed the invocation counter with the number of encrypted entries
+	// in the current epoch. Each stored key represents one encrypt invocation.
+	if ic := b.barrier.InvocationCounter(); ic != nil && ic.IsEnabled() {
+		count, countErr := b.countCurrentEntries(ctx)
+		if countErr != nil {
+			b.logger.Warn("failed to count entries for invocation counter seeding",
+				slog.String("error", countErr.Error()))
+		} else if count > 0 {
+			ic.Seed(count)
+			b.logger.Info("seeded invocation counter",
+				slog.Int64("count", count),
+				slog.Float64("usage_pct", ic.GetUsagePercentage()))
+		}
+	}
 
 	emitAudit(b.config.AuditLogger, "unseal", "barrier", b.config.RootKeyPath,
 		"allow", map[string]string{"strategy": string(sealed.Strategy)})
@@ -221,33 +245,58 @@ func (b *Barrier) Unseal(ctx context.Context, creds Credentials) error {
 }
 
 // unsealDirect obtains an encryptor from the Shamir strategy using the raw
-// root key and transitions to unsealed state. The root key is zeroed after
-// the encryptor is obtained.
+// root key and transitions to the unsealed state. The EpochBarrier is
+// initialized with the root key directly.
 // Used by StrategyShamir where shares reconstruct the root key directly.
-func (b *Barrier) unsealDirect(rootKey []byte) error {
+func (b *StorageBarrier) unsealDirect(rootKey []byte) error {
 	shamirStrat, ok := b.strategies[StrategyShamir]
 	if !ok {
-		memguard.WipeBytes(rootKey)
 		return ErrShamirNotConfigured
 	}
 
-	enc, err := shamirStrat.BarrierEncryptor(context.Background(), rootKey)
-	if err != nil {
-		memguard.WipeBytes(rootKey)
-		return err
+	// Initialize the EpochBarrier with the reconstructed root key.
+	if err := b.barrier.Initialize(context.Background(), shamirStrat, Credentials{}); err != nil {
+		// If already initialized, try unseal instead.
+		if err == quicraftseal.ErrBarrierAlreadyInit {
+			// Load the sealed data so the barrier has the epoch/salt state.
+			blob, getErr := b.base.Get(context.Background(), b.config.RootKeyPath)
+			if getErr != nil {
+				return getErr
+			}
+			var sealed SealedRootKey
+			if jsonErr := json.Unmarshal(blob, &sealed); jsonErr != nil {
+				return ErrCorruptRootKey
+			}
+			if setErr := b.barrier.SetSealedRootKey(&sealed); setErr != nil {
+				return setErr
+			}
+			if unsealErr := b.barrier.Unseal(context.Background(), shamirStrat, Credentials{}); unsealErr != nil {
+				return unsealErr
+			}
+		} else {
+			return err
+		}
+	} else {
+		// Persist the sealed root key blob from the new initialization.
+		sealed := b.barrier.SealedRootKeyData()
+		sealedBlob, marshalErr := json.Marshal(sealed)
+		if marshalErr != nil {
+			return marshalErr
+		}
+		if putErr := b.base.Put(context.Background(), b.config.RootKeyPath, sealedBlob); putErr != nil {
+			return putErr
+		}
 	}
-	memguard.WipeBytes(rootKey)
 
-	b.encryptor.Store(enc)
 	b.activeStrategy.Store(StrategyShamir)
-	b.state.Store(1)
+	b.state.Store(stateUnsealed)
 	return nil
 }
 
 // ShamirStrategy returns the registered ShamirStrategy or nil if not
 // registered. This accessor allows callers to inspect the Shamir
 // configuration and manage shares.
-func (b *Barrier) ShamirStrategy() *ShamirStrategy {
+func (b *StorageBarrier) ShamirStrategy() *ShamirStrategy {
 	s, ok := b.strategies[StrategyShamir]
 	if !ok {
 		return nil
@@ -259,53 +308,41 @@ func (b *Barrier) ShamirStrategy() *ShamirStrategy {
 	return shamirStrat
 }
 
-// GetMasterKey returns a copy of the data encryption key (DEK).
-// This is only available for software-backed strategies that derive a DEK.
-// For hardware-backed strategies, the key never leaves hardware and
-// ErrHardwareEncryptorRequired is returned.
+// GetMasterKey returns a copy of the root key from the EpochBarrier.
+// The barrier must be unsealed.
 //
-// The barrier must be unsealed. Returns ErrSealed if sealed,
-// ErrEncryptorNotAvailable if the encryptor has not been initialized.
-func (b *Barrier) GetMasterKey() ([]byte, error) {
-	enc, err := b.getEncryptor()
-	if err != nil {
-		return nil, err
+// For hardware-backed strategies where the key never leaves hardware,
+// the EpochBarrier returns an error.
+func (b *StorageBarrier) GetMasterKey() ([]byte, error) {
+	if b.IsSealed() {
+		return nil, ErrSealed
 	}
-	sw, ok := enc.(*softwareBarrierEncryptor)
-	if !ok {
-		return nil, ErrHardwareEncryptorRequired
-	}
-	return sw.DEK(), nil
+	return b.barrier.RootKey()
 }
 
-// Encryptor returns the active SymmetricEncrypter used for barrier data
-// operations. The barrier must be unsealed.
-func (b *Barrier) Encryptor() (SymmetricEncrypter, error) {
-	return b.getEncryptor()
+// Encryptor returns nil for the refactored barrier. Encryption is now
+// delegated entirely to the EpochBarrier and is not directly accessible.
+// Callers that need direct encryption should use the Encrypt/Decrypt
+// methods on the StorageBarrier itself.
+func (b *StorageBarrier) Encryptor() (SymmetricEncrypter, error) {
+	if b.IsSealed() {
+		return nil, ErrSealed
+	}
+	return nil, ErrEncryptorNotAvailable
 }
 
-// Seal transitions the barrier to sealed state and releases the encryptor.
-// For software encryptors, the DEK memory is zeroed.
+// Seal transitions the barrier to sealed state and seals the EpochBarrier.
 // All subsequent storage operations will return ErrSealed until Unseal
 // is called again. Seal is idempotent.
-func (b *Barrier) Seal() error {
-	if b.state.Load() == 0 {
+func (b *StorageBarrier) Seal() error {
+	if b.state.Load() == stateSealed {
 		return nil // already sealed, idempotent
 	}
 
-	// Zero the encryptor's key material if it supports it.
-	if raw := b.encryptor.Load(); raw != nil {
-		if enc, ok := raw.(SymmetricEncrypter); ok {
-			if sw, isSoftware := enc.(*softwareBarrierEncryptor); isSoftware {
-				sw.Zero()
-			}
-		}
-	}
+	// Seal the EpochBarrier (zeroes root key and DEKs).
+	_ = b.barrier.Seal()
 
-	// Transition to sealed state. The state flag gates all operations via
-	// getEncryptor(), so we do not need to nil out the encryptor value.
-	// atomic.Value does not support storing nil interface values.
-	b.state.Store(0)
+	b.state.Store(stateSealed)
 
 	emitAudit(b.config.AuditLogger, "seal", "barrier", b.config.RootKeyPath,
 		"allow", nil)
@@ -315,12 +352,12 @@ func (b *Barrier) Seal() error {
 }
 
 // IsSealed reports whether the barrier is in sealed state.
-func (b *Barrier) IsSealed() bool {
-	return b.state.Load() == 0
+func (b *StorageBarrier) IsSealed() bool {
+	return b.state.Load() == stateSealed
 }
 
 // Status returns the current barrier status.
-func (b *Barrier) Status() *BarrierStatus {
+func (b *StorageBarrier) Status() *BarrierStatus {
 	status := &BarrierStatus{
 		Sealed: b.IsSealed(),
 	}
@@ -338,14 +375,14 @@ func (b *Barrier) Status() *BarrierStatus {
 // SetShamirConfig sets or replaces the Shamir configuration on the barrier.
 // This allows the servicer layer to configure Shamir parameters from
 // transport request DTOs before calling InitializeShamir.
-func (b *Barrier) SetShamirConfig(cfg *ShamirConfig) {
+func (b *StorageBarrier) SetShamirConfig(cfg *ShamirConfig) {
 	b.config.Shamir = cfg
 }
 
 // ActiveStrategy returns the strategy ID that is currently protecting
 // the root key. Returns empty string if the barrier has not been
 // initialized or unsealed.
-func (b *Barrier) ActiveStrategy() StrategyID {
+func (b *StorageBarrier) ActiveStrategy() StrategyID {
 	if raw := b.activeStrategy.Load(); raw != nil {
 		if id, ok := raw.(StrategyID); ok {
 			return id
@@ -354,80 +391,136 @@ func (b *Barrier) ActiveStrategy() StrategyID {
 	return ""
 }
 
+// Config returns the barrier's configuration.
+func (b *StorageBarrier) Config() BarrierConfig {
+	return b.config
+}
+
+// EpochBarrier returns the underlying go-quicraft EpochBarrier for
+// direct access to epoch-based operations (Rotate, PurgeEpochsBefore, etc).
+func (b *StorageBarrier) EpochBarrier() *quicraftseal.Barrier {
+	return b.barrier
+}
+
+// InvocationCounter returns the barrier's AEAD invocation counter, or nil
+// if invocation counting is disabled.
+func (b *StorageBarrier) InvocationCounter() InvocationCounter {
+	return b.barrier.InvocationCounter()
+}
+
+// NonceTracker returns the barrier's nonce reuse detection tracker, or nil
+// if nonce tracking is disabled.
+func (b *StorageBarrier) NonceTracker() NonceTrackerProvider {
+	return b.barrier.NonceTracker()
+}
+
+// Strategies returns a copy of the registered sealing strategies.
+func (b *StorageBarrier) Strategies() map[StrategyID]SealingStrategy {
+	cp := make(map[StrategyID]SealingStrategy, len(b.strategies))
+	for id, s := range b.strategies {
+		cp[id] = s
+	}
+	return cp
+}
+
+// Logger returns the barrier's logger.
+func (b *StorageBarrier) Logger() *slog.Logger {
+	return b.logger
+}
+
 // Get retrieves and decrypts the value for the given key.
-func (b *Barrier) Get(key string) ([]byte, error) {
-	enc, err := b.getEncryptor()
+func (b *StorageBarrier) Get(ctx context.Context, key string) ([]byte, error) {
+	if b.state.Load() != stateUnsealed {
+		return nil, ErrSealed
+	}
+	ciphertext, err := b.base.Get(ctx, key)
 	if err != nil {
 		return nil, err
 	}
-	ciphertext, err := b.base.Get(key)
+	plaintext, err := b.barrier.Decrypt(nil, ciphertext)
 	if err != nil {
-		return nil, err
+		return nil, &GetError{Key: key, Err: err}
 	}
-	return barrierDecrypt(enc, ciphertext)
+	return plaintext, nil
 }
 
 // Put encrypts the value and stores it under the given key.
-func (b *Barrier) Put(key string, value []byte) error {
-	enc, err := b.getEncryptor()
-	if err != nil {
-		return err
+func (b *StorageBarrier) Put(ctx context.Context, key string, value []byte) error {
+	if b.state.Load() != stateUnsealed {
+		return ErrSealed
 	}
-	ciphertext, err := barrierEncrypt(enc, value)
+	encrypted, err := b.barrier.Encrypt(nil, value)
 	if err != nil {
-		return err
+		return &PutError{Key: key, Err: err}
 	}
-	return b.base.Put(key, ciphertext)
+	return b.base.Put(ctx, key, encrypted)
 }
 
 // Delete removes the key from storage.
-func (b *Barrier) Delete(key string) error {
+func (b *StorageBarrier) Delete(ctx context.Context, key string) error {
 	if b.IsSealed() {
 		return ErrSealed
 	}
-	return b.base.Delete(key)
+	return b.base.Delete(ctx, key)
 }
 
 // List returns all keys matching the given prefix. Keys are not encrypted.
-func (b *Barrier) List(prefix string) ([]string, error) {
+func (b *StorageBarrier) List(ctx context.Context, prefix string) ([]string, error) {
 	if b.IsSealed() {
 		return nil, ErrSealed
 	}
-	return b.base.List(prefix)
+	return b.base.List(ctx, prefix)
+}
+
+// Scan iterates over all keys matching the given prefix, decrypts each value,
+// and invokes fn for every entry. Iteration stops early if fn returns an error.
+func (b *StorageBarrier) Scan(ctx context.Context, prefix string, fn func(key string, value []byte) error) error {
+	if b.state.Load() != stateUnsealed {
+		return ErrSealed
+	}
+	return b.base.Scan(ctx, prefix, func(key string, ciphertext []byte) error {
+		plaintext, decErr := b.barrier.Decrypt(nil, ciphertext)
+		if decErr != nil {
+			return &GetError{Key: key, Err: decErr}
+		}
+		return fn(key, plaintext)
+	})
 }
 
 // Exists checks if a key exists in storage.
-func (b *Barrier) Exists(key string) (bool, error) {
+func (b *StorageBarrier) Exists(ctx context.Context, key string) (bool, error) {
 	if b.IsSealed() {
 		return false, ErrSealed
 	}
-	return b.base.Exists(key)
+	return b.base.Exists(ctx, key)
 }
 
 // Close seals the barrier and closes the underlying storage backend.
-func (b *Barrier) Close() error {
+func (b *StorageBarrier) Close() error {
 	_ = b.Seal()
 	return b.base.Close()
 }
 
-// getEncryptor returns the current encryptor or ErrSealed/ErrEncryptorNotAvailable.
-func (b *Barrier) getEncryptor() (SymmetricEncrypter, error) {
-	if b.IsSealed() {
+// Encrypt encrypts plaintext using the epoch barrier's master key.
+// Returns ErrSealed if the barrier is sealed.
+func (b *StorageBarrier) Encrypt(plaintext []byte) ([]byte, error) {
+	if b.state.Load() != stateUnsealed {
 		return nil, ErrSealed
 	}
-	raw := b.encryptor.Load()
-	if raw == nil {
-		return nil, ErrEncryptorNotAvailable
+	return b.barrier.Encrypt(nil, plaintext)
+}
+
+// Decrypt decrypts ciphertext using the epoch barrier's master key.
+// Returns ErrSealed if the barrier is sealed.
+func (b *StorageBarrier) Decrypt(ciphertext []byte) ([]byte, error) {
+	if b.state.Load() != stateUnsealed {
+		return nil, ErrSealed
 	}
-	enc, ok := raw.(SymmetricEncrypter)
-	if !ok || enc == nil {
-		return nil, ErrEncryptorNotAvailable
-	}
-	return enc, nil
+	return b.barrier.Decrypt(nil, ciphertext)
 }
 
 // bestStrategy returns the first available strategy in preference order.
-func (b *Barrier) bestStrategy() (SealingStrategy, error) {
+func (b *StorageBarrier) bestStrategy() (SealingStrategy, error) {
 	for _, id := range b.prefOrder {
 		if s, ok := b.strategies[id]; ok && s.Available() {
 			return s, nil
@@ -436,40 +529,15 @@ func (b *Barrier) bestStrategy() (SealingStrategy, error) {
 	return nil, ErrNoAvailableStrategy
 }
 
-// barrierEncrypt produces [version:1][enc.Encrypt(plaintext)]
-// using the strategy's SymmetricEncrypter.
-func barrierEncrypt(enc SymmetricEncrypter, plaintext []byte) ([]byte, error) {
-	encrypted, err := enc.Encrypt(plaintext)
+// countCurrentEntries counts the number of entries in the base backend by
+// listing all keys with an empty prefix. Each key represents one encrypt
+// invocation for the purposes of seeding the invocation counter.
+func (b *StorageBarrier) countCurrentEntries(ctx context.Context) (int64, error) {
+	keys, err := b.base.List(ctx, "")
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
-
-	// Prepend version byte.
-	out := make([]byte, 1+len(encrypted))
-	out[0] = barrierVersion
-	copy(out[1:], encrypted)
-	return out, nil
-}
-
-// barrierDecrypt parses encrypted data and returns plaintext.
-// Wire format: [version:1][enc.Encrypt(plaintext)]
-func barrierDecrypt(enc SymmetricEncrypter, data []byte) ([]byte, error) {
-	if len(data) < 2 {
-		return nil, ErrCorruptRootKey
-	}
-	if data[0] != barrierVersion {
-		return nil, ErrCorruptRootKey
-	}
-
-	plaintext, err := enc.Decrypt(data[1:])
-	if err != nil {
-		return nil, ErrInvalidCredentials
-	}
-
-	if plaintext == nil {
-		plaintext = []byte{}
-	}
-	return plaintext, nil
+	return int64(len(keys)), nil
 }
 
 // MemoryBackend is a simple in-memory StorageBackend for testing
@@ -490,7 +558,7 @@ func NewMemoryBackend() *MemoryBackend {
 }
 
 // Get returns the value for the given key or ErrSecretNotFound.
-func (m *MemoryBackend) Get(key string) ([]byte, error) {
+func (m *MemoryBackend) Get(_ context.Context, key string) ([]byte, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	v, ok := m.data[key]
@@ -503,7 +571,7 @@ func (m *MemoryBackend) Get(key string) ([]byte, error) {
 }
 
 // Put stores the value under the given key.
-func (m *MemoryBackend) Put(key string, data []byte) error {
+func (m *MemoryBackend) Put(_ context.Context, key string, data []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	stored := make([]byte, len(data))
@@ -513,7 +581,7 @@ func (m *MemoryBackend) Put(key string, data []byte) error {
 }
 
 // Delete removes the key from storage.
-func (m *MemoryBackend) Delete(key string) error {
+func (m *MemoryBackend) Delete(_ context.Context, key string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.data, key)
@@ -521,7 +589,7 @@ func (m *MemoryBackend) Delete(key string) error {
 }
 
 // List returns all keys matching the given prefix.
-func (m *MemoryBackend) List(prefix string) ([]string, error) {
+func (m *MemoryBackend) List(_ context.Context, prefix string) ([]string, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	var keys []string
@@ -534,8 +602,25 @@ func (m *MemoryBackend) List(prefix string) ([]string, error) {
 	return keys, nil
 }
 
+// Scan iterates over all key-value pairs matching the given prefix and invokes
+// fn for each entry. Iteration stops early if fn returns an error.
+func (m *MemoryBackend) Scan(_ context.Context, prefix string, fn func(key string, value []byte) error) error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for k, v := range m.data {
+		if strings.HasPrefix(k, prefix) {
+			cp := make([]byte, len(v))
+			copy(cp, v)
+			if err := fn(k, cp); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // Exists reports whether the given key exists in storage.
-func (m *MemoryBackend) Exists(key string) (bool, error) {
+func (m *MemoryBackend) Exists(_ context.Context, key string) (bool, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	_, ok := m.data[key]

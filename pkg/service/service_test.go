@@ -22,26 +22,40 @@ import (
 	"unsafe"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
+	"github.com/jeremyhahn/go-quicraft/pkg/config"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/codec"
+	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
+	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
 
 // mockHost implements the Host interface for unit testing. Each method
 // delegates to a configurable function field, allowing per-test behavior
 // without rebuilding the mock.
 type mockHost struct {
-	idFn                func() string
-	raftAddressFn       func() string
-	shardCountFn        func() int
-	getNodeHostInfoFn   func(quicraft.NodeHostInfoOption) *quicraft.NodeHostInfo
-	healthCheckFn       func() *quicraft.HealthStatus
-	drainFn             func() error
-	isDrainingFn        func() bool
-	syncProposeFn       func(ctx context.Context, shardID uint64, cmd []byte) (sm.Result, error)
-	syncReadFn          func(ctx context.Context, shardID uint64, query interface{}) (interface{}, error)
-	requestAddNodeFn    func(ctx context.Context, shardID, replicaID uint64, addr string) (*quicraft.RequestState, error)
-	requestRemoveNodeFn func(ctx context.Context, shardID, replicaID uint64) (*quicraft.RequestState, error)
-	requestSnapshotFn   func(ctx context.Context, shardID uint64) (*quicraft.RequestState, error)
+	idFn                  func() string
+	raftAddressFn         func() string
+	shardCountFn          func() int
+	getNodeHostInfoFn     func(quicraft.NodeHostInfoOption) *quicraft.NodeHostInfo
+	healthCheckFn         func() *quicraft.HealthStatus
+	drainFn               func() error
+	isDrainingFn          func() bool
+	syncProposeFn         func(ctx context.Context, shardID uint64, cmd []byte) (sm.Result, error)
+	syncReadFn            func(ctx context.Context, shardID uint64, query interface{}) (interface{}, error)
+	requestAddNodeFn      func(ctx context.Context, shardID, replicaID uint64, addr string) (*quicraft.RequestState, error)
+	requestRemoveNodeFn   func(ctx context.Context, shardID, replicaID uint64) (*quicraft.RequestState, error)
+	requestSnapshotFn     func(ctx context.Context, shardID uint64) (*quicraft.RequestState, error)
+	proposeWithModeFn     func(ctx context.Context, shardID uint64, cmd []byte, mode writemode.Mode) (sm.Result, error)
+	staleReadFn           func(ctx context.Context, shardID uint64, query interface{}) (interface{}, error)
+	readWithConsistencyFn func(ctx context.Context, shardID uint64, query interface{}, opts consistency.ReadOptions) (interface{}, error)
+	followerReadFn        func(ctx context.Context, shardID uint64, query interface{}) (interface{}, error)
+	getLeaderIDFn         func(shardID uint64) (uint64, bool, error)
+	getShardRaftStateFn   func(shardID uint64) (uint64, uint64, error)
+	startShardFn          func(members map[uint64]string, join bool, create sm.CreateFunc, cfg config.Config) error
+	stopShardFn           func(shardID uint64) error
+	closeFn               func() error
 }
 
 func (m *mockHost) ID() string {
@@ -107,14 +121,14 @@ func (m *mockHost) SyncRead(ctx context.Context, shardID uint64, query interface
 	return nil, nil
 }
 
-func (m *mockHost) RequestAddNode(ctx context.Context, shardID, replicaID uint64, addr string) (*quicraft.RequestState, error) {
+func (m *mockHost) RequestAddNode(ctx context.Context, shardID, replicaID uint64, addr string, configChangeIndex uint64) (*quicraft.RequestState, error) {
 	if m.requestAddNodeFn != nil {
 		return m.requestAddNodeFn(ctx, shardID, replicaID, addr)
 	}
 	return nil, nil
 }
 
-func (m *mockHost) RequestRemoveNode(ctx context.Context, shardID, replicaID uint64) (*quicraft.RequestState, error) {
+func (m *mockHost) RequestRemoveNode(ctx context.Context, shardID, replicaID uint64, configChangeIndex uint64) (*quicraft.RequestState, error) {
 	if m.requestRemoveNodeFn != nil {
 		return m.requestRemoveNodeFn(ctx, shardID, replicaID)
 	}
@@ -126,6 +140,69 @@ func (m *mockHost) RequestSnapshot(ctx context.Context, shardID uint64) (*quicra
 		return m.requestSnapshotFn(ctx, shardID)
 	}
 	return nil, nil
+}
+
+func (m *mockHost) ProposeWithMode(ctx context.Context, shardID uint64, cmd []byte, mode writemode.Mode) (sm.Result, error) {
+	if m.proposeWithModeFn != nil {
+		return m.proposeWithModeFn(ctx, shardID, cmd, mode)
+	}
+	return sm.Result{}, nil
+}
+
+func (m *mockHost) StaleRead(ctx context.Context, shardID uint64, query interface{}) (interface{}, error) {
+	if m.staleReadFn != nil {
+		return m.staleReadFn(ctx, shardID, query)
+	}
+	return nil, nil
+}
+
+func (m *mockHost) ReadWithConsistency(ctx context.Context, shardID uint64, query interface{}, opts consistency.ReadOptions) (interface{}, error) {
+	if m.readWithConsistencyFn != nil {
+		return m.readWithConsistencyFn(ctx, shardID, query, opts)
+	}
+	return nil, nil
+}
+
+func (m *mockHost) FollowerRead(ctx context.Context, shardID uint64, query interface{}) (interface{}, error) {
+	if m.followerReadFn != nil {
+		return m.followerReadFn(ctx, shardID, query)
+	}
+	return nil, nil
+}
+
+func (m *mockHost) GetLeaderID(shardID uint64) (uint64, bool, error) {
+	if m.getLeaderIDFn != nil {
+		return m.getLeaderIDFn(shardID)
+	}
+	return 0, false, nil
+}
+
+func (m *mockHost) GetShardRaftState(shardID uint64) (uint64, uint64, error) {
+	if m.getShardRaftStateFn != nil {
+		return m.getShardRaftStateFn(shardID)
+	}
+	return 0, 0, nil
+}
+
+func (m *mockHost) StartShard(members map[uint64]string, join bool, create sm.CreateFunc, cfg config.Config) error {
+	if m.startShardFn != nil {
+		return m.startShardFn(members, join, create, cfg)
+	}
+	return nil
+}
+
+func (m *mockHost) StopShard(shardID uint64) error {
+	if m.stopShardFn != nil {
+		return m.stopShardFn(shardID)
+	}
+	return nil
+}
+
+func (m *mockHost) Close() error {
+	if m.closeFn != nil {
+		return m.closeFn()
+	}
+	return nil
 }
 
 // newCompletedRequestState creates a RequestState that has already been
@@ -177,7 +254,10 @@ func TestKVService_Put_Success(t *testing.T) {
 	}
 
 	// Verify the command encodes correctly by round-tripping through EncodePut.
-	expected := kv.EncodePut([]byte("hello"), []byte("world"))
+	expected, encErr := kv.EncodePut([]byte("hello"), []byte("world"))
+	if encErr != nil {
+		t.Fatalf("EncodePut error: %v", encErr)
+	}
 	if len(capturedCmd) != len(expected) {
 		t.Fatalf("expected cmd length %d, got %d", len(expected), len(capturedCmd))
 	}
@@ -394,7 +474,10 @@ func TestKVService_Delete_Success(t *testing.T) {
 		t.Fatalf("expected nil error, got %v", err)
 	}
 
-	expected := kv.EncodeDelete([]byte("delme"))
+	expected, encErr := kv.EncodeDelete([]byte("delme"))
+	if encErr != nil {
+		t.Fatalf("EncodeDelete error: %v", encErr)
+	}
 	if len(capturedCmd) != len(expected) {
 		t.Fatalf("expected cmd length %d, got %d", len(expected), len(capturedCmd))
 	}
@@ -1227,7 +1310,10 @@ func TestNewAdminService_ReturnsNonNil(t *testing.T) {
 func TestKVService_Put_EmptyKeyAndValue(t *testing.T) {
 	host := &mockHost{
 		syncProposeFn: func(_ context.Context, _ uint64, cmd []byte) (sm.Result, error) {
-			expected := kv.EncodePut([]byte(""), []byte(""))
+			expected, encErr := kv.EncodePut([]byte(""), []byte(""))
+			if encErr != nil {
+				t.Fatalf("EncodePut error: %v", encErr)
+			}
 			if len(cmd) != len(expected) {
 				t.Fatalf("expected cmd length %d, got %d", len(expected), len(cmd))
 			}
@@ -1317,16 +1403,11 @@ func TestKVService_List_NilResult(t *testing.T) {
 
 	svc := NewKVService(host, 1)
 	keys, err := svc.List(context.Background(), "")
-	if err == nil {
-		t.Fatal("expected error for nil result, got nil")
+	if err != nil {
+		t.Fatalf("expected no error for nil result, got %v", err)
 	}
 	if keys != nil {
 		t.Fatalf("expected nil keys, got %v", keys)
-	}
-
-	var re *ReadError
-	if !errors.As(err, &re) {
-		t.Fatalf("expected *ReadError, got %T: %v", err, err)
 	}
 }
 
@@ -1482,5 +1563,882 @@ func TestKVService_Get_KeyNotFoundError_EmptyKey(t *testing.T) {
 	}
 	if knf.Key != "" {
 		t.Fatalf("expected empty key, got %q", knf.Key)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// KVService.Scan
+// ---------------------------------------------------------------------------
+
+func TestKVService_Scan(t *testing.T) {
+	expected := map[string][]byte{
+		"app/key1": []byte("v1"),
+		"app/key2": []byte("v2"),
+	}
+	host := &mockHost{
+		syncReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
+			return expected, nil
+		},
+	}
+	svc := NewKVService(host, 1)
+	result, err := svc.Scan(context.Background(), "app/")
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if len(result) != 2 {
+		t.Fatalf("expected 2 keys, got %d", len(result))
+	}
+	if string(result["app/key1"]) != "v1" {
+		t.Errorf("key1 = %q, want %q", result["app/key1"], "v1")
+	}
+}
+
+func TestKVService_Scan_NilResult(t *testing.T) {
+	host := &mockHost{
+		syncReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
+			return nil, nil
+		},
+	}
+	svc := NewKVService(host, 1)
+	result, err := svc.Scan(context.Background(), "empty/")
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if result != nil {
+		t.Fatalf("expected nil result, got %v", result)
+	}
+}
+
+func TestKVService_Scan_ReadError(t *testing.T) {
+	host := &mockHost{
+		syncReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
+			return nil, errors.New("read failed")
+		},
+	}
+	svc := NewKVService(host, 1)
+	_, err := svc.Scan(context.Background(), "prefix/")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestKVService_Scan_UnexpectedType(t *testing.T) {
+	host := &mockHost{
+		syncReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
+			return "not a map", nil
+		},
+	}
+	svc := NewKVService(host, 1)
+	_, err := svc.Scan(context.Background(), "prefix/")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var re *ReadError
+	if !errors.As(err, &re) {
+		t.Fatalf("expected *ReadError, got %T", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// AdminService.Capabilities
+// ---------------------------------------------------------------------------
+
+func TestAdminService_Capabilities(t *testing.T) {
+	svc := NewAdminService(&mockHost{})
+	caps, err := svc.Capabilities(context.Background())
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if caps == nil {
+		t.Fatal("expected non-nil capabilities")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// KVService with codec manager (nil = backward compat)
+// ---------------------------------------------------------------------------
+
+func TestKVService_NilCodec_PutGetPassthrough(t *testing.T) {
+	var storedValue []byte
+	host := &mockHost{
+		syncProposeFn: func(_ context.Context, _ uint64, cmd []byte) (sm.Result, error) {
+			// Extract the value from the encoded command by decoding
+			// the put command format.
+			storedValue = make([]byte, len(cmd))
+			copy(storedValue, cmd)
+			return sm.Result{Value: 1}, nil
+		},
+		syncReadFn: func(_ context.Context, _ uint64, query interface{}) (interface{}, error) {
+			return []byte("raw-value"), nil
+		},
+	}
+
+	// No codec option = nil codec, values pass through unmodified.
+	svc := NewKVService(host, 1)
+
+	if err := svc.Put(context.Background(), "key", []byte("raw-value")); err != nil {
+		t.Fatalf("Put: unexpected error: %v", err)
+	}
+
+	got, err := svc.Get(context.Background(), "key")
+	if err != nil {
+		t.Fatalf("Get: unexpected error: %v", err)
+	}
+	if string(got) != "raw-value" {
+		t.Errorf("Get: got %q, want %q", string(got), "raw-value")
+	}
+}
+
+func TestKVService_WithCodec_PutEncodesForStorage(t *testing.T) {
+	var capturedCmd []byte
+	host := &mockHost{
+		syncProposeFn: func(_ context.Context, _ uint64, cmd []byte) (sm.Result, error) {
+			capturedCmd = make([]byte, len(cmd))
+			copy(capturedCmd, cmd)
+			return sm.Result{Value: 1}, nil
+		},
+	}
+
+	// Use JSON for both storage and wire (so we can verify encoding).
+	cm := codec.NewManager(&codec.JSONCodec{}, &codec.JSONCodec{})
+	svc := NewKVService(host, 1, WithCodecManager(cm))
+
+	// Put raw bytes - the codec should encode them.
+	if err := svc.Put(context.Background(), "key", []byte("hello")); err != nil {
+		t.Fatalf("Put: unexpected error: %v", err)
+	}
+
+	// The captured command should contain the JSON-encoded form of
+	// the value (the bytes "hello" JSON-marshaled = "aGVsbG8=" base64).
+	if capturedCmd == nil {
+		t.Fatal("Put: no command was proposed")
+	}
+}
+
+func TestKVService_WithCodec_GetTranscodesFromStorage(t *testing.T) {
+	// Store a JSON-encoded value and verify transcode works.
+	cm := codec.NewManager(&codec.JSONCodec{}, &codec.JSONCodec{})
+
+	// Encode a test value using the storage codec.
+	testMap := map[string]string{"name": "alice"}
+	encoded, err := cm.EncodeForStorage(testMap)
+	if err != nil {
+		t.Fatalf("EncodeForStorage: %v", err)
+	}
+
+	host := &mockHost{
+		syncReadFn: func(_ context.Context, _ uint64, query interface{}) (interface{}, error) {
+			return encoded, nil
+		},
+	}
+
+	svc := NewKVService(host, 1, WithCodecManager(cm))
+	got, getErr := svc.Get(context.Background(), "key")
+	if getErr != nil {
+		t.Fatalf("Get: unexpected error: %v", getErr)
+	}
+	if got == nil {
+		t.Fatal("Get: got nil")
+	}
+	// The transcoded result should be valid JSON.
+	if len(got) == 0 {
+		t.Fatal("Get: got empty result after transcode")
+	}
+}
+
+func TestKVService_WithCodec_GetStaleTranscodes(t *testing.T) {
+	cm := codec.NewManager(&codec.JSONCodec{}, &codec.JSONCodec{})
+
+	testData := map[string]int{"count": 42}
+	encoded, err := cm.EncodeForStorage(testData)
+	if err != nil {
+		t.Fatalf("EncodeForStorage: %v", err)
+	}
+
+	host := &mockHost{
+		staleReadFn: func(_ context.Context, _ uint64, query interface{}) (interface{}, error) {
+			return encoded, nil
+		},
+	}
+
+	svc := NewKVService(host, 1, WithCodecManager(cm))
+	got, getErr := svc.GetStale(context.Background(), "key")
+	if getErr != nil {
+		t.Fatalf("GetStale: unexpected error: %v", getErr)
+	}
+	if len(got) == 0 {
+		t.Fatal("GetStale: got empty result after transcode")
+	}
+}
+
+func TestKVService_WithCodec_PutEncodeError(t *testing.T) {
+	host := &mockHost{}
+
+	// Use a failing codec to trigger encode errors.
+	failCodec := &failingCodec{marshalErr: errors.New("encode failed")}
+	cm := codec.NewManager(failCodec, &codec.JSONCodec{})
+	svc := NewKVService(host, 1, WithCodecManager(cm))
+
+	err := svc.Put(context.Background(), "key", []byte("value"))
+	if err == nil {
+		t.Fatal("expected error from codec encode, got nil")
+	}
+	var cee *CodecEncodeError
+	if !errors.As(err, &cee) {
+		t.Fatalf("expected *CodecEncodeError, got %T: %v", err, err)
+	}
+	if cee.Op != "put" {
+		t.Errorf("expected op %q, got %q", "put", cee.Op)
+	}
+}
+
+// failingCodec is a test codec that returns configurable errors.
+type failingCodec struct {
+	marshalErr   error
+	unmarshalErr error
+}
+
+func (c *failingCodec) Marshal(_ any) ([]byte, error) {
+	if c.marshalErr != nil {
+		return nil, c.marshalErr
+	}
+	return []byte("ok"), nil
+}
+
+func (c *failingCodec) Unmarshal(_ []byte, _ any) error {
+	return c.unmarshalErr
+}
+
+func (c *failingCodec) Type() string {
+	return "failing"
+}
+
+func TestKVService_WithCodec_GetTranscodeError(t *testing.T) {
+	// Use a storage codec that fails on unmarshal to trigger transcode error.
+	failStorage := &failingCodec{unmarshalErr: errors.New("unmarshal failed")}
+	cm := codec.NewManager(failStorage, &codec.JSONCodec{})
+
+	host := &mockHost{
+		syncReadFn: func(_ context.Context, _ uint64, query interface{}) (interface{}, error) {
+			return []byte("stored-data"), nil
+		},
+	}
+
+	svc := NewKVService(host, 1, WithCodecManager(cm))
+	_, err := svc.Get(context.Background(), "key")
+	if err == nil {
+		t.Fatal("expected error from transcode, got nil")
+	}
+	var cde *CodecDecodeError
+	if !errors.As(err, &cde) {
+		t.Fatalf("expected *CodecDecodeError, got %T: %v", err, err)
+	}
+	if cde.Op != "get" {
+		t.Errorf("expected op %q, got %q", "get", cde.Op)
+	}
+}
+
+func TestKVService_WithCodec_GetStaleTranscodeError(t *testing.T) {
+	failStorage := &failingCodec{unmarshalErr: errors.New("unmarshal failed")}
+	cm := codec.NewManager(failStorage, &codec.JSONCodec{})
+
+	host := &mockHost{
+		staleReadFn: func(_ context.Context, _ uint64, query interface{}) (interface{}, error) {
+			return []byte("stored-data"), nil
+		},
+	}
+
+	svc := NewKVService(host, 1, WithCodecManager(cm))
+	_, err := svc.GetStale(context.Background(), "key")
+	if err == nil {
+		t.Fatal("expected error from transcode, got nil")
+	}
+	var cde *CodecDecodeError
+	if !errors.As(err, &cde) {
+		t.Fatalf("expected *CodecDecodeError, got %T: %v", err, err)
+	}
+	if cde.Op != "get_stale" {
+		t.Errorf("expected op %q, got %q", "get_stale", cde.Op)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Codec error type tests
+// ---------------------------------------------------------------------------
+
+func TestCodecEncodeError_ErrorString(t *testing.T) {
+	err := &CodecEncodeError{Op: "put", Err: errors.New("marshal failed")}
+	want := "service: codec encode failed for put: marshal failed"
+	if err.Error() != want {
+		t.Errorf("got %q, want %q", err.Error(), want)
+	}
+}
+
+func TestCodecEncodeError_Unwrap(t *testing.T) {
+	inner := errors.New("inner")
+	err := &CodecEncodeError{Op: "put", Err: inner}
+	if err.Unwrap() != inner {
+		t.Error("Unwrap did not return the inner error")
+	}
+}
+
+func TestCodecDecodeError_ErrorString(t *testing.T) {
+	err := &CodecDecodeError{Op: "get", Err: errors.New("unmarshal failed")}
+	want := "service: codec decode failed for get: unmarshal failed"
+	if err.Error() != want {
+		t.Errorf("got %q, want %q", err.Error(), want)
+	}
+}
+
+func TestCodecDecodeError_Unwrap(t *testing.T) {
+	inner := errors.New("inner")
+	err := &CodecDecodeError{Op: "get", Err: inner}
+	if err.Unwrap() != inner {
+		t.Error("Unwrap did not return the inner error")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// AdminService shard management tests
+// ---------------------------------------------------------------------------
+
+// dummyCreateFunc is a no-op state machine factory for testing.
+func dummyCreateFunc(shardID, replicaID uint64) interface{} {
+	return nil
+}
+
+func TestAdminService_StartShard_Success(t *testing.T) {
+	var capturedMembers map[uint64]string
+	var capturedJoin bool
+	var capturedCfg config.Config
+
+	host := &mockHost{
+		startShardFn: func(members map[uint64]string, join bool, create sm.CreateFunc, cfg config.Config) error {
+			capturedMembers = members
+			capturedJoin = join
+			capturedCfg = cfg
+			return nil
+		},
+	}
+
+	svc := NewAdminService(host,
+		WithStateMachineFactory(dummyCreateFunc),
+		WithDefaultShardConfig(config.Config{
+			CheckQuorum: config.BoolPtr(true),
+			PreVote:     config.BoolPtr(true),
+		}),
+	)
+
+	req := &StartShardRequest{
+		ShardID:   100,
+		ReplicaID: 1,
+		Members:   map[uint64]string{1: "127.0.0.1:9100", 2: "127.0.0.1:9200"},
+		Join:      false,
+	}
+
+	err := svc.StartShard(context.Background(), req)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if len(capturedMembers) != 2 {
+		t.Errorf("expected 2 members, got %d", len(capturedMembers))
+	}
+	if capturedJoin {
+		t.Error("expected join to be false")
+	}
+	if capturedCfg.ShardID != 100 {
+		t.Errorf("expected ShardID 100, got %d", capturedCfg.ShardID)
+	}
+	if capturedCfg.ReplicaID != 1 {
+		t.Errorf("expected ReplicaID 1, got %d", capturedCfg.ReplicaID)
+	}
+	// Verify default config fields are preserved.
+	if !capturedCfg.GetCheckQuorum() {
+		t.Error("expected CheckQuorum to be true from default config")
+	}
+	if !capturedCfg.GetPreVote() {
+		t.Error("expected PreVote to be true from default config")
+	}
+}
+
+func TestAdminService_StartShard_NoFactory(t *testing.T) {
+	svc := NewAdminService(&mockHost{})
+
+	err := svc.StartShard(context.Background(), &StartShardRequest{
+		ShardID:   1,
+		ReplicaID: 1,
+		Members:   map[uint64]string{1: "127.0.0.1:9100"},
+	})
+
+	if err == nil {
+		t.Fatal("expected error when no state machine factory is configured")
+	}
+
+	var noFactory *NoStateMachineFactoryError
+	if !errors.As(err, &noFactory) {
+		t.Errorf("expected NoStateMachineFactoryError, got %T: %v", err, err)
+	}
+}
+
+func TestAdminService_StartShard_HostError(t *testing.T) {
+	hostErr := errors.New("shard already exists")
+	host := &mockHost{
+		startShardFn: func(members map[uint64]string, join bool, create sm.CreateFunc, cfg config.Config) error {
+			return hostErr
+		},
+	}
+
+	svc := NewAdminService(host, WithStateMachineFactory(dummyCreateFunc))
+
+	err := svc.StartShard(context.Background(), &StartShardRequest{
+		ShardID:   1,
+		ReplicaID: 1,
+		Members:   map[uint64]string{1: "127.0.0.1:9100"},
+	})
+
+	if err == nil {
+		t.Fatal("expected error from host.StartShard failure")
+	}
+
+	var shardErr *ShardStartError
+	if !errors.As(err, &shardErr) {
+		t.Fatalf("expected ShardStartError, got %T: %v", err, err)
+	}
+	if shardErr.ShardID != 1 {
+		t.Errorf("expected ShardID 1, got %d", shardErr.ShardID)
+	}
+	if shardErr.Unwrap() != hostErr {
+		t.Error("Unwrap did not return the host error")
+	}
+}
+
+func TestAdminService_StopShard_Success(t *testing.T) {
+	var capturedShardID uint64
+	host := &mockHost{
+		stopShardFn: func(shardID uint64) error {
+			capturedShardID = shardID
+			return nil
+		},
+	}
+
+	svc := NewAdminService(host)
+	err := svc.StopShard(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if capturedShardID != 42 {
+		t.Errorf("expected shardID 42, got %d", capturedShardID)
+	}
+}
+
+func TestAdminService_StopShard_Error(t *testing.T) {
+	hostErr := errors.New("shard not loaded")
+	host := &mockHost{
+		stopShardFn: func(shardID uint64) error {
+			return hostErr
+		},
+	}
+
+	svc := NewAdminService(host)
+	err := svc.StopShard(context.Background(), 99)
+	if err == nil {
+		t.Fatal("expected error from host.StopShard failure")
+	}
+
+	var stopErr *ShardStopError
+	if !errors.As(err, &stopErr) {
+		t.Fatalf("expected ShardStopError, got %T: %v", err, err)
+	}
+	if stopErr.ShardID != 99 {
+		t.Errorf("expected ShardID 99, got %d", stopErr.ShardID)
+	}
+	if stopErr.Unwrap() != hostErr {
+		t.Error("Unwrap did not return the host error")
+	}
+}
+
+func TestAdminService_GetShardState_Success(t *testing.T) {
+	host := &mockHost{
+		getShardRaftStateFn: func(shardID uint64) (uint64, uint64, error) {
+			return 5, 3, nil // configChangeIndex=5, term=3
+		},
+		getLeaderIDFn: func(shardID uint64) (uint64, bool, error) {
+			return 2, true, nil // leaderID=2, hasLeader=true
+		},
+	}
+
+	svc := NewAdminService(host)
+	resp, err := svc.GetShardState(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if resp.ShardID != 10 {
+		t.Errorf("expected ShardID 10, got %d", resp.ShardID)
+	}
+	if resp.ConfigChangeIndex != 5 {
+		t.Errorf("expected ConfigChangeIndex 5, got %d", resp.ConfigChangeIndex)
+	}
+	if resp.Term != 3 {
+		t.Errorf("expected Term 3, got %d", resp.Term)
+	}
+	if resp.LeaderID != 2 {
+		t.Errorf("expected LeaderID 2, got %d", resp.LeaderID)
+	}
+	if !resp.HasLeader {
+		t.Error("expected HasLeader to be true")
+	}
+}
+
+func TestAdminService_GetShardState_RaftStateError(t *testing.T) {
+	hostErr := errors.New("shard not found")
+	host := &mockHost{
+		getShardRaftStateFn: func(shardID uint64) (uint64, uint64, error) {
+			return 0, 0, hostErr
+		},
+	}
+
+	svc := NewAdminService(host)
+	resp, err := svc.GetShardState(context.Background(), 7)
+	if resp != nil {
+		t.Error("expected nil response on error")
+	}
+	if err == nil {
+		t.Fatal("expected error from GetShardRaftState failure")
+	}
+
+	var stateErr *ShardStateError
+	if !errors.As(err, &stateErr) {
+		t.Fatalf("expected ShardStateError, got %T: %v", err, err)
+	}
+	if stateErr.ShardID != 7 {
+		t.Errorf("expected ShardID 7, got %d", stateErr.ShardID)
+	}
+	if stateErr.Unwrap() != hostErr {
+		t.Error("Unwrap did not return the host error")
+	}
+}
+
+func TestAdminService_GetShardState_LeaderIDError(t *testing.T) {
+	hostErr := errors.New("leader lookup failed")
+	host := &mockHost{
+		getShardRaftStateFn: func(shardID uint64) (uint64, uint64, error) {
+			return 5, 3, nil
+		},
+		getLeaderIDFn: func(shardID uint64) (uint64, bool, error) {
+			return 0, false, hostErr
+		},
+	}
+
+	svc := NewAdminService(host)
+	resp, err := svc.GetShardState(context.Background(), 7)
+	if resp != nil {
+		t.Error("expected nil response on error")
+	}
+	if err == nil {
+		t.Fatal("expected error from GetLeaderID failure")
+	}
+
+	var stateErr *ShardStateError
+	if !errors.As(err, &stateErr) {
+		t.Fatalf("expected ShardStateError, got %T: %v", err, err)
+	}
+	if stateErr.ShardID != 7 {
+		t.Errorf("expected ShardID 7, got %d", stateErr.ShardID)
+	}
+	if stateErr.Unwrap() != hostErr {
+		t.Error("Unwrap did not return the host error")
+	}
+}
+
+func TestAdminService_GetTopology_Success(t *testing.T) {
+	host := &mockHost{
+		idFn:          func() string { return "node-abc" },
+		raftAddressFn: func() string { return "10.0.0.1:9100" },
+		shardCountFn:  func() int { return 2 },
+		getNodeHostInfoFn: func(opt quicraft.NodeHostInfoOption) *quicraft.NodeHostInfo {
+			return &quicraft.NodeHostInfo{
+				RaftAddress: "10.0.0.1:9100",
+				ShardInfoList: []quicraft.ShardInfo{
+					{
+						ShardID:   1,
+						ReplicaID: 1,
+						IsLeader:  true,
+						LeaderID:  1,
+						Nodes:     map[uint64]string{1: "10.0.0.1:9100", 2: "10.0.0.2:9100"},
+					},
+					{
+						ShardID:   2,
+						ReplicaID: 3,
+						IsLeader:  false,
+						LeaderID:  4,
+						Nodes:     map[uint64]string{3: "10.0.0.1:9100", 4: "10.0.0.3:9100"},
+					},
+				},
+			}
+		},
+	}
+
+	svc := NewAdminService(host)
+	resp, err := svc.GetTopology(context.Background())
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if resp.NodeID != "node-abc" {
+		t.Errorf("expected NodeID 'node-abc', got %q", resp.NodeID)
+	}
+	if resp.RaftAddress != "10.0.0.1:9100" {
+		t.Errorf("expected RaftAddress '10.0.0.1:9100', got %q", resp.RaftAddress)
+	}
+	if resp.ShardCount != 2 {
+		t.Errorf("expected ShardCount 2, got %d", resp.ShardCount)
+	}
+	if len(resp.Shards) != 2 {
+		t.Fatalf("expected 2 shards, got %d", len(resp.Shards))
+	}
+
+	shard0 := resp.Shards[0]
+	if shard0.ShardID != 1 {
+		t.Errorf("shard[0] ShardID: expected 1, got %d", shard0.ShardID)
+	}
+	if shard0.ReplicaID != 1 {
+		t.Errorf("shard[0] ReplicaID: expected 1, got %d", shard0.ReplicaID)
+	}
+	if !shard0.IsLeader {
+		t.Error("shard[0] expected IsLeader true")
+	}
+	if shard0.LeaderID != 1 {
+		t.Errorf("shard[0] LeaderID: expected 1, got %d", shard0.LeaderID)
+	}
+	if len(shard0.Nodes) != 2 {
+		t.Errorf("shard[0] Nodes: expected 2, got %d", len(shard0.Nodes))
+	}
+
+	shard1 := resp.Shards[1]
+	if shard1.ShardID != 2 {
+		t.Errorf("shard[1] ShardID: expected 2, got %d", shard1.ShardID)
+	}
+	if shard1.IsLeader {
+		t.Error("shard[1] expected IsLeader false")
+	}
+}
+
+func TestAdminService_GetTopology_EmptyShards(t *testing.T) {
+	host := &mockHost{
+		idFn:          func() string { return "node-empty" },
+		raftAddressFn: func() string { return "10.0.0.1:9100" },
+		shardCountFn:  func() int { return 0 },
+		getNodeHostInfoFn: func(opt quicraft.NodeHostInfoOption) *quicraft.NodeHostInfo {
+			return &quicraft.NodeHostInfo{
+				RaftAddress:   "10.0.0.1:9100",
+				ShardInfoList: nil,
+			}
+		},
+	}
+
+	svc := NewAdminService(host)
+	resp, err := svc.GetTopology(context.Background())
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if resp.NodeID != "node-empty" {
+		t.Errorf("expected NodeID 'node-empty', got %q", resp.NodeID)
+	}
+	if resp.ShardCount != 0 {
+		t.Errorf("expected ShardCount 0, got %d", resp.ShardCount)
+	}
+	if len(resp.Shards) != 0 {
+		t.Errorf("expected 0 shards, got %d", len(resp.Shards))
+	}
+}
+
+func TestAdminService_StartShard_JoinExistingCluster(t *testing.T) {
+	var capturedJoin bool
+	host := &mockHost{
+		startShardFn: func(members map[uint64]string, join bool, create sm.CreateFunc, cfg config.Config) error {
+			capturedJoin = join
+			return nil
+		},
+	}
+
+	svc := NewAdminService(host, WithStateMachineFactory(dummyCreateFunc))
+
+	err := svc.StartShard(context.Background(), &StartShardRequest{
+		ShardID:   5,
+		ReplicaID: 3,
+		Members:   nil,
+		Join:      true,
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if !capturedJoin {
+		t.Error("expected join to be true")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Shard management error type tests
+// ---------------------------------------------------------------------------
+
+func TestShardStartError_ErrorAndUnwrap(t *testing.T) {
+	inner := errors.New("disk full")
+	err := &ShardStartError{ShardID: 42, Err: inner}
+
+	want := "service: start shard 42 failed: disk full"
+	if err.Error() != want {
+		t.Errorf("got %q, want %q", err.Error(), want)
+	}
+	if err.Unwrap() != inner {
+		t.Error("Unwrap did not return the inner error")
+	}
+}
+
+func TestShardStopError_ErrorAndUnwrap(t *testing.T) {
+	inner := errors.New("not loaded")
+	err := &ShardStopError{ShardID: 7, Err: inner}
+
+	want := "service: stop shard 7 failed: not loaded"
+	if err.Error() != want {
+		t.Errorf("got %q, want %q", err.Error(), want)
+	}
+	if err.Unwrap() != inner {
+		t.Error("Unwrap did not return the inner error")
+	}
+}
+
+func TestShardStateError_ErrorAndUnwrap(t *testing.T) {
+	inner := errors.New("shard unavailable")
+	err := &ShardStateError{ShardID: 99, Err: inner}
+
+	want := "service: get shard state 99 failed: shard unavailable"
+	if err.Error() != want {
+		t.Errorf("got %q, want %q", err.Error(), want)
+	}
+	if err.Unwrap() != inner {
+		t.Error("Unwrap did not return the inner error")
+	}
+}
+
+func TestTopologyError_ErrorAndUnwrap(t *testing.T) {
+	inner := errors.New("host not ready")
+	err := &TopologyError{Err: inner}
+
+	want := "service: get topology failed: host not ready"
+	if err.Error() != want {
+		t.Errorf("got %q, want %q", err.Error(), want)
+	}
+	if err.Unwrap() != inner {
+		t.Error("Unwrap did not return the inner error")
+	}
+}
+
+func TestNoStateMachineFactoryError_Error(t *testing.T) {
+	err := &NoStateMachineFactoryError{}
+	want := "service: no state machine factory configured"
+	if err.Error() != want {
+		t.Errorf("got %q, want %q", err.Error(), want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// AdminService option tests
+// ---------------------------------------------------------------------------
+
+func TestWithStateMachineFactory_SetsFactory(t *testing.T) {
+	called := false
+	factory := sm.CreateFunc(func(shardID, replicaID uint64) interface{} {
+		called = true
+		return nil
+	})
+
+	host := &mockHost{
+		startShardFn: func(members map[uint64]string, join bool, create sm.CreateFunc, cfg config.Config) error {
+			create(1, 1)
+			return nil
+		},
+	}
+
+	svc := NewAdminService(host, WithStateMachineFactory(factory))
+	err := svc.StartShard(context.Background(), &StartShardRequest{
+		ShardID:   1,
+		ReplicaID: 1,
+		Members:   map[uint64]string{1: "127.0.0.1:9100"},
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if !called {
+		t.Error("expected factory to be called by host.StartShard")
+	}
+}
+
+func TestWithDefaultShardConfig_OverridesShardAndReplicaID(t *testing.T) {
+	var capturedCfg config.Config
+	host := &mockHost{
+		startShardFn: func(members map[uint64]string, join bool, create sm.CreateFunc, cfg config.Config) error {
+			capturedCfg = cfg
+			return nil
+		},
+	}
+
+	defaultCfg := config.Config{
+		ShardID:     999, // Should be overridden
+		ReplicaID:   999, // Should be overridden
+		CheckQuorum: config.BoolPtr(true),
+		PreVote:     config.BoolPtr(true),
+	}
+
+	svc := NewAdminService(host,
+		WithStateMachineFactory(dummyCreateFunc),
+		WithDefaultShardConfig(defaultCfg),
+	)
+
+	err := svc.StartShard(context.Background(), &StartShardRequest{
+		ShardID:   50,
+		ReplicaID: 3,
+		Members:   map[uint64]string{3: "10.0.0.1:9100"},
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if capturedCfg.ShardID != 50 {
+		t.Errorf("expected ShardID 50, got %d", capturedCfg.ShardID)
+	}
+	if capturedCfg.ReplicaID != 3 {
+		t.Errorf("expected ReplicaID 3, got %d", capturedCfg.ReplicaID)
+	}
+	if !capturedCfg.GetCheckQuorum() {
+		t.Error("expected CheckQuorum from default config to be preserved")
+	}
+	if !capturedCfg.GetPreVote() {
+		t.Error("expected PreVote from default config to be preserved")
+	}
+}
+
+func TestAdminService_GetShardState_NoLeader(t *testing.T) {
+	host := &mockHost{
+		getShardRaftStateFn: func(shardID uint64) (uint64, uint64, error) {
+			return 0, 1, nil
+		},
+		getLeaderIDFn: func(shardID uint64) (uint64, bool, error) {
+			return 0, false, nil
+		},
+	}
+
+	svc := NewAdminService(host)
+	resp, err := svc.GetShardState(context.Background(), 5)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if resp.HasLeader {
+		t.Error("expected HasLeader to be false")
+	}
+	if resp.LeaderID != 0 {
+		t.Errorf("expected LeaderID 0, got %d", resp.LeaderID)
 	}
 }

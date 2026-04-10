@@ -38,6 +38,18 @@ import (
 // Op codes (base: 1-3 in go-quicraft/pkg/sm/kv)
 // ---------------------------------------------------------------------------
 
+// FSM base KV operations (go-quicraft sm/kv).
+const (
+	// OpFSMPut is the base KV put operation (go-quicraft sm/kv).
+	OpFSMPut byte = 0x01
+
+	// OpFSMDelete is the base KV delete operation (go-quicraft sm/kv).
+	OpFSMDelete byte = 0x02
+
+	// OpFSMBatch is the base KV batch operation (go-quicraft sm/kv).
+	OpFSMBatch byte = 0x03
+)
+
 const (
 	// MVCC operations (10-19)
 
@@ -102,6 +114,18 @@ const (
 	// OpTSWriteBatch stores multiple time-series data points.
 	// Payload: [pointCount:2 LE][points...]
 	OpTSWriteBatch byte = 61
+
+	// OpTSWritePoint stores a single validated time-series data point.
+	// Payload: [metricLen:2 LE][metric][timestamp:8 LE][value:8 LE float64][tagCount:2 LE][tags...]
+	OpTSWritePoint byte = 62
+
+	// OpTSDeleteSeries deletes time-series data matching the criteria.
+	// Payload: [metricLen:2 LE][metric][startNs:8 LE][endNs:8 LE][tagCount:2 LE][tags...]
+	OpTSDeleteSeries byte = 63
+
+	// OpTSSetRetention sets the retention policy for a metric.
+	// Payload: [metricLen:2 LE][metric][durationNs:8 LE][resolutionNs:8 LE][aggregation:1]
+	OpTSSetRetention byte = 64
 )
 
 // Range flags (bit mask for OpMVCCRange)
@@ -120,6 +144,11 @@ const (
 
 	// IndexFlagSparse skips indexing absent fields.
 	IndexFlagSparse byte = 1 << 1
+
+	// IndexFlagNumeric encodes field values as fixed-width 8-byte big-endian
+	// integers so that byte ordering matches numeric ordering. Range scans
+	// like [1, 222) will not incorrectly include 1234.
+	IndexFlagNumeric byte = 1 << 2
 )
 
 // headerSize is 1 byte for the op code.
@@ -232,7 +261,7 @@ func EncodeLeaseKeepAlive(leaseID int64) []byte {
 
 // EncodeIndexCreate creates a binary Index Create command.
 // Format: [op:1][nameLen:2 LE][name][fieldLen:2 LE][field][flags:1]
-func EncodeIndexCreate(name, fieldName string, unique, sparse bool) []byte {
+func EncodeIndexCreate(name, fieldName string, unique, sparse, numeric bool) []byte {
 	nameBytes := []byte(name)
 	fieldBytes := []byte(fieldName)
 	buf := make([]byte, headerSize+2+len(nameBytes)+2+len(fieldBytes)+1)
@@ -257,6 +286,9 @@ func EncodeIndexCreate(name, fieldName string, unique, sparse bool) []byte {
 	}
 	if sparse {
 		flags |= IndexFlagSparse
+	}
+	if numeric {
+		flags |= IndexFlagNumeric
 	}
 	buf[off] = flags
 
@@ -701,39 +733,40 @@ func DecodeLeaseKeepAlive(payload []byte) (int64, error) {
 }
 
 // DecodeIndexCreate extracts name, field, and flags from an Index Create payload.
-func DecodeIndexCreate(payload []byte) (name, fieldName string, unique, sparse bool, err error) {
+func DecodeIndexCreate(payload []byte) (name, fieldName string, unique, sparse, numeric bool, err error) {
 	if len(payload) < 2 {
-		return "", "", false, false, &InvalidCommandError{Reason: "index create: payload too short"}
+		return "", "", false, false, false, &InvalidCommandError{Reason: "index create: payload too short"}
 	}
 
 	off := 0
 	nameLen := int(binary.LittleEndian.Uint16(payload[off:]))
 	off += 2
 	if off+nameLen > len(payload) {
-		return "", "", false, false, &InvalidCommandError{Reason: "index create: name length exceeds payload"}
+		return "", "", false, false, false, &InvalidCommandError{Reason: "index create: name length exceeds payload"}
 	}
 	name = string(payload[off : off+nameLen])
 	off += nameLen
 
 	if off+2 > len(payload) {
-		return "", "", false, false, &InvalidCommandError{Reason: "index create: missing field length"}
+		return "", "", false, false, false, &InvalidCommandError{Reason: "index create: missing field length"}
 	}
 	fieldLen := int(binary.LittleEndian.Uint16(payload[off:]))
 	off += 2
 	if off+fieldLen > len(payload) {
-		return "", "", false, false, &InvalidCommandError{Reason: "index create: field length exceeds payload"}
+		return "", "", false, false, false, &InvalidCommandError{Reason: "index create: field length exceeds payload"}
 	}
 	fieldName = string(payload[off : off+fieldLen])
 	off += fieldLen
 
 	if off >= len(payload) {
-		return "", "", false, false, &InvalidCommandError{Reason: "index create: missing flags"}
+		return "", "", false, false, false, &InvalidCommandError{Reason: "index create: missing flags"}
 	}
 	flags := payload[off]
 	unique = flags&IndexFlagUnique != 0
 	sparse = flags&IndexFlagSparse != 0
+	numeric = flags&IndexFlagNumeric != 0
 
-	return name, fieldName, unique, sparse, nil
+	return name, fieldName, unique, sparse, numeric, nil
 }
 
 // DecodeIndexDrop extracts the index name from an Index Drop payload.
@@ -1056,4 +1089,204 @@ func DecodeBatch(payload []byte) ([]DecodedOp, error) {
 	}
 
 	return ops, nil
+}
+
+// ---------------------------------------------------------------------------
+// Time-series extended encode/decode
+// ---------------------------------------------------------------------------
+
+// EncodeTSWritePoint creates a binary Time-Series WritePoint command.
+// The on-wire format is identical to EncodeTSWrite but uses a distinct
+// opcode so the state machine can validate before persisting.
+func EncodeTSWritePoint(metric string, timestamp int64, value float64, tags map[string]string) []byte {
+	buf := EncodeTSWrite(metric, timestamp, value, tags)
+	buf[0] = OpTSWritePoint
+	return buf
+}
+
+// TSDeleteParams holds decoded parameters for a time-series delete.
+type TSDeleteParams struct {
+	Metric  string
+	StartNs int64
+	EndNs   int64
+	Tags    map[string]string
+}
+
+// EncodeTSDeleteSeries creates a binary Time-Series DeleteSeries command.
+// Format: [op:1][metricLen:2 LE][metric][startNs:8 LE][endNs:8 LE][tagCount:2 LE][tags...]
+func EncodeTSDeleteSeries(metric string, startNs, endNs int64, tags map[string]string) []byte {
+	metricBytes := []byte(metric)
+
+	size := headerSize + 2 + len(metricBytes) + 8 + 8 + 2
+	for k, v := range tags {
+		size += 2 + len(k) + 2 + len(v)
+	}
+
+	buf := make([]byte, size)
+	off := 0
+
+	buf[off] = OpTSDeleteSeries
+	off++
+
+	binary.LittleEndian.PutUint16(buf[off:], uint16(len(metricBytes)))
+	off += 2
+	copy(buf[off:], metricBytes)
+	off += len(metricBytes)
+
+	binary.LittleEndian.PutUint64(buf[off:], uint64(startNs))
+	off += 8
+
+	binary.LittleEndian.PutUint64(buf[off:], uint64(endNs))
+	off += 8
+
+	binary.LittleEndian.PutUint16(buf[off:], uint16(len(tags)))
+	off += 2
+
+	for k, v := range tags {
+		binary.LittleEndian.PutUint16(buf[off:], uint16(len(k)))
+		off += 2
+		copy(buf[off:], k)
+		off += len(k)
+
+		binary.LittleEndian.PutUint16(buf[off:], uint16(len(v)))
+		off += 2
+		copy(buf[off:], v)
+		off += len(v)
+	}
+
+	return buf
+}
+
+// DecodeTSDeleteSeries decodes a Time-Series DeleteSeries payload.
+func DecodeTSDeleteSeries(payload []byte) (TSDeleteParams, error) {
+	if len(payload) < 2 {
+		return TSDeleteParams{}, &InvalidCommandError{Reason: "ts delete: payload too short"}
+	}
+
+	off := 0
+	metricLen := int(binary.LittleEndian.Uint16(payload[off:]))
+	off += 2
+	if off+metricLen > len(payload) {
+		return TSDeleteParams{}, &InvalidCommandError{Reason: "ts delete: metric length exceeds payload"}
+	}
+	metric := string(payload[off : off+metricLen])
+	off += metricLen
+
+	if off+18 > len(payload) {
+		return TSDeleteParams{}, &InvalidCommandError{Reason: "ts delete: missing startNs/endNs/tagCount"}
+	}
+
+	startNs := int64(binary.LittleEndian.Uint64(payload[off:]))
+	off += 8
+
+	endNs := int64(binary.LittleEndian.Uint64(payload[off:]))
+	off += 8
+
+	tagCount := int(binary.LittleEndian.Uint16(payload[off:]))
+	off += 2
+
+	tags := make(map[string]string, tagCount)
+	for i := 0; i < tagCount; i++ {
+		if off+2 > len(payload) {
+			return TSDeleteParams{}, &InvalidCommandError{Reason: "ts delete: truncated tag key length"}
+		}
+		kLen := int(binary.LittleEndian.Uint16(payload[off:]))
+		off += 2
+		if off+kLen > len(payload) {
+			return TSDeleteParams{}, &InvalidCommandError{Reason: "ts delete: tag key exceeds payload"}
+		}
+		k := string(payload[off : off+kLen])
+		off += kLen
+
+		if off+2 > len(payload) {
+			return TSDeleteParams{}, &InvalidCommandError{Reason: "ts delete: truncated tag value length"}
+		}
+		vLen := int(binary.LittleEndian.Uint16(payload[off:]))
+		off += 2
+		if off+vLen > len(payload) {
+			return TSDeleteParams{}, &InvalidCommandError{Reason: "ts delete: tag value exceeds payload"}
+		}
+		v := string(payload[off : off+vLen])
+		off += vLen
+
+		tags[k] = v
+	}
+
+	return TSDeleteParams{
+		Metric:  metric,
+		StartNs: startNs,
+		EndNs:   endNs,
+		Tags:    tags,
+	}, nil
+}
+
+// TSRetentionParams holds decoded parameters for a time-series retention policy.
+type TSRetentionParams struct {
+	Metric       string
+	DurationNs   int64
+	ResolutionNs int64
+	Aggregation  byte
+}
+
+// EncodeTSSetRetention creates a binary Time-Series SetRetention command.
+// Format: [op:1][metricLen:2 LE][metric][durationNs:8 LE][resolutionNs:8 LE][aggregation:1]
+func EncodeTSSetRetention(metric string, durationNs, resolutionNs int64, aggregation byte) []byte {
+	metricBytes := []byte(metric)
+	size := headerSize + 2 + len(metricBytes) + 8 + 8 + 1
+
+	buf := make([]byte, size)
+	off := 0
+
+	buf[off] = OpTSSetRetention
+	off++
+
+	binary.LittleEndian.PutUint16(buf[off:], uint16(len(metricBytes)))
+	off += 2
+	copy(buf[off:], metricBytes)
+	off += len(metricBytes)
+
+	binary.LittleEndian.PutUint64(buf[off:], uint64(durationNs))
+	off += 8
+
+	binary.LittleEndian.PutUint64(buf[off:], uint64(resolutionNs))
+	off += 8
+
+	buf[off] = aggregation
+
+	return buf
+}
+
+// DecodeTSSetRetention decodes a Time-Series SetRetention payload.
+func DecodeTSSetRetention(payload []byte) (TSRetentionParams, error) {
+	if len(payload) < 2 {
+		return TSRetentionParams{}, &InvalidCommandError{Reason: "ts set retention: payload too short"}
+	}
+
+	off := 0
+	metricLen := int(binary.LittleEndian.Uint16(payload[off:]))
+	off += 2
+	if off+metricLen > len(payload) {
+		return TSRetentionParams{}, &InvalidCommandError{Reason: "ts set retention: metric length exceeds payload"}
+	}
+	metric := string(payload[off : off+metricLen])
+	off += metricLen
+
+	if off+17 > len(payload) {
+		return TSRetentionParams{}, &InvalidCommandError{Reason: "ts set retention: missing duration/resolution/aggregation"}
+	}
+
+	durationNs := int64(binary.LittleEndian.Uint64(payload[off:]))
+	off += 8
+
+	resolutionNs := int64(binary.LittleEndian.Uint64(payload[off:]))
+	off += 8
+
+	aggregation := payload[off]
+
+	return TSRetentionParams{
+		Metric:       metric,
+		DurationNs:   durationNs,
+		ResolutionNs: resolutionNs,
+		Aggregation:  aggregation,
+	}, nil
 }

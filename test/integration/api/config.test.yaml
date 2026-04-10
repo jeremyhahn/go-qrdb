@@ -5,11 +5,15 @@ server:
   host: "0.0.0.0"
   admin_port: 63002
   grpc_port: 63003
+  quic_port: 63004
 
 # Enable ALL protocols for complete integration testing
 protocols:
   rest: true
   grpc: true
+  quic: true
+  unix: true
+  mcp: true
 
 logging:
   level: "debug"
@@ -24,21 +28,37 @@ raft:
   raft_address: "127.0.0.1:63001"
   listen_address: "0.0.0.0:63001"
   peers: "1=127.0.0.1:63001"
-  sm_type: "memory"
+  sm_type: "mvcc"
 
-# TLS configuration
-tls:
+# Discovery configuration for single-node cluster
+discovery:
+  method: "static"
+
+# TLS: omitted so the server auto-generates CA + node cert + admin client
+# cert via resolveTLS Path 3 (single-node mode). The admin client cert is
+# written to {data_dir}/admin-cert.pem and admin-key.pem.
+
+# Authentication enabled for mTLS integration testing.
+auth:
   enabled: true
-  cert_file: /etc/qrdb/certs/server.crt
-  key_file: /etc/qrdb/certs/server.key
-  ca_file: /etc/qrdb/certs/ca.crt
-  min_version: TLS1.3
-  client_auth: none
+
+# Seal configuration for barrier encryption integration testing.
+# Uses software strategy with deployment-ID-derived passphrase.
+seal:
+  enabled: true
+  strategy: "software"
+  root_key_path: "__sys:seal/root_key"
+  credential_strategy: "barrier"
+
+# Codec disabled: the MVCC state machine manages its own serialization.
+# Enabling a codec creates a mismatch between KV and MVCC code paths.
+codec:
+  storage_codec: ""
+  wire_codec: ""
 
 # Unix socket
 unix:
   socket_path: /var/run/qrdbd/qrdbd.sock
-  socket_mode: "0660"
 
 # MCP configuration
 mcp:

@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 )
@@ -29,6 +30,8 @@ func (m *mockAuditLogger) Log(_ context.Context, event *AuditEvent) error {
 	return nil
 }
 
+func (m *mockAuditLogger) Close() error { return nil }
+
 func (m *mockAuditLogger) Events() []*AuditEvent {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -38,7 +41,7 @@ func (m *mockAuditLogger) Events() []*AuditEvent {
 }
 
 // mockHardwareEncryptor implements SymmetricEncrypter but is NOT a
-// *softwareBarrierEncryptor, so GetMasterKey returns ErrHardwareEncryptorRequired.
+// software encryptor, so GetMasterKey returns ErrHardwareEncryptorRequired.
 type mockHardwareEncryptor struct{}
 
 func (m *mockHardwareEncryptor) Encrypt(plaintext []byte) ([]byte, error) {
@@ -57,18 +60,26 @@ func (s *mockHardwareStrategy) Available() bool      { return true }
 func (s *mockHardwareStrategy) HardwareBacked() bool { return true }
 
 func (s *mockHardwareStrategy) SealRootKey(ctx context.Context, rootKey []byte, creds Credentials) (*SealedRootKey, error) {
-	sw := NewSoftwareStrategy()
+	sw, swErr := NewSoftwareStrategy([]byte("test-master-password"))
+	if swErr != nil {
+		return nil, swErr
+	}
 	return sw.SealRootKey(ctx, rootKey, creds)
 }
 
 func (s *mockHardwareStrategy) UnsealRootKey(ctx context.Context, sealed *SealedRootKey, creds Credentials) ([]byte, error) {
-	sw := NewSoftwareStrategy()
+	sw, swErr := NewSoftwareStrategy([]byte("test-master-password"))
+	if swErr != nil {
+		return nil, swErr
+	}
 	return sw.UnsealRootKey(ctx, sealed, creds)
 }
 
 func (s *mockHardwareStrategy) BarrierEncryptor(_ context.Context, _ []byte) (SymmetricEncrypter, error) {
 	return &mockHardwareEncryptor{}, nil
 }
+
+func (s *mockHardwareStrategy) Close() error { return nil }
 
 // mockUnavailableStrategy reports Available() = false.
 type mockUnavailableStrategy struct{}
@@ -89,6 +100,8 @@ func (s *mockUnavailableStrategy) BarrierEncryptor(_ context.Context, _ []byte) 
 	return nil, ErrNoAvailableStrategy
 }
 
+func (s *mockUnavailableStrategy) Close() error { return nil }
+
 // mockFailingSealStrategy seals successfully but returns an error from
 // BarrierEncryptor. This covers the error path at barrier.go line 142-145.
 type mockFailingSealStrategy struct{}
@@ -98,12 +111,18 @@ func (s *mockFailingSealStrategy) Available() bool      { return true }
 func (s *mockFailingSealStrategy) HardwareBacked() bool { return false }
 
 func (s *mockFailingSealStrategy) SealRootKey(ctx context.Context, rootKey []byte, creds Credentials) (*SealedRootKey, error) {
-	sw := NewSoftwareStrategy()
+	sw, swErr := NewSoftwareStrategy([]byte("test-master-password"))
+	if swErr != nil {
+		return nil, swErr
+	}
 	return sw.SealRootKey(ctx, rootKey, creds)
 }
 
 func (s *mockFailingSealStrategy) UnsealRootKey(ctx context.Context, sealed *SealedRootKey, creds Credentials) ([]byte, error) {
-	sw := NewSoftwareStrategy()
+	sw, swErr := NewSoftwareStrategy([]byte("test-master-password"))
+	if swErr != nil {
+		return nil, swErr
+	}
 	return sw.UnsealRootKey(ctx, sealed, creds)
 }
 
@@ -111,16 +130,7 @@ func (s *mockFailingSealStrategy) BarrierEncryptor(_ context.Context, _ []byte) 
 	return nil, errors.New("mock: encryptor unavailable")
 }
 
-// mockFailingEncryptor always returns errors from Encrypt/Decrypt.
-type mockFailingEncryptor struct{}
-
-func (m *mockFailingEncryptor) Encrypt(_ []byte) ([]byte, error) {
-	return nil, errors.New("mock: encrypt failure")
-}
-
-func (m *mockFailingEncryptor) Decrypt(_ []byte) ([]byte, error) {
-	return nil, errors.New("mock: decrypt failure")
-}
+func (s *mockFailingSealStrategy) Close() error { return nil }
 
 // failingPutBackend wraps a real backend but returns an error from Put
 // for a specific key. This allows testing the error path at
@@ -132,18 +142,34 @@ type failingPutBackend struct {
 	putCalls int
 }
 
-func (f *failingPutBackend) Get(key string) ([]byte, error)    { return f.inner.Get(key) }
-func (f *failingPutBackend) Delete(key string) error           { return f.inner.Delete(key) }
-func (f *failingPutBackend) List(prefix string) ([]string, error) { return f.inner.List(prefix) }
-func (f *failingPutBackend) Exists(key string) (bool, error)   { return f.inner.Exists(key) }
-func (f *failingPutBackend) Close() error                      { return f.inner.Close() }
+func (f *failingPutBackend) Get(ctx context.Context, key string) ([]byte, error) {
+	return f.inner.Get(ctx, key)
+}
 
-func (f *failingPutBackend) Put(key string, data []byte) error {
+func (f *failingPutBackend) Delete(ctx context.Context, key string) error {
+	return f.inner.Delete(ctx, key)
+}
+
+func (f *failingPutBackend) List(ctx context.Context, prefix string) ([]string, error) {
+	return f.inner.List(ctx, prefix)
+}
+
+func (f *failingPutBackend) Scan(ctx context.Context, prefix string, fn func(key string, value []byte) error) error {
+	return f.inner.Scan(ctx, prefix, fn)
+}
+
+func (f *failingPutBackend) Exists(ctx context.Context, key string) (bool, error) {
+	return f.inner.Exists(ctx, key)
+}
+
+func (f *failingPutBackend) Close() error { return f.inner.Close() }
+
+func (f *failingPutBackend) Put(ctx context.Context, key string, data []byte) error {
 	f.putCalls++
 	if key == f.failKey {
 		return f.failErr
 	}
-	return f.inner.Put(key, data)
+	return f.inner.Put(ctx, key, data)
 }
 
 // fakeShamirStrategy is registered under StrategyShamir but is NOT a
@@ -156,18 +182,28 @@ func (s *fakeShamirStrategy) Available() bool      { return true }
 func (s *fakeShamirStrategy) HardwareBacked() bool { return false }
 
 func (s *fakeShamirStrategy) SealRootKey(ctx context.Context, rootKey []byte, creds Credentials) (*SealedRootKey, error) {
-	sw := NewSoftwareStrategy()
+	sw, swErr := NewSoftwareStrategy([]byte("test-master-password"))
+	if swErr != nil {
+		return nil, swErr
+	}
 	return sw.SealRootKey(ctx, rootKey, creds)
 }
 
 func (s *fakeShamirStrategy) UnsealRootKey(ctx context.Context, sealed *SealedRootKey, creds Credentials) ([]byte, error) {
-	sw := NewSoftwareStrategy()
+	sw, swErr := NewSoftwareStrategy([]byte("test-master-password"))
+	if swErr != nil {
+		return nil, swErr
+	}
 	return sw.UnsealRootKey(ctx, sealed, creds)
 }
 
-func (s *fakeShamirStrategy) BarrierEncryptor(ctx context.Context, rootKey []byte) (SymmetricEncrypter, error) {
-	return newSoftwareBarrierEncryptor(rootKey)
+func (s *fakeShamirStrategy) BarrierEncryptor(_ context.Context, _ []byte) (SymmetricEncrypter, error) {
+	// The barrier now uses epoch-based encryption from go-quicraft internally.
+	// Returning nil signals "use internal encryption".
+	return nil, nil
 }
+
+func (s *fakeShamirStrategy) Close() error { return nil }
 
 // newBarrierWithAudit creates a barrier backed by MemoryBackend and
 // SoftwareStrategy with an audit logger for barrier_test.go tests.
@@ -178,7 +214,7 @@ func newBarrierWithAudit(t *testing.T) (*Barrier, *mockAuditLogger) {
 		RootKeyPath: "test/root-key",
 		AuditLogger: audit,
 	}
-	b, err := NewBarrier(testLogger(), NewMemoryBackend(), cfg, NewSoftwareStrategy())
+	b, err := NewBarrier(testLogger(), NewMemoryBackend(), cfg, testSoftwareStrategy(t))
 	if err != nil {
 		t.Fatalf("NewBarrier: %v", err)
 	}
@@ -196,12 +232,11 @@ func initBarrier(t *testing.T, b *Barrier) Credentials {
 	return creds
 }
 
-
-// ─── NewBarrier ──────────────────────────────────────────────────────
+// --- NewBarrier -----------------------------------------------------------
 
 func TestNewBarrier_Success(t *testing.T) {
 	cfg := BarrierConfig{RootKeyPath: "root-key"}
-	b, err := NewBarrier(testLogger(), NewMemoryBackend(), cfg, NewSoftwareStrategy())
+	b, err := NewBarrier(testLogger(), NewMemoryBackend(), cfg, testSoftwareStrategy(t))
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -223,7 +258,7 @@ func TestNewBarrier_NoStrategies(t *testing.T) {
 
 func TestNewBarrier_DefaultPreferenceOrder(t *testing.T) {
 	cfg := BarrierConfig{RootKeyPath: "root-key"}
-	b, err := NewBarrier(testLogger(), NewMemoryBackend(), cfg, NewSoftwareStrategy())
+	b, err := NewBarrier(testLogger(), NewMemoryBackend(), cfg, testSoftwareStrategy(t))
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -239,7 +274,7 @@ func TestNewBarrier_CustomPreferenceOrder(t *testing.T) {
 		RootKeyPath:     "root-key",
 		PreferenceOrder: customOrder,
 	}
-	b, err := NewBarrier(testLogger(), NewMemoryBackend(), cfg, NewSoftwareStrategy())
+	b, err := NewBarrier(testLogger(), NewMemoryBackend(), cfg, testSoftwareStrategy(t))
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -253,7 +288,7 @@ func TestNewBarrier_CustomPreferenceOrder(t *testing.T) {
 	}
 }
 
-// ─── Initialize ─────────────────────────────────────────────────────
+// --- Initialize -----------------------------------------------------------
 
 func TestBarrier_Initialize_Success(t *testing.T) {
 	b, audit := newBarrierWithAudit(t)
@@ -338,7 +373,7 @@ func TestBarrier_Initialize_BasePutFails(t *testing.T) {
 		failErr: putErr,
 	}
 	cfg := BarrierConfig{RootKeyPath: "test/root-key"}
-	b, err := NewBarrier(testLogger(), backend, cfg, NewSoftwareStrategy())
+	b, err := NewBarrier(testLogger(), backend, cfg, testSoftwareStrategy(t))
 	if err != nil {
 		t.Fatalf("NewBarrier: %v", err)
 	}
@@ -376,7 +411,7 @@ func TestBarrier_Initialize_BarrierEncryptorFails(t *testing.T) {
 	}
 }
 
-// ─── Unseal ─────────────────────────────────────────────────────────
+// --- Unseal ---------------------------------------------------------------
 
 func TestBarrier_Unseal_Success(t *testing.T) {
 	b, _ := newBarrierWithAudit(t)
@@ -423,21 +458,44 @@ func TestBarrier_Unseal_NotInitialized(t *testing.T) {
 }
 
 func TestBarrier_Unseal_InvalidCredentials(t *testing.T) {
-	b, audit := newBarrierWithAudit(t)
-	ctx := context.Background()
-	creds := Credentials{Secret: "correct-password"}
+	// The SoftwareStrategy uses its construction-time passphrase, not the
+	// Credentials argument. To test credential mismatch, we initialize with
+	// one passphrase strategy and attempt unseal with a barrier that has a
+	// different passphrase strategy.
+	backend := NewMemoryBackend()
+	audit := &mockAuditLogger{}
+	cfg := BarrierConfig{
+		RootKeyPath: "test/root-key",
+		AuditLogger: audit,
+	}
 
-	if err := b.Initialize(ctx, creds); err != nil {
+	correctStrat, err := NewSoftwareStrategy([]byte("correct-password"))
+	if err != nil {
+		t.Fatalf("NewSoftwareStrategy: %v", err)
+	}
+	b1, err := NewBarrier(testLogger(), backend, cfg, correctStrat)
+	if err != nil {
+		t.Fatalf("NewBarrier: %v", err)
+	}
+
+	ctx := context.Background()
+	if err := b1.Initialize(ctx, Credentials{}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	if err := b.Seal(); err != nil {
-		t.Fatalf("Seal: %v", err)
+
+	// Create a new barrier with a different passphrase for the same backend.
+	wrongStrat, err := NewSoftwareStrategy([]byte("wrong-password"))
+	if err != nil {
+		t.Fatalf("NewSoftwareStrategy: %v", err)
+	}
+	b2, err := NewBarrier(testLogger(), backend, cfg, wrongStrat)
+	if err != nil {
+		t.Fatalf("NewBarrier: %v", err)
 	}
 
-	wrongCreds := Credentials{Secret: "wrong-password"}
-	err := b.Unseal(ctx, wrongCreds)
-	if err != ErrInvalidCredentials {
-		t.Fatalf("expected ErrInvalidCredentials, got %v", err)
+	err = b2.Unseal(ctx, Credentials{})
+	if err == nil {
+		t.Fatal("expected error from wrong passphrase, got nil")
 	}
 
 	// Verify deny audit event.
@@ -459,7 +517,7 @@ func TestBarrier_Unseal_CorruptRootKey(t *testing.T) {
 	ctx := context.Background()
 
 	// Write corrupt data directly to storage.
-	if err := b.base.Put(b.config.RootKeyPath, []byte("not-valid-json")); err != nil {
+	if err := b.base.Put(ctx, b.config.RootKeyPath, []byte("not-valid-json")); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 
@@ -478,7 +536,7 @@ func TestBarrier_Unseal_StrategyNotFound(t *testing.T) {
 		AuditLogger: audit,
 	}
 
-	b1, err := NewBarrier(testLogger(), backend, cfg, NewSoftwareStrategy())
+	b1, err := NewBarrier(testLogger(), backend, cfg, testSoftwareStrategy(t))
 	if err != nil {
 		t.Fatalf("NewBarrier: %v", err)
 	}
@@ -523,7 +581,7 @@ func TestBarrier_Unseal_BarrierEncryptorFails(t *testing.T) {
 		RootKeyPath:     "test/root-key",
 		PreferenceOrder: []StrategyID{StrategySoftware},
 	}
-	b, err := NewBarrier(testLogger(), backend, cfg, NewSoftwareStrategy())
+	b, err := NewBarrier(testLogger(), backend, cfg, testSoftwareStrategy(t))
 	if err != nil {
 		t.Fatalf("NewBarrier: %v", err)
 	}
@@ -547,11 +605,12 @@ func TestBarrier_Unseal_BarrierEncryptorFails(t *testing.T) {
 	}
 }
 
-// ─── Seal ───────────────────────────────────────────────────────────
+// --- Seal -----------------------------------------------------------------
 
 func TestBarrier_Seal_Success(t *testing.T) {
 	b, _ := newBarrierWithAudit(t)
 	initBarrier(t, b)
+	ctx := context.Background()
 
 	if b.IsSealed() {
 		t.Fatal("expected unsealed after Initialize")
@@ -565,7 +624,7 @@ func TestBarrier_Seal_Success(t *testing.T) {
 	}
 
 	// Operations should fail.
-	_, err := b.Get("any-key")
+	_, err := b.Get(ctx, "any-key")
 	if err != ErrSealed {
 		t.Fatalf("expected ErrSealed from Get, got %v", err)
 	}
@@ -587,43 +646,33 @@ func TestBarrier_Seal_ZeroesDEK(t *testing.T) {
 	b, _ := newBarrierWithAudit(t)
 	initBarrier(t, b)
 
-	// Get the DEK before seal.
+	// Verify we can get the master key before seal.
 	dek, err := b.GetMasterKey()
 	if err != nil {
 		t.Fatalf("GetMasterKey: %v", err)
 	}
-	if len(dek) != aesKeySize {
-		t.Fatalf("expected DEK length %d, got %d", aesKeySize, len(dek))
-	}
-
-	// Grab a reference to the internal encryptor to verify zeroing.
-	raw := b.encryptor.Load()
-	sw, ok := raw.(*softwareBarrierEncryptor)
-	if !ok {
-		t.Fatal("expected softwareBarrierEncryptor")
+	if len(dek) < 16 {
+		t.Fatalf("expected non-trivial DEK, got length %d", len(dek))
 	}
 
 	if err := b.Seal(); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
-
-	// Verify the internal DEK is zeroed.
-	allZero := true
-	for _, v := range sw.dek {
-		if v != 0 {
-			allZero = false
-			break
-		}
+	if !b.IsSealed() {
+		t.Error("expected sealed")
 	}
-	if !allZero {
-		t.Error("expected DEK to be zeroed after Seal")
+
+	// After sealing, GetMasterKey should fail.
+	_, err = b.GetMasterKey()
+	if err != ErrSealed {
+		t.Fatalf("expected ErrSealed after Seal, got %v", err)
 	}
 }
 
 func TestBarrier_Seal_WithHardwareEncryptor(t *testing.T) {
-	// Exercise the Seal path where the encryptor is not a
-	// *softwareBarrierEncryptor (hardware mock), ensuring it
-	// does not panic and still transitions to sealed.
+	// Exercise the Seal path where the encryptor is not a software
+	// encryptor (hardware mock), ensuring it does not panic and still
+	// transitions to sealed.
 	backend := NewMemoryBackend()
 	cfg := BarrierConfig{
 		RootKeyPath:     "root-key",
@@ -645,20 +694,21 @@ func TestBarrier_Seal_WithHardwareEncryptor(t *testing.T) {
 	}
 }
 
-// ─── Get/Put/Delete/List/Exists ─────────────────────────────────────
+// --- Get/Put/Delete/List/Exists -------------------------------------------
 
 func TestBarrier_PutGet_RoundTrip(t *testing.T) {
 	b, _ := newBarrierWithAudit(t)
 	initBarrier(t, b)
+	ctx := context.Background()
 
 	key := "secrets/my-secret"
 	value := []byte("super-secret-data")
 
-	if err := b.Put(key, value); err != nil {
+	if err := b.Put(ctx, key, value); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 
-	got, err := b.Get(key)
+	got, err := b.Get(ctx, key)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -670,33 +720,31 @@ func TestBarrier_PutGet_RoundTrip(t *testing.T) {
 func TestBarrier_Put_EncryptsData(t *testing.T) {
 	b, _ := newBarrierWithAudit(t)
 	initBarrier(t, b)
+	ctx := context.Background()
 
 	key := "secrets/my-secret"
 	value := []byte("plaintext-data-that-must-be-encrypted")
 
-	if err := b.Put(key, value); err != nil {
+	if err := b.Put(ctx, key, value); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 
 	// Read raw bytes from the underlying backend.
-	raw, err := b.base.Get(key)
+	raw, err := b.base.Get(ctx, key)
 	if err != nil {
 		t.Fatalf("base.Get: %v", err)
 	}
 
-	// Raw should differ from plaintext.
+	// Raw should differ from plaintext (encrypted by epoch barrier).
 	if bytes.Equal(raw, value) {
 		t.Error("expected raw backend data to differ from plaintext")
-	}
-	// Raw should have version byte prefix.
-	if raw[0] != barrierVersion {
-		t.Errorf("expected version byte %d, got %d", barrierVersion, raw[0])
 	}
 }
 
 func TestBarrier_Get_Sealed(t *testing.T) {
 	b, _ := newBarrierWithAudit(t)
-	_, err := b.Get("any")
+	ctx := context.Background()
+	_, err := b.Get(ctx, "any")
 	if err != ErrSealed {
 		t.Fatalf("expected ErrSealed, got %v", err)
 	}
@@ -704,7 +752,8 @@ func TestBarrier_Get_Sealed(t *testing.T) {
 
 func TestBarrier_Put_Sealed(t *testing.T) {
 	b, _ := newBarrierWithAudit(t)
-	err := b.Put("any", []byte("data"))
+	ctx := context.Background()
+	err := b.Put(ctx, "any", []byte("data"))
 	if err != ErrSealed {
 		t.Fatalf("expected ErrSealed, got %v", err)
 	}
@@ -712,7 +761,8 @@ func TestBarrier_Put_Sealed(t *testing.T) {
 
 func TestBarrier_Delete_Sealed(t *testing.T) {
 	b, _ := newBarrierWithAudit(t)
-	err := b.Delete("any")
+	ctx := context.Background()
+	err := b.Delete(ctx, "any")
 	if err != ErrSealed {
 		t.Fatalf("expected ErrSealed, got %v", err)
 	}
@@ -720,7 +770,8 @@ func TestBarrier_Delete_Sealed(t *testing.T) {
 
 func TestBarrier_List_Sealed(t *testing.T) {
 	b, _ := newBarrierWithAudit(t)
-	_, err := b.List("")
+	ctx := context.Background()
+	_, err := b.List(ctx, "")
 	if err != ErrSealed {
 		t.Fatalf("expected ErrSealed, got %v", err)
 	}
@@ -728,7 +779,8 @@ func TestBarrier_List_Sealed(t *testing.T) {
 
 func TestBarrier_Exists_Sealed(t *testing.T) {
 	b, _ := newBarrierWithAudit(t)
-	_, err := b.Exists("any")
+	ctx := context.Background()
+	_, err := b.Exists(ctx, "any")
 	if err != ErrSealed {
 		t.Fatalf("expected ErrSealed, got %v", err)
 	}
@@ -737,14 +789,15 @@ func TestBarrier_Exists_Sealed(t *testing.T) {
 func TestBarrier_Get_CorruptData(t *testing.T) {
 	b, _ := newBarrierWithAudit(t)
 	initBarrier(t, b)
+	ctx := context.Background()
 
 	// Write corrupt data directly to backend (too short for barrier format).
 	key := "corrupt-key"
-	if err := b.base.Put(key, []byte{0x01}); err != nil {
+	if err := b.base.Put(ctx, key, []byte{0x01}); err != nil {
 		t.Fatalf("base.Put: %v", err)
 	}
 
-	_, err := b.Get(key)
+	_, err := b.Get(ctx, key)
 	if err == nil {
 		t.Fatal("expected error for corrupt data")
 	}
@@ -753,14 +806,15 @@ func TestBarrier_Get_CorruptData(t *testing.T) {
 func TestBarrier_Get_TamperedCiphertext(t *testing.T) {
 	b, _ := newBarrierWithAudit(t)
 	initBarrier(t, b)
+	ctx := context.Background()
 
 	key := "secrets/tampered"
-	if err := b.Put(key, []byte("original-data")); err != nil {
+	if err := b.Put(ctx, key, []byte("original-data")); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 
 	// Tamper with raw ciphertext.
-	raw, err := b.base.Get(key)
+	raw, err := b.base.Get(ctx, key)
 	if err != nil {
 		t.Fatalf("base.Get: %v", err)
 	}
@@ -768,21 +822,28 @@ func TestBarrier_Get_TamperedCiphertext(t *testing.T) {
 	if len(raw) > 5 {
 		raw[len(raw)-1] ^= 0xFF
 	}
-	if err := b.base.Put(key, raw); err != nil {
+	if err := b.base.Put(ctx, key, raw); err != nil {
 		t.Fatalf("base.Put: %v", err)
 	}
 
-	_, err = b.Get(key)
-	if err != ErrInvalidCredentials {
-		t.Fatalf("expected ErrInvalidCredentials for tampered data, got %v", err)
+	_, err = b.Get(ctx, key)
+	if err == nil {
+		t.Fatal("expected error for tampered ciphertext")
+	}
+	// The go-quicraft epoch barrier returns ErrDecryptionFailed, which is
+	// wrapped in a GetError by the StorageBarrier. Verify we get a GetError.
+	var getErr *GetError
+	if !errors.As(err, &getErr) {
+		t.Fatalf("expected *GetError for tampered data, got %T: %v", err, err)
 	}
 }
 
 func TestBarrier_Get_KeyNotFound(t *testing.T) {
 	b, _ := newBarrierWithAudit(t)
 	initBarrier(t, b)
+	ctx := context.Background()
 
-	_, err := b.Get("nonexistent-key")
+	_, err := b.Get(ctx, "nonexistent-key")
 	if err != ErrSecretNotFound {
 		t.Fatalf("expected ErrSecretNotFound, got %v", err)
 	}
@@ -791,17 +852,18 @@ func TestBarrier_Get_KeyNotFound(t *testing.T) {
 func TestBarrier_Delete_Success(t *testing.T) {
 	b, _ := newBarrierWithAudit(t)
 	initBarrier(t, b)
+	ctx := context.Background()
 
 	key := "secrets/to-delete"
-	if err := b.Put(key, []byte("data")); err != nil {
+	if err := b.Put(ctx, key, []byte("data")); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 
-	if err := b.Delete(key); err != nil {
+	if err := b.Delete(ctx, key); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 
-	_, err := b.Get(key)
+	_, err := b.Get(ctx, key)
 	if err != ErrSecretNotFound {
 		t.Fatalf("expected ErrSecretNotFound after delete, got %v", err)
 	}
@@ -810,6 +872,7 @@ func TestBarrier_Delete_Success(t *testing.T) {
 func TestBarrier_List_WithPrefix(t *testing.T) {
 	b, _ := newBarrierWithAudit(t)
 	initBarrier(t, b)
+	ctx := context.Background()
 
 	keys := []string{
 		"secrets/alpha",
@@ -817,12 +880,12 @@ func TestBarrier_List_WithPrefix(t *testing.T) {
 		"other/gamma",
 	}
 	for _, k := range keys {
-		if err := b.Put(k, []byte("data")); err != nil {
+		if err := b.Put(ctx, k, []byte("data")); err != nil {
 			t.Fatalf("Put(%s): %v", k, err)
 		}
 	}
 
-	list, err := b.List("secrets/")
+	list, err := b.List(ctx, "secrets/")
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -834,13 +897,14 @@ func TestBarrier_List_WithPrefix(t *testing.T) {
 func TestBarrier_Exists_Success(t *testing.T) {
 	b, _ := newBarrierWithAudit(t)
 	initBarrier(t, b)
+	ctx := context.Background()
 
 	key := "secrets/check"
-	if err := b.Put(key, []byte("data")); err != nil {
+	if err := b.Put(ctx, key, []byte("data")); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 
-	exists, err := b.Exists(key)
+	exists, err := b.Exists(ctx, key)
 	if err != nil {
 		t.Fatalf("Exists: %v", err)
 	}
@@ -848,7 +912,7 @@ func TestBarrier_Exists_Success(t *testing.T) {
 		t.Error("expected key to exist")
 	}
 
-	missing, err := b.Exists("nonexistent")
+	missing, err := b.Exists(ctx, "nonexistent")
 	if err != nil {
 		t.Fatalf("Exists: %v", err)
 	}
@@ -857,7 +921,7 @@ func TestBarrier_Exists_Success(t *testing.T) {
 	}
 }
 
-// ─── GetMasterKey ───────────────────────────────────────────────────
+// --- GetMasterKey ---------------------------------------------------------
 
 func TestBarrier_GetMasterKey_Success(t *testing.T) {
 	b, _ := newBarrierWithAudit(t)
@@ -867,8 +931,8 @@ func TestBarrier_GetMasterKey_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetMasterKey: %v", err)
 	}
-	if len(dek) != aesKeySize {
-		t.Fatalf("expected DEK length %d, got %d", aesKeySize, len(dek))
+	if len(dek) < 16 {
+		t.Fatalf("expected DEK length >= 16, got %d", len(dek))
 	}
 
 	// Verify it returns a copy.
@@ -900,6 +964,10 @@ func TestBarrier_GetMasterKey_Sealed(t *testing.T) {
 }
 
 func TestBarrier_GetMasterKey_HardwareEncryptor(t *testing.T) {
+	// In the new architecture, GetMasterKey() delegates to the EpochBarrier's
+	// RootKey() which succeeds even in hardware mode because the root key is
+	// stored in a memguard enclave. The hardware encryptor handles
+	// encrypt/decrypt but the root key is still accessible.
 	backend := NewMemoryBackend()
 	cfg := BarrierConfig{
 		RootKeyPath:     "root-key",
@@ -915,13 +983,17 @@ func TestBarrier_GetMasterKey_HardwareEncryptor(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 
-	_, err = b.GetMasterKey()
-	if err != ErrHardwareEncryptorRequired {
-		t.Fatalf("expected ErrHardwareEncryptorRequired, got %v", err)
+	// Verify that GetMasterKey succeeds and returns a valid 32-byte root key.
+	key, err := b.GetMasterKey()
+	if err != nil {
+		t.Fatalf("GetMasterKey: expected success in hardware mode, got %v", err)
+	}
+	if len(key) != 32 {
+		t.Fatalf("expected 32-byte root key, got %d bytes", len(key))
 	}
 }
 
-// ─── Status ─────────────────────────────────────────────────────────
+// --- Status ---------------------------------------------------------------
 
 func TestBarrier_Status_Sealed(t *testing.T) {
 	b, _ := newBarrierWithAudit(t)
@@ -988,7 +1060,7 @@ func TestBarrier_ActiveStrategy_AfterInit(t *testing.T) {
 	}
 }
 
-// ─── Close ──────────────────────────────────────────────────────────
+// --- Close ----------------------------------------------------------------
 
 func TestBarrier_Close_SealsAndCloses(t *testing.T) {
 	b, _ := newBarrierWithAudit(t)
@@ -1014,18 +1086,36 @@ func TestBarrier_Close_AlreadySealed(t *testing.T) {
 	}
 }
 
-// ─── Encryptor ──────────────────────────────────────────────────────
+// --- Encryptor ------------------------------------------------------------
 
 func TestBarrier_Encryptor_Success(t *testing.T) {
+	// After the refactor to epoch-based encryption, Encryptor() returns
+	// (nil, ErrEncryptorNotAvailable) because encryption is handled
+	// internally by the EpochBarrier. Verify the expected behavior.
 	b, _ := newBarrierWithAudit(t)
 	initBarrier(t, b)
 
 	enc, err := b.Encryptor()
-	if err != nil {
-		t.Fatalf("Encryptor: %v", err)
+	if err != ErrEncryptorNotAvailable {
+		t.Fatalf("expected ErrEncryptorNotAvailable, got %v", err)
 	}
-	if enc == nil {
-		t.Fatal("expected non-nil encryptor")
+	if enc != nil {
+		t.Fatal("expected nil encryptor")
+	}
+
+	// Verify encryption still works through the barrier's public API.
+	ctx := context.Background()
+	key := "encryptor-test"
+	value := []byte("test-data")
+	if err := b.Put(ctx, key, value); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	got, err := b.Get(ctx, key)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !bytes.Equal(got, value) {
+		t.Errorf("expected %q, got %q", value, got)
 	}
 }
 
@@ -1037,7 +1127,7 @@ func TestBarrier_Encryptor_Sealed(t *testing.T) {
 	}
 }
 
-// ─── bestStrategy ───────────────────────────────────────────────────
+// --- bestStrategy ---------------------------------------------------------
 
 func TestBarrier_BestStrategy_AllUnavailable(t *testing.T) {
 	cfg := BarrierConfig{RootKeyPath: "root-key"}
@@ -1052,116 +1142,64 @@ func TestBarrier_BestStrategy_AllUnavailable(t *testing.T) {
 	}
 }
 
-// ─── barrierEncrypt/barrierDecrypt ──────────────────────────────────
+// --- Encryptor round-trip via Barrier --------------------------------------
 
-func TestBarrierEncryptDecrypt_RoundTrip(t *testing.T) {
-	rootKey := make([]byte, aesKeySize)
-	for i := range rootKey {
-		rootKey[i] = byte(i)
-	}
-	enc, err := newSoftwareBarrierEncryptor(rootKey)
-	if err != nil {
-		t.Fatalf("newSoftwareBarrierEncryptor: %v", err)
-	}
+func TestBarrier_Encryptor_EncryptDecrypt_RoundTrip(t *testing.T) {
+	// Use the EpochBarrier's Encrypt/Decrypt directly since the old
+	// Encryptor() accessor no longer returns a usable encryptor.
+	b, _ := newBarrierWithAudit(t)
+	initBarrier(t, b)
 
 	plaintext := []byte("round-trip test data")
-	ciphertext, err := barrierEncrypt(enc, plaintext)
+	ciphertext, err := b.EpochBarrier().Encrypt(nil, plaintext)
 	if err != nil {
-		t.Fatalf("barrierEncrypt: %v", err)
+		t.Fatalf("Encrypt: %v", err)
 	}
 
-	decrypted, err := barrierDecrypt(enc, ciphertext)
+	decrypted, err := b.EpochBarrier().Decrypt(nil, ciphertext)
 	if err != nil {
-		t.Fatalf("barrierDecrypt: %v", err)
+		t.Fatalf("Decrypt: %v", err)
 	}
 	if !bytes.Equal(decrypted, plaintext) {
 		t.Errorf("expected %q, got %q", plaintext, decrypted)
 	}
 }
 
-func TestBarrierDecrypt_TooShort(t *testing.T) {
-	rootKey := make([]byte, aesKeySize)
-	enc, err := newSoftwareBarrierEncryptor(rootKey)
-	if err != nil {
-		t.Fatalf("newSoftwareBarrierEncryptor: %v", err)
-	}
+func TestBarrier_Encryptor_DecryptInvalidData(t *testing.T) {
+	// Use the EpochBarrier's Decrypt directly since the old Encryptor()
+	// accessor no longer returns a usable encryptor.
+	b, _ := newBarrierWithAudit(t)
+	initBarrier(t, b)
 
-	_, err = barrierDecrypt(enc, []byte{0x01})
-	if err != ErrCorruptRootKey {
-		t.Fatalf("expected ErrCorruptRootKey for short data, got %v", err)
-	}
-}
-
-func TestBarrierDecrypt_WrongVersion(t *testing.T) {
-	rootKey := make([]byte, aesKeySize)
-	enc, err := newSoftwareBarrierEncryptor(rootKey)
-	if err != nil {
-		t.Fatalf("newSoftwareBarrierEncryptor: %v", err)
-	}
-
-	// Wrong version byte.
-	_, err = barrierDecrypt(enc, []byte{0xFF, 0x00})
-	if err != ErrCorruptRootKey {
-		t.Fatalf("expected ErrCorruptRootKey for wrong version, got %v", err)
-	}
-}
-
-func TestBarrierDecrypt_InvalidCiphertext(t *testing.T) {
-	rootKey := make([]byte, aesKeySize)
-	enc, err := newSoftwareBarrierEncryptor(rootKey)
-	if err != nil {
-		t.Fatalf("newSoftwareBarrierEncryptor: %v", err)
-	}
-
-	// Valid version byte but garbage ciphertext.
-	garbage := make([]byte, 50)
-	garbage[0] = barrierVersion
-	for i := 1; i < len(garbage); i++ {
-		garbage[i] = byte(i)
-	}
-
-	_, err = barrierDecrypt(enc, garbage)
-	if err != ErrInvalidCredentials {
-		t.Fatalf("expected ErrInvalidCredentials, got %v", err)
-	}
-}
-
-func TestBarrierEncrypt_EncryptorError(t *testing.T) {
-	enc := &mockFailingEncryptor{}
-	_, err := barrierEncrypt(enc, []byte("data"))
+	// Attempt to decrypt garbage data via the EpochBarrier.
+	_, err := b.EpochBarrier().Decrypt(nil, []byte{0x01})
 	if err == nil {
-		t.Fatal("expected error from failing encryptor")
+		t.Fatal("expected error decrypting invalid data")
 	}
 }
 
-func TestBarrierDecrypt_NilPlaintextNormalized(t *testing.T) {
-	// Test the nil -> empty slice normalization at barrier.go line 469-471.
-	// This path is exercised when gcm.Open returns nil plaintext for empty input.
-	rootKey := make([]byte, aesKeySize)
-	enc, err := newSoftwareBarrierEncryptor(rootKey)
+func TestBarrier_Encryptor_EncryptEmpty(t *testing.T) {
+	// Use the EpochBarrier's Encrypt/Decrypt directly since the old
+	// Encryptor() accessor no longer returns a usable encryptor.
+	b, _ := newBarrierWithAudit(t)
+	initBarrier(t, b)
+
+	// Encrypt empty plaintext and verify round-trip returns empty data.
+	ciphertext, err := b.EpochBarrier().Encrypt(nil, []byte{})
 	if err != nil {
-		t.Fatalf("newSoftwareBarrierEncryptor: %v", err)
+		t.Fatalf("Encrypt empty: %v", err)
 	}
 
-	// Encrypt empty plaintext and verify round-trip returns empty (not nil).
-	ciphertext, err := barrierEncrypt(enc, []byte{})
+	decrypted, err := b.EpochBarrier().Decrypt(nil, ciphertext)
 	if err != nil {
-		t.Fatalf("barrierEncrypt: %v", err)
-	}
-
-	decrypted, err := barrierDecrypt(enc, ciphertext)
-	if err != nil {
-		t.Fatalf("barrierDecrypt: %v", err)
-	}
-	if decrypted == nil {
-		t.Fatal("expected non-nil result for empty plaintext")
+		t.Fatalf("Decrypt empty: %v", err)
 	}
 	if len(decrypted) != 0 {
-		t.Errorf("expected empty slice, got %v", decrypted)
+		t.Errorf("expected empty result, got %v", decrypted)
 	}
 }
 
-// ─── SetShamirConfig ────────────────────────────────────────────────
+// --- SetShamirConfig ------------------------------------------------------
 
 func TestBarrier_SetShamirConfig(t *testing.T) {
 	b, _ := newBarrierWithAudit(t)
@@ -1175,7 +1213,7 @@ func TestBarrier_SetShamirConfig(t *testing.T) {
 	}
 }
 
-// ─── ShamirStrategy accessor ────────────────────────────────────────
+// --- ShamirStrategy accessor ----------------------------------------------
 
 func TestBarrier_ShamirStrategy_NotRegistered(t *testing.T) {
 	b, _ := newBarrierWithAudit(t)
@@ -1210,7 +1248,7 @@ func TestBarrier_ShamirStrategy_Registered(t *testing.T) {
 		RootKeyPath: "root-key",
 		Shamir:      &ShamirConfig{Threshold: 3, TotalShares: 5},
 	}
-	b, err := NewBarrier(testLogger(), NewMemoryBackend(), cfg, NewSoftwareStrategy(), shamirStrat)
+	b, err := NewBarrier(testLogger(), NewMemoryBackend(), cfg, testSoftwareStrategy(t), shamirStrat)
 	if err != nil {
 		t.Fatalf("NewBarrier: %v", err)
 	}
@@ -1224,7 +1262,7 @@ func TestBarrier_ShamirStrategy_Registered(t *testing.T) {
 	}
 }
 
-// ─── unsealDirect ───────────────────────────────────────────────────
+// --- unsealDirect ---------------------------------------------------------
 
 func TestBarrier_UnsealDirect_Success(t *testing.T) {
 	// Create barrier with ShamirStrategy and initialize via Shamir.
@@ -1238,7 +1276,7 @@ func TestBarrier_UnsealDirect_Success(t *testing.T) {
 		RootKeyPath: "test/root-key",
 		Shamir:      &ShamirConfig{Threshold: 2, TotalShares: 3},
 	}
-	b, err := NewBarrier(testLogger(), backend, cfg, NewSoftwareStrategy(), shamirStrat)
+	b, err := NewBarrier(testLogger(), backend, cfg, testSoftwareStrategy(t), shamirStrat)
 	if err != nil {
 		t.Fatalf("NewBarrier: %v", err)
 	}
@@ -1273,7 +1311,7 @@ func TestBarrier_UnsealDirect_NoShamirStrategy(t *testing.T) {
 		t.Fatalf("Seal: %v", err)
 	}
 
-	rootKey := make([]byte, aesKeySize)
+	rootKey := make([]byte, 32)
 	err := b.unsealDirect(rootKey)
 	if !errors.Is(err, ErrShamirNotConfigured) {
 		t.Fatalf("expected ErrShamirNotConfigured, got %v", err)
@@ -1287,7 +1325,7 @@ func TestBarrier_UnsealDirect_EncryptorError(t *testing.T) {
 		RootKeyPath:     "test/root-key",
 		PreferenceOrder: []StrategyID{StrategySoftware},
 	}
-	b, err := NewBarrier(testLogger(), NewMemoryBackend(), cfg, NewSoftwareStrategy())
+	b, err := NewBarrier(testLogger(), NewMemoryBackend(), cfg, testSoftwareStrategy(t))
 	if err != nil {
 		t.Fatalf("NewBarrier: %v", err)
 	}
@@ -1295,14 +1333,14 @@ func TestBarrier_UnsealDirect_EncryptorError(t *testing.T) {
 	// Manually register the failing strategy under StrategyShamir.
 	b.strategies[StrategyShamir] = failStrat
 
-	rootKey := make([]byte, aesKeySize)
+	rootKey := make([]byte, 32)
 	err = b.unsealDirect(rootKey)
 	if err == nil {
 		t.Fatal("expected error from BarrierEncryptor failure")
 	}
 }
 
-// ─── Unseal then data round-trip ────────────────────────────────────
+// --- Unseal then data round-trip ------------------------------------------
 
 func TestBarrier_UnsealThenDataRoundTrip(t *testing.T) {
 	b, _ := newBarrierWithAudit(t)
@@ -1313,7 +1351,7 @@ func TestBarrier_UnsealThenDataRoundTrip(t *testing.T) {
 	if err := b.Initialize(ctx, creds); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	if err := b.Put("key1", []byte("value1")); err != nil {
+	if err := b.Put(ctx, "key1", []byte("value1")); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 
@@ -1326,7 +1364,7 @@ func TestBarrier_UnsealThenDataRoundTrip(t *testing.T) {
 	}
 
 	// Data should still be retrievable.
-	got, err := b.Get("key1")
+	got, err := b.Get(ctx, "key1")
 	if err != nil {
 		t.Fatalf("Get after unseal: %v", err)
 	}
@@ -1335,11 +1373,12 @@ func TestBarrier_UnsealThenDataRoundTrip(t *testing.T) {
 	}
 }
 
-// ─── MemoryBackend ──────────────────────────────────────────────────
+// --- MemoryBackend --------------------------------------------------------
 
 func TestMemoryBackend_GetNotFound(t *testing.T) {
 	m := NewMemoryBackend()
-	_, err := m.Get("nonexistent")
+	ctx := context.Background()
+	_, err := m.Get(ctx, "nonexistent")
 	if err != ErrSecretNotFound {
 		t.Fatalf("expected ErrSecretNotFound, got %v", err)
 	}
@@ -1347,14 +1386,15 @@ func TestMemoryBackend_GetNotFound(t *testing.T) {
 
 func TestMemoryBackend_PutGet_RoundTrip(t *testing.T) {
 	m := NewMemoryBackend()
+	ctx := context.Background()
 	key := "test/key"
 	value := []byte("test-value")
 
-	if err := m.Put(key, value); err != nil {
+	if err := m.Put(ctx, key, value); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 
-	got, err := m.Get(key)
+	got, err := m.Get(ctx, key)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -1364,7 +1404,7 @@ func TestMemoryBackend_PutGet_RoundTrip(t *testing.T) {
 
 	// Verify data isolation (modifying returned value doesn't affect storage).
 	got[0] = 0xFF
-	got2, err := m.Get(key)
+	got2, err := m.Get(ctx, key)
 	if err != nil {
 		t.Fatalf("Get second: %v", err)
 	}
@@ -1375,17 +1415,18 @@ func TestMemoryBackend_PutGet_RoundTrip(t *testing.T) {
 
 func TestMemoryBackend_Delete(t *testing.T) {
 	m := NewMemoryBackend()
+	ctx := context.Background()
 	key := "test/del"
 
-	if err := m.Put(key, []byte("data")); err != nil {
+	if err := m.Put(ctx, key, []byte("data")); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 
-	if err := m.Delete(key); err != nil {
+	if err := m.Delete(ctx, key); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 
-	_, err := m.Get(key)
+	_, err := m.Get(ctx, key)
 	if err != ErrSecretNotFound {
 		t.Fatalf("expected ErrSecretNotFound after delete, got %v", err)
 	}
@@ -1393,14 +1434,16 @@ func TestMemoryBackend_Delete(t *testing.T) {
 
 func TestMemoryBackend_Delete_NonExistent(t *testing.T) {
 	m := NewMemoryBackend()
+	ctx := context.Background()
 	// Deleting a key that doesn't exist should not error.
-	if err := m.Delete("nonexistent"); err != nil {
+	if err := m.Delete(ctx, "nonexistent"); err != nil {
 		t.Fatalf("Delete nonexistent: %v", err)
 	}
 }
 
 func TestMemoryBackend_List_WithPrefix(t *testing.T) {
 	m := NewMemoryBackend()
+	ctx := context.Background()
 
 	entries := map[string][]byte{
 		"a/one":   []byte("1"),
@@ -1409,12 +1452,12 @@ func TestMemoryBackend_List_WithPrefix(t *testing.T) {
 		"a/four":  []byte("4"),
 	}
 	for k, v := range entries {
-		if err := m.Put(k, v); err != nil {
+		if err := m.Put(ctx, k, v); err != nil {
 			t.Fatalf("Put(%s): %v", k, err)
 		}
 	}
 
-	list, err := m.List("a/")
+	list, err := m.List(ctx, "a/")
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -1433,14 +1476,15 @@ func TestMemoryBackend_List_WithPrefix(t *testing.T) {
 
 func TestMemoryBackend_List_EmptyPrefix(t *testing.T) {
 	m := NewMemoryBackend()
-	if err := m.Put("key1", []byte("v")); err != nil {
+	ctx := context.Background()
+	if err := m.Put(ctx, "key1", []byte("v")); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	if err := m.Put("key2", []byte("v")); err != nil {
+	if err := m.Put(ctx, "key2", []byte("v")); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 
-	list, err := m.List("")
+	list, err := m.List(ctx, "")
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -1451,11 +1495,12 @@ func TestMemoryBackend_List_EmptyPrefix(t *testing.T) {
 
 func TestMemoryBackend_List_NoMatches(t *testing.T) {
 	m := NewMemoryBackend()
-	if err := m.Put("key", []byte("v")); err != nil {
+	ctx := context.Background()
+	if err := m.Put(ctx, "key", []byte("v")); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 
-	list, err := m.List("nonexistent/")
+	list, err := m.List(ctx, "nonexistent/")
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -1466,9 +1511,10 @@ func TestMemoryBackend_List_NoMatches(t *testing.T) {
 
 func TestMemoryBackend_Exists(t *testing.T) {
 	m := NewMemoryBackend()
+	ctx := context.Background()
 	key := "test/exists"
 
-	exists, err := m.Exists(key)
+	exists, err := m.Exists(ctx, key)
 	if err != nil {
 		t.Fatalf("Exists: %v", err)
 	}
@@ -1476,11 +1522,11 @@ func TestMemoryBackend_Exists(t *testing.T) {
 		t.Error("expected key to not exist")
 	}
 
-	if err := m.Put(key, []byte("data")); err != nil {
+	if err := m.Put(ctx, key, []byte("data")); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 
-	exists, err = m.Exists(key)
+	exists, err = m.Exists(ctx, key)
 	if err != nil {
 		t.Fatalf("Exists: %v", err)
 	}
@@ -1498,21 +1544,118 @@ func TestMemoryBackend_Close(t *testing.T) {
 
 func TestMemoryBackend_PutIsolatesInput(t *testing.T) {
 	m := NewMemoryBackend()
+	ctx := context.Background()
 	key := "isolation"
 	value := []byte("original")
 
-	if err := m.Put(key, value); err != nil {
+	if err := m.Put(ctx, key, value); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 
 	// Modify the original slice.
 	value[0] = 0xFF
 
-	got, err := m.Get(key)
+	got, err := m.Get(ctx, key)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
 	if got[0] == 0xFF {
 		t.Error("expected stored data to be isolated from input slice")
+	}
+}
+
+// --- InvocationCounter integration ---
+
+// TestBarrier_CustomInvocationCounter verifies that a custom InvocationCounter
+// injected via BarrierConfig is wired into the barrier and incremented on each
+// encrypt operation (Put).
+func TestBarrier_CustomInvocationCounter(t *testing.T) {
+	t.Parallel()
+
+	counter := NewInvocationCounter(true, 10000, 95.0)
+	cfg := BarrierConfig{
+		RootKeyPath:       "test/root-key",
+		InvocationCounter: counter,
+	}
+	b, err := NewBarrier(testLogger(), NewMemoryBackend(), cfg, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatalf("NewBarrier: %v", err)
+	}
+
+	if b.InvocationCounter() != counter {
+		t.Fatal("InvocationCounter() should return the injected counter")
+	}
+
+	initBarrier(t, b)
+
+	// Each Put encrypts a value, incrementing the counter.
+	ctx := context.Background()
+	const nOps = 5
+	for i := range nOps {
+		if err := b.Put(ctx, fmt.Sprintf("key-%d", i), []byte("value")); err != nil {
+			t.Fatalf("Put %d: %v", i, err)
+		}
+	}
+
+	if got := counter.Count(); got != nOps {
+		t.Fatalf("InvocationCounter.Count() = %d, want %d", got, nOps)
+	}
+}
+
+// TestBarrier_SeedInvocationCounterOnUnseal verifies that after unsealing a
+// previously initialized barrier the injected invocation counter is seeded with
+// the number of keys already present in the backend.
+func TestBarrier_SeedInvocationCounterOnUnseal(t *testing.T) {
+	t.Parallel()
+
+	backend := NewMemoryBackend()
+	strategy := testSoftwareStrategy(t)
+	logger := testLogger()
+
+	// Phase 1: initialize and write entries.
+	counter1 := NewInvocationCounter(true, 10000, 95.0)
+	b1, err := NewBarrier(logger, backend, BarrierConfig{
+		RootKeyPath:       "test/root-key",
+		InvocationCounter: counter1,
+	}, strategy)
+	if err != nil {
+		t.Fatalf("NewBarrier (phase 1): %v", err)
+	}
+
+	ctx := context.Background()
+	creds := Credentials{Secret: "test-password-123"}
+	if err := b1.Initialize(ctx, creds); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	const nEntries = 10
+	for i := range nEntries {
+		if err := b1.Put(ctx, fmt.Sprintf("data/key-%d", i), []byte("value")); err != nil {
+			t.Fatalf("Put %d: %v", i, err)
+		}
+	}
+
+	if err := b1.Seal(); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+
+	// Phase 2: fresh barrier + fresh counter against the same backend.
+	counter2 := NewInvocationCounter(true, 10000, 95.0)
+	b2, err := NewBarrier(logger, backend, BarrierConfig{
+		RootKeyPath:       "test/root-key",
+		InvocationCounter: counter2,
+	}, strategy)
+	if err != nil {
+		t.Fatalf("NewBarrier (phase 2): %v", err)
+	}
+
+	if err := b2.Unseal(ctx, creds); err != nil {
+		t.Fatalf("Unseal: %v", err)
+	}
+
+	// Unseal seeds the counter from all keys in the backend (root-key blob +
+	// nEntries data keys), so the count must be at least nEntries.
+	if got := counter2.Count(); got < nEntries {
+		t.Fatalf("counter2.Count() = %d after unseal, want >= %d", got, nEntries)
 	}
 }

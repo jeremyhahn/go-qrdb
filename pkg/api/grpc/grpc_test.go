@@ -27,7 +27,10 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
+	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
 
 // mockKVService implements service.KVServicer for testing.
@@ -83,11 +86,86 @@ func (m *mockKVService) List(_ context.Context, prefix string) ([]string, error)
 	return keys, nil
 }
 
+func (m *mockKVService) Scan(_ context.Context, prefix string) (map[string][]byte, error) {
+	result := make(map[string][]byte)
+	for k, v := range m.store {
+		if prefix == "" || strings.HasPrefix(k, prefix) {
+			result[k] = v
+		}
+	}
+	return result, nil
+}
+
+func (m *mockKVService) PutEntity(_ context.Context, _ *service.PutEntityRequest) (*service.PutEntityResponse, error) {
+	return nil, nil
+}
+
+func (m *mockKVService) GetEntity(_ context.Context, _ *service.GetEntityRequest) (*service.GetEntityResponse, error) {
+	return nil, nil
+}
+
+func (m *mockKVService) DeleteEntity(_ context.Context, _ *service.DeleteEntityRequest) (*service.DeleteEntityResponse, error) {
+	return nil, nil
+}
+
+func (m *mockKVService) ListEntities(_ context.Context, _ *service.ListEntitiesRequest) (*service.ListEntitiesResponse, error) {
+	return nil, nil
+}
+
+func (m *mockKVService) GetStale(ctx context.Context, key string) ([]byte, error) {
+	return m.Get(ctx, key)
+}
+
+func (m *mockKVService) ListStale(ctx context.Context, prefix string) ([]string, error) {
+	return m.List(ctx, prefix)
+}
+
+func (m *mockKVService) ScanStale(ctx context.Context, prefix string) (map[string][]byte, error) {
+	return m.Scan(ctx, prefix)
+}
+
+func (m *mockKVService) PutWithMode(_ context.Context, key string, value []byte, _ writemode.Mode) error {
+	if m.putErr != nil {
+		return m.putErr
+	}
+	m.store[key] = value
+	return nil
+}
+
+func (m *mockKVService) DeleteWithMode(_ context.Context, key string, _ writemode.Mode) error {
+	if m.delErr != nil {
+		return m.delErr
+	}
+	delete(m.store, key)
+	return nil
+}
+
+func (m *mockKVService) GetWithConsistency(ctx context.Context, key string, _ consistency.ReadOptions) ([]byte, error) {
+	return m.Get(ctx, key)
+}
+
+func (m *mockKVService) ListWithConsistency(ctx context.Context, prefix string, _ consistency.ReadOptions) ([]string, error) {
+	return m.List(ctx, prefix)
+}
+
+func (m *mockKVService) ScanWithConsistency(ctx context.Context, prefix string, _ consistency.ReadOptions) (map[string][]byte, error) {
+	return m.Scan(ctx, prefix)
+}
+
+func (m *mockKVService) ExistsWithConsistency(ctx context.Context, key string, _ consistency.ReadOptions) (bool, error) {
+	v, err := m.Get(ctx, key)
+	if err != nil {
+		return false, nil
+	}
+	return v != nil, nil
+}
+
 // mockAdminService implements service.AdminServicer for testing.
 type mockAdminService struct {
 	healthResult    *service.HealthStatus
 	statusResult    *service.StatusInfo
 	peersResult     *service.PeersInfo
+	capsResult      *capabilities.Capabilities
 	healthErr       error
 	statusErr       error
 	peersErr        error
@@ -95,6 +173,7 @@ type mockAdminService struct {
 	removeMemberErr error
 	snapshotErr     error
 	drainErr        error
+	capsErr         error
 }
 
 func newMockAdminService() *mockAdminService {
@@ -119,6 +198,17 @@ func newMockAdminService() *mockAdminService {
 					},
 				},
 			},
+		},
+		capsResult: &capabilities.Capabilities{
+			KV:          true,
+			MVCC:        true,
+			Transaction: true,
+			Batch:       true,
+			Watch:       true,
+			Lease:       true,
+			Index:       true,
+			TimeSeries:  false,
+			Vector:      false,
 		},
 	}
 }
@@ -158,6 +248,35 @@ func (m *mockAdminService) RequestSnapshot(_ context.Context, _ uint64) error {
 
 func (m *mockAdminService) Drain(_ context.Context) error {
 	return m.drainErr
+}
+
+func (m *mockAdminService) Capabilities(_ context.Context) (*capabilities.Capabilities, error) {
+	if m.capsErr != nil {
+		return nil, m.capsErr
+	}
+	return m.capsResult, nil
+}
+
+func (m *mockAdminService) StartShard(_ context.Context, _ *service.StartShardRequest) error {
+	return nil
+}
+
+func (m *mockAdminService) StopShard(_ context.Context, _ uint64) error {
+	return nil
+}
+
+func (m *mockAdminService) GetShardState(_ context.Context, shardID uint64) (*service.ShardStateResponse, error) {
+	return &service.ShardStateResponse{
+		ShardID:           shardID,
+		ConfigChangeIndex: 0,
+		Term:              0,
+		LeaderID:          0,
+		HasLeader:         false,
+	}, nil
+}
+
+func (m *mockAdminService) GetTopology(_ context.Context) (*service.TopologyResponse, error) {
+	return &service.TopologyResponse{}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -751,6 +870,63 @@ func TestGRPC_Drain_Error(t *testing.T) {
 	}
 	if st.Code() != codes.Unavailable {
 		t.Fatalf("expected Unavailable, got %s", st.Code())
+	}
+}
+
+func TestGRPC_Capabilities(t *testing.T) {
+	adminSvc := newMockAdminService()
+	client, cleanup := startTestServer(t, newMockKVService(), adminSvc)
+	defer cleanup()
+
+	resp, err := client.Capabilities(context.Background(), &pb.CapabilitiesRequest{})
+	if err != nil {
+		t.Fatalf("Capabilities failed: %v", err)
+	}
+	if !resp.GetKv() {
+		t.Fatal("expected KV=true")
+	}
+	if !resp.GetMvcc() {
+		t.Fatal("expected MVCC=true")
+	}
+	if !resp.GetTransaction() {
+		t.Fatal("expected Transaction=true")
+	}
+	if !resp.GetBatch() {
+		t.Fatal("expected Batch=true")
+	}
+	if !resp.GetWatch() {
+		t.Fatal("expected Watch=true")
+	}
+	if !resp.GetLease() {
+		t.Fatal("expected Lease=true")
+	}
+	if !resp.GetIndex() {
+		t.Fatal("expected Index=true")
+	}
+	if resp.GetTimeSeries() {
+		t.Fatal("expected TimeSeries=false")
+	}
+	if resp.GetVector() {
+		t.Fatal("expected Vector=false")
+	}
+}
+
+func TestGRPC_Capabilities_Error(t *testing.T) {
+	adminSvc := newMockAdminService()
+	adminSvc.capsErr = &service.ReadError{Err: errors.New("capabilities failed")}
+	client, cleanup := startTestServer(t, newMockKVService(), adminSvc)
+	defer cleanup()
+
+	_, err := client.Capabilities(context.Background(), &pb.CapabilitiesRequest{})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	st, ok := status.FromError(err)
+	if !ok {
+		t.Fatalf("expected gRPC status error, got %T", err)
+	}
+	if st.Code() != codes.Internal {
+		t.Fatalf("expected Internal, got %s", st.Code())
 	}
 }
 

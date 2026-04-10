@@ -21,7 +21,8 @@ import (
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
-// NilServiceError is returned when a nil service is passed to New.
+// NilServiceError is returned when a nil service is passed to New or
+// when an operation requires a service that was not injected.
 type NilServiceError struct {
 	Service string
 }
@@ -73,6 +74,61 @@ func translateError(err error) error {
 			LeaderID:      nle.LeaderID,
 			LeaderAddress: nle.LeaderAddress,
 		}
+	}
+
+	var rce *service.RevisionCompactedError
+	if errors.As(err, &rce) {
+		return &transport.RevisionCompactedError{Revision: rce.Requested}
+	}
+
+	var rnf *service.RevisionNotFoundError
+	if errors.As(err, &rnf) {
+		return &transport.RevisionNotFoundError{Revision: rnf.Revision}
+	}
+
+	var lnf *service.LeaseNotFoundError
+	if errors.As(err, &lnf) {
+		return &transport.LeaseNotFoundError{LeaseID: lnf.LeaseID}
+	}
+
+	var le *service.LeaseExpiredError
+	if errors.As(err, &le) {
+		return &transport.LeaseExpiredError{LeaseID: le.LeaseID}
+	}
+
+	var wce *service.WatchCanceledError
+	if errors.As(err, &wce) {
+		return &transport.WatchCanceledError{Reason: wce.Reason}
+	}
+
+	var ine *service.IndexNotFoundError
+	if errors.As(err, &ine) {
+		return &transport.IndexNotFoundError{Name: ine.Name}
+	}
+
+	var iee *service.IndexExistsError
+	if errors.As(err, &iee) {
+		return &transport.IndexExistsError{Name: iee.Name}
+	}
+
+	var vnf *service.VectorNotFoundError
+	if errors.As(err, &vnf) {
+		return &transport.VectorNotFoundError{Namespace: vnf.Namespace, ID: vnf.ID}
+	}
+
+	var nsnf *service.NamespaceNotFoundError
+	if errors.As(err, &nsnf) {
+		return &transport.NamespaceNotFoundError{Namespace: nsnf.Namespace}
+	}
+
+	var nse *service.NamespaceExistsError
+	if errors.As(err, &nse) {
+		return &transport.NamespaceExistsError{Namespace: nse.Namespace}
+	}
+
+	var dme *service.DimensionMismatchError
+	if errors.As(err, &dme) {
+		return &transport.DimensionMismatchError{Expected: dme.Expected, Got: dme.Actual}
 	}
 
 	return &transport.RequestError{Method: "embedded", Err: err}

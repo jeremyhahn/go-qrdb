@@ -21,7 +21,7 @@ func newRecoveryBarrier(t *testing.T) (*Barrier, *MemoryBackend) {
 	backend := NewMemoryBackend()
 	b, err := NewBarrier(slog.Default(), backend, BarrierConfig{
 		RootKeyPath: "test/root-key",
-	}, NewSoftwareStrategy())
+	}, testSoftwareStrategy(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +39,7 @@ func newRecoveryBarrierWithShamir(t *testing.T) (*Barrier, *MemoryBackend) {
 	b, err := NewBarrier(slog.Default(), backend, BarrierConfig{
 		RootKeyPath: "test/root-key",
 		Shamir:      &ShamirConfig{Threshold: 3, TotalShares: 5},
-	}, NewSoftwareStrategy(), shamirStrat)
+	}, testSoftwareStrategy(t), shamirStrat)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func TestRecoveryGenerateRecoveryKeys(t *testing.T) {
 		}
 
 		// Verify metadata is persisted in storage.
-		metaBytes, err := backend.Get(recoveryMetaKey)
+		metaBytes, err := backend.Get(ctx, recoveryMetaKey)
 		if err != nil {
 			t.Fatalf("Get recovery-meta: unexpected error: %v", err)
 		}
@@ -188,7 +188,7 @@ func TestRecoveryGenerateRecoveryKeys(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		metaBytes, err := backend.Get(recoveryMetaKey)
+		metaBytes, err := backend.Get(ctx, recoveryMetaKey)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -380,7 +380,7 @@ func TestRecoveryRecoverWithKeys(t *testing.T) {
 		// but provide garbage shares that will fail Shamir combine.
 		meta := &recoveryMeta{Threshold: 2, Total: 3}
 		metaBytes, _ := json.Marshal(meta)
-		if err := backend.Put(recoveryMetaKey, metaBytes); err != nil {
+		if err := backend.Put(ctx, recoveryMetaKey, metaBytes); err != nil {
 			t.Fatal(err)
 		}
 
@@ -393,9 +393,10 @@ func TestRecoveryRecoverWithKeys(t *testing.T) {
 	t.Run("ErrRecoveryKeysNotFound_CorruptMetadata", func(t *testing.T) {
 		b, backend := newRecoveryBarrier(t)
 		initRecoveryBarrier(t, b)
+		ctx := context.Background()
 
 		// Store corrupt metadata.
-		if err := backend.Put(recoveryMetaKey, []byte("not-json")); err != nil {
+		if err := backend.Put(ctx, recoveryMetaKey, []byte("not-json")); err != nil {
 			t.Fatal(err)
 		}
 
@@ -403,7 +404,6 @@ func TestRecoveryRecoverWithKeys(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		ctx := context.Background()
 		err := b.RecoverWithKeys(ctx, []string{"share1", "share2", "share3"})
 		if !errors.Is(err, ErrRecoveryKeysNotFound) {
 			t.Errorf("got %v, want ErrRecoveryKeysNotFound", err)
@@ -422,7 +422,7 @@ func TestRecoveryRoundTrip(t *testing.T) {
 		}
 
 		// Store some data while unsealed.
-		if err := b.Put("mykey", []byte("myvalue")); err != nil {
+		if err := b.Put(ctx, "mykey", []byte("myvalue")); err != nil {
 			t.Fatal(err)
 		}
 
@@ -438,7 +438,7 @@ func TestRecoveryRoundTrip(t *testing.T) {
 		}
 
 		// Verify Get fails while sealed.
-		_, err = b.Get("mykey")
+		_, err = b.Get(ctx, "mykey")
 		if !errors.Is(err, ErrSealed) {
 			t.Errorf("Get while sealed: got %v, want ErrSealed", err)
 		}
@@ -449,7 +449,7 @@ func TestRecoveryRoundTrip(t *testing.T) {
 		}
 
 		// Verify data is accessible after recovery.
-		val, err := b.Get("mykey")
+		val, err := b.Get(ctx, "mykey")
 		if err != nil {
 			t.Fatalf("Get after recovery: %v", err)
 		}
@@ -458,10 +458,10 @@ func TestRecoveryRoundTrip(t *testing.T) {
 		}
 
 		// Verify Put still works after recovery.
-		if err := b.Put("another-key", []byte("another-value")); err != nil {
+		if err := b.Put(ctx, "another-key", []byte("another-value")); err != nil {
 			t.Fatalf("Put after recovery: %v", err)
 		}
-		val, err = b.Get("another-key")
+		val, err = b.Get(ctx, "another-key")
 		if err != nil {
 			t.Fatalf("Get another-key: %v", err)
 		}
@@ -483,7 +483,7 @@ func TestRecoveryDeleteRecoveryKeys(t *testing.T) {
 		}
 
 		// Verify keys exist.
-		has, err := b.HasRecoveryKeys()
+		has, err := b.HasRecoveryKeys(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -492,12 +492,12 @@ func TestRecoveryDeleteRecoveryKeys(t *testing.T) {
 		}
 
 		// Delete them.
-		if err := b.DeleteRecoveryKeys(); err != nil {
+		if err := b.DeleteRecoveryKeys(ctx); err != nil {
 			t.Fatal(err)
 		}
 
 		// Verify they are gone.
-		has, err = b.HasRecoveryKeys()
+		has, err = b.HasRecoveryKeys(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -508,9 +508,10 @@ func TestRecoveryDeleteRecoveryKeys(t *testing.T) {
 
 	t.Run("ErrSealed", func(t *testing.T) {
 		b, _ := newRecoveryBarrier(t)
+		ctx := context.Background()
 		// Barrier is sealed by default (not initialized).
 
-		err := b.DeleteRecoveryKeys()
+		err := b.DeleteRecoveryKeys(ctx)
 		if !errors.Is(err, ErrSealed) {
 			t.Errorf("got %v, want ErrSealed", err)
 		}
@@ -519,10 +520,11 @@ func TestRecoveryDeleteRecoveryKeys(t *testing.T) {
 	t.Run("DeleteNonExistent", func(t *testing.T) {
 		b, _ := newRecoveryBarrier(t)
 		initRecoveryBarrier(t, b)
+		ctx := context.Background()
 
 		// Deleting non-existent recovery keys should not error
 		// (MemoryBackend.Delete is a no-op for missing keys).
-		err := b.DeleteRecoveryKeys()
+		err := b.DeleteRecoveryKeys(ctx)
 		if err != nil {
 			t.Errorf("DeleteRecoveryKeys for non-existent: got %v, want nil", err)
 		}
@@ -533,8 +535,9 @@ func TestRecoveryHasRecoveryKeys(t *testing.T) {
 	t.Run("ReturnsFalseWhenNoneExist", func(t *testing.T) {
 		b, _ := newRecoveryBarrier(t)
 		initRecoveryBarrier(t, b)
+		ctx := context.Background()
 
-		has, err := b.HasRecoveryKeys()
+		has, err := b.HasRecoveryKeys(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -553,7 +556,7 @@ func TestRecoveryHasRecoveryKeys(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		has, err := b.HasRecoveryKeys()
+		has, err := b.HasRecoveryKeys(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -564,8 +567,9 @@ func TestRecoveryHasRecoveryKeys(t *testing.T) {
 
 	t.Run("ErrSealed", func(t *testing.T) {
 		b, _ := newRecoveryBarrier(t)
+		ctx := context.Background()
 
-		has, err := b.HasRecoveryKeys()
+		has, err := b.HasRecoveryKeys(ctx)
 		if !errors.Is(err, ErrSealed) {
 			t.Errorf("got %v, want ErrSealed", err)
 		}
@@ -584,11 +588,11 @@ func TestRecoveryHasRecoveryKeys(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if err := b.DeleteRecoveryKeys(); err != nil {
+		if err := b.DeleteRecoveryKeys(ctx); err != nil {
 			t.Fatal(err)
 		}
 
-		has, err := b.HasRecoveryKeys()
+		has, err := b.HasRecoveryKeys(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}

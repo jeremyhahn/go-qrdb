@@ -1,0 +1,573 @@
+// Copyright (c) 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package rest
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/url"
+	"strconv"
+
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+)
+
+// Compile-time interface assertions.
+var (
+	_ transport.UserClient = (*Transport)(nil)
+	_ transport.RoleClient = (*Transport)(nil)
+	_ transport.CertClient = (*Transport)(nil)
+)
+
+// ---------------------------------------------------------------------------
+// UserClient implementation
+// ---------------------------------------------------------------------------
+
+// CreateUser creates a new passwordless user. Maps to POST /users.
+func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserRequest) (*transport.User, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	var user transport.User
+	if err := t.postJSONDecode(ctx, "CreateUser", "/users", req, &user); err != nil {
+		return nil, err
+	}
+	return &user, nil
+}
+
+// GetUser retrieves a user by its globally unique ID. Maps to GET /users/{id}.
+func (t *Transport) GetUser(ctx context.Context, id string) (*transport.User, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	reqURL := t.baseURL + "/users/" + url.PathEscape(id)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "GetUser", Err: err}
+	}
+
+	resp, err := t.client.Do(httpReq)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "GetUser", Err: err}
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &transport.UserNotFoundError{ID: id}
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, t.decodeErrorResponse("GetUser", resp)
+	}
+
+	var user transport.User
+	if err := json.NewDecoder(resp.Body).Decode(&user); err != nil {
+		return nil, &transport.RequestError{Method: "GetUser", Err: &jsonDecodeError{Err: err}}
+	}
+
+	return &user, nil
+}
+
+// UpdateUser applies partial updates to an existing user. Maps to
+// PUT /users/{id}.
+func (t *Transport) UpdateUser(ctx context.Context, req *transport.UpdateUserRequest) (*transport.User, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	var user transport.User
+	if err := t.putJSONDecode(ctx, "UpdateUser", "/users/"+url.PathEscape(req.ID), req, &user); err != nil {
+		return nil, err
+	}
+	return &user, nil
+}
+
+// DeleteUser removes a non-system user by ID. Maps to DELETE /users/{id}.
+func (t *Transport) DeleteUser(ctx context.Context, id string) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	reqURL := t.baseURL + "/users/" + url.PathEscape(id)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, reqURL, nil)
+	if err != nil {
+		return &transport.RequestError{Method: "DeleteUser", Err: err}
+	}
+
+	resp, err := t.client.Do(httpReq)
+	if err != nil {
+		return &transport.RequestError{Method: "DeleteUser", Err: err}
+	}
+	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}()
+
+	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusOK {
+		return nil
+	}
+
+	return t.decodeErrorResponse("DeleteUser", resp)
+}
+
+// ListUsers returns a paginated list of users for the given tenant.
+// Maps to GET /users/list?tenantID=X&page=N&pageSize=N.
+func (t *Transport) ListUsers(ctx context.Context, req *transport.ListUsersRequest) (*transport.ListUsersResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	params := url.Values{}
+	if req.TenantID != "" {
+		params.Set("tenantID", req.TenantID)
+	}
+	if req.Page > 0 {
+		params.Set("page", strconv.Itoa(req.Page))
+	}
+	if req.PageSize > 0 {
+		params.Set("pageSize", strconv.Itoa(req.PageSize))
+	}
+
+	reqURL := t.baseURL + "/users/list"
+	if encoded := params.Encode(); encoded != "" {
+		reqURL += "?" + encoded
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "ListUsers", Err: err}
+	}
+
+	resp, err := t.client.Do(httpReq)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "ListUsers", Err: err}
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, t.decodeErrorResponse("ListUsers", resp)
+	}
+
+	var listResp transport.ListUsersResponse
+	if err := json.NewDecoder(resp.Body).Decode(&listResp); err != nil {
+		return nil, &transport.RequestError{Method: "ListUsers", Err: &jsonDecodeError{Err: err}}
+	}
+
+	return &listResp, nil
+}
+
+// EnableUser activates a user account. Maps to POST /users/{id}/enable.
+func (t *Transport) EnableUser(ctx context.Context, id string) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	return t.postJSON(ctx, "EnableUser", "/users/"+url.PathEscape(id)+"/enable", nil)
+}
+
+// DisableUser deactivates a user account. Maps to POST /users/{id}/disable.
+func (t *Transport) DisableUser(ctx context.Context, id string) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	return t.postJSON(ctx, "DisableUser", "/users/"+url.PathEscape(id)+"/disable", nil)
+}
+
+// ---------------------------------------------------------------------------
+// RoleClient implementation
+// ---------------------------------------------------------------------------
+
+// CreateRole creates a new role with a generated UUID. Maps to POST /roles.
+func (t *Transport) CreateRole(ctx context.Context, req *transport.CreateRoleRequest) (*transport.Role, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	var role transport.Role
+	if err := t.postJSONDecode(ctx, "CreateRole", "/roles", req, &role); err != nil {
+		return nil, err
+	}
+	return &role, nil
+}
+
+// GetRole retrieves a role by its globally unique ID. Maps to GET /roles/{id}.
+func (t *Transport) GetRole(ctx context.Context, id string) (*transport.Role, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	reqURL := t.baseURL + "/roles/" + url.PathEscape(id)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "GetRole", Err: err}
+	}
+
+	resp, err := t.client.Do(httpReq)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "GetRole", Err: err}
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &transport.RoleNotFoundError{ID: id}
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, t.decodeErrorResponse("GetRole", resp)
+	}
+
+	var role transport.Role
+	if err := json.NewDecoder(resp.Body).Decode(&role); err != nil {
+		return nil, &transport.RequestError{Method: "GetRole", Err: &jsonDecodeError{Err: err}}
+	}
+
+	return &role, nil
+}
+
+// UpdateRole applies partial updates to an existing role. Maps to
+// PUT /roles/{id}.
+func (t *Transport) UpdateRole(ctx context.Context, req *transport.UpdateRoleRequest) (*transport.Role, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	var role transport.Role
+	if err := t.putJSONDecode(ctx, "UpdateRole", "/roles/"+url.PathEscape(req.ID), req, &role); err != nil {
+		return nil, err
+	}
+	return &role, nil
+}
+
+// DeleteRole removes a non-system role by ID. Maps to DELETE /roles/{id}.
+func (t *Transport) DeleteRole(ctx context.Context, id string) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	reqURL := t.baseURL + "/roles/" + url.PathEscape(id)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, reqURL, nil)
+	if err != nil {
+		return &transport.RequestError{Method: "DeleteRole", Err: err}
+	}
+
+	resp, err := t.client.Do(httpReq)
+	if err != nil {
+		return &transport.RequestError{Method: "DeleteRole", Err: err}
+	}
+	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}()
+
+	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusOK {
+		return nil
+	}
+
+	return t.decodeErrorResponse("DeleteRole", resp)
+}
+
+// ListRoles returns a paginated list of roles for the given tenant.
+// Maps to GET /roles/list?tenantID=X&page=N&pageSize=N.
+func (t *Transport) ListRoles(ctx context.Context, req *transport.ListRolesRequest) (*transport.ListRolesResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	params := url.Values{}
+	if req.TenantID != "" {
+		params.Set("tenantID", req.TenantID)
+	}
+	if req.Page > 0 {
+		params.Set("page", strconv.Itoa(req.Page))
+	}
+	if req.PageSize > 0 {
+		params.Set("pageSize", strconv.Itoa(req.PageSize))
+	}
+
+	reqURL := t.baseURL + "/roles/list"
+	if encoded := params.Encode(); encoded != "" {
+		reqURL += "?" + encoded
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "ListRoles", Err: err}
+	}
+
+	resp, err := t.client.Do(httpReq)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "ListRoles", Err: err}
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, t.decodeErrorResponse("ListRoles", resp)
+	}
+
+	var listResp transport.ListRolesResponse
+	if err := json.NewDecoder(resp.Body).Decode(&listResp); err != nil {
+		return nil, &transport.RequestError{Method: "ListRoles", Err: &jsonDecodeError{Err: err}}
+	}
+
+	return &listResp, nil
+}
+
+// AssignRole assigns a role to a user. Maps to POST /roles/assign.
+func (t *Transport) AssignRole(ctx context.Context, userID, roleID string) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	payload := transport.AssignRoleRequest{
+		UserID: userID,
+		RoleID: roleID,
+	}
+
+	return t.postJSON(ctx, "AssignRole", "/roles/assign", payload)
+}
+
+// UnassignRole removes a role assignment from a user. Maps to
+// POST /roles/unassign.
+func (t *Transport) UnassignRole(ctx context.Context, userID, roleID string) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	payload := transport.UnassignRoleRequest{
+		UserID: userID,
+		RoleID: roleID,
+	}
+
+	return t.postJSON(ctx, "UnassignRole", "/roles/unassign", payload)
+}
+
+// ListPermissions returns all available permission categories. Maps to
+// GET /permissions.
+func (t *Transport) ListPermissions(ctx context.Context) (*transport.ListPermissionsResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, t.baseURL+"/permissions", nil)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "ListPermissions", Err: err}
+	}
+
+	resp, err := t.client.Do(httpReq)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "ListPermissions", Err: err}
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, t.decodeErrorResponse("ListPermissions", resp)
+	}
+
+	var permsResp transport.ListPermissionsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&permsResp); err != nil {
+		return nil, &transport.RequestError{Method: "ListPermissions", Err: &jsonDecodeError{Err: err}}
+	}
+
+	return &permsResp, nil
+}
+
+// ---------------------------------------------------------------------------
+// CertClient implementation
+// ---------------------------------------------------------------------------
+
+// GenerateCert creates a client certificate signed by the internal CA.
+// Maps to POST /certs/generate.
+func (t *Transport) GenerateCert(ctx context.Context, req *transport.GenerateCertRequest) (*transport.CertBundle, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	var bundle transport.CertBundle
+	if err := t.postJSONDecode(ctx, "GenerateCert", "/certs/generate", req, &bundle); err != nil {
+		return nil, err
+	}
+	return &bundle, nil
+}
+
+// ExportCert exports a certificate and key as a PKCS#12 archive.
+// Maps to POST /certs/export.
+func (t *Transport) ExportCert(ctx context.Context, req *transport.ExportCertRequest) (*transport.ExportCertResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	var exportResp transport.ExportCertResponse
+	if err := t.postJSONDecode(ctx, "ExportCert", "/certs/export", req, &exportResp); err != nil {
+		return nil, err
+	}
+	return &exportResp, nil
+}
+
+// RevokeCert marks a certificate serial as revoked. Maps to
+// POST /certs/revoke.
+func (t *Transport) RevokeCert(ctx context.Context, serial string) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	payload := struct {
+		Serial string `json:"serial"`
+	}{Serial: serial}
+
+	return t.postJSON(ctx, "RevokeCert", "/certs/revoke", payload)
+}
+
+// ListCerts lists all issued client certificates for a tenant.
+// Maps to GET /certs/list?tenantID=X.
+func (t *Transport) ListCerts(ctx context.Context, tenantID string) (*transport.ListCertsResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	reqURL := t.baseURL + "/certs/list"
+	if tenantID != "" {
+		reqURL += "?tenantID=" + url.QueryEscape(tenantID)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "ListCerts", Err: err}
+	}
+
+	resp, err := t.client.Do(httpReq)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "ListCerts", Err: err}
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, t.decodeErrorResponse("ListCerts", resp)
+	}
+
+	var listResp transport.ListCertsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&listResp); err != nil {
+		return nil, &transport.RequestError{Method: "ListCerts", Err: &jsonDecodeError{Err: err}}
+	}
+
+	return &listResp, nil
+}
+
+// ---------------------------------------------------------------------------
+// Auth transport helpers
+// ---------------------------------------------------------------------------
+
+// postJSONDecode encodes a payload as JSON, POSTs it to the given path,
+// and decodes the JSON response body into dest.
+func (t *Transport) postJSONDecode(ctx context.Context, method, path string, payload, dest any) error {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return &transport.RequestError{Method: method, Err: &jsonEncodeError{Err: err}}
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, t.baseURL+path, bytes.NewReader(data))
+	if err != nil {
+		return &transport.RequestError{Method: method, Err: err}
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := t.client.Do(httpReq)
+	if err != nil {
+		return &transport.RequestError{Method: method, Err: err}
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode >= 400 {
+		return t.decodeErrorResponse(method, resp)
+	}
+
+	if dest != nil {
+		if err := json.NewDecoder(resp.Body).Decode(dest); err != nil {
+			return &transport.RequestError{Method: method, Err: &jsonDecodeError{Err: err}}
+		}
+	}
+
+	return nil
+}
+
+// putJSONDecode encodes a payload as JSON, PUTs it to the given path,
+// and decodes the JSON response body into dest.
+func (t *Transport) putJSONDecode(ctx context.Context, method, path string, payload, dest any) error {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return &transport.RequestError{Method: method, Err: &jsonEncodeError{Err: err}}
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPut, t.baseURL+path, bytes.NewReader(data))
+	if err != nil {
+		return &transport.RequestError{Method: method, Err: err}
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := t.client.Do(httpReq)
+	if err != nil {
+		return &transport.RequestError{Method: method, Err: err}
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode >= 400 {
+		return t.decodeErrorResponse(method, resp)
+	}
+
+	if dest != nil {
+		if err := json.NewDecoder(resp.Body).Decode(dest); err != nil {
+			return &transport.RequestError{Method: method, Err: &jsonDecodeError{Err: err}}
+		}
+	}
+
+	return nil
+}
+
+// patchJSONDecode encodes a payload as JSON, PATCHes it to the given path,
+// and decodes the JSON response body into dest.
+func (t *Transport) patchJSONDecode(ctx context.Context, method, path string, payload, dest any) error {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return &transport.RequestError{Method: method, Err: &jsonEncodeError{Err: err}}
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPatch, t.baseURL+path, bytes.NewReader(data))
+	if err != nil {
+		return &transport.RequestError{Method: method, Err: err}
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := t.client.Do(httpReq)
+	if err != nil {
+		return &transport.RequestError{Method: method, Err: err}
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode >= 400 {
+		return t.decodeErrorResponse(method, resp)
+	}
+
+	if dest != nil {
+		if err := json.NewDecoder(resp.Body).Decode(dest); err != nil {
+			return &transport.RequestError{Method: method, Err: &jsonDecodeError{Err: err}}
+		}
+	}
+
+	return nil
+}

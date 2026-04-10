@@ -169,3 +169,356 @@ func (e *CACertWriteError) Error() string {
 func (e *CACertWriteError) Unwrap() error {
 	return e.Err
 }
+
+// AuthBootstrapError is returned when authentication infrastructure
+// initialization fails during the bootstrap sequence.
+type AuthBootstrapError struct {
+	Step string
+	Err  error
+}
+
+// Error returns a human-readable description of the bootstrap failure.
+func (e *AuthBootstrapError) Error() string {
+	return "cli: auth bootstrap failed at " + strconv.Quote(e.Step) + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *AuthBootstrapError) Unwrap() error {
+	return e.Err
+}
+
+// AdminCertError is returned when admin client certificate generation fails.
+type AdminCertError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *AdminCertError) Error() string {
+	return "cli: admin client certificate generation failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *AdminCertError) Unwrap() error {
+	return e.Err
+}
+
+// AdminCertWriteError is returned when writing the admin client cert to
+// disk fails.
+type AdminCertWriteError struct {
+	Path string
+	Err  error
+}
+
+// Error returns a human-readable description.
+func (e *AdminCertWriteError) Error() string {
+	return "cli: failed to write admin certificate to " + strconv.Quote(e.Path) + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *AdminCertWriteError) Unwrap() error {
+	return e.Err
+}
+
+// BootstrapFetchError is returned when fetching the CA bundle from a
+// bootstrap server fails.
+type BootstrapFetchError struct {
+	Method string
+	Err    error
+}
+
+// Error returns a human-readable description.
+func (e *BootstrapFetchError) Error() string {
+	return "cli: bootstrap fetch failed via " + e.Method + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *BootstrapFetchError) Unwrap() error {
+	return e.Err
+}
+
+// BootstrapError is returned when the overall bootstrap process fails.
+type BootstrapError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *BootstrapError) Error() string {
+	return "cli: TLS bootstrap failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *BootstrapError) Unwrap() error {
+	return e.Err
+}
+
+// BootstrapServerError is returned when starting a bootstrap server
+// fails.
+type BootstrapServerError struct {
+	Protocol string
+	Err      error
+}
+
+// Error returns a human-readable description.
+func (e *BootstrapServerError) Error() string {
+	return "cli: bootstrap server (" + e.Protocol + ") failed to start: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *BootstrapServerError) Unwrap() error {
+	return e.Err
+}
+
+// BootstrapWriteError is returned when writing bootstrap material to
+// disk fails.
+type BootstrapWriteError struct {
+	Path string
+	Err  error
+}
+
+// Error returns a human-readable description.
+func (e *BootstrapWriteError) Error() string {
+	return "cli: failed to write bootstrap file " + strconv.Quote(e.Path) + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *BootstrapWriteError) Unwrap() error {
+	return e.Err
+}
+
+// BootstrapKeyError is returned when parsing bootstrap key material
+// fails.
+type BootstrapKeyError struct {
+	Kind string
+	Err  error
+}
+
+// Error returns a human-readable description.
+func (e *BootstrapKeyError) Error() string {
+	return "cli: bootstrap key parse failed (" + e.Kind + "): " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *BootstrapKeyError) Unwrap() error {
+	return e.Err
+}
+
+// NoBootstrapAddrError is returned when no bootstrap address can be
+// determined.
+type NoBootstrapAddrError struct{}
+
+// Error returns a human-readable description.
+func (e *NoBootstrapAddrError) Error() string {
+	return "cli: no bootstrap address available, use --bootstrap-addr or --bootstrap-noise-addr"
+}
+
+// CertReloadError is returned when hot-reloading a TLS certificate
+// from disk fails.
+type CertReloadError struct {
+	Path string
+	Err  error
+}
+
+// Error returns a human-readable description.
+func (e *CertReloadError) Error() string {
+	return "cli: TLS certificate reload failed for " + strconv.Quote(e.Path) + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *CertReloadError) Unwrap() error {
+	return e.Err
+}
+
+// SealStorageError is returned when the seal storage backend
+// fails to initialize.
+type SealStorageError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *SealStorageError) Error() string {
+	return "cli: seal storage initialization failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *SealStorageError) Unwrap() error {
+	return e.Err
+}
+
+// SealStrategyError is returned when a sealing strategy fails to
+// initialize.
+type SealStrategyError struct {
+	Strategy string
+	Err      error
+}
+
+// Error returns a human-readable description.
+func (e *SealStrategyError) Error() string {
+	return "cli: seal strategy " + strconv.Quote(e.Strategy) + " initialization failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *SealStrategyError) Unwrap() error {
+	return e.Err
+}
+
+// SealBarrierError is returned when the storage barrier fails to
+// initialize.
+type SealBarrierError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *SealBarrierError) Error() string {
+	return "cli: seal barrier initialization failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *SealBarrierError) Unwrap() error {
+	return e.Err
+}
+
+// CredentialServiceError is returned when the credential service
+// fails to initialize.
+type CredentialServiceError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *CredentialServiceError) Error() string {
+	return "cli: credential service initialization failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *CredentialServiceError) Unwrap() error {
+	return e.Err
+}
+
+// CeremonyServiceError is returned when the ceremony service fails
+// to initialize.
+type CeremonyServiceError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *CeremonyServiceError) Error() string {
+	return "cli: ceremony service initialization failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *CeremonyServiceError) Unwrap() error {
+	return e.Err
+}
+
+// VectorStorageError is returned when the vector storage backend
+// fails to initialize.
+type VectorStorageError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *VectorStorageError) Error() string {
+	return "cli: vector storage initialization failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *VectorStorageError) Unwrap() error {
+	return e.Err
+}
+
+// VectorServiceError is returned when the vector service fails to
+// initialize.
+type VectorServiceError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *VectorServiceError) Error() string {
+	return "cli: vector service initialization failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *VectorServiceError) Unwrap() error {
+	return e.Err
+}
+
+// BarrierRegistryError is returned when the barrier registry fails to
+// initialize. This prevents per-tenant encryption isolation from
+// being established.
+type BarrierRegistryError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *BarrierRegistryError) Error() string {
+	return "cli: barrier registry initialization failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *BarrierRegistryError) Unwrap() error {
+	return e.Err
+}
+
+// ClusterDEKError is returned when the cluster DEK manager fails to
+// initialize. This prevents the tenant DEK hierarchy from being
+// established.
+type ClusterDEKError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *ClusterDEKError) Error() string {
+	return "cli: cluster DEK manager initialization failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *ClusterDEKError) Unwrap() error {
+	return e.Err
+}
+
+// DEKStorageError is returned when the DEK storage backend fails to
+// initialize.
+type DEKStorageError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *DEKStorageError) Error() string {
+	return "cli: DEK storage initialization failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *DEKStorageError) Unwrap() error {
+	return e.Err
+}
+
+// TenantDEKError is returned when the tenant DEK manager fails to
+// initialize.
+type TenantDEKError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *TenantDEKError) Error() string {
+	return "cli: tenant DEK manager initialization failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *TenantDEKError) Unwrap() error {
+	return e.Err
+}
+
+// TenantServiceError is returned when the tenant lifecycle service fails
+// to initialize.
+type TenantServiceError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *TenantServiceError) Error() string {
+	return "cli: tenant service initialization failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *TenantServiceError) Unwrap() error {
+	return e.Err
+}

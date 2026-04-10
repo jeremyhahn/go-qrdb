@@ -46,7 +46,8 @@ func NewIndexService(host Host, shardID uint64) IndexServicer {
 
 // CreateIndex creates a new secondary index through Raft consensus.
 func (s *IndexService) CreateIndex(ctx context.Context, name, fieldName string, config IndexConfig) error {
-	cmd := protocol.EncodeIndexCreate(name, fieldName, config.Unique, config.Sparse)
+	numeric := config.ValueType == index.IndexValueTypeNumeric
+	cmd := protocol.EncodeIndexCreate(name, fieldName, config.Unique, config.Sparse, numeric)
 	_, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
 		return s.translateProposeError(err)
@@ -65,7 +66,7 @@ func (s *IndexService) DropIndex(ctx context.Context, name string) error {
 }
 
 // Query returns entity IDs matching an exact value in the specified index.
-func (s *IndexService) Query(ctx context.Context, indexName string, value []byte) ([]uint64, error) {
+func (s *IndexService) Query(ctx context.Context, indexName string, value []byte) ([][]byte, error) {
 	result, err := s.host.SyncRead(ctx, s.shardID, IndexQueryRequest{
 		IndexName: indexName,
 		Value:     value,
@@ -74,7 +75,7 @@ func (s *IndexService) Query(ctx context.Context, indexName string, value []byte
 		return nil, s.translateReadError(err)
 	}
 
-	ids, ok := result.([]uint64)
+	ids, ok := result.([][]byte)
 	if !ok {
 		return nil, &unexpectedResultTypeError{}
 	}
@@ -82,7 +83,7 @@ func (s *IndexService) Query(ctx context.Context, indexName string, value []byte
 }
 
 // Scan returns entries in the specified index within the value range [start, end).
-func (s *IndexService) Scan(ctx context.Context, indexName string, start, end []byte) (map[string][]uint64, error) {
+func (s *IndexService) Scan(ctx context.Context, indexName string, start, end []byte) (map[string][][]byte, error) {
 	result, err := s.host.SyncRead(ctx, s.shardID, IndexScanRequest{
 		IndexName: indexName,
 		Start:     start,
@@ -92,11 +93,25 @@ func (s *IndexService) Scan(ctx context.Context, indexName string, start, end []
 		return nil, s.translateReadError(err)
 	}
 
-	entries, ok := result.(map[string][]uint64)
+	entries, ok := result.(map[string][][]byte)
 	if !ok {
 		return nil, &unexpectedResultTypeError{}
 	}
 	return entries, nil
+}
+
+// ListIndexes returns the names of all registered indexes via a linearizable read.
+func (s *IndexService) ListIndexes(ctx context.Context) ([]string, error) {
+	result, err := s.host.SyncRead(ctx, s.shardID, IndexListRequest{})
+	if err != nil {
+		return nil, s.translateReadError(err)
+	}
+
+	names, ok := result.([]string)
+	if !ok {
+		return nil, &unexpectedResultTypeError{}
+	}
+	return names, nil
 }
 
 // translateProposeError converts QuicRaft proposal errors to service-level

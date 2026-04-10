@@ -18,6 +18,8 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/kv"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
+	"github.com/jeremyhahn/go-qrdb/pkg/lock"
+	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
@@ -86,237 +88,117 @@ type Lease = lease.Lease
 
 // ---------------------------------------------------------------------------
 // Compare-and-swap (transactions)
+//
+// Canonical definitions live in pkg/lock to avoid the lock ↔ service import
+// cycle. These are type aliases for backward compatibility.
 // ---------------------------------------------------------------------------
 
 // CompareTarget selects which field of a key-value is compared in a
 // transaction precondition.
-type CompareTarget uint8
+// The canonical definition lives in pkg/lock.
+type CompareTarget = lock.CompareTarget
 
-const (
-	// CompareVersion compares the key's version counter.
-	CompareVersion CompareTarget = iota
-
-	// CompareCreateRevision compares the key's creation revision.
-	CompareCreateRevision
-
-	// CompareModRevision compares the key's modification revision.
-	CompareModRevision
-
-	// CompareValue compares the key's value bytes.
-	CompareValue
+// Compare target constants — alias the canonical pkg/lock values.
+var (
+	CompareVersion        = lock.CompareVersion
+	CompareCreateRevision = lock.CompareCreateRevision
+	CompareModRevision    = lock.CompareModRevision
+	CompareValue          = lock.CompareValue
 )
 
 // CompareResult specifies the comparison operator for a transaction
 // precondition.
-type CompareResult uint8
+// The canonical definition lives in pkg/lock.
+type CompareResult = lock.CompareResult
 
-const (
-	// CompareEqual requires the field to be equal to the target.
-	CompareEqual CompareResult = iota
-
-	// CompareGreater requires the field to be greater than the target.
-	CompareGreater
-
-	// CompareLess requires the field to be less than the target.
-	CompareLess
-
-	// CompareNotEqual requires the field to not be equal to the target.
-	CompareNotEqual
+// Compare result constants — alias the canonical pkg/lock values.
+var (
+	CompareEqual    = lock.CompareEqual
+	CompareGreater  = lock.CompareGreater
+	CompareLess     = lock.CompareLess
+	CompareNotEqual = lock.CompareNotEqual
 )
 
-// Compare is a single precondition in a transaction. It checks a field
-// of the key-value against a target value using the specified comparison
-// operator.
-type Compare struct {
-	// Key is the key to compare.
-	Key []byte
-
-	// Target selects which field to compare.
-	Target CompareTarget
-
-	// Result is the comparison operator.
-	Result CompareResult
-
-	// Value is the comparison operand when Target is CompareValue.
-	Value []byte
-
-	// Version is the comparison operand when Target is CompareVersion.
-	Version int64
-
-	// CreateRevision is the comparison operand when Target is
-	// CompareCreateRevision.
-	CreateRevision int64
-
-	// ModRevision is the comparison operand when Target is
-	// CompareModRevision.
-	ModRevision int64
-}
+// Compare is a single precondition in a transaction.
+// The canonical definition lives in pkg/lock.
+type Compare = lock.Compare
 
 // ---------------------------------------------------------------------------
 // Operations (transaction / batch)
 // ---------------------------------------------------------------------------
 
 // OpType identifies the type of operation in a transaction or batch.
-type OpType uint8
+// The canonical definition lives in pkg/lock.
+type OpType = lock.OpType
 
-const (
-	// OpPut stores a key-value pair.
-	OpPut OpType = iota
-
-	// OpGet retrieves a key-value pair.
-	OpGet
-
-	// OpDelete removes a key-value pair.
-	OpDelete
-
-	// OpRange retrieves a range of key-value pairs.
-	OpRange
+// Op type constants — alias the canonical pkg/lock values.
+var (
+	OpPut    = lock.OpPut
+	OpGet    = lock.OpGet
+	OpDelete = lock.OpDelete
+	OpRange  = lock.OpRange
 )
 
 // Op is a single operation within a transaction or batch.
-type Op struct {
-	// Type is the kind of operation.
-	Type OpType
-
-	// Key is the target key.
-	Key []byte
-
-	// Value is the value for put operations.
-	Value []byte
-
-	// RangeEnd defines the end of a range for range operations.
-	// When nil, the operation targets a single key.
-	RangeEnd []byte
-
-	// LeaseID attaches a lease to the key for put operations.
-	LeaseID int64
-}
+// The canonical definition lives in pkg/lock.
+type Op = lock.Op
 
 // OpResponse is the result of a single operation within a transaction
 // or batch.
-type OpResponse struct {
-	// Kvs contains the key-values returned by get or range operations.
-	Kvs []*KeyValue
-
-	// Count is the total number of keys matching the request, which
-	// may exceed len(Kvs) when a limit is applied.
-	Count int64
-
-	// Succeeded indicates whether the operation completed successfully.
-	Succeeded bool
-}
+// The canonical definition lives in pkg/lock.
+type OpResponse = lock.OpResponse
 
 // TransactionResponse is the result of a compare-and-swap transaction.
-type TransactionResponse struct {
-	// Succeeded is true when all preconditions passed and the success
-	// operations were executed; false when preconditions failed and
-	// the failure operations were executed.
-	Succeeded bool
-
-	// Revision is the global MVCC revision after the transaction.
-	Revision int64
-
-	// Responses contains the results of the executed operations
-	// (success ops when Succeeded is true, failure ops otherwise).
-	Responses []OpResponse
-}
+// The canonical definition lives in pkg/lock.
+type TransactionResponse = lock.TransactionResponse
 
 // ---------------------------------------------------------------------------
 // Range query options
 // ---------------------------------------------------------------------------
 
 // RangeOptions holds the resolved configuration for a range query.
-type RangeOptions struct {
-	Limit      int64
-	Revision   int64
-	CountOnly  bool
-	KeysOnly   bool
-	SortOrder  SortOrder
-	SortTarget SortTarget
-}
+// The canonical definition lives in pkg/lock.
+type RangeOptions = lock.RangeOptions
 
 // RangeOption configures a range query.
-type RangeOption func(*RangeOptions)
+// The canonical definition lives in pkg/lock.
+type RangeOption = lock.RangeOption
 
-// WithLimit sets the maximum number of key-values to return.
-func WithLimit(limit int64) RangeOption {
-	return func(o *RangeOptions) {
-		o.Limit = limit
-	}
-}
-
-// WithRevision reads key-values at the given historical revision.
-func WithRevision(rev int64) RangeOption {
-	return func(o *RangeOptions) {
-		o.Revision = rev
-	}
-}
-
-// WithCountOnly returns only the count of matching keys without values.
-func WithCountOnly() RangeOption {
-	return func(o *RangeOptions) {
-		o.CountOnly = true
-	}
-}
-
-// WithKeysOnly returns keys without their values.
-func WithKeysOnly() RangeOption {
-	return func(o *RangeOptions) {
-		o.KeysOnly = true
-	}
-}
-
-// WithSort configures the sort order and target for range results.
-func WithSort(order SortOrder, target SortTarget) RangeOption {
-	return func(o *RangeOptions) {
-		o.SortOrder = order
-		o.SortTarget = target
-	}
-}
-
-// ApplyRangeOptions resolves variadic RangeOption values into a
-// RangeOptions struct.
-func ApplyRangeOptions(opts []RangeOption) RangeOptions {
-	var ro RangeOptions
-	for _, opt := range opts {
-		opt(&ro)
-	}
-	return ro
-}
+// Range option constructors — delegate to pkg/lock.
+var (
+	WithLimit         = lock.WithLimit
+	WithRevision      = lock.WithRevision
+	WithCountOnly     = lock.WithCountOnly
+	WithKeysOnly      = lock.WithKeysOnly
+	ApplyRangeOptions = lock.ApplyRangeOptions
+)
 
 // SortOrder specifies the sort direction for range results.
-type SortOrder uint8
+// The canonical definition lives in pkg/lock.
+type SortOrder = lock.SortOrder
 
-const (
-	// SortNone returns results in natural key order.
-	SortNone SortOrder = iota
-
-	// SortAscend returns results in ascending order.
-	SortAscend
-
-	// SortDescend returns results in descending order.
-	SortDescend
+// Sort order constants — alias the canonical pkg/lock values.
+var (
+	SortNone    = lock.SortNone
+	SortAscend  = lock.SortAscend
+	SortDescend = lock.SortDescend
 )
 
 // SortTarget specifies which field to sort by.
-type SortTarget uint8
+// The canonical definition lives in pkg/lock.
+type SortTarget = lock.SortTarget
 
-const (
-	// SortByKey sorts by the key.
-	SortByKey SortTarget = iota
-
-	// SortByVersion sorts by the version counter.
-	SortByVersion
-
-	// SortByCreateRevision sorts by the creation revision.
-	SortByCreateRevision
-
-	// SortByModRevision sorts by the modification revision.
-	SortByModRevision
-
-	// SortByValue sorts by the value.
-	SortByValue
+// Sort target constants — alias the canonical pkg/lock values.
+var (
+	SortByKey            = lock.SortByKey
+	SortByVersion        = lock.SortByVersion
+	SortByCreateRevision = lock.SortByCreateRevision
+	SortByModRevision    = lock.SortByModRevision
+	SortByValue          = lock.SortByValue
 )
+
+// WithSort configures the sort order and target for range results.
+var WithSort = lock.WithSort
 
 // ---------------------------------------------------------------------------
 // Watch options
@@ -332,10 +214,10 @@ type WatchOption = watch.WatchOption
 
 // Watch option constructors — delegate to pkg/watch.
 var (
-	WithStartRevision = watch.WithStartRevision
-	WithPrevKV        = watch.WithPrevKV
+	WithStartRevision  = watch.WithStartRevision
+	WithPrevKV         = watch.WithPrevKV
 	WithProgressNotify = watch.WithProgressNotify
-	ApplyWatchOptions = watch.ApplyWatchOptions
+	ApplyWatchOptions  = watch.ApplyWatchOptions
 )
 
 // ---------------------------------------------------------------------------
@@ -383,29 +265,22 @@ var (
 type IndexConfig = index.IndexConfig
 
 // ---------------------------------------------------------------------------
-// MVCC lookup query types
+// MVCC lookup query types (aliases to statemachine package to avoid
+// type mismatch when passed through SyncRead → FSM Lookup)
 // ---------------------------------------------------------------------------
 
 // MVCCGetQuery queries the latest value of a key via SyncRead/Lookup.
-type MVCCGetQuery struct {
-	Key []byte
-}
+type MVCCGetQuery = statemachine.MVCCGetQuery
 
 // MVCCGetAtRevisionQuery queries a key at a specific historical revision.
-type MVCCGetAtRevisionQuery struct {
-	Key      []byte
-	Revision int64
-}
+type MVCCGetAtRevisionQuery = statemachine.MVCCGetAtRevisionQuery
 
 // MVCCRangeQuery queries a range of keys with optional parameters.
-type MVCCRangeQuery struct {
-	Start []byte
-	End   []byte
-	Opts  []RangeOption
-}
+// Uses flat fields so the FSM can type-switch without circular imports.
+type MVCCRangeQuery = statemachine.MVCCRangeQuery
 
 // MVCCRevisionQuery queries the current global MVCC revision.
-type MVCCRevisionQuery struct{}
+type MVCCRevisionQuery = statemachine.MVCCRevisionQuery
 
 // MVCCRangeResult holds the result of an MVCC range query.
 type MVCCRangeResult struct {
@@ -445,3 +320,99 @@ type TSQueryRequest = timeseries.TSQueryRequest
 
 // TSAggregateRequest is an alias for the canonical timeseries.TSAggregateRequest type.
 type TSAggregateRequest = timeseries.TSAggregateRequest
+
+// TSRichQueryRequest is an alias for the canonical timeseries.TSRichQueryRequest type.
+type TSRichQueryRequest = timeseries.TSRichQueryRequest
+
+// TSGetRetentionRequest is an alias for the canonical timeseries.TSGetRetentionRequest type.
+type TSGetRetentionRequest = timeseries.TSGetRetentionRequest
+
+// TSListMetricsRequest is an alias for the canonical timeseries.TSListMetricsRequest type.
+type TSListMetricsRequest = timeseries.TSListMetricsRequest
+
+// QueryRequest is an alias for the canonical timeseries.QueryRequest type.
+type QueryRequest = timeseries.QueryRequest
+
+// QueryResult is an alias for the canonical timeseries.QueryResult type.
+type QueryResult = timeseries.QueryResult
+
+// RetentionPolicy is an alias for the canonical timeseries.RetentionPolicy type.
+type RetentionPolicy = timeseries.RetentionPolicy
+
+// DeleteRequest is an alias for the canonical timeseries.DeleteRequest type.
+type DeleteRequest = timeseries.DeleteRequest
+
+// ---------------------------------------------------------------------------
+// Shard management types
+// ---------------------------------------------------------------------------
+
+// StartShardRequest describes the parameters for starting a new Raft shard.
+type StartShardRequest struct {
+	// ShardID is the unique shard identifier to start.
+	ShardID uint64
+
+	// ReplicaID is this node's replica identifier within the shard.
+	ReplicaID uint64
+
+	// Members maps replicaID to Raft network address for initial
+	// cluster members. Required for new clusters; empty for joins.
+	Members map[uint64]string
+
+	// Join indicates whether this node is joining an existing shard
+	// rather than forming a new one.
+	Join bool
+}
+
+// ShardStateResponse describes the Raft state of a single shard.
+type ShardStateResponse struct {
+	// ShardID is the shard's unique identifier.
+	ShardID uint64
+
+	// ConfigChangeIndex is the current Raft configuration change index.
+	ConfigChangeIndex uint64
+
+	// Term is the current Raft term.
+	Term uint64
+
+	// LeaderID is the current leader's replica ID. 0 if unknown.
+	LeaderID uint64
+
+	// HasLeader is true when a leader is known for this shard.
+	HasLeader bool
+}
+
+// TopologyResponse describes the full cluster topology as seen from
+// a single node.
+type TopologyResponse struct {
+	// NodeID is the unique host identifier.
+	NodeID string
+
+	// RaftAddress is the host's Raft network address.
+	RaftAddress string
+
+	// ShardCount is the number of shards loaded on this host.
+	ShardCount int
+
+	// Shards contains per-shard topology information.
+	Shards []TopologyShardInfo
+}
+
+// TopologyShardInfo describes a single shard's topology including its
+// membership and leadership state.
+type TopologyShardInfo struct {
+	// ShardID is the shard's unique identifier.
+	ShardID uint64
+
+	// ReplicaID is this node's replica identifier within the shard.
+	ReplicaID uint64
+
+	// IsLeader is true when this replica is the current leader.
+	IsLeader bool
+
+	// LeaderID is the current leader's replica ID. 0 if unknown.
+	LeaderID uint64
+
+	// Nodes maps replicaID to Raft network address for all known
+	// cluster members.
+	Nodes map[uint64]string
+}

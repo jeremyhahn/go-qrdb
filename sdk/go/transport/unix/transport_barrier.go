@@ -1,0 +1,296 @@
+// Copyright 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package unix
+
+import (
+	"context"
+
+	"google.golang.org/protobuf/types/known/emptypb"
+
+	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+)
+
+// Compile-time interface assertion.
+var _ transport.BarrierClient = (*Transport)(nil)
+
+// ---------------------------------------------------------------------------
+// BarrierClient implementation
+// ---------------------------------------------------------------------------
+
+// BarrierInitialize initializes the barrier with a single master key.
+func (t *Transport) BarrierInitialize(ctx context.Context, req *transport.BarrierInitializeRequest) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	_, err := t.client.BarrierInitialize(ctx, &pb.BarrierInitializeRequest{
+		Secret: req.Secret,
+	})
+	if err != nil {
+		return mapGRPCError("BarrierInitialize", err)
+	}
+	return nil
+}
+
+// BarrierUnseal unseals the barrier using the master key.
+func (t *Transport) BarrierUnseal(ctx context.Context, req *transport.BarrierUnsealRequest) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	_, err := t.client.BarrierUnseal(ctx, &pb.BarrierUnsealRequest{
+		Secret: req.Secret,
+	})
+	if err != nil {
+		return mapGRPCError("BarrierUnseal", err)
+	}
+	return nil
+}
+
+// BarrierSeal seals the barrier, preventing further data access until it is
+// unsealed again.
+func (t *Transport) BarrierSeal(ctx context.Context) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	_, err := t.client.BarrierSeal(ctx, &emptypb.Empty{})
+	if err != nil {
+		return mapGRPCError("BarrierSeal", err)
+	}
+	return nil
+}
+
+// BarrierStatus returns the current state of the cryptographic barrier.
+func (t *Transport) BarrierStatus(ctx context.Context) (*transport.BarrierStatusResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	resp, err := t.client.BarrierStatus(ctx, &emptypb.Empty{})
+	if err != nil {
+		return nil, mapGRPCError("BarrierStatus", err)
+	}
+	return &transport.BarrierStatusResponse{
+		Sealed:         resp.GetSealed(),
+		Strategy:       resp.GetStrategy(),
+		HardwareBacked: resp.GetHardwareBacked(),
+		InitializedAt:  resp.GetInitializedAt(),
+	}, nil
+}
+
+// BarrierInitializeShamir initializes the barrier using Shamir secret sharing
+// and returns the generated key shares.
+func (t *Transport) BarrierInitializeShamir(ctx context.Context, req *transport.BarrierInitializeShamirRequest) (*transport.BarrierInitializeShamirResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	resp, err := t.client.BarrierShamirInitialize(ctx, &pb.BarrierShamirInitializeRequest{
+		Secret:      req.Secret,
+		Threshold:   int32(req.Threshold),
+		TotalShares: int32(req.TotalShares),
+	})
+	if err != nil {
+		return nil, mapGRPCError("BarrierInitializeShamir", err)
+	}
+	return &transport.BarrierInitializeShamirResponse{
+		Shares:      resp.GetShares(),
+		Threshold:   int(resp.GetThreshold()),
+		TotalShares: int(resp.GetTotalShares()),
+	}, nil
+}
+
+// BarrierUnsealWithShare submits a single Shamir share toward the unseal
+// threshold.
+func (t *Transport) BarrierUnsealWithShare(ctx context.Context, req *transport.BarrierUnsealShareRequest) (*transport.BarrierUnsealShareResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	resp, err := t.client.BarrierShamirUnsealShare(ctx, &pb.BarrierShamirUnsealShareRequest{
+		Share: req.Share,
+	})
+	if err != nil {
+		return nil, mapGRPCError("BarrierUnsealWithShare", err)
+	}
+	return &transport.BarrierUnsealShareResponse{
+		Required:  int(resp.GetRequired()),
+		Submitted: int(resp.GetSubmitted()),
+		Complete:  resp.GetComplete(),
+	}, nil
+}
+
+// BarrierUnsealWithShares submits multiple Shamir shares to unseal the
+// barrier in a single request.
+func (t *Transport) BarrierUnsealWithShares(ctx context.Context, req *transport.BarrierUnsealSharesRequest) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	_, err := t.client.BarrierShamirUnsealShares(ctx, &pb.BarrierShamirUnsealSharesRequest{
+		Shares: req.Shares,
+	})
+	if err != nil {
+		return mapGRPCError("BarrierUnsealWithShares", err)
+	}
+	return nil
+}
+
+// BarrierShamirListShares returns metadata about stored Shamir shares.
+func (t *Transport) BarrierShamirListShares(ctx context.Context) (*transport.BarrierShamirSharesResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	resp, err := t.client.BarrierShamirListShares(ctx, &emptypb.Empty{})
+	if err != nil {
+		return nil, mapGRPCError("BarrierShamirListShares", err)
+	}
+	return &transport.BarrierShamirSharesResponse{
+		Count:     int(resp.GetCount()),
+		Threshold: int(resp.GetThreshold()),
+		Total:     int(resp.GetTotal()),
+	}, nil
+}
+
+// BarrierShamirDeleteShare deletes a single Shamir share by index.
+func (t *Transport) BarrierShamirDeleteShare(ctx context.Context, req *transport.BarrierShamirDeleteShareRequest) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	_, err := t.client.BarrierShamirDeleteShare(ctx, &pb.BarrierShamirDeleteShareRequest{
+		Index: int32(req.Index),
+	})
+	if err != nil {
+		return mapGRPCError("BarrierShamirDeleteShare", err)
+	}
+	return nil
+}
+
+// BarrierShamirDeleteAllShares deletes all stored Shamir shares.
+func (t *Transport) BarrierShamirDeleteAllShares(ctx context.Context) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	_, err := t.client.BarrierShamirDeleteAllShares(ctx, &emptypb.Empty{})
+	if err != nil {
+		return mapGRPCError("BarrierShamirDeleteAllShares", err)
+	}
+	return nil
+}
+
+// BarrierShamirVerify verifies the integrity of stored Shamir shares.
+func (t *Transport) BarrierShamirVerify(ctx context.Context) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	_, err := t.client.BarrierShamirVerify(ctx, &emptypb.Empty{})
+	if err != nil {
+		return mapGRPCError("BarrierShamirVerify", err)
+	}
+	return nil
+}
+
+// BarrierRekey generates new Shamir shares with the specified threshold and
+// total count, replacing the existing shares.
+func (t *Transport) BarrierRekey(ctx context.Context, req *transport.BarrierRekeyRequest) (*transport.BarrierRekeyResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	resp, err := t.client.BarrierRekey(ctx, &pb.BarrierRekeyRequest{
+		Threshold: int32(req.Threshold),
+		Total:     int32(req.Total),
+	})
+	if err != nil {
+		return nil, mapGRPCError("BarrierRekey", err)
+	}
+	return &transport.BarrierRekeyResponse{
+		Shares:      resp.GetShares(),
+		Threshold:   int(resp.GetThreshold()),
+		TotalShares: int(resp.GetTotalShares()),
+	}, nil
+}
+
+// BarrierGenerateRecoveryKeys generates recovery keys for disaster recovery
+// scenarios.
+func (t *Transport) BarrierGenerateRecoveryKeys(ctx context.Context, req *transport.BarrierGenerateRecoveryKeysRequest) (*transport.BarrierRecoveryKeysResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	resp, err := t.client.BarrierRecoveryGenerate(ctx, &pb.BarrierRecoveryGenerateRequest{
+		Threshold: int32(req.Threshold),
+		Total:     int32(req.Total),
+	})
+	if err != nil {
+		return nil, mapGRPCError("BarrierGenerateRecoveryKeys", err)
+	}
+	return &transport.BarrierRecoveryKeysResponse{
+		Keys:      resp.GetKeys(),
+		Threshold: int(resp.GetThreshold()),
+		Total:     int(resp.GetTotal()),
+	}, nil
+}
+
+// BarrierRecoverWithKeys unseals the barrier using recovery keys.
+func (t *Transport) BarrierRecoverWithKeys(ctx context.Context, req *transport.BarrierRecoverWithKeysRequest) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	_, err := t.client.BarrierRecoveryRecover(ctx, &pb.BarrierRecoveryRecoverRequest{
+		Keys: req.Keys,
+	})
+	if err != nil {
+		return mapGRPCError("BarrierRecoverWithKeys", err)
+	}
+	return nil
+}
+
+// BarrierDeleteRecoveryKeys deletes all stored recovery keys.
+func (t *Transport) BarrierDeleteRecoveryKeys(ctx context.Context) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	_, err := t.client.BarrierRecoveryDelete(ctx, &emptypb.Empty{})
+	if err != nil {
+		return mapGRPCError("BarrierDeleteRecoveryKeys", err)
+	}
+	return nil
+}
+
+// BarrierHasRecoveryKeys checks whether recovery keys have been generated.
+func (t *Transport) BarrierHasRecoveryKeys(ctx context.Context) (*transport.BarrierHasRecoveryKeysResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	resp, err := t.client.BarrierRecoveryStatus(ctx, &emptypb.Empty{})
+	if err != nil {
+		return nil, mapGRPCError("BarrierHasRecoveryKeys", err)
+	}
+	return &transport.BarrierHasRecoveryKeysResponse{
+		HasKeys: resp.GetHasRecoveryKeys(),
+	}, nil
+}
+
+// BarrierGenerateRootToken generates a new root token using the provided
+// Shamir shares.
+func (t *Transport) BarrierGenerateRootToken(ctx context.Context, req *transport.BarrierGenerateRootTokenRequest) (*transport.BarrierRootTokenResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	resp, err := t.client.BarrierRootToken(ctx, &pb.BarrierRootTokenRequest{
+		Shares: req.Shares,
+	})
+	if err != nil {
+		return nil, mapGRPCError("BarrierGenerateRootToken", err)
+	}
+	return &transport.BarrierRootTokenResponse{
+		Token:     resp.GetToken(),
+		CreatedAt: resp.GetCreatedAt(),
+	}, nil
+}

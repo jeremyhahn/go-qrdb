@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"sync"
 	"time"
 
 	"google.golang.org/grpc"
@@ -31,7 +32,13 @@ import (
 	"google.golang.org/grpc/status"
 
 	grpcpkg "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
+	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/index"
+	"github.com/jeremyhahn/go-qrdb/pkg/lease"
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
 // Server is a gRPC server that listens on a Unix domain socket. It
@@ -39,19 +46,137 @@ import (
 // by the TCP gRPC server, but communicates over a local socket path
 // without TLS.
 type Server struct {
-	kvSvc      service.KVServicer
-	adminSvc   service.AdminServicer
-	socketPath string
-	server     *grpc.Server
-	listener   net.Listener
+	kvSvc         service.KVServicer
+	adminSvc      service.AdminServicer
+	socketPath    string
+	userSvc       user.UserServicer
+	roleSvc       role.RoleServicer
+	certProv      cert.CertProvider
+	barrierSvc    service.BarrierServicer
+	ceremonySvc   service.CeremonyServicer
+	credentialSvc service.CredentialServicer
+	collectionSvc service.CollectionServicer
+	mvccSvc       service.MVCCKVServicer
+	txSvc         service.TransactionServicer
+	batchSvc      service.BatchServicer
+	watchSvc      service.WatchServicer
+	leaseSvc      lease.LeaseServicer
+	lockSvc       service.LockServicer
+	indexSvc      index.IndexServicer
+	tsSvc         timeseries.TimeSeriesServicer
+	vectorSvc     service.VectorServicer
+	databaseSvc   service.DatabaseServicer
+	server        *grpc.Server
+	listener      net.Listener
+	serveWg       sync.WaitGroup
 }
 
 // ServerOption configures optional Server dependencies.
 type ServerOption func(*Server)
 
-// NewServer creates a new Unix domain socket gRPC server that listens
-// on the given socket path and delegates to the provided service
-// implementations.
+// WithUserService configures the Unix socket server with a user management service.
+func WithUserService(svc user.UserServicer) ServerOption {
+	return func(s *Server) { s.userSvc = svc }
+}
+
+// WithRoleService configures the Unix socket server with a role management service.
+func WithRoleService(svc role.RoleServicer) ServerOption {
+	return func(s *Server) { s.roleSvc = svc }
+}
+
+// WithCertProvider configures the Unix socket server with a certificate provider.
+func WithCertProvider(svc cert.CertProvider) ServerOption {
+	return func(s *Server) { s.certProv = svc }
+}
+
+// WithBarrierService configures the Unix socket server with a barrier service.
+func WithBarrierService(svc service.BarrierServicer) ServerOption {
+	return func(s *Server) { s.barrierSvc = svc }
+}
+
+// WithCeremonyService configures the Unix socket server with a ceremony service.
+func WithCeremonyService(svc service.CeremonyServicer) ServerOption {
+	return func(s *Server) { s.ceremonySvc = svc }
+}
+
+// WithCredentialService configures the Unix socket server with a credential service.
+func WithCredentialService(svc service.CredentialServicer) ServerOption {
+	return func(s *Server) { s.credentialSvc = svc }
+}
+
+// WithCollectionService configures the Unix socket server with a collection service.
+func WithCollectionService(svc service.CollectionServicer) ServerOption {
+	return func(s *Server) { s.collectionSvc = svc }
+}
+
+// WithMVCC configures the Unix socket server with an MVCC service.
+func WithMVCC(svc service.MVCCKVServicer) ServerOption {
+	return func(s *Server) { s.mvccSvc = svc }
+}
+
+// WithTransaction configures the Unix socket server with a transaction service.
+func WithTransaction(svc service.TransactionServicer) ServerOption {
+	return func(s *Server) { s.txSvc = svc }
+}
+
+// WithBatch configures the Unix socket server with a batch service.
+func WithBatch(svc service.BatchServicer) ServerOption {
+	return func(s *Server) { s.batchSvc = svc }
+}
+
+// WithWatch configures the Unix socket server with a watch service.
+func WithWatch(svc service.WatchServicer) ServerOption {
+	return func(s *Server) { s.watchSvc = svc }
+}
+
+// WithLease configures the Unix socket server with a lease service.
+func WithLease(svc lease.LeaseServicer) ServerOption {
+	return func(s *Server) { s.leaseSvc = svc }
+}
+
+// WithLock configures the Unix socket server with a distributed lock service.
+func WithLock(svc service.LockServicer) ServerOption {
+	return func(s *Server) { s.lockSvc = svc }
+}
+
+// WithIndex configures the Unix socket server with an index service.
+func WithIndex(svc index.IndexServicer) ServerOption {
+	return func(s *Server) { s.indexSvc = svc }
+}
+
+// WithTimeSeries configures the Unix socket server with a time-series service.
+func WithTimeSeries(svc timeseries.TimeSeriesServicer) ServerOption {
+	return func(s *Server) { s.tsSvc = svc }
+}
+
+// WithVector configures the Unix socket server with a vector service.
+func WithVector(svc service.VectorServicer) ServerOption {
+	return func(s *Server) { s.vectorSvc = svc }
+}
+
+// WithDatabaseService configures the Unix socket server with a database service.
+func WithDatabaseService(svc service.DatabaseServicer) ServerOption {
+	return func(s *Server) { s.databaseSvc = svc }
+}
+
+// WithKVService configures the Unix socket server with a KV service. This is
+// an alternative to passing kvSvc as a positional parameter and is useful when
+// constructing a server that handles only barrier, cert, or auth services.
+func WithKVService(svc service.KVServicer) ServerOption {
+	return func(s *Server) { s.kvSvc = svc }
+}
+
+// WithAdminService configures the Unix socket server with an admin service.
+// This is an alternative to passing adminSvc as a positional parameter and is
+// useful when constructing a server without a KV engine.
+func WithAdminService(svc service.AdminServicer) ServerOption {
+	return func(s *Server) { s.adminSvc = svc }
+}
+
+// NewServer creates a new Unix domain socket gRPC server that listens on the
+// given socket path and delegates to the provided service implementations.
+// kvSvc and adminSvc may be nil when only non-KV services (barrier, cert, auth)
+// are needed; their RPC handlers return codes.Unimplemented when nil.
 func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, socketPath string, opts ...ServerOption) *Server {
 	s := &Server{
 		kvSvc:      kvSvc,
@@ -97,12 +222,68 @@ func (s *Server) Start() error {
 
 	s.server = grpc.NewServer(serverOpts...)
 
+	// Build register options for optional services.
+	var regOpts []grpcpkg.RegisterOption
+	if s.userSvc != nil {
+		regOpts = append(regOpts, grpcpkg.WithRegisterUserService(s.userSvc))
+	}
+	if s.roleSvc != nil {
+		regOpts = append(regOpts, grpcpkg.WithRegisterRoleService(s.roleSvc))
+	}
+	if s.certProv != nil {
+		regOpts = append(regOpts, grpcpkg.WithRegisterCertProvider(s.certProv))
+	}
+	if s.barrierSvc != nil {
+		regOpts = append(regOpts, grpcpkg.WithRegisterBarrierService(s.barrierSvc))
+	}
+	if s.ceremonySvc != nil {
+		regOpts = append(regOpts, grpcpkg.WithRegisterCeremonyService(s.ceremonySvc))
+	}
+	if s.credentialSvc != nil {
+		regOpts = append(regOpts, grpcpkg.WithRegisterCredentialService(s.credentialSvc))
+	}
+	if s.collectionSvc != nil {
+		regOpts = append(regOpts, grpcpkg.WithRegisterCollectionService(s.collectionSvc))
+	}
+	if s.mvccSvc != nil {
+		regOpts = append(regOpts, grpcpkg.WithRegisterMVCC(s.mvccSvc))
+	}
+	if s.txSvc != nil {
+		regOpts = append(regOpts, grpcpkg.WithRegisterTransaction(s.txSvc))
+	}
+	if s.batchSvc != nil {
+		regOpts = append(regOpts, grpcpkg.WithRegisterBatch(s.batchSvc))
+	}
+	if s.watchSvc != nil {
+		regOpts = append(regOpts, grpcpkg.WithRegisterWatch(s.watchSvc))
+	}
+	if s.leaseSvc != nil {
+		regOpts = append(regOpts, grpcpkg.WithRegisterLease(s.leaseSvc))
+	}
+	if s.lockSvc != nil {
+		regOpts = append(regOpts, grpcpkg.WithRegisterLockService(s.lockSvc))
+	}
+	if s.indexSvc != nil {
+		regOpts = append(regOpts, grpcpkg.WithRegisterIndex(s.indexSvc))
+	}
+	if s.tsSvc != nil {
+		regOpts = append(regOpts, grpcpkg.WithRegisterTimeSeries(s.tsSvc))
+	}
+	if s.vectorSvc != nil {
+		regOpts = append(regOpts, grpcpkg.WithRegisterVector(s.vectorSvc))
+	}
+	if s.databaseSvc != nil {
+		regOpts = append(regOpts, grpcpkg.WithRegisterDatabaseService(s.databaseSvc))
+	}
+
 	// Reuse the gRPC package's service registration.
-	grpcpkg.RegisterService(s.server, s.kvSvc, s.adminSvc)
+	grpcpkg.RegisterService(s.server, s.kvSvc, s.adminSvc, regOpts...)
 
 	slog.Info("unix gRPC server started", "socket", s.socketPath)
 
+	s.serveWg.Add(1)
 	go func() {
+		defer s.serveWg.Done()
 		if serveErr := s.server.Serve(ln); serveErr != nil {
 			slog.Error("unix gRPC server error", "error", serveErr)
 		}
@@ -118,6 +299,11 @@ func (s *Server) Stop() {
 		return
 	}
 	s.server.GracefulStop()
+
+	// Wait for the serve goroutine to exit before removing the socket
+	// to prevent a race where a subsequent Start recreates the socket
+	// file and the exiting goroutine removes it.
+	s.serveWg.Wait()
 
 	// Clean up the socket file.
 	_ = os.Remove(s.socketPath)

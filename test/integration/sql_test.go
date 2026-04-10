@@ -1,0 +1,669 @@
+// Copyright 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+//go:build integration
+
+package integration_test
+
+import (
+	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"database/sql"
+	"encoding/pem"
+	"fmt"
+	"math/big"
+	"os"
+	"path/filepath"
+	"sort"
+	"testing"
+	"time"
+
+	gomysql "github.com/go-sql-driver/mysql"
+	"github.com/jackc/pgx/v5"
+)
+
+// startSingleNodeWithSQL starts a single-node QRDB instance with MySQL and
+// PostgreSQL wire protocol servers enabled. It returns the admin, MySQL, and
+// PostgreSQL ports along with the test CA used for mTLS.
+func startSingleNodeWithSQL(t *testing.T) (adminPort, mysqlPort, pgsqlPort int, ca *testCA) {
+	t.Helper()
+
+	bin := buildBinary(t)
+	ca = generateTestCA(t)
+	raftPorts := allocatePorts(t, 1)
+	adminPorts := allocateTCPPorts(t, 1)
+	grpcPorts := allocateTCPPorts(t, 1)
+	mysqlPorts := allocateTCPPorts(t, 1)
+	pgsqlPorts := allocateTCPPorts(t, 1)
+	dataDir := t.TempDir()
+
+	args := []string{
+		"start",
+		"--listen", fmt.Sprintf("0.0.0.0:%d", raftPorts[0]),
+		"--raft-address", fmt.Sprintf("127.0.0.1:%d", raftPorts[0]),
+		"--data-dir", dataDir,
+		"--sm", "memory",
+		"--discovery", "static",
+		"--peers", fmt.Sprintf("1=127.0.0.1:%d", raftPorts[0]),
+		"--shard-id", "1",
+		"--replica-id", "1",
+		"--admin-port", fmt.Sprintf("%d", adminPorts[0]),
+		"--grpc-port", fmt.Sprintf("%d", grpcPorts[0]),
+		"--enable-mysql",
+		"--mysql-port", fmt.Sprintf("%d", mysqlPorts[0]),
+		"--enable-pgsql",
+		"--pgsql-port", fmt.Sprintf("%d", pgsqlPorts[0]),
+		"--sql-database", "qrdb",
+	}
+	args = append(args, ca.tlsFlags(t)...)
+
+	startNode(t, bin, args, "[sql-node] ")
+	waitForHealthy(t, dataDir, 30*time.Second)
+	waitForAdmin(t, ca.Pool, adminPorts[0], 90*time.Second)
+	waitForLeaderViaAdmin(t, ca, []int{adminPorts[0]}, 60*time.Second)
+	warmupWrite(t, ca, adminPorts[0], 15*time.Second)
+
+	return adminPorts[0], mysqlPorts[0], pgsqlPorts[0], ca
+}
+
+// generateClientCert creates a client certificate signed by the test CA with
+// the specified CN (username) and OU (tenantID). The cert and key are written
+// to temporary files and their paths are returned.
+func generateClientCert(t *testing.T, ca *testCA, cn, ou string) (certPath, keyPath string) {
+	t.Helper()
+
+	clientKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generateClientCert: generate key: %v", err)
+	}
+
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		t.Fatalf("generateClientCert: serial: %v", err)
+	}
+
+	template := &x509.Certificate{
+		SerialNumber: serial,
+		Subject: pkix.Name{
+			Organization:       []string{"go-quicraft-test"},
+			CommonName:         cn,
+			OrganizationalUnit: []string{ou},
+		},
+		NotBefore: time.Now().Add(-1 * time.Minute),
+		NotAfter:  time.Now().Add(1 * time.Hour),
+		KeyUsage:  x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage: []x509.ExtKeyUsage{
+			x509.ExtKeyUsageClientAuth,
+		},
+		BasicConstraintsValid: true,
+	}
+
+	certDER, err := x509.CreateCertificate(rand.Reader, template, ca.cert, &clientKey.PublicKey, ca.key)
+	if err != nil {
+		t.Fatalf("generateClientCert: create cert: %v", err)
+	}
+
+	keyDER, err := x509.MarshalECPrivateKey(clientKey)
+	if err != nil {
+		t.Fatalf("generateClientCert: marshal key: %v", err)
+	}
+
+	clientCertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	clientKeyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+
+	dir := t.TempDir()
+	certPath = filepath.Join(dir, fmt.Sprintf("%s-cert.pem", cn))
+	keyPath = filepath.Join(dir, fmt.Sprintf("%s-key.pem", cn))
+
+	if err := os.WriteFile(certPath, clientCertPEM, 0600); err != nil {
+		t.Fatalf("generateClientCert: write cert: %v", err)
+	}
+	if err := os.WriteFile(keyPath, clientKeyPEM, 0600); err != nil {
+		t.Fatalf("generateClientCert: write key: %v", err)
+	}
+
+	return certPath, keyPath
+}
+
+// loadTLSCert loads a TLS certificate and key from PEM files on disk.
+func loadTLSCert(t *testing.T, certPath, keyPath string) tls.Certificate {
+	t.Helper()
+	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		t.Fatalf("loadTLSCert: %v", err)
+	}
+	return cert
+}
+
+// waitForMySQL opens a MySQL connection with mTLS and retries until the
+// server is ready or the timeout expires. The returned *sql.DB is registered
+// for cleanup via t.Cleanup.
+func waitForMySQL(t *testing.T, ca *testCA, certPath, keyPath string, port int, user string) *sql.DB {
+	t.Helper()
+
+	cert := loadTLSCert(t, certPath, keyPath)
+	tlsCfg := &tls.Config{
+		RootCAs:      ca.Pool,
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS13,
+	}
+
+	// Register a unique TLS config name per test to avoid collisions.
+	tlsName := fmt.Sprintf("sql-test-%d-%d", port, time.Now().UnixNano())
+	if err := gomysql.RegisterTLSConfig(tlsName, tlsCfg); err != nil {
+		t.Fatalf("waitForMySQL: RegisterTLSConfig: %v", err)
+	}
+	t.Cleanup(func() {
+		gomysql.DeregisterTLSConfig(tlsName)
+	})
+
+	dsn := fmt.Sprintf("%s@tcp(127.0.0.1:%d)/qrdb?tls=%s", user, port, tlsName)
+
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		db, err := sql.Open("mysql", dsn)
+		if err != nil {
+			time.Sleep(200 * time.Millisecond)
+			continue
+		}
+		db.SetConnMaxLifetime(30 * time.Second)
+		db.SetMaxOpenConns(5)
+		db.SetMaxIdleConns(2)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		err = db.PingContext(ctx)
+		cancel()
+		if err == nil {
+			t.Cleanup(func() { db.Close() })
+			return db
+		}
+		db.Close()
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	t.Fatalf("waitForMySQL: timed out after 30s waiting for MySQL on port %d", port)
+	return nil
+}
+
+// waitForPgSQL opens a PostgreSQL connection with mTLS and retries until the
+// server is ready or the timeout expires. The returned *pgx.Conn is registered
+// for cleanup via t.Cleanup.
+func waitForPgSQL(t *testing.T, ca *testCA, certPath, keyPath string, port int, user string) *pgx.Conn {
+	t.Helper()
+
+	cert := loadTLSCert(t, certPath, keyPath)
+	tlsCfg := &tls.Config{
+		RootCAs:      ca.Pool,
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS13,
+		ServerName:   "localhost",
+	}
+
+	connStr := fmt.Sprintf("host=127.0.0.1 port=%d dbname=qrdb user=%s sslmode=require", port, user)
+
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		config, err := pgx.ParseConfig(connStr)
+		if err != nil {
+			t.Fatalf("waitForPgSQL: ParseConfig: %v", err)
+		}
+		config.TLSConfig = tlsCfg
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		conn, err := pgx.ConnectConfig(ctx, config)
+		cancel()
+		if err == nil {
+			t.Cleanup(func() {
+				conn.Close(context.Background())
+			})
+			return conn
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	t.Fatalf("waitForPgSQL: timed out after 30s waiting for PgSQL on port %d", port)
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// MySQL wire protocol tests
+// ---------------------------------------------------------------------------
+
+func TestSQL_MySQL_InsertAndSelect(t *testing.T) {
+	_, mysqlPort, _, ca := startSingleNodeWithSQL(t)
+
+	certPath, keyPath := generateClientCert(t, ca, "admin", "default")
+	db := waitForMySQL(t, ca, certPath, keyPath, mysqlPort, "admin")
+
+	// INSERT a key-value pair.
+	_, err := db.Exec("INSERT INTO kv (`key`, `value`) VALUES (?, ?)", "greeting", []byte("hello world"))
+	if err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	// SELECT it back and verify.
+	var key string
+	var value []byte
+	err = db.QueryRow("SELECT `key`, `value` FROM kv WHERE `key` = ?", "greeting").Scan(&key, &value)
+	if err != nil {
+		t.Fatalf("SELECT: %v", err)
+	}
+	if key != "greeting" {
+		t.Errorf("key: got %q, want %q", key, "greeting")
+	}
+	if string(value) != "hello world" {
+		t.Errorf("value: got %q, want %q", string(value), "hello world")
+	}
+}
+
+func TestSQL_MySQL_UpdateAndDelete(t *testing.T) {
+	_, mysqlPort, _, ca := startSingleNodeWithSQL(t)
+
+	certPath, keyPath := generateClientCert(t, ca, "admin", "default")
+	db := waitForMySQL(t, ca, certPath, keyPath, mysqlPort, "admin")
+
+	// INSERT initial value.
+	_, err := db.Exec("INSERT INTO kv (`key`, `value`) VALUES (?, ?)", "mutable", []byte("version-1"))
+	if err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	// UPDATE value.
+	result, err := db.Exec("UPDATE kv SET `value` = ? WHERE `key` = ?", []byte("version-2"), "mutable")
+	if err != nil {
+		t.Fatalf("UPDATE: %v", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		t.Fatalf("RowsAffected: %v", err)
+	}
+	if affected != 1 {
+		t.Errorf("UPDATE rows affected: got %d, want 1", affected)
+	}
+
+	// Verify updated value.
+	var value []byte
+	err = db.QueryRow("SELECT `value` FROM kv WHERE `key` = ?", "mutable").Scan(&value)
+	if err != nil {
+		t.Fatalf("SELECT after UPDATE: %v", err)
+	}
+	if string(value) != "version-2" {
+		t.Errorf("value after UPDATE: got %q, want %q", string(value), "version-2")
+	}
+
+	// DELETE the key.
+	result, err = db.Exec("DELETE FROM kv WHERE `key` = ?", "mutable")
+	if err != nil {
+		t.Fatalf("DELETE: %v", err)
+	}
+	affected, err = result.RowsAffected()
+	if err != nil {
+		t.Fatalf("DELETE RowsAffected: %v", err)
+	}
+	if affected != 1 {
+		t.Errorf("DELETE rows affected: got %d, want 1", affected)
+	}
+
+	// Verify key is gone.
+	err = db.QueryRow("SELECT `value` FROM kv WHERE `key` = ?", "mutable").Scan(&value)
+	if err != sql.ErrNoRows {
+		t.Errorf("SELECT after DELETE: got err=%v, want sql.ErrNoRows", err)
+	}
+}
+
+func TestSQL_MySQL_SelectAll(t *testing.T) {
+	_, mysqlPort, _, ca := startSingleNodeWithSQL(t)
+
+	certPath, keyPath := generateClientCert(t, ca, "admin", "default")
+	db := waitForMySQL(t, ca, certPath, keyPath, mysqlPort, "admin")
+
+	// INSERT multiple keys.
+	keys := []string{"alpha", "bravo", "charlie"}
+	for i, k := range keys {
+		_, err := db.Exec("INSERT INTO kv (`key`, `value`) VALUES (?, ?)", k, []byte(fmt.Sprintf("val-%d", i)))
+		if err != nil {
+			t.Fatalf("INSERT %s: %v", k, err)
+		}
+	}
+
+	// SELECT * FROM kv and verify count.
+	rows, err := db.Query("SELECT `key`, `value` FROM kv")
+	if err != nil {
+		t.Fatalf("SELECT *: %v", err)
+	}
+	defer rows.Close()
+
+	var gotKeys []string
+	for rows.Next() {
+		var k string
+		var v []byte
+		if err := rows.Scan(&k, &v); err != nil {
+			t.Fatalf("Scan: %v", err)
+		}
+		gotKeys = append(gotKeys, k)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows iteration: %v", err)
+	}
+
+	if len(gotKeys) != len(keys) {
+		t.Fatalf("SELECT * count: got %d, want %d (keys: %v)", len(gotKeys), len(keys), gotKeys)
+	}
+
+	// Verify all expected keys are present.
+	sort.Strings(gotKeys)
+	sort.Strings(keys)
+	for i, k := range keys {
+		if gotKeys[i] != k {
+			t.Errorf("key[%d]: got %q, want %q", i, gotKeys[i], k)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PostgreSQL wire protocol tests
+// ---------------------------------------------------------------------------
+
+func TestSQL_PgSQL_InsertAndSelect(t *testing.T) {
+	_, _, pgsqlPort, ca := startSingleNodeWithSQL(t)
+
+	certPath, keyPath := generateClientCert(t, ca, "admin", "default")
+	conn := waitForPgSQL(t, ca, certPath, keyPath, pgsqlPort, "admin")
+	ctx := context.Background()
+
+	// INSERT a key-value pair.
+	_, err := conn.Exec(ctx, "INSERT INTO kv (key, value) VALUES ($1, $2)", "greeting", []byte("hello world"))
+	if err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	// SELECT it back and verify.
+	var key string
+	var value []byte
+	err = conn.QueryRow(ctx, "SELECT key, value FROM kv WHERE key = $1", "greeting").Scan(&key, &value)
+	if err != nil {
+		t.Fatalf("SELECT: %v", err)
+	}
+	if key != "greeting" {
+		t.Errorf("key: got %q, want %q", key, "greeting")
+	}
+	if string(value) != "hello world" {
+		t.Errorf("value: got %q, want %q", string(value), "hello world")
+	}
+}
+
+func TestSQL_PgSQL_UpdateAndDelete(t *testing.T) {
+	_, _, pgsqlPort, ca := startSingleNodeWithSQL(t)
+
+	certPath, keyPath := generateClientCert(t, ca, "admin", "default")
+	conn := waitForPgSQL(t, ca, certPath, keyPath, pgsqlPort, "admin")
+	ctx := context.Background()
+
+	// INSERT initial value.
+	_, err := conn.Exec(ctx, "INSERT INTO kv (key, value) VALUES ($1, $2)", "mutable", []byte("version-1"))
+	if err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	// UPDATE value.
+	cmdTag, err := conn.Exec(ctx, "UPDATE kv SET value = $1 WHERE key = $2", []byte("version-2"), "mutable")
+	if err != nil {
+		t.Fatalf("UPDATE: %v", err)
+	}
+	if cmdTag.RowsAffected() != 1 {
+		t.Errorf("UPDATE rows affected: got %d, want 1", cmdTag.RowsAffected())
+	}
+
+	// Verify updated value.
+	var value []byte
+	err = conn.QueryRow(ctx, "SELECT value FROM kv WHERE key = $1", "mutable").Scan(&value)
+	if err != nil {
+		t.Fatalf("SELECT after UPDATE: %v", err)
+	}
+	if string(value) != "version-2" {
+		t.Errorf("value after UPDATE: got %q, want %q", string(value), "version-2")
+	}
+
+	// DELETE the key.
+	cmdTag, err = conn.Exec(ctx, "DELETE FROM kv WHERE key = $1", "mutable")
+	if err != nil {
+		t.Fatalf("DELETE: %v", err)
+	}
+	if cmdTag.RowsAffected() != 1 {
+		t.Errorf("DELETE rows affected: got %d, want 1", cmdTag.RowsAffected())
+	}
+
+	// Verify key is gone.
+	err = conn.QueryRow(ctx, "SELECT value FROM kv WHERE key = $1", "mutable").Scan(&value)
+	if err == nil {
+		t.Error("SELECT after DELETE: expected error, got nil")
+	}
+}
+
+func TestSQL_PgSQL_SelectAll(t *testing.T) {
+	_, _, pgsqlPort, ca := startSingleNodeWithSQL(t)
+
+	certPath, keyPath := generateClientCert(t, ca, "admin", "default")
+	conn := waitForPgSQL(t, ca, certPath, keyPath, pgsqlPort, "admin")
+	ctx := context.Background()
+
+	// INSERT multiple keys.
+	keys := []string{"alpha", "bravo", "charlie"}
+	for i, k := range keys {
+		_, err := conn.Exec(ctx, "INSERT INTO kv (key, value) VALUES ($1, $2)", k, []byte(fmt.Sprintf("val-%d", i)))
+		if err != nil {
+			t.Fatalf("INSERT %s: %v", k, err)
+		}
+	}
+
+	// SELECT * FROM kv and verify count.
+	rows, err := conn.Query(ctx, "SELECT key, value FROM kv")
+	if err != nil {
+		t.Fatalf("SELECT *: %v", err)
+	}
+	defer rows.Close()
+
+	var gotKeys []string
+	for rows.Next() {
+		var k string
+		var v []byte
+		if err := rows.Scan(&k, &v); err != nil {
+			t.Fatalf("Scan: %v", err)
+		}
+		gotKeys = append(gotKeys, k)
+	}
+	if rows.Err() != nil {
+		t.Fatalf("rows iteration: %v", rows.Err())
+	}
+
+	if len(gotKeys) != len(keys) {
+		t.Fatalf("SELECT * count: got %d, want %d (keys: %v)", len(gotKeys), len(keys), gotKeys)
+	}
+
+	// Verify all expected keys are present.
+	sort.Strings(gotKeys)
+	sort.Strings(keys)
+	for i, k := range keys {
+		if gotKeys[i] != k {
+			t.Errorf("key[%d]: got %q, want %q", i, gotKeys[i], k)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Multi-tenant isolation
+// ---------------------------------------------------------------------------
+
+func TestSQL_MultiTenant_Isolation(t *testing.T) {
+	_, mysqlPort, _, ca := startSingleNodeWithSQL(t)
+
+	// Create two client certs with different tenant IDs (OU field).
+	certA, keyA := generateClientCert(t, ca, "user-a", "tenant-a")
+	certB, keyB := generateClientCert(t, ca, "user-b", "tenant-b")
+
+	dbA := waitForMySQL(t, ca, certA, keyA, mysqlPort, "user-a")
+	dbB := waitForMySQL(t, ca, certB, keyB, mysqlPort, "user-b")
+
+	// Tenant A inserts a key.
+	_, err := dbA.Exec("INSERT INTO kv (`key`, `value`) VALUES (?, ?)", "shared-name", []byte("tenant-a-value"))
+	if err != nil {
+		t.Fatalf("tenant-a INSERT: %v", err)
+	}
+
+	// Tenant B inserts a key with the same logical name.
+	_, err = dbB.Exec("INSERT INTO kv (`key`, `value`) VALUES (?, ?)", "shared-name", []byte("tenant-b-value"))
+	if err != nil {
+		t.Fatalf("tenant-b INSERT: %v", err)
+	}
+
+	// Tenant A should only see their own value.
+	var valueA []byte
+	err = dbA.QueryRow("SELECT `value` FROM kv WHERE `key` = ?", "shared-name").Scan(&valueA)
+	if err != nil {
+		t.Fatalf("tenant-a SELECT: %v", err)
+	}
+	if string(valueA) != "tenant-a-value" {
+		t.Errorf("tenant-a value: got %q, want %q", string(valueA), "tenant-a-value")
+	}
+
+	// Tenant B should only see their own value.
+	var valueB []byte
+	err = dbB.QueryRow("SELECT `value` FROM kv WHERE `key` = ?", "shared-name").Scan(&valueB)
+	if err != nil {
+		t.Fatalf("tenant-b SELECT: %v", err)
+	}
+	if string(valueB) != "tenant-b-value" {
+		t.Errorf("tenant-b value: got %q, want %q", string(valueB), "tenant-b-value")
+	}
+
+	// Tenant A SELECT * should return only tenant A keys.
+	rowsA, err := dbA.Query("SELECT `key`, `value` FROM kv")
+	if err != nil {
+		t.Fatalf("tenant-a SELECT *: %v", err)
+	}
+	defer rowsA.Close()
+
+	var countA int
+	for rowsA.Next() {
+		var k string
+		var v []byte
+		if err := rowsA.Scan(&k, &v); err != nil {
+			t.Fatalf("tenant-a Scan: %v", err)
+		}
+		countA++
+		if string(v) != "tenant-a-value" {
+			t.Errorf("tenant-a unexpected value: got %q", string(v))
+		}
+	}
+	if err := rowsA.Err(); err != nil {
+		t.Fatalf("tenant-a rows iteration: %v", err)
+	}
+	if countA != 1 {
+		t.Errorf("tenant-a row count: got %d, want 1", countA)
+	}
+
+	// Tenant B SELECT * should return only tenant B keys.
+	rowsB, err := dbB.Query("SELECT `key`, `value` FROM kv")
+	if err != nil {
+		t.Fatalf("tenant-b SELECT *: %v", err)
+	}
+	defer rowsB.Close()
+
+	var countB int
+	for rowsB.Next() {
+		var k string
+		var v []byte
+		if err := rowsB.Scan(&k, &v); err != nil {
+			t.Fatalf("tenant-b Scan: %v", err)
+		}
+		countB++
+		if string(v) != "tenant-b-value" {
+			t.Errorf("tenant-b unexpected value: got %q", string(v))
+		}
+	}
+	if err := rowsB.Err(); err != nil {
+		t.Fatalf("tenant-b rows iteration: %v", err)
+	}
+	if countB != 1 {
+		t.Errorf("tenant-b row count: got %d, want 1", countB)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Authentication enforcement
+// ---------------------------------------------------------------------------
+
+func TestSQL_MySQL_NoClientCert_Rejected(t *testing.T) {
+	_, mysqlPort, _, ca := startSingleNodeWithSQL(t)
+
+	// Configure TLS with CA trust but no client certificate.
+	tlsCfg := &tls.Config{
+		RootCAs:    ca.Pool,
+		MinVersion: tls.VersionTLS13,
+	}
+
+	tlsName := fmt.Sprintf("no-cert-%d", time.Now().UnixNano())
+	if err := gomysql.RegisterTLSConfig(tlsName, tlsCfg); err != nil {
+		t.Fatalf("RegisterTLSConfig: %v", err)
+	}
+	t.Cleanup(func() {
+		gomysql.DeregisterTLSConfig(tlsName)
+	})
+
+	dsn := fmt.Sprintf("anonymous@tcp(127.0.0.1:%d)/qrdb?tls=%s", mysqlPort, tlsName)
+
+	// Retry to account for server startup delay.
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		db, err := sql.Open("mysql", dsn)
+		if err != nil {
+			time.Sleep(200 * time.Millisecond)
+			continue
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		err = db.PingContext(ctx)
+		cancel()
+		db.Close()
+
+		if err != nil {
+			// Connection was rejected as expected. The server requires
+			// a client certificate for mTLS authentication.
+			t.Logf("connection without client cert rejected as expected: %v", err)
+			return
+		}
+
+		// If Ping succeeded, the server is not enforcing mTLS properly.
+		// Try a query to see if it fails at the authorization level.
+		db2, _ := sql.Open("mysql", dsn)
+		ctx2, cancel2 := context.WithTimeout(context.Background(), 2*time.Second)
+		_, qErr := db2.ExecContext(ctx2, "SELECT 1")
+		cancel2()
+		db2.Close()
+
+		if qErr != nil {
+			t.Logf("query without client cert rejected as expected: %v", qErr)
+			return
+		}
+
+		t.Fatal("connection without client certificate should have been rejected")
+	}
+
+	t.Fatal("timed out waiting for MySQL server to be available for auth test")
+}

@@ -21,11 +21,22 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// validLogLevels is the set of supported log levels for O(1) lookup.
+var validLogLevels = map[string]struct{}{
+	"trace": {},
+	"debug": {},
+	"info":  {},
+	"warn":  {},
+	"error": {},
+}
+
 // Package-level state shared across all subcommands. These are set
 // during PersistentPreRunE from resolved flags.
 var (
 	client       *sdk.Client
 	outputFormat string
+	logLevel     string
+	logFile      string
 )
 
 // newRootCmd creates the root cobra.Command for the qrdb client CLI.
@@ -82,11 +93,34 @@ func newRootCmd() *cobra.Command {
 	pflags.StringVar(&keyFile, "key-file", "", "TLS client key file")
 	pflags.StringVar(&outputFormat, "output", "table", "Output format: table, json, yaml")
 	pflags.DurationVar(&timeout, "timeout", 10*time.Second, "Request timeout")
+	pflags.StringVar(&logLevel, "log-level", "info", "Log level: trace, debug, info, warn, error")
+	pflags.StringVar(&logFile, "log-file", "", "Log file path (default: stdout)")
 
 	// Subcommand groups.
 	kvCmd := newKVCmd()
 	rootCmd.AddCommand(kvCmd)
 	rootCmd.AddCommand(newAdminCmd())
+	rootCmd.AddCommand(newTxCmd())
+	rootCmd.AddCommand(newBatchCmd())
+	rootCmd.AddCommand(newWatchCmd())
+	rootCmd.AddCommand(newLeaseCmd())
+	rootCmd.AddCommand(newLockCmd())
+	if cmd := newTSCmd(); cmd != nil {
+		rootCmd.AddCommand(cmd)
+	}
+	if cmd := newVectorCmd(); cmd != nil {
+		rootCmd.AddCommand(cmd)
+	}
+	rootCmd.AddCommand(newIndexCmd())
+	rootCmd.AddCommand(newDatabaseCmd())
+	rootCmd.AddCommand(newUsersCmd())
+	rootCmd.AddCommand(newRolesCmd())
+	rootCmd.AddCommand(newTenantCmd())
+	rootCmd.AddCommand(newCertsCmd())
+	rootCmd.AddCommand(newBarrierCmd())
+	rootCmd.AddCommand(newCeremonyCmd())
+	rootCmd.AddCommand(newBackupCmd())
+	rootCmd.AddCommand(newRebalanceCmd())
 	rootCmd.AddCommand(newVersionCmd())
 
 	// Top-level aliases for common KV operations.

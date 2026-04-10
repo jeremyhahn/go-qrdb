@@ -1,0 +1,40 @@
+# Binaries
+bin/
+qrdb
+qrdbd
+*.exe
+*.test
+*.out
+
+# Coverage
+coverage/
+
+# Logs
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# TypeScript SDK
+sdk/typescript/node_modules/
+sdk/typescript/dist/
+
+# Frontend
+cmd/qrdb/frontend/node_modules/
+cmd/qrdb/frontend/dist/
+
+# Wails generated bindings
+cmd/qrdb/frontend/src/lib/wails/
+
+.serena
+.claude
+CLAUDE.md
+go.work
+go.work.sum

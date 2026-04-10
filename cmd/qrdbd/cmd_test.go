@@ -22,6 +22,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -34,7 +35,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
+	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 )
@@ -178,7 +183,7 @@ func TestIsSingleNode_StaticInvalidPeer(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestResolveCreateFunc_Memory(t *testing.T) {
-	fn, err := resolveCreateFunc("memory")
+	fn, err := resolveCreateFunc("memory", "")
 	if err != nil {
 		t.Fatalf("resolveCreateFunc(memory) error: %v", err)
 	}
@@ -188,7 +193,7 @@ func TestResolveCreateFunc_Memory(t *testing.T) {
 }
 
 func TestResolveCreateFunc_Concurrent(t *testing.T) {
-	fn, err := resolveCreateFunc("concurrent")
+	fn, err := resolveCreateFunc("concurrent", "")
 	if err != nil {
 		t.Fatalf("resolveCreateFunc(concurrent) error: %v", err)
 	}
@@ -198,7 +203,7 @@ func TestResolveCreateFunc_Concurrent(t *testing.T) {
 }
 
 func TestResolveCreateFunc_Pebble(t *testing.T) {
-	fn, err := resolveCreateFunc("pebble")
+	fn, err := resolveCreateFunc("pebble", "")
 	if err != nil {
 		t.Fatalf("resolveCreateFunc(pebble) error: %v", err)
 	}
@@ -208,7 +213,7 @@ func TestResolveCreateFunc_Pebble(t *testing.T) {
 }
 
 func TestResolveCreateFunc_Unknown(t *testing.T) {
-	_, err := resolveCreateFunc("unknown-type")
+	_, err := resolveCreateFunc("unknown-type", "")
 	if err == nil {
 		t.Fatal("resolveCreateFunc(unknown-type) expected error")
 	}
@@ -581,6 +586,7 @@ func TestBuildServerConfig(t *testing.T) {
 		snapshotEntries:      5000,
 		compactionOverhead:   1000,
 		join:                 true,
+		tlsClientAuth:        "require_and_verify",
 		logLevel:             "warn",
 		logFormat:            "json",
 		discoveryMethod:      "static",
@@ -909,14 +915,16 @@ func TestNewPeersCmd(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSMFactories_Keys(t *testing.T) {
-	expected := []string{"memory", "concurrent", "pebble"}
+	// The init() function in start.go registers "pebble", "mvcc",
+	// and "mvcc-fast" in the centralized statemachine registry.
+	// The statemachine package itself registers "memory", "regular",
+	// "concurrent", and "fast". Verify all expected types are
+	// available after startup.
+	expected := []string{"memory", "regular", "concurrent", "fast", "pebble", "mvcc", "mvcc-fast"}
 	for _, key := range expected {
-		if _, ok := smFactories[key]; !ok {
-			t.Fatalf("smFactories missing key %q", key)
+		if !statemachine.Has(key) {
+			t.Fatalf("statemachine registry missing type %q", key)
 		}
-	}
-	if len(smFactories) != len(expected) {
-		t.Fatalf("smFactories has %d entries, want %d", len(smFactories), len(expected))
 	}
 }
 
@@ -2611,7 +2619,8 @@ func TestNewStartCmd_MemorySM_SingleNodeStatic_WithPeer(t *testing.T) {
 		done <- cmd.Execute()
 	}()
 
-	// Allow the node to start fully before signaling.
+	// Allow the node to start. If leader election is still in progress
+	// when SIGINT arrives, the bootstrap cancels cleanly via context.
 	time.Sleep(500 * time.Millisecond)
 
 	// Send SIGINT to unblock waitForSignal.
@@ -2624,7 +2633,7 @@ func TestNewStartCmd_MemorySM_SingleNodeStatic_WithPeer(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Execute() error = %v, want nil (clean shutdown)", err)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(15 * time.Second):
 		t.Fatal("Execute() did not return within timeout after SIGINT")
 	}
 
@@ -2869,4 +2878,878 @@ func TestLoadCACertPool_InvalidPEM(t *testing.T) {
 	if !errors.As(err, &tlsErr) {
 		t.Fatalf("error type = %T, want *TLSLoadError", err)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Bootstrap & reload error type tests
+// ---------------------------------------------------------------------------
+
+func TestBootstrapFetchError_ErrorAndUnwrap(t *testing.T) {
+	inner := errors.New("connection reset")
+	err := &BootstrapFetchError{Method: "HTTPS", Err: inner}
+	want := "cli: bootstrap fetch failed via HTTPS: connection reset"
+	if err.Error() != want {
+		t.Fatalf("BootstrapFetchError.Error() = %q, want %q", err.Error(), want)
+	}
+	if err.Unwrap() != inner {
+		t.Fatal("BootstrapFetchError.Unwrap() did not return inner error")
+	}
+}
+
+func TestBootstrapFetchError_ErrorsIs(t *testing.T) {
+	inner := errors.New("timeout")
+	err := &BootstrapFetchError{Method: "mDNS", Err: inner}
+	if !errors.Is(err, inner) {
+		t.Fatal("errors.Is() should find inner error through Unwrap")
+	}
+}
+
+func TestBootstrapError_ErrorAndUnwrap(t *testing.T) {
+	inner := errors.New("no CA available")
+	err := &BootstrapError{Err: inner}
+	want := "cli: TLS bootstrap failed: no CA available"
+	if err.Error() != want {
+		t.Fatalf("BootstrapError.Error() = %q, want %q", err.Error(), want)
+	}
+	if err.Unwrap() != inner {
+		t.Fatal("BootstrapError.Unwrap() did not return inner error")
+	}
+}
+
+func TestBootstrapError_ErrorsIs(t *testing.T) {
+	inner := errors.New("handshake failed")
+	err := &BootstrapError{Err: inner}
+	if !errors.Is(err, inner) {
+		t.Fatal("errors.Is() should find inner error through Unwrap")
+	}
+}
+
+func TestBootstrapServerError_ErrorAndUnwrap(t *testing.T) {
+	inner := errors.New("address in use")
+	err := &BootstrapServerError{Protocol: "QUIC", Err: inner}
+	want := "cli: bootstrap server (QUIC) failed to start: address in use"
+	if err.Error() != want {
+		t.Fatalf("BootstrapServerError.Error() = %q, want %q", err.Error(), want)
+	}
+	if err.Unwrap() != inner {
+		t.Fatal("BootstrapServerError.Unwrap() did not return inner error")
+	}
+}
+
+func TestBootstrapServerError_ErrorsIs(t *testing.T) {
+	inner := errors.New("bind failed")
+	err := &BootstrapServerError{Protocol: "TCP", Err: inner}
+	if !errors.Is(err, inner) {
+		t.Fatal("errors.Is() should find inner error through Unwrap")
+	}
+}
+
+func TestBootstrapWriteError_ErrorAndUnwrap(t *testing.T) {
+	inner := errors.New("disk full")
+	err := &BootstrapWriteError{Path: "/var/qrdb/bootstrap.pem", Err: inner}
+	want := `cli: failed to write bootstrap file "/var/qrdb/bootstrap.pem": disk full`
+	if err.Error() != want {
+		t.Fatalf("BootstrapWriteError.Error() = %q, want %q", err.Error(), want)
+	}
+	if err.Unwrap() != inner {
+		t.Fatal("BootstrapWriteError.Unwrap() did not return inner error")
+	}
+}
+
+func TestBootstrapWriteError_ErrorsIs(t *testing.T) {
+	inner := errors.New("permission denied")
+	err := &BootstrapWriteError{Path: "/etc/ca.pem", Err: inner}
+	if !errors.Is(err, inner) {
+		t.Fatal("errors.Is() should find inner error through Unwrap")
+	}
+}
+
+func TestBootstrapKeyError_ErrorAndUnwrap(t *testing.T) {
+	inner := errors.New("invalid PEM block")
+	err := &BootstrapKeyError{Kind: "ED25519", Err: inner}
+	want := "cli: bootstrap key parse failed (ED25519): invalid PEM block"
+	if err.Error() != want {
+		t.Fatalf("BootstrapKeyError.Error() = %q, want %q", err.Error(), want)
+	}
+	if err.Unwrap() != inner {
+		t.Fatal("BootstrapKeyError.Unwrap() did not return inner error")
+	}
+}
+
+func TestBootstrapKeyError_ErrorsIs(t *testing.T) {
+	inner := errors.New("unsupported curve")
+	err := &BootstrapKeyError{Kind: "ECDSA", Err: inner}
+	if !errors.Is(err, inner) {
+		t.Fatal("errors.Is() should find inner error through Unwrap")
+	}
+}
+
+func TestNoBootstrapAddrError(t *testing.T) {
+	err := &NoBootstrapAddrError{}
+	want := "cli: no bootstrap address available, use --bootstrap-addr or --bootstrap-noise-addr"
+	if err.Error() != want {
+		t.Fatalf("NoBootstrapAddrError.Error() = %q, want %q", err.Error(), want)
+	}
+}
+
+func TestNoBootstrapAddrError_ErrorsAs(t *testing.T) {
+	var target *NoBootstrapAddrError
+	err := &NoBootstrapAddrError{}
+	if !errors.As(err, &target) {
+		t.Fatal("errors.As() should match *NoBootstrapAddrError")
+	}
+}
+
+func TestCertReloadError_ErrorAndUnwrap(t *testing.T) {
+	inner := errors.New("file not found")
+	err := &CertReloadError{Path: "/etc/certs/node.pem", Err: inner}
+	want := `cli: TLS certificate reload failed for "/etc/certs/node.pem": file not found`
+	if err.Error() != want {
+		t.Fatalf("CertReloadError.Error() = %q, want %q", err.Error(), want)
+	}
+	if err.Unwrap() != inner {
+		t.Fatal("CertReloadError.Unwrap() did not return inner error")
+	}
+}
+
+func TestCertReloadError_ErrorsIs(t *testing.T) {
+	inner := errors.New("bad certificate")
+	err := &CertReloadError{Path: "/data/tls.pem", Err: inner}
+	if !errors.Is(err, inner) {
+		t.Fatal("errors.Is() should find inner error through Unwrap")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// generateCA tests
+// ---------------------------------------------------------------------------
+
+func TestGenerateCA_ValidIsCA(t *testing.T) {
+	caCertPEM, caKeyPEM, caCert, caKey, err := generateCA(caValidity)
+	require.NoError(t, err)
+	require.NotNil(t, caCert)
+	require.NotNil(t, caKey)
+	require.NotEmpty(t, caCertPEM)
+	require.NotEmpty(t, caKeyPEM)
+
+	assert.True(t, caCert.IsCA, "CA certificate should have IsCA=true")
+	assert.True(t, caCert.BasicConstraintsValid, "CA should have BasicConstraintsValid=true")
+
+	// Verify the CA has approximately 10-year validity range.
+	expectedNotAfter := time.Now().Add(caValidity)
+	assert.WithinDuration(t, expectedNotAfter, caCert.NotAfter, 2*time.Minute,
+		"CA NotAfter should be approximately 10 years from now")
+}
+
+func TestGenerateCA_InvalidValidity(t *testing.T) {
+	// Zero duration should not panic; the certificate is still created
+	// (NotAfter will be very close to NotBefore).
+	caCertPEM, caKeyPEM, caCert, caKey, err := generateCA(0)
+	require.NoError(t, err)
+	require.NotNil(t, caCert)
+	require.NotNil(t, caKey)
+	require.NotEmpty(t, caCertPEM)
+	require.NotEmpty(t, caKeyPEM)
+	assert.True(t, caCert.IsCA)
+}
+
+// ---------------------------------------------------------------------------
+// generateNodeCert tests
+// ---------------------------------------------------------------------------
+
+func TestGenerateNodeCert_CorrectSANs(t *testing.T) {
+	_, _, caCert, caKey, err := generateCA(caValidity)
+	require.NoError(t, err)
+
+	certPEM, _, err := generateNodeCert(caCert, caKey, nodeValidity)
+	require.NoError(t, err)
+
+	block, _ := pem.Decode(certPEM)
+	require.NotNil(t, block, "failed to decode node cert PEM")
+
+	leaf, err := x509.ParseCertificate(block.Bytes)
+	require.NoError(t, err)
+
+	// Verify localhost in DNS names.
+	assert.Contains(t, leaf.DNSNames, "localhost", "node cert should contain localhost SAN")
+
+	// Verify 127.0.0.1 in IP addresses.
+	found127 := false
+	for _, ip := range leaf.IPAddresses {
+		if ip.Equal(net.IPv4(127, 0, 0, 1)) {
+			found127 = true
+			break
+		}
+	}
+	assert.True(t, found127, "node cert should contain 127.0.0.1 IP SAN")
+}
+
+func TestGenerateNodeCert_1YearValidity(t *testing.T) {
+	_, _, caCert, caKey, err := generateCA(caValidity)
+	require.NoError(t, err)
+
+	certPEM, _, err := generateNodeCert(caCert, caKey, nodeValidity)
+	require.NoError(t, err)
+
+	block, _ := pem.Decode(certPEM)
+	require.NotNil(t, block)
+
+	leaf, err := x509.ParseCertificate(block.Bytes)
+	require.NoError(t, err)
+
+	expectedNotAfter := time.Now().Add(nodeValidity)
+	assert.WithinDuration(t, expectedNotAfter, leaf.NotAfter, 2*time.Minute,
+		"node cert NotAfter should be approximately 1 year from now")
+}
+
+func TestGenerateNodeCert_CAVerifiable(t *testing.T) {
+	_, _, caCert, caKey, err := generateCA(caValidity)
+	require.NoError(t, err)
+
+	certPEM, _, err := generateNodeCert(caCert, caKey, nodeValidity)
+	require.NoError(t, err)
+
+	block, _ := pem.Decode(certPEM)
+	require.NotNil(t, block)
+
+	leaf, err := x509.ParseCertificate(block.Bytes)
+	require.NoError(t, err)
+
+	pool := x509.NewCertPool()
+	pool.AddCert(caCert)
+
+	opts := x509.VerifyOptions{
+		Roots:     pool,
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	_, err = leaf.Verify(opts)
+	assert.NoError(t, err, "node cert should be verifiable by the CA")
+}
+
+// ---------------------------------------------------------------------------
+// generateClientCert tests
+// ---------------------------------------------------------------------------
+
+func TestGenerateClientCert_CorrectCNOU(t *testing.T) {
+	_, _, caCert, caKey, err := generateCA(caValidity)
+	require.NoError(t, err)
+
+	certPEM, _, err := generateClientCert(caCert, caKey, "admin-user", "tenant-42", adminValidity)
+	require.NoError(t, err)
+
+	block, _ := pem.Decode(certPEM)
+	require.NotNil(t, block)
+
+	leaf, err := x509.ParseCertificate(block.Bytes)
+	require.NoError(t, err)
+
+	assert.Equal(t, "admin-user", leaf.Subject.CommonName, "client cert CN should match input")
+	require.Len(t, leaf.Subject.OrganizationalUnit, 1)
+	assert.Equal(t, "tenant-42", leaf.Subject.OrganizationalUnit[0], "client cert OU should match input")
+}
+
+func TestGenerateClientCert_ClientAuthOnly(t *testing.T) {
+	_, _, caCert, caKey, err := generateCA(caValidity)
+	require.NoError(t, err)
+
+	certPEM, _, err := generateClientCert(caCert, caKey, "user", "org", adminValidity)
+	require.NoError(t, err)
+
+	block, _ := pem.Decode(certPEM)
+	require.NotNil(t, block)
+
+	leaf, err := x509.ParseCertificate(block.Bytes)
+	require.NoError(t, err)
+
+	require.Len(t, leaf.ExtKeyUsage, 1, "client cert should have exactly one ExtKeyUsage")
+	assert.Equal(t, x509.ExtKeyUsageClientAuth, leaf.ExtKeyUsage[0],
+		"client cert should only have ExtKeyUsageClientAuth")
+}
+
+// ---------------------------------------------------------------------------
+// loadTLSFromDir tests
+// ---------------------------------------------------------------------------
+
+func TestLoadTLSFromDir_Present(t *testing.T) {
+	// Generate a bundle and persist it to a temp directory.
+	bundle, err := generateCATLS()
+	require.NoError(t, err)
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "ca.pem"), bundle.CACertPEM, 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "ca-key.pem"), bundle.CAKeyPEM, 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "node-cert.pem"), bundle.CertPEM, 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "node-key.pem"), bundle.KeyPEM, 0o600))
+
+	loaded, err := loadTLSFromDir(dir)
+	require.NoError(t, err)
+	require.NotNil(t, loaded, "loadTLSFromDir should return a bundle when files exist")
+
+	assert.NotEmpty(t, loaded.CACertPEM, "CACertPEM should be populated")
+	assert.NotEmpty(t, loaded.CAKeyPEM, "CAKeyPEM should be populated")
+	assert.NotEmpty(t, loaded.CertPEM, "CertPEM should be populated")
+	assert.NotEmpty(t, loaded.KeyPEM, "KeyPEM should be populated")
+	assert.NotNil(t, loaded.TLSConfig, "TLSConfig should be non-nil")
+	assert.NotNil(t, loaded.CACertPool, "CACertPool should be non-nil")
+}
+
+func TestLoadTLSFromDir_Absent(t *testing.T) {
+	dir := t.TempDir()
+
+	loaded, err := loadTLSFromDir(dir)
+	assert.NoError(t, err, "empty dir should not return an error")
+	assert.Nil(t, loaded, "empty dir should return nil bundle")
+}
+
+func TestLoadTLSFromDir_Partial(t *testing.T) {
+	// Only ca.pem exists; node-cert.pem and node-key.pem are missing.
+	dir := t.TempDir()
+	bundle, err := generateCATLS()
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "ca.pem"), bundle.CACertPEM, 0o600))
+
+	loaded, err := loadTLSFromDir(dir)
+	assert.NoError(t, err, "partial files should not return an error")
+	assert.Nil(t, loaded, "partial files should return nil bundle")
+}
+
+// ---------------------------------------------------------------------------
+// persistFullBundle tests
+// ---------------------------------------------------------------------------
+
+func TestPersistFullBundle_WritesFiles(t *testing.T) {
+	bundle, err := generateCATLS()
+	require.NoError(t, err)
+
+	dir := filepath.Join(t.TempDir(), "certs")
+
+	err = persistFullBundle(bundle, dir)
+	require.NoError(t, err)
+
+	// Verify all expected files exist.
+	for _, name := range []string{"ca.pem", "ca-key.pem", "node-cert.pem", "node-key.pem"} {
+		path := filepath.Join(dir, name)
+		info, statErr := os.Stat(path)
+		require.NoError(t, statErr, "file %s should exist", name)
+		assert.Equal(t, os.FileMode(0o600), info.Mode().Perm(),
+			"file %s should have 0600 permissions", name)
+	}
+
+	// Verify directory permissions.
+	dirInfo, err := os.Stat(dir)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o700), dirInfo.Mode().Perm(),
+		"directory should have 0700 permissions")
+}
+
+func TestPersistFullBundle_CreatesDirError(t *testing.T) {
+	bundle, err := generateCATLS()
+	require.NoError(t, err)
+
+	// Use a path under /dev/null which cannot be a directory.
+	err = persistFullBundle(bundle, "/dev/null/impossible/path")
+	require.Error(t, err)
+
+	var writeErr *BootstrapWriteError
+	assert.True(t, errors.As(err, &writeErr), "error should be *BootstrapWriteError, got %T", err)
+}
+
+// ---------------------------------------------------------------------------
+// generateLeafFromCA tests
+// ---------------------------------------------------------------------------
+
+func TestGenerateLeafFromCA_Valid(t *testing.T) {
+	// Generate CA material and concatenate cert+key PEM.
+	caCertPEM, caKeyPEM, _, _, err := generateCA(caValidity)
+	require.NoError(t, err)
+
+	combined := append(caCertPEM, caKeyPEM...)
+
+	bundle, err := generateLeafFromCA(combined)
+	require.NoError(t, err)
+	require.NotNil(t, bundle)
+
+	assert.NotEmpty(t, bundle.CACertPEM)
+	assert.NotEmpty(t, bundle.CAKeyPEM)
+	assert.NotEmpty(t, bundle.CertPEM)
+	assert.NotEmpty(t, bundle.KeyPEM)
+	assert.NotNil(t, bundle.TLSConfig)
+	assert.NotNil(t, bundle.CACertPool)
+
+	// Verify the leaf is signed by the CA.
+	leafBlock, _ := pem.Decode(bundle.CertPEM)
+	require.NotNil(t, leafBlock)
+	leaf, err := x509.ParseCertificate(leafBlock.Bytes)
+	require.NoError(t, err)
+
+	opts := x509.VerifyOptions{
+		Roots:     bundle.CACertPool,
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	_, err = leaf.Verify(opts)
+	assert.NoError(t, err, "leaf cert should be verifiable by the CA")
+}
+
+func TestGenerateLeafFromCA_MissingCert(t *testing.T) {
+	// Only key PEM, no certificate.
+	_, caKeyPEM, _, _, err := generateCA(caValidity)
+	require.NoError(t, err)
+
+	_, err = generateLeafFromCA(caKeyPEM)
+	require.Error(t, err)
+
+	var keyErr *BootstrapKeyError
+	assert.True(t, errors.As(err, &keyErr), "error should be *BootstrapKeyError, got %T", err)
+	assert.Equal(t, "CA certificate", keyErr.Kind)
+}
+
+func TestGenerateLeafFromCA_MissingKey(t *testing.T) {
+	// Only cert PEM, no key.
+	caCertPEM, _, _, _, err := generateCA(caValidity)
+	require.NoError(t, err)
+
+	_, err = generateLeafFromCA(caCertPEM)
+	require.Error(t, err)
+
+	var keyErr *BootstrapKeyError
+	assert.True(t, errors.As(err, &keyErr), "error should be *BootstrapKeyError, got %T", err)
+	assert.Equal(t, "CA private key", keyErr.Kind)
+}
+
+// ---------------------------------------------------------------------------
+// wireCertReloader tests
+// ---------------------------------------------------------------------------
+
+func TestWireCertReloader_WiresCallback(t *testing.T) {
+	// Generate and persist a bundle so we have real cert/key files.
+	bundle, err := generateCATLS()
+	require.NoError(t, err)
+
+	dir := t.TempDir()
+	certPath := filepath.Join(dir, "node-cert.pem")
+	keyPath := filepath.Join(dir, "node-key.pem")
+	require.NoError(t, os.WriteFile(certPath, bundle.CertPEM, 0o600))
+	require.NoError(t, os.WriteFile(keyPath, bundle.KeyPEM, 0o600))
+
+	logger := slog.Default()
+
+	err = wireCertReloader(bundle, certPath, keyPath, logger)
+	require.NoError(t, err)
+
+	// Verify GetCertificate is wired and Certificates is cleared.
+	assert.NotNil(t, bundle.TLSConfig.GetCertificate,
+		"GetCertificate should be non-nil after wiring")
+	assert.Nil(t, bundle.TLSConfig.Certificates,
+		"Certificates should be nil after wiring (GetCertificate takes precedence)")
+	assert.NotNil(t, bundle.Reloader,
+		"Reloader should be set on the bundle")
+
+	// Clean up the reloader goroutine.
+	require.NoError(t, bundle.Reloader.Stop())
+}
+
+// ---------------------------------------------------------------------------
+// Helper: makePEMBlock
+// ---------------------------------------------------------------------------
+
+func makePEMBlock(blockType string, data []byte) []byte {
+	return pem.EncodeToMemory(&pem.Block{Type: blockType, Bytes: data})
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4: generateLeafFromCA edge cases
+// ---------------------------------------------------------------------------
+
+func TestGenerateLeafFromCA_WrongCertBlockType(t *testing.T) {
+	// PEM with block type "PRIVATE KEY" instead of "CERTIFICATE".
+	input := makePEMBlock("PRIVATE KEY", []byte("fake-cert-data"))
+
+	_, err := generateLeafFromCA(input)
+	require.Error(t, err)
+
+	var keyErr *BootstrapKeyError
+	assert.True(t, errors.As(err, &keyErr), "error should be *BootstrapKeyError, got %T", err)
+	assert.Equal(t, "CA certificate", keyErr.Kind)
+}
+
+func TestGenerateLeafFromCA_InvalidCertDER(t *testing.T) {
+	// CERTIFICATE block with garbage DER bytes.
+	input := makePEMBlock("CERTIFICATE", []byte("not-valid-der"))
+
+	_, err := generateLeafFromCA(input)
+	require.Error(t, err)
+
+	var keyErr *BootstrapKeyError
+	assert.True(t, errors.As(err, &keyErr), "error should be *BootstrapKeyError, got %T", err)
+	assert.Equal(t, "CA certificate", keyErr.Kind)
+}
+
+func TestGenerateLeafFromCA_WrongKeyBlockType(t *testing.T) {
+	// Valid CA cert PEM followed by a PEM block with wrong key type.
+	caCertPEM, _, _, _, err := generateCA(time.Hour)
+	require.NoError(t, err)
+
+	wrongKeyBlock := makePEMBlock("RSA PRIVATE KEY", []byte("fake-rsa-key"))
+	input := append(caCertPEM, wrongKeyBlock...)
+
+	_, err = generateLeafFromCA(input)
+	require.Error(t, err)
+
+	var keyErr *BootstrapKeyError
+	assert.True(t, errors.As(err, &keyErr), "error should be *BootstrapKeyError, got %T", err)
+	assert.Equal(t, "CA private key", keyErr.Kind)
+}
+
+func TestGenerateLeafFromCA_InvalidKeyDER(t *testing.T) {
+	// Valid CA cert PEM followed by "EC PRIVATE KEY" block with garbage bytes.
+	caCertPEM, _, _, _, err := generateCA(time.Hour)
+	require.NoError(t, err)
+
+	badKeyBlock := makePEMBlock("EC PRIVATE KEY", []byte("not-valid-ec-key"))
+	input := append(caCertPEM, badKeyBlock...)
+
+	_, err = generateLeafFromCA(input)
+	require.Error(t, err)
+
+	var keyErr *BootstrapKeyError
+	assert.True(t, errors.As(err, &keyErr), "error should be *BootstrapKeyError, got %T", err)
+	assert.Equal(t, "CA private key", keyErr.Kind)
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5: persistFullBundle write errors
+// ---------------------------------------------------------------------------
+
+func TestPersistFullBundle_SkipsCAKeyWhenEmpty(t *testing.T) {
+	bundle, err := generateCATLS()
+	require.NoError(t, err)
+
+	// Clear the CA key so it should be skipped.
+	bundle.CAKeyPEM = nil
+
+	dir := t.TempDir()
+	err = persistFullBundle(bundle, dir)
+	require.NoError(t, err)
+
+	// ca.pem, node-cert.pem, node-key.pem should exist.
+	assert.True(t, fileExists(filepath.Join(dir, "ca.pem")))
+	assert.True(t, fileExists(filepath.Join(dir, "node-cert.pem")))
+	assert.True(t, fileExists(filepath.Join(dir, "node-key.pem")))
+
+	// ca-key.pem should NOT exist.
+	assert.False(t, fileExists(filepath.Join(dir, "ca-key.pem")),
+		"ca-key.pem should not be written when CAKeyPEM is nil")
+}
+
+func TestPersistFullBundle_CAWriteError(t *testing.T) {
+	bundle, err := generateCATLS()
+	require.NoError(t, err)
+
+	dir := t.TempDir()
+	// Create a directory where ca.pem should be written, causing WriteFile to fail.
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "ca.pem"), 0o700))
+
+	err = persistFullBundle(bundle, dir)
+	require.Error(t, err)
+
+	var writeErr *BootstrapWriteError
+	assert.True(t, errors.As(err, &writeErr), "error should be *BootstrapWriteError, got %T", err)
+}
+
+func TestPersistFullBundle_CertWriteError(t *testing.T) {
+	bundle, err := generateCATLS()
+	require.NoError(t, err)
+
+	dir := t.TempDir()
+	// Create a directory where node-cert.pem should be written.
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "node-cert.pem"), 0o700))
+
+	err = persistFullBundle(bundle, dir)
+	require.Error(t, err)
+
+	var writeErr *BootstrapWriteError
+	assert.True(t, errors.As(err, &writeErr), "error should be *BootstrapWriteError, got %T", err)
+}
+
+func TestPersistFullBundle_KeyWriteError(t *testing.T) {
+	bundle, err := generateCATLS()
+	require.NoError(t, err)
+
+	dir := t.TempDir()
+	// Create a directory where node-key.pem should be written.
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "node-key.pem"), 0o700))
+
+	err = persistFullBundle(bundle, dir)
+	require.Error(t, err)
+
+	var writeErr *BootstrapWriteError
+	assert.True(t, errors.As(err, &writeErr), "error should be *BootstrapWriteError, got %T", err)
+}
+
+func TestPersistFullBundle_CAKeyWriteError(t *testing.T) {
+	bundle, err := generateCATLS()
+	require.NoError(t, err)
+
+	// Ensure CAKeyPEM is non-empty (generateCATLS populates it).
+	require.NotEmpty(t, bundle.CAKeyPEM)
+
+	dir := t.TempDir()
+	// Create a directory where ca-key.pem should be written.
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "ca-key.pem"), 0o700))
+
+	err = persistFullBundle(bundle, dir)
+	require.Error(t, err)
+
+	var writeErr *BootstrapWriteError
+	assert.True(t, errors.As(err, &writeErr), "error should be *BootstrapWriteError, got %T", err)
+}
+
+// ---------------------------------------------------------------------------
+// Phase 6: loadTLSFromDir additional paths
+// ---------------------------------------------------------------------------
+
+func TestLoadTLSFromDir_NoCAKey(t *testing.T) {
+	dir := t.TempDir()
+	bundle := writeTLSFixtures(t, dir)
+
+	// Remove ca-key.pem so loadTLSFromDir skips it.
+	require.NoError(t, os.Remove(filepath.Join(dir, "ca-key.pem")))
+
+	loaded, err := loadTLSFromDir(dir)
+	require.NoError(t, err)
+	require.NotNil(t, loaded)
+
+	// Core cert material should be loaded.
+	assert.Equal(t, bundle.CACertPEM, loaded.CACertPEM)
+	assert.Equal(t, bundle.CertPEM, loaded.CertPEM)
+	assert.Equal(t, bundle.KeyPEM, loaded.KeyPEM)
+
+	// CAKeyPEM should be empty since ca-key.pem was removed.
+	assert.Empty(t, loaded.CAKeyPEM, "CAKeyPEM should be empty when ca-key.pem is absent")
+}
+
+func TestLoadTLSFromDir_CAKeyReadError(t *testing.T) {
+	dir := t.TempDir()
+	writeTLSFixtures(t, dir)
+
+	// Replace ca-key.pem with a symlink to /proc/self/mem so that
+	// fileExists returns true (Stat succeeds, not a directory) but
+	// os.ReadFile fails with an I/O error. This works even as root,
+	// unlike chmod-based permission restrictions.
+	caKeyPath := filepath.Join(dir, "ca-key.pem")
+	require.NoError(t, os.Remove(caKeyPath))
+	require.NoError(t, os.Symlink("/proc/self/mem", caKeyPath))
+
+	_, err := loadTLSFromDir(dir)
+	require.Error(t, err)
+
+	var loadErr *TLSLoadError
+	assert.True(t, errors.As(err, &loadErr), "error should be *TLSLoadError, got %T", err)
+}
+
+// ---------------------------------------------------------------------------
+// handleSIGHUP tests
+// ---------------------------------------------------------------------------
+
+func TestHandleSIGHUP_NilReloader(t *testing.T) {
+	// A nil reloader must be silently ignored without panicking.
+	assert.NotPanics(t, func() {
+		handleSIGHUP(nil, testLogger())
+	})
+}
+
+func TestHandleSIGHUP_ReloadSuccess(t *testing.T) {
+	dir := t.TempDir()
+	certPEM, keyPEM := testCertPair(t)
+	certPath, keyPath := writeCertFiles(t, dir, certPEM, keyPEM)
+
+	reloader, err := NewCertReloader(certPath, keyPath, testLogger())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = reloader.Stop() })
+
+	// handleSIGHUP must not panic and the cert must remain valid.
+	assert.NotPanics(t, func() {
+		handleSIGHUP(reloader, testLogger())
+	})
+
+	// Verify the certificate is still loadable after reload.
+	cert, err := reloader.GetCertificate(nil)
+	require.NoError(t, err)
+	require.NotNil(t, cert, "certificate must remain valid after successful SIGHUP reload")
+}
+
+func TestHandleSIGHUP_ReloadError(t *testing.T) {
+	dir := t.TempDir()
+	certPEM, keyPEM := testCertPair(t)
+	certPath, keyPath := writeCertFiles(t, dir, certPEM, keyPEM)
+
+	reloader, err := NewCertReloader(certPath, keyPath, testLogger())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = reloader.Stop() })
+
+	// Delete the cert file so reload will fail.
+	require.NoError(t, os.Remove(certPath))
+
+	// handleSIGHUP must not panic even when reload fails (error is logged).
+	assert.NotPanics(t, func() {
+		handleSIGHUP(reloader, testLogger())
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Phase 8: Additional Error Path Tests
+// ---------------------------------------------------------------------------
+
+func TestWireCertReloader_InvalidCertPath(t *testing.T) {
+	bundle := &TLSBundle{
+		TLSConfig: &tls.Config{
+			MinVersion: tls.VersionTLS13,
+		},
+	}
+
+	dir := t.TempDir()
+	certPath := filepath.Join(dir, "nonexistent.crt")
+	keyPath := filepath.Join(dir, "nonexistent.key")
+
+	err := wireCertReloader(bundle, certPath, keyPath, testLogger())
+	require.Error(t, err)
+
+	var reloadErr *CertReloadError
+	assert.True(t, errors.As(err, &reloadErr),
+		"wireCertReloader with nonexistent paths must return *CertReloadError, got %T", err)
+}
+
+func TestLoadTLSFromFiles_MismatchedKeyPair(t *testing.T) {
+	dir := t.TempDir()
+
+	// Generate two independent cert/key pairs.
+	certA, _ := testCertPair(t)
+	_, keyB := testCertPair(t)
+
+	// Generate a valid CA for the CA file.
+	caCert, _ := testCertPair(t)
+
+	caFile := filepath.Join(dir, "ca.pem")
+	certFile := filepath.Join(dir, "cert.pem")
+	keyFile := filepath.Join(dir, "key.pem")
+
+	require.NoError(t, os.WriteFile(caFile, caCert, 0o600))
+	require.NoError(t, os.WriteFile(certFile, certA, 0o600))
+	require.NoError(t, os.WriteFile(keyFile, keyB, 0o600))
+
+	_, err := loadTLSFromFiles(caFile, certFile, keyFile)
+	require.Error(t, err)
+
+	var loadErr *TLSLoadError
+	assert.True(t, errors.As(err, &loadErr),
+		"loadTLSFromFiles with mismatched key pair must return *TLSLoadError, got %T", err)
+}
+
+func TestLoadTLSFromFiles_InvalidCAPEM(t *testing.T) {
+	dir := t.TempDir()
+
+	certPEM, keyPEM := testCertPair(t)
+
+	caFile := filepath.Join(dir, "ca.pem")
+	certFile := filepath.Join(dir, "cert.pem")
+	keyFile := filepath.Join(dir, "key.pem")
+
+	// Write garbage data as the CA file.
+	require.NoError(t, os.WriteFile(caFile, []byte("not-a-valid-pem"), 0o600))
+	require.NoError(t, os.WriteFile(certFile, certPEM, 0o600))
+	require.NoError(t, os.WriteFile(keyFile, keyPEM, 0o600))
+
+	_, err := loadTLSFromFiles(caFile, certFile, keyFile)
+	require.Error(t, err)
+
+	var loadErr *TLSLoadError
+	require.True(t, errors.As(err, &loadErr),
+		"loadTLSFromFiles with invalid CA PEM must return *TLSLoadError, got %T", err)
+	assert.True(t, errors.Is(loadErr, errNoCertsInPEM),
+		"underlying error must be errNoCertsInPEM")
+}
+
+func TestStartBootstrapServers_MkdirError(t *testing.T) {
+	// Create a regular file where dataDir should be, so MkdirAll will fail.
+	dir := t.TempDir()
+	fakeDataDir := filepath.Join(dir, "blocked")
+	require.NoError(t, os.WriteFile(fakeDataDir, []byte("blocker"), 0o600))
+
+	bundle, err := generateCATLS()
+	require.NoError(t, err)
+
+	f := &startFlags{
+		dataDir: fakeDataDir,
+	}
+
+	_, err = startBootstrapServers(bundle, f, testLogger())
+	require.Error(t, err)
+
+	var serverErr *BootstrapServerError
+	assert.True(t, errors.As(err, &serverErr),
+		"startBootstrapServers with invalid dataDir must return *BootstrapServerError, got %T", err)
+}
+
+func TestStartBootstrapServers_KeyWriteError(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a directory named noise-key.hex so that WriteFile will fail.
+	keyDirPath := filepath.Join(dir, noiseKeyFile)
+	require.NoError(t, os.Mkdir(keyDirPath, 0o700))
+
+	bundle, err := generateCATLS()
+	require.NoError(t, err)
+
+	f := &startFlags{
+		dataDir: dir,
+	}
+
+	_, err = startBootstrapServers(bundle, f, testLogger())
+	require.Error(t, err)
+
+	var serverErr *BootstrapServerError
+	assert.True(t, errors.As(err, &serverErr),
+		"startBootstrapServers with directory as noise-key.hex must return *BootstrapServerError, got %T", err)
+}
+
+// ---------------------------------------------------------------------------
+// Phase 9: NoBootstrapAddrError (additional format test)
+// ---------------------------------------------------------------------------
+
+func TestNoBootstrapAddrError_Error_ContainsExpectedMessage(t *testing.T) {
+	e := &NoBootstrapAddrError{}
+	msg := e.Error()
+	assert.Contains(t, msg, "no bootstrap address available")
+	assert.Contains(t, msg, "--bootstrap-addr")
+	assert.Contains(t, msg, "--bootstrap-noise-addr")
+}
+
+// ---------------------------------------------------------------------------
+// startBootstrapServers: ReadFile error on existing noise-key.hex
+// ---------------------------------------------------------------------------
+
+func TestStartBootstrapServers_KeyReadError(t *testing.T) {
+	dir := t.TempDir()
+
+	// Write a noise key file, then remove read permission so os.ReadFile fails
+	// while fileExists returns true.
+	keyPath := filepath.Join(dir, noiseKeyFile)
+	require.NoError(t, os.WriteFile(keyPath, []byte("deadbeef"), 0o600))
+	require.NoError(t, os.Chmod(keyPath, 0o000))
+	t.Cleanup(func() { _ = os.Chmod(keyPath, 0o600) })
+
+	bundle, err := generateCATLS()
+	require.NoError(t, err)
+
+	f := &startFlags{
+		dataDir: dir,
+	}
+
+	_, err = startBootstrapServers(bundle, f, testLogger())
+	require.Error(t, err)
+
+	var serverErr *BootstrapServerError
+	assert.True(t, errors.As(err, &serverErr),
+		"expected *BootstrapServerError for ReadFile failure, got %T", err)
+	assert.Equal(t, "noise", serverErr.Protocol)
 }

@@ -15,30 +15,30 @@
 package mvcc
 
 import (
+	"bytes"
 	"sync/atomic"
 
-	"github.com/cockroachdb/pebble/v2"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 )
 
-// Store is a multi-version concurrency control engine backed by PebbleDB.
+// Store is a multi-version concurrency control engine backed by storage.Storage.
 // It maintains versioned key-value pairs with revision metadata, supporting
 // point-in-time reads, range queries, and compaction of old revisions.
 //
-// Thread safety: PebbleDB handles its own internal synchronization.
-// The atomic revision counter is lock-free.
+// Thread safety: The underlying storage.Storage implementation handles its own
+// internal synchronization. The atomic revision counter is lock-free.
 type Store struct {
-	db        *pebble.DB
+	storage   storage.Storage
 	revision  atomic.Int64
 	compacted atomic.Int64
 }
 
-// New creates a new MVCC store backed by the given PebbleDB instance.
+// New creates a new MVCC store backed by the given storage.Storage instance.
 // The store loads the current revision and compacted marker from the
-// database if they exist.
-func New(db *pebble.DB) (*Store, error) {
-	s := &Store{db: db}
+// storage if they exist.
+func New(store storage.Storage) (*Store, error) {
+	s := &Store{storage: store}
 	if err := s.loadRevision(); err != nil {
 		return nil, err
 	}
@@ -48,18 +48,17 @@ func New(db *pebble.DB) (*Store, error) {
 	return s, nil
 }
 
-// loadRevision reads the persisted revision counter from PebbleDB.
+// loadRevision reads the persisted revision counter from storage.
 func (s *Store) loadRevision() error {
-	val, closer, err := s.db.Get(revisionKey())
+	val, err := s.storage.Get(RevisionKey())
 	if err != nil {
-		if err == pebble.ErrNotFound {
-			return nil // Fresh database, revision starts at 0.
-		}
 		return &StoreError{Op: "load revision", Err: err}
 	}
-	defer func() { _ = closer.Close() }()
+	if val == nil {
+		return nil // Fresh database, revision starts at 0.
+	}
 
-	rev, err := decodeRevision(val)
+	rev, err := DecodeRevision(val)
 	if err != nil {
 		return err
 	}
@@ -67,18 +66,17 @@ func (s *Store) loadRevision() error {
 	return nil
 }
 
-// loadCompacted reads the persisted compacted revision from PebbleDB.
+// loadCompacted reads the persisted compacted revision from storage.
 func (s *Store) loadCompacted() error {
-	val, closer, err := s.db.Get(compactedKey())
+	val, err := s.storage.Get(CompactedKey())
 	if err != nil {
-		if err == pebble.ErrNotFound {
-			return nil
-		}
 		return &StoreError{Op: "load compacted", Err: err}
 	}
-	defer func() { _ = closer.Close() }()
+	if val == nil {
+		return nil
+	}
 
-	rev, err := decodeRevision(val)
+	rev, err := DecodeRevision(val)
 	if err != nil {
 		return err
 	}
@@ -107,46 +105,46 @@ func (s *Store) CompactedRevision() int64 {
 func (s *Store) Put(key, value []byte, leaseID int64) (*service.KeyValue, error) {
 	rev := s.nextRevision()
 
-	batch := s.db.NewBatch()
+	batch := s.storage.Batch()
 	defer func() { _ = batch.Close() }()
 
 	// Read existing metadata for version tracking.
-	var meta metadata
+	var meta KeyMeta
 	existingMeta, err := s.getMetadata(key)
 	if err == nil {
-		meta = existingMeta
+		meta = *existingMeta
 		meta.ModRevision = rev
 		meta.Version++
-		meta.Lease = leaseID
+		meta.LeaseID = leaseID
 	} else {
 		// New key.
-		meta = metadata{
+		meta = KeyMeta{
 			CreateRevision: rev,
 			ModRevision:    rev,
 			Version:        1,
-			Lease:          leaseID,
+			LeaseID:        leaseID,
 		}
 	}
 
 	// Write data entry.
-	dk := encodeDataKey(key, rev)
-	dv := encodeDataValue(value)
-	if err := batch.Set(dk, dv, pebble.Sync); err != nil {
+	dk := EncodeDataKey(key, rev)
+	dv := EncodeValue(value)
+	if err := batch.Set(dk, dv); err != nil {
 		return nil, &StoreError{Op: "put data", Err: err}
 	}
 
 	// Write metadata.
-	mk := encodeMetaKey(key)
-	if err := batch.Set(mk, meta.encode(), pebble.Sync); err != nil {
+	mk := EncodeMetaKey(key)
+	if err := batch.Set(mk, EncodeMeta(&meta)); err != nil {
 		return nil, &StoreError{Op: "put meta", Err: err}
 	}
 
 	// Persist revision counter.
-	if err := batch.Set(revisionKey(), encodeRevision(rev), pebble.Sync); err != nil {
+	if err := batch.Set(RevisionKey(), EncodeRevision(rev)); err != nil {
 		return nil, &StoreError{Op: "put revision", Err: err}
 	}
 
-	if err := batch.Commit(pebble.Sync); err != nil {
+	if err := batch.Commit(); err != nil {
 		return nil, &StoreError{Op: "put commit", Err: err}
 	}
 
@@ -156,7 +154,7 @@ func (s *Store) Put(key, value []byte, leaseID int64) (*service.KeyValue, error)
 		CreateRevision: meta.CreateRevision,
 		ModRevision:    meta.ModRevision,
 		Version:        meta.Version,
-		LeaseID:        meta.Lease,
+		LeaseID:        meta.LeaseID,
 	}, nil
 }
 
@@ -179,7 +177,7 @@ func (s *Store) Get(key []byte) (*service.KeyValue, error) {
 		CreateRevision: meta.CreateRevision,
 		ModRevision:    meta.ModRevision,
 		Version:        meta.Version,
-		LeaseID:        meta.Lease,
+		LeaseID:        meta.LeaseID,
 	}, nil
 }
 
@@ -221,27 +219,27 @@ func (s *Store) Delete(key []byte) (*service.KeyValue, error) {
 	}
 
 	rev := s.nextRevision()
-	batch := s.db.NewBatch()
+	batch := s.storage.Batch()
 	defer func() { _ = batch.Close() }()
 
 	// Write tombstone data entry.
-	dk := encodeDataKey(key, rev)
-	if err := batch.Set(dk, encodeTombstone(), pebble.Sync); err != nil {
+	dk := EncodeDataKey(key, rev)
+	if err := batch.Set(dk, EncodeTombstone()); err != nil {
 		return nil, &StoreError{Op: "delete data", Err: err}
 	}
 
 	// Remove metadata (key is no longer "live").
-	mk := encodeMetaKey(key)
-	if err := batch.Delete(mk, pebble.Sync); err != nil {
+	mk := EncodeMetaKey(key)
+	if err := batch.Delete(mk); err != nil {
 		return nil, &StoreError{Op: "delete meta", Err: err}
 	}
 
 	// Persist revision counter.
-	if err := batch.Set(revisionKey(), encodeRevision(rev), pebble.Sync); err != nil {
+	if err := batch.Set(RevisionKey(), EncodeRevision(rev)); err != nil {
 		return nil, &StoreError{Op: "delete revision", Err: err}
 	}
 
-	if err := batch.Commit(pebble.Sync); err != nil {
+	if err := batch.Commit(); err != nil {
 		return nil, &StoreError{Op: "delete commit", Err: err}
 	}
 
@@ -251,7 +249,7 @@ func (s *Store) Delete(key []byte) (*service.KeyValue, error) {
 		CreateRevision: meta.CreateRevision,
 		ModRevision:    meta.ModRevision,
 		Version:        meta.Version,
-		LeaseID:        meta.Lease,
+		LeaseID:        meta.LeaseID,
 	}, nil
 }
 
@@ -283,25 +281,26 @@ func (s *Store) Range(start, end []byte, opts ...service.RangeOption) ([]*servic
 		return []*service.KeyValue{kv}, currentRev, nil
 	}
 
-	// Range scan over metadata keys.
-	lowerMeta := encodeMetaKey(start)
-	upperMeta := encodeMetaKey(end)
-
-	iter, err := s.db.NewIter(&pebble.IterOptions{
-		LowerBound: lowerMeta,
-		UpperBound: upperMeta,
+	// Range scan over all metadata keys, filtering by user key in [start, end).
+	// With length-prefixed meta keys, we must scan the entire meta namespace
+	// because keys of different lengths sort by length prefix first.
+	iter := s.storage.NewIterator(&storage.IteratorOptions{
+		LowerBound: MetaLowerBound(),
+		UpperBound: MetaUpperBound(),
 	})
-	if err != nil {
-		return nil, 0, &StoreError{Op: "range iter", Err: err}
-	}
 	defer func() { _ = iter.Close() }()
 
 	var results []*service.KeyValue
 	var count int64
 
-	for iter.First(); iter.Valid(); iter.Next() {
-		userKey, err := decodeMetaKey(iter.Key())
+	for iter.SeekToFirst(); iter.Valid(); iter.Next() {
+		userKey, err := DecodeMetaKey(iter.Key())
 		if err != nil {
+			continue
+		}
+
+		// Filter by user key range [start, end).
+		if !IsInRange(userKey, start, end) {
 			continue
 		}
 
@@ -342,32 +341,63 @@ func (s *Store) Range(start, end []byte, opts ...service.RangeOption) ([]*servic
 	return results, currentRev, nil
 }
 
-// Compact removes all data entries at or below the given revision.
-// The compacted revision is persisted to prevent future reads at
-// compacted revisions.
+// Compact removes old data entries at revisions at or below the given revision,
+// while preserving the latest (highest) revision per unique key. This ensures
+// that keys whose only write is within the compaction range (e.g., system keys
+// written during bootstrap) remain readable after compaction.
+//
+// Data keys are sorted by [prefix][keyLen][key][complement(revision)], so within
+// each user key group the highest revision appears first in iteration order.
+// The method tracks the current key prefix and skips the first entry per group
+// (the latest revision), deleting only subsequent older entries at or below the
+// compaction revision.
+//
+// Metadata is preserved so that Get and Delete can still detect the key's
+// existence via its metadata entry.
 func (s *Store) Compact(revision int64) error {
-	batch := s.db.NewBatch()
+	batch := s.storage.Batch()
 	defer func() { _ = batch.Close() }()
 
-	// Iterate all data entries and delete those at or below the revision.
-	iter, err := s.db.NewIter(&pebble.IterOptions{
-		LowerBound: []byte{dataPrefix},
-		UpperBound: []byte{dataPrefix + 1},
+	// Iterate all data entries.
+	iter := s.storage.NewIterator(&storage.IteratorOptions{
+		LowerBound: []byte{prefixData},
+		UpperBound: []byte{prefixData + 1},
 	})
-	if err != nil {
-		return &CompactionError{Err: err}
-	}
 	defer func() { _ = iter.Close() }()
 
-	for iter.First(); iter.Valid(); iter.Next() {
-		_, entryRev, err := decodeDataKey(iter.Key())
+	// Track the current user key prefix to detect group boundaries.
+	// Data key format: [0x01][keyLen:8 BE][key][complement:8 BE]
+	// The prefix for grouping is everything except the last 8 bytes.
+	var currentPrefix []byte
+
+	for iter.SeekToFirst(); iter.Valid(); iter.Next() {
+		raw := iter.Key()
+		if len(raw) < 17 { // 1 + 8 + 0 + 8 minimum
+			continue
+		}
+
+		_, entryRev, err := DecodeDataKey(raw)
 		if err != nil {
 			continue
 		}
+
+		// Extract the key prefix (everything except the trailing 8-byte complement).
+		keyPrefix := raw[:len(raw)-8]
+
+		// Detect new key group: skip the first entry (latest revision) in each group.
+		if !bytes.Equal(keyPrefix, currentPrefix) {
+			currentPrefix = make([]byte, len(keyPrefix))
+			copy(currentPrefix, keyPrefix)
+			// This is the latest revision for this key. Preserve it.
+			continue
+		}
+
+		// Subsequent (older) entry in the same key group.
+		// Delete if at or below the compaction point.
 		if entryRev <= revision {
-			keyCopy := make([]byte, len(iter.Key()))
-			copy(keyCopy, iter.Key())
-			if err := batch.Delete(keyCopy, pebble.Sync); err != nil {
+			keyCopy := make([]byte, len(raw))
+			copy(keyCopy, raw)
+			if err := batch.Delete(keyCopy); err != nil {
 				return &CompactionError{Err: err}
 			}
 		}
@@ -378,11 +408,11 @@ func (s *Store) Compact(revision int64) error {
 	}
 
 	// Persist the compacted revision marker.
-	if err := batch.Set(compactedKey(), encodeRevision(revision), pebble.Sync); err != nil {
+	if err := batch.Set(CompactedKey(), EncodeRevision(revision)); err != nil {
 		return &CompactionError{Err: err}
 	}
 
-	if err := batch.Commit(pebble.Sync); err != nil {
+	if err := batch.Commit(); err != nil {
 		return &CompactionError{Err: err}
 	}
 
@@ -390,37 +420,37 @@ func (s *Store) Compact(revision int64) error {
 	return nil
 }
 
-// PutInBatch writes a key-value pair into the given PebbleDB batch
+// PutInBatch writes a key-value pair into the given storage.Batch
 // at the specified revision. Used by the state machine to apply MVCC
 // operations within a Raft entry batch. Returns the resulting KeyValue.
-func (s *Store) PutInBatch(batch *pebble.Batch, key, value []byte, leaseID int64, rev int64) (*service.KeyValue, error) {
+func (s *Store) PutInBatch(batch storage.Batch, key, value []byte, leaseID int64, rev int64) (*service.KeyValue, error) {
 	// Read existing metadata for version tracking.
-	var meta metadata
+	var meta KeyMeta
 	existingMeta, err := s.getMetadata(key)
 	if err == nil {
-		meta = existingMeta
+		meta = *existingMeta
 		meta.ModRevision = rev
 		meta.Version++
-		meta.Lease = leaseID
+		meta.LeaseID = leaseID
 	} else {
-		meta = metadata{
+		meta = KeyMeta{
 			CreateRevision: rev,
 			ModRevision:    rev,
 			Version:        1,
-			Lease:          leaseID,
+			LeaseID:        leaseID,
 		}
 	}
 
 	// Write data entry.
-	dk := encodeDataKey(key, rev)
-	dv := encodeDataValue(value)
-	if err := batch.Set(dk, dv, pebble.Sync); err != nil {
+	dk := EncodeDataKey(key, rev)
+	dv := EncodeValue(value)
+	if err := batch.Set(dk, dv); err != nil {
 		return nil, &StoreError{Op: "batch put data", Err: err}
 	}
 
 	// Write metadata.
-	mk := encodeMetaKey(key)
-	if err := batch.Set(mk, meta.encode(), pebble.Sync); err != nil {
+	mk := EncodeMetaKey(key)
+	if err := batch.Set(mk, EncodeMeta(&meta)); err != nil {
 		return nil, &StoreError{Op: "batch put meta", Err: err}
 	}
 
@@ -430,14 +460,14 @@ func (s *Store) PutInBatch(batch *pebble.Batch, key, value []byte, leaseID int64
 		CreateRevision: meta.CreateRevision,
 		ModRevision:    rev,
 		Version:        meta.Version,
-		LeaseID:        meta.Lease,
+		LeaseID:        meta.LeaseID,
 	}, nil
 }
 
-// DeleteInBatch writes a tombstone for a key in the given PebbleDB batch
+// DeleteInBatch writes a tombstone for a key in the given storage.Batch
 // at the specified revision. Used by the state machine. Returns the
 // previous KeyValue, or nil if the key didn't exist.
-func (s *Store) DeleteInBatch(batch *pebble.Batch, key []byte, rev int64) (*service.KeyValue, error) {
+func (s *Store) DeleteInBatch(batch storage.Batch, key []byte, rev int64) (*service.KeyValue, error) {
 	var prevKV *service.KeyValue
 	meta, err := s.getMetadata(key)
 	if err == nil {
@@ -449,20 +479,20 @@ func (s *Store) DeleteInBatch(batch *pebble.Batch, key []byte, rev int64) (*serv
 				CreateRevision: meta.CreateRevision,
 				ModRevision:    meta.ModRevision,
 				Version:        meta.Version,
-				LeaseID:        meta.Lease,
+				LeaseID:        meta.LeaseID,
 			}
 		}
 	}
 
 	// Write tombstone.
-	dk := encodeDataKey(key, rev)
-	if err := batch.Set(dk, encodeTombstone(), pebble.Sync); err != nil {
+	dk := EncodeDataKey(key, rev)
+	if err := batch.Set(dk, EncodeTombstone()); err != nil {
 		return nil, &StoreError{Op: "batch delete data", Err: err}
 	}
 
 	// Remove metadata.
-	mk := encodeMetaKey(key)
-	if err := batch.Delete(mk, pebble.Sync); err != nil {
+	mk := EncodeMetaKey(key)
+	if err := batch.Delete(mk); err != nil {
 		return nil, &StoreError{Op: "batch delete meta", Err: err}
 	}
 
@@ -475,9 +505,9 @@ func (s *Store) SetRevision(rev int64) {
 	s.revision.Store(rev)
 }
 
-// DB returns the underlying PebbleDB instance.
-func (s *Store) DB() *pebble.DB {
-	return s.db
+// Storage returns the underlying storage.Storage instance.
+func (s *Store) Storage() storage.Storage {
+	return s.storage
 }
 
 // ---------------------------------------------------------------------------
@@ -485,33 +515,31 @@ func (s *Store) DB() *pebble.DB {
 // ---------------------------------------------------------------------------
 
 // getMetadata reads the current metadata for a key.
-func (s *Store) getMetadata(key []byte) (metadata, error) {
-	mk := encodeMetaKey(key)
-	val, closer, err := s.db.Get(mk)
+func (s *Store) getMetadata(key []byte) (*KeyMeta, error) {
+	mk := EncodeMetaKey(key)
+	val, err := s.storage.Get(mk)
 	if err != nil {
-		if err == pebble.ErrNotFound {
-			return metadata{}, &KeyNotFoundError{Key: string(key)}
-		}
-		return metadata{}, &StoreError{Op: "get meta", Err: err}
+		return nil, &StoreError{Op: "get meta", Err: err}
 	}
-	defer func() { _ = closer.Close() }()
+	if val == nil {
+		return nil, &KeyNotFoundError{Key: string(key)}
+	}
 
-	return decodeMetadata(val)
+	return DecodeMeta(val)
 }
 
 // getDataAtRevision reads the data value at an exact revision.
 func (s *Store) getDataAtRevision(key []byte, revision int64) ([]byte, error) {
-	dk := encodeDataKey(key, revision)
-	val, closer, err := s.db.Get(dk)
+	dk := EncodeDataKey(key, revision)
+	val, err := s.storage.Get(dk)
 	if err != nil {
-		if err == pebble.ErrNotFound {
-			return nil, &RevisionNotFoundError{Key: string(key), Revision: revision}
-		}
 		return nil, &StoreError{Op: "get data", Err: err}
 	}
-	defer func() { _ = closer.Close() }()
+	if val == nil {
+		return nil, &RevisionNotFoundError{Key: string(key), Revision: revision}
+	}
 
-	value, isTombstone, err := decodeDataValue(val)
+	value, isTombstone, err := DecodeValue(val)
 	if err != nil {
 		return nil, err
 	}
@@ -526,42 +554,39 @@ func (s *Store) getDataAtRevision(key []byte, revision int64) ([]byte, error) {
 }
 
 // findAtRevision finds the data entry at or before the requested revision.
-// Uses PebbleDB's SeekGE with complement encoding to find the correct entry.
+// Uses storage.Iterator's Seek with complement encoding to find the correct entry.
 func (s *Store) findAtRevision(key []byte, revision int64) (*service.KeyValue, error) {
-	prefix := dataKeyPrefix(key)
-	upper := dataKeyUpperBound(key)
-	seekKey := encodeDataKey(key, revision)
+	prefix := DataKeyPrefix(key)
+	upper := DataKeyUpperBound(key)
+	seekKey := EncodeDataKey(key, revision)
 
-	iter, err := s.db.NewIter(&pebble.IterOptions{
+	iter := s.storage.NewIterator(&storage.IteratorOptions{
 		LowerBound: prefix,
 		UpperBound: upper,
 	})
-	if err != nil {
-		return nil, &StoreError{Op: "find at revision", Err: err}
-	}
 	defer func() { _ = iter.Close() }()
 
-	// SeekGE with complement encoding: complement(revision) seeks to the
+	// Seek with complement encoding: complement(revision) seeks to the
 	// first entry with complement >= complement(revision), which means
 	// entryRevision <= revision (newest entry at or before requested revision).
-	if !iter.SeekGE(seekKey) {
+	if !iter.Seek(seekKey) {
 		if err := iter.Error(); err != nil {
 			return nil, &StoreError{Op: "find at revision seek", Err: err}
 		}
 		return nil, &RevisionNotFoundError{Key: string(key), Revision: revision}
 	}
 
-	_, entryRev, err := decodeDataKey(iter.Key())
+	_, entryRev, err := DecodeDataKey(iter.Key())
 	if err != nil {
 		return nil, err
 	}
 
-	val, err := iter.ValueAndErr()
-	if err != nil {
+	val := iter.Value()
+	if err := iter.Error(); err != nil {
 		return nil, &StoreError{Op: "find at revision value", Err: err}
 	}
 
-	value, isTombstone, err := decodeDataValue(val)
+	value, isTombstone, err := DecodeValue(val)
 	if err != nil {
 		return nil, err
 	}
@@ -580,7 +605,7 @@ func (s *Store) findAtRevision(key []byte, revision int64) (*service.KeyValue, e
 			CreateRevision: meta.CreateRevision,
 			ModRevision:    entryRev,
 			Version:        meta.Version,
-			LeaseID:        meta.Lease,
+			LeaseID:        meta.LeaseID,
 		}
 	} else {
 		// Key was deleted; provide revision info from the data entry.

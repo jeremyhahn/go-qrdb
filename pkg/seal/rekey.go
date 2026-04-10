@@ -13,7 +13,7 @@ import (
 	"encoding/json"
 
 	"github.com/awnumar/memguard"
-	"github.com/jeremyhahn/go-qrdb/pkg/shamir"
+	"github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir"
 )
 
 // Rekey generates a new set of Shamir shares for the existing root key.
@@ -22,7 +22,7 @@ import (
 // updated with the new Shamir parameters.
 //
 // The barrier must be unsealed and have a ShamirStrategy registered.
-func (b *Barrier) Rekey(ctx context.Context, newThreshold, newTotal int) (*ShamirInitResult, error) {
+func (b *StorageBarrier) Rekey(ctx context.Context, newThreshold, newTotal int) (*ShamirInitResult, error) {
 	if b.IsSealed() {
 		return nil, ErrSealed
 	}
@@ -37,7 +37,7 @@ func (b *Barrier) Rekey(ctx context.Context, newThreshold, newTotal int) (*Shami
 	}
 
 	// Load existing shares and reconstruct the root key.
-	existingShares, err := shamirStrat.LoadAllShares()
+	existingShares, err := shamirStrat.LoadAllShares(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -48,9 +48,9 @@ func (b *Barrier) Rekey(ctx context.Context, newThreshold, newTotal int) (*Shami
 	}
 	defer memguard.WipeBytes(rootKey)
 
-	// Delete old shares from storage using the package-level key function.
+	// Delete old shares from storage.
 	for i := 1; i <= shamirStrat.total; i++ {
-		_ = shamirStrat.Storage().Delete(shamirShareKey(i))
+		_ = shamirStrat.Storage().Delete(ctx, shamirShareKey(i))
 	}
 
 	// Create a new ShamirStrategy with the same storage but new parameters.
@@ -65,7 +65,7 @@ func (b *Barrier) Rekey(ctx context.Context, newThreshold, newTotal int) (*Shami
 	}
 
 	// Update the sealed root key blob with new Shamir parameters.
-	blob, err := b.base.Get(b.config.RootKeyPath)
+	blob, err := b.base.Get(ctx, b.config.RootKeyPath)
 	if err != nil {
 		return nil, err
 	}
@@ -79,7 +79,7 @@ func (b *Barrier) Rekey(ctx context.Context, newThreshold, newTotal int) (*Shami
 	if err != nil {
 		return nil, err
 	}
-	if err := b.base.Put(b.config.RootKeyPath, updatedBlob); err != nil {
+	if err := b.base.Put(ctx, b.config.RootKeyPath, updatedBlob); err != nil {
 		return nil, err
 	}
 
@@ -93,7 +93,7 @@ func (b *Barrier) Rekey(ctx context.Context, newThreshold, newTotal int) (*Shami
 	}
 
 	// Load the new shares and build the result.
-	newShares, err := newStrat.LoadAllShares()
+	newShares, err := newStrat.LoadAllShares(ctx)
 	if err != nil {
 		return nil, err
 	}

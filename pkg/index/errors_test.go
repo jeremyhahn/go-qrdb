@@ -15,6 +15,7 @@
 package index
 
 import (
+	"bytes"
 	"errors"
 	"strings"
 	"testing"
@@ -112,42 +113,33 @@ func TestNilFieldValueError_Error_DifferentOp(t *testing.T) {
 
 func TestUniqueViolationError_Error_ContainsFields(t *testing.T) {
 	e := &UniqueViolationError{
-		IndexName:  "email-idx",
-		FieldValue: []byte("test@example.com"),
-		ExistingID: 100,
-		NewID:      200,
+		IndexName:   "email-idx",
+		FieldValue:  []byte("test@example.com"),
+		ExistingKey: []byte("entity-100"),
+		NewKey:      []byte("entity-200"),
 	}
 	got := e.Error()
 	if !strings.Contains(got, "email-idx") {
 		t.Errorf("Error: expected index name, got %q", got)
 	}
-	if !strings.Contains(got, "100") {
-		t.Errorf("Error: expected existing ID, got %q", got)
-	}
-	if !strings.Contains(got, "200") {
-		t.Errorf("Error: expected new ID, got %q", got)
-	}
-	if !strings.Contains(got, "unique violation") {
+	if !strings.Contains(got, "unique constraint violation") {
 		t.Errorf("Error: expected 'unique violation', got %q", got)
 	}
 }
 
-func TestUniqueViolationError_Error_DifferentIDs(t *testing.T) {
+func TestUniqueViolationError_Error_DifferentKeys(t *testing.T) {
 	e := &UniqueViolationError{
-		IndexName:  "name-idx",
-		FieldValue: []byte("alice"),
-		ExistingID: 1,
-		NewID:      2,
+		IndexName:   "name-idx",
+		FieldValue:  []byte("alice"),
+		ExistingKey: []byte("key-1"),
+		NewKey:      []byte("key-2"),
 	}
 	got := e.Error()
 	if !strings.Contains(got, "name-idx") {
 		t.Errorf("Error: expected 'name-idx', got %q", got)
 	}
-	if !strings.Contains(got, "1") {
-		t.Errorf("Error: expected existing ID '1', got %q", got)
-	}
-	if !strings.Contains(got, "cannot map to 2") {
-		t.Errorf("Error: expected 'cannot map to 2', got %q", got)
+	if !strings.Contains(got, "unique constraint violation") {
+		t.Errorf("Error: expected 'unique violation', got %q", got)
 	}
 }
 
@@ -208,16 +200,16 @@ func TestClosedError_ErrorsAs(t *testing.T) {
 
 func TestUniqueViolationError_ErrorsAs(t *testing.T) {
 	var err error = &UniqueViolationError{
-		IndexName:  "idx",
-		FieldValue: []byte("val"),
-		ExistingID: 10,
-		NewID:      20,
+		IndexName:   "idx",
+		FieldValue:  []byte("val"),
+		ExistingKey: []byte("key-10"),
+		NewKey:      []byte("key-20"),
 	}
 	var target *UniqueViolationError
 	if !errors.As(err, &target) {
 		t.Error("errors.As: failed for UniqueViolationError")
 	}
-	if target.ExistingID != 10 {
-		t.Errorf("errors.As: ExistingID got %d, want 10", target.ExistingID)
+	if !bytes.Equal(target.ExistingKey, []byte("key-10")) {
+		t.Errorf("errors.As: ExistingKey got %v, want %v", target.ExistingKey, []byte("key-10"))
 	}
 }

@@ -42,7 +42,7 @@ Source: `go.mod`
 ```
 module github.com/jeremyhahn/go-qrdb
 
-go 1.26
+go 1.26.1
 
 require github.com/jeremyhahn/go-quicraft v0.0.0
 replace github.com/jeremyhahn/go-quicraft => ../go-quicraft
@@ -59,13 +59,30 @@ replace github.com/jeremyhahn/go-quicraft => ../go-quicraft
 |   +----------+  +--------+  +-------+  +-------+  +--------+ |
 |   |  Transactions  |  Batch  |  Consistency  |  Protocol    | |
 |   +-----------+----+---------+---------+-----+--------------+ |
+|   |  RBAC  |  Audit  |  Certs  |  Users  |  Capabilities   | |
+|   +-----------+-------+---------+---------+-----------------+ |
 |               |          Service Layer         |              |
 |               +--------------------------------+              |
-|               |  REST API  |   gRPC API  |                    |
+|   | REST API | gRPC API | Unix API | MCP API | etcd API |     |
 |               +--------------------------------+              |
 +---------------------------------------------------------------+
                               |
                     sm.DiskStateMachine
+                              |
+                  +-------------------------+
+                  | State Machines           |
+                  | (Raft wrappers)          |
+                  +-------------------------+
+                              |
+                  +-------------------------+
+                  | Store Engines            |
+                  | (MVCCEngine, KVEngine)   |
+                  +-------------------------+
+                              |
+                  +-------------------------+
+                  | Storage Backends         |
+                  | (memory, file, pebble)   |
+                  +-------------------------+
                               |
 +---------------------------------------------------------------+
 |                        go-quicraft                             |
@@ -79,15 +96,35 @@ replace github.com/jeremyhahn/go-quicraft => ../go-quicraft
 ```
 
 The boundary between go-quicraft and go-qrdb is the `sm.DiskStateMachine`
-interface. QRDB implements this interface in two forms:
+interface. QRDB uses a three-layer store architecture:
 
-- `PebbleStore` (`pkg/store/pebble.go`) -- a basic KV state machine for
-  simple put/get/delete/list operations
-- `MVCCStateMachine` (planned in `pkg/store/`) -- an MVCC-aware state
-  machine that dispatches extended protocol op codes
+1. **Storage backends** (`pkg/storage/`) implement the `storage.Storage`
+   interface. Three backends are provided: `memory` (in-memory, data lost
+   on restart), `file` (filesystem-backed), and `pebble` (PebbleDB-backed,
+   production default).
 
-Both are selectable at startup via the `raft.sm_type` configuration field
-(`"pebble"`, `"memory"`, or `"mvcc"`).
+2. **Store engines** (`pkg/engine/`) implement the `Engine` interface
+   (extends `backend.SMAdapter`). They contain all handler logic for
+   protocol dispatch:
+   - `KVEngine` -- basic Get/Put/Delete/List/Scan, optional indexes and watches
+   - `MVCCEngine` -- MVCC versioning, transactions, leases, indexes, watches,
+     time-series, and extended protocol op codes
+
+3. **State machines** (`pkg/store/`) are thin Raft wrappers that implement
+   `sm.DiskStateMachine` and delegate `Update`/`Lookup` calls to an engine.
+   They add only: opening PebbleDB, persisting `lastApplied`, and snapshot
+   save/restore. `MVCCStateMachine` (`pkg/store/mvcc.go`) is the primary
+   Raft state machine.
+
+In **local (non-Raft) mode**, a `LocalBackend` wraps an engine directly
+without a state machine, bypassing Raft consensus entirely.
+
+Users choose a **store engine** (`kv` or `mvcc`) and a **storage backend**
+(`memory`, `file`, `pebble`) independently. The file backend defaults to
+the KV engine because MVCC binary keys are not valid filenames.
+
+The `raft.sm_type` configuration field (`"pebble"`, `"memory"`, or `"mvcc"`)
+selects which Raft state machine wrapper to use for distributed mode.
 
 ## 3. Package Structure
 
@@ -113,13 +150,32 @@ github.com/jeremyhahn/go-qrdb/
       timeseries_service.go      TimeSeriesService interface
       types.go                   Shared types (KeyValue, Event, Lease, Compare, Op, etc.)
       errors.go                  Typed service errors
-    store/                     Storage backends
-      pebble.go                  PebbleStore (sm.DiskStateMachine, PebbleDB-backed)
-      factory.go                 Store factory (NewPebbleCreateFunc with functional options)
+    storage/                   Storage backend implementations
+      storage.go                 storage.Storage interface
+      memory/                    In-memory storage backend (data lost on restart)
+      file/                      Filesystem-backed storage backend
+      pebble/                    PebbleDB-backed storage backend (production default)
+      namespace/                 Namespace-scoped storage wrapper
+    engine/                    Store engine implementations
+      kv_engine.go               KVEngine (basic KV ops, optional indexes/watches)
+      mvcc_engine.go             MVCCEngine (MVCC, transactions, leases, indexes, watches, time-series)
+    store/                     Raft state machine wrappers
+      mvcc.go                    MVCCStateMachine (sm.DiskStateMachine, delegates to engine)
+      pebble.go                  PebbleStateMachine (sm.DiskStateMachine, legacy wrapper)
+      factory.go                 Store factory (functional options)
       errors.go                  Store-specific error types
     config/                    YAML configuration loading and validation
       config.go                  Config struct, DefaultConfig(), Load(), Validate()
       errors.go                  Config-specific error types
+    capabilities/            Compile-time feature registration (build-tag gated)
+    permission/              Fine-grained resource:action permission registry
+    user/                    Passwordless mTLS user management (KVStore-backed)
+    role/                    RBAC role management with built-in roles
+    cert/                    Pluggable CertProvider (default: barrier-sealed ECDSA CA)
+    auth/
+      rbac/                  RBAC authorizer with permission cache
+      middleware/            Auth chain: gRPC interceptors + REST middleware
+    audit/                   Dual-backend audit logging (KVStore + slog JSON file)
     api/
       rest/                    REST API (HTTP/2 + HTTP/3, leader forwarding, Prometheus)
         server.go                Server struct, route registration, TLS setup
@@ -130,8 +186,16 @@ github.com/jeremyhahn/go-qrdb/
         service.go               gRPC service implementation
         errors.go                gRPC-specific error types
         proto/qrdbv1/            Protobuf definitions and generated code
+      unix/                    gRPC over Unix domain socket
+      mcp/                     MCP (Model Context Protocol) AI/LLM tool server
+      etcd/                    etcd v3 gRPC compatibility (per-database endpoint)
     server/                    Multi-protocol server orchestrator
       server.go                  Coordinates REST + gRPC + Raft startup/shutdown
+  cmd/qrdb/                    Client CLI + Desktop GUI (Wails v2 + Svelte 5)
+    frontend/                  Svelte 5 frontend (Vite + TailwindCSS + DaisyUI)
+  sdk/
+    go/                        Go SDK with 5 transports
+    typescript/                TypeScript SDK (@qrdb/sdk, WailsClient + RestClient)
   configs/                     YAML configuration files (qrdb.yaml, qrdb-dev.yaml)
   docs/                        Documentation
   test/
@@ -161,11 +225,18 @@ go-quicraft Host
   |-- Raft consensus (propose -> replicate -> commit)
   |-- Engine pipeline: step -> commit (WAL) -> apply
   v
-State Machine (PebbleStore.Update)
+State Machine (MVCCStateMachine.Update)
+  |-- delegates to Engine.Update(cmd)
+  v
+Engine (KVEngine or MVCCEngine)
   |-- kv.DecodeCommand(cmd)  ->  {Op: OpPut, Key, Value}
-  |-- pebble.Batch.Set(key, value)
+  |-- storage.Put(key, value)
+  v
+Storage Backend (memory, file, or pebble)
+  |-- persist data
+  v
+State Machine
   |-- persist lastApplied index
-  |-- batch.Commit(pebble.Sync)
   v
 Client <- 204 No Content  or  gRPC OK
 ```
@@ -186,6 +257,9 @@ go-quicraft Host
   |-- Raft consensus
   v
 MVCCStateMachine.Update
+  |-- delegates to MVCCEngine.Update(cmd)
+  v
+MVCCEngine
   |-- protocol.DecodeCommand(cmd)  ->  {Op: OpMVCCPut, Payload}
   |-- dispatch via op-code map:
   |     10 -> handleMVCCPut
@@ -197,7 +271,7 @@ MVCCStateMachine.Update
   |     ...
   |-- revision.Add(1)  (atomic.Int64)
   |-- encode MVCC key: [userKey | revisionBytes]
-  |-- pebble.Set(mvccKey, mvccValue)
+  |-- storage.Put(mvccKey, mvccValue)
   |-- emit watch events
   v
 Client <- KeyValue{Key, Value, CreateRevision, ModRevision, Version}
@@ -223,8 +297,11 @@ go-quicraft Host
   |     wait for lastApplied >= commitIndex
   |-- sm.Lookup(ctx, query)
   v
-State Machine (PebbleStore.Lookup)
-  |-- pebble.Get(key)  ->  value bytes
+State Machine (MVCCStateMachine.Lookup)
+  |-- delegates to Engine.Lookup(query)
+  v
+Engine -> Storage Backend
+  |-- storage.Get(key)  ->  value bytes
   |-- return defensive copy
   v
 Client <- 200 OK + value bytes  or  gRPC GetResponse{value}
@@ -324,10 +401,13 @@ Package dependency summary:
 | `lease`       | `service` (types only)           | stdlib only     |
 | `index`       | `service` (types only)           | `pebble/v2`     |
 | `timeseries`  | `service` (types only)           | stdlib only     |
-| `store`       | `protocol` (via kv)              | `pebble/v2`, `xxhash` |
+| `storage`     | (none)                           | `pebble/v2`     |
+| `engine`      | `protocol`, `storage`, `mvcc`    | stdlib only     |
+| `store`       | `engine`, `storage`              | `pebble/v2`     |
 | `service`     | (defines interfaces)             | `go-quicraft`   |
 | `api/rest`    | `service`                        | `prometheus`    |
 | `api/grpc`    | `service`                        | `grpc`, `protobuf` |
+| `api/etcd`    | `service`                        | `grpc`, `etcd/api` |
 | `server`      | `service`, `config`, `api/*`     | `prometheus`    |
 | `config`      | (none)                           | `yaml.v3`       |
 | `cmd/qrdbd`   | `server`, `config`, `store`      | `cobra`         |
@@ -339,13 +419,17 @@ Package dependency summary:
   store, enabling distinct compaction policies and key encoding schemes
   without coupling the two storage paths.
 
-- **MVCCStateMachine coexists with PebbleStore (selectable via `sm_type`).**
-  Operators choose `"pebble"` for a simple KV workload (base op codes 1-3)
-  or `"mvcc"` for the full transactional feature set (extended op codes
-  10+). Both implement `sm.DiskStateMachine` and are registered via the
-  same factory pattern.
+- **Three-layer store architecture with independent engine and backend selection.**
+  The store layer is split into storage backends (`pkg/storage/`), store
+  engines (`pkg/engine/`), and thin Raft state machine wrappers (`pkg/store/`).
+  Operators choose a store engine (`kv` for simple put/get/delete with base
+  op codes 1-3, or `mvcc` for the full transactional feature set with
+  extended op codes 10+) and a storage backend (`memory`, `file`, `pebble`)
+  independently. State machines delegate all data operations to engines,
+  adding only Raft lifecycle concerns (open, lastApplied, snapshots).
+  In local (non-Raft) mode, a `LocalBackend` wraps an engine directly.
 
-  Source: `pkg/config/config.go` -- `validSMTypes`
+  Source: `pkg/engine/`, `pkg/storage/`, `pkg/store/`
 
 - **Interface segregation across service boundaries.** Each feature domain
   has its own service interface (`KVService`, `MVCCKVService`,
@@ -394,7 +478,7 @@ Package dependency summary:
   Source: `pkg/service/service.go` -- `kvService`, `adminService`
 
 - **Functional options pattern for server configuration.** The REST
-  server, gRPC server, multi-protocol orchestrator, and PebbleStore
+  server, gRPC server, multi-protocol orchestrator, and store
   factory all use the functional options pattern (`WithTLS`,
   `WithGatherer`, `WithCacheSize`, etc.) for optional dependency
   injection.
@@ -408,6 +492,47 @@ Package dependency summary:
   co-located with their packages (`pkg/service/errors.go`,
   `pkg/store/errors.go`, `pkg/api/rest/errors.go`, etc.).
 
+## 7. Capabilities API
+
+The `pkg/capabilities/` package implements compile-time feature registration using
+Go build tags. Each feature (MVCC, transactions, batch, watch, lease, index,
+time-series, vector) registers itself via an `init()` function in a
+`*_enabled.go` file that is only compiled when the corresponding build tag is
+present. A companion `*_stub.go` file (compiled when the tag is absent) registers
+the feature as disabled.
+
+```go
+// capabilities/registry.go
+var registry = map[string]bool{}
+
+func Register(name string, enabled bool) { registry[name] = enabled }
+func IsEnabled(name string) bool         { return registry[name] }
+func All() map[string]bool               { return registry }
+```
+
+The `GET /v1/capabilities` endpoint and `qrdb_capabilities` MCP tool return
+`capabilities.All()`, giving clients a runtime view of which features the server
+was compiled with. This enables conditional UI rendering in the GUI and
+feature-gated CLI commands.
+
+## 8. GUI Architecture
+
+QRDB includes a universal GUI built with Wails v2 and Svelte 5 that runs in
+two modes:
+
+- **Desktop**: Native window via Wails, communicating with the embedded qrdbd
+  server through Wails-generated Go bindings (IPC, no network)
+- **Browser**: Standalone SPA served by the REST API, communicating via
+  `fetch()` against the REST endpoints
+
+The frontend lives in `cmd/qrdb/frontend/` and uses Vite, TailwindCSS, and
+DaisyUI. A TypeScript SDK (`sdk/typescript/`, published as `@qrdb/sdk`) provides
+two transport implementations (`WailsClient` and `RestClient`) that share the
+same client interface.
+
+See [GUI documentation](gui/README.md) for setup wizard, component architecture,
+and build instructions.
+
 ## Cross-References
 
 - [API Reference](api.md) -- REST and gRPC endpoint specifications
@@ -415,3 +540,6 @@ Package dependency summary:
 - [Transactions](03-transactions.md) -- compare-and-swap semantics
 - [Configuration](12-configuration.md) -- complete YAML reference
 - [Operations](13-operations.md) -- deployment and monitoring
+- [Authentication and RBAC](auth/README.md) -- pluggable auth, RBAC authorizer, auth middleware
+- [Seal / CA Key Lifecycle](seal/README.md) -- barrier-sealed CA private key protection
+- [GUI](gui/README.md) -- desktop and browser GUI architecture

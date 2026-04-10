@@ -286,3 +286,35 @@ func TestClosedError_Message(t *testing.T) {
 		t.Errorf("expected %q, got %q", expected, err.Error())
 	}
 }
+
+func TestDatabaseNotFoundError_Message(t *testing.T) {
+	err := &DatabaseNotFoundError{Name: "analytics"}
+	expected := "transport: database not found: analytics"
+	if err.Error() != expected {
+		t.Errorf("expected %q, got %q", expected, err.Error())
+	}
+}
+
+func TestDatabaseNotFoundError_EmptyName(t *testing.T) {
+	err := &DatabaseNotFoundError{}
+	expected := "transport: database not found: "
+	if err.Error() != expected {
+		t.Errorf("expected %q, got %q", expected, err.Error())
+	}
+}
+
+func TestDatabaseExistsError_Message(t *testing.T) {
+	err := &DatabaseExistsError{Name: "analytics"}
+	expected := "transport: database already exists: analytics"
+	if err.Error() != expected {
+		t.Errorf("expected %q, got %q", expected, err.Error())
+	}
+}
+
+func TestDatabaseExistsError_EmptyName(t *testing.T) {
+	err := &DatabaseExistsError{}
+	expected := "transport: database already exists: "
+	if err.Error() != expected {
+		t.Errorf("expected %q, got %q", expected, err.Error())
+	}
+}

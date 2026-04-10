@@ -17,6 +17,8 @@ raft:
   peers: "1=127.0.0.1:63001"
   join: false
   sm_type: "memory"
+  lease_read: true
+  check_quorum: true
 
 storage:
   backend: "memory"

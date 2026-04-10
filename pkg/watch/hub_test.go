@@ -657,9 +657,8 @@ func TestHub_CleanupOnCancel_ExactWatcher(t *testing.T) {
 	// Channel should be closed after cleanup.
 	select {
 	case _, ok := <-w.Events():
-		if ok {
-			// May get residual; keep draining.
-		}
+		// May get residual events; we just confirm the channel is reachable.
+		_ = ok
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for events channel to close")
 	}
@@ -683,9 +682,8 @@ func TestHub_CleanupOnCancel_PrefixWatcher(t *testing.T) {
 
 	select {
 	case _, ok := <-w.Events():
-		if ok {
-			// May get residual; keep draining.
-		}
+		// May get residual events; we just confirm the channel is reachable.
+		_ = ok
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for events channel to close")
 	}

@@ -120,3 +120,497 @@ type ClosedError struct{}
 func (e *ClosedError) Error() string {
 	return "transport: connection is closed"
 }
+
+// RevisionCompactedError is returned when a requested revision has
+// been compacted and is no longer available.
+type RevisionCompactedError struct {
+	Revision int64
+}
+
+// Error returns a human-readable description.
+func (e *RevisionCompactedError) Error() string {
+	return "transport: revision " + strconv.FormatInt(e.Revision, 10) + " has been compacted"
+}
+
+// RevisionNotFoundError is returned when a requested revision does
+// not exist.
+type RevisionNotFoundError struct {
+	Revision int64
+}
+
+// Error returns a human-readable description.
+func (e *RevisionNotFoundError) Error() string {
+	return "transport: revision " + strconv.FormatInt(e.Revision, 10) + " not found"
+}
+
+// LeaseNotFoundError is returned when a lease ID does not exist.
+type LeaseNotFoundError struct {
+	LeaseID int64
+}
+
+// Error returns a human-readable description.
+func (e *LeaseNotFoundError) Error() string {
+	return "transport: lease not found: " + strconv.FormatInt(e.LeaseID, 10)
+}
+
+// LeaseExpiredError is returned when a lease has already expired.
+type LeaseExpiredError struct {
+	LeaseID int64
+}
+
+// Error returns a human-readable description.
+func (e *LeaseExpiredError) Error() string {
+	return "transport: lease expired: " + strconv.FormatInt(e.LeaseID, 10)
+}
+
+// WatchCanceledError is returned when a watch stream is canceled.
+type WatchCanceledError struct {
+	Reason string
+}
+
+// Error returns a human-readable description.
+func (e *WatchCanceledError) Error() string {
+	if e.Reason == "" {
+		return "transport: watch canceled"
+	}
+	return "transport: watch canceled: " + e.Reason
+}
+
+// IndexExistsError is returned when an index already exists.
+type IndexExistsError struct {
+	Name string
+}
+
+// Error returns a human-readable description.
+func (e *IndexExistsError) Error() string {
+	return "transport: index already exists: " + e.Name
+}
+
+// IndexNotFoundError is returned when an index does not exist.
+type IndexNotFoundError struct {
+	Name string
+}
+
+// Error returns a human-readable description.
+func (e *IndexNotFoundError) Error() string {
+	return "transport: index not found: " + e.Name
+}
+
+// TransactionFailedError is returned when a transaction's preconditions
+// did not pass.
+type TransactionFailedError struct {
+	Revision int64
+}
+
+// Error returns a human-readable description.
+func (e *TransactionFailedError) Error() string {
+	return "transport: transaction preconditions failed at revision " + strconv.FormatInt(e.Revision, 10)
+}
+
+// VectorNotFoundError is returned when a vector ID does not exist.
+type VectorNotFoundError struct {
+	Namespace string
+	ID        string
+}
+
+// Error returns a human-readable description.
+func (e *VectorNotFoundError) Error() string {
+	return "transport: vector not found: " + e.Namespace + "/" + e.ID
+}
+
+// NamespaceNotFoundError is returned when a vector namespace does not exist.
+type NamespaceNotFoundError struct {
+	Namespace string
+}
+
+// Error returns a human-readable description.
+func (e *NamespaceNotFoundError) Error() string {
+	return "transport: namespace not found: " + e.Namespace
+}
+
+// NamespaceExistsError is returned when a vector namespace already exists.
+type NamespaceExistsError struct {
+	Namespace string
+}
+
+// Error returns a human-readable description.
+func (e *NamespaceExistsError) Error() string {
+	return "transport: namespace already exists: " + e.Namespace
+}
+
+// DimensionMismatchError is returned when a vector's dimensionality
+// does not match the namespace configuration.
+type DimensionMismatchError struct {
+	Expected int
+	Got      int
+}
+
+// Error returns a human-readable description.
+func (e *DimensionMismatchError) Error() string {
+	return "transport: dimension mismatch: expected " + strconv.Itoa(e.Expected) + ", got " + strconv.Itoa(e.Got)
+}
+
+// NotImplementedError is returned when a transport method is not yet
+// implemented.
+type NotImplementedError struct {
+	Method string
+}
+
+// Error returns a human-readable description.
+func (e *NotImplementedError) Error() string {
+	return "transport: method not implemented: " + e.Method
+}
+
+// UserNotFoundError is returned when a user ID does not exist.
+type UserNotFoundError struct {
+	ID string
+}
+
+// Error returns a human-readable description.
+func (e *UserNotFoundError) Error() string {
+	return "transport: user not found: " + e.ID
+}
+
+// UserExistsError is returned when a username already exists within
+// the tenant.
+type UserExistsError struct {
+	Username string
+}
+
+// Error returns a human-readable description.
+func (e *UserExistsError) Error() string {
+	return "transport: user already exists: " + e.Username
+}
+
+// RoleNotFoundError is returned when a role ID does not exist.
+type RoleNotFoundError struct {
+	ID string
+}
+
+// Error returns a human-readable description.
+func (e *RoleNotFoundError) Error() string {
+	return "transport: role not found: " + e.ID
+}
+
+// RoleExistsError is returned when a role name already exists within
+// the tenant.
+type RoleExistsError struct {
+	Name string
+}
+
+// Error returns a human-readable description.
+func (e *RoleExistsError) Error() string {
+	return "transport: role already exists: " + e.Name
+}
+
+// CertNotFoundError is returned when a certificate serial does not exist.
+type CertNotFoundError struct {
+	Serial string
+}
+
+// Error returns a human-readable description.
+func (e *CertNotFoundError) Error() string {
+	return "transport: certificate not found: " + e.Serial
+}
+
+// DatabaseNotFoundError is returned when a database name does not exist.
+type DatabaseNotFoundError struct {
+	Name string
+}
+
+// Error returns a human-readable description.
+func (e *DatabaseNotFoundError) Error() string {
+	return "transport: database not found: " + e.Name
+}
+
+// DatabaseExistsError is returned when a database name already exists.
+type DatabaseExistsError struct {
+	Name string
+}
+
+// Error returns a human-readable description.
+func (e *DatabaseExistsError) Error() string {
+	return "transport: database already exists: " + e.Name
+}
+
+// ShardNotFoundError is returned when a shard ID does not exist on
+// the target host.
+type ShardNotFoundError struct {
+	ShardID uint64
+}
+
+// Error returns a human-readable description.
+func (e *ShardNotFoundError) Error() string {
+	return "transport: shard not found: " + strconv.FormatUint(e.ShardID, 10)
+}
+
+// ShardStartError is returned when starting a Raft shard fails.
+type ShardStartError struct {
+	ShardID uint64
+	Err     error
+}
+
+// Error returns a human-readable description.
+func (e *ShardStartError) Error() string {
+	return "transport: failed to start shard " + strconv.FormatUint(e.ShardID, 10) + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *ShardStartError) Unwrap() error {
+	return e.Err
+}
+
+// ShardStopError is returned when stopping a Raft shard fails.
+type ShardStopError struct {
+	ShardID uint64
+	Err     error
+}
+
+// Error returns a human-readable description.
+func (e *ShardStopError) Error() string {
+	return "transport: failed to stop shard " + strconv.FormatUint(e.ShardID, 10) + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *ShardStopError) Unwrap() error {
+	return e.Err
+}
+
+// ShardStateError is returned when querying shard Raft state fails.
+type ShardStateError struct {
+	ShardID uint64
+	Err     error
+}
+
+// Error returns a human-readable description.
+func (e *ShardStateError) Error() string {
+	return "transport: failed to get state for shard " + strconv.FormatUint(e.ShardID, 10) + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *ShardStateError) Unwrap() error {
+	return e.Err
+}
+
+// TopologyError is returned when querying the cluster topology fails.
+type TopologyError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *TopologyError) Error() string {
+	return "transport: failed to get topology: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *TopologyError) Unwrap() error {
+	return e.Err
+}
+
+// NoStateMachineFactoryError is returned when StartShard is called
+// but no state machine factory has been registered.
+type NoStateMachineFactoryError struct{}
+
+// Error returns a human-readable description.
+func (e *NoStateMachineFactoryError) Error() string {
+	return "transport: no state machine factory registered for StartShard"
+}
+
+// InvalidWriteModeError is returned when an unrecognized write mode
+// string is provided.
+type InvalidWriteModeError struct {
+	Mode string
+}
+
+// Error returns a human-readable description.
+func (e *InvalidWriteModeError) Error() string {
+	return "transport: invalid write mode: " + e.Mode
+}
+
+// InvalidConsistencyLevelError is returned when an unrecognized
+// consistency level string is provided.
+type InvalidConsistencyLevelError struct {
+	Level string
+}
+
+// Error returns a human-readable description.
+func (e *InvalidConsistencyLevelError) Error() string {
+	return "transport: invalid consistency level: " + e.Level
+}
+
+// ---------------------------------------------------------------------------
+// Backup errors
+// ---------------------------------------------------------------------------
+
+// BackupNotFoundError is returned when a backup ID does not exist.
+type BackupNotFoundError struct {
+	ID string
+}
+
+// Error returns a human-readable description.
+func (e *BackupNotFoundError) Error() string {
+	return "transport: backup not found: " + e.ID
+}
+
+// BackupCreateError is returned when backup creation fails.
+type BackupCreateError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *BackupCreateError) Error() string {
+	return "transport: backup creation failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *BackupCreateError) Unwrap() error {
+	return e.Err
+}
+
+// BackupRestoreError is returned when backup restoration fails.
+type BackupRestoreError struct {
+	BackupID string
+	Err      error
+}
+
+// Error returns a human-readable description.
+func (e *BackupRestoreError) Error() string {
+	return "transport: backup restore failed for " + e.BackupID + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *BackupRestoreError) Unwrap() error {
+	return e.Err
+}
+
+// BackupVerifyError is returned when backup verification fails.
+type BackupVerifyError struct {
+	BackupID string
+	Err      error
+}
+
+// Error returns a human-readable description.
+func (e *BackupVerifyError) Error() string {
+	return "transport: backup verification failed for " + e.BackupID + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *BackupVerifyError) Unwrap() error {
+	return e.Err
+}
+
+// BackupEmptyDestinationError is returned when a backup request has
+// an empty destination.
+type BackupEmptyDestinationError struct{}
+
+// Error returns a human-readable description.
+func (e *BackupEmptyDestinationError) Error() string {
+	return "transport: backup destination must not be empty"
+}
+
+// BackupEmptyIDError is returned when a backup operation requires an
+// ID but none was provided.
+type BackupEmptyIDError struct{}
+
+// Error returns a human-readable description.
+func (e *BackupEmptyIDError) Error() string {
+	return "transport: backup ID must not be empty"
+}
+
+// BackupChecksumMismatchError is returned when a backup's computed
+// checksum does not match the stored checksum.
+type BackupChecksumMismatchError struct {
+	Expected string
+	Actual   string
+}
+
+// Error returns a human-readable description.
+func (e *BackupChecksumMismatchError) Error() string {
+	return "transport: backup checksum mismatch: expected " + e.Expected + ", got " + e.Actual
+}
+
+// ---------------------------------------------------------------------------
+// Rebalance errors
+// ---------------------------------------------------------------------------
+
+// ShardStatsError is returned when querying shard statistics fails.
+type ShardStatsError struct {
+	ShardID uint64
+	Err     error
+}
+
+// Error returns a human-readable description.
+func (e *ShardStatsError) Error() string {
+	return "transport: get shard stats " + strconv.FormatUint(e.ShardID, 10) + " failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *ShardStatsError) Unwrap() error {
+	return e.Err
+}
+
+// RebalancePlanError is returned when generating a rebalance plan fails.
+type RebalancePlanError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *RebalancePlanError) Error() string {
+	return "transport: create rebalance plan failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *RebalancePlanError) Unwrap() error {
+	return e.Err
+}
+
+// RebalanceExecuteError is returned when executing a rebalance plan fails.
+type RebalanceExecuteError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *RebalanceExecuteError) Error() string {
+	return "transport: execute rebalance failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *RebalanceExecuteError) Unwrap() error {
+	return e.Err
+}
+
+// ImbalanceReportError is returned when generating an imbalance report fails.
+type ImbalanceReportError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *ImbalanceReportError) Error() string {
+	return "transport: get imbalance report failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *ImbalanceReportError) Unwrap() error {
+	return e.Err
+}
+
+// NilRebalancePlanError is returned when ExecuteRebalance is called
+// with a nil plan.
+type NilRebalancePlanError struct{}
+
+// Error returns a human-readable description.
+func (e *NilRebalancePlanError) Error() string {
+	return "transport: rebalance plan must not be nil"
+}
+
+// BatchIndexError is returned when a batch response is missing the
+// expected result at the given index. This indicates a server-side
+// protocol violation.
+type BatchIndexError struct {
+	Index int
+}
+
+// Error returns a human-readable description.
+func (e *BatchIndexError) Error() string {
+	return "transport: batch response missing result at index " + strconv.Itoa(e.Index)
+}

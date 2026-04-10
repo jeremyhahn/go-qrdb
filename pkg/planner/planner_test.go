@@ -1,0 +1,318 @@
+// Copyright 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package planner_test
+
+import (
+	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/planner"
+)
+
+// helpers ----------------------------------------------------------------
+
+func emailUniqueIndex() planner.IndexInfo {
+	return planner.IndexInfo{Name: "mydb.users.Email", FieldName: "Email", Unique: true, FieldType: "string"}
+}
+
+func emailNonUniqueIndex() planner.IndexInfo {
+	return planner.IndexInfo{Name: "mydb.users.Email", FieldName: "Email", Unique: false, FieldType: "string"}
+}
+
+func ageIndex() planner.IndexInfo {
+	return planner.IndexInfo{Name: "mydb.users.Age", FieldName: "Age", Unique: false, FieldType: "uint64"}
+}
+
+func scoreIndex() planner.IndexInfo {
+	return planner.IndexInfo{Name: "mydb.users.Score", FieldName: "Score", Unique: false, FieldType: "float64"}
+}
+
+func newPlanner(infos ...planner.IndexInfo) *planner.Planner {
+	return planner.New(planner.NewStaticCatalog(infos))
+}
+
+// tests ------------------------------------------------------------------
+
+func TestPlanNoPredicates(t *testing.T) {
+	p := newPlanner(emailUniqueIndex())
+	plan := p.Plan(nil)
+
+	if plan.Type != planner.PlanFullScan {
+		t.Fatalf("expected PlanFullScan, got %s", plan.Type)
+	}
+	if plan.EstimatedCost != 1000 {
+		t.Errorf("expected cost 1000, got %f", plan.EstimatedCost)
+	}
+	if len(plan.PostFilters) != 0 {
+		t.Errorf("expected no post-filters, got %d", len(plan.PostFilters))
+	}
+}
+
+func TestPlanEmptyPredicateSlice(t *testing.T) {
+	p := newPlanner(emailUniqueIndex())
+	plan := p.Plan([]planner.Predicate{})
+
+	if plan.Type != planner.PlanFullScan {
+		t.Fatalf("expected PlanFullScan for empty predicates, got %s", plan.Type)
+	}
+}
+
+func TestPlanEqWithUniqueIndex(t *testing.T) {
+	p := newPlanner(emailUniqueIndex())
+	pred := planner.Predicate{Field: "Email", Op: planner.OpEq, Value: "alice@example.com"}
+
+	plan := p.Plan([]planner.Predicate{pred})
+
+	if plan.Type != planner.PlanIndexLookup {
+		t.Fatalf("expected PlanIndexLookup, got %s", plan.Type)
+	}
+	if plan.EstimatedCost != 1 {
+		t.Errorf("expected cost 1 for unique lookup, got %f", plan.EstimatedCost)
+	}
+	if plan.IndexName != "mydb.users.Email" {
+		t.Errorf("unexpected index name: %s", plan.IndexName)
+	}
+	if plan.IndexField != "Email" {
+		t.Errorf("unexpected index field: %s", plan.IndexField)
+	}
+	if !plan.IsUnique {
+		t.Error("expected IsUnique=true")
+	}
+	if plan.ExactValue != "alice@example.com" {
+		t.Errorf("unexpected ExactValue: %v", plan.ExactValue)
+	}
+	if len(plan.PostFilters) != 0 {
+		t.Errorf("unexpected post-filters: %v", plan.PostFilters)
+	}
+}
+
+func TestPlanEqWithNonUniqueIndex(t *testing.T) {
+	p := newPlanner(emailNonUniqueIndex())
+	pred := planner.Predicate{Field: "Email", Op: planner.OpEq, Value: "bob@example.com"}
+
+	plan := p.Plan([]planner.Predicate{pred})
+
+	if plan.Type != planner.PlanIndexLookup {
+		t.Fatalf("expected PlanIndexLookup, got %s", plan.Type)
+	}
+	if plan.EstimatedCost != 10 {
+		t.Errorf("expected cost 10 for non-unique lookup, got %f", plan.EstimatedCost)
+	}
+	if plan.IsUnique {
+		t.Error("expected IsUnique=false")
+	}
+}
+
+func TestPlanGtWithIndex(t *testing.T) {
+	p := newPlanner(ageIndex())
+	pred := planner.Predicate{Field: "Age", Op: planner.OpGt, Value: uint64(18)}
+
+	plan := p.Plan([]planner.Predicate{pred})
+
+	if plan.Type != planner.PlanIndexScan {
+		t.Fatalf("expected PlanIndexScan, got %s", plan.Type)
+	}
+	if plan.EstimatedCost != 50 {
+		t.Errorf("expected cost 50, got %f", plan.EstimatedCost)
+	}
+	if plan.RangeStart != uint64(18) {
+		t.Errorf("unexpected RangeStart: %v", plan.RangeStart)
+	}
+	if plan.RangeEnd != nil {
+		t.Errorf("expected nil RangeEnd for OpGt, got %v", plan.RangeEnd)
+	}
+}
+
+func TestPlanGteWithIndex(t *testing.T) {
+	p := newPlanner(ageIndex())
+	pred := planner.Predicate{Field: "Age", Op: planner.OpGte, Value: uint64(21)}
+
+	plan := p.Plan([]planner.Predicate{pred})
+
+	if plan.Type != planner.PlanIndexScan {
+		t.Fatalf("expected PlanIndexScan, got %s", plan.Type)
+	}
+	if plan.RangeStart != uint64(21) {
+		t.Errorf("unexpected RangeStart: %v", plan.RangeStart)
+	}
+}
+
+func TestPlanLtWithIndex(t *testing.T) {
+	p := newPlanner(ageIndex())
+	pred := planner.Predicate{Field: "Age", Op: planner.OpLt, Value: uint64(65)}
+
+	plan := p.Plan([]planner.Predicate{pred})
+
+	if plan.Type != planner.PlanIndexScan {
+		t.Fatalf("expected PlanIndexScan, got %s", plan.Type)
+	}
+	if plan.RangeEnd != uint64(65) {
+		t.Errorf("unexpected RangeEnd: %v", plan.RangeEnd)
+	}
+	if plan.RangeStart != nil {
+		t.Errorf("expected nil RangeStart for OpLt, got %v", plan.RangeStart)
+	}
+}
+
+func TestPlanLteWithIndex(t *testing.T) {
+	p := newPlanner(ageIndex())
+	pred := planner.Predicate{Field: "Age", Op: planner.OpLte, Value: uint64(64)}
+
+	plan := p.Plan([]planner.Predicate{pred})
+
+	if plan.Type != planner.PlanIndexScan {
+		t.Fatalf("expected PlanIndexScan, got %s", plan.Type)
+	}
+	if plan.RangeEnd != uint64(64) {
+		t.Errorf("unexpected RangeEnd: %v", plan.RangeEnd)
+	}
+}
+
+func TestPlanBetweenWithIndex(t *testing.T) {
+	p := newPlanner(ageIndex())
+	pred := planner.Predicate{Field: "Age", Op: planner.OpBetween, Value: uint64(18), ValueEnd: uint64(65)}
+
+	plan := p.Plan([]planner.Predicate{pred})
+
+	if plan.Type != planner.PlanIndexScan {
+		t.Fatalf("expected PlanIndexScan, got %s", plan.Type)
+	}
+	if plan.RangeStart != uint64(18) {
+		t.Errorf("unexpected RangeStart: %v", plan.RangeStart)
+	}
+	if plan.RangeEnd != uint64(65) {
+		t.Errorf("unexpected RangeEnd: %v", plan.RangeEnd)
+	}
+}
+
+func TestPlanPrefixWithIndex(t *testing.T) {
+	p := newPlanner(emailUniqueIndex())
+	pred := planner.Predicate{Field: "Email", Op: planner.OpPrefix, Value: "alice"}
+
+	plan := p.Plan([]planner.Predicate{pred})
+
+	if plan.Type != planner.PlanIndexScan {
+		t.Fatalf("expected PlanIndexScan, got %s", plan.Type)
+	}
+	if plan.RangeStart != "alice" {
+		t.Errorf("unexpected RangeStart: %v", plan.RangeStart)
+	}
+}
+
+func TestPlanInWithIndex(t *testing.T) {
+	p := newPlanner(emailUniqueIndex())
+	pred := planner.Predicate{
+		Field:  "Email",
+		Op:     planner.OpIn,
+		Values: []interface{}{"alice@example.com", "bob@example.com"},
+	}
+
+	plan := p.Plan([]planner.Predicate{pred})
+
+	if plan.Type != planner.PlanIndexLookup {
+		t.Fatalf("expected PlanIndexLookup for OpIn, got %s", plan.Type)
+	}
+	// OpIn always uses non-unique cost.
+	if plan.EstimatedCost != 10 {
+		t.Errorf("expected cost 10 for OpIn, got %f", plan.EstimatedCost)
+	}
+}
+
+func TestPlanNeqNoIndex(t *testing.T) {
+	p := newPlanner(emailUniqueIndex())
+	pred := planner.Predicate{Field: "Email", Op: planner.OpNeq, Value: "spam@example.com"}
+
+	plan := p.Plan([]planner.Predicate{pred})
+
+	if plan.Type != planner.PlanFullScan {
+		t.Fatalf("expected PlanFullScan for OpNeq, got %s", plan.Type)
+	}
+	if len(plan.PostFilters) != 1 {
+		t.Fatalf("expected 1 post-filter, got %d", len(plan.PostFilters))
+	}
+	if plan.PostFilters[0].Op != planner.OpNeq {
+		t.Errorf("unexpected post-filter op: %v", plan.PostFilters[0].Op)
+	}
+}
+
+func TestPlanNoMatchingIndex(t *testing.T) {
+	p := newPlanner(ageIndex())
+	pred := planner.Predicate{Field: "Email", Op: planner.OpEq, Value: "alice@example.com"}
+
+	plan := p.Plan([]planner.Predicate{pred})
+
+	if plan.Type != planner.PlanFullScan {
+		t.Fatalf("expected PlanFullScan when no index matches, got %s", plan.Type)
+	}
+	if len(plan.PostFilters) != 1 {
+		t.Errorf("expected predicate as post-filter, got %d post-filters", len(plan.PostFilters))
+	}
+}
+
+func TestPlanCompoundPredicates(t *testing.T) {
+	// Email is unique (cost 1). Age is non-unique scan (cost 50).
+	// Planner should pick Email, and Age becomes a post-filter.
+	p := newPlanner(emailUniqueIndex(), ageIndex())
+
+	preds := []planner.Predicate{
+		{Field: "Age", Op: planner.OpGt, Value: uint64(18)},
+		{Field: "Email", Op: planner.OpEq, Value: "alice@example.com"},
+	}
+
+	plan := p.Plan(preds)
+
+	if plan.Type != planner.PlanIndexLookup {
+		t.Fatalf("expected PlanIndexLookup, got %s", plan.Type)
+	}
+	if plan.IndexField != "Email" {
+		t.Errorf("expected Email index to be chosen, got %s", plan.IndexField)
+	}
+	if len(plan.PostFilters) != 1 {
+		t.Fatalf("expected 1 post-filter (Age), got %d", len(plan.PostFilters))
+	}
+	if plan.PostFilters[0].Field != "Age" {
+		t.Errorf("expected Age as post-filter, got %s", plan.PostFilters[0].Field)
+	}
+}
+
+func TestPlanSelectsLowestCost(t *testing.T) {
+	// Two indexes cover different predicates: unique Email (cost 1) and
+	// non-unique Score range scan (cost 50). The planner must pick Email.
+	p := newPlanner(emailUniqueIndex(), scoreIndex())
+
+	preds := []planner.Predicate{
+		{Field: "Score", Op: planner.OpGte, Value: float64(90.0)},
+		{Field: "Email", Op: planner.OpEq, Value: "alice@example.com"},
+	}
+
+	plan := p.Plan(preds)
+
+	if plan.IndexField != "Email" {
+		t.Errorf("planner should prefer unique Email index (cost 1) over Score scan (cost 50), got %s", plan.IndexField)
+	}
+	if plan.EstimatedCost != 1 {
+		t.Errorf("expected cost 1, got %f", plan.EstimatedCost)
+	}
+}
+
+func TestPlanNoIndexesDefined(t *testing.T) {
+	p := newPlanner() // empty catalog
+	pred := planner.Predicate{Field: "Email", Op: planner.OpEq, Value: "x@example.com"}
+
+	plan := p.Plan([]planner.Predicate{pred})
+
+	if plan.Type != planner.PlanFullScan {
+		t.Fatalf("expected PlanFullScan with empty catalog, got %s", plan.Type)
+	}
+}

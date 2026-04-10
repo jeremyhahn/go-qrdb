@@ -16,16 +16,16 @@
 package file
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync/atomic"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 )
 
 // Compile-time interface check.
-var _ storage.Engine = (*Engine)(nil)
+var _ storage.Storage = (*Engine)(nil)
 
 // Engine is a file-based storage engine that stores each key-value pair
 // as a separate file under a base directory. Keys containing "/" are
@@ -47,49 +47,50 @@ func New(dir string) (*Engine, error) {
 	return &Engine{dir: dir}, nil
 }
 
-func (e *Engine) keyPath(key string) string {
-	return filepath.Join(e.dir, filepath.FromSlash(key))
+func (e *Engine) keyPath(key []byte) string {
+	return filepath.Join(e.dir, filepath.FromSlash(string(key)))
 }
 
-// Get retrieves the value for the given key.
-func (e *Engine) Get(key string) ([]byte, error) {
+// Get retrieves the value for the given key. Returns nil, nil when the
+// key does not exist per the storage.Storage contract.
+func (e *Engine) Get(key []byte) ([]byte, error) {
 	if e.closed.Load() {
-		return nil, storage.ErrStorageClosed
+		return nil, &storage.ClosedError{}
 	}
-	if key == "" {
+	if len(key) == 0 {
 		return nil, storage.ErrEmptyKey
 	}
 	data, err := os.ReadFile(e.keyPath(key))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, storage.ErrKeyNotFound
+			return nil, nil
 		}
 		return nil, err
 	}
 	return data, nil
 }
 
-// Put stores a key-value pair as a file on disk.
-func (e *Engine) Put(key string, data []byte) error {
+// Set stores a key-value pair as a file on disk.
+func (e *Engine) Set(key, value []byte) error {
 	if e.closed.Load() {
-		return storage.ErrStorageClosed
+		return &storage.ClosedError{}
 	}
-	if key == "" {
+	if len(key) == 0 {
 		return storage.ErrEmptyKey
 	}
 	path := e.keyPath(key)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o600)
+	return os.WriteFile(path, value, 0o600)
 }
 
 // Delete removes a key from storage.
-func (e *Engine) Delete(key string) error {
+func (e *Engine) Delete(key []byte) error {
 	if e.closed.Load() {
-		return storage.ErrStorageClosed
+		return &storage.ClosedError{}
 	}
-	if key == "" {
+	if len(key) == 0 {
 		return storage.ErrEmptyKey
 	}
 	err := os.Remove(e.keyPath(key))
@@ -100,11 +101,11 @@ func (e *Engine) Delete(key string) error {
 }
 
 // List returns all keys matching the given prefix.
-func (e *Engine) List(prefix string) ([]string, error) {
+func (e *Engine) List(prefix []byte) ([][]byte, error) {
 	if e.closed.Load() {
-		return nil, storage.ErrStorageClosed
+		return nil, &storage.ClosedError{}
 	}
-	var keys []string
+	var keys [][]byte
 	err := filepath.Walk(e.dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -116,8 +117,8 @@ func (e *Engine) List(prefix string) ([]string, error) {
 		if relErr != nil {
 			return relErr
 		}
-		key := filepath.ToSlash(rel)
-		if strings.HasPrefix(key, prefix) {
+		key := []byte(filepath.ToSlash(rel))
+		if bytes.HasPrefix(key, prefix) {
 			keys = append(keys, key)
 		}
 		return nil
@@ -129,11 +130,11 @@ func (e *Engine) List(prefix string) ([]string, error) {
 }
 
 // Exists reports whether the key exists in storage.
-func (e *Engine) Exists(key string) (bool, error) {
+func (e *Engine) Exists(key []byte) (bool, error) {
 	if e.closed.Load() {
-		return false, storage.ErrStorageClosed
+		return false, &storage.ClosedError{}
 	}
-	if key == "" {
+	if len(key) == 0 {
 		return false, storage.ErrEmptyKey
 	}
 	_, err := os.Stat(e.keyPath(key))
@@ -146,7 +147,25 @@ func (e *Engine) Exists(key string) (bool, error) {
 	return true, nil
 }
 
-// Close marks the engine as closed. Subsequent operations return ErrStorageClosed.
+// Batch creates a new write batch for atomic multi-key operations.
+func (e *Engine) Batch() storage.Batch {
+	return newBatch(e)
+}
+
+// NewIterator creates an iterator for scanning key ranges.
+func (e *Engine) NewIterator(opts *storage.IteratorOptions) storage.Iterator {
+	return newIterator(e, opts)
+}
+
+// Snapshot creates a point-in-time snapshot for consistent reads.
+func (e *Engine) Snapshot() (storage.Snapshot, error) {
+	if e.closed.Load() {
+		return nil, &storage.ClosedError{}
+	}
+	return newSnapshot(e)
+}
+
+// Close marks the engine as closed. Subsequent operations return ClosedError.
 func (e *Engine) Close() error {
 	e.closed.Store(true)
 	return nil

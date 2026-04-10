@@ -1,5 +1,5 @@
 # Build stage: compile the TiKV benchmark binary
-FROM golang:1.26-bookworm AS builder
+FROM golang:1.26.1-bookworm AS builder
 
 WORKDIR /src
 

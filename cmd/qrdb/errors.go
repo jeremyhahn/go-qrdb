@@ -76,3 +76,180 @@ type InvalidArgError struct {
 func (e *InvalidArgError) Error() string {
 	return "qrdb: invalid argument " + e.Arg + ": " + e.Reason
 }
+
+// InvalidLeaseIDError is returned when a lease ID argument cannot
+// be parsed as an int64.
+type InvalidLeaseIDError struct {
+	Input string
+}
+
+// Error returns a human-readable description.
+func (e *InvalidLeaseIDError) Error() string {
+	return "qrdb: invalid lease ID: " + e.Input + ": must be a positive integer"
+}
+
+// InvalidRevisionError is returned when a revision argument cannot
+// be parsed as an int64.
+type InvalidRevisionError struct {
+	Input string
+}
+
+// Error returns a human-readable description.
+func (e *InvalidRevisionError) Error() string {
+	return "qrdb: invalid revision: " + e.Input + ": must be a positive integer"
+}
+
+// InvalidAggFuncError is returned when an aggregation function name
+// is not recognized.
+type InvalidAggFuncError struct {
+	Input string
+}
+
+// Error returns a human-readable description.
+func (e *InvalidAggFuncError) Error() string {
+	return "qrdb: invalid aggregation function: " + e.Input + ": must be one of avg, sum, min, max, count, percentile"
+}
+
+// FileReadError is returned when a file cannot be read.
+type FileReadError struct {
+	Path string
+	Err  error
+}
+
+// Error returns a human-readable description.
+func (e *FileReadError) Error() string {
+	return "qrdb: failed to read file " + e.Path + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *FileReadError) Unwrap() error {
+	return e.Err
+}
+
+// InvalidTimestampError is returned when a timestamp argument cannot
+// be parsed as an int64 nanosecond value.
+type InvalidTimestampError struct {
+	Input string
+}
+
+// Error returns a human-readable description.
+func (e *InvalidTimestampError) Error() string {
+	return "qrdb: invalid timestamp: " + e.Input + ": must be a nanosecond Unix timestamp"
+}
+
+// FileWriteError is returned when a file cannot be written.
+type FileWriteError struct {
+	Path string
+	Err  error
+}
+
+// Error returns a human-readable description.
+func (e *FileWriteError) Error() string {
+	return "qrdb: failed to write file " + e.Path + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *FileWriteError) Unwrap() error {
+	return e.Err
+}
+
+// DirectoryCreateError is returned when a directory cannot be created.
+type DirectoryCreateError struct {
+	Path string
+	Err  error
+}
+
+// Error returns a human-readable description.
+func (e *DirectoryCreateError) Error() string {
+	return "qrdb: failed to create directory " + e.Path + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *DirectoryCreateError) Unwrap() error {
+	return e.Err
+}
+
+// PKCS12DecodeError is returned when base64 decoding of a PKCS#12
+// archive fails.
+type PKCS12DecodeError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *PKCS12DecodeError) Error() string {
+	return "qrdb: failed to decode PKCS#12 data: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *PKCS12DecodeError) Unwrap() error {
+	return e.Err
+}
+
+// InvalidLogLevelError is returned when an unknown log level is specified.
+type InvalidLogLevelError struct {
+	Level string
+}
+
+// Error returns a human-readable description.
+func (e *InvalidLogLevelError) Error() string {
+	return "qrdb: unknown log level: " + e.Level
+}
+
+// LogFileError is returned when the log file cannot be opened.
+type LogFileError struct {
+	Path string
+	Err  error
+}
+
+// Error returns a human-readable description.
+func (e *LogFileError) Error() string {
+	return "qrdb: log file error: " + e.Path + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *LogFileError) Unwrap() error {
+	return e.Err
+}
+
+// TenantUnsealInputError is returned when neither --share nor --key is
+// provided to the tenant barrier-unseal command.
+type TenantUnsealInputError struct{}
+
+// Error returns a human-readable description.
+func (e *TenantUnsealInputError) Error() string {
+	return "qrdb: tenant barrier-unseal: provide --share or --key"
+}
+
+// Base64DecodeError is returned when a base64-encoded flag value cannot
+// be decoded.
+type Base64DecodeError struct {
+	Field string
+	Err   error
+}
+
+// Error returns a human-readable description.
+func (e *Base64DecodeError) Error() string {
+	return "qrdb: failed to base64 decode " + e.Field + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *Base64DecodeError) Unwrap() error {
+	return e.Err
+}
+
+// EmbeddedBarrierError is returned when the in-process embedded seal
+// barrier fails to initialize.
+type EmbeddedBarrierError struct {
+	Step string
+	Err  error
+}
+
+// Error returns a human-readable description.
+func (e *EmbeddedBarrierError) Error() string {
+	return "embedded: barrier " + e.Step + " failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *EmbeddedBarrierError) Unwrap() error {
+	return e.Err
+}

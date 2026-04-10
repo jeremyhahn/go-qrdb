@@ -28,7 +28,7 @@ func newRekeyBarrier(t *testing.T) (*Barrier, *MemoryBackend) {
 	b, err := NewBarrier(testLogger(), backend, BarrierConfig{
 		RootKeyPath: "test/root-key",
 		Shamir:      &ShamirConfig{Threshold: 3, TotalShares: 5},
-	}, NewSoftwareStrategy(), shamirStrat)
+	}, testSoftwareStrategy(t), shamirStrat)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +149,7 @@ func TestRekeySuccess(t *testing.T) {
 		}
 
 		// Verify sealed root key blob has updated Shamir parameters.
-		blob, err := backend.Get("test/root-key")
+		blob, err := backend.Get(ctx, "test/root-key")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -246,7 +246,7 @@ func TestRekeyErrors(t *testing.T) {
 
 		// Corrupt the root key blob so Rekey fails during JSON unmarshal
 		// of the sealed root key (after the new strategy has been created).
-		if err := backend.Put("test/root-key", []byte("corrupt-blob")); err != nil {
+		if err := backend.Put(ctx, "test/root-key", []byte("corrupt-blob")); err != nil {
 			t.Fatal(err)
 		}
 
@@ -268,7 +268,7 @@ func TestRekeyPreservesData(t *testing.T) {
 		}
 
 		// Store data.
-		if err := b.Put("secret-data", []byte("important")); err != nil {
+		if err := b.Put(ctx, "secret-data", []byte("important")); err != nil {
 			t.Fatal(err)
 		}
 
@@ -279,7 +279,7 @@ func TestRekeyPreservesData(t *testing.T) {
 		}
 
 		// Data should still be accessible.
-		val, err := b.Get("secret-data")
+		val, err := b.Get(ctx, "secret-data")
 		if err != nil {
 			t.Fatalf("Get after rekey: %v", err)
 		}
@@ -298,7 +298,7 @@ func TestRekeyPreservesData(t *testing.T) {
 		}
 
 		// Data should still be accessible after unseal with new shares.
-		val, err = b.Get("secret-data")
+		val, err = b.Get(ctx, "secret-data")
 		if err != nil {
 			t.Fatalf("Get after unseal with new shares: %v", err)
 		}

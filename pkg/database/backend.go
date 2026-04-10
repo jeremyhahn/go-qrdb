@@ -1,0 +1,73 @@
+// Copyright 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Package database defines the Backend interface, the storage abstraction that
+// services use to interact with a database regardless of whether it is backed
+// by local storage or Raft consensus.
+package database
+
+import "context"
+
+// KeyValue represents a key-value pair returned from range scans.
+type KeyValue struct {
+	Key   []byte
+	Value []byte
+}
+
+// BatchOp represents a single operation within a batch.
+type BatchOp struct {
+	Op    BatchOpType
+	Key   []byte
+	Value []byte // nil for deletes
+}
+
+// BatchOpType identifies the type of batch operation.
+type BatchOpType byte
+
+const (
+	// BatchOpPut indicates a put (upsert) operation.
+	BatchOpPut BatchOpType = 1
+
+	// BatchOpDelete indicates a delete operation.
+	BatchOpDelete BatchOpType = 2
+)
+
+// Backend is the storage abstraction that databases expose to services.
+// Standalone backends implement this directly against storage.Storage.
+// The raft backend implements this via service.Host (proposals/reads through
+// consensus).
+type Backend interface {
+	// Get retrieves a value by key. Returns nil, nil when the key does not
+	// exist.
+	Get(ctx context.Context, key []byte) ([]byte, error)
+
+	// Put stores a key-value pair.
+	Put(ctx context.Context, key, value []byte) error
+
+	// Delete removes a key.
+	Delete(ctx context.Context, key []byte) error
+
+	// List returns all keys matching the given prefix as strings.
+	List(ctx context.Context, prefix string) ([]string, error)
+
+	// Range scans keys in [start, end) with an optional limit.
+	// A zero limit returns all matching keys.
+	Range(ctx context.Context, start, end []byte, limit int) ([]KeyValue, error)
+
+	// Batch applies multiple operations atomically.
+	Batch(ctx context.Context, ops []BatchOp) error
+
+	// Close releases all resources held by the backend.
+	Close() error
+}

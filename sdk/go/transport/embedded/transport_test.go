@@ -22,7 +22,10 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
+	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -75,6 +78,95 @@ func (m *mockKVService) List(_ context.Context, prefix string) ([]string, error)
 	}
 	sort.Strings(keys)
 	return keys, nil
+}
+
+func (m *mockKVService) Scan(_ context.Context, prefix string) (map[string][]byte, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	result := make(map[string][]byte)
+	for k, v := range m.store {
+		if prefix == "" || strings.HasPrefix(k, prefix) {
+			result[k] = v
+		}
+	}
+	return result, nil
+}
+
+func (m *mockKVService) PutEntity(ctx context.Context, req *service.PutEntityRequest) (*service.PutEntityResponse, error) {
+	key := string(req.EntityType) + "/" + req.ID
+	if err := m.Put(ctx, key, req.Data); err != nil {
+		return nil, err
+	}
+	return &service.PutEntityResponse{Version: 1, Revision: 1}, nil
+}
+
+func (m *mockKVService) GetEntity(ctx context.Context, req *service.GetEntityRequest) (*service.GetEntityResponse, error) {
+	key := string(req.EntityType) + "/" + req.ID
+	data, err := m.Get(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	return &service.GetEntityResponse{Data: data, Version: 1, Revision: 1}, nil
+}
+
+func (m *mockKVService) DeleteEntity(ctx context.Context, req *service.DeleteEntityRequest) (*service.DeleteEntityResponse, error) {
+	key := string(req.EntityType) + "/" + req.ID
+	if err := m.Delete(ctx, key); err != nil {
+		return nil, err
+	}
+	return &service.DeleteEntityResponse{Deleted: true, Revision: 1}, nil
+}
+
+func (m *mockKVService) ListEntities(ctx context.Context, req *service.ListEntitiesRequest) (*service.ListEntitiesResponse, error) {
+	prefix := string(req.EntityType) + "/"
+	keys, err := m.List(ctx, prefix)
+	if err != nil {
+		return nil, err
+	}
+	stripped := make([]string, 0, len(keys))
+	for _, k := range keys {
+		stripped = append(stripped, strings.TrimPrefix(k, prefix))
+	}
+	return &service.ListEntitiesResponse{Keys: stripped, TotalCount: int64(len(stripped))}, nil
+}
+
+func (m *mockKVService) GetStale(ctx context.Context, key string) ([]byte, error) {
+	return m.Get(ctx, key)
+}
+
+func (m *mockKVService) ListStale(ctx context.Context, prefix string) ([]string, error) {
+	return m.List(ctx, prefix)
+}
+
+func (m *mockKVService) ScanStale(ctx context.Context, prefix string) (map[string][]byte, error) {
+	return m.Scan(ctx, prefix)
+}
+func (m *mockKVService) PutWithMode(ctx context.Context, key string, value []byte, _ writemode.Mode) error {
+	return m.Put(ctx, key, value)
+}
+
+func (m *mockKVService) DeleteWithMode(ctx context.Context, key string, _ writemode.Mode) error {
+	return m.Delete(ctx, key)
+}
+
+func (m *mockKVService) GetWithConsistency(ctx context.Context, key string, _ consistency.ReadOptions) ([]byte, error) {
+	return m.Get(ctx, key)
+}
+
+func (m *mockKVService) ListWithConsistency(ctx context.Context, prefix string, _ consistency.ReadOptions) ([]string, error) {
+	return m.List(ctx, prefix)
+}
+
+func (m *mockKVService) ScanWithConsistency(ctx context.Context, prefix string, _ consistency.ReadOptions) (map[string][]byte, error) {
+	return m.Scan(ctx, prefix)
+}
+
+func (m *mockKVService) ExistsWithConsistency(ctx context.Context, key string, _ consistency.ReadOptions) (bool, error) {
+	_, err := m.Get(ctx, key)
+	if err != nil {
+		return false, nil
+	}
+	return true, nil
 }
 
 // mockAdminService is a mock admin service for testing.
@@ -131,6 +223,44 @@ func (m *mockAdminService) RequestSnapshot(_ context.Context, _ uint64) error {
 func (m *mockAdminService) Drain(_ context.Context) error {
 	m.drainCalled = true
 	return nil
+}
+
+func (m *mockAdminService) Capabilities(_ context.Context) (*capabilities.Capabilities, error) {
+	return &capabilities.Capabilities{
+		KV:          true,
+		MVCC:        true,
+		Transaction: true,
+		Batch:       true,
+		Watch:       true,
+		Lease:       true,
+		Index:       true,
+	}, nil
+}
+
+func (m *mockAdminService) StartShard(_ context.Context, _ *service.StartShardRequest) error {
+	return nil
+}
+
+func (m *mockAdminService) StopShard(_ context.Context, _ uint64) error {
+	return nil
+}
+
+func (m *mockAdminService) GetShardState(_ context.Context, shardID uint64) (*service.ShardStateResponse, error) {
+	return &service.ShardStateResponse{
+		ShardID:           shardID,
+		ConfigChangeIndex: 1,
+		Term:              2,
+		LeaderID:          1,
+		HasLeader:         true,
+	}, nil
+}
+
+func (m *mockAdminService) GetTopology(_ context.Context) (*service.TopologyResponse, error) {
+	return &service.TopologyResponse{
+		NodeID:      "test-node",
+		RaftAddress: "127.0.0.1:63001",
+		ShardCount:  1,
+	}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -935,5 +1065,78 @@ func TestKV_PutGetDeleteRoundtrip(t *testing.T) {
 	}
 	if len(remaining) != 2 {
 		t.Errorf("expected 2 keys after delete, got %d", len(remaining))
+	}
+}
+
+func TestExists_KeyPresent(t *testing.T) {
+	tr, _ := New(newMockKVService(), &mockAdminService{})
+	ctx := context.Background()
+
+	if err := tr.Put(ctx, "exists-key", []byte("value")); err != nil {
+		t.Fatalf("Put failed: %v", err)
+	}
+
+	exists, err := tr.Exists(ctx, "exists-key")
+	if err != nil {
+		t.Fatalf("Exists returned unexpected error: %v", err)
+	}
+	if !exists {
+		t.Error("expected Exists to return true for present key")
+	}
+}
+
+func TestExists_KeyMissing(t *testing.T) {
+	tr, _ := New(newMockKVService(), &mockAdminService{})
+	ctx := context.Background()
+
+	exists, err := tr.Exists(ctx, "no-such-key")
+	if err != nil {
+		t.Fatalf("Exists returned unexpected error for missing key: %v", err)
+	}
+	if exists {
+		t.Error("expected Exists to return false for missing key")
+	}
+}
+
+func TestExists_ClosedTransport(t *testing.T) {
+	tr, _ := New(newMockKVService(), &mockAdminService{})
+	_ = tr.Close()
+
+	_, err := tr.Exists(context.Background(), "any-key")
+	if err == nil {
+		t.Fatal("expected error on closed transport")
+	}
+	var closed *transport.ClosedError
+	if !errors.As(err, &closed) {
+		t.Errorf("expected ClosedError, got %T: %v", err, err)
+	}
+}
+
+func TestExists_AfterDelete(t *testing.T) {
+	tr, _ := New(newMockKVService(), &mockAdminService{})
+	ctx := context.Background()
+
+	if err := tr.Put(ctx, "del-key", []byte("value")); err != nil {
+		t.Fatalf("Put failed: %v", err)
+	}
+
+	exists, err := tr.Exists(ctx, "del-key")
+	if err != nil {
+		t.Fatalf("Exists failed: %v", err)
+	}
+	if !exists {
+		t.Fatal("expected key to exist before delete")
+	}
+
+	if err := tr.Delete(ctx, "del-key"); err != nil {
+		t.Fatalf("Delete failed: %v", err)
+	}
+
+	exists, err = tr.Exists(ctx, "del-key")
+	if err != nil {
+		t.Fatalf("Exists returned unexpected error after delete: %v", err)
+	}
+	if exists {
+		t.Error("expected Exists to return false after delete")
 	}
 }

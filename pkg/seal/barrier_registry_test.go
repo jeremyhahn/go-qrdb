@@ -19,7 +19,7 @@ func newSystemBarrier(t *testing.T) *Barrier {
 	store := NewMemoryBackend()
 	b, err := NewBarrier(testLogger(), store, BarrierConfig{
 		RootKeyPath: "system/root-key",
-	}, NewSoftwareStrategy())
+	}, testSoftwareStrategy(t))
 	if err != nil {
 		t.Fatalf("NewBarrier (system): %v", err)
 	}
@@ -63,7 +63,7 @@ func TestBarrierRegistry_RegisterTenant_Success(t *testing.T) {
 	reg := newTestRegistry(t)
 	base := NewMemoryBackend()
 
-	tb, err := reg.RegisterTenant("tenant-1", base, BarrierConfig{}, NewSoftwareStrategy())
+	tb, err := reg.RegisterTenant("tenant-1", base, BarrierConfig{}, testSoftwareStrategy(t))
 	if err != nil {
 		t.Fatalf("RegisterTenant: %v", err)
 	}
@@ -76,12 +76,12 @@ func TestBarrierRegistry_RegisterTenant_Duplicate(t *testing.T) {
 	reg := newTestRegistry(t)
 	base := NewMemoryBackend()
 
-	_, err := reg.RegisterTenant("tenant-1", base, BarrierConfig{}, NewSoftwareStrategy())
+	_, err := reg.RegisterTenant("tenant-1", base, BarrierConfig{}, testSoftwareStrategy(t))
 	if err != nil {
 		t.Fatalf("first RegisterTenant: %v", err)
 	}
 
-	_, err = reg.RegisterTenant("tenant-1", base, BarrierConfig{}, NewSoftwareStrategy())
+	_, err = reg.RegisterTenant("tenant-1", base, BarrierConfig{}, testSoftwareStrategy(t))
 	if err != ErrTenantAlreadyExists {
 		t.Errorf("expected ErrTenantAlreadyExists, got %v", err)
 	}
@@ -91,7 +91,124 @@ func TestBarrierRegistry_RegisterTenant_EmptyID(t *testing.T) {
 	reg := newTestRegistry(t)
 	base := NewMemoryBackend()
 
-	_, err := reg.RegisterTenant("", base, BarrierConfig{}, NewSoftwareStrategy())
+	_, err := reg.RegisterTenant("", base, BarrierConfig{}, testSoftwareStrategy(t))
+	if err != ErrEmptyTenantID {
+		t.Errorf("expected ErrEmptyTenantID, got %v", err)
+	}
+}
+
+// ---------- RegisterTenantDefault tests ----------
+
+func TestBarrierRegistry_RegisterTenantDefault_Success(t *testing.T) {
+	reg := newTestRegistry(t)
+	ctx := context.Background()
+	creds := Credentials{Secret: "tenant-pw"}
+
+	tb, err := reg.RegisterTenantDefault("default-tenant")
+	if err != nil {
+		t.Fatalf("RegisterTenantDefault: %v", err)
+	}
+	if tb.TenantID() != "default-tenant" {
+		t.Errorf("expected default-tenant, got %s", tb.TenantID())
+	}
+
+	// Verify the tenant is accessible via GetTenant.
+	got, err := reg.GetTenant("default-tenant")
+	if err != nil {
+		t.Fatalf("GetTenant after RegisterTenantDefault: %v", err)
+	}
+	if got != tb {
+		t.Error("GetTenant returned a different TenantBarrier instance")
+	}
+
+	// Verify the tenant can initialize and unseal.
+	if err := tb.Initialize(ctx, creds); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if tb.IsSealed() {
+		t.Error("expected unsealed after Initialize")
+	}
+
+	if err := tb.Seal(); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	if !tb.IsSealed() {
+		t.Error("expected sealed after Seal")
+	}
+
+	if err := tb.Unseal(ctx, creds); err != nil {
+		t.Fatalf("Unseal: %v", err)
+	}
+	if tb.IsSealed() {
+		t.Error("expected unsealed after Unseal")
+	}
+}
+
+func TestBarrierRegistry_RegisterTenantDefault_EmptyID(t *testing.T) {
+	reg := newTestRegistry(t)
+
+	_, err := reg.RegisterTenantDefault("")
+	if err != ErrEmptyTenantID {
+		t.Errorf("expected ErrEmptyTenantID, got %v", err)
+	}
+}
+
+func TestBarrierRegistry_RegisterTenantDefault_Duplicate(t *testing.T) {
+	reg := newTestRegistry(t)
+
+	_, err := reg.RegisterTenantDefault("dup-tenant")
+	if err != nil {
+		t.Fatalf("first RegisterTenantDefault: %v", err)
+	}
+
+	_, err = reg.RegisterTenantDefault("dup-tenant")
+	if err != ErrTenantAlreadyExists {
+		t.Errorf("expected ErrTenantAlreadyExists, got %v", err)
+	}
+}
+
+// ---------- Tenant (alias) tests ----------
+
+func TestBarrierRegistry_Tenant_Success(t *testing.T) {
+	reg := newTestRegistry(t)
+	base := NewMemoryBackend()
+
+	registered, err := reg.RegisterTenant("tenant-1", base, BarrierConfig{}, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatalf("RegisterTenant: %v", err)
+	}
+
+	// Tenant() should return the same result as GetTenant().
+	fromTenant, err := reg.Tenant("tenant-1")
+	if err != nil {
+		t.Fatalf("Tenant: %v", err)
+	}
+	fromGet, err := reg.GetTenant("tenant-1")
+	if err != nil {
+		t.Fatalf("GetTenant: %v", err)
+	}
+
+	if fromTenant != registered {
+		t.Error("Tenant() returned a different instance than RegisterTenant")
+	}
+	if fromTenant != fromGet {
+		t.Error("Tenant() and GetTenant() returned different instances")
+	}
+}
+
+func TestBarrierRegistry_Tenant_NotFound(t *testing.T) {
+	reg := newTestRegistry(t)
+
+	_, err := reg.Tenant("nonexistent")
+	if err != ErrTenantNotFound {
+		t.Errorf("expected ErrTenantNotFound, got %v", err)
+	}
+}
+
+func TestBarrierRegistry_Tenant_EmptyID(t *testing.T) {
+	reg := newTestRegistry(t)
+
+	_, err := reg.Tenant("")
 	if err != ErrEmptyTenantID {
 		t.Errorf("expected ErrEmptyTenantID, got %v", err)
 	}
@@ -103,7 +220,7 @@ func TestBarrierRegistry_GetTenant_Success(t *testing.T) {
 	reg := newTestRegistry(t)
 	base := NewMemoryBackend()
 
-	_, err := reg.RegisterTenant("tenant-1", base, BarrierConfig{}, NewSoftwareStrategy())
+	_, err := reg.RegisterTenant("tenant-1", base, BarrierConfig{}, testSoftwareStrategy(t))
 	if err != nil {
 		t.Fatalf("RegisterTenant: %v", err)
 	}
@@ -141,7 +258,7 @@ func TestBarrierRegistry_RemoveTenant_Success(t *testing.T) {
 	reg := newTestRegistry(t)
 	base := NewMemoryBackend()
 
-	_, err := reg.RegisterTenant("tenant-1", base, BarrierConfig{}, NewSoftwareStrategy())
+	_, err := reg.RegisterTenant("tenant-1", base, BarrierConfig{}, testSoftwareStrategy(t))
 	if err != nil {
 		t.Fatalf("RegisterTenant: %v", err)
 	}
@@ -165,6 +282,37 @@ func TestBarrierRegistry_RemoveTenant_NotFound(t *testing.T) {
 	}
 }
 
+// ---------- UnregisterTenant (alias) tests ----------
+
+func TestBarrierRegistry_UnregisterTenant_Success(t *testing.T) {
+	reg := newTestRegistry(t)
+	base := NewMemoryBackend()
+
+	_, err := reg.RegisterTenant("tenant-1", base, BarrierConfig{}, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatalf("RegisterTenant: %v", err)
+	}
+
+	// UnregisterTenant() should behave identically to RemoveTenant().
+	if err := reg.UnregisterTenant("tenant-1"); err != nil {
+		t.Fatalf("UnregisterTenant: %v", err)
+	}
+
+	_, err = reg.GetTenant("tenant-1")
+	if err != ErrTenantNotFound {
+		t.Errorf("expected ErrTenantNotFound after unregister, got %v", err)
+	}
+}
+
+func TestBarrierRegistry_UnregisterTenant_NotFound(t *testing.T) {
+	reg := newTestRegistry(t)
+
+	err := reg.UnregisterTenant("ghost")
+	if err != ErrTenantNotFound {
+		t.Errorf("expected ErrTenantNotFound, got %v", err)
+	}
+}
+
 // ---------- InitializeTenant / UnsealTenant / SealTenant / TenantStatus ----------
 
 func TestBarrierRegistry_TenantLifecycle(t *testing.T) {
@@ -173,7 +321,7 @@ func TestBarrierRegistry_TenantLifecycle(t *testing.T) {
 	ctx := context.Background()
 	creds := Credentials{Secret: "tenant-pw"}
 
-	_, err := reg.RegisterTenant("tenant-1", base, BarrierConfig{}, NewSoftwareStrategy())
+	_, err := reg.RegisterTenant("tenant-1", base, BarrierConfig{}, testSoftwareStrategy(t))
 	if err != nil {
 		t.Fatalf("RegisterTenant: %v", err)
 	}
@@ -273,7 +421,7 @@ func TestBarrierRegistry_ListTenants_MultipleTenants(t *testing.T) {
 
 	for _, id := range []string{"alpha", "beta", "gamma"} {
 		base := NewMemoryBackend()
-		_, err := reg.RegisterTenant(id, base, BarrierConfig{}, NewSoftwareStrategy())
+		_, err := reg.RegisterTenant(id, base, BarrierConfig{}, testSoftwareStrategy(t))
 		if err != nil {
 			t.Fatalf("RegisterTenant(%s): %v", id, err)
 		}
@@ -311,7 +459,7 @@ func TestBarrierRegistry_SealAll(t *testing.T) {
 	// Register and initialize tenants.
 	for _, id := range []string{"t1", "t2"} {
 		base := NewMemoryBackend()
-		_, err := reg.RegisterTenant(id, base, BarrierConfig{}, NewSoftwareStrategy())
+		_, err := reg.RegisterTenant(id, base, BarrierConfig{}, testSoftwareStrategy(t))
 		if err != nil {
 			t.Fatalf("RegisterTenant(%s): %v", id, err)
 		}
@@ -356,7 +504,7 @@ func TestBarrierRegistry_Close(t *testing.T) {
 
 	// Register and initialize a tenant.
 	base := NewMemoryBackend()
-	_, err := reg.RegisterTenant("t1", base, BarrierConfig{}, NewSoftwareStrategy())
+	_, err := reg.RegisterTenant("t1", base, BarrierConfig{}, testSoftwareStrategy(t))
 	if err != nil {
 		t.Fatalf("RegisterTenant: %v", err)
 	}

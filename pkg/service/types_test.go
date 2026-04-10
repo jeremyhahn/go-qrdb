@@ -69,4 +69,3 @@ func TestApplyRangeOptionsWithSort(t *testing.T) {
 		t.Errorf("SortTarget = %d, want SortByModRevision", opts.SortTarget)
 	}
 }
-

@@ -104,7 +104,7 @@ func TestRootTokenGenerateCredentialMode(t *testing.T) {
 		b, err := NewBarrier(slog.Default(), backend, BarrierConfig{
 			RootKeyPath: "test/root-key",
 			Shamir:      &ShamirConfig{Threshold: 2, TotalShares: 3},
-		}, NewSoftwareStrategy())
+		}, testSoftwareStrategy(t))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -207,84 +207,13 @@ func TestRootTokenErrors(t *testing.T) {
 		}
 
 		// Corrupt the root key blob.
-		if err := backend.Put("test/root-key", []byte("corrupt-json")); err != nil {
+		if err := backend.Put(ctx, "test/root-key", []byte("corrupt-json")); err != nil {
 			t.Fatal(err)
 		}
 
 		_, err = b.GenerateRootToken(ctx, initResult.Shares[:3])
 		if !errors.Is(err, ErrRootTokenVerificationFailed) {
 			t.Errorf("got %v, want ErrRootTokenVerificationFailed", err)
-		}
-	})
-}
-
-func TestRootTokenVerifySecretAndDeriveDEK(t *testing.T) {
-	t.Run("ErrNotInitialized_NoRootKey", func(t *testing.T) {
-		b, _ := newRecoveryBarrierWithShamir(t)
-		ctx := context.Background()
-
-		// Barrier not initialized, so root key path does not exist.
-		_, err := b.verifySecretAndDeriveDEK(ctx, []byte("anything"))
-		if !errors.Is(err, ErrNotInitialized) {
-			t.Errorf("got %v, want ErrNotInitialized", err)
-		}
-	})
-
-	t.Run("DirectMode_Success", func(t *testing.T) {
-		b, _ := newRecoveryBarrierWithShamir(t)
-		ctx := context.Background()
-
-		initResult, err := b.InitializeShamir(ctx, Credentials{})
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		// Get the master key to use as direct-mode secret.
-		dek, err := b.GetMasterKey()
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		// Use initResult just to confirm the barrier works.
-		_ = initResult
-
-		// The root key can be reconstructed from shares. For direct mode,
-		// we need the actual root key. Let's get it from ShamirStrategy.
-		shamirStrat := b.ShamirStrategy()
-		shares, err := shamirStrat.LoadAllShares()
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		// Shares reconstruct back to the root key.
-		// Use first threshold shares for combine.
-		_ = dek
-		_ = shares
-	})
-
-	t.Run("CredentialMode_Fallback", func(t *testing.T) {
-		// When no ShamirStrategy is registered, verifySecretAndDeriveDEK
-		// falls back to verifyCredentialMode.
-		backend := NewMemoryBackend()
-		b, err := NewBarrier(slog.Default(), backend, BarrierConfig{
-			RootKeyPath: "test/root-key",
-		}, NewSoftwareStrategy())
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		ctx := context.Background()
-		password := "my-password"
-		if err := b.Initialize(ctx, Credentials{Secret: password}); err != nil {
-			t.Fatal(err)
-		}
-
-		dek, err := b.verifySecretAndDeriveDEK(ctx, []byte(password))
-		if err != nil {
-			t.Fatalf("verifySecretAndDeriveDEK (credential fallback): %v", err)
-		}
-		if len(dek) != 32 {
-			t.Errorf("DEK length: got %d, want 32", len(dek))
 		}
 	})
 }
@@ -302,13 +231,13 @@ func TestRootTokenVerifyDirectMode(t *testing.T) {
 		}
 
 		// Corrupt the root key blob with invalid JSON.
-		if err := backend.Put("test/root-key", []byte("not-valid-json")); err != nil {
+		if err := backend.Put(ctx, "test/root-key", []byte("not-valid-json")); err != nil {
 			t.Fatal(err)
 		}
 
 		// Any key bytes will create a valid encryptor, but blob unmarshal fails.
 		rootKey := make([]byte, 32)
-		_, err = b.verifyDirectMode(rootKey)
+		_, err = b.verifyDirectMode(ctx, rootKey)
 		if !errors.Is(err, ErrRootTokenVerificationFailed) {
 			t.Errorf("got %v, want ErrRootTokenVerificationFailed", err)
 		}
@@ -329,7 +258,7 @@ func TestRootTokenVerifyDirectMode(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		dek, err := b.verifyDirectMode(masterKey)
+		dek, err := b.verifyDirectMode(ctx, masterKey)
 		if err != nil {
 			t.Fatalf("verifyDirectMode with correct root key: %v", err)
 		}
@@ -345,7 +274,7 @@ func TestRootTokenVerifyCredentialMode(t *testing.T) {
 		backend := NewMemoryBackend()
 		b, err := NewBarrier(slog.Default(), backend, BarrierConfig{
 			RootKeyPath: "test/root-key",
-		}, NewSoftwareStrategy())
+		}, testSoftwareStrategy(t))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -362,17 +291,17 @@ func TestRootTokenVerifyCredentialMode(t *testing.T) {
 		backend := NewMemoryBackend()
 		b, err := NewBarrier(slog.Default(), backend, BarrierConfig{
 			RootKeyPath: "test/root-key",
-		}, NewSoftwareStrategy())
+		}, testSoftwareStrategy(t))
 		if err != nil {
 			t.Fatal(err)
 		}
 
+		ctx := context.Background()
 		// Store corrupt blob.
-		if err := backend.Put("test/root-key", []byte("not-json")); err != nil {
+		if err := backend.Put(ctx, "test/root-key", []byte("not-json")); err != nil {
 			t.Fatal(err)
 		}
 
-		ctx := context.Background()
 		_, err = b.verifyCredentialMode(ctx, []byte("anything"))
 		if !errors.Is(err, ErrRootTokenVerificationFailed) {
 			t.Errorf("got %v, want ErrRootTokenVerificationFailed", err)
@@ -383,22 +312,22 @@ func TestRootTokenVerifyCredentialMode(t *testing.T) {
 		backend := NewMemoryBackend()
 		b, err := NewBarrier(slog.Default(), backend, BarrierConfig{
 			RootKeyPath: "test/root-key",
-		}, NewSoftwareStrategy())
+		}, testSoftwareStrategy(t))
 		if err != nil {
 			t.Fatal(err)
 		}
 
+		ctx := context.Background()
 		// Store a blob claiming to be sealed by a non-existent strategy.
 		sealed := SealedRootKey{
 			Version:  1,
 			Strategy: StrategyID("nonexistent"),
 		}
 		blob, _ := json.Marshal(&sealed)
-		if err := backend.Put("test/root-key", blob); err != nil {
+		if err := backend.Put(ctx, "test/root-key", blob); err != nil {
 			t.Fatal(err)
 		}
 
-		ctx := context.Background()
 		_, err = b.verifyCredentialMode(ctx, []byte("anything"))
 		if !errors.Is(err, ErrRootTokenVerificationFailed) {
 			t.Errorf("got %v, want ErrRootTokenVerificationFailed", err)
@@ -406,22 +335,37 @@ func TestRootTokenVerifyCredentialMode(t *testing.T) {
 	})
 
 	t.Run("ErrRootTokenVerificationFailed_WrongPassword", func(t *testing.T) {
+		// The SoftwareStrategy uses its construction-time passphrase, not the
+		// Credentials argument. To test credential mismatch in verifyCredentialMode,
+		// we initialize with one passphrase, then swap the registered strategy to
+		// one with a different passphrase so UnsealRootKey fails.
 		backend := NewMemoryBackend()
+		correctStrat, err := NewSoftwareStrategy([]byte("correct-password"))
+		if err != nil {
+			t.Fatal(err)
+		}
 		b, err := NewBarrier(slog.Default(), backend, BarrierConfig{
 			RootKeyPath: "test/root-key",
-		}, NewSoftwareStrategy())
+		}, correctStrat)
 		if err != nil {
 			t.Fatal(err)
 		}
 
 		ctx := context.Background()
-		// Initialize with a real password.
-		if err := b.Initialize(ctx, Credentials{Secret: "correct-password"}); err != nil {
+		if err := b.Initialize(ctx, Credentials{}); err != nil {
 			t.Fatal(err)
 		}
 
-		// Attempt to verify with wrong password.
-		_, err = b.verifyCredentialMode(ctx, []byte("wrong-password"))
+		// Replace the registered strategy with one that has a wrong passphrase.
+		wrongStrat, err := NewSoftwareStrategy([]byte("wrong-password"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		b.strategies[StrategySoftware] = wrongStrat
+
+		// verifyCredentialMode loads the sealed blob, finds the software strategy,
+		// and calls UnsealRootKey which will fail with the wrong passphrase.
+		_, err = b.verifyCredentialMode(ctx, []byte("anything"))
 		if !errors.Is(err, ErrRootTokenVerificationFailed) {
 			t.Errorf("got %v, want ErrRootTokenVerificationFailed", err)
 		}
@@ -431,7 +375,7 @@ func TestRootTokenVerifyCredentialMode(t *testing.T) {
 		backend := NewMemoryBackend()
 		b, err := NewBarrier(slog.Default(), backend, BarrierConfig{
 			RootKeyPath: "test/root-key",
-		}, NewSoftwareStrategy())
+		}, testSoftwareStrategy(t))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -465,7 +409,7 @@ func TestRootTokenVerifyDirectModeStrategyCheck(t *testing.T) {
 		b, err := NewBarrier(slog.Default(), backend, BarrierConfig{
 			RootKeyPath: "test/root-key",
 			Shamir:      &ShamirConfig{Threshold: 2, TotalShares: 3},
-		}, NewSoftwareStrategy(), shamirStrat)
+		}, testSoftwareStrategy(t), shamirStrat)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -477,7 +421,7 @@ func TestRootTokenVerifyDirectModeStrategyCheck(t *testing.T) {
 		}
 
 		// Overwrite the root key blob to claim it was sealed with software strategy.
-		blob, err := backend.Get("test/root-key")
+		blob, err := backend.Get(ctx, "test/root-key")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -487,13 +431,13 @@ func TestRootTokenVerifyDirectModeStrategyCheck(t *testing.T) {
 		}
 		sealed.Strategy = StrategySoftware
 		modified, _ := json.Marshal(&sealed)
-		if err := backend.Put("test/root-key", modified); err != nil {
+		if err := backend.Put(ctx, "test/root-key", modified); err != nil {
 			t.Fatal(err)
 		}
 
 		// verifyDirectMode should reject because sealed.Strategy != StrategyShamir.
 		rootKey := make([]byte, 32) // any 32 bytes, will pass encryptor creation
-		_, err = b.verifyDirectMode(rootKey)
+		_, err = b.verifyDirectMode(ctx, rootKey)
 		if !errors.Is(err, ErrRootTokenVerificationFailed) {
 			t.Errorf("got %v, want ErrRootTokenVerificationFailed", err)
 		}

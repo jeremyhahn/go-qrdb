@@ -26,9 +26,9 @@ func newVersionCmd() *cobra.Command {
 		Use:   "version",
 		Short: "Print version information",
 		RunE: func(_ *cobra.Command, _ []string) error {
-			fmt.Fprintf(outputWriter, "QRDB CLI v%s\n", version)
-			fmt.Fprintf(outputWriter, "  commit: %s\n", gitCommit)
-			fmt.Fprintf(outputWriter, "  built:  %s\n", buildDate)
+			_, _ = fmt.Fprintf(outputWriter, "QRDB CLI v%s\n", version)
+			_, _ = fmt.Fprintf(outputWriter, "  commit: %s\n", gitCommit)
+			_, _ = fmt.Fprintf(outputWriter, "  built:  %s\n", buildDate)
 			return nil
 		},
 	}

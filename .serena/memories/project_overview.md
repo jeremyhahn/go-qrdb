@@ -6,11 +6,11 @@ go-qrdb (QuicRaft DB) is a high-performance distributed key-value store powered 
 ## Version
 - Current version: 0.1.0 (from VERSION file)
 - Module: `github.com/jeremyhahn/go-qrdb`
-- Go version: 1.26
+- Go version: 1.26.1
 - License: Apache License 2.0
 
 ## Tech Stack
-- **Language**: Go 1.26
+- **Language**: Go 1.26.1
 - **Consensus**: Multi-group Raft via go-quicraft (local dependency via replace directive at `../go-quicraft`)
 - **Transport**: QUIC (quic-go v0.59.0)
 - **Storage**: PebbleDB (cockroachdb/pebble/v2 v2.1.4)

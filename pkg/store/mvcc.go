@@ -19,72 +19,45 @@ import (
 	"encoding/binary"
 	"io"
 	"sync"
-	"time"
 
 	"github.com/cespare/xxhash/v2"
 	"github.com/cockroachdb/pebble/v2"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/index"
+	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/mvcc"
-	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
-	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
+	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 )
 
-// MVCC query types are defined in pkg/service/types.go:
-//   service.MVCCGetQuery, service.MVCCGetAtRevisionQuery,
-//   service.MVCCRangeQuery, service.MVCCRevisionQuery, service.MVCCRangeResult
-
-// ---------------------------------------------------------------------------
-// Update handler type
-// ---------------------------------------------------------------------------
-
-// watchNotification captures a single change event for delivery to the
-// watch hub after the PebbleDB batch is committed.
-type watchNotification struct {
-	eventType service.EventType
-	key       []byte
-	kv        *service.KeyValue // new state after the operation
-	prevKv    *service.KeyValue // previous state before the operation (may be nil)
-}
-
-// mvccUpdateHandler processes a single decoded command within a PebbleDB batch.
-// The handler receives the MVCC store, the lessor (may be nil), the batch,
-// and the command payload. It returns the result, any watch notifications,
-// and an error.
-type mvccUpdateHandler func(s *mvcc.Store, lr *lease.Lessor, batch *pebble.Batch, payload []byte) (sm.Result, []watchNotification, error)
-
 // ---------------------------------------------------------------------------
 // MVCCStateMachine
 // ---------------------------------------------------------------------------
 
-// MVCCStateMachine implements sm.DiskStateMachine backed by an MVCC-versioned
-// PebbleDB store. Every write creates a new revision while retaining historical
-// versions for point-in-time reads. Commands are dispatched via the extended
-// wire protocol defined in the protocol package.
+// MVCCStateMachine implements sm.DiskStateMachine as a thin Raft wrapper
+// around MVCCEngine. All handler dispatch, query evaluation, and subsystem
+// management is delegated to the engine. This state machine adds only the
+// Raft-specific concerns: opening/closing the PebbleDB database, persisting
+// the last applied log index, snapshot save/restore, and synchronization.
 //
-// Thread safety: Lookup may be called concurrently with Update. PebbleDB
-// handles its own internal synchronization for concurrent reads during writes.
+// Thread safety: Lookup may be called concurrently with Update. The engine
+// and PebbleDB handle their own internal synchronization for concurrent
+// reads during writes.
 type MVCCStateMachine struct {
-	mu     sync.RWMutex
-	db     *pebble.DB
-	store  *mvcc.Store
-	dir    string
-	opts   *pebble.Options
-	hub    *watch.Hub
-	lessor *lease.Lessor
+	mu      sync.RWMutex
+	db      *pebble.DB
+	storage storage.Storage
+	engine  *engine.MVCCEngine
+	dir     string
+	opts    *pebble.Options
 
-	// indexes holds registered secondary indexes by name.
-	indexes map[string]index.Index
-
-	// ts is the time-series storage engine. Nil if not configured.
-	ts *timeseries.Storage
-
-	// updateHandlers maps op codes to their update handlers.
-	updateHandlers map[byte]mvccUpdateHandler
+	// Pre-Open configuration stored until Open() is called.
+	hub              *watch.Hub
+	lessor           *lease.Lessor
+	enableTimeSeries bool
 }
 
 // NewMVCCStateMachine creates a new MVCCStateMachine with the given PebbleDB
@@ -94,25 +67,9 @@ func NewMVCCStateMachine(opts *pebble.Options) *MVCCStateMachine {
 	if opts == nil {
 		opts = &pebble.Options{}
 	}
-	s := &MVCCStateMachine{
-		opts:    opts,
-		indexes: make(map[string]index.Index),
+	return &MVCCStateMachine{
+		opts: opts,
 	}
-	s.updateHandlers = map[byte]mvccUpdateHandler{
-		protocol.OpMVCCPut:        handleMVCCPut,
-		protocol.OpMVCCDelete:     handleMVCCDelete,
-		protocol.OpMVCCCompact:    handleMVCCCompact,
-		protocol.OpTransaction:    handleTransaction,
-		protocol.OpBatch:          handleBatch,
-		protocol.OpLeaseGrant:     handleLeaseGrant,
-		protocol.OpLeaseRevoke:    handleLeaseRevoke,
-		protocol.OpLeaseKeepAlive: handleLeaseKeepAlive,
-		protocol.OpIndexCreate:    s.handleIndexCreate,
-		protocol.OpIndexDrop:      s.handleIndexDrop,
-		protocol.OpTSWrite:        s.handleTSWrite,
-		protocol.OpTSWriteBatch:   s.handleTSWriteBatch,
-	}
-	return s
 }
 
 // Store returns the underlying MVCC store. Returns nil if the state machine
@@ -120,7 +77,10 @@ func NewMVCCStateMachine(opts *pebble.Options) *MVCCStateMachine {
 func (s *MVCCStateMachine) Store() *mvcc.Store {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.store
+	if s.engine != nil {
+		return s.engine.Store()
+	}
+	return nil
 }
 
 // SetWatchHub attaches a watch hub to the state machine. When set,
@@ -146,6 +106,9 @@ func (s *MVCCStateMachine) SetLessor(lr *lease.Lessor) {
 func (s *MVCCStateMachine) Lessor() *lease.Lessor {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if s.engine != nil {
+		return s.engine.Lessor()
+	}
 	return s.lessor
 }
 
@@ -154,7 +117,7 @@ func (s *MVCCStateMachine) Lessor() *lease.Lessor {
 func (s *MVCCStateMachine) SetTimeSeries(ts *timeseries.Storage) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.ts = ts
+	s.enableTimeSeries = ts != nil
 }
 
 // TimeSeries returns the attached time-series storage. Returns nil if
@@ -162,11 +125,15 @@ func (s *MVCCStateMachine) SetTimeSeries(ts *timeseries.Storage) {
 func (s *MVCCStateMachine) TimeSeries() *timeseries.Storage {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.ts
+	if s.engine != nil {
+		return s.engine.TimeSeries()
+	}
+	return nil
 }
 
-// Open initializes the PebbleDB database and MVCC store, returning the last
-// applied Raft log index for crash recovery. Returns 0 for a fresh database.
+// Open initializes the PebbleDB database, creates the MVCCEngine with all
+// configured subsystems, and returns the last applied Raft log index for
+// crash recovery. Returns 0 for a fresh database.
 func (s *MVCCStateMachine) Open(_ context.Context, initialDir string, _ <-chan struct{}) (uint64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -178,19 +145,47 @@ func (s *MVCCStateMachine) Open(_ context.Context, initialDir string, _ <-chan s
 	s.db = db
 	s.dir = initialDir
 
-	store, err := mvcc.New(db)
+	// Wrap the pebble.DB in a storage.Storage interface for the MVCC store.
+	s.storage = pebbleStorage.NewFromDB(db, true) // syncWrites=true for durability
+
+	// Build engine options from pre-Open configuration.
+	var engineOpts []engine.MVCCOption
+	if s.hub != nil {
+		engineOpts = append(engineOpts, engine.WithMVCCWatchHub(s.hub))
+	}
+	if s.lessor != nil {
+		engineOpts = append(engineOpts, engine.WithMVCCLessor(s.lessor))
+	}
+	engineOpts = append(engineOpts, engine.WithMVCCPebbleDB(db))
+
+	// Create time-series storage if enabled.
+	if s.enableTimeSeries {
+		ts, tsErr := timeseries.New(db)
+		if tsErr != nil {
+			_ = db.Close()
+			s.db = nil
+			s.storage = nil
+			return 0, &OpenError{Dir: initialDir, Err: tsErr}
+		}
+		engineOpts = append(engineOpts, engine.WithMVCCTimeSeries(ts))
+	}
+
+	e, err := engine.NewMVCCEngine(s.storage, engineOpts...)
 	if err != nil {
 		_ = db.Close()
 		s.db = nil
+		s.storage = nil
 		return 0, &OpenError{Dir: initialDir, Err: err}
 	}
-	s.store = store
+	s.engine = e
 
 	lastApplied, err := s.readLastApplied()
 	if err != nil {
+		_ = e.Close(context.Background())
 		_ = db.Close()
 		s.db = nil
-		s.store = nil
+		s.storage = nil
+		s.engine = nil
 		return 0, &ReadError{Key: metaKeyLastApplied, Err: err}
 	}
 
@@ -199,15 +194,13 @@ func (s *MVCCStateMachine) Open(_ context.Context, initialDir string, _ <-chan s
 
 // readLastApplied reads the persisted last applied index from the metadata key.
 func (s *MVCCStateMachine) readLastApplied() (uint64, error) {
-	val, closer, err := s.db.Get([]byte(metaKeyLastApplied))
+	val, err := s.storage.Get([]byte(metaKeyLastApplied))
 	if err != nil {
-		if err == pebble.ErrNotFound {
-			return 0, nil
-		}
 		return 0, err
 	}
-	defer func() { _ = closer.Close() }()
-
+	if val == nil {
+		return 0, nil
+	}
 	if len(val) != 8 {
 		return 0, nil
 	}
@@ -215,10 +208,10 @@ func (s *MVCCStateMachine) readLastApplied() (uint64, error) {
 }
 
 // Update applies committed entries to the MVCC store using an atomic PebbleDB
-// batch. Each entry is decoded using the extended wire protocol and dispatched
-// to the appropriate handler. Write operations (Put, Delete) each allocate a
-// new MVCC revision. The last applied index is persisted in the same batch
-// for crash recovery.
+// batch. Each entry is decoded by the engine and dispatched to the appropriate
+// handler. The revision counter and last applied index are persisted in the
+// same batch for crash recovery. Watch notifications are delivered after the
+// batch is committed.
 func (s *MVCCStateMachine) Update(_ context.Context, entries []sm.Entry, results []sm.Result) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -227,74 +220,50 @@ func (s *MVCCStateMachine) Update(_ context.Context, entries []sm.Entry, results
 		return &NotOpenError{}
 	}
 
-	batch := s.db.NewBatch()
+	batch := s.storage.Batch()
 	defer func() { _ = batch.Close() }()
 
-	var lastIndex uint64
-	var notifications []watchNotification
-
-	for i, e := range entries {
-		cmd, err := protocol.DecodeCommand(e.Cmd)
-		if err != nil {
-			return err
-		}
-
-		handler, ok := s.updateHandlers[cmd.Op]
-		if !ok {
-			return &protocol.UnknownOpError{Op: cmd.Op}
-		}
-
-		result, notifs, err := handler(s.store, s.lessor, batch, cmd.Payload)
-		if err != nil {
-			return err
-		}
-		results[i] = result
-
-		if len(notifs) > 0 {
-			notifications = append(notifications, notifs...)
-		}
-
-		if e.Index > lastIndex {
-			lastIndex = e.Index
-		}
+	notifications, err := s.engine.UpdateEntries(batch, entries, results)
+	if err != nil {
+		return err
 	}
 
-	// Persist the last applied index in the same atomic batch.
-	if lastIndex > 0 {
-		var buf [8]byte
-		binary.LittleEndian.PutUint64(buf[:], lastIndex)
-		if err := batch.Set([]byte(metaKeyLastApplied), buf[:], pebble.Sync); err != nil {
+	// Persist the revision counter in the same batch.
+	rev := s.engine.Store().CurrentRevision()
+	if rev > 0 {
+		if err := batch.Set(mvcc.RevisionKey(), mvcc.EncodeRevision(rev)); err != nil {
 			return &WriteError{Err: err}
 		}
 	}
 
-	if err := batch.Commit(pebble.Sync); err != nil {
+	// Persist the last applied index in the same atomic batch.
+	var lastIndex uint64
+	for _, e := range entries {
+		if e.Index > lastIndex {
+			lastIndex = e.Index
+		}
+	}
+	if lastIndex > 0 {
+		var buf [8]byte
+		binary.LittleEndian.PutUint64(buf[:], lastIndex)
+		if err := batch.Set([]byte(metaKeyLastApplied), buf[:]); err != nil {
+			return &WriteError{Err: err}
+		}
+	}
+
+	if err := batch.Commit(); err != nil {
 		return &WriteError{Err: err}
 	}
 
 	// Deliver watch notifications after the batch is committed.
-	if s.hub != nil && len(notifications) > 0 {
-		for _, n := range notifications {
-			switch n.eventType {
-			case service.EventPut:
-				s.hub.NotifyPut(n.key, n.kv, n.prevKv)
-			case service.EventDelete:
-				s.hub.NotifyDelete(n.key, n.kv, n.prevKv)
-			}
-		}
-	}
+	s.engine.DeliverNotifications(notifications)
 
 	return nil
 }
 
-// Lookup reads state from the MVCC store. Supports the following query types:
-//   - service.MVCCGetQuery: returns *service.KeyValue for the latest value
-//   - service.MVCCGetAtRevisionQuery: returns *service.KeyValue at a historical revision
-//   - service.MVCCRangeQuery: returns *service.MVCCRangeResult with key-values and revision
-//   - service.MVCCRevisionQuery: returns int64 current revision
-//   - []byte: returns *service.KeyValue (convenience for simple key lookup)
-//   - string: returns *service.KeyValue (convenience for simple key lookup)
-func (s *MVCCStateMachine) Lookup(_ context.Context, query interface{}) (interface{}, error) {
+// Lookup reads state from the MVCC store by delegating to the engine.
+// See engine.MVCCEngine.Lookup for supported query types.
+func (s *MVCCStateMachine) Lookup(ctx context.Context, query interface{}) (interface{}, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -302,81 +271,7 @@ func (s *MVCCStateMachine) Lookup(_ context.Context, query interface{}) (interfa
 		return nil, &NotOpenError{}
 	}
 
-	switch q := query.(type) {
-	case service.MVCCGetQuery:
-		return s.store.Get(q.Key)
-
-	case service.MVCCGetAtRevisionQuery:
-		return s.store.GetAtRevision(q.Key, q.Revision)
-
-	case service.MVCCRangeQuery:
-		kvs, rev, err := s.store.Range(q.Start, q.End, q.Opts...)
-		if err != nil {
-			return nil, err
-		}
-		return &service.MVCCRangeResult{KeyValues: kvs, Revision: rev}, nil
-
-	case service.MVCCRevisionQuery:
-		return s.store.CurrentRevision(), nil
-
-	case service.LeaseTimeToLiveQuery:
-		if s.lessor == nil {
-			return nil, &InvalidQueryError{Reason: "lessor not configured"}
-		}
-		l := s.lessor.Lookup(q.ID)
-		if l == nil {
-			return nil, &ReadError{Key: "lease", Err: &InvalidQueryError{Reason: "lease not found"}}
-		}
-		return l, nil
-
-	case service.LeasesQuery:
-		if s.lessor == nil {
-			return nil, &InvalidQueryError{Reason: "lessor not configured"}
-		}
-		return s.lessor.Leases(), nil
-
-	case service.IndexQueryRequest:
-		idx, ok := s.indexes[q.IndexName]
-		if !ok {
-			return nil, &InvalidQueryError{Reason: "index not found: " + q.IndexName}
-		}
-		return idx.Get(q.Value)
-
-	case service.IndexScanRequest:
-		idx, ok := s.indexes[q.IndexName]
-		if !ok {
-			return nil, &InvalidQueryError{Reason: "index not found: " + q.IndexName}
-		}
-		return idx.Scan(q.Start, q.End)
-
-	case service.IndexListRequest:
-		names := make([]string, 0, len(s.indexes))
-		for name := range s.indexes {
-			names = append(names, name)
-		}
-		return names, nil
-
-	case service.TSQueryRequest:
-		if s.ts == nil {
-			return nil, &InvalidQueryError{Reason: "time-series storage not configured"}
-		}
-		return s.ts.Query(q.Metric, q.Start, q.End, q.Opts...)
-
-	case service.TSAggregateRequest:
-		if s.ts == nil {
-			return nil, &InvalidQueryError{Reason: "time-series storage not configured"}
-		}
-		return s.ts.Aggregate(q.Metric, q.Start, q.End, q.Func, q.Interval)
-
-	case []byte:
-		return s.store.Get(q)
-
-	case string:
-		return s.store.Get([]byte(q))
-
-	default:
-		return nil, &InvalidQueryError{Reason: "unsupported query type"}
-	}
+	return s.engine.Lookup(ctx, query)
 }
 
 // Sync flushes all pending writes to durable storage.
@@ -482,8 +377,8 @@ func (s *MVCCStateMachine) SaveSnapshot(_ context.Context, snapshotCtx interface
 }
 
 // RecoverFromSnapshot restores the database state from the reader, replacing
-// all existing data. After recovery, the MVCC store is re-initialized to
-// reflect the restored revision and compacted markers.
+// all existing data. After recovery, the engine is re-created to reflect the
+// restored revision and compacted markers.
 func (s *MVCCStateMachine) RecoverFromSnapshot(_ context.Context, r io.Reader, stopper <-chan struct{}) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -502,7 +397,7 @@ func (s *MVCCStateMachine) RecoverFromSnapshot(_ context.Context, r io.Reader, s
 		return &SnapshotError{Op: "recover", Err: err}
 	}
 
-	batch := s.db.NewBatch()
+	batch := s.storage.Batch()
 	defer func() { _ = batch.Close() }()
 
 	for i := uint32(0); i < count; i++ {
@@ -530,21 +425,38 @@ func (s *MVCCStateMachine) RecoverFromSnapshot(_ context.Context, r io.Reader, s
 			return &SnapshotError{Op: "recover", Err: err}
 		}
 
-		if err := batch.Set(key, val, pebble.Sync); err != nil {
+		if err := batch.Set(key, val); err != nil {
 			return &SnapshotError{Op: "recover", Err: err}
 		}
 	}
 
-	if err := batch.Commit(pebble.Sync); err != nil {
+	if err := batch.Commit(); err != nil {
 		return &SnapshotError{Op: "recover", Err: err}
 	}
 
-	// Re-initialize the MVCC store to load revision/compacted from restored data.
-	store, err := mvcc.New(s.db)
+	// Close the old engine before re-creating.
+	if s.engine != nil {
+		_ = s.engine.Close(context.Background())
+	}
+
+	// Re-create engine to load revision/compacted from restored data.
+	var engineOpts []engine.MVCCOption
+	if s.hub != nil {
+		engineOpts = append(engineOpts, engine.WithMVCCWatchHub(s.hub))
+	}
+	if s.lessor != nil {
+		engineOpts = append(engineOpts, engine.WithMVCCLessor(s.lessor))
+	}
+	engineOpts = append(engineOpts, engine.WithMVCCPebbleDB(s.db))
+	if s.engine != nil && s.engine.TimeSeries() != nil {
+		engineOpts = append(engineOpts, engine.WithMVCCTimeSeries(s.engine.TimeSeries()))
+	}
+
+	e, err := engine.NewMVCCEngine(s.storage, engineOpts...)
 	if err != nil {
 		return &SnapshotError{Op: "recover", Err: err}
 	}
-	s.store = store
+	s.engine = e
 
 	return nil
 }
@@ -578,8 +490,8 @@ func (s *MVCCStateMachine) clearAll() error {
 	return s.db.DeleteRange(firstKey, lastKey, pebble.Sync)
 }
 
-// Close releases all resources held by the PebbleDB store.
-func (s *MVCCStateMachine) Close(_ context.Context) error {
+// Close releases all resources held by the engine and PebbleDB store.
+func (s *MVCCStateMachine) Close(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -587,9 +499,14 @@ func (s *MVCCStateMachine) Close(_ context.Context) error {
 		return nil
 	}
 
+	if s.engine != nil {
+		_ = s.engine.Close(ctx)
+		s.engine = nil
+	}
+
 	err := s.db.Close()
 	s.db = nil
-	s.store = nil
+	s.storage = nil
 	return err
 }
 
@@ -605,21 +522,15 @@ func (s *MVCCStateMachine) GetHash() (uint64, error) {
 
 	h := xxhash.New()
 
-	iter, err := s.db.NewIter(nil)
-	if err != nil {
-		return 0, &ReadError{Key: "", Err: err}
-	}
+	iter := s.storage.NewIterator(nil)
 	defer func() { _ = iter.Close() }()
 
-	for iter.First(); iter.Valid(); iter.Next() {
+	for iter.SeekToFirst(); iter.Valid(); iter.Next() {
 		k := iter.Key()
 		if len(k) > 0 && k[0] == '\x00' {
 			continue
 		}
-		v, err := iter.ValueAndErr()
-		if err != nil {
-			return 0, &ReadError{Key: string(k), Err: err}
-		}
+		v := iter.Value()
 		_, _ = h.Write(k)
 		_, _ = h.Write(v)
 	}
@@ -628,429 +539,6 @@ func (s *MVCCStateMachine) GetHash() (uint64, error) {
 	}
 
 	return h.Sum64(), nil
-}
-
-// ---------------------------------------------------------------------------
-// Update handlers
-// ---------------------------------------------------------------------------
-
-// handleMVCCPut processes an MVCC Put command. Allocates a new revision and
-// writes the key-value pair with metadata into the batch.
-func handleMVCCPut(s *mvcc.Store, lr *lease.Lessor, batch *pebble.Batch, payload []byte) (sm.Result, []watchNotification, error) {
-	key, value, leaseID, err := protocol.DecodeMVCCPut(payload)
-	if err != nil {
-		return sm.Result{}, nil, err
-	}
-
-	// Capture previous value for watch notifications.
-	prevKv, _ := s.Get(key)
-
-	kv, err := s.PutInBatch(batch, key, value, leaseID, s.CurrentRevision()+1)
-	if err != nil {
-		return sm.Result{}, nil, err
-	}
-	s.SetRevision(kv.ModRevision)
-
-	// Track key-lease attachment.
-	if lr != nil && leaseID > 0 {
-		lr.AttachKey(leaseID, key)
-	}
-
-	notifs := []watchNotification{{
-		eventType: service.EventPut,
-		key:       key,
-		kv:        kv,
-		prevKv:    prevKv,
-	}}
-
-	return sm.Result{Value: uint64(kv.ModRevision)}, notifs, nil
-}
-
-// handleMVCCDelete processes an MVCC Delete command. Allocates a new revision
-// and writes a tombstone into the batch.
-func handleMVCCDelete(s *mvcc.Store, lr *lease.Lessor, batch *pebble.Batch, payload []byte) (sm.Result, []watchNotification, error) {
-	key, err := protocol.DecodeMVCCDelete(payload)
-	if err != nil {
-		return sm.Result{}, nil, err
-	}
-
-	rev := s.CurrentRevision() + 1
-	prevKv, err := s.DeleteInBatch(batch, key, rev)
-	if err != nil {
-		return sm.Result{}, nil, err
-	}
-	s.SetRevision(rev)
-
-	// Detach key from lease if it had one.
-	if lr != nil && prevKv != nil && prevKv.LeaseID > 0 {
-		lr.DetachKey(prevKv.LeaseID, key)
-	}
-
-	// Build delete notification with tombstone entry.
-	deleteKv := &service.KeyValue{
-		Key:         key,
-		ModRevision: rev,
-	}
-	notifs := []watchNotification{{
-		eventType: service.EventDelete,
-		key:       key,
-		kv:        deleteKv,
-		prevKv:    prevKv,
-	}}
-
-	return sm.Result{Value: uint64(rev)}, notifs, nil
-}
-
-// handleMVCCCompact processes an MVCC Compact command. Compaction runs
-// directly on the store (not in the batch) since it manages its own
-// iteration and deletion.
-func handleMVCCCompact(s *mvcc.Store, _ *lease.Lessor, _ *pebble.Batch, payload []byte) (sm.Result, []watchNotification, error) {
-	revision, err := protocol.DecodeMVCCCompact(payload)
-	if err != nil {
-		return sm.Result{}, nil, err
-	}
-
-	if err := s.Compact(revision); err != nil {
-		return sm.Result{}, nil, err
-	}
-
-	return sm.Result{Value: 1}, nil, nil
-}
-
-// handleTransaction processes a compare-and-swap transaction. Evaluates all
-// compares against current state, then atomically executes the success or
-// failure operation set at a single new revision.
-func handleTransaction(s *mvcc.Store, lr *lease.Lessor, batch *pebble.Batch, payload []byte) (sm.Result, []watchNotification, error) {
-	txn, err := protocol.DecodeTransaction(payload)
-	if err != nil {
-		return sm.Result{}, nil, err
-	}
-
-	// Evaluate all compares.
-	succeeded := true
-	for _, dc := range txn.Compares {
-		cmp := decodedCompareToService(dc)
-
-		// Look up the current value for the compare key.
-		kv, _ := s.Get(cmp.Key)
-		if !mvcc.Evaluate(&cmp, kv) {
-			succeeded = false
-			break
-		}
-	}
-
-	// Select the operation set to execute.
-	var ops []protocol.DecodedOp
-	if succeeded {
-		ops = txn.SuccessOps
-	} else {
-		ops = txn.FailureOps
-	}
-
-	// Execute all operations at a single revision.
-	rev := s.CurrentRevision() + 1
-	var notifs []watchNotification
-	for _, op := range ops {
-		opNotifs, err := executeDecodedOpWithNotify(s, lr, batch, op, rev)
-		if err != nil {
-			return sm.Result{}, nil, err
-		}
-		notifs = append(notifs, opNotifs...)
-	}
-	if len(ops) > 0 {
-		s.SetRevision(rev)
-	}
-
-	// Encode result: Value = revision, Data[0] = succeeded flag.
-	var data [1]byte
-	if succeeded {
-		data[0] = 1
-	}
-	return sm.Result{Value: uint64(rev), Data: data[:]}, notifs, nil
-}
-
-// handleBatch processes a batch of operations. All operations are executed
-// atomically at a single revision.
-func handleBatch(s *mvcc.Store, lr *lease.Lessor, batch *pebble.Batch, payload []byte) (sm.Result, []watchNotification, error) {
-	ops, err := protocol.DecodeBatch(payload)
-	if err != nil {
-		return sm.Result{}, nil, err
-	}
-
-	rev := s.CurrentRevision() + 1
-	var notifs []watchNotification
-	for _, op := range ops {
-		opNotifs, err := executeDecodedOpWithNotify(s, lr, batch, op, rev)
-		if err != nil {
-			return sm.Result{}, nil, err
-		}
-		notifs = append(notifs, opNotifs...)
-	}
-	if len(ops) > 0 {
-		s.SetRevision(rev)
-	}
-
-	return sm.Result{Value: uint64(rev)}, notifs, nil
-}
-
-// ---------------------------------------------------------------------------
-// Transaction/batch helpers
-// ---------------------------------------------------------------------------
-
-// decodedCompareToService converts a protocol.DecodedCompare to a service.Compare.
-func decodedCompareToService(dc protocol.DecodedCompare) service.Compare {
-	return service.Compare{
-		Key:            dc.Key,
-		Target:         service.CompareTarget(dc.Target),
-		Result:         service.CompareResult(dc.Result),
-		Version:        dc.Version,
-		CreateRevision: dc.CreateRevision,
-		ModRevision:    dc.ModRevision,
-		Value:          dc.Value,
-	}
-}
-
-// executeDecodedOpWithNotify executes a single decoded operation (Put or
-// Delete) within a batch at the given revision and returns watch
-// notifications. Used by both transaction and batch handlers.
-func executeDecodedOpWithNotify(s *mvcc.Store, lr *lease.Lessor, batch *pebble.Batch, op protocol.DecodedOp, rev int64) ([]watchNotification, error) {
-	switch op.Type {
-	case protocol.OpMVCCPut:
-		prevKv, _ := s.Get(op.Key)
-		kv, err := s.PutInBatch(batch, op.Key, op.Value, op.LeaseID, rev)
-		if err != nil {
-			return nil, err
-		}
-		if lr != nil && op.LeaseID > 0 {
-			lr.AttachKey(op.LeaseID, op.Key)
-		}
-		return []watchNotification{{
-			eventType: service.EventPut,
-			key:       op.Key,
-			kv:        kv,
-			prevKv:    prevKv,
-		}}, nil
-
-	case protocol.OpMVCCDelete:
-		prevKv, err := s.DeleteInBatch(batch, op.Key, rev)
-		if err != nil {
-			return nil, err
-		}
-		if lr != nil && prevKv != nil && prevKv.LeaseID > 0 {
-			lr.DetachKey(prevKv.LeaseID, op.Key)
-		}
-		deleteKv := &service.KeyValue{
-			Key:         op.Key,
-			ModRevision: rev,
-		}
-		return []watchNotification{{
-			eventType: service.EventDelete,
-			key:       op.Key,
-			kv:        deleteKv,
-			prevKv:    prevKv,
-		}}, nil
-
-	default:
-		return nil, &protocol.UnknownOpError{Op: op.Type}
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Lease handlers
-// ---------------------------------------------------------------------------
-
-// handleLeaseGrant creates a new lease with the specified TTL. The
-// lease ID is auto-generated by the lessor. Returns the lease ID in
-// sm.Result.Value.
-func handleLeaseGrant(_ *mvcc.Store, lr *lease.Lessor, _ *pebble.Batch, payload []byte) (sm.Result, []watchNotification, error) {
-	ttl, err := protocol.DecodeLeaseGrant(payload)
-	if err != nil {
-		return sm.Result{}, nil, err
-	}
-
-	if lr == nil {
-		return sm.Result{}, nil, &NotOpenError{}
-	}
-
-	info, err := lr.Grant(ttl)
-	if err != nil {
-		return sm.Result{}, nil, err
-	}
-
-	return sm.Result{Value: uint64(info.ID)}, nil, nil
-}
-
-// handleLeaseRevoke expires a lease and returns the attached keys for
-// deletion. The caller (Update method) is responsible for deleting the
-// keys through additional batch operations. Returns the number of
-// detached keys in sm.Result.Value.
-func handleLeaseRevoke(s *mvcc.Store, lr *lease.Lessor, batch *pebble.Batch, payload []byte) (sm.Result, []watchNotification, error) {
-	leaseID, err := protocol.DecodeLeaseRevoke(payload)
-	if err != nil {
-		return sm.Result{}, nil, err
-	}
-
-	if lr == nil {
-		return sm.Result{}, nil, &NotOpenError{}
-	}
-
-	keys, err := lr.Revoke(leaseID)
-	if err != nil {
-		return sm.Result{}, nil, err
-	}
-
-	// Delete all attached keys at a new revision.
-	var notifs []watchNotification
-	if len(keys) > 0 {
-		rev := s.CurrentRevision() + 1
-		for _, key := range keys {
-			prevKv, delErr := s.DeleteInBatch(batch, key, rev)
-			if delErr != nil {
-				continue // key may already be deleted
-			}
-			deleteKv := &service.KeyValue{
-				Key:         key,
-				ModRevision: rev,
-			}
-			notifs = append(notifs, watchNotification{
-				eventType: service.EventDelete,
-				key:       key,
-				kv:        deleteKv,
-				prevKv:    prevKv,
-			})
-		}
-		if len(notifs) > 0 {
-			s.SetRevision(rev)
-		}
-	}
-
-	return sm.Result{Value: uint64(len(keys))}, notifs, nil
-}
-
-// handleLeaseKeepAlive resets a lease's TTL. Returns the lease ID in
-// sm.Result.Value.
-func handleLeaseKeepAlive(_ *mvcc.Store, lr *lease.Lessor, _ *pebble.Batch, payload []byte) (sm.Result, []watchNotification, error) {
-	leaseID, err := protocol.DecodeLeaseKeepAlive(payload)
-	if err != nil {
-		return sm.Result{}, nil, err
-	}
-
-	if lr == nil {
-		return sm.Result{}, nil, &NotOpenError{}
-	}
-
-	_, err = lr.KeepAlive(leaseID)
-	if err != nil {
-		return sm.Result{}, nil, err
-	}
-
-	return sm.Result{Value: uint64(leaseID)}, nil, nil
-}
-
-// ---------------------------------------------------------------------------
-// Index handlers
-// ---------------------------------------------------------------------------
-
-// handleIndexCreate creates a new secondary index. The index is backed by
-// the same PebbleDB instance as the MVCC store. Returns 1 in
-// sm.Result.Value on success.
-func (s *MVCCStateMachine) handleIndexCreate(_ *mvcc.Store, _ *lease.Lessor, _ *pebble.Batch, payload []byte) (sm.Result, []watchNotification, error) {
-	name, _, unique, sparse, err := protocol.DecodeIndexCreate(payload)
-	if err != nil {
-		return sm.Result{}, nil, err
-	}
-	_ = sparse // reserved for future use
-
-	if _, exists := s.indexes[name]; exists {
-		return sm.Result{}, nil, &InvalidQueryError{Reason: "index already exists: " + name}
-	}
-
-	idx, err := index.NewPebbleIndex(s.db, name, unique)
-	if err != nil {
-		return sm.Result{}, nil, err
-	}
-	s.indexes[name] = idx
-
-	return sm.Result{Value: 1}, nil, nil
-}
-
-// handleIndexDrop removes a secondary index and clears all its entries.
-// Returns 1 in sm.Result.Value on success.
-func (s *MVCCStateMachine) handleIndexDrop(_ *mvcc.Store, _ *lease.Lessor, _ *pebble.Batch, payload []byte) (sm.Result, []watchNotification, error) {
-	name, err := protocol.DecodeIndexDrop(payload)
-	if err != nil {
-		return sm.Result{}, nil, err
-	}
-
-	idx, ok := s.indexes[name]
-	if !ok {
-		return sm.Result{}, nil, &InvalidQueryError{Reason: "index not found: " + name}
-	}
-
-	if err := idx.Clear(); err != nil {
-		return sm.Result{}, nil, err
-	}
-	if err := idx.Close(); err != nil {
-		return sm.Result{}, nil, err
-	}
-	delete(s.indexes, name)
-
-	return sm.Result{Value: 1}, nil, nil
-}
-
-// ---------------------------------------------------------------------------
-// Time-series handlers
-// ---------------------------------------------------------------------------
-
-// handleTSWrite stores a single time-series data point.
-func (s *MVCCStateMachine) handleTSWrite(_ *mvcc.Store, _ *lease.Lessor, _ *pebble.Batch, payload []byte) (sm.Result, []watchNotification, error) {
-	if s.ts == nil {
-		return sm.Result{}, nil, &NotOpenError{}
-	}
-
-	params, err := protocol.DecodeTSWrite(payload)
-	if err != nil {
-		return sm.Result{}, nil, err
-	}
-
-	if err := s.ts.Write(params.Metric, params.Value, tsTimestampFromNano(params.Timestamp), params.Tags); err != nil {
-		return sm.Result{}, nil, err
-	}
-
-	return sm.Result{Value: 1}, nil, nil
-}
-
-// handleTSWriteBatch stores multiple time-series data points atomically.
-func (s *MVCCStateMachine) handleTSWriteBatch(_ *mvcc.Store, _ *lease.Lessor, _ *pebble.Batch, payload []byte) (sm.Result, []watchNotification, error) {
-	if s.ts == nil {
-		return sm.Result{}, nil, &NotOpenError{}
-	}
-
-	params, err := protocol.DecodeTSWriteBatch(payload)
-	if err != nil {
-		return sm.Result{}, nil, err
-	}
-
-	points := make([]service.DataPoint, len(params))
-	for i, p := range params {
-		points[i] = service.DataPoint{
-			Metric:    p.Metric,
-			Value:     p.Value,
-			Timestamp: tsTimestampFromNano(p.Timestamp),
-			Tags:      p.Tags,
-		}
-	}
-
-	if err := s.ts.WriteBatch(points); err != nil {
-		return sm.Result{}, nil, err
-	}
-
-	return sm.Result{Value: uint64(len(points))}, nil, nil
-}
-
-// tsTimestampFromNano converts a nanosecond Unix timestamp to time.Time.
-func tsTimestampFromNano(ns int64) time.Time {
-	return time.Unix(0, ns)
 }
 
 // Compile-time assertions.

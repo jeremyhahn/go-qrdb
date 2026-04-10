@@ -69,6 +69,12 @@ type KVListResponse struct {
 	Keys []string `json:"keys"`
 }
 
+// KVScanResponse is the JSON payload for prefix scan responses
+// returning key-value pairs.
+type KVScanResponse struct {
+	Pairs map[string][]byte `json:"pairs"`
+}
+
 // ---------------------------------------------------------------------------
 // Membership and snapshot request types
 // ---------------------------------------------------------------------------
@@ -89,6 +95,99 @@ type RemoveMemberRequest struct {
 // SnapshotRequest is the JSON payload for requesting a shard snapshot.
 type SnapshotRequest struct {
 	ShardID uint64 `json:"shard_id"`
+}
+
+// CapabilitiesResponse describes the compile-time feature set of the QRDB binary.
+type CapabilitiesResponse struct {
+	KV          bool `json:"kv"`
+	MVCC        bool `json:"mvcc"`
+	Transaction bool `json:"transaction"`
+	Batch       bool `json:"batch"`
+	Watch       bool `json:"watch"`
+	Lease       bool `json:"lease"`
+	Index       bool `json:"index"`
+	TimeSeries  bool `json:"timeSeries"`
+	Vector      bool `json:"vector"`
+}
+
+// ---------------------------------------------------------------------------
+// Shard management request/response types
+// ---------------------------------------------------------------------------
+
+// StartShardRequest is the JSON payload for starting a new Raft shard.
+type StartShardRequest struct {
+	// ShardID is the unique shard identifier to start.
+	ShardID uint64 `json:"shard_id"`
+
+	// ReplicaID is this node's replica identifier within the shard.
+	ReplicaID uint64 `json:"replica_id"`
+
+	// Members maps replicaID to Raft network address for initial
+	// cluster members. Required for new clusters; empty for joins.
+	Members map[uint64]string `json:"members,omitempty"`
+
+	// Join indicates whether this node is joining an existing shard
+	// rather than forming a new one.
+	Join bool `json:"join"`
+}
+
+// StopShardRequest is the JSON payload for stopping a Raft shard.
+type StopShardRequest struct {
+	ShardID uint64 `json:"shard_id"`
+}
+
+// ShardStateResponse describes the Raft state of a single shard.
+type ShardStateResponse struct {
+	// ShardID is the shard's unique identifier.
+	ShardID uint64 `json:"shard_id"`
+
+	// ConfigChangeIndex is the current Raft configuration change index.
+	ConfigChangeIndex uint64 `json:"config_change_index"`
+
+	// Term is the current Raft term.
+	Term uint64 `json:"term"`
+
+	// LeaderID is the current leader's replica ID. 0 if unknown.
+	LeaderID uint64 `json:"leader_id"`
+
+	// HasLeader is true when a leader is known for this shard.
+	HasLeader bool `json:"has_leader"`
+}
+
+// TopologyResponse describes the full cluster topology as seen from
+// a single node.
+type TopologyResponse struct {
+	// NodeID is the unique host identifier.
+	NodeID string `json:"node_id"`
+
+	// RaftAddress is the host's Raft network address.
+	RaftAddress string `json:"raft_address"`
+
+	// ShardCount is the number of shards loaded on this host.
+	ShardCount int `json:"shard_count"`
+
+	// Shards contains per-shard topology information.
+	Shards []ShardInfo `json:"shards"`
+}
+
+// ShardInfo describes a single shard's topology including its
+// membership and leadership state.
+type ShardInfo struct {
+	// ShardID is the shard's unique identifier.
+	ShardID uint64 `json:"shard_id"`
+
+	// ReplicaID is this node's replica identifier within the shard.
+	ReplicaID uint64 `json:"replica_id"`
+
+	// IsLeader is true when this replica is the current leader.
+	IsLeader bool `json:"is_leader"`
+
+	// LeaderID is the current leader's replica ID. 0 if unknown.
+	LeaderID uint64 `json:"leader_id"`
+
+	// Nodes maps replicaID to Raft network address for all known
+	// cluster members.
+	Nodes map[uint64]string `json:"nodes"`
 }
 
 // OKResponse is a simple success response.

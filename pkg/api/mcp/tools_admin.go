@@ -56,6 +56,26 @@ func adminTools(adminSvc service.AdminServicer) []mcpserver.ServerTool {
 			Tool:    toolDrain(),
 			Handler: handleDrain(adminSvc),
 		},
+		{
+			Tool:    toolCapabilities(),
+			Handler: handleCapabilities(adminSvc),
+		},
+		{
+			Tool:    toolStartShard(),
+			Handler: handleStartShard(adminSvc),
+		},
+		{
+			Tool:    toolStopShard(),
+			Handler: handleStopShard(adminSvc),
+		},
+		{
+			Tool:    toolGetShardState(),
+			Handler: handleGetShardState(adminSvc),
+		},
+		{
+			Tool:    toolGetTopology(),
+			Handler: handleGetTopology(adminSvc),
+		},
 	}
 }
 
@@ -254,5 +274,185 @@ func handleDrain(adminSvc service.AdminServicer) mcpserver.ToolHandlerFunc {
 		}
 
 		return mcp.NewToolResultText("ok"), nil
+	}
+}
+
+// toolCapabilities defines the qrdb_capabilities tool schema.
+func toolCapabilities() mcp.Tool {
+	return mcp.NewTool("qrdb_capabilities",
+		mcp.WithDescription("Return the compile-time feature capabilities of the QRDB binary."),
+	)
+}
+
+// handleCapabilities returns a tool handler that delegates to adminSvc.Capabilities.
+func handleCapabilities(adminSvc service.AdminServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		caps, err := adminSvc.Capabilities(ctx)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_capabilities", Err: err}
+		}
+
+		data, jsonErr := json.Marshal(caps)
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_capabilities", Err: jsonErr}
+		}
+
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// toolStartShard defines the qrdb_start_shard tool schema.
+func toolStartShard() mcp.Tool {
+	return mcp.NewTool("qrdb_start_shard",
+		mcp.WithDescription("Initialize and start a Raft group for the given shard."),
+		mcp.WithNumber("shard_id",
+			mcp.Required(),
+			mcp.Description("The shard ID to start."),
+		),
+		mcp.WithNumber("replica_id",
+			mcp.Required(),
+			mcp.Description("This node's replica ID within the shard."),
+		),
+		mcp.WithString("members_json",
+			mcp.Description("JSON-encoded map of replicaID (string) to raft address for initial members."),
+		),
+		mcp.WithBoolean("join",
+			mcp.Description("True when joining an existing cluster."),
+		),
+	)
+}
+
+// handleStartShard returns a tool handler that delegates to adminSvc.StartShard.
+func handleStartShard(adminSvc service.AdminServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		shardID := mcp.ParseUInt64(req, "shard_id", 0)
+		replicaID := mcp.ParseUInt64(req, "replica_id", 0)
+		membersJSON := mcp.ParseString(req, "members_json", "")
+		join := mcp.ParseBoolean(req, "join", false)
+
+		if shardID == 0 {
+			return mcp.NewToolResultError("shard_id is required"), nil
+		}
+		if replicaID == 0 {
+			return mcp.NewToolResultError("replica_id is required"), nil
+		}
+
+		var members map[uint64]string
+		if membersJSON != "" {
+			// The JSON keys are stringified uint64 values.
+			var raw map[string]string
+			if jsonErr := json.Unmarshal([]byte(membersJSON), &raw); jsonErr != nil {
+				return mcp.NewToolResultError("invalid members_json: " + jsonErr.Error()), nil
+			}
+			members = make(map[uint64]string, len(raw))
+			for k, v := range raw {
+				var id uint64
+				if jsonErr := json.Unmarshal([]byte(k), &id); jsonErr != nil {
+					return mcp.NewToolResultError("invalid replica ID in members_json: " + k), nil
+				}
+				members[id] = v
+			}
+		}
+
+		svcReq := &service.StartShardRequest{
+			ShardID:   shardID,
+			ReplicaID: replicaID,
+			Members:   members,
+			Join:      join,
+		}
+
+		if err := adminSvc.StartShard(ctx, svcReq); err != nil {
+			return nil, &ToolError{Tool: "qrdb_start_shard", Err: err}
+		}
+
+		return mcp.NewToolResultText("ok"), nil
+	}
+}
+
+// toolStopShard defines the qrdb_stop_shard tool schema.
+func toolStopShard() mcp.Tool {
+	return mcp.NewTool("qrdb_stop_shard",
+		mcp.WithDescription("Stop the Raft group for the given shard."),
+		mcp.WithNumber("shard_id",
+			mcp.Required(),
+			mcp.Description("The shard ID to stop."),
+		),
+	)
+}
+
+// handleStopShard returns a tool handler that delegates to adminSvc.StopShard.
+func handleStopShard(adminSvc service.AdminServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		shardID := mcp.ParseUInt64(req, "shard_id", 0)
+
+		if shardID == 0 {
+			return mcp.NewToolResultError("shard_id is required"), nil
+		}
+
+		if err := adminSvc.StopShard(ctx, shardID); err != nil {
+			return nil, &ToolError{Tool: "qrdb_stop_shard", Err: err}
+		}
+
+		return mcp.NewToolResultText("ok"), nil
+	}
+}
+
+// toolGetShardState defines the qrdb_shard_state tool schema.
+func toolGetShardState() mcp.Tool {
+	return mcp.NewTool("qrdb_shard_state",
+		mcp.WithDescription("Return the Raft state for a shard including term, leader, and config change index."),
+		mcp.WithNumber("shard_id",
+			mcp.Required(),
+			mcp.Description("The shard ID to query."),
+		),
+	)
+}
+
+// handleGetShardState returns a tool handler that delegates to
+// adminSvc.GetShardState.
+func handleGetShardState(adminSvc service.AdminServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		shardID := mcp.ParseUInt64(req, "shard_id", 0)
+
+		if shardID == 0 {
+			return mcp.NewToolResultError("shard_id is required"), nil
+		}
+
+		state, err := adminSvc.GetShardState(ctx, shardID)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_shard_state", Err: err}
+		}
+
+		data, jsonErr := json.Marshal(state)
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_shard_state", Err: jsonErr}
+		}
+
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// toolGetTopology defines the qrdb_topology tool schema.
+func toolGetTopology() mcp.Tool {
+	return mcp.NewTool("qrdb_topology",
+		mcp.WithDescription("Return the full cluster topology including all loaded shards and their membership."),
+	)
+}
+
+// handleGetTopology returns a tool handler that delegates to
+// adminSvc.GetTopology.
+func handleGetTopology(adminSvc service.AdminServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		topo, err := adminSvc.GetTopology(ctx)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_topology", Err: err}
+		}
+
+		data, jsonErr := json.Marshal(topo)
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_topology", Err: jsonErr}
+		}
+
+		return mcp.NewToolResultText(string(data)), nil
 	}
 }

@@ -48,3 +48,17 @@ type ValidationError struct {
 func (e *ValidationError) Error() string {
 	return "config: validation failed for " + strconv.Quote(e.Field) + ": " + e.Reason
 }
+
+// DatabaseConfigError is returned when a database configuration entry is invalid.
+type DatabaseConfigError struct {
+	// Name is the database name that failed validation.
+	Name string
+
+	// Message describes why the database configuration is invalid.
+	Message string
+}
+
+// Error returns a human-readable description of the database config failure.
+func (e *DatabaseConfigError) Error() string {
+	return "config: invalid database " + strconv.Quote(e.Name) + ": " + e.Message
+}

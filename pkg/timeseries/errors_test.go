@@ -221,3 +221,70 @@ func TestReadError_Unwrap_MatchesAs(t *testing.T) {
 		t.Error("Unwrap: errors.As failed for ReadError")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// EmptyDirError
+// ---------------------------------------------------------------------------
+
+func TestEmptyDirError_Error_ContainsMessage(t *testing.T) {
+	e := &EmptyDirError{}
+	got := e.Error()
+	if !strings.Contains(got, "data directory is empty") {
+		t.Errorf("Error: expected 'data directory is empty', got %q", got)
+	}
+}
+
+func TestEmptyDirError_Error_HasPrefix(t *testing.T) {
+	e := &EmptyDirError{}
+	got := e.Error()
+	if !strings.HasPrefix(got, "timeseries:") {
+		t.Errorf("Error: expected 'timeseries:' prefix, got %q", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// OpenDirError
+// ---------------------------------------------------------------------------
+
+func TestOpenDirError_Error_ContainsDirAndInnerErr(t *testing.T) {
+	inner := errors.New("permission denied")
+	e := &OpenDirError{Dir: "/tmp/bad-dir", Err: inner}
+	got := e.Error()
+	if !strings.Contains(got, "/tmp/bad-dir") {
+		t.Errorf("Error: expected directory path, got %q", got)
+	}
+	if !strings.Contains(got, "permission denied") {
+		t.Errorf("Error: expected inner error, got %q", got)
+	}
+	if !strings.Contains(got, "failed to open directory") {
+		t.Errorf("Error: expected 'failed to open directory', got %q", got)
+	}
+}
+
+func TestOpenDirError_Error_HasPrefix(t *testing.T) {
+	e := &OpenDirError{Dir: "/data", Err: errors.New("err")}
+	got := e.Error()
+	if !strings.HasPrefix(got, "timeseries:") {
+		t.Errorf("Error: expected 'timeseries:' prefix, got %q", got)
+	}
+}
+
+func TestOpenDirError_Unwrap_ReturnsInnerError(t *testing.T) {
+	inner := io.ErrClosedPipe
+	e := &OpenDirError{Dir: "/data", Err: inner}
+	if !errors.Is(e, io.ErrClosedPipe) {
+		t.Error("Unwrap: errors.Is failed for inner error")
+	}
+}
+
+func TestOpenDirError_Unwrap_MatchesAs(t *testing.T) {
+	inner := errors.New("lock held")
+	e := &OpenDirError{Dir: "/data", Err: inner}
+	var target *OpenDirError
+	if !errors.As(e, &target) {
+		t.Error("Unwrap: errors.As failed for OpenDirError")
+	}
+	if target.Dir != "/data" {
+		t.Errorf("As: Dir = %q, want %q", target.Dir, "/data")
+	}
+}

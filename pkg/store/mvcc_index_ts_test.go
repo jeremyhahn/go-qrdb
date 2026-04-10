@@ -23,6 +23,7 @@ import (
 
 	"github.com/cockroachdb/pebble/v2"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
@@ -37,7 +38,7 @@ import (
 func indexCreateEntry(index uint64, name, fieldName string, unique, sparse bool) sm.Entry {
 	return sm.Entry{
 		Index: index,
-		Cmd:   protocol.EncodeIndexCreate(name, fieldName, unique, sparse),
+		Cmd:   protocol.EncodeIndexCreate(name, fieldName, unique, sparse, false),
 	}
 }
 
@@ -69,23 +70,16 @@ func tsWriteBatchEntry(index uint64, params []protocol.TSWriteParams) sm.Entry {
 // Storage attached, each backed by its own PebbleDB.
 func openTestMVCCWithTS(t *testing.T) *MVCCStateMachine {
 	t.Helper()
-	smach := newTestMVCCStateMachine(t)
-
-	tsDir := t.TempDir()
-	tsDB, err := pebble.Open(tsDir, nil)
+	dir := t.TempDir()
+	s := NewMVCCStateMachine(nil)
+	s.enableTimeSeries = true
+	ctx := context.Background()
+	_, err := s.Open(ctx, dir, make(chan struct{}))
 	if err != nil {
-		t.Fatalf("open ts pebble: %v", err)
+		t.Fatalf("open mvcc sm with ts: %v", err)
 	}
-	t.Cleanup(func() { _ = tsDB.Close() })
-
-	ts, err := timeseries.New(tsDB)
-	if err != nil {
-		t.Fatalf("create ts storage: %v", err)
-	}
-	t.Cleanup(func() { _ = ts.Close() })
-
-	smach.SetTimeSeries(ts)
-	return smach
+	t.Cleanup(func() { _ = s.Close(ctx) })
+	return s
 }
 
 // ---------------------------------------------------------------------------
@@ -177,9 +171,9 @@ func TestMVCCStateMachine_IndexCreate_Duplicate(t *testing.T) {
 		t.Fatal("expected error creating duplicate index, got nil")
 	}
 
-	var iqe *InvalidQueryError
+	var iqe *engine.InvalidQueryError
 	if !errors.As(err, &iqe) {
-		t.Fatalf("expected *InvalidQueryError, got %T: %v", err, err)
+		t.Fatalf("expected *engine.InvalidQueryError, got %T: %v", err, err)
 	}
 }
 
@@ -200,9 +194,9 @@ func TestMVCCStateMachine_IndexCreate_DuplicateErrorMessage(t *testing.T) {
 		t.Fatal("expected error, got nil")
 	}
 
-	var iqe *InvalidQueryError
+	var iqe *engine.InvalidQueryError
 	if !errors.As(err, &iqe) {
-		t.Fatalf("expected *InvalidQueryError, got %T: %v", err, err)
+		t.Fatalf("expected *engine.InvalidQueryError, got %T: %v", err, err)
 	}
 	if iqe.Reason != "index already exists: dup_idx2" {
 		t.Fatalf("expected reason containing index name, got %q", iqe.Reason)
@@ -298,9 +292,9 @@ func TestMVCCStateMachine_IndexDrop_NotFound(t *testing.T) {
 		t.Fatal("expected error dropping nonexistent index, got nil")
 	}
 
-	var iqe *InvalidQueryError
+	var iqe *engine.InvalidQueryError
 	if !errors.As(err, &iqe) {
-		t.Fatalf("expected *InvalidQueryError, got %T: %v", err, err)
+		t.Fatalf("expected *engine.InvalidQueryError, got %T: %v", err, err)
 	}
 }
 
@@ -315,9 +309,9 @@ func TestMVCCStateMachine_IndexDrop_NotFound_ErrorMessage(t *testing.T) {
 		t.Fatal("expected error, got nil")
 	}
 
-	var iqe *InvalidQueryError
+	var iqe *engine.InvalidQueryError
 	if !errors.As(err, &iqe) {
-		t.Fatalf("expected *InvalidQueryError, got %T: %v", err, err)
+		t.Fatalf("expected *engine.InvalidQueryError, got %T: %v", err, err)
 	}
 	if iqe.Reason != "index not found: ghost_idx" {
 		t.Fatalf("expected reason with index name, got %q", iqe.Reason)
@@ -332,27 +326,18 @@ func TestMVCCStateMachine_IndexQuery(t *testing.T) {
 	s := newTestMVCCStateMachine(t)
 	ctx := context.Background()
 
-	// Create an index.
+	// Create an index on "field1".
 	entries := []sm.Entry{indexCreateEntry(1, "query_idx", "field1", false, false)}
 	results := make([]sm.Result, len(entries))
 	if err := s.Update(ctx, entries, results); err != nil {
 		t.Fatalf("Update create: unexpected error: %v", err)
 	}
 
-	// Access the index directly to put entries.
-	s.mu.RLock()
-	idx := s.indexes["query_idx"]
-	s.mu.RUnlock()
-	if idx == nil {
-		t.Fatal("expected index query_idx to exist")
-	}
-
-	if err := idx.Put(100, []byte("alice")); err != nil {
-		t.Fatalf("index.Put: unexpected error: %v", err)
-	}
-	if err := idx.Put(200, []byte("alice")); err != nil {
-		t.Fatalf("index.Put: unexpected error: %v", err)
-	}
+	// Insert two documents with the same indexed field value via MVCC put.
+	putE1 := mvccPutEntry(2, []byte("doc:1"), []byte(`{"field1":"alice"}`), 0)
+	putE2 := mvccPutEntry(3, []byte("doc:2"), []byte(`{"field1":"alice"}`), 0)
+	applyMVCCEntries(t, s, []sm.Entry{putE1})
+	applyMVCCEntries(t, s, []sm.Entry{putE2})
 
 	// Query via Lookup.
 	result, err := s.Lookup(ctx, service.IndexQueryRequest{
@@ -362,12 +347,12 @@ func TestMVCCStateMachine_IndexQuery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Lookup IndexQueryRequest: unexpected error: %v", err)
 	}
-	ids, ok := result.([]uint64)
+	keys, ok := result.([][]byte)
 	if !ok {
-		t.Fatalf("expected []uint64, got %T", result)
+		t.Fatalf("expected [][]byte, got %T", result)
 	}
-	if len(ids) != 2 {
-		t.Fatalf("expected 2 entity IDs, got %d", len(ids))
+	if len(keys) != 2 {
+		t.Fatalf("expected 2 entity keys, got %d", len(keys))
 	}
 }
 
@@ -384,9 +369,9 @@ func TestMVCCStateMachine_IndexQuery_NotFound(t *testing.T) {
 		t.Fatal("expected error querying nonexistent index, got nil")
 	}
 
-	var iqe *InvalidQueryError
+	var iqe *engine.InvalidQueryError
 	if !errors.As(err, &iqe) {
-		t.Fatalf("expected *InvalidQueryError, got %T: %v", err, err)
+		t.Fatalf("expected *engine.InvalidQueryError, got %T: %v", err, err)
 	}
 }
 
@@ -405,20 +390,13 @@ func TestMVCCStateMachine_IndexScan(t *testing.T) {
 		t.Fatalf("Update create: unexpected error: %v", err)
 	}
 
-	// Put entries directly in the index.
-	s.mu.RLock()
-	idx := s.indexes["scan_idx"]
-	s.mu.RUnlock()
-
-	if err := idx.Put(1, []byte("apple")); err != nil {
-		t.Fatalf("index.Put: %v", err)
-	}
-	if err := idx.Put(2, []byte("banana")); err != nil {
-		t.Fatalf("index.Put: %v", err)
-	}
-	if err := idx.Put(3, []byte("cherry")); err != nil {
-		t.Fatalf("index.Put: %v", err)
-	}
+	// Insert documents with indexed field values via MVCC put.
+	putE1 := mvccPutEntry(2, []byte("fruit:1"), []byte(`{"field1":"apple"}`), 0)
+	putE2 := mvccPutEntry(3, []byte("fruit:2"), []byte(`{"field1":"banana"}`), 0)
+	putE3 := mvccPutEntry(4, []byte("fruit:3"), []byte(`{"field1":"cherry"}`), 0)
+	applyMVCCEntries(t, s, []sm.Entry{putE1})
+	applyMVCCEntries(t, s, []sm.Entry{putE2})
+	applyMVCCEntries(t, s, []sm.Entry{putE3})
 
 	// Scan via Lookup with range [apple, cherry).
 	result, err := s.Lookup(ctx, service.IndexScanRequest{
@@ -429,9 +407,9 @@ func TestMVCCStateMachine_IndexScan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Lookup IndexScanRequest: unexpected error: %v", err)
 	}
-	entries2, ok := result.(map[string][]uint64)
+	entries2, ok := result.(map[string][][]byte)
 	if !ok {
-		t.Fatalf("expected map[string][]uint64, got %T", result)
+		t.Fatalf("expected map[string][][]byte, got %T", result)
 	}
 	// Should contain apple and banana, but not cherry (half-open).
 	if len(entries2) < 1 {
@@ -455,9 +433,9 @@ func TestMVCCStateMachine_IndexScan_NotFoundIndex(t *testing.T) {
 		t.Fatal("expected error scanning nonexistent index, got nil")
 	}
 
-	var iqe *InvalidQueryError
+	var iqe *engine.InvalidQueryError
 	if !errors.As(err, &iqe) {
-		t.Fatalf("expected *InvalidQueryError, got %T: %v", err, err)
+		t.Fatalf("expected *engine.InvalidQueryError, got %T: %v", err, err)
 	}
 }
 
@@ -548,9 +526,9 @@ func TestMVCCStateMachine_TSWrite_NoStorage(t *testing.T) {
 		t.Fatal("expected error writing TS without storage, got nil")
 	}
 
-	var noe *NotOpenError
+	var noe *engine.NotOpenError
 	if !errors.As(err, &noe) {
-		t.Fatalf("expected *NotOpenError, got %T: %v", err, err)
+		t.Fatalf("expected *engine.NotOpenError, got %T: %v", err, err)
 	}
 }
 
@@ -568,9 +546,9 @@ func TestMVCCStateMachine_TSWrite_NoStorage_QueryFails(t *testing.T) {
 		t.Fatal("expected error querying TS without storage, got nil")
 	}
 
-	var iqe *InvalidQueryError
+	var iqe *engine.InvalidQueryError
 	if !errors.As(err, &iqe) {
-		t.Fatalf("expected *InvalidQueryError, got %T: %v", err, err)
+		t.Fatalf("expected *engine.InvalidQueryError, got %T: %v", err, err)
 	}
 }
 
@@ -627,9 +605,9 @@ func TestMVCCStateMachine_TSWriteBatch_NoStorage(t *testing.T) {
 		t.Fatal("expected error writing TS batch without storage, got nil")
 	}
 
-	var noe *NotOpenError
+	var noe *engine.NotOpenError
 	if !errors.As(err, &noe) {
-		t.Fatalf("expected *NotOpenError, got %T: %v", err, err)
+		t.Fatalf("expected *engine.NotOpenError, got %T: %v", err, err)
 	}
 }
 
@@ -751,9 +729,9 @@ func TestMVCCStateMachine_TSAggregate_NoStorage(t *testing.T) {
 		t.Fatal("expected error for TSAggregate without storage, got nil")
 	}
 
-	var iqe *InvalidQueryError
+	var iqe *engine.InvalidQueryError
 	if !errors.As(err, &iqe) {
-		t.Fatalf("expected *InvalidQueryError, got %T: %v", err, err)
+		t.Fatalf("expected *engine.InvalidQueryError, got %T: %v", err, err)
 	}
 }
 
@@ -773,9 +751,9 @@ func TestMVCCStateMachine_TSAggregate_NoStorage_ReasonMessage(t *testing.T) {
 		t.Fatal("expected error, got nil")
 	}
 
-	var iqe *InvalidQueryError
+	var iqe *engine.InvalidQueryError
 	if !errors.As(err, &iqe) {
-		t.Fatalf("expected *InvalidQueryError, got %T: %v", err, err)
+		t.Fatalf("expected *engine.InvalidQueryError, got %T: %v", err, err)
 	}
 	if iqe.Reason != "time-series storage not configured" {
 		t.Fatalf("expected 'time-series storage not configured', got %q", iqe.Reason)
@@ -787,7 +765,11 @@ func TestMVCCStateMachine_TSAggregate_NoStorage_ReasonMessage(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestMVCCStateMachine_SetTimeSeries(t *testing.T) {
+	// SetTimeSeries must be called before Open. The engine creates
+	// time-series storage during Open when enableTimeSeries is set.
 	s := NewMVCCStateMachine(nil)
+	s.enableTimeSeries = true
+
 	dir := t.TempDir()
 	_, err := s.Open(context.Background(), dir, nil)
 	if err != nil {
@@ -795,62 +777,34 @@ func TestMVCCStateMachine_SetTimeSeries(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = s.Close(context.Background()) })
 
+	got := s.TimeSeries()
+	if got == nil {
+		t.Fatal("expected TimeSeries() to return non-nil storage when enableTimeSeries is set")
+	}
+}
+
+func TestMVCCStateMachine_SetTimeSeries_Overwrite(t *testing.T) {
+	// SetTimeSeries(ts) sets enableTimeSeries = (ts != nil). Calling
+	// with a non-nil then nil should disable time-series.
+	s := NewMVCCStateMachine(nil)
+
+	// Enable via a non-nil argument.
 	tsDB, err := pebble.Open(t.TempDir(), nil)
 	if err != nil {
 		t.Fatalf("open ts pebble: %v", err)
 	}
 	t.Cleanup(func() { _ = tsDB.Close() })
-
 	ts, err := timeseries.New(tsDB)
 	if err != nil {
 		t.Fatalf("create ts storage: %v", err)
 	}
-
 	s.SetTimeSeries(ts)
 
-	got := s.TimeSeries()
-	if got != ts {
-		t.Fatal("expected TimeSeries() to return the same storage that was set")
-	}
-}
+	// Disable by passing nil.
+	s.SetTimeSeries(nil)
 
-func TestMVCCStateMachine_SetTimeSeries_Overwrite(t *testing.T) {
-	s := NewMVCCStateMachine(nil)
-	dir := t.TempDir()
-	_, err := s.Open(context.Background(), dir, nil)
-	if err != nil {
-		t.Fatalf("Open: unexpected error: %v", err)
-	}
-	t.Cleanup(func() { _ = s.Close(context.Background()) })
-
-	tsDB1, err := pebble.Open(t.TempDir(), nil)
-	if err != nil {
-		t.Fatalf("open ts pebble 1: %v", err)
-	}
-	t.Cleanup(func() { _ = tsDB1.Close() })
-
-	ts1, err := timeseries.New(tsDB1)
-	if err != nil {
-		t.Fatalf("create ts storage 1: %v", err)
-	}
-
-	tsDB2, err := pebble.Open(t.TempDir(), nil)
-	if err != nil {
-		t.Fatalf("open ts pebble 2: %v", err)
-	}
-	t.Cleanup(func() { _ = tsDB2.Close() })
-
-	ts2, err := timeseries.New(tsDB2)
-	if err != nil {
-		t.Fatalf("create ts storage 2: %v", err)
-	}
-
-	s.SetTimeSeries(ts1)
-	s.SetTimeSeries(ts2)
-
-	got := s.TimeSeries()
-	if got != ts2 {
-		t.Fatal("expected TimeSeries() to return the second storage after overwrite")
+	if s.enableTimeSeries {
+		t.Fatal("expected enableTimeSeries to be false after SetTimeSeries(nil)")
 	}
 }
 
@@ -926,5 +880,454 @@ func TestMVCCStateMachine_IndexList_EmptyAfterCleanup(t *testing.T) {
 	names := result.([]string)
 	if len(names) != 0 {
 		t.Fatalf("expected 0 names after create-drop, got %d", len(names))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TimeSeries handler test helpers: WritePoint, DeleteSeries, SetRetention
+// ---------------------------------------------------------------------------
+
+// tsWritePointEntry builds an sm.Entry with a TS WritePoint command.
+func tsWritePointEntry(index uint64, metric string, ts int64, value float64, tags map[string]string) sm.Entry {
+	return sm.Entry{
+		Index: index,
+		Cmd:   protocol.EncodeTSWritePoint(metric, ts, value, tags),
+	}
+}
+
+// tsDeleteSeriesEntry builds an sm.Entry with a TS DeleteSeries command.
+func tsDeleteSeriesEntry(index uint64, metric string, startNs, endNs int64, tags map[string]string) sm.Entry {
+	return sm.Entry{
+		Index: index,
+		Cmd:   protocol.EncodeTSDeleteSeries(metric, startNs, endNs, tags),
+	}
+}
+
+// tsSetRetentionEntry builds an sm.Entry with a TS SetRetention command.
+func tsSetRetentionEntry(index uint64, metric string, durationNs, resolutionNs int64, aggregation byte) sm.Entry {
+	return sm.Entry{
+		Index: index,
+		Cmd:   protocol.EncodeTSSetRetention(metric, durationNs, resolutionNs, aggregation),
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TimeSeries handler tests: WritePoint
+// ---------------------------------------------------------------------------
+
+func TestMVCCStateMachine_TSWritePoint(t *testing.T) {
+	s := openTestMVCCWithTS(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	entries := []sm.Entry{tsWritePointEntry(1, "net.rx", now.UnixNano(), 99.9, map[string]string{"iface": "eth0"})}
+	results := make([]sm.Result, len(entries))
+	if err := s.Update(ctx, entries, results); err != nil {
+		t.Fatalf("Update TSWritePoint: unexpected error: %v", err)
+	}
+	if results[0].Value != 1 {
+		t.Fatalf("expected result value 1, got %d", results[0].Value)
+	}
+
+	// Query back through Lookup to confirm persistence.
+	queryResult, err := s.Lookup(ctx, service.TSQueryRequest{
+		Metric: "net.rx",
+		Start:  now.Add(-time.Second),
+		End:    now.Add(time.Second),
+	})
+	if err != nil {
+		t.Fatalf("Lookup TSQueryRequest: unexpected error: %v", err)
+	}
+	points, ok := queryResult.([]service.DataPoint)
+	if !ok {
+		t.Fatalf("expected []service.DataPoint, got %T", queryResult)
+	}
+	if len(points) != 1 {
+		t.Fatalf("expected 1 data point, got %d", len(points))
+	}
+	if math.Abs(points[0].Value-99.9) > 0.001 {
+		t.Fatalf("expected value 99.9, got %f", points[0].Value)
+	}
+	if points[0].Tags["iface"] != "eth0" {
+		t.Fatalf("expected tag iface=eth0, got %s", points[0].Tags["iface"])
+	}
+}
+
+func TestMVCCStateMachine_TSWritePoint_NoStorage(t *testing.T) {
+	s := newTestMVCCStateMachine(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	entries := []sm.Entry{tsWritePointEntry(1, "net.rx", now.UnixNano(), 99.9, nil)}
+	results := make([]sm.Result, len(entries))
+	err := s.Update(ctx, entries, results)
+	if err == nil {
+		t.Fatal("expected error writing TSWritePoint without storage, got nil")
+	}
+
+	var noe *engine.NotOpenError
+	if !errors.As(err, &noe) {
+		t.Fatalf("expected *engine.NotOpenError, got %T: %v", err, err)
+	}
+}
+
+func TestMVCCStateMachine_TSWritePoint_InvalidPayload(t *testing.T) {
+	s := openTestMVCCWithTS(t)
+	ctx := context.Background()
+
+	// Build an entry with the correct opcode but garbage payload.
+	garbage := []byte{protocol.OpTSWritePoint, 0xFF}
+	entries := []sm.Entry{{Index: 1, Cmd: garbage}}
+	results := make([]sm.Result, len(entries))
+	err := s.Update(ctx, entries, results)
+	if err == nil {
+		t.Fatal("expected error from invalid TSWritePoint payload, got nil")
+	}
+
+	var ice *protocol.InvalidCommandError
+	if !errors.As(err, &ice) {
+		t.Fatalf("expected *protocol.InvalidCommandError, got %T: %v", err, err)
+	}
+}
+
+func TestMVCCStateMachine_TSWritePoint_StoreError(t *testing.T) {
+	s := openTestMVCCWithTS(t)
+	ctx := context.Background()
+
+	// WritePoint validates via DataPoint.Validate(). An empty metric triggers
+	// an InvalidMetricError from the underlying timeseries storage.
+	entries := []sm.Entry{tsWritePointEntry(1, "", time.Now().UTC().UnixNano(), 1.0, nil)}
+	results := make([]sm.Result, len(entries))
+	err := s.Update(ctx, entries, results)
+	if err == nil {
+		t.Fatal("expected error from empty metric, got nil")
+	}
+
+	var ime *timeseries.InvalidMetricError
+	if !errors.As(err, &ime) {
+		t.Fatalf("expected *timeseries.InvalidMetricError, got %T: %v", err, err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TimeSeries handler tests: DeleteSeries
+// ---------------------------------------------------------------------------
+
+func TestMVCCStateMachine_TSDeleteSeries(t *testing.T) {
+	s := openTestMVCCWithTS(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+
+	// Write two points for the same metric.
+	entries := []sm.Entry{
+		tsWriteEntry(1, "del.metric", now.UnixNano(), 10.0, map[string]string{"host": "a"}),
+		tsWriteEntry(2, "del.metric", now.Add(time.Second).UnixNano(), 20.0, map[string]string{"host": "a"}),
+	}
+	results := make([]sm.Result, len(entries))
+	if err := s.Update(ctx, entries, results); err != nil {
+		t.Fatalf("Update writes: unexpected error: %v", err)
+	}
+
+	// Verify both points exist.
+	queryResult, err := s.Lookup(ctx, service.TSQueryRequest{
+		Metric: "del.metric",
+		Start:  now.Add(-time.Second),
+		End:    now.Add(2 * time.Second),
+	})
+	if err != nil {
+		t.Fatalf("Lookup before delete: unexpected error: %v", err)
+	}
+	pointsBefore := queryResult.([]service.DataPoint)
+	if len(pointsBefore) != 2 {
+		t.Fatalf("expected 2 points before delete, got %d", len(pointsBefore))
+	}
+
+	// Delete the entire series (no time bounds, no tag filter).
+	delEntries := []sm.Entry{tsDeleteSeriesEntry(3, "del.metric", 0, 0, nil)}
+	delResults := make([]sm.Result, len(delEntries))
+	if err := s.Update(ctx, delEntries, delResults); err != nil {
+		t.Fatalf("Update TSDeleteSeries: unexpected error: %v", err)
+	}
+	if delResults[0].Value != 1 {
+		t.Fatalf("expected delete result value 1, got %d", delResults[0].Value)
+	}
+
+	// Verify data is gone.
+	queryResult2, err := s.Lookup(ctx, service.TSQueryRequest{
+		Metric: "del.metric",
+		Start:  now.Add(-time.Second),
+		End:    now.Add(2 * time.Second),
+	})
+	if err != nil {
+		t.Fatalf("Lookup after delete: unexpected error: %v", err)
+	}
+	pointsAfter := queryResult2.([]service.DataPoint)
+	if len(pointsAfter) != 0 {
+		t.Fatalf("expected 0 points after delete, got %d", len(pointsAfter))
+	}
+}
+
+func TestMVCCStateMachine_TSDeleteSeries_WithTimeRange(t *testing.T) {
+	s := openTestMVCCWithTS(t)
+	ctx := context.Background()
+
+	baseTime := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+
+	// Write three points at 0s, 1s, 2s.
+	entries := []sm.Entry{
+		tsWriteEntry(1, "partial.del", baseTime.UnixNano(), 1.0, nil),
+		tsWriteEntry(2, "partial.del", baseTime.Add(time.Second).UnixNano(), 2.0, nil),
+		tsWriteEntry(3, "partial.del", baseTime.Add(2*time.Second).UnixNano(), 3.0, nil),
+	}
+	results := make([]sm.Result, len(entries))
+	if err := s.Update(ctx, entries, results); err != nil {
+		t.Fatalf("Update writes: unexpected error: %v", err)
+	}
+
+	// Delete only points in [0s, 1s] range (startNs through endNs).
+	delEntries := []sm.Entry{tsDeleteSeriesEntry(4, "partial.del",
+		baseTime.UnixNano(),
+		baseTime.Add(time.Second).UnixNano(),
+		nil)}
+	delResults := make([]sm.Result, len(delEntries))
+	if err := s.Update(ctx, delEntries, delResults); err != nil {
+		t.Fatalf("Update TSDeleteSeries: unexpected error: %v", err)
+	}
+
+	// Only the point at 2s should remain.
+	queryResult, err := s.Lookup(ctx, service.TSQueryRequest{
+		Metric: "partial.del",
+		Start:  baseTime.Add(-time.Second),
+		End:    baseTime.Add(3 * time.Second),
+	})
+	if err != nil {
+		t.Fatalf("Lookup after partial delete: unexpected error: %v", err)
+	}
+	points := queryResult.([]service.DataPoint)
+	if len(points) != 1 {
+		t.Fatalf("expected 1 remaining point, got %d", len(points))
+	}
+	if math.Abs(points[0].Value-3.0) > 0.001 {
+		t.Fatalf("expected remaining value 3.0, got %f", points[0].Value)
+	}
+}
+
+func TestMVCCStateMachine_TSDeleteSeries_NoStorage(t *testing.T) {
+	s := newTestMVCCStateMachine(t)
+	ctx := context.Background()
+
+	entries := []sm.Entry{tsDeleteSeriesEntry(1, "some.metric", 0, 0, nil)}
+	results := make([]sm.Result, len(entries))
+	err := s.Update(ctx, entries, results)
+	if err == nil {
+		t.Fatal("expected error deleting TS series without storage, got nil")
+	}
+
+	var noe *engine.NotOpenError
+	if !errors.As(err, &noe) {
+		t.Fatalf("expected *engine.NotOpenError, got %T: %v", err, err)
+	}
+}
+
+func TestMVCCStateMachine_TSDeleteSeries_InvalidPayload(t *testing.T) {
+	s := openTestMVCCWithTS(t)
+	ctx := context.Background()
+
+	// Build an entry with the correct opcode but garbage payload.
+	garbage := []byte{protocol.OpTSDeleteSeries, 0xFF}
+	entries := []sm.Entry{{Index: 1, Cmd: garbage}}
+	results := make([]sm.Result, len(entries))
+	err := s.Update(ctx, entries, results)
+	if err == nil {
+		t.Fatal("expected error from invalid TSDeleteSeries payload, got nil")
+	}
+
+	var ice *protocol.InvalidCommandError
+	if !errors.As(err, &ice) {
+		t.Fatalf("expected *protocol.InvalidCommandError, got %T: %v", err, err)
+	}
+}
+
+func TestMVCCStateMachine_TSDeleteSeries_StoreError(t *testing.T) {
+	s := openTestMVCCWithTS(t)
+	ctx := context.Background()
+
+	// DeleteRequest.Validate() rejects an empty metric with InvalidMetricError.
+	entries := []sm.Entry{tsDeleteSeriesEntry(1, "", 0, 0, nil)}
+	results := make([]sm.Result, len(entries))
+	err := s.Update(ctx, entries, results)
+	if err == nil {
+		t.Fatal("expected error from empty metric delete, got nil")
+	}
+
+	var ime *timeseries.InvalidMetricError
+	if !errors.As(err, &ime) {
+		t.Fatalf("expected *timeseries.InvalidMetricError, got %T: %v", err, err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TimeSeries handler tests: SetRetention
+// ---------------------------------------------------------------------------
+
+func TestMVCCStateMachine_TSSetRetention(t *testing.T) {
+	s := openTestMVCCWithTS(t)
+	ctx := context.Background()
+
+	durationNs := int64(24 * time.Hour)
+	resolutionNs := int64(time.Minute)
+	aggregation := byte(timeseries.AggAvg)
+
+	entries := []sm.Entry{tsSetRetentionEntry(1, "ret.metric", durationNs, resolutionNs, aggregation)}
+	results := make([]sm.Result, len(entries))
+	if err := s.Update(ctx, entries, results); err != nil {
+		t.Fatalf("Update TSSetRetention: unexpected error: %v", err)
+	}
+	if results[0].Value != 1 {
+		t.Fatalf("expected result value 1, got %d", results[0].Value)
+	}
+
+	// Read back the retention policy directly from the TS storage.
+	policy, err := s.TimeSeries().GetRetentionPolicy("ret.metric")
+	if err != nil {
+		t.Fatalf("GetRetentionPolicy: unexpected error: %v", err)
+	}
+	if policy.Duration != time.Duration(durationNs) {
+		t.Fatalf("expected duration %v, got %v", time.Duration(durationNs), policy.Duration)
+	}
+	if policy.Resolution != time.Duration(resolutionNs) {
+		t.Fatalf("expected resolution %v, got %v", time.Duration(resolutionNs), policy.Resolution)
+	}
+	if policy.Aggregation != timeseries.AggAvg {
+		t.Fatalf("expected aggregation AggAvg (%d), got %d", timeseries.AggAvg, policy.Aggregation)
+	}
+}
+
+func TestMVCCStateMachine_TSSetRetention_OverwritesPolicy(t *testing.T) {
+	s := openTestMVCCWithTS(t)
+	ctx := context.Background()
+
+	// Set initial policy.
+	entries := []sm.Entry{tsSetRetentionEntry(1, "overwrite.metric",
+		int64(time.Hour), int64(time.Second), byte(timeseries.AggSum))}
+	results := make([]sm.Result, len(entries))
+	if err := s.Update(ctx, entries, results); err != nil {
+		t.Fatalf("Update first retention: unexpected error: %v", err)
+	}
+
+	// Overwrite with a different policy.
+	entries2 := []sm.Entry{tsSetRetentionEntry(2, "overwrite.metric",
+		int64(7*24*time.Hour), int64(5*time.Minute), byte(timeseries.AggCount))}
+	results2 := make([]sm.Result, len(entries2))
+	if err := s.Update(ctx, entries2, results2); err != nil {
+		t.Fatalf("Update second retention: unexpected error: %v", err)
+	}
+
+	policy, err := s.TimeSeries().GetRetentionPolicy("overwrite.metric")
+	if err != nil {
+		t.Fatalf("GetRetentionPolicy: unexpected error: %v", err)
+	}
+	if policy.Duration != 7*24*time.Hour {
+		t.Fatalf("expected duration 7d, got %v", policy.Duration)
+	}
+	if policy.Resolution != 5*time.Minute {
+		t.Fatalf("expected resolution 5m, got %v", policy.Resolution)
+	}
+	if policy.Aggregation != timeseries.AggCount {
+		t.Fatalf("expected aggregation AggCount (%d), got %d", timeseries.AggCount, policy.Aggregation)
+	}
+}
+
+func TestMVCCStateMachine_TSSetRetention_NoStorage(t *testing.T) {
+	s := newTestMVCCStateMachine(t)
+	ctx := context.Background()
+
+	entries := []sm.Entry{tsSetRetentionEntry(1, "any.metric",
+		int64(time.Hour), int64(time.Second), byte(timeseries.AggAvg))}
+	results := make([]sm.Result, len(entries))
+	err := s.Update(ctx, entries, results)
+	if err == nil {
+		t.Fatal("expected error setting retention without storage, got nil")
+	}
+
+	var noe *engine.NotOpenError
+	if !errors.As(err, &noe) {
+		t.Fatalf("expected *engine.NotOpenError, got %T: %v", err, err)
+	}
+}
+
+func TestMVCCStateMachine_TSSetRetention_InvalidPayload(t *testing.T) {
+	s := openTestMVCCWithTS(t)
+	ctx := context.Background()
+
+	// Build an entry with the correct opcode but garbage payload.
+	garbage := []byte{protocol.OpTSSetRetention, 0xFF}
+	entries := []sm.Entry{{Index: 1, Cmd: garbage}}
+	results := make([]sm.Result, len(entries))
+	err := s.Update(ctx, entries, results)
+	if err == nil {
+		t.Fatal("expected error from invalid TSSetRetention payload, got nil")
+	}
+
+	var ice *protocol.InvalidCommandError
+	if !errors.As(err, &ice) {
+		t.Fatalf("expected *protocol.InvalidCommandError, got %T: %v", err, err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Invalid payload tests for index and original TS handlers (decode error paths)
+// ---------------------------------------------------------------------------
+
+func TestMVCCStateMachine_IndexCreate_InvalidPayload(t *testing.T) {
+	s := newTestMVCCStateMachine(t)
+	ctx := context.Background()
+
+	garbage := []byte{protocol.OpIndexCreate, 0xFF}
+	entries := []sm.Entry{{Index: 1, Cmd: garbage}}
+	results := make([]sm.Result, len(entries))
+	err := s.Update(ctx, entries, results)
+	if err == nil {
+		t.Fatal("expected error from invalid IndexCreate payload, got nil")
+	}
+}
+
+func TestMVCCStateMachine_IndexDrop_InvalidPayload(t *testing.T) {
+	s := newTestMVCCStateMachine(t)
+	ctx := context.Background()
+
+	garbage := []byte{protocol.OpIndexDrop, 0xFF}
+	entries := []sm.Entry{{Index: 1, Cmd: garbage}}
+	results := make([]sm.Result, len(entries))
+	err := s.Update(ctx, entries, results)
+	if err == nil {
+		t.Fatal("expected error from invalid IndexDrop payload, got nil")
+	}
+}
+
+func TestMVCCStateMachine_TSWrite_InvalidPayload(t *testing.T) {
+	s := openTestMVCCWithTS(t)
+	ctx := context.Background()
+
+	garbage := []byte{protocol.OpTSWrite, 0xFF}
+	entries := []sm.Entry{{Index: 1, Cmd: garbage}}
+	results := make([]sm.Result, len(entries))
+	err := s.Update(ctx, entries, results)
+	if err == nil {
+		t.Fatal("expected error from invalid TSWrite payload, got nil")
+	}
+}
+
+func TestMVCCStateMachine_TSWriteBatch_InvalidPayload(t *testing.T) {
+	s := openTestMVCCWithTS(t)
+	ctx := context.Background()
+
+	garbage := []byte{protocol.OpTSWriteBatch, 0xFF}
+	entries := []sm.Entry{{Index: 1, Cmd: garbage}}
+	results := make([]sm.Result, len(entries))
+	err := s.Update(ctx, entries, results)
+	if err == nil {
+		t.Fatal("expected error from invalid TSWriteBatch payload, got nil")
 	}
 }

@@ -38,3 +38,86 @@ var (
 	// ErrInvalidPath is returned when a file storage path is invalid.
 	ErrInvalidPath = &StorageError{Code: "invalid_path", Message: "storage path is invalid"}
 )
+
+// OpError wraps an error with the storage operation that caused it.
+// Use OpError for errors from Storage interface methods (Get, Set, Delete).
+type OpError struct {
+	Op  string
+	Err error
+}
+
+// Error returns a human-readable description of the operation failure.
+func (e *OpError) Error() string {
+	return "storage " + e.Op + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error for use with errors.Is and errors.As.
+func (e *OpError) Unwrap() error {
+	return e.Err
+}
+
+// KeyNotFoundError is returned when a specific key does not exist in storage.
+// Unlike the ErrKeyNotFound sentinel, KeyNotFoundError carries the missing key.
+type KeyNotFoundError struct {
+	Key []byte
+}
+
+// Error returns a human-readable description of the missing key.
+func (e *KeyNotFoundError) Error() string {
+	return "key not found: " + string(e.Key)
+}
+
+// ClosedError is returned when operating on a closed storage instance.
+type ClosedError struct{}
+
+// Error returns a human-readable description indicating the storage is closed.
+func (e *ClosedError) Error() string {
+	return "storage is closed"
+}
+
+// BatchError wraps an error that occurred during a batch operation.
+type BatchError struct {
+	Op  string
+	Err error
+}
+
+// Error returns a human-readable description of the batch operation failure.
+func (e *BatchError) Error() string {
+	return "storage batch " + e.Op + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error for use with errors.Is and errors.As.
+func (e *BatchError) Unwrap() error {
+	return e.Err
+}
+
+// IteratorError wraps an error that occurred during iteration.
+type IteratorError struct {
+	Err error
+}
+
+// Error returns a human-readable description of the iterator failure.
+func (e *IteratorError) Error() string {
+	return "storage iterator: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error for use with errors.Is and errors.As.
+func (e *IteratorError) Unwrap() error {
+	return e.Err
+}
+
+// SnapshotError wraps an error that occurred during a snapshot operation.
+type SnapshotError struct {
+	Op  string
+	Err error
+}
+
+// Error returns a human-readable description of the snapshot failure.
+func (e *SnapshotError) Error() string {
+	return "storage snapshot " + e.Op + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error for use with errors.Is and errors.As.
+func (e *SnapshotError) Unwrap() error {
+	return e.Err
+}

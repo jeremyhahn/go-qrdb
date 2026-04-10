@@ -39,10 +39,9 @@ func TestNotFoundErrorWithLargeID(t *testing.T) {
 }
 
 func TestNotFoundErrorImplementsError(t *testing.T) {
-	var err error = &NotFoundError{ID: 1}
-	if err == nil {
-		t.Fatal("expected non-nil error")
-	}
+	err := &NotFoundError{ID: 1}
+	// Verify the concrete type satisfies the error interface.
+	var _ error = err
 }
 
 func TestExistsErrorMessage(t *testing.T) {
@@ -65,10 +64,9 @@ func TestExistsErrorWithDifferentID(t *testing.T) {
 }
 
 func TestExistsErrorImplementsError(t *testing.T) {
-	var err error = &ExistsError{ID: 1}
-	if err == nil {
-		t.Fatal("expected non-nil error")
-	}
+	err := &ExistsError{ID: 1}
+	// Verify the concrete type satisfies the error interface.
+	var _ error = err
 }
 
 func TestExpiredErrorMessage(t *testing.T) {
@@ -91,10 +89,9 @@ func TestExpiredErrorWithZeroID(t *testing.T) {
 }
 
 func TestExpiredErrorImplementsError(t *testing.T) {
-	var err error = &ExpiredError{ID: 1}
-	if err == nil {
-		t.Fatal("expected non-nil error")
-	}
+	err := &ExpiredError{ID: 1}
+	// Verify the concrete type satisfies the error interface.
+	var _ error = err
 }
 
 func TestInvalidTTLErrorMessage(t *testing.T) {
@@ -120,10 +117,9 @@ func TestInvalidTTLErrorWithZero(t *testing.T) {
 }
 
 func TestInvalidTTLErrorImplementsError(t *testing.T) {
-	var err error = &InvalidTTLError{TTL: -1}
-	if err == nil {
-		t.Fatal("expected non-nil error")
-	}
+	err := &InvalidTTLError{TTL: -1}
+	var _ error = err // compile-time interface assertion
+	_ = err
 }
 
 func TestLessorClosedErrorMessage(t *testing.T) {
@@ -135,8 +131,7 @@ func TestLessorClosedErrorMessage(t *testing.T) {
 }
 
 func TestLessorClosedErrorImplementsError(t *testing.T) {
-	var err error = &LessorClosedError{}
-	if err == nil {
-		t.Fatal("expected non-nil error")
-	}
+	err := &LessorClosedError{}
+	var _ error = err // compile-time interface assertion
+	_ = err
 }

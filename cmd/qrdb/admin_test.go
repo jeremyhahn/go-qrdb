@@ -24,7 +24,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
+	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
@@ -44,6 +47,7 @@ type fnAdminService struct {
 	removeMemberFn    func(ctx context.Context, shardID, replicaID uint64) error
 	requestSnapshotFn func(ctx context.Context, shardID uint64) error
 	drainFn           func(ctx context.Context) error
+	capabilitiesFn    func(ctx context.Context) (*capabilities.Capabilities, error)
 }
 
 func (m *fnAdminService) Health(ctx context.Context) (*service.HealthStatus, error) {
@@ -74,6 +78,37 @@ func (m *fnAdminService) Drain(ctx context.Context) error {
 	return m.drainFn(ctx)
 }
 
+func (m *fnAdminService) Capabilities(ctx context.Context) (*capabilities.Capabilities, error) {
+	if m.capabilitiesFn != nil {
+		return m.capabilitiesFn(ctx)
+	}
+	return &capabilities.Capabilities{
+		KV:          true,
+		MVCC:        true,
+		Transaction: true,
+		Batch:       true,
+		Watch:       true,
+		Lease:       true,
+		Index:       true,
+	}, nil
+}
+
+func (m *fnAdminService) StartShard(_ context.Context, _ *service.StartShardRequest) error {
+	return nil
+}
+
+func (m *fnAdminService) StopShard(_ context.Context, _ uint64) error {
+	return nil
+}
+
+func (m *fnAdminService) GetShardState(_ context.Context, _ uint64) (*service.ShardStateResponse, error) {
+	return &service.ShardStateResponse{}, nil
+}
+
+func (m *fnAdminService) GetTopology(_ context.Context) (*service.TopologyResponse, error) {
+	return &service.TopologyResponse{}, nil
+}
+
 // ---------------------------------------------------------------------------
 // Minimal KV service for admin tests (distinct from cmd_test.go)
 // ---------------------------------------------------------------------------
@@ -82,10 +117,57 @@ func (m *fnAdminService) Drain(ctx context.Context) error {
 // the embedded.New constructor requirement for admin-focused tests.
 type noopKVService struct{}
 
-func (m *noopKVService) Put(_ context.Context, _ string, _ []byte) error    { return nil }
-func (m *noopKVService) Get(_ context.Context, _ string) ([]byte, error)    { return nil, nil }
-func (m *noopKVService) Delete(_ context.Context, _ string) error           { return nil }
-func (m *noopKVService) List(_ context.Context, _ string) ([]string, error) { return nil, nil }
+func (m *noopKVService) Put(_ context.Context, _ string, _ []byte) error             { return nil }
+func (m *noopKVService) Get(_ context.Context, _ string) ([]byte, error)             { return nil, nil }
+func (m *noopKVService) Delete(_ context.Context, _ string) error                    { return nil }
+func (m *noopKVService) List(_ context.Context, _ string) ([]string, error)          { return nil, nil }
+func (m *noopKVService) Scan(_ context.Context, _ string) (map[string][]byte, error) { return nil, nil }
+
+func (m *noopKVService) GetStale(_ context.Context, _ string) ([]byte, error)    { return nil, nil }
+func (m *noopKVService) ListStale(_ context.Context, _ string) ([]string, error) { return nil, nil }
+func (m *noopKVService) ScanStale(_ context.Context, _ string) (map[string][]byte, error) {
+	return nil, nil
+}
+
+func (m *noopKVService) PutEntity(_ context.Context, _ *service.PutEntityRequest) (*service.PutEntityResponse, error) {
+	return nil, nil
+}
+
+func (m *noopKVService) GetEntity(_ context.Context, _ *service.GetEntityRequest) (*service.GetEntityResponse, error) {
+	return nil, nil
+}
+
+func (m *noopKVService) DeleteEntity(_ context.Context, _ *service.DeleteEntityRequest) (*service.DeleteEntityResponse, error) {
+	return nil, nil
+}
+
+func (m *noopKVService) ListEntities(_ context.Context, _ *service.ListEntitiesRequest) (*service.ListEntitiesResponse, error) {
+	return nil, nil
+}
+
+func (m *noopKVService) PutWithMode(_ context.Context, _ string, _ []byte, _ writemode.Mode) error {
+	return nil
+}
+
+func (m *noopKVService) DeleteWithMode(_ context.Context, _ string, _ writemode.Mode) error {
+	return nil
+}
+
+func (m *noopKVService) GetWithConsistency(_ context.Context, _ string, _ consistency.ReadOptions) ([]byte, error) {
+	return nil, nil
+}
+
+func (m *noopKVService) ListWithConsistency(_ context.Context, _ string, _ consistency.ReadOptions) ([]string, error) {
+	return nil, nil
+}
+
+func (m *noopKVService) ScanWithConsistency(_ context.Context, _ string, _ consistency.ReadOptions) (map[string][]byte, error) {
+	return nil, nil
+}
+
+func (m *noopKVService) ExistsWithConsistency(_ context.Context, _ string, _ consistency.ReadOptions) (bool, error) {
+	return false, nil
+}
 
 // ---------------------------------------------------------------------------
 // Test helper
@@ -107,7 +189,7 @@ func executeAdminCmd(t *testing.T, adminSvc service.AdminServicer, args ...strin
 	if err != nil {
 		t.Fatalf("sdk.NewClient() error: %v", err)
 	}
-	t.Cleanup(func() { sdkClient.Close() })
+	t.Cleanup(func() { _ = sdkClient.Close() })
 
 	// Save and restore package-level state.
 	oldClient := client

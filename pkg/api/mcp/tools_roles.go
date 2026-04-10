@@ -1,0 +1,420 @@
+// Copyright (c) 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package mcp
+
+import (
+	"context"
+	"encoding/json"
+
+	"github.com/mark3labs/mcp-go/mcp"
+	mcpserver "github.com/mark3labs/mcp-go/server"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
+)
+
+// roleTools returns the MCP tool registrations for role management and
+// permission operations. Role assignment and unassignment require both
+// the role and user services.
+func roleTools(roleSvc role.RoleServicer, userSvc user.UserServicer) []mcpserver.ServerTool {
+	return []mcpserver.ServerTool{
+		{
+			Tool:    toolRoleCreate(),
+			Handler: handleRoleCreate(roleSvc),
+		},
+		{
+			Tool:    toolRoleGet(),
+			Handler: handleRoleGet(roleSvc),
+		},
+		{
+			Tool:    toolRoleUpdate(),
+			Handler: handleRoleUpdate(roleSvc),
+		},
+		{
+			Tool:    toolRoleDelete(),
+			Handler: handleRoleDelete(roleSvc),
+		},
+		{
+			Tool:    toolRoleList(),
+			Handler: handleRoleList(roleSvc),
+		},
+		{
+			Tool:    toolRoleAssign(),
+			Handler: handleRoleAssign(userSvc),
+		},
+		{
+			Tool:    toolRoleUnassign(),
+			Handler: handleRoleUnassign(userSvc),
+		},
+		{
+			Tool:    toolPermissionsList(),
+			Handler: handlePermissionsList(),
+		},
+	}
+}
+
+// toolRoleCreate defines the qrdb_role_create tool schema.
+func toolRoleCreate() mcp.Tool {
+	return mcp.NewTool("qrdb_role_create",
+		mcp.WithDescription("Create a new RBAC role with the specified permissions."),
+		mcp.WithString("name",
+			mcp.Required(),
+			mcp.Description("The role name. Must be unique within the tenant."),
+		),
+		mcp.WithString("tenant_id",
+			mcp.Description("The tenant ID. Defaults to the system default tenant when empty."),
+		),
+		mcp.WithString("permissions",
+			mcp.Required(),
+			mcp.Description(`Comma-separated list of permissions in "resource:action" format (e.g., "kv:put,kv:get,admin:health").`),
+		),
+	)
+}
+
+// handleRoleCreate returns a tool handler that delegates to
+// roleSvc.CreateRole.
+func handleRoleCreate(roleSvc role.RoleServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		name := mcp.ParseString(req, "name", "")
+		if name == "" {
+			return mcp.NewToolResultError("name is required"), nil
+		}
+		permsStr := mcp.ParseString(req, "permissions", "")
+		if permsStr == "" {
+			return mcp.NewToolResultError("permissions is required"), nil
+		}
+
+		perms, err := parsePermissions(permsStr)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+
+		r, createErr := roleSvc.CreateRole(ctx, &role.CreateRoleRequest{
+			Name:        name,
+			TenantID:    mcp.ParseString(req, "tenant_id", ""),
+			Permissions: perms,
+		})
+		if createErr != nil {
+			return nil, &ToolError{Tool: "qrdb_role_create", Err: createErr}
+		}
+
+		data, jsonErr := json.Marshal(r)
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_role_create", Err: jsonErr}
+		}
+
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// toolRoleGet defines the qrdb_role_get tool schema.
+func toolRoleGet() mcp.Tool {
+	return mcp.NewTool("qrdb_role_get",
+		mcp.WithDescription("Retrieve a role by its globally unique ID."),
+		mcp.WithString("id",
+			mcp.Required(),
+			mcp.Description("The role UUID."),
+		),
+	)
+}
+
+// handleRoleGet returns a tool handler that delegates to roleSvc.GetRole.
+func handleRoleGet(roleSvc role.RoleServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		id := mcp.ParseString(req, "id", "")
+		if id == "" {
+			return mcp.NewToolResultError("id is required"), nil
+		}
+
+		r, err := roleSvc.GetRole(ctx, id)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_role_get", Err: err}
+		}
+
+		data, jsonErr := json.Marshal(r)
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_role_get", Err: jsonErr}
+		}
+
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// toolRoleUpdate defines the qrdb_role_update tool schema.
+func toolRoleUpdate() mcp.Tool {
+	return mcp.NewTool("qrdb_role_update",
+		mcp.WithDescription("Apply partial updates to an existing role."),
+		mcp.WithString("id",
+			mcp.Required(),
+			mcp.Description("The role UUID to update."),
+		),
+		mcp.WithString("name",
+			mcp.Description("The new role name. Left unchanged when empty."),
+		),
+		mcp.WithString("permissions",
+			mcp.Description(`Comma-separated list of permissions to replace the current set. Left unchanged when empty.`),
+		),
+	)
+}
+
+// handleRoleUpdate returns a tool handler that delegates to
+// roleSvc.UpdateRole.
+func handleRoleUpdate(roleSvc role.RoleServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		id := mcp.ParseString(req, "id", "")
+		if id == "" {
+			return mcp.NewToolResultError("id is required"), nil
+		}
+
+		updateReq := &role.UpdateRoleRequest{
+			ID:   id,
+			Name: mcp.ParseString(req, "name", ""),
+		}
+
+		permsStr := mcp.ParseString(req, "permissions", "")
+		if permsStr != "" {
+			perms, err := parsePermissions(permsStr)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			updateReq.Permissions = perms
+		}
+
+		r, err := roleSvc.UpdateRole(ctx, updateReq)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_role_update", Err: err}
+		}
+
+		data, jsonErr := json.Marshal(r)
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_role_update", Err: jsonErr}
+		}
+
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// toolRoleDelete defines the qrdb_role_delete tool schema.
+func toolRoleDelete() mcp.Tool {
+	return mcp.NewTool("qrdb_role_delete",
+		mcp.WithDescription("Delete a non-system role by ID."),
+		mcp.WithString("id",
+			mcp.Required(),
+			mcp.Description("The role UUID to delete."),
+		),
+	)
+}
+
+// handleRoleDelete returns a tool handler that delegates to
+// roleSvc.DeleteRole.
+func handleRoleDelete(roleSvc role.RoleServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		id := mcp.ParseString(req, "id", "")
+		if id == "" {
+			return mcp.NewToolResultError("id is required"), nil
+		}
+
+		if err := roleSvc.DeleteRole(ctx, id); err != nil {
+			return nil, &ToolError{Tool: "qrdb_role_delete", Err: err}
+		}
+
+		return mcp.NewToolResultText("ok"), nil
+	}
+}
+
+// toolRoleList defines the qrdb_role_list tool schema.
+func toolRoleList() mcp.Tool {
+	return mcp.NewTool("qrdb_role_list",
+		mcp.WithDescription("Return a paginated list of roles for a tenant."),
+		mcp.WithString("tenant_id",
+			mcp.Description("Filter roles by tenant ID. Defaults to the system default tenant when empty."),
+		),
+		mcp.WithNumber("page",
+			mcp.Description("1-based page number. Defaults to 1."),
+		),
+		mcp.WithNumber("page_size",
+			mcp.Description("Maximum number of roles per page. Defaults to the server default."),
+		),
+	)
+}
+
+// handleRoleList returns a tool handler that delegates to roleSvc.ListRoles.
+func handleRoleList(roleSvc role.RoleServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		resp, err := roleSvc.ListRoles(ctx, &role.ListRolesRequest{
+			TenantID: mcp.ParseString(req, "tenant_id", ""),
+			Page:     mcp.ParseInt(req, "page", 0),
+			PageSize: mcp.ParseInt(req, "page_size", 0),
+		})
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_role_list", Err: err}
+		}
+
+		data, jsonErr := json.Marshal(resp)
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_role_list", Err: jsonErr}
+		}
+
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// toolRoleAssign defines the qrdb_role_assign tool schema.
+func toolRoleAssign() mcp.Tool {
+	return mcp.NewTool("qrdb_role_assign",
+		mcp.WithDescription("Assign a role to a user. The role ID is appended to the user's role set if not already present."),
+		mcp.WithString("user_id",
+			mcp.Required(),
+			mcp.Description("The user UUID to assign the role to."),
+		),
+		mcp.WithString("role_id",
+			mcp.Required(),
+			mcp.Description("The role UUID to assign."),
+		),
+	)
+}
+
+// handleRoleAssign returns a tool handler that fetches the user, appends the
+// role ID if not already present, and updates the user.
+func handleRoleAssign(userSvc user.UserServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		userID := mcp.ParseString(req, "user_id", "")
+		if userID == "" {
+			return mcp.NewToolResultError("user_id is required"), nil
+		}
+		roleID := mcp.ParseString(req, "role_id", "")
+		if roleID == "" {
+			return mcp.NewToolResultError("role_id is required"), nil
+		}
+
+		u, err := userSvc.GetUser(ctx, userID)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_role_assign", Err: err}
+		}
+
+		// Check if role is already assigned.
+		for _, rid := range u.RoleIDs {
+			if rid == roleID {
+				return mcp.NewToolResultText("ok"), nil
+			}
+		}
+
+		roleIDs := make([]string, len(u.RoleIDs), len(u.RoleIDs)+1)
+		copy(roleIDs, u.RoleIDs)
+		roleIDs = append(roleIDs, roleID)
+
+		if _, updateErr := userSvc.UpdateUser(ctx, &user.UpdateUserRequest{
+			ID:      userID,
+			RoleIDs: roleIDs,
+		}); updateErr != nil {
+			return nil, &ToolError{Tool: "qrdb_role_assign", Err: updateErr}
+		}
+
+		return mcp.NewToolResultText("ok"), nil
+	}
+}
+
+// toolRoleUnassign defines the qrdb_role_unassign tool schema.
+func toolRoleUnassign() mcp.Tool {
+	return mcp.NewTool("qrdb_role_unassign",
+		mcp.WithDescription("Remove a role from a user."),
+		mcp.WithString("user_id",
+			mcp.Required(),
+			mcp.Description("The user UUID to remove the role from."),
+		),
+		mcp.WithString("role_id",
+			mcp.Required(),
+			mcp.Description("The role UUID to remove."),
+		),
+	)
+}
+
+// handleRoleUnassign returns a tool handler that fetches the user, removes the
+// role ID from the user's role set, and updates the user.
+func handleRoleUnassign(userSvc user.UserServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		userID := mcp.ParseString(req, "user_id", "")
+		if userID == "" {
+			return mcp.NewToolResultError("user_id is required"), nil
+		}
+		roleID := mcp.ParseString(req, "role_id", "")
+		if roleID == "" {
+			return mcp.NewToolResultError("role_id is required"), nil
+		}
+
+		u, err := userSvc.GetUser(ctx, userID)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_role_unassign", Err: err}
+		}
+
+		roleIDs := make([]string, 0, len(u.RoleIDs))
+		for _, rid := range u.RoleIDs {
+			if rid != roleID {
+				roleIDs = append(roleIDs, rid)
+			}
+		}
+
+		if _, updateErr := userSvc.UpdateUser(ctx, &user.UpdateUserRequest{
+			ID:      userID,
+			RoleIDs: roleIDs,
+		}); updateErr != nil {
+			return nil, &ToolError{Tool: "qrdb_role_unassign", Err: updateErr}
+		}
+
+		return mcp.NewToolResultText("ok"), nil
+	}
+}
+
+// toolPermissionsList defines the qrdb_permissions_list tool schema.
+func toolPermissionsList() mcp.Tool {
+	return mcp.NewTool("qrdb_permissions_list",
+		mcp.WithDescription("List all registered permissions grouped by category for UI rendering."),
+	)
+}
+
+// handlePermissionsList returns a tool handler that returns all permission
+// categories from the global registry.
+func handlePermissionsList() mcpserver.ToolHandlerFunc {
+	return func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		categories := permission.Categories()
+
+		data, jsonErr := json.Marshal(categories)
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_permissions_list", Err: jsonErr}
+		}
+
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// parsePermissions splits a comma-separated string of permissions and
+// validates each one using permission.Parse. Returns the parsed
+// permissions or the first validation error encountered.
+func parsePermissions(s string) ([]permission.Permission, error) {
+	parts := parseCSV(s)
+	if len(parts) == 0 {
+		return nil, nil
+	}
+	perms := make([]permission.Permission, 0, len(parts))
+	for _, p := range parts {
+		perm, err := permission.Parse(p)
+		if err != nil {
+			return nil, err
+		}
+		perms = append(perms, perm)
+	}
+	return perms, nil
+}

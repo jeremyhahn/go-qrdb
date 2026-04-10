@@ -18,9 +18,14 @@ type Client interface {
     Watch() WatchClient
     Lease() LeaseClient
     Batch() BatchClient
+    Lock() LockClient
     Index() IndexClient
     TimeSeries() TimeSeriesClient
     Barrier() BarrierClient
+    Vector() VectorClient        // nil when capability disabled
+    Users() UserClient
+    Roles() RoleClient
+    Certs() CertClient
     WithTenant(tenantID string) TenantClient
     Close() error
 }
@@ -64,6 +69,40 @@ tenant := client.WithTenant("tenant-a")
 err = tenant.KV().Put(ctx, "key", []byte("value"))
 // Server stores as "tenant-a/key"
 ```
+
+## Database Protocol Management
+
+The SDK supports managing per-database wire protocol configurations for
+MySQL, PostgreSQL, and etcd. Use `client.Admin()` to update protocol
+settings on existing databases.
+
+```go
+// Enable etcd protocol on a database
+err = client.Admin().UpdateProtocol(ctx, "k8s", transport.UpdateProtocolRequest{
+    Etcd: &transport.EtcdProtocolConfig{
+        Enabled:       true,
+        ListenAddr:    ":2379",
+        AdvertiseURLs: []string{"https://node1:2379"},
+    },
+})
+
+// Disable etcd protocol
+err = client.Admin().UpdateProtocol(ctx, "k8s", transport.UpdateProtocolRequest{
+    Etcd: &transport.EtcdProtocolConfig{
+        Enabled: false,
+    },
+})
+```
+
+## TypeScript SDK
+
+A parallel TypeScript SDK is available at `sdk/typescript/` (`@qrdb/sdk` npm package).
+It provides the same client interface with two transport implementations:
+
+- **WailsClient**: Desktop IPC via Wails-generated bindings
+- **RestClient**: Browser/standalone via fetch() against REST API
+
+See [TypeScript SDK documentation](../typescript-sdk/README.md) for details.
 
 ## TLS Configuration
 

@@ -18,17 +18,133 @@ import (
 	"google.golang.org/grpc"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/index"
+	"github.com/jeremyhahn/go-qrdb/pkg/lease"
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
+// RegisterOption configures optional service dependencies for RegisterService.
+type RegisterOption func(*qrdbServiceServer)
+
+// WithRegisterKVService attaches a KV service for the registered gRPC service.
+// This is an alternative to passing kvSvc as a positional parameter.
+func WithRegisterKVService(svc service.KVServicer) RegisterOption {
+	return func(s *qrdbServiceServer) { s.kvSvc = svc }
+}
+
+// WithRegisterAdminService attaches an admin service for the registered gRPC
+// service. This is an alternative to passing adminSvc as a positional parameter.
+func WithRegisterAdminService(svc service.AdminServicer) RegisterOption {
+	return func(s *qrdbServiceServer) { s.adminSvc = svc }
+}
+
+// WithRegisterMVCC attaches an MVCC service for the registered gRPC service.
+func WithRegisterMVCC(svc service.MVCCKVServicer) RegisterOption {
+	return func(s *qrdbServiceServer) { s.mvccSvc = svc }
+}
+
+// WithRegisterTransaction attaches a transaction service for the registered gRPC service.
+func WithRegisterTransaction(svc service.TransactionServicer) RegisterOption {
+	return func(s *qrdbServiceServer) { s.txSvc = svc }
+}
+
+// WithRegisterBatch attaches a batch service for the registered gRPC service.
+func WithRegisterBatch(svc service.BatchServicer) RegisterOption {
+	return func(s *qrdbServiceServer) { s.batchSvc = svc }
+}
+
+// WithRegisterWatch attaches a watch service for the registered gRPC service.
+func WithRegisterWatch(svc service.WatchServicer) RegisterOption {
+	return func(s *qrdbServiceServer) { s.watchSvc = svc }
+}
+
+// WithRegisterLease attaches a lease service for the registered gRPC service.
+func WithRegisterLease(svc lease.LeaseServicer) RegisterOption {
+	return func(s *qrdbServiceServer) { s.leaseSvc = svc }
+}
+
+// WithRegisterIndex attaches an index service for the registered gRPC service.
+func WithRegisterIndex(svc index.IndexServicer) RegisterOption {
+	return func(s *qrdbServiceServer) { s.indexSvc = svc }
+}
+
+// WithRegisterTimeSeries attaches a time-series service for the registered gRPC service.
+func WithRegisterTimeSeries(svc timeseries.TimeSeriesServicer) RegisterOption {
+	return func(s *qrdbServiceServer) { s.tsSvc = svc }
+}
+
+// WithRegisterVector attaches a vector service for the registered gRPC service.
+func WithRegisterVector(svc service.VectorServicer) RegisterOption {
+	return func(s *qrdbServiceServer) { s.vectorSvc = svc }
+}
+
+// WithRegisterUserService attaches a user management service for the registered gRPC service.
+func WithRegisterUserService(svc user.UserServicer) RegisterOption {
+	return func(s *qrdbServiceServer) { s.userSvc = svc }
+}
+
+// WithRegisterRoleService attaches a role management service for the registered gRPC service.
+func WithRegisterRoleService(svc role.RoleServicer) RegisterOption {
+	return func(s *qrdbServiceServer) { s.roleSvc = svc }
+}
+
+// WithRegisterEmbedding attaches an embedding service for the registered gRPC service.
+func WithRegisterEmbedding(svc service.EmbeddingServicer) RegisterOption {
+	return func(s *qrdbServiceServer) { s.embeddingSvc = svc }
+}
+
+// WithRegisterDatabaseService attaches a database management service for the registered gRPC service.
+func WithRegisterDatabaseService(svc service.DatabaseServicer) RegisterOption {
+	return func(s *qrdbServiceServer) { s.databaseSvc = svc }
+}
+
+// WithRegisterBarrierService attaches a barrier management service for the registered gRPC service.
+func WithRegisterBarrierService(svc service.BarrierServicer) RegisterOption {
+	return func(s *qrdbServiceServer) { s.barrierSvc = svc }
+}
+
+// WithRegisterCeremonyService attaches a ceremony management service for the registered gRPC service.
+func WithRegisterCeremonyService(svc service.CeremonyServicer) RegisterOption {
+	return func(s *qrdbServiceServer) { s.ceremonySvc = svc }
+}
+
+// WithRegisterCredentialService attaches a credential management service for the registered gRPC service.
+func WithRegisterCredentialService(svc service.CredentialServicer) RegisterOption {
+	return func(s *qrdbServiceServer) { s.credentialSvc = svc }
+}
+
+// WithRegisterCertProvider attaches a certificate provider for the registered gRPC service.
+func WithRegisterCertProvider(svc cert.CertProvider) RegisterOption {
+	return func(s *qrdbServiceServer) { s.certProv = svc }
+}
+
+// WithRegisterCollectionService attaches a collection service for the registered gRPC service.
+func WithRegisterCollectionService(svc service.CollectionServicer) RegisterOption {
+	return func(s *qrdbServiceServer) { s.collectionSvc = svc }
+}
+
+// WithRegisterLockService attaches a distributed lock service for the registered gRPC service.
+func WithRegisterLockService(svc service.LockServicer) RegisterOption {
+	return func(s *qrdbServiceServer) { s.lockSvc = svc }
+}
+
 // RegisterService registers the QRDBServiceServer on the given gRPC server
-// using the provided KV and admin service implementations. This allows
-// other server transports (e.g., Unix domain sockets) to reuse the same
-// service implementation without duplicating the protobuf glue code.
-func RegisterService(srv *grpc.Server, kvSvc service.KVServicer, adminSvc service.AdminServicer) {
+// using the provided KV and admin service implementations. kvSvc and adminSvc
+// may be nil when only non-KV services (barrier, cert, auth) are needed;
+// their RPC handlers return codes.Unimplemented when the service is nil.
+// This allows other server transports (e.g., Unix domain sockets) to reuse
+// the same service implementation without duplicating the protobuf glue code.
+func RegisterService(srv *grpc.Server, kvSvc service.KVServicer, adminSvc service.AdminServicer, opts ...RegisterOption) {
 	svc := &qrdbServiceServer{
 		kvSvc:    kvSvc,
 		adminSvc: adminSvc,
+	}
+	for _, opt := range opts {
+		opt(svc)
 	}
 	pb.RegisterQRDBServiceServer(srv, svc)
 }

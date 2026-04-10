@@ -20,6 +20,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -176,9 +177,9 @@ func TestMVCCLease_LeaseGrant_NoLessor(t *testing.T) {
 		t.Fatal("expected error when granting lease without lessor")
 	}
 
-	var notOpen *NotOpenError
+	var notOpen *engine.NotOpenError
 	if !errors.As(err, &notOpen) {
-		t.Fatalf("expected *NotOpenError, got %T: %v", err, err)
+		t.Fatalf("expected *engine.NotOpenError, got %T: %v", err, err)
 	}
 }
 
@@ -204,9 +205,9 @@ func TestMVCCLease_LeaseRevoke_NoLessor(t *testing.T) {
 		t.Fatal("expected error when revoking lease without lessor")
 	}
 
-	var notOpen *NotOpenError
+	var notOpen *engine.NotOpenError
 	if !errors.As(err, &notOpen) {
-		t.Fatalf("expected *NotOpenError, got %T: %v", err, err)
+		t.Fatalf("expected *engine.NotOpenError, got %T: %v", err, err)
 	}
 }
 
@@ -390,9 +391,9 @@ func TestMVCCLease_LeaseKeepAlive_NoLessor(t *testing.T) {
 		t.Fatal("expected error when keep-alive without lessor")
 	}
 
-	var notOpen *NotOpenError
+	var notOpen *engine.NotOpenError
 	if !errors.As(err, &notOpen) {
-		t.Fatalf("expected *NotOpenError, got %T: %v", err, err)
+		t.Fatalf("expected *engine.NotOpenError, got %T: %v", err, err)
 	}
 }
 
@@ -527,9 +528,9 @@ func TestMVCCLease_Lookup_LeasesQuery_NoLessor(t *testing.T) {
 		t.Fatal("expected error for leases lookup without lessor")
 	}
 
-	var iqe *InvalidQueryError
+	var iqe *engine.InvalidQueryError
 	if !errors.As(err, &iqe) {
-		t.Fatalf("expected *InvalidQueryError, got %T: %v", err, err)
+		t.Fatalf("expected *engine.InvalidQueryError, got %T: %v", err, err)
 	}
 }
 
@@ -563,9 +564,9 @@ func TestMVCCLease_Lookup_LeaseNotFound(t *testing.T) {
 		t.Fatal("expected error for non-existent lease")
 	}
 
-	var readErr *ReadError
-	if !errors.As(err, &readErr) {
-		t.Fatalf("expected *ReadError, got %T: %v", err, err)
+	var iqe2 *engine.InvalidQueryError
+	if !errors.As(err, &iqe2) {
+		t.Fatalf("expected *engine.InvalidQueryError, got %T: %v", err, err)
 	}
 }
 
@@ -584,9 +585,9 @@ func TestMVCCLease_Lookup_LeaseNotFound_NoLessor(t *testing.T) {
 		t.Fatal("expected error for lease lookup without lessor")
 	}
 
-	var iqe *InvalidQueryError
+	var iqe *engine.InvalidQueryError
 	if !errors.As(err, &iqe) {
-		t.Fatalf("expected *InvalidQueryError, got %T: %v", err, err)
+		t.Fatalf("expected *engine.InvalidQueryError, got %T: %v", err, err)
 	}
 }
 

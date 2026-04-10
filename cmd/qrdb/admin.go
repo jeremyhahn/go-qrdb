@@ -60,7 +60,7 @@ func newAdminHealthCmd() *cobra.Command {
 			case "yaml":
 				return printYAML(resp)
 			default:
-				fmt.Fprintf(outputWriter, "Status: %s\nLeader: %t\n", resp.Status, resp.IsLeader)
+				_, _ = fmt.Fprintf(outputWriter, "Status: %s\nLeader: %t\n", resp.Status, resp.IsLeader)
 				return nil
 			}
 		},
@@ -85,12 +85,12 @@ func newAdminStatusCmd() *cobra.Command {
 			case "yaml":
 				return printYAML(resp)
 			default:
-				fmt.Fprintf(outputWriter, "NodeID:      %s\n", resp.NodeID)
-				fmt.Fprintf(outputWriter, "RaftAddress: %s\n", resp.RaftAddress)
-				fmt.Fprintf(outputWriter, "IsLeader:    %t\n", resp.IsLeader)
-				fmt.Fprintf(outputWriter, "LeaderID:    %s\n", strconv.FormatUint(resp.LeaderID, 10))
-				fmt.Fprintf(outputWriter, "ShardCount:  %d\n", resp.ShardCount)
-				fmt.Fprintf(outputWriter, "IsDraining:  %t\n", resp.IsDraining)
+				_, _ = fmt.Fprintf(outputWriter, "NodeID:      %s\n", resp.NodeID)
+				_, _ = fmt.Fprintf(outputWriter, "RaftAddress: %s\n", resp.RaftAddress)
+				_, _ = fmt.Fprintf(outputWriter, "IsLeader:    %t\n", resp.IsLeader)
+				_, _ = fmt.Fprintf(outputWriter, "LeaderID:    %s\n", strconv.FormatUint(resp.LeaderID, 10))
+				_, _ = fmt.Fprintf(outputWriter, "ShardCount:  %d\n", resp.ShardCount)
+				_, _ = fmt.Fprintf(outputWriter, "IsDraining:  %t\n", resp.IsDraining)
 				return nil
 			}
 		},

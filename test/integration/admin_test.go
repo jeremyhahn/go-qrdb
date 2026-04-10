@@ -124,6 +124,7 @@ func TestCLI_Start_GracefulShutdown(t *testing.T) {
 	}
 
 	waitForHealthy(t, dataDir, 30*time.Second)
+	waitForAdmin(t, ca.Pool, adminPorts[0], 30*time.Second)
 
 	// Send SIGTERM for graceful shutdown.
 	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
@@ -366,11 +367,17 @@ func TestCLI_Status(t *testing.T) {
 
 	startNode(t, binary, args, "[node1] ")
 	waitForHealthy(t, dataDir, 30*time.Second)
-	waitForAdmin(t, ca.Pool, adminPorts[0], 10*time.Second)
+	waitForAdmin(t, ca.Pool, adminPorts[0], 30*time.Second)
+
+	// Generate admin client cert from the test CA (external TLS mode
+	// means the binary doesn't have the CA key to generate one).
+	adminCert, adminKey := ca.generateAdminClientCert(t, dataDir)
 
 	out, err := runCLI(t, binary, "status",
 		"--address", fmt.Sprintf("127.0.0.1:%d", adminPorts[0]),
-		"--tls-ca-file", ca.CertPath)
+		"--tls-ca-file", ca.CertPath,
+		"--tls-cert-file", adminCert,
+		"--tls-key-file", adminKey)
 	if err != nil {
 		t.Fatalf("status command failed: %v\n%s", err, out)
 	}
@@ -408,11 +415,15 @@ func TestCLI_Peers(t *testing.T) {
 
 	startNode(t, binary, args, "[node1] ")
 	waitForHealthy(t, dataDir, 30*time.Second)
-	waitForAdmin(t, ca.Pool, adminPorts[0], 10*time.Second)
+	waitForAdmin(t, ca.Pool, adminPorts[0], 30*time.Second)
+
+	adminCert, adminKey := ca.generateAdminClientCert(t, dataDir)
 
 	out, err := runCLI(t, binary, "peers",
 		"--address", fmt.Sprintf("127.0.0.1:%d", adminPorts[0]),
-		"--tls-ca-file", ca.CertPath)
+		"--tls-ca-file", ca.CertPath,
+		"--tls-cert-file", adminCert,
+		"--tls-key-file", adminKey)
 	if err != nil {
 		t.Fatalf("peers command failed: %v\n%s", err, out)
 	}
@@ -459,13 +470,21 @@ func TestCLI_Status_ThreeNode(t *testing.T) {
 
 	for i, dir := range dataDirs {
 		waitForHealthy(t, dir, 30*time.Second)
-		waitForAdmin(t, ca.Pool, adminPorts[i], 10*time.Second)
+		waitForAdmin(t, ca.Pool, adminPorts[i], 90*time.Second)
 	}
 
-	// Query status from node 1.
+	// Wait for the auth middleware to become operational (user store
+	// SyncRead needs a functioning Raft group with a leader).
+	waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
+
+	// Generate admin client cert from test CA for CLI commands.
+	adminCert, adminKey := ca.generateAdminClientCert(t, dataDirs[0])
+
 	out, err := runCLI(t, binary, "status",
 		"--address", fmt.Sprintf("127.0.0.1:%d", adminPorts[0]),
-		"--tls-ca-file", ca.CertPath)
+		"--tls-ca-file", ca.CertPath,
+		"--tls-cert-file", adminCert,
+		"--tls-key-file", adminKey)
 	if err != nil {
 		t.Fatalf("status command failed: %v\n%s", err, out)
 	}
@@ -509,13 +528,21 @@ func TestCLI_Peers_ThreeNode(t *testing.T) {
 
 	for i, dir := range dataDirs {
 		waitForHealthy(t, dir, 30*time.Second)
-		waitForAdmin(t, ca.Pool, adminPorts[i], 10*time.Second)
+		waitForAdmin(t, ca.Pool, adminPorts[i], 90*time.Second)
 	}
 
-	// Query peers from node 1.
+	// Wait for the auth middleware to become operational (user store
+	// SyncRead needs a functioning Raft group with a leader).
+	waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
+
+	// Generate admin client cert from test CA for CLI commands.
+	adminCert, adminKey := ca.generateAdminClientCert(t, dataDirs[0])
+
 	out, err := runCLI(t, binary, "peers",
 		"--address", fmt.Sprintf("127.0.0.1:%d", adminPorts[0]),
-		"--tls-ca-file", ca.CertPath)
+		"--tls-ca-file", ca.CertPath,
+		"--tls-cert-file", adminCert,
+		"--tls-key-file", adminKey)
 	if err != nil {
 		t.Fatalf("peers command failed: %v\n%s", err, out)
 	}

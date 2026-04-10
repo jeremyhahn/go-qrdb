@@ -1,0 +1,124 @@
+// Copyright (c) 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Package kvstore defines the context-aware key-value store interface used
+// by the DAO and service layers. Unlike storage.Storage (used by state
+// machines), KVStore supports context propagation for timeouts, cancellation,
+// and distributed tracing.
+package kvstore
+
+import "context"
+
+// EntityIndex defines an index to be created for an entity type's field.
+// For single-field indexes, FieldName and JSONFieldName are used.
+// For compound indexes, FieldNames and JSONFieldNames are used instead.
+type EntityIndex struct {
+	// FieldName is the Go struct field name (used as the index name component).
+	// Used for single-field indexes. Ignored when FieldNames is non-empty.
+	FieldName string
+
+	// JSONFieldName is the JSON tag name (used for field extraction from serialized bytes).
+	// Used for single-field indexes. Ignored when JSONFieldNames is non-empty.
+	JSONFieldName string
+
+	// FieldNames is an ordered list of Go struct field names for compound indexes.
+	// When non-empty, this index is compound and FieldName is ignored.
+	FieldNames []string
+
+	// JSONFieldNames is an ordered list of JSON tag names for compound indexes.
+	// When non-empty, this index is compound and JSONFieldName is ignored.
+	JSONFieldNames []string
+
+	// Unique enforces that each indexed value maps to at most one key.
+	Unique bool
+
+	// Sparse skips indexing keys where the indexed field is absent or empty.
+	Sparse bool
+
+	// CaseSensitive indicates whether string comparisons are case-sensitive.
+	CaseSensitive bool
+}
+
+// IsCompound reports whether the index covers multiple fields.
+func (ei EntityIndex) IsCompound() bool {
+	return len(ei.FieldNames) > 1
+}
+
+// EntityRegisterer allows entity types to register their index definitions.
+type EntityRegisterer interface {
+	RegisterEntityType(entityType string, indexes []EntityIndex) error
+}
+
+// LookupFunc performs a query against the engine's index subsystem.
+// The query parameter is an index.IndexQueryRequest or
+// index.IndexScanRequest. The return value depends on the request
+// type: [][]byte for queries, map[string][][]byte for scans.
+type LookupFunc func(ctx context.Context, query interface{}) (interface{}, error)
+
+// KVStore is a context-aware key-value store interface for service-layer
+// and DAO operations. Implementations route through the Raft consensus
+// layer for strong consistency, or read from local replicas for
+// eventual consistency.
+type KVStore interface {
+	// Put stores a key-value pair. The context controls timeout and
+	// cancellation for Raft proposals.
+	Put(ctx context.Context, key string, value []byte) error
+
+	// Get retrieves a value by key. Returns nil, nil when key does not exist.
+	// The context controls timeout and cancellation for Raft reads.
+	Get(ctx context.Context, key string) ([]byte, error)
+
+	// Delete removes a key. The context controls timeout and cancellation
+	// for Raft proposals.
+	Delete(ctx context.Context, key string) error
+
+	// Scan iterates over keys with the given prefix, calling fn for each
+	// key-value pair. Return a non-nil error from fn to stop iteration.
+	// The context controls timeout and cancellation for the scan.
+	Scan(ctx context.Context, prefix string, fn func(key string, value []byte) error) error
+
+	// List returns all keys matching the given prefix. The context controls
+	// timeout and cancellation for the listing operation.
+	List(ctx context.Context, prefix string) ([]string, error)
+
+	// Exists checks whether a key exists in the store. The context controls
+	// timeout and cancellation for the lookup.
+	Exists(ctx context.Context, key string) (bool, error)
+
+	// RegisterEntityIndexes registers index definitions for an entity type.
+	// The engine creates storage-backed indexes and backfills them from
+	// existing data. Registration is idempotent.
+	RegisterEntityIndexes(entityType string, indexes []EntityIndex) error
+
+	// QueryIndex performs an exact-match query on the named index.
+	// Returns the entity keys matching the given value.
+	QueryIndex(ctx context.Context, indexName string, value []byte) ([][]byte, error)
+
+	// ScanIndex performs a range scan on the named index.
+	// Returns a map of field values to entity key slices for values
+	// in the half-open interval [start, end).
+	ScanIndex(ctx context.Context, indexName string, start, end []byte) (map[string][][]byte, error)
+
+	// QueryCompoundIndex performs an exact-match query on a compound index.
+	// All field values must match. Returns the entity keys matching the
+	// given compound value.
+	QueryCompoundIndex(ctx context.Context, indexName string, values [][]byte) ([][]byte, error)
+
+	// ScanCompoundIndex performs a prefix + range scan on a compound index.
+	// prefixValues are exact-match values for the leading fields of the
+	// compound index. rangeStart and rangeEnd define a half-open range on
+	// the next field after the prefix. Pass nil for either bound to leave
+	// it open.
+	ScanCompoundIndex(ctx context.Context, indexName string, prefixValues [][]byte, rangeStart, rangeEnd []byte) (map[string][][]byte, error)
+}

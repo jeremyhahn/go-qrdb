@@ -19,11 +19,18 @@ package mcp
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"errors"
+	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"sync/atomic"
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
+	mcptransport "github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
@@ -35,7 +42,6 @@ var (
 	_ transport.Transport   = (*Transport)(nil)
 	_ transport.KVClient    = (*Transport)(nil)
 	_ transport.AdminClient = (*Transport)(nil)
-	_ transport.Client      = (*Transport)(nil)
 )
 
 // Transport implements the QRDB SDK transport interface using the MCP
@@ -97,7 +103,18 @@ func (t *Transport) Connect(ctx context.Context) error {
 		client, err = mcpclient.NewInProcessClient(t.mcpServer)
 	} else {
 		// Network connection via Streamable HTTP.
-		client, err = mcpclient.NewStreamableHttpClient(t.config.Address)
+		var httpOpts []mcptransport.StreamableHTTPCOption
+		if tlsCfg, tlsErr := t.buildTLSConfig(); tlsErr != nil {
+			return &transport.ConnectionError{
+				Address: t.config.Address,
+				Err:     tlsErr,
+			}
+		} else if tlsCfg != nil {
+			httpOpts = append(httpOpts, mcptransport.WithHTTPBasicClient(&http.Client{
+				Transport: &http.Transport{TLSClientConfig: tlsCfg},
+			}))
+		}
+		client, err = mcpclient.NewStreamableHttpClient(t.config.Address, httpOpts...)
 	}
 	if err != nil {
 		return &transport.ConnectionError{
@@ -133,6 +150,43 @@ func (t *Transport) Connect(ctx context.Context) error {
 
 	t.client = client
 	return nil
+}
+
+// buildTLSConfig constructs the TLS configuration from the transport config.
+func (t *Transport) buildTLSConfig() (*tls.Config, error) {
+	if t.config.TLSConfig != nil {
+		return t.config.TLSConfig, nil
+	}
+
+	if !t.config.TLSEnabled {
+		return nil, nil
+	}
+
+	tlsCfg := &tls.Config{
+		MinVersion: tls.VersionTLS13,
+	}
+
+	if t.config.TLSCAFile != "" {
+		caCert, err := os.ReadFile(t.config.TLSCAFile)
+		if err != nil {
+			return nil, &transport.TLSError{Err: err}
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(caCert) {
+			return nil, &transport.TLSError{Err: errors.New("failed to parse CA certificate")}
+		}
+		tlsCfg.RootCAs = pool
+	}
+
+	if t.config.TLSCertFile != "" && t.config.TLSKeyFile != "" {
+		cert, err := tls.LoadX509KeyPair(t.config.TLSCertFile, t.config.TLSKeyFile)
+		if err != nil {
+			return nil, &transport.TLSError{Err: err}
+		}
+		tlsCfg.Certificates = []tls.Certificate{cert}
+	}
+
+	return tlsCfg, nil
 }
 
 // Close shuts down the MCP client and releases all resources.
@@ -179,29 +233,40 @@ func (t *Transport) Request(ctx context.Context, method string, req, resp any) e
 
 // Put stores a key-value pair through Raft consensus. Calls the qrdb_put
 // MCP tool.
-func (t *Transport) Put(ctx context.Context, key string, value []byte) error {
+func (t *Transport) Put(ctx context.Context, key string, value []byte, opts ...transport.WriteOption) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
 
-	_, err := t.callTool(ctx, "qrdb_put", map[string]any{
+	args := map[string]any{
 		"key":   key,
 		"value": string(value),
-	})
+	}
+
+	wo := transport.ResolveWriteOptions(opts...)
+	if wo.ModeSet {
+		args["write_mode"] = wo.Mode.String()
+	}
+
+	_, err := t.callTool(ctx, "qrdb_put", args)
 	return err
 }
 
 // Get retrieves a value by key with a linearizable read. Calls the
 // qrdb_get MCP tool. Returns KeyNotFoundError when the tool returns
 // a "not found" error.
-func (t *Transport) Get(ctx context.Context, key string) ([]byte, error) {
+func (t *Transport) Get(ctx context.Context, key string, opts ...transport.ReadOption) ([]byte, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
 
-	text, err := t.callTool(ctx, "qrdb_get", map[string]any{
+	args := map[string]any{
 		"key": key,
-	})
+	}
+
+	applyReadArgs(args, opts...)
+
+	text, err := t.callTool(ctx, "qrdb_get", args)
 	if err != nil {
 		// Detect key-not-found errors from the tool response.
 		if isNotFoundError(err) {
@@ -215,20 +280,27 @@ func (t *Transport) Get(ctx context.Context, key string) ([]byte, error) {
 
 // Delete removes a key through Raft consensus. Calls the qrdb_delete
 // MCP tool.
-func (t *Transport) Delete(ctx context.Context, key string) error {
+func (t *Transport) Delete(ctx context.Context, key string, opts ...transport.WriteOption) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
 
-	_, err := t.callTool(ctx, "qrdb_delete", map[string]any{
+	args := map[string]any{
 		"key": key,
-	})
+	}
+
+	wo := transport.ResolveWriteOptions(opts...)
+	if wo.ModeSet {
+		args["write_mode"] = wo.Mode.String()
+	}
+
+	_, err := t.callTool(ctx, "qrdb_delete", args)
 	return err
 }
 
 // List returns sorted keys matching the given prefix. Calls the
 // qrdb_list MCP tool and parses the JSON array result.
-func (t *Transport) List(ctx context.Context, prefix string) ([]string, error) {
+func (t *Transport) List(ctx context.Context, prefix string, opts ...transport.ReadOption) ([]string, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -237,6 +309,8 @@ func (t *Transport) List(ctx context.Context, prefix string) ([]string, error) {
 	if prefix != "" {
 		args["prefix"] = prefix
 	}
+
+	applyReadArgs(args, opts...)
 
 	text, err := t.callTool(ctx, "qrdb_list", args)
 	if err != nil {
@@ -249,6 +323,46 @@ func (t *Transport) List(ctx context.Context, prefix string) ([]string, error) {
 	}
 
 	return keys, nil
+}
+
+// Scan returns all key-value pairs matching the given prefix. Calls the
+// qrdb_scan MCP tool and parses the JSON map result.
+func (t *Transport) Scan(ctx context.Context, prefix string, opts ...transport.ReadOption) (map[string][]byte, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	args := map[string]any{}
+	if prefix != "" {
+		args["prefix"] = prefix
+	}
+
+	applyReadArgs(args, opts...)
+
+	text, err := t.callTool(ctx, "qrdb_scan", args)
+	if err != nil {
+		return nil, err
+	}
+
+	var pairs map[string][]byte
+	if jsonErr := json.Unmarshal([]byte(text), &pairs); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "Scan", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+
+	return pairs, nil
+}
+
+// Exists checks whether a key exists. Performs a check via Get.
+func (t *Transport) Exists(ctx context.Context, key string, opts ...transport.ReadOption) (bool, error) {
+	_, err := t.Get(ctx, key, opts...)
+	if err != nil {
+		var knf *transport.KeyNotFoundError
+		if errors.As(err, &knf) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -397,6 +511,143 @@ func (t *Transport) Drain(ctx context.Context) error {
 	return err
 }
 
+// Capabilities returns the compile-time feature set of the QRDB node.
+// Calls the qrdb_capabilities MCP tool and parses the JSON response.
+func (t *Transport) Capabilities(ctx context.Context) (*transport.CapabilitiesResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	text, err := t.callTool(ctx, "qrdb_capabilities", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var raw serverCapabilities
+	if jsonErr := json.Unmarshal([]byte(text), &raw); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "Capabilities", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+
+	return &transport.CapabilitiesResponse{
+		KV:          raw.KV,
+		MVCC:        raw.MVCC,
+		Transaction: raw.Transaction,
+		Batch:       raw.Batch,
+		Watch:       raw.Watch,
+		Lease:       raw.Lease,
+		Index:       raw.Index,
+		TimeSeries:  raw.TimeSeries,
+		Vector:      raw.Vector,
+	}, nil
+}
+
+// StartShard initializes and starts a Raft group for the given shard.
+// Calls the qrdb_start_shard MCP tool.
+func (t *Transport) StartShard(ctx context.Context, req *transport.StartShardRequest) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	args := map[string]any{
+		"shard_id":   req.ShardID,
+		"replica_id": req.ReplicaID,
+		"join":       req.Join,
+	}
+
+	if len(req.Members) > 0 {
+		// Serialize the members map as JSON. Keys must be strings.
+		raw := make(map[string]string, len(req.Members))
+		for k, v := range req.Members {
+			raw[strconv.FormatUint(k, 10)] = v
+		}
+		data, jsonErr := json.Marshal(raw)
+		if jsonErr != nil {
+			return &transport.RequestError{Method: "StartShard", Err: &jsonEncodeError{Err: jsonErr}}
+		}
+		args["members_json"] = string(data)
+	}
+
+	_, err := t.callTool(ctx, "qrdb_start_shard", args)
+	return err
+}
+
+// StopShard stops the Raft group for the given shard. Calls the
+// qrdb_stop_shard MCP tool.
+func (t *Transport) StopShard(ctx context.Context, shardID uint64) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	_, err := t.callTool(ctx, "qrdb_stop_shard", map[string]any{
+		"shard_id": shardID,
+	})
+	return err
+}
+
+// GetShardState returns the Raft state for a shard. Calls the
+// qrdb_shard_state MCP tool and parses the JSON response.
+func (t *Transport) GetShardState(ctx context.Context, shardID uint64) (*transport.ShardStateResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	text, err := t.callTool(ctx, "qrdb_shard_state", map[string]any{
+		"shard_id": shardID,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var raw serverShardState
+	if jsonErr := json.Unmarshal([]byte(text), &raw); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "GetShardState", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+
+	return &transport.ShardStateResponse{
+		ShardID:           raw.ShardID,
+		ConfigChangeIndex: raw.ConfigChangeIndex,
+		Term:              raw.Term,
+		LeaderID:          raw.LeaderID,
+		HasLeader:         raw.HasLeader,
+	}, nil
+}
+
+// GetTopology returns the full cluster topology. Calls the
+// qrdb_topology MCP tool and parses the JSON response.
+func (t *Transport) GetTopology(ctx context.Context) (*transport.TopologyResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	text, err := t.callTool(ctx, "qrdb_topology", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var raw serverTopology
+	if jsonErr := json.Unmarshal([]byte(text), &raw); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "GetTopology", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+
+	shards := make([]transport.ShardInfo, 0, len(raw.Shards))
+	for _, si := range raw.Shards {
+		shards = append(shards, transport.ShardInfo{
+			ShardID:   si.ShardID,
+			ReplicaID: si.ReplicaID,
+			IsLeader:  si.IsLeader,
+			LeaderID:  si.LeaderID,
+			Nodes:     si.Nodes,
+		})
+	}
+
+	return &transport.TopologyResponse{
+		NodeID:      raw.NodeID,
+		RaftAddress: raw.RaftAddress,
+		ShardCount:  raw.ShardCount,
+		Shards:      shards,
+	}, nil
+}
+
 // ---------------------------------------------------------------------------
 // Server-side JSON decode types
 // ---------------------------------------------------------------------------
@@ -440,6 +691,48 @@ type serverPeerInfo struct {
 	ReplicaID uint64 `json:"ReplicaID"`
 	Address   string `json:"Address"`
 	IsLeader  bool   `json:"IsLeader"`
+}
+
+// serverCapabilities mirrors capabilities.Capabilities for JSON decoding.
+// The capabilities package uses json tags with camelCase, matching the
+// SDK transport's CapabilitiesResponse field names.
+type serverCapabilities struct {
+	KV          bool `json:"kv"`
+	MVCC        bool `json:"mvcc"`
+	Transaction bool `json:"transaction"`
+	Batch       bool `json:"batch"`
+	Watch       bool `json:"watch"`
+	Lease       bool `json:"lease"`
+	Index       bool `json:"index"`
+	TimeSeries  bool `json:"timeSeries"`
+	Vector      bool `json:"vector"`
+}
+
+// serverShardState mirrors service.ShardStateResponse for JSON decoding.
+// The service layer uses PascalCase field names with no json tags.
+type serverShardState struct {
+	ShardID           uint64 `json:"ShardID"`
+	ConfigChangeIndex uint64 `json:"ConfigChangeIndex"`
+	Term              uint64 `json:"Term"`
+	LeaderID          uint64 `json:"LeaderID"`
+	HasLeader         bool   `json:"HasLeader"`
+}
+
+// serverTopology mirrors service.TopologyResponse for JSON decoding.
+type serverTopology struct {
+	NodeID      string            `json:"NodeID"`
+	RaftAddress string            `json:"RaftAddress"`
+	ShardCount  int               `json:"ShardCount"`
+	Shards      []serverShardInfo `json:"Shards"`
+}
+
+// serverShardInfo mirrors service.TopologyShardInfo for JSON decoding.
+type serverShardInfo struct {
+	ShardID   uint64            `json:"ShardID"`
+	ReplicaID uint64            `json:"ReplicaID"`
+	IsLeader  bool              `json:"IsLeader"`
+	LeaderID  uint64            `json:"LeaderID"`
+	Nodes     map[uint64]string `json:"Nodes"`
 }
 
 // ---------------------------------------------------------------------------
@@ -500,4 +793,19 @@ func isNotFoundError(err error) bool {
 	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "not found")
+}
+
+// applyReadArgs resolves read options and adds them to the MCP tool
+// argument map.
+func applyReadArgs(args map[string]any, opts ...transport.ReadOption) {
+	ro := transport.ResolveReadOptions(opts...)
+	if ro.ConsistencySet {
+		args["consistency"] = ro.Consistency.String()
+	}
+	if ro.TimeoutMs > 0 {
+		args["read_timeout_ms"] = ro.TimeoutMs
+	}
+	if ro.AllowStale {
+		args["allow_stale"] = true
+	}
 }

@@ -1,8 +1,8 @@
 # QRDB API Reference
 
-QRDB exposes four API protocols: REST, gRPC, Unix socket, and MCP. All protocols
-delegate to the same service layer, providing identical semantics. Choose the
-protocol that best fits your client ecosystem.
+QRDB exposes five API protocols: REST, gRPC, Unix socket, MCP, and etcd. All
+protocols delegate to the same service layer, providing identical semantics.
+Choose the protocol that best fits your client ecosystem.
 
 | Protocol | Default Port/Path | Transport |
 |----------|-------------------|-----------|
@@ -10,6 +10,7 @@ protocol that best fits your client ecosystem.
 | gRPC | 63003 | gRPC with TLS 1.3 |
 | Unix | /var/run/qrdbd/qrdbd.sock | gRPC over UDS |
 | MCP | 63005 | MCP over HTTP |
+| etcd | 2379 | gRPC + mTLS (per-database) |
 | Raft | 63001 | QUIC (internal, mTLS) |
 
 ---
@@ -395,6 +396,156 @@ curl -sk -X POST -H 'Content-Type: application/json' \
 
 ---
 
+### GET /v1/capabilities
+
+Returns the feature capabilities of the server, reflecting compile-time build tags.
+
+**Response** `200 OK`
+
+```json
+{
+  "kv": true,
+  "mvcc": true,
+  "transaction": true,
+  "batch": true,
+  "watch": true,
+  "lease": true,
+  "index": true,
+  "timeSeries": false,
+  "vector": true
+}
+```
+
+```bash
+curl -sk https://localhost:63002/v1/capabilities | jq .
+```
+
+---
+
+### Management Endpoints
+
+User, role, and certificate management endpoints for RBAC and mTLS identity lifecycle.
+
+#### User Management
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/v1/users` | Create user |
+| `GET` | `/v1/users` | List users (query: `tenant_id`) |
+| `GET` | `/v1/users/{id}` | Get user |
+| `PUT` | `/v1/users/{id}` | Update user |
+| `DELETE` | `/v1/users/{id}` | Delete user |
+| `POST` | `/v1/users/{id}/enable` | Enable user |
+| `POST` | `/v1/users/{id}/disable` | Disable user |
+
+#### Role Management
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/v1/roles` | Create role |
+| `GET` | `/v1/roles` | List roles |
+| `GET` | `/v1/roles/{id}` | Get role |
+| `PUT` | `/v1/roles/{id}` | Update role |
+| `DELETE` | `/v1/roles/{id}` | Delete role |
+| `POST` | `/v1/roles/assign` | Assign role to user |
+| `POST` | `/v1/roles/unassign` | Unassign role from user |
+| `GET` | `/v1/permissions` | List all permissions |
+
+#### Certificate Management
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/v1/certs/generate` | Generate client certificate |
+| `POST` | `/v1/certs/export` | Export as PKCS#12 |
+| `POST` | `/v1/certs/revoke` | Revoke certificate |
+| `GET` | `/v1/certs` | List certificates (query: `tenant_id`) |
+
+---
+
+### Lock Endpoints
+
+Distributed lock operations with fencing tokens for stale holder detection.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/v1/lock/acquire` | Blocking lock acquisition |
+| `POST` | `/v1/lock/trylock` | Non-blocking lock attempt |
+| `POST` | `/v1/lock/release` | Release held lock |
+| `POST` | `/v1/lock/extend` | Refresh lock TTL |
+| `GET` | `/v1/lock/status?key=...` | Query lock state |
+| `GET` | `/v1/lock/list?prefix=...` | List active locks |
+
+**Errors:**
+
+| Code | Condition |
+|------|-----------|
+| 400 | Invalid TTL, empty key |
+| 403 | Stale fencing token (NotLockHolderError) |
+| 404 | Lock not found |
+| 409 | Lock held by another holder |
+
+For detailed request/response formats and examples, see [18-distributed-locking.md](18-distributed-locking.md#rest-api).
+
+---
+
+### Vector Endpoints (build tag: qrdb_vector)
+
+Vector database operations are available when the server is compiled with the `qrdb_vector` build tag.
+
+#### Namespace Management
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/v1/vector/namespaces` | Create namespace |
+| `GET` | `/v1/vector/namespaces` | List namespaces |
+| `GET` | `/v1/vector/namespaces/{name}` | Get namespace |
+| `PUT` | `/v1/vector/namespaces/{name}` | Update namespace |
+| `DELETE` | `/v1/vector/namespaces/{name}` | Delete namespace |
+
+#### Vector CRUD
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/v1/vector/{namespace}/upsert` | Upsert vector |
+| `GET` | `/v1/vector/{namespace}/{id}` | Get vector |
+| `DELETE` | `/v1/vector/{namespace}/{id}` | Delete vector |
+| `POST` | `/v1/vector/{namespace}/batch-upsert` | Batch upsert vectors |
+| `GET` | `/v1/vector/{namespace}` | List vectors |
+| `POST` | `/v1/vector/{namespace}/metadata` | Update vector metadata |
+
+#### Search
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/v1/vector/{namespace}/search` | Similarity search |
+| `POST` | `/v1/vector/{namespace}/search-metadata` | Metadata-filtered search |
+| `POST` | `/v1/vector/{namespace}/search-hybrid` | Hybrid search (vector + metadata) |
+| `POST` | `/v1/vector/{namespace}/search-by-id` | Search by vector ID |
+
+#### Maintenance
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/v1/vector/{namespace}/index/rebuild` | Rebuild vector index |
+| `GET` | `/v1/vector/{namespace}/index/progress` | Get rebuild progress |
+| `POST` | `/v1/vector/{namespace}/compact` | Compact namespace |
+| `GET` | `/v1/vector/{namespace}/stats` | Get namespace statistics |
+
+---
+
+### CORS
+
+When CORS is configured, the REST server adds Cross-Origin Resource Sharing headers for browser-based access. Configurable via the `cors` section in the YAML config:
+
+```yaml
+cors:
+  allowed_origins: ["*"]
+  allowed_headers: ["Authorization", "Content-Type"]
+  max_age: 3600
+```
+
+---
+
 ### REST Error Handling
 
 All endpoints return errors as JSON with an `error` field:
@@ -448,6 +599,18 @@ service QRDBService {
     rpc RemoveMember(RemoveMemberRequest) returns (google.protobuf.Empty);
     rpc RequestSnapshot(RequestSnapshotMessage) returns (google.protobuf.Empty);
     rpc Drain(google.protobuf.Empty) returns (google.protobuf.Empty);
+    rpc Capabilities(CapabilitiesRequest) returns (CapabilitiesResponse);
+    // User management
+    rpc CreateUser(CreateUserRequest) returns (User);
+    rpc GetUser(GetUserRequest) returns (User);
+    rpc UpdateUser(UpdateUserRequest) returns (User);
+    rpc DeleteUser(DeleteUserRequest) returns (google.protobuf.Empty);
+    rpc ListUsers(ListUsersRequest) returns (ListUsersResponse);
+    rpc EnableUser(EnableUserRequest) returns (google.protobuf.Empty);
+    rpc DisableUser(DisableUserRequest) returns (google.protobuf.Empty);
+    // Role management (Create, Get, Update, Delete, List, Assign, Unassign, ListPermissions)
+    // Certificate management (Generate, Export, Revoke, List)
+    // Vector operations (20 RPCs when qrdb_vector tag enabled)
 }
 ```
 
@@ -714,6 +877,50 @@ grpcurl -insecure localhost:63003 qrdb.v1.QRDBService/Drain
 
 ---
 
+### Lock Operations
+
+Lock acquisition and management with fencing tokens.
+
+| Method | Description |
+|--------|-------------|
+| `LockAcquire` | Blocking lock acquisition |
+| `LockTryLock` | Non-blocking lock attempt |
+| `LockRelease` | Release held lock |
+| `LockExtend` | Refresh lock TTL |
+| `LockStatus` | Query lock state |
+| `LockList` | List active locks |
+
+**Errors:**
+
+| gRPC Code | Condition |
+|-----------|-----------|
+| `INVALID_ARGUMENT` | Empty key, invalid TTL |
+| `ALREADY_EXISTS` | Lock held by another holder |
+| `NOT_FOUND` | Lock does not exist |
+| `FAILED_PRECONDITION` | Stale fencing token |
+
+For detailed message definitions and examples, see [18-distributed-locking.md](18-distributed-locking.md#grpc-api).
+
+```bash
+# Acquire lock
+grpcurl -insecure -d '{"key":"mylock","ttl":30}' \
+  localhost:63003 qrdb.v1.QRDBService/LockAcquire
+
+# Release lock
+grpcurl -insecure -d '{"key":"mylock","fencing_token":42}' \
+  localhost:63003 qrdb.v1.QRDBService/LockRelease
+
+# Query lock status
+grpcurl -insecure -d '{"key":"mylock"}' \
+  localhost:63003 qrdb.v1.QRDBService/LockStatus
+
+# List all locks
+grpcurl -insecure -d '{}' \
+  localhost:63003 qrdb.v1.QRDBService/LockList
+```
+
+---
+
 ### gRPC Error Codes
 
 The gRPC server maps service-layer errors to standard gRPC status codes:
@@ -787,6 +994,11 @@ All 9 service interfaces are exposed as MCP tools:
 | TimeSeries | `ts_write`, `ts_write_batch`, `ts_query`, `ts_aggregate` |
 | Admin | `health`, `status`, `peers`, `add_member`, `remove_member`, `snapshot`, `drain` |
 | Barrier | `barrier_init`, `barrier_seal`, `barrier_unseal`, `barrier_status`, `barrier_rotate`, `barrier_rekey`, and tenant operations |
+| Users | `qrdb_user_create`, `qrdb_user_get`, `qrdb_user_update`, `qrdb_user_delete`, `qrdb_user_list`, `qrdb_user_enable`, `qrdb_user_disable` |
+| Roles | `qrdb_role_create`, `qrdb_role_get`, `qrdb_role_update`, `qrdb_role_delete`, `qrdb_role_list`, `qrdb_role_assign`, `qrdb_role_unassign`, `qrdb_permissions_list` |
+| Certs | `qrdb_cert_generate`, `qrdb_cert_export`, `qrdb_cert_revoke`, `qrdb_cert_list` |
+| Vector | 20 tools for namespace, vector CRUD, search, and maintenance |
+| Capabilities | `qrdb_capabilities` |
 
 ### Authentication
 
@@ -798,3 +1010,77 @@ mux.Handle("/mcp", authMiddleware(mcpHandler))
 ```
 
 An `HTTPContextFunc` injects the authenticated identity into the MCP request context.
+
+---
+
+## etcd API
+
+etcd v3 gRPC compatibility layer, exposing per-database etcd endpoints. Each
+database with `etcd: enabled` spawns its own gRPC server implementing the core
+etcd v3 API surface. See [etcd documentation](etcd/README.md) for full details.
+
+### Configuration
+
+etcd is configured per-database, not globally:
+
+```yaml
+databases:
+  - name: k8s-prod
+    engine: kv
+    backend: raft
+    protocol:
+      etcd:
+        enabled: true
+        listen_addr: ":2379"
+        advertise_client_urls:
+          - "https://node1:2379"
+```
+
+### Implemented Services
+
+| etcd gRPC Service | RPCs | Description |
+|---|---|---|
+| `KV` | `Range`, `Put`, `DeleteRange`, `Txn`, `Compact` | Key-value CRUD, transactions, compaction |
+| `Watch` | `Watch` | Bidirectional streaming watch with prefix support |
+| `Lease` | `LeaseGrant`, `LeaseRevoke`, `LeaseKeepAlive`, `LeaseTimeToLive`, `LeaseLeases` | Distributed lease management |
+| `Cluster` | `MemberList` | Cluster membership (maps to QRDB peers) |
+| `Maintenance` | `Status`, `Defragment`, `Alarm` | Node status, compaction, alarm state |
+| `Auth` | -- | Stub (returns `Unimplemented`; mTLS used instead) |
+
+### Connection
+
+```bash
+# With mTLS (required)
+export ETCDCTL_API=3
+export ETCDCTL_ENDPOINTS=https://localhost:2379
+export ETCDCTL_CACERT=ca.pem
+export ETCDCTL_CERT=client.pem
+export ETCDCTL_KEY=client-key.pem
+
+etcdctl put mykey "hello"
+etcdctl get mykey
+etcdctl watch --prefix /events/
+etcdctl lease grant 60
+etcdctl member list
+etcdctl endpoint status
+```
+
+### Authentication
+
+mTLS only. The etcd `Auth` service is stubbed out. Client identity is extracted
+from the TLS client certificate (CN = username, OU = tenant ID). See the
+[authentication documentation](auth/README.md) for details.
+
+### Error Mapping
+
+etcd gRPC errors map to standard gRPC status codes consistent with the etcd v3 API contract:
+
+| gRPC Code | Condition |
+|---|---|
+| `OK` | Success |
+| `NOT_FOUND` | Key not found (empty range response) |
+| `UNAVAILABLE` | Not leader / node draining |
+| `FAILED_PRECONDITION` | Transaction compare failed |
+| `RESOURCE_EXHAUSTED` | Lease table full |
+| `UNIMPLEMENTED` | Auth RPCs (mTLS used instead) |
+| `INTERNAL` | Raft proposal/read failure |

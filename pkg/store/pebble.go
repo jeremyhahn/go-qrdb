@@ -15,52 +15,195 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"io"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/cespare/xxhash/v2"
 	"github.com/cockroachdb/pebble/v2"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/index"
+	qrdbkv "github.com/jeremyhahn/go-qrdb/pkg/kv"
+	"github.com/jeremyhahn/go-qrdb/pkg/lease"
+	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
+	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
+	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
+	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 )
 
-// metaKeyLastApplied is the reserved key used to persist the last applied
-// Raft log index. This key is excluded from user-facing List/GetHash operations.
-const metaKeyLastApplied = "\x00__quicraft_last_applied__"
+// pebbleUpdateHandler processes a single decoded command within a PebbleDB
+// batch. It receives the store, the batch, and the command payload. It
+// returns the result, any watch notifications, and an error.
+type pebbleUpdateHandler func(s *PebbleStateMachine, batch *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error)
 
-// PebbleStore implements sm.DiskStateMachine backed by PebbleDB. It provides
+// pebbleNotification captures a single change event for delivery to the
+// watch hub after the PebbleDB batch is committed.
+type pebbleNotification struct {
+	eventType watch.EventType
+	key       []byte
+	kv        *qrdbkv.KeyValue
+	prevKv    *qrdbkv.KeyValue
+}
+
+// PebbleStateMachine implements sm.DiskStateMachine backed by PebbleDB. It provides
 // persistent key-value storage with crash recovery, prefix-based listing via
 // native PebbleDB iterators, and point-in-time snapshots.
+//
+// When configured with optional components (lessor, indexes, time-series,
+// watch hub), PebbleStateMachine supports the full extended protocol including
+// batch operations, compare-and-swap transactions, lease management,
+// secondary indexes, and time-series storage -- all with direct-to-disk
+// durability and without MVCC versioning overhead.
 //
 // Thread safety: PebbleDB handles its own internal synchronization. Lookup
 // may be called concurrently with Update as required by the DiskStateMachine
 // contract.
-type PebbleStore struct {
+type PebbleStateMachine struct {
 	mu   sync.RWMutex
 	db   *pebble.DB
 	dir  string
 	opts *pebble.Options
+
+	// hub delivers watch notifications after committed batches.
+	hub *watch.Hub
+
+	// lessor manages lease lifecycle. Nil if leases are not enabled.
+	lessor *lease.Lessor
+
+	// indexes holds registered secondary indexes by name.
+	indexes map[string]index.Index
+
+	// ts is the time-series storage engine. Nil if not configured.
+	ts *timeseries.Storage
+
+	// enableTimeSeries indicates that a time-series storage engine
+	// should be created in Open() using the same PebbleDB instance.
+	enableTimeSeries bool
+
+	// updateHandlers maps op codes to their update handlers for O(1) dispatch.
+	updateHandlers map[byte]pebbleUpdateHandler
 }
 
-// NewPebbleStore creates a new PebbleStore with the given PebbleDB options.
+// NewPebbleStateMachine creates a new PebbleStateMachine with the given PebbleDB options.
 // If opts is nil, default options are used. The store must be opened via
 // Open() before use.
-func NewPebbleStore(opts *pebble.Options) *PebbleStore {
+func NewPebbleStateMachine(opts *pebble.Options) *PebbleStateMachine {
 	if opts == nil {
 		opts = &pebble.Options{}
 	}
-	return &PebbleStore{opts: opts}
+	s := &PebbleStateMachine{
+		opts:    opts,
+		indexes: make(map[string]index.Index),
+	}
+	s.updateHandlers = s.buildUpdateHandlers()
+	return s
+}
+
+// buildUpdateHandlers constructs the map-based dispatch table for all
+// supported opcodes. Base KV opcodes (1-3) and extended protocol opcodes
+// (10+) are registered here for O(1) lookup during Update.
+func (s *PebbleStateMachine) buildUpdateHandlers() map[byte]pebbleUpdateHandler {
+	return map[byte]pebbleUpdateHandler{
+		// Base KV operations.
+		kv.OpPut:    pebbleHandlePut,
+		kv.OpGet:    pebbleHandleGet,
+		kv.OpDelete: pebbleHandleDelete,
+
+		// MVCC-compatible Put/Delete (same semantics, no revision tracking).
+		protocol.OpMVCCPut:    pebbleHandleMVCCPut,
+		protocol.OpMVCCDelete: pebbleHandleMVCCDelete,
+
+		// Batch and transaction operations.
+		protocol.OpBatch:       pebbleHandleBatch,
+		protocol.OpTransaction: pebbleHandleTransaction,
+
+		// Lease operations.
+		protocol.OpLeaseGrant:     pebbleHandleLeaseGrant,
+		protocol.OpLeaseRevoke:    pebbleHandleLeaseRevoke,
+		protocol.OpLeaseKeepAlive: pebbleHandleLeaseKeepAlive,
+
+		// Index operations.
+		protocol.OpIndexCreate: s.pebbleHandleIndexCreate,
+		protocol.OpIndexDrop:   s.pebbleHandleIndexDrop,
+
+		// Time-series operations.
+		protocol.OpTSWrite:        s.pebbleHandleTSWrite,
+		protocol.OpTSWriteBatch:   s.pebbleHandleTSWriteBatch,
+		protocol.OpTSWritePoint:   s.pebbleHandleTSWritePoint,
+		protocol.OpTSDeleteSeries: s.pebbleHandleTSDeleteSeries,
+		protocol.OpTSSetRetention: s.pebbleHandleTSSetRetention,
+	}
+}
+
+// SetWatchHub attaches a watch hub to the store. When set, the store
+// emits watch notifications after each committed batch. Must be called
+// before the store is opened.
+func (s *PebbleStateMachine) SetWatchHub(hub *watch.Hub) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.hub = hub
+}
+
+// SetLessor attaches a lessor to the store. When set, lease
+// grant/revoke/keep-alive commands are processed. Must be called
+// before the store is opened.
+func (s *PebbleStateMachine) SetLessor(lr *lease.Lessor) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lessor = lr
+}
+
+// Lessor returns the attached lessor. Returns nil if no lessor is set.
+func (s *PebbleStateMachine) Lessor() *lease.Lessor {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.lessor
+}
+
+// SetTimeSeries attaches a time-series storage engine to the store.
+// Must be called before the store is opened.
+func (s *PebbleStateMachine) SetTimeSeries(ts *timeseries.Storage) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ts = ts
+}
+
+// SetTimeSeriesEnabled instructs the PebbleStateMachine to create a
+// time-series storage engine when the database is opened. Must be
+// called before Open().
+func (s *PebbleStateMachine) SetTimeSeriesEnabled(enabled bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.enableTimeSeries = enabled
+}
+
+// TimeSeries returns the attached time-series storage. Returns nil if
+// not configured.
+func (s *PebbleStateMachine) TimeSeries() *timeseries.Storage {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.ts
+}
+
+// DB returns the underlying PebbleDB instance. Returns nil if the store
+// has not been opened.
+func (s *PebbleStateMachine) DB() *pebble.DB {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.db
 }
 
 // Open initializes the PebbleDB database at the given directory and returns
 // the last applied Raft log index for crash recovery. Returns 0 for a fresh
 // database.
-func (s *PebbleStore) Open(_ context.Context, initialDir string, _ <-chan struct{}) (uint64, error) {
+func (s *PebbleStateMachine) Open(_ context.Context, initialDir string, _ <-chan struct{}) (uint64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -71,10 +214,23 @@ func (s *PebbleStore) Open(_ context.Context, initialDir string, _ <-chan struct
 	s.db = db
 	s.dir = initialDir
 
+	// Create time-series storage if enabled. Uses the same PebbleDB
+	// instance so that TS data shares the same durability guarantees.
+	if s.enableTimeSeries && s.ts == nil {
+		ts, tsErr := timeseries.New(db)
+		if tsErr != nil {
+			_ = db.Close()
+			s.db = nil
+			return 0, &OpenError{Dir: initialDir, Err: tsErr}
+		}
+		s.ts = ts
+	}
+
 	lastApplied, err := s.readLastApplied()
 	if err != nil {
 		_ = s.db.Close()
 		s.db = nil
+		s.ts = nil
 		return 0, &ReadError{Key: metaKeyLastApplied, Err: err}
 	}
 
@@ -82,7 +238,7 @@ func (s *PebbleStore) Open(_ context.Context, initialDir string, _ <-chan struct
 }
 
 // readLastApplied reads the persisted last applied index from the metadata key.
-func (s *PebbleStore) readLastApplied() (uint64, error) {
+func (s *PebbleStateMachine) readLastApplied() (uint64, error) {
 	val, closer, err := s.db.Get([]byte(metaKeyLastApplied))
 	if err != nil {
 		if err == pebble.ErrNotFound {
@@ -98,10 +254,12 @@ func (s *PebbleStore) readLastApplied() (uint64, error) {
 	return binary.LittleEndian.Uint64(val), nil
 }
 
-// Update applies committed entries to the PebbleDB store using an atomic batch.
-// Entries are decoded using the KV protocol (OpPut, OpGet, OpDelete). The last
-// applied index is persisted in the same batch for crash recovery.
-func (s *PebbleStore) Update(_ context.Context, entries []sm.Entry, results []sm.Result) error {
+// Update applies committed entries to the PebbleDB store using an atomic
+// batch. Each entry is decoded using either the base KV protocol or the
+// extended wire protocol and dispatched to the appropriate handler via
+// map-based O(1) lookup. The last applied index is persisted in the same
+// batch for crash recovery.
+func (s *PebbleStateMachine) Update(_ context.Context, entries []sm.Entry, results []sm.Result) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -113,25 +271,39 @@ func (s *PebbleStore) Update(_ context.Context, entries []sm.Entry, results []sm
 	defer func() { _ = batch.Close() }()
 
 	var lastIndex uint64
+	var notifications []pebbleNotification
+
 	for i, e := range entries {
-		cmd, err := kv.DecodeCommand(e.Cmd)
+		if len(e.Cmd) == 0 {
+			return &protocol.InvalidCommandError{Reason: "empty command"}
+		}
+
+		op := e.Cmd[0]
+		handler, ok := s.updateHandlers[op]
+		if !ok {
+			return &protocol.UnknownOpError{Op: op}
+		}
+
+		// For base KV ops (1-3), payload starts at byte 1 (the full command
+		// is passed to the handler which decodes it). For extended ops (10+),
+		// payload starts at byte 1 as well (the op byte is stripped).
+		var payload []byte
+		if op <= kv.OpDelete {
+			// Base KV handlers receive the full command including the op byte.
+			payload = e.Cmd
+		} else {
+			// Extended protocol handlers receive payload after op byte.
+			payload = e.Cmd[1:]
+		}
+
+		result, notifs, err := handler(s, batch, payload)
 		if err != nil {
 			return err
 		}
+		results[i] = result
 
-		switch cmd.Op {
-		case kv.OpPut:
-			if err := batch.Set(cmd.Key, cmd.Value, pebble.Sync); err != nil {
-				return &WriteError{Err: err}
-			}
-			results[i] = sm.Result{Value: uint64(len(cmd.Value))}
-		case kv.OpDelete:
-			if err := batch.Delete(cmd.Key, pebble.Sync); err != nil {
-				return &WriteError{Err: err}
-			}
-			results[i] = sm.Result{Value: 1}
-		case kv.OpGet:
-			results[i] = sm.Result{Value: 0}
+		if len(notifs) > 0 {
+			notifications = append(notifications, notifs...)
 		}
 
 		if e.Index > lastIndex {
@@ -152,14 +324,36 @@ func (s *PebbleStore) Update(_ context.Context, entries []sm.Entry, results []sm
 		return &WriteError{Err: err}
 	}
 
+	// Deliver watch notifications after the batch is committed.
+	if s.hub != nil && len(notifications) > 0 {
+		for _, n := range notifications {
+			switch n.eventType {
+			case watch.EventPut:
+				s.hub.NotifyPut(n.key, n.kv, n.prevKv)
+			case watch.EventDelete:
+				s.hub.NotifyDelete(n.key, n.kv, n.prevKv)
+			}
+		}
+	}
+
 	return nil
 }
 
-// Lookup reads state from the PebbleDB store. Supports three query types:
+// Lookup reads state from the PebbleDB store. Supports the following query types:
 //   - kv.ListQuery: returns sorted []string of keys matching the prefix
+//   - lease.LeaseTimeToLiveQuery: returns *lease.Lease for the given ID
+//   - lease.LeasesQuery: returns []*lease.Lease for all active leases
+//   - index.IndexQueryRequest: returns []uint64 entity IDs matching the value
+//   - index.IndexScanRequest: returns map[string][]uint64 for the range
+//   - index.IndexListRequest: returns []string of index names
+//   - timeseries.TSQueryRequest: returns time-series query results
+//   - timeseries.TSAggregateRequest: returns aggregation results
+//   - timeseries.TSRichQueryRequest: returns rich query results
+//   - timeseries.TSGetRetentionRequest: returns retention policy
+//   - timeseries.TSListMetricsRequest: returns []string of metric names
 //   - []byte: returns a copy of the value for the given key
 //   - string: returns a copy of the value for the given key
-func (s *PebbleStore) Lookup(_ context.Context, query interface{}) (interface{}, error) {
+func (s *PebbleStateMachine) Lookup(_ context.Context, query interface{}) (interface{}, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -167,25 +361,94 @@ func (s *PebbleStore) Lookup(_ context.Context, query interface{}) (interface{},
 		return nil, &NotOpenError{}
 	}
 
-	if lq, ok := query.(kv.ListQuery); ok {
-		return s.listKeys(lq.Prefix)
-	}
+	switch q := query.(type) {
+	case kv.ListQuery:
+		return s.listKeys(q.Prefix)
 
-	key, ok := query.([]byte)
-	if !ok {
-		if str, ok := query.(string); ok {
-			key = []byte(str)
-		} else {
-			return nil, &InvalidQueryError{Reason: "query must be []byte, string, or kv.ListQuery"}
+	case lease.LeaseTimeToLiveQuery:
+		if s.lessor == nil {
+			return nil, &InvalidQueryError{Reason: "lessor not configured"}
 		}
-	}
+		l := s.lessor.Lookup(q.ID)
+		if l == nil {
+			return nil, &ReadError{Key: "lease", Err: &InvalidQueryError{Reason: "lease not found"}}
+		}
+		return l, nil
 
-	return s.getKey(key)
+	case lease.LeasesQuery:
+		if s.lessor == nil {
+			return nil, &InvalidQueryError{Reason: "lessor not configured"}
+		}
+		return s.lessor.Leases(), nil
+
+	case index.IndexQueryRequest:
+		idx, ok := s.indexes[q.IndexName]
+		if !ok {
+			return nil, &InvalidQueryError{Reason: "index not found: " + q.IndexName}
+		}
+		return idx.Get(q.Value)
+
+	case index.IndexScanRequest:
+		idx, ok := s.indexes[q.IndexName]
+		if !ok {
+			return nil, &InvalidQueryError{Reason: "index not found: " + q.IndexName}
+		}
+		return idx.Scan(q.Start, q.End)
+
+	case index.IndexListRequest:
+		names := make([]string, 0, len(s.indexes))
+		for name := range s.indexes {
+			names = append(names, name)
+		}
+		return names, nil
+
+	case timeseries.TSQueryRequest:
+		if s.ts == nil {
+			return nil, &InvalidQueryError{Reason: "time-series storage not configured"}
+		}
+		return s.ts.Query(q.Metric, q.Start, q.End, q.Opts...)
+
+	case timeseries.TSAggregateRequest:
+		if s.ts == nil {
+			return nil, &InvalidQueryError{Reason: "time-series storage not configured"}
+		}
+		return s.ts.Aggregate(q.Metric, q.Start, q.End, q.Func, q.Interval)
+
+	case timeseries.TSRichQueryRequest:
+		if s.ts == nil {
+			return nil, &InvalidQueryError{Reason: "time-series storage not configured"}
+		}
+		return s.ts.QueryRich(context.Background(), q.Request)
+
+	case timeseries.TSGetRetentionRequest:
+		if s.ts == nil {
+			return nil, &InvalidQueryError{Reason: "time-series storage not configured"}
+		}
+		return s.ts.GetRetentionPolicy(q.Metric)
+
+	case timeseries.TSListMetricsRequest:
+		if s.ts == nil {
+			return nil, &InvalidQueryError{Reason: "time-series storage not configured"}
+		}
+		return s.ts.ListMetrics(q.Prefix, q.Limit)
+
+	case *statemachine.PrefixQuery:
+		return s.scanPrefix(q)
+
+	case []byte:
+		return s.getKey(q)
+
+	case string:
+		return s.getKey([]byte(q))
+
+	default:
+		return nil, &InvalidQueryError{Reason: "unsupported query type"}
+	}
 }
 
 // listKeys returns sorted keys matching the given prefix using a native PebbleDB
 // prefix iterator. The metadata key is excluded from results.
-func (s *PebbleStore) listKeys(prefix string) ([]string, error) {
+func (s *PebbleStateMachine) listKeys(prefix string) ([]string, error) {
 	iterOpts := &pebble.IterOptions{}
 	if prefix != "" {
 		lower := []byte(prefix)
@@ -202,11 +465,20 @@ func (s *PebbleStore) listKeys(prefix string) ([]string, error) {
 	}
 	defer func() { _ = iter.Close() }()
 
+	// When the prefix itself targets system key space, skip the internal
+	// key filter so that internal stores (users, roles, certs) can list
+	// their own records through the PebbleStateMachine path.
+	skipFilter := strings.HasPrefix(prefix, "__sys:")
+
 	var keys []string
 	for iter.First(); iter.Valid(); iter.Next() {
 		k := string(iter.Key())
-		// Exclude internal metadata keys (prefixed with \x00).
+		// Exclude internal metadata keys (prefixed with \x00) and
+		// system keys used for roles, users, and indexes.
 		if len(k) > 0 && k[0] == '\x00' {
+			continue
+		}
+		if !skipFilter && isInternalKey(k) {
 			continue
 		}
 		if prefix == "" || strings.HasPrefix(k, prefix) {
@@ -224,6 +496,56 @@ func (s *PebbleStore) listKeys(prefix string) ([]string, error) {
 	return keys, nil
 }
 
+// scanPrefix performs a prefix scan returning a map of key→value pairs.
+// If limit > 0, at most that many entries are returned.
+func (s *PebbleStateMachine) scanPrefix(pq *statemachine.PrefixQuery) (map[string][]byte, error) {
+	prefix := string(pq.Prefix)
+	iterOpts := &pebble.IterOptions{}
+	if len(pq.Prefix) > 0 {
+		upper := prefixUpperBound(pq.Prefix)
+		iterOpts.LowerBound = pq.Prefix
+		if upper != nil {
+			iterOpts.UpperBound = upper
+		}
+	}
+
+	iter, err := s.db.NewIter(iterOpts)
+	if err != nil {
+		return nil, &ReadError{Key: prefix, Err: err}
+	}
+	defer func() { _ = iter.Close() }()
+
+	skipFilter := strings.HasPrefix(prefix, "__sys:")
+
+	result := make(map[string][]byte)
+	for iter.First(); iter.Valid(); iter.Next() {
+		k := string(iter.Key())
+		if len(k) > 0 && k[0] == '\x00' {
+			continue
+		}
+		if !skipFilter && isInternalKey(k) {
+			continue
+		}
+		if prefix == "" || strings.HasPrefix(k, prefix) {
+			val, err := iter.ValueAndErr()
+			if err != nil {
+				return nil, &ReadError{Key: k, Err: err}
+			}
+			cp := make([]byte, len(val))
+			copy(cp, val)
+			result[k] = cp
+			if pq.Limit > 0 && len(result) >= pq.Limit {
+				break
+			}
+		}
+	}
+	if err := iter.Error(); err != nil {
+		return nil, &ReadError{Key: prefix, Err: err}
+	}
+
+	return result, nil
+}
+
 // prefixUpperBound computes the upper bound for a prefix scan. Returns nil
 // if no upper bound can be computed (prefix is all 0xFF bytes).
 func prefixUpperBound(prefix []byte) []byte {
@@ -239,7 +561,7 @@ func prefixUpperBound(prefix []byte) []byte {
 }
 
 // getKey retrieves a single key's value, returning a defensive copy.
-func (s *PebbleStore) getKey(key []byte) ([]byte, error) {
+func (s *PebbleStateMachine) getKey(key []byte) ([]byte, error) {
 	val, closer, err := s.db.Get(key)
 	if err != nil {
 		if err == pebble.ErrNotFound {
@@ -256,7 +578,7 @@ func (s *PebbleStore) getKey(key []byte) ([]byte, error) {
 
 // BytesLookup performs a zero-allocation byte-slice lookup for the NALookup
 // interface. Returns a defensive copy of the value.
-func (s *PebbleStore) BytesLookup(key []byte) ([]byte, error) {
+func (s *PebbleStateMachine) BytesLookup(key []byte) ([]byte, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -269,7 +591,7 @@ func (s *PebbleStore) BytesLookup(key []byte) ([]byte, error) {
 
 // Sync flushes all pending writes to durable storage. Called before snapshot
 // operations to ensure consistency.
-func (s *PebbleStore) Sync() error {
+func (s *PebbleStateMachine) Sync() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -285,7 +607,7 @@ func (s *PebbleStore) Sync() error {
 
 // PrepareSnapshot creates a point-in-time snapshot of the database for use
 // by SaveSnapshot. The returned *pebble.Snapshot must be closed after use.
-func (s *PebbleStore) PrepareSnapshot() (interface{}, error) {
+func (s *PebbleStateMachine) PrepareSnapshot() (interface{}, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -300,7 +622,7 @@ func (s *PebbleStore) PrepareSnapshot() (interface{}, error) {
 // to the writer using the same wire format as the in-memory KV stores:
 // [count:4 LE] then for each pair: [keyLen:4 LE][key][valLen:4 LE][val].
 // Internal metadata keys are excluded from the snapshot.
-func (s *PebbleStore) SaveSnapshot(_ context.Context, snapshotCtx interface{}, w io.Writer, stopper <-chan struct{}) error {
+func (s *PebbleStateMachine) SaveSnapshot(_ context.Context, snapshotCtx interface{}, w io.Writer, stopper <-chan struct{}) error {
 	snap, ok := snapshotCtx.(*pebble.Snapshot)
 	if !ok {
 		return &SnapshotError{Op: "save", Err: &InvalidQueryError{Reason: "invalid snapshot context type"}}
@@ -374,7 +696,7 @@ func (s *PebbleStore) SaveSnapshot(_ context.Context, snapshotCtx interface{}, w
 
 // RecoverFromSnapshot restores the database state from the reader, replacing
 // all existing data. Reads the same wire format written by SaveSnapshot.
-func (s *PebbleStore) RecoverFromSnapshot(_ context.Context, r io.Reader, stopper <-chan struct{}) error {
+func (s *PebbleStateMachine) RecoverFromSnapshot(_ context.Context, r io.Reader, stopper <-chan struct{}) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -433,7 +755,7 @@ func (s *PebbleStore) RecoverFromSnapshot(_ context.Context, r io.Reader, stoppe
 }
 
 // clearAll removes all entries from the database using a range deletion.
-func (s *PebbleStore) clearAll() error {
+func (s *PebbleStateMachine) clearAll() error {
 	iter, err := s.db.NewIter(nil)
 	if err != nil {
 		return err
@@ -462,7 +784,7 @@ func (s *PebbleStore) clearAll() error {
 }
 
 // Close releases all resources held by the PebbleDB store.
-func (s *PebbleStore) Close(_ context.Context) error {
+func (s *PebbleStateMachine) Close(_ context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -477,7 +799,7 @@ func (s *PebbleStore) Close(_ context.Context) error {
 
 // GetHash computes a deterministic xxhash64 hash of all user key-value pairs
 // in sorted order. Internal metadata keys are excluded.
-func (s *PebbleStore) GetHash() (uint64, error) {
+func (s *PebbleStateMachine) GetHash() (uint64, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -513,9 +835,658 @@ func (s *PebbleStore) GetHash() (uint64, error) {
 	return h.Sum64(), nil
 }
 
+// ---------------------------------------------------------------------------
+// Base KV update handlers
+// ---------------------------------------------------------------------------
+
+// pebbleHandlePut processes a base KV Put command (OpPut=1). The payload
+// is the full encoded command including the op byte.
+func pebbleHandlePut(s *PebbleStateMachine, batch *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
+	cmd, err := kv.DecodeCommand(payload)
+	if err != nil {
+		return sm.Result{}, nil, err
+	}
+
+	// Capture previous value for watch notifications.
+	var prevKv *qrdbkv.KeyValue
+	if s.hub != nil {
+		if val, getErr := s.getKeyNoLock(cmd.Key); getErr == nil {
+			prevKv = &qrdbkv.KeyValue{Key: cmd.Key, Value: val}
+		}
+	}
+
+	if err := batch.Set(cmd.Key, cmd.Value, pebble.Sync); err != nil {
+		return sm.Result{}, nil, &WriteError{Err: err}
+	}
+
+	var notifs []pebbleNotification
+	if s.hub != nil {
+		notifs = []pebbleNotification{{
+			eventType: watch.EventPut,
+			key:       cmd.Key,
+			kv:        &qrdbkv.KeyValue{Key: cmd.Key, Value: cmd.Value},
+			prevKv:    prevKv,
+		}}
+	}
+
+	return sm.Result{Value: uint64(len(cmd.Value))}, notifs, nil
+}
+
+// pebbleHandleGet processes a base KV Get command (OpGet=2). Gets are
+// no-ops in the Update path (reads happen in Lookup).
+func pebbleHandleGet(_ *PebbleStateMachine, _ *pebble.Batch, _ []byte) (sm.Result, []pebbleNotification, error) {
+	return sm.Result{Value: 0}, nil, nil
+}
+
+// pebbleHandleDelete processes a base KV Delete command (OpDelete=3). The
+// payload is the full encoded command including the op byte.
+func pebbleHandleDelete(s *PebbleStateMachine, batch *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
+	cmd, err := kv.DecodeCommand(payload)
+	if err != nil {
+		return sm.Result{}, nil, err
+	}
+
+	// Capture previous value for watch notifications.
+	var prevKv *qrdbkv.KeyValue
+	if s.hub != nil {
+		if val, getErr := s.getKeyNoLock(cmd.Key); getErr == nil {
+			prevKv = &qrdbkv.KeyValue{Key: cmd.Key, Value: val}
+		}
+	}
+
+	if err := batch.Delete(cmd.Key, pebble.Sync); err != nil {
+		return sm.Result{}, nil, &WriteError{Err: err}
+	}
+
+	var notifs []pebbleNotification
+	if s.hub != nil {
+		notifs = []pebbleNotification{{
+			eventType: watch.EventDelete,
+			key:       cmd.Key,
+			kv:        &qrdbkv.KeyValue{Key: cmd.Key},
+			prevKv:    prevKv,
+		}}
+	}
+
+	return sm.Result{Value: 1}, notifs, nil
+}
+
+// ---------------------------------------------------------------------------
+// Extended protocol update handlers (MVCC-compatible, no revision tracking)
+// ---------------------------------------------------------------------------
+
+// pebbleHandleMVCCPut processes an MVCC Put command without revision
+// tracking. The key-value pair is stored directly in PebbleDB. Lease
+// attachment is tracked if a lessor is configured.
+func pebbleHandleMVCCPut(s *PebbleStateMachine, batch *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
+	key, value, leaseID, err := protocol.DecodeMVCCPut(payload)
+	if err != nil {
+		return sm.Result{}, nil, err
+	}
+
+	// Capture previous value for watch notifications.
+	var prevKv *qrdbkv.KeyValue
+	if s.hub != nil {
+		if val, getErr := s.getKeyNoLock(key); getErr == nil {
+			prevKv = &qrdbkv.KeyValue{Key: key, Value: val}
+		}
+	}
+
+	if err := batch.Set(key, value, pebble.Sync); err != nil {
+		return sm.Result{}, nil, &WriteError{Err: err}
+	}
+
+	// Track key-lease attachment.
+	if s.lessor != nil && leaseID > 0 {
+		s.lessor.AttachKey(leaseID, key)
+	}
+
+	var notifs []pebbleNotification
+	if s.hub != nil {
+		notifs = []pebbleNotification{{
+			eventType: watch.EventPut,
+			key:       key,
+			kv:        &qrdbkv.KeyValue{Key: key, Value: value, LeaseID: leaseID},
+			prevKv:    prevKv,
+		}}
+	}
+
+	return sm.Result{Value: uint64(len(value))}, notifs, nil
+}
+
+// pebbleHandleMVCCDelete processes an MVCC Delete command without
+// revision tracking. The key is deleted directly from PebbleDB.
+func pebbleHandleMVCCDelete(s *PebbleStateMachine, batch *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
+	key, err := protocol.DecodeMVCCDelete(payload)
+	if err != nil {
+		return sm.Result{}, nil, err
+	}
+
+	// Capture previous value for watch notifications.
+	var prevKv *qrdbkv.KeyValue
+	if s.hub != nil {
+		if val, getErr := s.getKeyNoLock(key); getErr == nil {
+			prevKv = &qrdbkv.KeyValue{Key: key, Value: val}
+		}
+	}
+
+	if err := batch.Delete(key, pebble.Sync); err != nil {
+		return sm.Result{}, nil, &WriteError{Err: err}
+	}
+
+	// Detach key from lease if it had one.
+	if s.lessor != nil && prevKv != nil && prevKv.LeaseID > 0 {
+		s.lessor.DetachKey(prevKv.LeaseID, key)
+	}
+
+	var notifs []pebbleNotification
+	if s.hub != nil {
+		notifs = []pebbleNotification{{
+			eventType: watch.EventDelete,
+			key:       key,
+			kv:        &qrdbkv.KeyValue{Key: key},
+			prevKv:    prevKv,
+		}}
+	}
+
+	return sm.Result{Value: 1}, notifs, nil
+}
+
+// ---------------------------------------------------------------------------
+// Batch handler
+// ---------------------------------------------------------------------------
+
+// pebbleHandleBatch processes a batch of operations. All operations are
+// executed atomically within the PebbleDB batch.
+func pebbleHandleBatch(s *PebbleStateMachine, batch *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
+	ops, err := protocol.DecodeBatch(payload)
+	if err != nil {
+		return sm.Result{}, nil, err
+	}
+
+	var notifs []pebbleNotification
+	for _, op := range ops {
+		opNotifs, execErr := pebbleExecuteOp(s, batch, op)
+		if execErr != nil {
+			return sm.Result{}, nil, execErr
+		}
+		notifs = append(notifs, opNotifs...)
+	}
+
+	return sm.Result{Value: uint64(len(ops))}, notifs, nil
+}
+
+// ---------------------------------------------------------------------------
+// Transaction handler (compare-and-swap without MVCC revisions)
+// ---------------------------------------------------------------------------
+
+// pebbleHandleTransaction processes a compare-and-swap transaction.
+// Evaluates all compares against current PebbleDB state, then atomically
+// executes the success or failure operation set.
+func pebbleHandleTransaction(s *PebbleStateMachine, batch *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
+	txn, err := protocol.DecodeTransaction(payload)
+	if err != nil {
+		return sm.Result{}, nil, err
+	}
+
+	// Evaluate all compares against current state.
+	succeeded := true
+	for _, dc := range txn.Compares {
+		if !pebbleEvaluateCompare(s, dc) {
+			succeeded = false
+			break
+		}
+	}
+
+	// Select the operation set to execute.
+	var ops []protocol.DecodedOp
+	if succeeded {
+		ops = txn.SuccessOps
+	} else {
+		ops = txn.FailureOps
+	}
+
+	// Execute all operations atomically.
+	var notifs []pebbleNotification
+	for _, op := range ops {
+		opNotifs, execErr := pebbleExecuteOp(s, batch, op)
+		if execErr != nil {
+			return sm.Result{}, nil, execErr
+		}
+		notifs = append(notifs, opNotifs...)
+	}
+
+	// Encode result: Value = op count, Data[0] = succeeded flag.
+	var data [1]byte
+	if succeeded {
+		data[0] = 1
+	}
+	return sm.Result{Value: uint64(len(ops)), Data: data[:]}, notifs, nil
+}
+
+// pebbleEvaluateCompare evaluates a single transaction compare against the
+// current PebbleDB state. Without MVCC, only value-based comparisons are
+// meaningful. Revision/version comparisons default to zero for all keys.
+func pebbleEvaluateCompare(s *PebbleStateMachine, dc protocol.DecodedCompare) bool {
+	val, err := s.getKeyNoLock(dc.Key)
+
+	// Build the target value for comparison.
+	switch dc.Target {
+	case 3: // CompareValue
+		if err != nil {
+			// Key does not exist: only equal-to-zero-length succeeds.
+			return (dc.Result == 0) && len(dc.Value) == 0
+		}
+		cmp := bytes.Compare(val, dc.Value)
+		return evaluateCompareResult(dc.Result, cmp)
+
+	case 0: // CompareVersion
+		// Without MVCC, version is 0 if key doesn't exist, 1 if it does.
+		var version int64
+		if err == nil {
+			version = 1
+		}
+		return evaluateCompareInt(dc.Result, version, dc.Version)
+
+	case 1: // CompareCreateRevision
+		// Without MVCC, create revision is 0 for all keys.
+		return evaluateCompareInt(dc.Result, 0, dc.CreateRevision)
+
+	case 2: // CompareModRevision
+		// Without MVCC, mod revision is 0 for all keys.
+		return evaluateCompareInt(dc.Result, 0, dc.ModRevision)
+
+	default:
+		return false
+	}
+}
+
+// evaluateCompareResult maps a comparison result (from bytes.Compare) to
+// the expected compare result byte.
+func evaluateCompareResult(result byte, cmp int) bool {
+	switch result {
+	case 0: // Equal
+		return cmp == 0
+	case 1: // Greater
+		return cmp > 0
+	case 2: // Less
+		return cmp < 0
+	case 3: // NotEqual
+		return cmp != 0
+	default:
+		return false
+	}
+}
+
+// evaluateCompareInt compares two int64 values using the compare result byte.
+func evaluateCompareInt(result byte, actual, expected int64) bool {
+	switch result {
+	case 0: // Equal
+		return actual == expected
+	case 1: // Greater
+		return actual > expected
+	case 2: // Less
+		return actual < expected
+	case 3: // NotEqual
+		return actual != expected
+	default:
+		return false
+	}
+}
+
+// pebbleExecuteOp executes a single decoded operation (Put or Delete)
+// within the PebbleDB batch. Returns watch notifications.
+func pebbleExecuteOp(s *PebbleStateMachine, batch *pebble.Batch, op protocol.DecodedOp) ([]pebbleNotification, error) {
+	switch op.Type {
+	case protocol.OpMVCCPut:
+		var prevKv *qrdbkv.KeyValue
+		if s.hub != nil {
+			if val, err := s.getKeyNoLock(op.Key); err == nil {
+				prevKv = &qrdbkv.KeyValue{Key: op.Key, Value: val}
+			}
+		}
+
+		if err := batch.Set(op.Key, op.Value, pebble.Sync); err != nil {
+			return nil, &WriteError{Err: err}
+		}
+
+		if s.lessor != nil && op.LeaseID > 0 {
+			s.lessor.AttachKey(op.LeaseID, op.Key)
+		}
+
+		var notifs []pebbleNotification
+		if s.hub != nil {
+			notifs = []pebbleNotification{{
+				eventType: watch.EventPut,
+				key:       op.Key,
+				kv:        &qrdbkv.KeyValue{Key: op.Key, Value: op.Value, LeaseID: op.LeaseID},
+				prevKv:    prevKv,
+			}}
+		}
+		return notifs, nil
+
+	case protocol.OpMVCCDelete:
+		var prevKv *qrdbkv.KeyValue
+		if s.hub != nil {
+			if val, err := s.getKeyNoLock(op.Key); err == nil {
+				prevKv = &qrdbkv.KeyValue{Key: op.Key, Value: val}
+			}
+		}
+
+		if err := batch.Delete(op.Key, pebble.Sync); err != nil {
+			return nil, &WriteError{Err: err}
+		}
+
+		if s.lessor != nil && prevKv != nil && prevKv.LeaseID > 0 {
+			s.lessor.DetachKey(prevKv.LeaseID, op.Key)
+		}
+
+		var notifs []pebbleNotification
+		if s.hub != nil {
+			notifs = []pebbleNotification{{
+				eventType: watch.EventDelete,
+				key:       op.Key,
+				kv:        &qrdbkv.KeyValue{Key: op.Key},
+				prevKv:    prevKv,
+			}}
+		}
+		return notifs, nil
+
+	default:
+		return nil, &protocol.UnknownOpError{Op: op.Type}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Lease handlers
+// ---------------------------------------------------------------------------
+
+// pebbleHandleLeaseGrant creates a new lease with the specified TTL.
+func pebbleHandleLeaseGrant(s *PebbleStateMachine, _ *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
+	ttl, err := protocol.DecodeLeaseGrant(payload)
+	if err != nil {
+		return sm.Result{}, nil, err
+	}
+
+	if s.lessor == nil {
+		return sm.Result{}, nil, &NotOpenError{}
+	}
+
+	info, grantErr := s.lessor.Grant(ttl)
+	if grantErr != nil {
+		return sm.Result{}, nil, grantErr
+	}
+
+	return sm.Result{Value: uint64(info.ID)}, nil, nil
+}
+
+// pebbleHandleLeaseRevoke expires a lease and deletes all attached keys.
+func pebbleHandleLeaseRevoke(s *PebbleStateMachine, batch *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
+	leaseID, err := protocol.DecodeLeaseRevoke(payload)
+	if err != nil {
+		return sm.Result{}, nil, err
+	}
+
+	if s.lessor == nil {
+		return sm.Result{}, nil, &NotOpenError{}
+	}
+
+	keys, revokeErr := s.lessor.Revoke(leaseID)
+	if revokeErr != nil {
+		return sm.Result{}, nil, revokeErr
+	}
+
+	// Delete all attached keys.
+	var notifs []pebbleNotification
+	for _, key := range keys {
+		var prevKv *qrdbkv.KeyValue
+		if s.hub != nil {
+			if val, getErr := s.getKeyNoLock(key); getErr == nil {
+				prevKv = &qrdbkv.KeyValue{Key: key, Value: val}
+			}
+		}
+
+		if delErr := batch.Delete(key, pebble.Sync); delErr != nil {
+			continue // key may already be deleted
+		}
+
+		if s.hub != nil {
+			notifs = append(notifs, pebbleNotification{
+				eventType: watch.EventDelete,
+				key:       key,
+				kv:        &qrdbkv.KeyValue{Key: key},
+				prevKv:    prevKv,
+			})
+		}
+	}
+
+	return sm.Result{Value: uint64(len(keys))}, notifs, nil
+}
+
+// pebbleHandleLeaseKeepAlive resets a lease's TTL.
+func pebbleHandleLeaseKeepAlive(s *PebbleStateMachine, _ *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
+	leaseID, err := protocol.DecodeLeaseKeepAlive(payload)
+	if err != nil {
+		return sm.Result{}, nil, err
+	}
+
+	if s.lessor == nil {
+		return sm.Result{}, nil, &NotOpenError{}
+	}
+
+	_, kaErr := s.lessor.KeepAlive(leaseID)
+	if kaErr != nil {
+		return sm.Result{}, nil, kaErr
+	}
+
+	return sm.Result{Value: uint64(leaseID)}, nil, nil
+}
+
+// ---------------------------------------------------------------------------
+// Index handlers
+// ---------------------------------------------------------------------------
+
+// pebbleHandleIndexCreate creates a new secondary index backed by the
+// same PebbleDB instance.
+func (s *PebbleStateMachine) pebbleHandleIndexCreate(_ *PebbleStateMachine, _ *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
+	name, _, unique, sparse, numeric, err := protocol.DecodeIndexCreate(payload)
+	if err != nil {
+		return sm.Result{}, nil, err
+	}
+	_ = sparse // reserved for future use
+
+	if _, exists := s.indexes[name]; exists {
+		return sm.Result{}, nil, &InvalidQueryError{Reason: "index already exists: " + name}
+	}
+
+	valueType := index.IndexValueTypeString
+	if numeric {
+		valueType = index.IndexValueTypeNumeric
+	}
+
+	idx, idxErr := index.NewPebbleIndex(s.db, name, unique, valueType)
+	if idxErr != nil {
+		return sm.Result{}, nil, idxErr
+	}
+	s.indexes[name] = idx
+
+	return sm.Result{Value: 1}, nil, nil
+}
+
+// pebbleHandleIndexDrop removes a secondary index and clears all its entries.
+func (s *PebbleStateMachine) pebbleHandleIndexDrop(_ *PebbleStateMachine, _ *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
+	name, err := protocol.DecodeIndexDrop(payload)
+	if err != nil {
+		return sm.Result{}, nil, err
+	}
+
+	idx, ok := s.indexes[name]
+	if !ok {
+		return sm.Result{}, nil, &InvalidQueryError{Reason: "index not found: " + name}
+	}
+
+	if err := idx.Clear(); err != nil {
+		return sm.Result{}, nil, err
+	}
+	if err := idx.Close(); err != nil {
+		return sm.Result{}, nil, err
+	}
+	delete(s.indexes, name)
+
+	return sm.Result{Value: 1}, nil, nil
+}
+
+// ---------------------------------------------------------------------------
+// Time-series handlers
+// ---------------------------------------------------------------------------
+
+// pebbleHandleTSWrite stores a single time-series data point.
+func (s *PebbleStateMachine) pebbleHandleTSWrite(_ *PebbleStateMachine, _ *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
+	if s.ts == nil {
+		return sm.Result{}, nil, &NotOpenError{}
+	}
+
+	params, err := protocol.DecodeTSWrite(payload)
+	if err != nil {
+		return sm.Result{}, nil, err
+	}
+
+	if err := s.ts.Write(params.Metric, params.Value, time.Unix(0, params.Timestamp), params.Tags); err != nil {
+		return sm.Result{}, nil, err
+	}
+
+	return sm.Result{Value: 1}, nil, nil
+}
+
+// pebbleHandleTSWriteBatch stores multiple time-series data points.
+func (s *PebbleStateMachine) pebbleHandleTSWriteBatch(_ *PebbleStateMachine, _ *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
+	if s.ts == nil {
+		return sm.Result{}, nil, &NotOpenError{}
+	}
+
+	params, err := protocol.DecodeTSWriteBatch(payload)
+	if err != nil {
+		return sm.Result{}, nil, err
+	}
+
+	points := make([]timeseries.DataPoint, len(params))
+	for i, p := range params {
+		points[i] = timeseries.DataPoint{
+			Metric:    p.Metric,
+			Value:     p.Value,
+			Timestamp: time.Unix(0, p.Timestamp),
+			Tags:      p.Tags,
+		}
+	}
+
+	if err := s.ts.WriteBatch(points); err != nil {
+		return sm.Result{}, nil, err
+	}
+
+	return sm.Result{Value: uint64(len(points))}, nil, nil
+}
+
+// pebbleHandleTSWritePoint stores a single validated time-series data point.
+func (s *PebbleStateMachine) pebbleHandleTSWritePoint(_ *PebbleStateMachine, _ *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
+	if s.ts == nil {
+		return sm.Result{}, nil, &NotOpenError{}
+	}
+
+	params, err := protocol.DecodeTSWrite(payload)
+	if err != nil {
+		return sm.Result{}, nil, err
+	}
+
+	dp := &timeseries.DataPoint{
+		Metric:    params.Metric,
+		Value:     params.Value,
+		Timestamp: time.Unix(0, params.Timestamp),
+		Tags:      params.Tags,
+	}
+	if err := s.ts.WritePoint(context.Background(), dp); err != nil {
+		return sm.Result{}, nil, err
+	}
+
+	return sm.Result{Value: 1}, nil, nil
+}
+
+// pebbleHandleTSDeleteSeries deletes time-series data matching criteria.
+func (s *PebbleStateMachine) pebbleHandleTSDeleteSeries(_ *PebbleStateMachine, _ *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
+	if s.ts == nil {
+		return sm.Result{}, nil, &NotOpenError{}
+	}
+
+	params, err := protocol.DecodeTSDeleteSeries(payload)
+	if err != nil {
+		return sm.Result{}, nil, err
+	}
+
+	req := &timeseries.DeleteRequest{
+		Metric: params.Metric,
+		Tags:   params.Tags,
+	}
+	if params.StartNs != 0 {
+		req.StartTime = time.Unix(0, params.StartNs)
+	}
+	if params.EndNs != 0 {
+		req.EndTime = time.Unix(0, params.EndNs)
+	}
+
+	if err := s.ts.DeleteSeries(context.Background(), req); err != nil {
+		return sm.Result{}, nil, err
+	}
+
+	return sm.Result{Value: 1}, nil, nil
+}
+
+// pebbleHandleTSSetRetention sets the retention policy for a metric.
+func (s *PebbleStateMachine) pebbleHandleTSSetRetention(_ *PebbleStateMachine, _ *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
+	if s.ts == nil {
+		return sm.Result{}, nil, &NotOpenError{}
+	}
+
+	params, err := protocol.DecodeTSSetRetention(payload)
+	if err != nil {
+		return sm.Result{}, nil, err
+	}
+
+	policy := &timeseries.RetentionPolicy{
+		Duration:    time.Duration(params.DurationNs),
+		Resolution:  time.Duration(params.ResolutionNs),
+		Aggregation: timeseries.AggFunc(params.Aggregation),
+	}
+
+	if err := s.ts.SetRetentionPolicy(params.Metric, policy); err != nil {
+		return sm.Result{}, nil, err
+	}
+
+	return sm.Result{Value: 1}, nil, nil
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+// getKeyNoLock retrieves a single key's value without acquiring the mutex.
+// Must be called from code paths that already hold the lock (Update path).
+func (s *PebbleStateMachine) getKeyNoLock(key []byte) ([]byte, error) {
+	val, closer, err := s.db.Get(key)
+	if err != nil {
+		if err == pebble.ErrNotFound {
+			return nil, &kv.KeyNotFoundError{Key: string(key)}
+		}
+		return nil, &ReadError{Key: string(key), Err: err}
+	}
+	defer func() { _ = closer.Close() }()
+
+	cp := make([]byte, len(val))
+	copy(cp, val)
+	return cp, nil
+}
+
 // Compile-time assertions.
 var (
-	_ sm.DiskStateMachine = (*PebbleStore)(nil)
-	_ sm.Hasher           = (*PebbleStore)(nil)
-	_ sm.NALookup         = (*PebbleStore)(nil)
+	_ sm.DiskStateMachine = (*PebbleStateMachine)(nil)
+	_ sm.Hasher           = (*PebbleStateMachine)(nil)
+	_ sm.NALookup         = (*PebbleStateMachine)(nil)
 )

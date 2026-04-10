@@ -16,7 +16,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.6.1
 // - protoc             v4.25.1
-// source: pkg/api/grpc/proto/qrdbv1/qrdb.proto
+// source: proto/qrdbv1/qrdb.proto
 
 package qrdbv1
 
@@ -34,17 +34,138 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	QRDBService_Put_FullMethodName             = "/qrdb.v1.QRDBService/Put"
-	QRDBService_Get_FullMethodName             = "/qrdb.v1.QRDBService/Get"
-	QRDBService_Delete_FullMethodName          = "/qrdb.v1.QRDBService/Delete"
-	QRDBService_List_FullMethodName            = "/qrdb.v1.QRDBService/List"
-	QRDBService_Health_FullMethodName          = "/qrdb.v1.QRDBService/Health"
-	QRDBService_Status_FullMethodName          = "/qrdb.v1.QRDBService/Status"
-	QRDBService_Peers_FullMethodName           = "/qrdb.v1.QRDBService/Peers"
-	QRDBService_AddMember_FullMethodName       = "/qrdb.v1.QRDBService/AddMember"
-	QRDBService_RemoveMember_FullMethodName    = "/qrdb.v1.QRDBService/RemoveMember"
-	QRDBService_RequestSnapshot_FullMethodName = "/qrdb.v1.QRDBService/RequestSnapshot"
-	QRDBService_Drain_FullMethodName           = "/qrdb.v1.QRDBService/Drain"
+	QRDBService_Put_FullMethodName                          = "/qrdb.v1.QRDBService/Put"
+	QRDBService_Get_FullMethodName                          = "/qrdb.v1.QRDBService/Get"
+	QRDBService_Delete_FullMethodName                       = "/qrdb.v1.QRDBService/Delete"
+	QRDBService_List_FullMethodName                         = "/qrdb.v1.QRDBService/List"
+	QRDBService_Scan_FullMethodName                         = "/qrdb.v1.QRDBService/Scan"
+	QRDBService_PutWithLease_FullMethodName                 = "/qrdb.v1.QRDBService/PutWithLease"
+	QRDBService_GetRevision_FullMethodName                  = "/qrdb.v1.QRDBService/GetRevision"
+	QRDBService_GetAtRevision_FullMethodName                = "/qrdb.v1.QRDBService/GetAtRevision"
+	QRDBService_Range_FullMethodName                        = "/qrdb.v1.QRDBService/Range"
+	QRDBService_Compact_FullMethodName                      = "/qrdb.v1.QRDBService/Compact"
+	QRDBService_CurrentRevision_FullMethodName              = "/qrdb.v1.QRDBService/CurrentRevision"
+	QRDBService_Transaction_FullMethodName                  = "/qrdb.v1.QRDBService/Transaction"
+	QRDBService_Batch_FullMethodName                        = "/qrdb.v1.QRDBService/Batch"
+	QRDBService_Watch_FullMethodName                        = "/qrdb.v1.QRDBService/Watch"
+	QRDBService_LeaseGrant_FullMethodName                   = "/qrdb.v1.QRDBService/LeaseGrant"
+	QRDBService_LeaseRevoke_FullMethodName                  = "/qrdb.v1.QRDBService/LeaseRevoke"
+	QRDBService_LeaseKeepAlive_FullMethodName               = "/qrdb.v1.QRDBService/LeaseKeepAlive"
+	QRDBService_LeaseTimeToLive_FullMethodName              = "/qrdb.v1.QRDBService/LeaseTimeToLive"
+	QRDBService_LeaseList_FullMethodName                    = "/qrdb.v1.QRDBService/LeaseList"
+	QRDBService_LockAcquire_FullMethodName                  = "/qrdb.v1.QRDBService/LockAcquire"
+	QRDBService_LockTryLock_FullMethodName                  = "/qrdb.v1.QRDBService/LockTryLock"
+	QRDBService_LockRelease_FullMethodName                  = "/qrdb.v1.QRDBService/LockRelease"
+	QRDBService_LockExtend_FullMethodName                   = "/qrdb.v1.QRDBService/LockExtend"
+	QRDBService_LockStatus_FullMethodName                   = "/qrdb.v1.QRDBService/LockStatus"
+	QRDBService_LockList_FullMethodName                     = "/qrdb.v1.QRDBService/LockList"
+	QRDBService_IndexCreate_FullMethodName                  = "/qrdb.v1.QRDBService/IndexCreate"
+	QRDBService_IndexDrop_FullMethodName                    = "/qrdb.v1.QRDBService/IndexDrop"
+	QRDBService_IndexQuery_FullMethodName                   = "/qrdb.v1.QRDBService/IndexQuery"
+	QRDBService_IndexScan_FullMethodName                    = "/qrdb.v1.QRDBService/IndexScan"
+	QRDBService_IndexList_FullMethodName                    = "/qrdb.v1.QRDBService/IndexList"
+	QRDBService_TSWrite_FullMethodName                      = "/qrdb.v1.QRDBService/TSWrite"
+	QRDBService_TSWriteBatch_FullMethodName                 = "/qrdb.v1.QRDBService/TSWriteBatch"
+	QRDBService_TSQuery_FullMethodName                      = "/qrdb.v1.QRDBService/TSQuery"
+	QRDBService_TSAggregate_FullMethodName                  = "/qrdb.v1.QRDBService/TSAggregate"
+	QRDBService_TSWritePoint_FullMethodName                 = "/qrdb.v1.QRDBService/TSWritePoint"
+	QRDBService_TSRichQuery_FullMethodName                  = "/qrdb.v1.QRDBService/TSRichQuery"
+	QRDBService_TSDeleteSeries_FullMethodName               = "/qrdb.v1.QRDBService/TSDeleteSeries"
+	QRDBService_TSGetRetention_FullMethodName               = "/qrdb.v1.QRDBService/TSGetRetention"
+	QRDBService_TSSetRetention_FullMethodName               = "/qrdb.v1.QRDBService/TSSetRetention"
+	QRDBService_TSListMetrics_FullMethodName                = "/qrdb.v1.QRDBService/TSListMetrics"
+	QRDBService_VectorCreateNamespace_FullMethodName        = "/qrdb.v1.QRDBService/VectorCreateNamespace"
+	QRDBService_VectorDeleteNamespace_FullMethodName        = "/qrdb.v1.QRDBService/VectorDeleteNamespace"
+	QRDBService_VectorListNamespaces_FullMethodName         = "/qrdb.v1.QRDBService/VectorListNamespaces"
+	QRDBService_VectorGetNamespaceInfo_FullMethodName       = "/qrdb.v1.QRDBService/VectorGetNamespaceInfo"
+	QRDBService_VectorUpsert_FullMethodName                 = "/qrdb.v1.QRDBService/VectorUpsert"
+	QRDBService_VectorGet_FullMethodName                    = "/qrdb.v1.QRDBService/VectorGet"
+	QRDBService_VectorDelete_FullMethodName                 = "/qrdb.v1.QRDBService/VectorDelete"
+	QRDBService_VectorBatchUpsert_FullMethodName            = "/qrdb.v1.QRDBService/VectorBatchUpsert"
+	QRDBService_VectorBatchDelete_FullMethodName            = "/qrdb.v1.QRDBService/VectorBatchDelete"
+	QRDBService_VectorList_FullMethodName                   = "/qrdb.v1.QRDBService/VectorList"
+	QRDBService_VectorUpdateMetadata_FullMethodName         = "/qrdb.v1.QRDBService/VectorUpdateMetadata"
+	QRDBService_VectorSearchSimilar_FullMethodName          = "/qrdb.v1.QRDBService/VectorSearchSimilar"
+	QRDBService_VectorSearchByMetadata_FullMethodName       = "/qrdb.v1.QRDBService/VectorSearchByMetadata"
+	QRDBService_VectorHybridSearch_FullMethodName           = "/qrdb.v1.QRDBService/VectorHybridSearch"
+	QRDBService_VectorSearchByID_FullMethodName             = "/qrdb.v1.QRDBService/VectorSearchByID"
+	QRDBService_VectorRebuildIndex_FullMethodName           = "/qrdb.v1.QRDBService/VectorRebuildIndex"
+	QRDBService_VectorGetRebuildProgress_FullMethodName     = "/qrdb.v1.QRDBService/VectorGetRebuildProgress"
+	QRDBService_VectorGetIndexStats_FullMethodName          = "/qrdb.v1.QRDBService/VectorGetIndexStats"
+	QRDBService_VectorCompactNamespace_FullMethodName       = "/qrdb.v1.QRDBService/VectorCompactNamespace"
+	QRDBService_VectorGetCompactionProgress_FullMethodName  = "/qrdb.v1.QRDBService/VectorGetCompactionProgress"
+	QRDBService_Health_FullMethodName                       = "/qrdb.v1.QRDBService/Health"
+	QRDBService_Status_FullMethodName                       = "/qrdb.v1.QRDBService/Status"
+	QRDBService_Peers_FullMethodName                        = "/qrdb.v1.QRDBService/Peers"
+	QRDBService_AddMember_FullMethodName                    = "/qrdb.v1.QRDBService/AddMember"
+	QRDBService_RemoveMember_FullMethodName                 = "/qrdb.v1.QRDBService/RemoveMember"
+	QRDBService_RequestSnapshot_FullMethodName              = "/qrdb.v1.QRDBService/RequestSnapshot"
+	QRDBService_Drain_FullMethodName                        = "/qrdb.v1.QRDBService/Drain"
+	QRDBService_Capabilities_FullMethodName                 = "/qrdb.v1.QRDBService/Capabilities"
+	QRDBService_StartShard_FullMethodName                   = "/qrdb.v1.QRDBService/StartShard"
+	QRDBService_StopShard_FullMethodName                    = "/qrdb.v1.QRDBService/StopShard"
+	QRDBService_GetShardState_FullMethodName                = "/qrdb.v1.QRDBService/GetShardState"
+	QRDBService_GetTopology_FullMethodName                  = "/qrdb.v1.QRDBService/GetTopology"
+	QRDBService_CreateUser_FullMethodName                   = "/qrdb.v1.QRDBService/CreateUser"
+	QRDBService_GetUser_FullMethodName                      = "/qrdb.v1.QRDBService/GetUser"
+	QRDBService_UpdateUser_FullMethodName                   = "/qrdb.v1.QRDBService/UpdateUser"
+	QRDBService_DeleteUser_FullMethodName                   = "/qrdb.v1.QRDBService/DeleteUser"
+	QRDBService_ListUsers_FullMethodName                    = "/qrdb.v1.QRDBService/ListUsers"
+	QRDBService_EnableUser_FullMethodName                   = "/qrdb.v1.QRDBService/EnableUser"
+	QRDBService_DisableUser_FullMethodName                  = "/qrdb.v1.QRDBService/DisableUser"
+	QRDBService_CreateRole_FullMethodName                   = "/qrdb.v1.QRDBService/CreateRole"
+	QRDBService_GetRole_FullMethodName                      = "/qrdb.v1.QRDBService/GetRole"
+	QRDBService_UpdateRole_FullMethodName                   = "/qrdb.v1.QRDBService/UpdateRole"
+	QRDBService_DeleteRole_FullMethodName                   = "/qrdb.v1.QRDBService/DeleteRole"
+	QRDBService_ListRoles_FullMethodName                    = "/qrdb.v1.QRDBService/ListRoles"
+	QRDBService_AssignRole_FullMethodName                   = "/qrdb.v1.QRDBService/AssignRole"
+	QRDBService_UnassignRole_FullMethodName                 = "/qrdb.v1.QRDBService/UnassignRole"
+	QRDBService_ListPermissions_FullMethodName              = "/qrdb.v1.QRDBService/ListPermissions"
+	QRDBService_GenerateCert_FullMethodName                 = "/qrdb.v1.QRDBService/GenerateCert"
+	QRDBService_ExportCert_FullMethodName                   = "/qrdb.v1.QRDBService/ExportCert"
+	QRDBService_RevokeCert_FullMethodName                   = "/qrdb.v1.QRDBService/RevokeCert"
+	QRDBService_ListCerts_FullMethodName                    = "/qrdb.v1.QRDBService/ListCerts"
+	QRDBService_CreateCollection_FullMethodName             = "/qrdb.v1.QRDBService/CreateCollection"
+	QRDBService_GetCollectionInfo_FullMethodName            = "/qrdb.v1.QRDBService/GetCollectionInfo"
+	QRDBService_ListCollections_FullMethodName              = "/qrdb.v1.QRDBService/ListCollections"
+	QRDBService_DropCollection_FullMethodName               = "/qrdb.v1.QRDBService/DropCollection"
+	QRDBService_InsertDocument_FullMethodName               = "/qrdb.v1.QRDBService/InsertDocument"
+	QRDBService_GetDocument_FullMethodName                  = "/qrdb.v1.QRDBService/GetDocument"
+	QRDBService_UpdateDocument_FullMethodName               = "/qrdb.v1.QRDBService/UpdateDocument"
+	QRDBService_DeleteDocument_FullMethodName               = "/qrdb.v1.QRDBService/DeleteDocument"
+	QRDBService_ListDocuments_FullMethodName                = "/qrdb.v1.QRDBService/ListDocuments"
+	QRDBService_DatabaseCreate_FullMethodName               = "/qrdb.v1.QRDBService/DatabaseCreate"
+	QRDBService_DatabaseGet_FullMethodName                  = "/qrdb.v1.QRDBService/DatabaseGet"
+	QRDBService_DatabaseList_FullMethodName                 = "/qrdb.v1.QRDBService/DatabaseList"
+	QRDBService_DatabaseDrop_FullMethodName                 = "/qrdb.v1.QRDBService/DatabaseDrop"
+	QRDBService_DatabaseUpdateProtocol_FullMethodName       = "/qrdb.v1.QRDBService/DatabaseUpdateProtocol"
+	QRDBService_DatabaseUpdateEtcd_FullMethodName           = "/qrdb.v1.QRDBService/DatabaseUpdateEtcd"
+	QRDBService_DatabaseUpdateRaft_FullMethodName           = "/qrdb.v1.QRDBService/DatabaseUpdateRaft"
+	QRDBService_DatabaseUpdateBarrier_FullMethodName        = "/qrdb.v1.QRDBService/DatabaseUpdateBarrier"
+	QRDBService_DatabaseUpdateConnection_FullMethodName     = "/qrdb.v1.QRDBService/DatabaseUpdateConnection"
+	QRDBService_BarrierInitialize_FullMethodName            = "/qrdb.v1.QRDBService/BarrierInitialize"
+	QRDBService_BarrierUnseal_FullMethodName                = "/qrdb.v1.QRDBService/BarrierUnseal"
+	QRDBService_BarrierSeal_FullMethodName                  = "/qrdb.v1.QRDBService/BarrierSeal"
+	QRDBService_BarrierStatus_FullMethodName                = "/qrdb.v1.QRDBService/BarrierStatus"
+	QRDBService_BarrierShamirInitialize_FullMethodName      = "/qrdb.v1.QRDBService/BarrierShamirInitialize"
+	QRDBService_BarrierShamirUnsealShare_FullMethodName     = "/qrdb.v1.QRDBService/BarrierShamirUnsealShare"
+	QRDBService_BarrierShamirUnsealShares_FullMethodName    = "/qrdb.v1.QRDBService/BarrierShamirUnsealShares"
+	QRDBService_BarrierShamirListShares_FullMethodName      = "/qrdb.v1.QRDBService/BarrierShamirListShares"
+	QRDBService_BarrierShamirDeleteShare_FullMethodName     = "/qrdb.v1.QRDBService/BarrierShamirDeleteShare"
+	QRDBService_BarrierShamirDeleteAllShares_FullMethodName = "/qrdb.v1.QRDBService/BarrierShamirDeleteAllShares"
+	QRDBService_BarrierShamirVerify_FullMethodName          = "/qrdb.v1.QRDBService/BarrierShamirVerify"
+	QRDBService_BarrierRekey_FullMethodName                 = "/qrdb.v1.QRDBService/BarrierRekey"
+	QRDBService_BarrierRecoveryGenerate_FullMethodName      = "/qrdb.v1.QRDBService/BarrierRecoveryGenerate"
+	QRDBService_BarrierRecoveryRecover_FullMethodName       = "/qrdb.v1.QRDBService/BarrierRecoveryRecover"
+	QRDBService_BarrierRecoveryDelete_FullMethodName        = "/qrdb.v1.QRDBService/BarrierRecoveryDelete"
+	QRDBService_BarrierRecoveryStatus_FullMethodName        = "/qrdb.v1.QRDBService/BarrierRecoveryStatus"
+	QRDBService_BarrierRootToken_FullMethodName             = "/qrdb.v1.QRDBService/BarrierRootToken"
+	QRDBService_CeremonyInitialize_FullMethodName           = "/qrdb.v1.QRDBService/CeremonyInitialize"
+	QRDBService_CeremonyStatus_FullMethodName               = "/qrdb.v1.QRDBService/CeremonyStatus"
+	QRDBService_CeremonyClaimCertBegin_FullMethodName       = "/qrdb.v1.QRDBService/CeremonyClaimCertBegin"
+	QRDBService_CeremonyClaimCertComplete_FullMethodName    = "/qrdb.v1.QRDBService/CeremonyClaimCertComplete"
+	QRDBService_CeremonyClaimShare_FullMethodName           = "/qrdb.v1.QRDBService/CeremonyClaimShare"
+	QRDBService_CeremonySignCSR_FullMethodName              = "/qrdb.v1.QRDBService/CeremonySignCSR"
 )
 
 // QRDBServiceClient is the client API for QRDBService service.
@@ -62,6 +183,120 @@ type QRDBServiceClient interface {
 	Delete(ctx context.Context, in *DeleteRequest, opts ...grpc.CallOption) (*DeleteResponse, error)
 	// List returns sorted keys matching a prefix.
 	List(ctx context.Context, in *ListRequest, opts ...grpc.CallOption) (*ListResponse, error)
+	// Scan returns key-value pairs matching a prefix.
+	Scan(ctx context.Context, in *ScanRequest, opts ...grpc.CallOption) (*ScanResponse, error)
+	// PutWithLease stores a key-value pair with an attached lease.
+	PutWithLease(ctx context.Context, in *PutWithLeaseRequest, opts ...grpc.CallOption) (*PutWithLeaseResponse, error)
+	// GetRevision retrieves a key-value pair with full MVCC revision metadata.
+	GetRevision(ctx context.Context, in *GetRevisionRequest, opts ...grpc.CallOption) (*GetRevisionResponse, error)
+	// GetAtRevision retrieves a key-value pair at a historical revision.
+	GetAtRevision(ctx context.Context, in *GetAtRevisionRequest, opts ...grpc.CallOption) (*GetAtRevisionResponse, error)
+	// Range returns key-value pairs in the half-open interval [start, end).
+	Range(ctx context.Context, in *RangeRequest, opts ...grpc.CallOption) (*RangeResponse, error)
+	// Compact discards all MVCC revisions older than the specified revision.
+	Compact(ctx context.Context, in *CompactRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// CurrentRevision returns the latest committed MVCC revision.
+	CurrentRevision(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*CurrentRevisionResponse, error)
+	// Transaction executes an atomic compare-and-swap transaction.
+	Transaction(ctx context.Context, in *TransactionRequest, opts ...grpc.CallOption) (*TransactionResponse, error)
+	// Batch executes multiple operations atomically.
+	Batch(ctx context.Context, in *BatchRequest, opts ...grpc.CallOption) (*BatchResponse, error)
+	// Watch creates a server-streaming watcher that delivers events for
+	// the specified key or prefix.
+	Watch(ctx context.Context, in *WatchRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[WatchResponse], error)
+	// LeaseGrant creates a new lease with the specified TTL.
+	LeaseGrant(ctx context.Context, in *LeaseGrantRequest, opts ...grpc.CallOption) (*LeaseGrantResponse, error)
+	// LeaseRevoke immediately expires a lease and deletes attached keys.
+	LeaseRevoke(ctx context.Context, in *LeaseRevokeRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// LeaseKeepAlive resets the TTL on an existing lease.
+	LeaseKeepAlive(ctx context.Context, in *LeaseKeepAliveRequest, opts ...grpc.CallOption) (*LeaseKeepAliveResponse, error)
+	// LeaseTimeToLive returns the current state of a lease.
+	LeaseTimeToLive(ctx context.Context, in *LeaseTimeToLiveRequest, opts ...grpc.CallOption) (*LeaseTimeToLiveResponse, error)
+	// LeaseList returns all active leases.
+	LeaseList(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*LeaseListResponse, error)
+	// LockAcquire acquires a distributed lock, blocking until acquired or
+	// the context is cancelled.
+	LockAcquire(ctx context.Context, in *LockAcquireRequest, opts ...grpc.CallOption) (*LockAcquireResponse, error)
+	// LockTryLock attempts to acquire a lock immediately without blocking.
+	LockTryLock(ctx context.Context, in *LockTryLockRequest, opts ...grpc.CallOption) (*LockTryLockResponse, error)
+	// LockRelease releases a held lock. The fencing token must match.
+	LockRelease(ctx context.Context, in *LockReleaseRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// LockExtend refreshes the TTL on a held lock without releasing it.
+	LockExtend(ctx context.Context, in *LockExtendRequest, opts ...grpc.CallOption) (*LockExtendResponse, error)
+	// LockStatus returns the current lock state for a key.
+	LockStatus(ctx context.Context, in *LockStatusRequest, opts ...grpc.CallOption) (*LockStatusResponse, error)
+	// LockList returns all active locks, optionally filtered by prefix.
+	LockList(ctx context.Context, in *LockListRequest, opts ...grpc.CallOption) (*LockListResponse, error)
+	// IndexCreate creates a new secondary index.
+	IndexCreate(ctx context.Context, in *IndexCreateRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// IndexDrop removes a secondary index.
+	IndexDrop(ctx context.Context, in *IndexDropRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// IndexQuery returns entry IDs matching an exact value in an index.
+	IndexQuery(ctx context.Context, in *IndexQueryRequest, opts ...grpc.CallOption) (*IndexQueryResponse, error)
+	// IndexScan returns entries in an index within a value range.
+	IndexScan(ctx context.Context, in *IndexScanRequest, opts ...grpc.CallOption) (*IndexScanResponse, error)
+	// IndexList returns the names of all registered indexes.
+	IndexList(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*IndexListResponse, error)
+	// TSWrite stores a single time-series data point.
+	TSWrite(ctx context.Context, in *TSWriteRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// TSWriteBatch stores multiple time-series data points atomically.
+	TSWriteBatch(ctx context.Context, in *TSWriteBatchRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// TSQuery retrieves data points for a metric within a time range.
+	TSQuery(ctx context.Context, in *TSQueryRequest, opts ...grpc.CallOption) (*TSQueryResponse, error)
+	// TSAggregate computes an aggregation over data points in a time range.
+	TSAggregate(ctx context.Context, in *TSAggregateRequest, opts ...grpc.CallOption) (*TSAggregateResponse, error)
+	// TSWritePoint stores a single validated data point.
+	TSWritePoint(ctx context.Context, in *TSWriteRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// TSRichQuery performs a rich query with aggregation, downsampling, and grouping.
+	TSRichQuery(ctx context.Context, in *TSRichQueryRequest, opts ...grpc.CallOption) (*TSRichQueryResponse, error)
+	// TSDeleteSeries deletes time-series data matching the criteria.
+	TSDeleteSeries(ctx context.Context, in *TSDeleteSeriesRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// TSGetRetention retrieves the retention policy for a metric.
+	TSGetRetention(ctx context.Context, in *TSGetRetentionRequest, opts ...grpc.CallOption) (*TSRetentionPolicyResponse, error)
+	// TSSetRetention sets the retention policy for a metric.
+	TSSetRetention(ctx context.Context, in *TSSetRetentionRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// TSListMetrics lists metric names matching a prefix.
+	TSListMetrics(ctx context.Context, in *TSListMetricsRequest, opts ...grpc.CallOption) (*TSListMetricsResponse, error)
+	// VectorCreateNamespace creates a new vector namespace.
+	VectorCreateNamespace(ctx context.Context, in *VectorCreateNamespaceRequest, opts ...grpc.CallOption) (*VectorCreateNamespaceResponse, error)
+	// VectorDeleteNamespace removes a namespace and all its vectors.
+	VectorDeleteNamespace(ctx context.Context, in *VectorDeleteNamespaceRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// VectorListNamespaces returns all vector namespace names.
+	VectorListNamespaces(ctx context.Context, in *VectorListNamespacesRequest, opts ...grpc.CallOption) (*VectorListNamespacesResponse, error)
+	// VectorGetNamespaceInfo returns metadata about a namespace.
+	VectorGetNamespaceInfo(ctx context.Context, in *VectorGetNamespaceInfoRequest, opts ...grpc.CallOption) (*VectorNamespaceInfo, error)
+	// VectorUpsert inserts or updates a vector in a namespace.
+	VectorUpsert(ctx context.Context, in *VectorUpsertRequest, opts ...grpc.CallOption) (*VectorUpsertResponse, error)
+	// VectorGet retrieves a single vector by ID.
+	VectorGet(ctx context.Context, in *VectorGetRequest, opts ...grpc.CallOption) (*VectorDataProto, error)
+	// VectorDelete removes a single vector by ID.
+	VectorDelete(ctx context.Context, in *VectorDeleteRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// VectorBatchUpsert inserts or updates multiple vectors.
+	VectorBatchUpsert(ctx context.Context, in *VectorBatchUpsertRequest, opts ...grpc.CallOption) (*VectorBatchUpsertResponse, error)
+	// VectorBatchDelete removes multiple vectors by ID.
+	VectorBatchDelete(ctx context.Context, in *VectorBatchDeleteRequest, opts ...grpc.CallOption) (*VectorBatchDeleteResponse, error)
+	// VectorList returns a paginated list of vectors in a namespace.
+	VectorList(ctx context.Context, in *VectorListRequest, opts ...grpc.CallOption) (*VectorListResponse, error)
+	// VectorUpdateMetadata updates vector metadata without modifying vector data.
+	VectorUpdateMetadata(ctx context.Context, in *VectorUpdateMetadataRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// VectorSearchSimilar performs k-nearest-neighbor search using a query vector.
+	VectorSearchSimilar(ctx context.Context, in *VectorSearchSimilarRequest, opts ...grpc.CallOption) (*VectorSearchSimilarResponse, error)
+	// VectorSearchByMetadata returns vectors matching metadata filters.
+	VectorSearchByMetadata(ctx context.Context, in *VectorSearchByMetadataRequest, opts ...grpc.CallOption) (*VectorSearchByMetadataResponse, error)
+	// VectorHybridSearch combines vector similarity and metadata filtering.
+	VectorHybridSearch(ctx context.Context, in *VectorHybridSearchRequest, opts ...grpc.CallOption) (*VectorHybridSearchResponse, error)
+	// VectorSearchByID searches using an existing vector's ID as the query.
+	VectorSearchByID(ctx context.Context, in *VectorSearchByIDRequest, opts ...grpc.CallOption) (*VectorSearchSimilarResponse, error)
+	// VectorRebuildIndex triggers an asynchronous index rebuild for a namespace.
+	VectorRebuildIndex(ctx context.Context, in *VectorRebuildIndexRequest, opts ...grpc.CallOption) (*VectorRebuildIndexResponse, error)
+	// VectorGetRebuildProgress returns the progress of an index rebuild job.
+	VectorGetRebuildProgress(ctx context.Context, in *VectorGetRebuildProgressRequest, opts ...grpc.CallOption) (*VectorRebuildProgress, error)
+	// VectorGetIndexStats returns statistics about a namespace's vector index.
+	VectorGetIndexStats(ctx context.Context, in *VectorGetIndexStatsRequest, opts ...grpc.CallOption) (*VectorIndexStats, error)
+	// VectorCompactNamespace triggers asynchronous compaction for a namespace.
+	VectorCompactNamespace(ctx context.Context, in *VectorCompactNamespaceRequest, opts ...grpc.CallOption) (*VectorCompactNamespaceResponse, error)
+	// VectorGetCompactionProgress returns the progress of a compaction job.
+	VectorGetCompactionProgress(ctx context.Context, in *VectorGetCompactionProgressRequest, opts ...grpc.CallOption) (*VectorCompactionProgress, error)
 	// Health returns the node health status.
 	Health(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*HealthResponse, error)
 	// Status returns detailed node status information.
@@ -76,6 +311,137 @@ type QRDBServiceClient interface {
 	RequestSnapshot(ctx context.Context, in *RequestSnapshotMessage, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// Drain transitions the node into drain mode.
 	Drain(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// Capabilities returns the compile-time feature set of the node.
+	Capabilities(ctx context.Context, in *CapabilitiesRequest, opts ...grpc.CallOption) (*CapabilitiesResponse, error)
+	// StartShard initializes and starts a Raft group for the given shard.
+	StartShard(ctx context.Context, in *StartShardRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// StopShard stops the Raft group for the given shard.
+	StopShard(ctx context.Context, in *StopShardRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// GetShardState returns the Raft state for a shard.
+	GetShardState(ctx context.Context, in *GetShardStateRequest, opts ...grpc.CallOption) (*ShardStateResponse, error)
+	// GetTopology returns the full cluster topology.
+	GetTopology(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*TopologyResponse, error)
+	// CreateUser creates a new passwordless user.
+	CreateUser(ctx context.Context, in *CreateUserRequest, opts ...grpc.CallOption) (*UserResponse, error)
+	// GetUser retrieves a user by ID.
+	GetUser(ctx context.Context, in *GetUserRequest, opts ...grpc.CallOption) (*UserResponse, error)
+	// UpdateUser applies partial updates to an existing user.
+	UpdateUser(ctx context.Context, in *UpdateUserProtoRequest, opts ...grpc.CallOption) (*UserResponse, error)
+	// DeleteUser removes a non-system user by ID.
+	DeleteUser(ctx context.Context, in *DeleteUserRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// ListUsers returns a paginated list of users.
+	ListUsers(ctx context.Context, in *ListUsersRequest, opts ...grpc.CallOption) (*ListUsersResponse, error)
+	// EnableUser activates a user account.
+	EnableUser(ctx context.Context, in *EnableUserRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// DisableUser deactivates a user account.
+	DisableUser(ctx context.Context, in *DisableUserRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// CreateRole creates a new role.
+	CreateRole(ctx context.Context, in *CreateRoleRequest, opts ...grpc.CallOption) (*RoleResponse, error)
+	// GetRole retrieves a role by ID.
+	GetRole(ctx context.Context, in *GetRoleRequest, opts ...grpc.CallOption) (*RoleResponse, error)
+	// UpdateRole applies partial updates to an existing role.
+	UpdateRole(ctx context.Context, in *UpdateRoleProtoRequest, opts ...grpc.CallOption) (*RoleResponse, error)
+	// DeleteRole removes a non-system role by ID.
+	DeleteRole(ctx context.Context, in *DeleteRoleRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// ListRoles returns a paginated list of roles.
+	ListRoles(ctx context.Context, in *ListRolesRequest, opts ...grpc.CallOption) (*ListRolesResponse, error)
+	// AssignRole assigns a role to a user.
+	AssignRole(ctx context.Context, in *AssignRoleRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// UnassignRole removes a role assignment.
+	UnassignRole(ctx context.Context, in *UnassignRoleRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// ListPermissions returns all available permission categories.
+	ListPermissions(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*ListPermissionsResponse, error)
+	// GenerateCert creates a client certificate.
+	GenerateCert(ctx context.Context, in *GenerateCertRequest, opts ...grpc.CallOption) (*CertBundleResponse, error)
+	// ExportCert exports a certificate as PKCS#12.
+	ExportCert(ctx context.Context, in *ExportCertRequest, opts ...grpc.CallOption) (*ExportCertResponse, error)
+	// RevokeCert marks a certificate serial as revoked.
+	RevokeCert(ctx context.Context, in *RevokeCertRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// ListCerts lists all issued client certificates for a tenant.
+	ListCerts(ctx context.Context, in *ListCertsRequest, opts ...grpc.CallOption) (*ListCertsResponse, error)
+	// CreateCollection creates a new document collection in a database.
+	CreateCollection(ctx context.Context, in *CreateCollectionRequest, opts ...grpc.CallOption) (*CollectionInfoResponse, error)
+	// GetCollectionInfo returns metadata about a specific collection.
+	GetCollectionInfo(ctx context.Context, in *GetCollectionInfoRequest, opts ...grpc.CallOption) (*CollectionInfoResponse, error)
+	// ListCollections returns all collections within a database.
+	ListCollections(ctx context.Context, in *ListCollectionsRequest, opts ...grpc.CallOption) (*ListCollectionsResponse, error)
+	// DropCollection removes a collection and all its documents.
+	DropCollection(ctx context.Context, in *DropCollectionRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// InsertDocument inserts a document into a collection.
+	InsertDocument(ctx context.Context, in *InsertDocumentRequest, opts ...grpc.CallOption) (*InsertDocumentResponse, error)
+	// GetDocument retrieves a single document by ID.
+	GetDocument(ctx context.Context, in *GetDocumentRequest, opts ...grpc.CallOption) (*DocumentResponse, error)
+	// UpdateDocument replaces an existing document in a collection.
+	UpdateDocument(ctx context.Context, in *UpdateDocumentRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// DeleteDocument removes a document from a collection by ID.
+	DeleteDocument(ctx context.Context, in *DeleteDocumentRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// ListDocuments returns a paginated list of documents in a collection.
+	ListDocuments(ctx context.Context, in *ListDocumentsRequest, opts ...grpc.CallOption) (*ListDocumentsResponse, error)
+	// DatabaseCreate creates a new database with the specified configuration.
+	DatabaseCreate(ctx context.Context, in *DatabaseCreateRequest, opts ...grpc.CallOption) (*DatabaseInfoResponse, error)
+	// DatabaseGet returns information about a specific database.
+	DatabaseGet(ctx context.Context, in *DatabaseGetRequest, opts ...grpc.CallOption) (*DatabaseInfoResponse, error)
+	// DatabaseList returns information about all open databases.
+	DatabaseList(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*DatabaseListResponse, error)
+	// DatabaseDrop closes and removes a database.
+	DatabaseDrop(ctx context.Context, in *DatabaseDropRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// DatabaseUpdateProtocol updates the wire protocol configuration.
+	DatabaseUpdateProtocol(ctx context.Context, in *DatabaseUpdateProtocolRequest, opts ...grpc.CallOption) (*DatabaseInfoResponse, error)
+	// DatabaseUpdateEtcd updates the etcd wire protocol configuration.
+	DatabaseUpdateEtcd(ctx context.Context, in *DatabaseUpdateEtcdRequest, opts ...grpc.CallOption) (*DatabaseInfoResponse, error)
+	// DatabaseUpdateRaft updates the Raft consensus configuration.
+	DatabaseUpdateRaft(ctx context.Context, in *DatabaseUpdateRaftRequest, opts ...grpc.CallOption) (*DatabaseInfoResponse, error)
+	// DatabaseUpdateBarrier updates the encryption barrier configuration.
+	DatabaseUpdateBarrier(ctx context.Context, in *DatabaseUpdateBarrierRequest, opts ...grpc.CallOption) (*DatabaseInfoResponse, error)
+	// DatabaseUpdateConnection updates the remote connection configuration.
+	DatabaseUpdateConnection(ctx context.Context, in *DatabaseUpdateConnectionRequest, opts ...grpc.CallOption) (*DatabaseInfoResponse, error)
+	// BarrierInitialize initializes the cryptographic barrier with a single
+	// master key.
+	BarrierInitialize(ctx context.Context, in *BarrierInitializeRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// BarrierUnseal unseals the barrier using the master key.
+	BarrierUnseal(ctx context.Context, in *BarrierUnsealRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// BarrierSeal seals the barrier, preventing data access until unsealed.
+	BarrierSeal(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// BarrierStatus returns the current barrier state.
+	BarrierStatus(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*BarrierStatusResponse, error)
+	// BarrierShamirInitialize initializes the barrier with Shamir secret sharing.
+	BarrierShamirInitialize(ctx context.Context, in *BarrierShamirInitializeRequest, opts ...grpc.CallOption) (*BarrierShamirInitializeResponse, error)
+	// BarrierShamirUnsealShare submits a single Shamir share toward the unseal threshold.
+	BarrierShamirUnsealShare(ctx context.Context, in *BarrierShamirUnsealShareRequest, opts ...grpc.CallOption) (*BarrierShamirUnsealShareResponse, error)
+	// BarrierShamirUnsealShares submits multiple Shamir shares to unseal in one call.
+	BarrierShamirUnsealShares(ctx context.Context, in *BarrierShamirUnsealSharesRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// BarrierShamirListShares returns metadata about stored Shamir shares.
+	BarrierShamirListShares(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*BarrierShamirSharesResponse, error)
+	// BarrierShamirDeleteShare deletes a single Shamir share by index.
+	BarrierShamirDeleteShare(ctx context.Context, in *BarrierShamirDeleteShareRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// BarrierShamirDeleteAllShares deletes all stored Shamir shares.
+	BarrierShamirDeleteAllShares(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// BarrierShamirVerify verifies the integrity of stored Shamir shares.
+	BarrierShamirVerify(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// BarrierRekey generates new Shamir shares with the specified parameters.
+	BarrierRekey(ctx context.Context, in *BarrierRekeyRequest, opts ...grpc.CallOption) (*BarrierShamirInitializeResponse, error)
+	// BarrierRecoveryGenerate generates recovery keys for disaster recovery.
+	BarrierRecoveryGenerate(ctx context.Context, in *BarrierRecoveryGenerateRequest, opts ...grpc.CallOption) (*BarrierRecoveryKeysResponse, error)
+	// BarrierRecoveryRecover unseals the barrier using recovery keys.
+	BarrierRecoveryRecover(ctx context.Context, in *BarrierRecoveryRecoverRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// BarrierRecoveryDelete deletes all stored recovery keys.
+	BarrierRecoveryDelete(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// BarrierRecoveryStatus checks whether recovery keys have been generated.
+	BarrierRecoveryStatus(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*BarrierRecoveryStatusResponse, error)
+	// BarrierRootToken generates a new root token using Shamir shares.
+	BarrierRootToken(ctx context.Context, in *BarrierRootTokenRequest, opts ...grpc.CallOption) (*BarrierRootTokenResponse, error)
+	// CeremonyInitialize starts the initialization ceremony.
+	CeremonyInitialize(ctx context.Context, in *CeremonyInitializeRequest, opts ...grpc.CallOption) (*CeremonyInitializeResponse, error)
+	// CeremonyStatus returns the current ceremony state.
+	CeremonyStatus(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*CeremonyStatusResponse, error)
+	// CeremonyClaimCertBegin starts a certificate claim challenge for an officer.
+	CeremonyClaimCertBegin(ctx context.Context, in *CeremonyClaimCertBeginRequest, opts ...grpc.CallOption) (*CeremonyClaimCertBeginResponse, error)
+	// CeremonyClaimCertComplete completes a certificate claim by submitting the signed nonce.
+	CeremonyClaimCertComplete(ctx context.Context, in *CeremonyClaimCertCompleteRequest, opts ...grpc.CallOption) (*CeremonyClaimCertCompleteResponse, error)
+	// CeremonyClaimShare retrieves the Shamir share for an officer.
+	CeremonyClaimShare(ctx context.Context, in *CeremonyClaimShareRequest, opts ...grpc.CallOption) (*CeremonyClaimShareResponse, error)
+	// CeremonySignCSR submits a CSR for signing during the ceremony.
+	CeremonySignCSR(ctx context.Context, in *CeremonySignCSRRequest, opts ...grpc.CallOption) (*CeremonySignCSRResponse, error)
 }
 
 type qRDBServiceClient struct {
@@ -120,6 +486,575 @@ func (c *qRDBServiceClient) List(ctx context.Context, in *ListRequest, opts ...g
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListResponse)
 	err := c.cc.Invoke(ctx, QRDBService_List_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) Scan(ctx context.Context, in *ScanRequest, opts ...grpc.CallOption) (*ScanResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ScanResponse)
+	err := c.cc.Invoke(ctx, QRDBService_Scan_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) PutWithLease(ctx context.Context, in *PutWithLeaseRequest, opts ...grpc.CallOption) (*PutWithLeaseResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PutWithLeaseResponse)
+	err := c.cc.Invoke(ctx, QRDBService_PutWithLease_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) GetRevision(ctx context.Context, in *GetRevisionRequest, opts ...grpc.CallOption) (*GetRevisionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetRevisionResponse)
+	err := c.cc.Invoke(ctx, QRDBService_GetRevision_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) GetAtRevision(ctx context.Context, in *GetAtRevisionRequest, opts ...grpc.CallOption) (*GetAtRevisionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetAtRevisionResponse)
+	err := c.cc.Invoke(ctx, QRDBService_GetAtRevision_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) Range(ctx context.Context, in *RangeRequest, opts ...grpc.CallOption) (*RangeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RangeResponse)
+	err := c.cc.Invoke(ctx, QRDBService_Range_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) Compact(ctx context.Context, in *CompactRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_Compact_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) CurrentRevision(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*CurrentRevisionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CurrentRevisionResponse)
+	err := c.cc.Invoke(ctx, QRDBService_CurrentRevision_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) Transaction(ctx context.Context, in *TransactionRequest, opts ...grpc.CallOption) (*TransactionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TransactionResponse)
+	err := c.cc.Invoke(ctx, QRDBService_Transaction_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) Batch(ctx context.Context, in *BatchRequest, opts ...grpc.CallOption) (*BatchResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BatchResponse)
+	err := c.cc.Invoke(ctx, QRDBService_Batch_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) Watch(ctx context.Context, in *WatchRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[WatchResponse], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &QRDBService_ServiceDesc.Streams[0], QRDBService_Watch_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[WatchRequest, WatchResponse]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type QRDBService_WatchClient = grpc.ServerStreamingClient[WatchResponse]
+
+func (c *qRDBServiceClient) LeaseGrant(ctx context.Context, in *LeaseGrantRequest, opts ...grpc.CallOption) (*LeaseGrantResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(LeaseGrantResponse)
+	err := c.cc.Invoke(ctx, QRDBService_LeaseGrant_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) LeaseRevoke(ctx context.Context, in *LeaseRevokeRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_LeaseRevoke_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) LeaseKeepAlive(ctx context.Context, in *LeaseKeepAliveRequest, opts ...grpc.CallOption) (*LeaseKeepAliveResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(LeaseKeepAliveResponse)
+	err := c.cc.Invoke(ctx, QRDBService_LeaseKeepAlive_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) LeaseTimeToLive(ctx context.Context, in *LeaseTimeToLiveRequest, opts ...grpc.CallOption) (*LeaseTimeToLiveResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(LeaseTimeToLiveResponse)
+	err := c.cc.Invoke(ctx, QRDBService_LeaseTimeToLive_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) LeaseList(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*LeaseListResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(LeaseListResponse)
+	err := c.cc.Invoke(ctx, QRDBService_LeaseList_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) LockAcquire(ctx context.Context, in *LockAcquireRequest, opts ...grpc.CallOption) (*LockAcquireResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(LockAcquireResponse)
+	err := c.cc.Invoke(ctx, QRDBService_LockAcquire_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) LockTryLock(ctx context.Context, in *LockTryLockRequest, opts ...grpc.CallOption) (*LockTryLockResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(LockTryLockResponse)
+	err := c.cc.Invoke(ctx, QRDBService_LockTryLock_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) LockRelease(ctx context.Context, in *LockReleaseRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_LockRelease_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) LockExtend(ctx context.Context, in *LockExtendRequest, opts ...grpc.CallOption) (*LockExtendResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(LockExtendResponse)
+	err := c.cc.Invoke(ctx, QRDBService_LockExtend_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) LockStatus(ctx context.Context, in *LockStatusRequest, opts ...grpc.CallOption) (*LockStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(LockStatusResponse)
+	err := c.cc.Invoke(ctx, QRDBService_LockStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) LockList(ctx context.Context, in *LockListRequest, opts ...grpc.CallOption) (*LockListResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(LockListResponse)
+	err := c.cc.Invoke(ctx, QRDBService_LockList_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) IndexCreate(ctx context.Context, in *IndexCreateRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_IndexCreate_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) IndexDrop(ctx context.Context, in *IndexDropRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_IndexDrop_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) IndexQuery(ctx context.Context, in *IndexQueryRequest, opts ...grpc.CallOption) (*IndexQueryResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(IndexQueryResponse)
+	err := c.cc.Invoke(ctx, QRDBService_IndexQuery_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) IndexScan(ctx context.Context, in *IndexScanRequest, opts ...grpc.CallOption) (*IndexScanResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(IndexScanResponse)
+	err := c.cc.Invoke(ctx, QRDBService_IndexScan_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) IndexList(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*IndexListResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(IndexListResponse)
+	err := c.cc.Invoke(ctx, QRDBService_IndexList_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) TSWrite(ctx context.Context, in *TSWriteRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_TSWrite_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) TSWriteBatch(ctx context.Context, in *TSWriteBatchRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_TSWriteBatch_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) TSQuery(ctx context.Context, in *TSQueryRequest, opts ...grpc.CallOption) (*TSQueryResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TSQueryResponse)
+	err := c.cc.Invoke(ctx, QRDBService_TSQuery_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) TSAggregate(ctx context.Context, in *TSAggregateRequest, opts ...grpc.CallOption) (*TSAggregateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TSAggregateResponse)
+	err := c.cc.Invoke(ctx, QRDBService_TSAggregate_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) TSWritePoint(ctx context.Context, in *TSWriteRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_TSWritePoint_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) TSRichQuery(ctx context.Context, in *TSRichQueryRequest, opts ...grpc.CallOption) (*TSRichQueryResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TSRichQueryResponse)
+	err := c.cc.Invoke(ctx, QRDBService_TSRichQuery_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) TSDeleteSeries(ctx context.Context, in *TSDeleteSeriesRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_TSDeleteSeries_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) TSGetRetention(ctx context.Context, in *TSGetRetentionRequest, opts ...grpc.CallOption) (*TSRetentionPolicyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TSRetentionPolicyResponse)
+	err := c.cc.Invoke(ctx, QRDBService_TSGetRetention_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) TSSetRetention(ctx context.Context, in *TSSetRetentionRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_TSSetRetention_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) TSListMetrics(ctx context.Context, in *TSListMetricsRequest, opts ...grpc.CallOption) (*TSListMetricsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TSListMetricsResponse)
+	err := c.cc.Invoke(ctx, QRDBService_TSListMetrics_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) VectorCreateNamespace(ctx context.Context, in *VectorCreateNamespaceRequest, opts ...grpc.CallOption) (*VectorCreateNamespaceResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VectorCreateNamespaceResponse)
+	err := c.cc.Invoke(ctx, QRDBService_VectorCreateNamespace_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) VectorDeleteNamespace(ctx context.Context, in *VectorDeleteNamespaceRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_VectorDeleteNamespace_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) VectorListNamespaces(ctx context.Context, in *VectorListNamespacesRequest, opts ...grpc.CallOption) (*VectorListNamespacesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VectorListNamespacesResponse)
+	err := c.cc.Invoke(ctx, QRDBService_VectorListNamespaces_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) VectorGetNamespaceInfo(ctx context.Context, in *VectorGetNamespaceInfoRequest, opts ...grpc.CallOption) (*VectorNamespaceInfo, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VectorNamespaceInfo)
+	err := c.cc.Invoke(ctx, QRDBService_VectorGetNamespaceInfo_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) VectorUpsert(ctx context.Context, in *VectorUpsertRequest, opts ...grpc.CallOption) (*VectorUpsertResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VectorUpsertResponse)
+	err := c.cc.Invoke(ctx, QRDBService_VectorUpsert_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) VectorGet(ctx context.Context, in *VectorGetRequest, opts ...grpc.CallOption) (*VectorDataProto, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VectorDataProto)
+	err := c.cc.Invoke(ctx, QRDBService_VectorGet_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) VectorDelete(ctx context.Context, in *VectorDeleteRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_VectorDelete_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) VectorBatchUpsert(ctx context.Context, in *VectorBatchUpsertRequest, opts ...grpc.CallOption) (*VectorBatchUpsertResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VectorBatchUpsertResponse)
+	err := c.cc.Invoke(ctx, QRDBService_VectorBatchUpsert_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) VectorBatchDelete(ctx context.Context, in *VectorBatchDeleteRequest, opts ...grpc.CallOption) (*VectorBatchDeleteResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VectorBatchDeleteResponse)
+	err := c.cc.Invoke(ctx, QRDBService_VectorBatchDelete_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) VectorList(ctx context.Context, in *VectorListRequest, opts ...grpc.CallOption) (*VectorListResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VectorListResponse)
+	err := c.cc.Invoke(ctx, QRDBService_VectorList_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) VectorUpdateMetadata(ctx context.Context, in *VectorUpdateMetadataRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_VectorUpdateMetadata_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) VectorSearchSimilar(ctx context.Context, in *VectorSearchSimilarRequest, opts ...grpc.CallOption) (*VectorSearchSimilarResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VectorSearchSimilarResponse)
+	err := c.cc.Invoke(ctx, QRDBService_VectorSearchSimilar_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) VectorSearchByMetadata(ctx context.Context, in *VectorSearchByMetadataRequest, opts ...grpc.CallOption) (*VectorSearchByMetadataResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VectorSearchByMetadataResponse)
+	err := c.cc.Invoke(ctx, QRDBService_VectorSearchByMetadata_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) VectorHybridSearch(ctx context.Context, in *VectorHybridSearchRequest, opts ...grpc.CallOption) (*VectorHybridSearchResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VectorHybridSearchResponse)
+	err := c.cc.Invoke(ctx, QRDBService_VectorHybridSearch_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) VectorSearchByID(ctx context.Context, in *VectorSearchByIDRequest, opts ...grpc.CallOption) (*VectorSearchSimilarResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VectorSearchSimilarResponse)
+	err := c.cc.Invoke(ctx, QRDBService_VectorSearchByID_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) VectorRebuildIndex(ctx context.Context, in *VectorRebuildIndexRequest, opts ...grpc.CallOption) (*VectorRebuildIndexResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VectorRebuildIndexResponse)
+	err := c.cc.Invoke(ctx, QRDBService_VectorRebuildIndex_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) VectorGetRebuildProgress(ctx context.Context, in *VectorGetRebuildProgressRequest, opts ...grpc.CallOption) (*VectorRebuildProgress, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VectorRebuildProgress)
+	err := c.cc.Invoke(ctx, QRDBService_VectorGetRebuildProgress_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) VectorGetIndexStats(ctx context.Context, in *VectorGetIndexStatsRequest, opts ...grpc.CallOption) (*VectorIndexStats, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VectorIndexStats)
+	err := c.cc.Invoke(ctx, QRDBService_VectorGetIndexStats_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) VectorCompactNamespace(ctx context.Context, in *VectorCompactNamespaceRequest, opts ...grpc.CallOption) (*VectorCompactNamespaceResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VectorCompactNamespaceResponse)
+	err := c.cc.Invoke(ctx, QRDBService_VectorCompactNamespace_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) VectorGetCompactionProgress(ctx context.Context, in *VectorGetCompactionProgressRequest, opts ...grpc.CallOption) (*VectorCompactionProgress, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VectorCompactionProgress)
+	err := c.cc.Invoke(ctx, QRDBService_VectorGetCompactionProgress_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -196,6 +1131,656 @@ func (c *qRDBServiceClient) Drain(ctx context.Context, in *emptypb.Empty, opts .
 	return out, nil
 }
 
+func (c *qRDBServiceClient) Capabilities(ctx context.Context, in *CapabilitiesRequest, opts ...grpc.CallOption) (*CapabilitiesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CapabilitiesResponse)
+	err := c.cc.Invoke(ctx, QRDBService_Capabilities_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) StartShard(ctx context.Context, in *StartShardRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_StartShard_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) StopShard(ctx context.Context, in *StopShardRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_StopShard_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) GetShardState(ctx context.Context, in *GetShardStateRequest, opts ...grpc.CallOption) (*ShardStateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ShardStateResponse)
+	err := c.cc.Invoke(ctx, QRDBService_GetShardState_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) GetTopology(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*TopologyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TopologyResponse)
+	err := c.cc.Invoke(ctx, QRDBService_GetTopology_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) CreateUser(ctx context.Context, in *CreateUserRequest, opts ...grpc.CallOption) (*UserResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UserResponse)
+	err := c.cc.Invoke(ctx, QRDBService_CreateUser_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) GetUser(ctx context.Context, in *GetUserRequest, opts ...grpc.CallOption) (*UserResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UserResponse)
+	err := c.cc.Invoke(ctx, QRDBService_GetUser_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) UpdateUser(ctx context.Context, in *UpdateUserProtoRequest, opts ...grpc.CallOption) (*UserResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UserResponse)
+	err := c.cc.Invoke(ctx, QRDBService_UpdateUser_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) DeleteUser(ctx context.Context, in *DeleteUserRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_DeleteUser_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) ListUsers(ctx context.Context, in *ListUsersRequest, opts ...grpc.CallOption) (*ListUsersResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListUsersResponse)
+	err := c.cc.Invoke(ctx, QRDBService_ListUsers_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) EnableUser(ctx context.Context, in *EnableUserRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_EnableUser_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) DisableUser(ctx context.Context, in *DisableUserRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_DisableUser_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) CreateRole(ctx context.Context, in *CreateRoleRequest, opts ...grpc.CallOption) (*RoleResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RoleResponse)
+	err := c.cc.Invoke(ctx, QRDBService_CreateRole_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) GetRole(ctx context.Context, in *GetRoleRequest, opts ...grpc.CallOption) (*RoleResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RoleResponse)
+	err := c.cc.Invoke(ctx, QRDBService_GetRole_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) UpdateRole(ctx context.Context, in *UpdateRoleProtoRequest, opts ...grpc.CallOption) (*RoleResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RoleResponse)
+	err := c.cc.Invoke(ctx, QRDBService_UpdateRole_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) DeleteRole(ctx context.Context, in *DeleteRoleRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_DeleteRole_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) ListRoles(ctx context.Context, in *ListRolesRequest, opts ...grpc.CallOption) (*ListRolesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListRolesResponse)
+	err := c.cc.Invoke(ctx, QRDBService_ListRoles_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) AssignRole(ctx context.Context, in *AssignRoleRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_AssignRole_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) UnassignRole(ctx context.Context, in *UnassignRoleRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_UnassignRole_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) ListPermissions(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*ListPermissionsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListPermissionsResponse)
+	err := c.cc.Invoke(ctx, QRDBService_ListPermissions_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) GenerateCert(ctx context.Context, in *GenerateCertRequest, opts ...grpc.CallOption) (*CertBundleResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CertBundleResponse)
+	err := c.cc.Invoke(ctx, QRDBService_GenerateCert_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) ExportCert(ctx context.Context, in *ExportCertRequest, opts ...grpc.CallOption) (*ExportCertResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ExportCertResponse)
+	err := c.cc.Invoke(ctx, QRDBService_ExportCert_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) RevokeCert(ctx context.Context, in *RevokeCertRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_RevokeCert_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) ListCerts(ctx context.Context, in *ListCertsRequest, opts ...grpc.CallOption) (*ListCertsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListCertsResponse)
+	err := c.cc.Invoke(ctx, QRDBService_ListCerts_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) CreateCollection(ctx context.Context, in *CreateCollectionRequest, opts ...grpc.CallOption) (*CollectionInfoResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CollectionInfoResponse)
+	err := c.cc.Invoke(ctx, QRDBService_CreateCollection_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) GetCollectionInfo(ctx context.Context, in *GetCollectionInfoRequest, opts ...grpc.CallOption) (*CollectionInfoResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CollectionInfoResponse)
+	err := c.cc.Invoke(ctx, QRDBService_GetCollectionInfo_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) ListCollections(ctx context.Context, in *ListCollectionsRequest, opts ...grpc.CallOption) (*ListCollectionsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListCollectionsResponse)
+	err := c.cc.Invoke(ctx, QRDBService_ListCollections_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) DropCollection(ctx context.Context, in *DropCollectionRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_DropCollection_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) InsertDocument(ctx context.Context, in *InsertDocumentRequest, opts ...grpc.CallOption) (*InsertDocumentResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(InsertDocumentResponse)
+	err := c.cc.Invoke(ctx, QRDBService_InsertDocument_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) GetDocument(ctx context.Context, in *GetDocumentRequest, opts ...grpc.CallOption) (*DocumentResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DocumentResponse)
+	err := c.cc.Invoke(ctx, QRDBService_GetDocument_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) UpdateDocument(ctx context.Context, in *UpdateDocumentRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_UpdateDocument_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) DeleteDocument(ctx context.Context, in *DeleteDocumentRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_DeleteDocument_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) ListDocuments(ctx context.Context, in *ListDocumentsRequest, opts ...grpc.CallOption) (*ListDocumentsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListDocumentsResponse)
+	err := c.cc.Invoke(ctx, QRDBService_ListDocuments_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) DatabaseCreate(ctx context.Context, in *DatabaseCreateRequest, opts ...grpc.CallOption) (*DatabaseInfoResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DatabaseInfoResponse)
+	err := c.cc.Invoke(ctx, QRDBService_DatabaseCreate_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) DatabaseGet(ctx context.Context, in *DatabaseGetRequest, opts ...grpc.CallOption) (*DatabaseInfoResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DatabaseInfoResponse)
+	err := c.cc.Invoke(ctx, QRDBService_DatabaseGet_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) DatabaseList(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*DatabaseListResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DatabaseListResponse)
+	err := c.cc.Invoke(ctx, QRDBService_DatabaseList_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) DatabaseDrop(ctx context.Context, in *DatabaseDropRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_DatabaseDrop_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) DatabaseUpdateProtocol(ctx context.Context, in *DatabaseUpdateProtocolRequest, opts ...grpc.CallOption) (*DatabaseInfoResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DatabaseInfoResponse)
+	err := c.cc.Invoke(ctx, QRDBService_DatabaseUpdateProtocol_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) DatabaseUpdateEtcd(ctx context.Context, in *DatabaseUpdateEtcdRequest, opts ...grpc.CallOption) (*DatabaseInfoResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DatabaseInfoResponse)
+	err := c.cc.Invoke(ctx, QRDBService_DatabaseUpdateEtcd_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) DatabaseUpdateRaft(ctx context.Context, in *DatabaseUpdateRaftRequest, opts ...grpc.CallOption) (*DatabaseInfoResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DatabaseInfoResponse)
+	err := c.cc.Invoke(ctx, QRDBService_DatabaseUpdateRaft_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) DatabaseUpdateBarrier(ctx context.Context, in *DatabaseUpdateBarrierRequest, opts ...grpc.CallOption) (*DatabaseInfoResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DatabaseInfoResponse)
+	err := c.cc.Invoke(ctx, QRDBService_DatabaseUpdateBarrier_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) DatabaseUpdateConnection(ctx context.Context, in *DatabaseUpdateConnectionRequest, opts ...grpc.CallOption) (*DatabaseInfoResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DatabaseInfoResponse)
+	err := c.cc.Invoke(ctx, QRDBService_DatabaseUpdateConnection_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) BarrierInitialize(ctx context.Context, in *BarrierInitializeRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_BarrierInitialize_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) BarrierUnseal(ctx context.Context, in *BarrierUnsealRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_BarrierUnseal_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) BarrierSeal(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_BarrierSeal_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) BarrierStatus(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*BarrierStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BarrierStatusResponse)
+	err := c.cc.Invoke(ctx, QRDBService_BarrierStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) BarrierShamirInitialize(ctx context.Context, in *BarrierShamirInitializeRequest, opts ...grpc.CallOption) (*BarrierShamirInitializeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BarrierShamirInitializeResponse)
+	err := c.cc.Invoke(ctx, QRDBService_BarrierShamirInitialize_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) BarrierShamirUnsealShare(ctx context.Context, in *BarrierShamirUnsealShareRequest, opts ...grpc.CallOption) (*BarrierShamirUnsealShareResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BarrierShamirUnsealShareResponse)
+	err := c.cc.Invoke(ctx, QRDBService_BarrierShamirUnsealShare_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) BarrierShamirUnsealShares(ctx context.Context, in *BarrierShamirUnsealSharesRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_BarrierShamirUnsealShares_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) BarrierShamirListShares(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*BarrierShamirSharesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BarrierShamirSharesResponse)
+	err := c.cc.Invoke(ctx, QRDBService_BarrierShamirListShares_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) BarrierShamirDeleteShare(ctx context.Context, in *BarrierShamirDeleteShareRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_BarrierShamirDeleteShare_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) BarrierShamirDeleteAllShares(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_BarrierShamirDeleteAllShares_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) BarrierShamirVerify(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_BarrierShamirVerify_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) BarrierRekey(ctx context.Context, in *BarrierRekeyRequest, opts ...grpc.CallOption) (*BarrierShamirInitializeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BarrierShamirInitializeResponse)
+	err := c.cc.Invoke(ctx, QRDBService_BarrierRekey_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) BarrierRecoveryGenerate(ctx context.Context, in *BarrierRecoveryGenerateRequest, opts ...grpc.CallOption) (*BarrierRecoveryKeysResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BarrierRecoveryKeysResponse)
+	err := c.cc.Invoke(ctx, QRDBService_BarrierRecoveryGenerate_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) BarrierRecoveryRecover(ctx context.Context, in *BarrierRecoveryRecoverRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_BarrierRecoveryRecover_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) BarrierRecoveryDelete(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_BarrierRecoveryDelete_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) BarrierRecoveryStatus(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*BarrierRecoveryStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BarrierRecoveryStatusResponse)
+	err := c.cc.Invoke(ctx, QRDBService_BarrierRecoveryStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) BarrierRootToken(ctx context.Context, in *BarrierRootTokenRequest, opts ...grpc.CallOption) (*BarrierRootTokenResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BarrierRootTokenResponse)
+	err := c.cc.Invoke(ctx, QRDBService_BarrierRootToken_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) CeremonyInitialize(ctx context.Context, in *CeremonyInitializeRequest, opts ...grpc.CallOption) (*CeremonyInitializeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CeremonyInitializeResponse)
+	err := c.cc.Invoke(ctx, QRDBService_CeremonyInitialize_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) CeremonyStatus(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*CeremonyStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CeremonyStatusResponse)
+	err := c.cc.Invoke(ctx, QRDBService_CeremonyStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) CeremonyClaimCertBegin(ctx context.Context, in *CeremonyClaimCertBeginRequest, opts ...grpc.CallOption) (*CeremonyClaimCertBeginResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CeremonyClaimCertBeginResponse)
+	err := c.cc.Invoke(ctx, QRDBService_CeremonyClaimCertBegin_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) CeremonyClaimCertComplete(ctx context.Context, in *CeremonyClaimCertCompleteRequest, opts ...grpc.CallOption) (*CeremonyClaimCertCompleteResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CeremonyClaimCertCompleteResponse)
+	err := c.cc.Invoke(ctx, QRDBService_CeremonyClaimCertComplete_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) CeremonyClaimShare(ctx context.Context, in *CeremonyClaimShareRequest, opts ...grpc.CallOption) (*CeremonyClaimShareResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CeremonyClaimShareResponse)
+	err := c.cc.Invoke(ctx, QRDBService_CeremonyClaimShare_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) CeremonySignCSR(ctx context.Context, in *CeremonySignCSRRequest, opts ...grpc.CallOption) (*CeremonySignCSRResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CeremonySignCSRResponse)
+	err := c.cc.Invoke(ctx, QRDBService_CeremonySignCSR_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // QRDBServiceServer is the server API for QRDBService service.
 // All implementations must embed UnimplementedQRDBServiceServer
 // for forward compatibility.
@@ -211,6 +1796,120 @@ type QRDBServiceServer interface {
 	Delete(context.Context, *DeleteRequest) (*DeleteResponse, error)
 	// List returns sorted keys matching a prefix.
 	List(context.Context, *ListRequest) (*ListResponse, error)
+	// Scan returns key-value pairs matching a prefix.
+	Scan(context.Context, *ScanRequest) (*ScanResponse, error)
+	// PutWithLease stores a key-value pair with an attached lease.
+	PutWithLease(context.Context, *PutWithLeaseRequest) (*PutWithLeaseResponse, error)
+	// GetRevision retrieves a key-value pair with full MVCC revision metadata.
+	GetRevision(context.Context, *GetRevisionRequest) (*GetRevisionResponse, error)
+	// GetAtRevision retrieves a key-value pair at a historical revision.
+	GetAtRevision(context.Context, *GetAtRevisionRequest) (*GetAtRevisionResponse, error)
+	// Range returns key-value pairs in the half-open interval [start, end).
+	Range(context.Context, *RangeRequest) (*RangeResponse, error)
+	// Compact discards all MVCC revisions older than the specified revision.
+	Compact(context.Context, *CompactRequest) (*emptypb.Empty, error)
+	// CurrentRevision returns the latest committed MVCC revision.
+	CurrentRevision(context.Context, *emptypb.Empty) (*CurrentRevisionResponse, error)
+	// Transaction executes an atomic compare-and-swap transaction.
+	Transaction(context.Context, *TransactionRequest) (*TransactionResponse, error)
+	// Batch executes multiple operations atomically.
+	Batch(context.Context, *BatchRequest) (*BatchResponse, error)
+	// Watch creates a server-streaming watcher that delivers events for
+	// the specified key or prefix.
+	Watch(*WatchRequest, grpc.ServerStreamingServer[WatchResponse]) error
+	// LeaseGrant creates a new lease with the specified TTL.
+	LeaseGrant(context.Context, *LeaseGrantRequest) (*LeaseGrantResponse, error)
+	// LeaseRevoke immediately expires a lease and deletes attached keys.
+	LeaseRevoke(context.Context, *LeaseRevokeRequest) (*emptypb.Empty, error)
+	// LeaseKeepAlive resets the TTL on an existing lease.
+	LeaseKeepAlive(context.Context, *LeaseKeepAliveRequest) (*LeaseKeepAliveResponse, error)
+	// LeaseTimeToLive returns the current state of a lease.
+	LeaseTimeToLive(context.Context, *LeaseTimeToLiveRequest) (*LeaseTimeToLiveResponse, error)
+	// LeaseList returns all active leases.
+	LeaseList(context.Context, *emptypb.Empty) (*LeaseListResponse, error)
+	// LockAcquire acquires a distributed lock, blocking until acquired or
+	// the context is cancelled.
+	LockAcquire(context.Context, *LockAcquireRequest) (*LockAcquireResponse, error)
+	// LockTryLock attempts to acquire a lock immediately without blocking.
+	LockTryLock(context.Context, *LockTryLockRequest) (*LockTryLockResponse, error)
+	// LockRelease releases a held lock. The fencing token must match.
+	LockRelease(context.Context, *LockReleaseRequest) (*emptypb.Empty, error)
+	// LockExtend refreshes the TTL on a held lock without releasing it.
+	LockExtend(context.Context, *LockExtendRequest) (*LockExtendResponse, error)
+	// LockStatus returns the current lock state for a key.
+	LockStatus(context.Context, *LockStatusRequest) (*LockStatusResponse, error)
+	// LockList returns all active locks, optionally filtered by prefix.
+	LockList(context.Context, *LockListRequest) (*LockListResponse, error)
+	// IndexCreate creates a new secondary index.
+	IndexCreate(context.Context, *IndexCreateRequest) (*emptypb.Empty, error)
+	// IndexDrop removes a secondary index.
+	IndexDrop(context.Context, *IndexDropRequest) (*emptypb.Empty, error)
+	// IndexQuery returns entry IDs matching an exact value in an index.
+	IndexQuery(context.Context, *IndexQueryRequest) (*IndexQueryResponse, error)
+	// IndexScan returns entries in an index within a value range.
+	IndexScan(context.Context, *IndexScanRequest) (*IndexScanResponse, error)
+	// IndexList returns the names of all registered indexes.
+	IndexList(context.Context, *emptypb.Empty) (*IndexListResponse, error)
+	// TSWrite stores a single time-series data point.
+	TSWrite(context.Context, *TSWriteRequest) (*emptypb.Empty, error)
+	// TSWriteBatch stores multiple time-series data points atomically.
+	TSWriteBatch(context.Context, *TSWriteBatchRequest) (*emptypb.Empty, error)
+	// TSQuery retrieves data points for a metric within a time range.
+	TSQuery(context.Context, *TSQueryRequest) (*TSQueryResponse, error)
+	// TSAggregate computes an aggregation over data points in a time range.
+	TSAggregate(context.Context, *TSAggregateRequest) (*TSAggregateResponse, error)
+	// TSWritePoint stores a single validated data point.
+	TSWritePoint(context.Context, *TSWriteRequest) (*emptypb.Empty, error)
+	// TSRichQuery performs a rich query with aggregation, downsampling, and grouping.
+	TSRichQuery(context.Context, *TSRichQueryRequest) (*TSRichQueryResponse, error)
+	// TSDeleteSeries deletes time-series data matching the criteria.
+	TSDeleteSeries(context.Context, *TSDeleteSeriesRequest) (*emptypb.Empty, error)
+	// TSGetRetention retrieves the retention policy for a metric.
+	TSGetRetention(context.Context, *TSGetRetentionRequest) (*TSRetentionPolicyResponse, error)
+	// TSSetRetention sets the retention policy for a metric.
+	TSSetRetention(context.Context, *TSSetRetentionRequest) (*emptypb.Empty, error)
+	// TSListMetrics lists metric names matching a prefix.
+	TSListMetrics(context.Context, *TSListMetricsRequest) (*TSListMetricsResponse, error)
+	// VectorCreateNamespace creates a new vector namespace.
+	VectorCreateNamespace(context.Context, *VectorCreateNamespaceRequest) (*VectorCreateNamespaceResponse, error)
+	// VectorDeleteNamespace removes a namespace and all its vectors.
+	VectorDeleteNamespace(context.Context, *VectorDeleteNamespaceRequest) (*emptypb.Empty, error)
+	// VectorListNamespaces returns all vector namespace names.
+	VectorListNamespaces(context.Context, *VectorListNamespacesRequest) (*VectorListNamespacesResponse, error)
+	// VectorGetNamespaceInfo returns metadata about a namespace.
+	VectorGetNamespaceInfo(context.Context, *VectorGetNamespaceInfoRequest) (*VectorNamespaceInfo, error)
+	// VectorUpsert inserts or updates a vector in a namespace.
+	VectorUpsert(context.Context, *VectorUpsertRequest) (*VectorUpsertResponse, error)
+	// VectorGet retrieves a single vector by ID.
+	VectorGet(context.Context, *VectorGetRequest) (*VectorDataProto, error)
+	// VectorDelete removes a single vector by ID.
+	VectorDelete(context.Context, *VectorDeleteRequest) (*emptypb.Empty, error)
+	// VectorBatchUpsert inserts or updates multiple vectors.
+	VectorBatchUpsert(context.Context, *VectorBatchUpsertRequest) (*VectorBatchUpsertResponse, error)
+	// VectorBatchDelete removes multiple vectors by ID.
+	VectorBatchDelete(context.Context, *VectorBatchDeleteRequest) (*VectorBatchDeleteResponse, error)
+	// VectorList returns a paginated list of vectors in a namespace.
+	VectorList(context.Context, *VectorListRequest) (*VectorListResponse, error)
+	// VectorUpdateMetadata updates vector metadata without modifying vector data.
+	VectorUpdateMetadata(context.Context, *VectorUpdateMetadataRequest) (*emptypb.Empty, error)
+	// VectorSearchSimilar performs k-nearest-neighbor search using a query vector.
+	VectorSearchSimilar(context.Context, *VectorSearchSimilarRequest) (*VectorSearchSimilarResponse, error)
+	// VectorSearchByMetadata returns vectors matching metadata filters.
+	VectorSearchByMetadata(context.Context, *VectorSearchByMetadataRequest) (*VectorSearchByMetadataResponse, error)
+	// VectorHybridSearch combines vector similarity and metadata filtering.
+	VectorHybridSearch(context.Context, *VectorHybridSearchRequest) (*VectorHybridSearchResponse, error)
+	// VectorSearchByID searches using an existing vector's ID as the query.
+	VectorSearchByID(context.Context, *VectorSearchByIDRequest) (*VectorSearchSimilarResponse, error)
+	// VectorRebuildIndex triggers an asynchronous index rebuild for a namespace.
+	VectorRebuildIndex(context.Context, *VectorRebuildIndexRequest) (*VectorRebuildIndexResponse, error)
+	// VectorGetRebuildProgress returns the progress of an index rebuild job.
+	VectorGetRebuildProgress(context.Context, *VectorGetRebuildProgressRequest) (*VectorRebuildProgress, error)
+	// VectorGetIndexStats returns statistics about a namespace's vector index.
+	VectorGetIndexStats(context.Context, *VectorGetIndexStatsRequest) (*VectorIndexStats, error)
+	// VectorCompactNamespace triggers asynchronous compaction for a namespace.
+	VectorCompactNamespace(context.Context, *VectorCompactNamespaceRequest) (*VectorCompactNamespaceResponse, error)
+	// VectorGetCompactionProgress returns the progress of a compaction job.
+	VectorGetCompactionProgress(context.Context, *VectorGetCompactionProgressRequest) (*VectorCompactionProgress, error)
 	// Health returns the node health status.
 	Health(context.Context, *emptypb.Empty) (*HealthResponse, error)
 	// Status returns detailed node status information.
@@ -225,6 +1924,137 @@ type QRDBServiceServer interface {
 	RequestSnapshot(context.Context, *RequestSnapshotMessage) (*emptypb.Empty, error)
 	// Drain transitions the node into drain mode.
 	Drain(context.Context, *emptypb.Empty) (*emptypb.Empty, error)
+	// Capabilities returns the compile-time feature set of the node.
+	Capabilities(context.Context, *CapabilitiesRequest) (*CapabilitiesResponse, error)
+	// StartShard initializes and starts a Raft group for the given shard.
+	StartShard(context.Context, *StartShardRequest) (*emptypb.Empty, error)
+	// StopShard stops the Raft group for the given shard.
+	StopShard(context.Context, *StopShardRequest) (*emptypb.Empty, error)
+	// GetShardState returns the Raft state for a shard.
+	GetShardState(context.Context, *GetShardStateRequest) (*ShardStateResponse, error)
+	// GetTopology returns the full cluster topology.
+	GetTopology(context.Context, *emptypb.Empty) (*TopologyResponse, error)
+	// CreateUser creates a new passwordless user.
+	CreateUser(context.Context, *CreateUserRequest) (*UserResponse, error)
+	// GetUser retrieves a user by ID.
+	GetUser(context.Context, *GetUserRequest) (*UserResponse, error)
+	// UpdateUser applies partial updates to an existing user.
+	UpdateUser(context.Context, *UpdateUserProtoRequest) (*UserResponse, error)
+	// DeleteUser removes a non-system user by ID.
+	DeleteUser(context.Context, *DeleteUserRequest) (*emptypb.Empty, error)
+	// ListUsers returns a paginated list of users.
+	ListUsers(context.Context, *ListUsersRequest) (*ListUsersResponse, error)
+	// EnableUser activates a user account.
+	EnableUser(context.Context, *EnableUserRequest) (*emptypb.Empty, error)
+	// DisableUser deactivates a user account.
+	DisableUser(context.Context, *DisableUserRequest) (*emptypb.Empty, error)
+	// CreateRole creates a new role.
+	CreateRole(context.Context, *CreateRoleRequest) (*RoleResponse, error)
+	// GetRole retrieves a role by ID.
+	GetRole(context.Context, *GetRoleRequest) (*RoleResponse, error)
+	// UpdateRole applies partial updates to an existing role.
+	UpdateRole(context.Context, *UpdateRoleProtoRequest) (*RoleResponse, error)
+	// DeleteRole removes a non-system role by ID.
+	DeleteRole(context.Context, *DeleteRoleRequest) (*emptypb.Empty, error)
+	// ListRoles returns a paginated list of roles.
+	ListRoles(context.Context, *ListRolesRequest) (*ListRolesResponse, error)
+	// AssignRole assigns a role to a user.
+	AssignRole(context.Context, *AssignRoleRequest) (*emptypb.Empty, error)
+	// UnassignRole removes a role assignment.
+	UnassignRole(context.Context, *UnassignRoleRequest) (*emptypb.Empty, error)
+	// ListPermissions returns all available permission categories.
+	ListPermissions(context.Context, *emptypb.Empty) (*ListPermissionsResponse, error)
+	// GenerateCert creates a client certificate.
+	GenerateCert(context.Context, *GenerateCertRequest) (*CertBundleResponse, error)
+	// ExportCert exports a certificate as PKCS#12.
+	ExportCert(context.Context, *ExportCertRequest) (*ExportCertResponse, error)
+	// RevokeCert marks a certificate serial as revoked.
+	RevokeCert(context.Context, *RevokeCertRequest) (*emptypb.Empty, error)
+	// ListCerts lists all issued client certificates for a tenant.
+	ListCerts(context.Context, *ListCertsRequest) (*ListCertsResponse, error)
+	// CreateCollection creates a new document collection in a database.
+	CreateCollection(context.Context, *CreateCollectionRequest) (*CollectionInfoResponse, error)
+	// GetCollectionInfo returns metadata about a specific collection.
+	GetCollectionInfo(context.Context, *GetCollectionInfoRequest) (*CollectionInfoResponse, error)
+	// ListCollections returns all collections within a database.
+	ListCollections(context.Context, *ListCollectionsRequest) (*ListCollectionsResponse, error)
+	// DropCollection removes a collection and all its documents.
+	DropCollection(context.Context, *DropCollectionRequest) (*emptypb.Empty, error)
+	// InsertDocument inserts a document into a collection.
+	InsertDocument(context.Context, *InsertDocumentRequest) (*InsertDocumentResponse, error)
+	// GetDocument retrieves a single document by ID.
+	GetDocument(context.Context, *GetDocumentRequest) (*DocumentResponse, error)
+	// UpdateDocument replaces an existing document in a collection.
+	UpdateDocument(context.Context, *UpdateDocumentRequest) (*emptypb.Empty, error)
+	// DeleteDocument removes a document from a collection by ID.
+	DeleteDocument(context.Context, *DeleteDocumentRequest) (*emptypb.Empty, error)
+	// ListDocuments returns a paginated list of documents in a collection.
+	ListDocuments(context.Context, *ListDocumentsRequest) (*ListDocumentsResponse, error)
+	// DatabaseCreate creates a new database with the specified configuration.
+	DatabaseCreate(context.Context, *DatabaseCreateRequest) (*DatabaseInfoResponse, error)
+	// DatabaseGet returns information about a specific database.
+	DatabaseGet(context.Context, *DatabaseGetRequest) (*DatabaseInfoResponse, error)
+	// DatabaseList returns information about all open databases.
+	DatabaseList(context.Context, *emptypb.Empty) (*DatabaseListResponse, error)
+	// DatabaseDrop closes and removes a database.
+	DatabaseDrop(context.Context, *DatabaseDropRequest) (*emptypb.Empty, error)
+	// DatabaseUpdateProtocol updates the wire protocol configuration.
+	DatabaseUpdateProtocol(context.Context, *DatabaseUpdateProtocolRequest) (*DatabaseInfoResponse, error)
+	// DatabaseUpdateEtcd updates the etcd wire protocol configuration.
+	DatabaseUpdateEtcd(context.Context, *DatabaseUpdateEtcdRequest) (*DatabaseInfoResponse, error)
+	// DatabaseUpdateRaft updates the Raft consensus configuration.
+	DatabaseUpdateRaft(context.Context, *DatabaseUpdateRaftRequest) (*DatabaseInfoResponse, error)
+	// DatabaseUpdateBarrier updates the encryption barrier configuration.
+	DatabaseUpdateBarrier(context.Context, *DatabaseUpdateBarrierRequest) (*DatabaseInfoResponse, error)
+	// DatabaseUpdateConnection updates the remote connection configuration.
+	DatabaseUpdateConnection(context.Context, *DatabaseUpdateConnectionRequest) (*DatabaseInfoResponse, error)
+	// BarrierInitialize initializes the cryptographic barrier with a single
+	// master key.
+	BarrierInitialize(context.Context, *BarrierInitializeRequest) (*emptypb.Empty, error)
+	// BarrierUnseal unseals the barrier using the master key.
+	BarrierUnseal(context.Context, *BarrierUnsealRequest) (*emptypb.Empty, error)
+	// BarrierSeal seals the barrier, preventing data access until unsealed.
+	BarrierSeal(context.Context, *emptypb.Empty) (*emptypb.Empty, error)
+	// BarrierStatus returns the current barrier state.
+	BarrierStatus(context.Context, *emptypb.Empty) (*BarrierStatusResponse, error)
+	// BarrierShamirInitialize initializes the barrier with Shamir secret sharing.
+	BarrierShamirInitialize(context.Context, *BarrierShamirInitializeRequest) (*BarrierShamirInitializeResponse, error)
+	// BarrierShamirUnsealShare submits a single Shamir share toward the unseal threshold.
+	BarrierShamirUnsealShare(context.Context, *BarrierShamirUnsealShareRequest) (*BarrierShamirUnsealShareResponse, error)
+	// BarrierShamirUnsealShares submits multiple Shamir shares to unseal in one call.
+	BarrierShamirUnsealShares(context.Context, *BarrierShamirUnsealSharesRequest) (*emptypb.Empty, error)
+	// BarrierShamirListShares returns metadata about stored Shamir shares.
+	BarrierShamirListShares(context.Context, *emptypb.Empty) (*BarrierShamirSharesResponse, error)
+	// BarrierShamirDeleteShare deletes a single Shamir share by index.
+	BarrierShamirDeleteShare(context.Context, *BarrierShamirDeleteShareRequest) (*emptypb.Empty, error)
+	// BarrierShamirDeleteAllShares deletes all stored Shamir shares.
+	BarrierShamirDeleteAllShares(context.Context, *emptypb.Empty) (*emptypb.Empty, error)
+	// BarrierShamirVerify verifies the integrity of stored Shamir shares.
+	BarrierShamirVerify(context.Context, *emptypb.Empty) (*emptypb.Empty, error)
+	// BarrierRekey generates new Shamir shares with the specified parameters.
+	BarrierRekey(context.Context, *BarrierRekeyRequest) (*BarrierShamirInitializeResponse, error)
+	// BarrierRecoveryGenerate generates recovery keys for disaster recovery.
+	BarrierRecoveryGenerate(context.Context, *BarrierRecoveryGenerateRequest) (*BarrierRecoveryKeysResponse, error)
+	// BarrierRecoveryRecover unseals the barrier using recovery keys.
+	BarrierRecoveryRecover(context.Context, *BarrierRecoveryRecoverRequest) (*emptypb.Empty, error)
+	// BarrierRecoveryDelete deletes all stored recovery keys.
+	BarrierRecoveryDelete(context.Context, *emptypb.Empty) (*emptypb.Empty, error)
+	// BarrierRecoveryStatus checks whether recovery keys have been generated.
+	BarrierRecoveryStatus(context.Context, *emptypb.Empty) (*BarrierRecoveryStatusResponse, error)
+	// BarrierRootToken generates a new root token using Shamir shares.
+	BarrierRootToken(context.Context, *BarrierRootTokenRequest) (*BarrierRootTokenResponse, error)
+	// CeremonyInitialize starts the initialization ceremony.
+	CeremonyInitialize(context.Context, *CeremonyInitializeRequest) (*CeremonyInitializeResponse, error)
+	// CeremonyStatus returns the current ceremony state.
+	CeremonyStatus(context.Context, *emptypb.Empty) (*CeremonyStatusResponse, error)
+	// CeremonyClaimCertBegin starts a certificate claim challenge for an officer.
+	CeremonyClaimCertBegin(context.Context, *CeremonyClaimCertBeginRequest) (*CeremonyClaimCertBeginResponse, error)
+	// CeremonyClaimCertComplete completes a certificate claim by submitting the signed nonce.
+	CeremonyClaimCertComplete(context.Context, *CeremonyClaimCertCompleteRequest) (*CeremonyClaimCertCompleteResponse, error)
+	// CeremonyClaimShare retrieves the Shamir share for an officer.
+	CeremonyClaimShare(context.Context, *CeremonyClaimShareRequest) (*CeremonyClaimShareResponse, error)
+	// CeremonySignCSR submits a CSR for signing during the ceremony.
+	CeremonySignCSR(context.Context, *CeremonySignCSRRequest) (*CeremonySignCSRResponse, error)
 	mustEmbedUnimplementedQRDBServiceServer()
 }
 
@@ -247,6 +2077,174 @@ func (UnimplementedQRDBServiceServer) Delete(context.Context, *DeleteRequest) (*
 func (UnimplementedQRDBServiceServer) List(context.Context, *ListRequest) (*ListResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method List not implemented")
 }
+func (UnimplementedQRDBServiceServer) Scan(context.Context, *ScanRequest) (*ScanResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Scan not implemented")
+}
+func (UnimplementedQRDBServiceServer) PutWithLease(context.Context, *PutWithLeaseRequest) (*PutWithLeaseResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PutWithLease not implemented")
+}
+func (UnimplementedQRDBServiceServer) GetRevision(context.Context, *GetRevisionRequest) (*GetRevisionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetRevision not implemented")
+}
+func (UnimplementedQRDBServiceServer) GetAtRevision(context.Context, *GetAtRevisionRequest) (*GetAtRevisionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetAtRevision not implemented")
+}
+func (UnimplementedQRDBServiceServer) Range(context.Context, *RangeRequest) (*RangeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Range not implemented")
+}
+func (UnimplementedQRDBServiceServer) Compact(context.Context, *CompactRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method Compact not implemented")
+}
+func (UnimplementedQRDBServiceServer) CurrentRevision(context.Context, *emptypb.Empty) (*CurrentRevisionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CurrentRevision not implemented")
+}
+func (UnimplementedQRDBServiceServer) Transaction(context.Context, *TransactionRequest) (*TransactionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Transaction not implemented")
+}
+func (UnimplementedQRDBServiceServer) Batch(context.Context, *BatchRequest) (*BatchResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Batch not implemented")
+}
+func (UnimplementedQRDBServiceServer) Watch(*WatchRequest, grpc.ServerStreamingServer[WatchResponse]) error {
+	return status.Error(codes.Unimplemented, "method Watch not implemented")
+}
+func (UnimplementedQRDBServiceServer) LeaseGrant(context.Context, *LeaseGrantRequest) (*LeaseGrantResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method LeaseGrant not implemented")
+}
+func (UnimplementedQRDBServiceServer) LeaseRevoke(context.Context, *LeaseRevokeRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method LeaseRevoke not implemented")
+}
+func (UnimplementedQRDBServiceServer) LeaseKeepAlive(context.Context, *LeaseKeepAliveRequest) (*LeaseKeepAliveResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method LeaseKeepAlive not implemented")
+}
+func (UnimplementedQRDBServiceServer) LeaseTimeToLive(context.Context, *LeaseTimeToLiveRequest) (*LeaseTimeToLiveResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method LeaseTimeToLive not implemented")
+}
+func (UnimplementedQRDBServiceServer) LeaseList(context.Context, *emptypb.Empty) (*LeaseListResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method LeaseList not implemented")
+}
+func (UnimplementedQRDBServiceServer) LockAcquire(context.Context, *LockAcquireRequest) (*LockAcquireResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method LockAcquire not implemented")
+}
+func (UnimplementedQRDBServiceServer) LockTryLock(context.Context, *LockTryLockRequest) (*LockTryLockResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method LockTryLock not implemented")
+}
+func (UnimplementedQRDBServiceServer) LockRelease(context.Context, *LockReleaseRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method LockRelease not implemented")
+}
+func (UnimplementedQRDBServiceServer) LockExtend(context.Context, *LockExtendRequest) (*LockExtendResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method LockExtend not implemented")
+}
+func (UnimplementedQRDBServiceServer) LockStatus(context.Context, *LockStatusRequest) (*LockStatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method LockStatus not implemented")
+}
+func (UnimplementedQRDBServiceServer) LockList(context.Context, *LockListRequest) (*LockListResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method LockList not implemented")
+}
+func (UnimplementedQRDBServiceServer) IndexCreate(context.Context, *IndexCreateRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method IndexCreate not implemented")
+}
+func (UnimplementedQRDBServiceServer) IndexDrop(context.Context, *IndexDropRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method IndexDrop not implemented")
+}
+func (UnimplementedQRDBServiceServer) IndexQuery(context.Context, *IndexQueryRequest) (*IndexQueryResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method IndexQuery not implemented")
+}
+func (UnimplementedQRDBServiceServer) IndexScan(context.Context, *IndexScanRequest) (*IndexScanResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method IndexScan not implemented")
+}
+func (UnimplementedQRDBServiceServer) IndexList(context.Context, *emptypb.Empty) (*IndexListResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method IndexList not implemented")
+}
+func (UnimplementedQRDBServiceServer) TSWrite(context.Context, *TSWriteRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method TSWrite not implemented")
+}
+func (UnimplementedQRDBServiceServer) TSWriteBatch(context.Context, *TSWriteBatchRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method TSWriteBatch not implemented")
+}
+func (UnimplementedQRDBServiceServer) TSQuery(context.Context, *TSQueryRequest) (*TSQueryResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method TSQuery not implemented")
+}
+func (UnimplementedQRDBServiceServer) TSAggregate(context.Context, *TSAggregateRequest) (*TSAggregateResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method TSAggregate not implemented")
+}
+func (UnimplementedQRDBServiceServer) TSWritePoint(context.Context, *TSWriteRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method TSWritePoint not implemented")
+}
+func (UnimplementedQRDBServiceServer) TSRichQuery(context.Context, *TSRichQueryRequest) (*TSRichQueryResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method TSRichQuery not implemented")
+}
+func (UnimplementedQRDBServiceServer) TSDeleteSeries(context.Context, *TSDeleteSeriesRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method TSDeleteSeries not implemented")
+}
+func (UnimplementedQRDBServiceServer) TSGetRetention(context.Context, *TSGetRetentionRequest) (*TSRetentionPolicyResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method TSGetRetention not implemented")
+}
+func (UnimplementedQRDBServiceServer) TSSetRetention(context.Context, *TSSetRetentionRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method TSSetRetention not implemented")
+}
+func (UnimplementedQRDBServiceServer) TSListMetrics(context.Context, *TSListMetricsRequest) (*TSListMetricsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method TSListMetrics not implemented")
+}
+func (UnimplementedQRDBServiceServer) VectorCreateNamespace(context.Context, *VectorCreateNamespaceRequest) (*VectorCreateNamespaceResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method VectorCreateNamespace not implemented")
+}
+func (UnimplementedQRDBServiceServer) VectorDeleteNamespace(context.Context, *VectorDeleteNamespaceRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method VectorDeleteNamespace not implemented")
+}
+func (UnimplementedQRDBServiceServer) VectorListNamespaces(context.Context, *VectorListNamespacesRequest) (*VectorListNamespacesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method VectorListNamespaces not implemented")
+}
+func (UnimplementedQRDBServiceServer) VectorGetNamespaceInfo(context.Context, *VectorGetNamespaceInfoRequest) (*VectorNamespaceInfo, error) {
+	return nil, status.Error(codes.Unimplemented, "method VectorGetNamespaceInfo not implemented")
+}
+func (UnimplementedQRDBServiceServer) VectorUpsert(context.Context, *VectorUpsertRequest) (*VectorUpsertResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method VectorUpsert not implemented")
+}
+func (UnimplementedQRDBServiceServer) VectorGet(context.Context, *VectorGetRequest) (*VectorDataProto, error) {
+	return nil, status.Error(codes.Unimplemented, "method VectorGet not implemented")
+}
+func (UnimplementedQRDBServiceServer) VectorDelete(context.Context, *VectorDeleteRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method VectorDelete not implemented")
+}
+func (UnimplementedQRDBServiceServer) VectorBatchUpsert(context.Context, *VectorBatchUpsertRequest) (*VectorBatchUpsertResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method VectorBatchUpsert not implemented")
+}
+func (UnimplementedQRDBServiceServer) VectorBatchDelete(context.Context, *VectorBatchDeleteRequest) (*VectorBatchDeleteResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method VectorBatchDelete not implemented")
+}
+func (UnimplementedQRDBServiceServer) VectorList(context.Context, *VectorListRequest) (*VectorListResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method VectorList not implemented")
+}
+func (UnimplementedQRDBServiceServer) VectorUpdateMetadata(context.Context, *VectorUpdateMetadataRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method VectorUpdateMetadata not implemented")
+}
+func (UnimplementedQRDBServiceServer) VectorSearchSimilar(context.Context, *VectorSearchSimilarRequest) (*VectorSearchSimilarResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method VectorSearchSimilar not implemented")
+}
+func (UnimplementedQRDBServiceServer) VectorSearchByMetadata(context.Context, *VectorSearchByMetadataRequest) (*VectorSearchByMetadataResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method VectorSearchByMetadata not implemented")
+}
+func (UnimplementedQRDBServiceServer) VectorHybridSearch(context.Context, *VectorHybridSearchRequest) (*VectorHybridSearchResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method VectorHybridSearch not implemented")
+}
+func (UnimplementedQRDBServiceServer) VectorSearchByID(context.Context, *VectorSearchByIDRequest) (*VectorSearchSimilarResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method VectorSearchByID not implemented")
+}
+func (UnimplementedQRDBServiceServer) VectorRebuildIndex(context.Context, *VectorRebuildIndexRequest) (*VectorRebuildIndexResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method VectorRebuildIndex not implemented")
+}
+func (UnimplementedQRDBServiceServer) VectorGetRebuildProgress(context.Context, *VectorGetRebuildProgressRequest) (*VectorRebuildProgress, error) {
+	return nil, status.Error(codes.Unimplemented, "method VectorGetRebuildProgress not implemented")
+}
+func (UnimplementedQRDBServiceServer) VectorGetIndexStats(context.Context, *VectorGetIndexStatsRequest) (*VectorIndexStats, error) {
+	return nil, status.Error(codes.Unimplemented, "method VectorGetIndexStats not implemented")
+}
+func (UnimplementedQRDBServiceServer) VectorCompactNamespace(context.Context, *VectorCompactNamespaceRequest) (*VectorCompactNamespaceResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method VectorCompactNamespace not implemented")
+}
+func (UnimplementedQRDBServiceServer) VectorGetCompactionProgress(context.Context, *VectorGetCompactionProgressRequest) (*VectorCompactionProgress, error) {
+	return nil, status.Error(codes.Unimplemented, "method VectorGetCompactionProgress not implemented")
+}
 func (UnimplementedQRDBServiceServer) Health(context.Context, *emptypb.Empty) (*HealthResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Health not implemented")
 }
@@ -267,6 +2265,201 @@ func (UnimplementedQRDBServiceServer) RequestSnapshot(context.Context, *RequestS
 }
 func (UnimplementedQRDBServiceServer) Drain(context.Context, *emptypb.Empty) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method Drain not implemented")
+}
+func (UnimplementedQRDBServiceServer) Capabilities(context.Context, *CapabilitiesRequest) (*CapabilitiesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Capabilities not implemented")
+}
+func (UnimplementedQRDBServiceServer) StartShard(context.Context, *StartShardRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method StartShard not implemented")
+}
+func (UnimplementedQRDBServiceServer) StopShard(context.Context, *StopShardRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method StopShard not implemented")
+}
+func (UnimplementedQRDBServiceServer) GetShardState(context.Context, *GetShardStateRequest) (*ShardStateResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetShardState not implemented")
+}
+func (UnimplementedQRDBServiceServer) GetTopology(context.Context, *emptypb.Empty) (*TopologyResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetTopology not implemented")
+}
+func (UnimplementedQRDBServiceServer) CreateUser(context.Context, *CreateUserRequest) (*UserResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreateUser not implemented")
+}
+func (UnimplementedQRDBServiceServer) GetUser(context.Context, *GetUserRequest) (*UserResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetUser not implemented")
+}
+func (UnimplementedQRDBServiceServer) UpdateUser(context.Context, *UpdateUserProtoRequest) (*UserResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method UpdateUser not implemented")
+}
+func (UnimplementedQRDBServiceServer) DeleteUser(context.Context, *DeleteUserRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteUser not implemented")
+}
+func (UnimplementedQRDBServiceServer) ListUsers(context.Context, *ListUsersRequest) (*ListUsersResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListUsers not implemented")
+}
+func (UnimplementedQRDBServiceServer) EnableUser(context.Context, *EnableUserRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method EnableUser not implemented")
+}
+func (UnimplementedQRDBServiceServer) DisableUser(context.Context, *DisableUserRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method DisableUser not implemented")
+}
+func (UnimplementedQRDBServiceServer) CreateRole(context.Context, *CreateRoleRequest) (*RoleResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreateRole not implemented")
+}
+func (UnimplementedQRDBServiceServer) GetRole(context.Context, *GetRoleRequest) (*RoleResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetRole not implemented")
+}
+func (UnimplementedQRDBServiceServer) UpdateRole(context.Context, *UpdateRoleProtoRequest) (*RoleResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method UpdateRole not implemented")
+}
+func (UnimplementedQRDBServiceServer) DeleteRole(context.Context, *DeleteRoleRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteRole not implemented")
+}
+func (UnimplementedQRDBServiceServer) ListRoles(context.Context, *ListRolesRequest) (*ListRolesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListRoles not implemented")
+}
+func (UnimplementedQRDBServiceServer) AssignRole(context.Context, *AssignRoleRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method AssignRole not implemented")
+}
+func (UnimplementedQRDBServiceServer) UnassignRole(context.Context, *UnassignRoleRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method UnassignRole not implemented")
+}
+func (UnimplementedQRDBServiceServer) ListPermissions(context.Context, *emptypb.Empty) (*ListPermissionsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListPermissions not implemented")
+}
+func (UnimplementedQRDBServiceServer) GenerateCert(context.Context, *GenerateCertRequest) (*CertBundleResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GenerateCert not implemented")
+}
+func (UnimplementedQRDBServiceServer) ExportCert(context.Context, *ExportCertRequest) (*ExportCertResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ExportCert not implemented")
+}
+func (UnimplementedQRDBServiceServer) RevokeCert(context.Context, *RevokeCertRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method RevokeCert not implemented")
+}
+func (UnimplementedQRDBServiceServer) ListCerts(context.Context, *ListCertsRequest) (*ListCertsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListCerts not implemented")
+}
+func (UnimplementedQRDBServiceServer) CreateCollection(context.Context, *CreateCollectionRequest) (*CollectionInfoResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreateCollection not implemented")
+}
+func (UnimplementedQRDBServiceServer) GetCollectionInfo(context.Context, *GetCollectionInfoRequest) (*CollectionInfoResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetCollectionInfo not implemented")
+}
+func (UnimplementedQRDBServiceServer) ListCollections(context.Context, *ListCollectionsRequest) (*ListCollectionsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListCollections not implemented")
+}
+func (UnimplementedQRDBServiceServer) DropCollection(context.Context, *DropCollectionRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method DropCollection not implemented")
+}
+func (UnimplementedQRDBServiceServer) InsertDocument(context.Context, *InsertDocumentRequest) (*InsertDocumentResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method InsertDocument not implemented")
+}
+func (UnimplementedQRDBServiceServer) GetDocument(context.Context, *GetDocumentRequest) (*DocumentResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetDocument not implemented")
+}
+func (UnimplementedQRDBServiceServer) UpdateDocument(context.Context, *UpdateDocumentRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method UpdateDocument not implemented")
+}
+func (UnimplementedQRDBServiceServer) DeleteDocument(context.Context, *DeleteDocumentRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteDocument not implemented")
+}
+func (UnimplementedQRDBServiceServer) ListDocuments(context.Context, *ListDocumentsRequest) (*ListDocumentsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListDocuments not implemented")
+}
+func (UnimplementedQRDBServiceServer) DatabaseCreate(context.Context, *DatabaseCreateRequest) (*DatabaseInfoResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DatabaseCreate not implemented")
+}
+func (UnimplementedQRDBServiceServer) DatabaseGet(context.Context, *DatabaseGetRequest) (*DatabaseInfoResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DatabaseGet not implemented")
+}
+func (UnimplementedQRDBServiceServer) DatabaseList(context.Context, *emptypb.Empty) (*DatabaseListResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DatabaseList not implemented")
+}
+func (UnimplementedQRDBServiceServer) DatabaseDrop(context.Context, *DatabaseDropRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method DatabaseDrop not implemented")
+}
+func (UnimplementedQRDBServiceServer) DatabaseUpdateProtocol(context.Context, *DatabaseUpdateProtocolRequest) (*DatabaseInfoResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DatabaseUpdateProtocol not implemented")
+}
+func (UnimplementedQRDBServiceServer) DatabaseUpdateEtcd(context.Context, *DatabaseUpdateEtcdRequest) (*DatabaseInfoResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DatabaseUpdateEtcd not implemented")
+}
+func (UnimplementedQRDBServiceServer) DatabaseUpdateRaft(context.Context, *DatabaseUpdateRaftRequest) (*DatabaseInfoResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DatabaseUpdateRaft not implemented")
+}
+func (UnimplementedQRDBServiceServer) DatabaseUpdateBarrier(context.Context, *DatabaseUpdateBarrierRequest) (*DatabaseInfoResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DatabaseUpdateBarrier not implemented")
+}
+func (UnimplementedQRDBServiceServer) DatabaseUpdateConnection(context.Context, *DatabaseUpdateConnectionRequest) (*DatabaseInfoResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DatabaseUpdateConnection not implemented")
+}
+func (UnimplementedQRDBServiceServer) BarrierInitialize(context.Context, *BarrierInitializeRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method BarrierInitialize not implemented")
+}
+func (UnimplementedQRDBServiceServer) BarrierUnseal(context.Context, *BarrierUnsealRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method BarrierUnseal not implemented")
+}
+func (UnimplementedQRDBServiceServer) BarrierSeal(context.Context, *emptypb.Empty) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method BarrierSeal not implemented")
+}
+func (UnimplementedQRDBServiceServer) BarrierStatus(context.Context, *emptypb.Empty) (*BarrierStatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method BarrierStatus not implemented")
+}
+func (UnimplementedQRDBServiceServer) BarrierShamirInitialize(context.Context, *BarrierShamirInitializeRequest) (*BarrierShamirInitializeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method BarrierShamirInitialize not implemented")
+}
+func (UnimplementedQRDBServiceServer) BarrierShamirUnsealShare(context.Context, *BarrierShamirUnsealShareRequest) (*BarrierShamirUnsealShareResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method BarrierShamirUnsealShare not implemented")
+}
+func (UnimplementedQRDBServiceServer) BarrierShamirUnsealShares(context.Context, *BarrierShamirUnsealSharesRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method BarrierShamirUnsealShares not implemented")
+}
+func (UnimplementedQRDBServiceServer) BarrierShamirListShares(context.Context, *emptypb.Empty) (*BarrierShamirSharesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method BarrierShamirListShares not implemented")
+}
+func (UnimplementedQRDBServiceServer) BarrierShamirDeleteShare(context.Context, *BarrierShamirDeleteShareRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method BarrierShamirDeleteShare not implemented")
+}
+func (UnimplementedQRDBServiceServer) BarrierShamirDeleteAllShares(context.Context, *emptypb.Empty) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method BarrierShamirDeleteAllShares not implemented")
+}
+func (UnimplementedQRDBServiceServer) BarrierShamirVerify(context.Context, *emptypb.Empty) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method BarrierShamirVerify not implemented")
+}
+func (UnimplementedQRDBServiceServer) BarrierRekey(context.Context, *BarrierRekeyRequest) (*BarrierShamirInitializeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method BarrierRekey not implemented")
+}
+func (UnimplementedQRDBServiceServer) BarrierRecoveryGenerate(context.Context, *BarrierRecoveryGenerateRequest) (*BarrierRecoveryKeysResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method BarrierRecoveryGenerate not implemented")
+}
+func (UnimplementedQRDBServiceServer) BarrierRecoveryRecover(context.Context, *BarrierRecoveryRecoverRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method BarrierRecoveryRecover not implemented")
+}
+func (UnimplementedQRDBServiceServer) BarrierRecoveryDelete(context.Context, *emptypb.Empty) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method BarrierRecoveryDelete not implemented")
+}
+func (UnimplementedQRDBServiceServer) BarrierRecoveryStatus(context.Context, *emptypb.Empty) (*BarrierRecoveryStatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method BarrierRecoveryStatus not implemented")
+}
+func (UnimplementedQRDBServiceServer) BarrierRootToken(context.Context, *BarrierRootTokenRequest) (*BarrierRootTokenResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method BarrierRootToken not implemented")
+}
+func (UnimplementedQRDBServiceServer) CeremonyInitialize(context.Context, *CeremonyInitializeRequest) (*CeremonyInitializeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CeremonyInitialize not implemented")
+}
+func (UnimplementedQRDBServiceServer) CeremonyStatus(context.Context, *emptypb.Empty) (*CeremonyStatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CeremonyStatus not implemented")
+}
+func (UnimplementedQRDBServiceServer) CeremonyClaimCertBegin(context.Context, *CeremonyClaimCertBeginRequest) (*CeremonyClaimCertBeginResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CeremonyClaimCertBegin not implemented")
+}
+func (UnimplementedQRDBServiceServer) CeremonyClaimCertComplete(context.Context, *CeremonyClaimCertCompleteRequest) (*CeremonyClaimCertCompleteResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CeremonyClaimCertComplete not implemented")
+}
+func (UnimplementedQRDBServiceServer) CeremonyClaimShare(context.Context, *CeremonyClaimShareRequest) (*CeremonyClaimShareResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CeremonyClaimShare not implemented")
+}
+func (UnimplementedQRDBServiceServer) CeremonySignCSR(context.Context, *CeremonySignCSRRequest) (*CeremonySignCSRResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CeremonySignCSR not implemented")
 }
 func (UnimplementedQRDBServiceServer) mustEmbedUnimplementedQRDBServiceServer() {}
 func (UnimplementedQRDBServiceServer) testEmbeddedByValue()                     {}
@@ -357,6 +2550,1007 @@ func _QRDBService_List_Handler(srv interface{}, ctx context.Context, dec func(in
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(QRDBServiceServer).List(ctx, req.(*ListRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_Scan_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ScanRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).Scan(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_Scan_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).Scan(ctx, req.(*ScanRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_PutWithLease_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PutWithLeaseRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).PutWithLease(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_PutWithLease_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).PutWithLease(ctx, req.(*PutWithLeaseRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_GetRevision_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetRevisionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).GetRevision(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_GetRevision_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).GetRevision(ctx, req.(*GetRevisionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_GetAtRevision_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetAtRevisionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).GetAtRevision(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_GetAtRevision_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).GetAtRevision(ctx, req.(*GetAtRevisionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_Range_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RangeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).Range(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_Range_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).Range(ctx, req.(*RangeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_Compact_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CompactRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).Compact(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_Compact_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).Compact(ctx, req.(*CompactRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_CurrentRevision_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).CurrentRevision(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_CurrentRevision_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).CurrentRevision(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_Transaction_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TransactionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).Transaction(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_Transaction_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).Transaction(ctx, req.(*TransactionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_Batch_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BatchRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).Batch(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_Batch_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).Batch(ctx, req.(*BatchRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_Watch_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(WatchRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(QRDBServiceServer).Watch(m, &grpc.GenericServerStream[WatchRequest, WatchResponse]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type QRDBService_WatchServer = grpc.ServerStreamingServer[WatchResponse]
+
+func _QRDBService_LeaseGrant_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LeaseGrantRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).LeaseGrant(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_LeaseGrant_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).LeaseGrant(ctx, req.(*LeaseGrantRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_LeaseRevoke_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LeaseRevokeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).LeaseRevoke(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_LeaseRevoke_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).LeaseRevoke(ctx, req.(*LeaseRevokeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_LeaseKeepAlive_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LeaseKeepAliveRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).LeaseKeepAlive(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_LeaseKeepAlive_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).LeaseKeepAlive(ctx, req.(*LeaseKeepAliveRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_LeaseTimeToLive_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LeaseTimeToLiveRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).LeaseTimeToLive(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_LeaseTimeToLive_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).LeaseTimeToLive(ctx, req.(*LeaseTimeToLiveRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_LeaseList_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).LeaseList(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_LeaseList_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).LeaseList(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_LockAcquire_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LockAcquireRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).LockAcquire(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_LockAcquire_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).LockAcquire(ctx, req.(*LockAcquireRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_LockTryLock_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LockTryLockRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).LockTryLock(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_LockTryLock_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).LockTryLock(ctx, req.(*LockTryLockRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_LockRelease_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LockReleaseRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).LockRelease(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_LockRelease_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).LockRelease(ctx, req.(*LockReleaseRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_LockExtend_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LockExtendRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).LockExtend(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_LockExtend_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).LockExtend(ctx, req.(*LockExtendRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_LockStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LockStatusRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).LockStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_LockStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).LockStatus(ctx, req.(*LockStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_LockList_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LockListRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).LockList(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_LockList_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).LockList(ctx, req.(*LockListRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_IndexCreate_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(IndexCreateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).IndexCreate(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_IndexCreate_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).IndexCreate(ctx, req.(*IndexCreateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_IndexDrop_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(IndexDropRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).IndexDrop(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_IndexDrop_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).IndexDrop(ctx, req.(*IndexDropRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_IndexQuery_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(IndexQueryRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).IndexQuery(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_IndexQuery_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).IndexQuery(ctx, req.(*IndexQueryRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_IndexScan_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(IndexScanRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).IndexScan(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_IndexScan_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).IndexScan(ctx, req.(*IndexScanRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_IndexList_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).IndexList(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_IndexList_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).IndexList(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_TSWrite_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TSWriteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).TSWrite(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_TSWrite_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).TSWrite(ctx, req.(*TSWriteRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_TSWriteBatch_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TSWriteBatchRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).TSWriteBatch(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_TSWriteBatch_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).TSWriteBatch(ctx, req.(*TSWriteBatchRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_TSQuery_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TSQueryRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).TSQuery(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_TSQuery_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).TSQuery(ctx, req.(*TSQueryRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_TSAggregate_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TSAggregateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).TSAggregate(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_TSAggregate_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).TSAggregate(ctx, req.(*TSAggregateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_TSWritePoint_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TSWriteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).TSWritePoint(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_TSWritePoint_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).TSWritePoint(ctx, req.(*TSWriteRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_TSRichQuery_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TSRichQueryRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).TSRichQuery(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_TSRichQuery_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).TSRichQuery(ctx, req.(*TSRichQueryRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_TSDeleteSeries_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TSDeleteSeriesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).TSDeleteSeries(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_TSDeleteSeries_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).TSDeleteSeries(ctx, req.(*TSDeleteSeriesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_TSGetRetention_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TSGetRetentionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).TSGetRetention(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_TSGetRetention_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).TSGetRetention(ctx, req.(*TSGetRetentionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_TSSetRetention_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TSSetRetentionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).TSSetRetention(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_TSSetRetention_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).TSSetRetention(ctx, req.(*TSSetRetentionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_TSListMetrics_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TSListMetricsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).TSListMetrics(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_TSListMetrics_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).TSListMetrics(ctx, req.(*TSListMetricsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_VectorCreateNamespace_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VectorCreateNamespaceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).VectorCreateNamespace(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_VectorCreateNamespace_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).VectorCreateNamespace(ctx, req.(*VectorCreateNamespaceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_VectorDeleteNamespace_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VectorDeleteNamespaceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).VectorDeleteNamespace(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_VectorDeleteNamespace_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).VectorDeleteNamespace(ctx, req.(*VectorDeleteNamespaceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_VectorListNamespaces_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VectorListNamespacesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).VectorListNamespaces(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_VectorListNamespaces_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).VectorListNamespaces(ctx, req.(*VectorListNamespacesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_VectorGetNamespaceInfo_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VectorGetNamespaceInfoRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).VectorGetNamespaceInfo(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_VectorGetNamespaceInfo_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).VectorGetNamespaceInfo(ctx, req.(*VectorGetNamespaceInfoRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_VectorUpsert_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VectorUpsertRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).VectorUpsert(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_VectorUpsert_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).VectorUpsert(ctx, req.(*VectorUpsertRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_VectorGet_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VectorGetRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).VectorGet(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_VectorGet_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).VectorGet(ctx, req.(*VectorGetRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_VectorDelete_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VectorDeleteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).VectorDelete(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_VectorDelete_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).VectorDelete(ctx, req.(*VectorDeleteRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_VectorBatchUpsert_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VectorBatchUpsertRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).VectorBatchUpsert(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_VectorBatchUpsert_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).VectorBatchUpsert(ctx, req.(*VectorBatchUpsertRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_VectorBatchDelete_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VectorBatchDeleteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).VectorBatchDelete(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_VectorBatchDelete_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).VectorBatchDelete(ctx, req.(*VectorBatchDeleteRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_VectorList_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VectorListRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).VectorList(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_VectorList_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).VectorList(ctx, req.(*VectorListRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_VectorUpdateMetadata_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VectorUpdateMetadataRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).VectorUpdateMetadata(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_VectorUpdateMetadata_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).VectorUpdateMetadata(ctx, req.(*VectorUpdateMetadataRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_VectorSearchSimilar_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VectorSearchSimilarRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).VectorSearchSimilar(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_VectorSearchSimilar_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).VectorSearchSimilar(ctx, req.(*VectorSearchSimilarRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_VectorSearchByMetadata_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VectorSearchByMetadataRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).VectorSearchByMetadata(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_VectorSearchByMetadata_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).VectorSearchByMetadata(ctx, req.(*VectorSearchByMetadataRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_VectorHybridSearch_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VectorHybridSearchRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).VectorHybridSearch(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_VectorHybridSearch_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).VectorHybridSearch(ctx, req.(*VectorHybridSearchRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_VectorSearchByID_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VectorSearchByIDRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).VectorSearchByID(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_VectorSearchByID_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).VectorSearchByID(ctx, req.(*VectorSearchByIDRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_VectorRebuildIndex_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VectorRebuildIndexRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).VectorRebuildIndex(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_VectorRebuildIndex_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).VectorRebuildIndex(ctx, req.(*VectorRebuildIndexRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_VectorGetRebuildProgress_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VectorGetRebuildProgressRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).VectorGetRebuildProgress(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_VectorGetRebuildProgress_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).VectorGetRebuildProgress(ctx, req.(*VectorGetRebuildProgressRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_VectorGetIndexStats_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VectorGetIndexStatsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).VectorGetIndexStats(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_VectorGetIndexStats_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).VectorGetIndexStats(ctx, req.(*VectorGetIndexStatsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_VectorCompactNamespace_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VectorCompactNamespaceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).VectorCompactNamespace(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_VectorCompactNamespace_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).VectorCompactNamespace(ctx, req.(*VectorCompactNamespaceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_VectorGetCompactionProgress_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VectorGetCompactionProgressRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).VectorGetCompactionProgress(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_VectorGetCompactionProgress_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).VectorGetCompactionProgress(ctx, req.(*VectorGetCompactionProgressRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -487,6 +3681,1176 @@ func _QRDBService_Drain_Handler(srv interface{}, ctx context.Context, dec func(i
 	return interceptor(ctx, in, info, handler)
 }
 
+func _QRDBService_Capabilities_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CapabilitiesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).Capabilities(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_Capabilities_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).Capabilities(ctx, req.(*CapabilitiesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_StartShard_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(StartShardRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).StartShard(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_StartShard_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).StartShard(ctx, req.(*StartShardRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_StopShard_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(StopShardRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).StopShard(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_StopShard_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).StopShard(ctx, req.(*StopShardRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_GetShardState_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetShardStateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).GetShardState(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_GetShardState_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).GetShardState(ctx, req.(*GetShardStateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_GetTopology_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).GetTopology(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_GetTopology_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).GetTopology(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_CreateUser_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateUserRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).CreateUser(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_CreateUser_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).CreateUser(ctx, req.(*CreateUserRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_GetUser_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetUserRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).GetUser(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_GetUser_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).GetUser(ctx, req.(*GetUserRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_UpdateUser_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpdateUserProtoRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).UpdateUser(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_UpdateUser_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).UpdateUser(ctx, req.(*UpdateUserProtoRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_DeleteUser_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteUserRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).DeleteUser(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_DeleteUser_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).DeleteUser(ctx, req.(*DeleteUserRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_ListUsers_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListUsersRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).ListUsers(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_ListUsers_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).ListUsers(ctx, req.(*ListUsersRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_EnableUser_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(EnableUserRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).EnableUser(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_EnableUser_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).EnableUser(ctx, req.(*EnableUserRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_DisableUser_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DisableUserRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).DisableUser(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_DisableUser_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).DisableUser(ctx, req.(*DisableUserRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_CreateRole_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateRoleRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).CreateRole(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_CreateRole_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).CreateRole(ctx, req.(*CreateRoleRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_GetRole_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetRoleRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).GetRole(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_GetRole_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).GetRole(ctx, req.(*GetRoleRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_UpdateRole_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpdateRoleProtoRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).UpdateRole(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_UpdateRole_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).UpdateRole(ctx, req.(*UpdateRoleProtoRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_DeleteRole_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteRoleRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).DeleteRole(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_DeleteRole_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).DeleteRole(ctx, req.(*DeleteRoleRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_ListRoles_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListRolesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).ListRoles(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_ListRoles_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).ListRoles(ctx, req.(*ListRolesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_AssignRole_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AssignRoleRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).AssignRole(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_AssignRole_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).AssignRole(ctx, req.(*AssignRoleRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_UnassignRole_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UnassignRoleRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).UnassignRole(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_UnassignRole_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).UnassignRole(ctx, req.(*UnassignRoleRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_ListPermissions_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).ListPermissions(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_ListPermissions_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).ListPermissions(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_GenerateCert_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GenerateCertRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).GenerateCert(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_GenerateCert_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).GenerateCert(ctx, req.(*GenerateCertRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_ExportCert_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ExportCertRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).ExportCert(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_ExportCert_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).ExportCert(ctx, req.(*ExportCertRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_RevokeCert_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RevokeCertRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).RevokeCert(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_RevokeCert_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).RevokeCert(ctx, req.(*RevokeCertRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_ListCerts_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListCertsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).ListCerts(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_ListCerts_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).ListCerts(ctx, req.(*ListCertsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_CreateCollection_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateCollectionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).CreateCollection(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_CreateCollection_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).CreateCollection(ctx, req.(*CreateCollectionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_GetCollectionInfo_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetCollectionInfoRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).GetCollectionInfo(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_GetCollectionInfo_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).GetCollectionInfo(ctx, req.(*GetCollectionInfoRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_ListCollections_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListCollectionsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).ListCollections(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_ListCollections_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).ListCollections(ctx, req.(*ListCollectionsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_DropCollection_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DropCollectionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).DropCollection(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_DropCollection_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).DropCollection(ctx, req.(*DropCollectionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_InsertDocument_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(InsertDocumentRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).InsertDocument(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_InsertDocument_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).InsertDocument(ctx, req.(*InsertDocumentRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_GetDocument_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetDocumentRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).GetDocument(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_GetDocument_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).GetDocument(ctx, req.(*GetDocumentRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_UpdateDocument_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpdateDocumentRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).UpdateDocument(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_UpdateDocument_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).UpdateDocument(ctx, req.(*UpdateDocumentRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_DeleteDocument_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteDocumentRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).DeleteDocument(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_DeleteDocument_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).DeleteDocument(ctx, req.(*DeleteDocumentRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_ListDocuments_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListDocumentsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).ListDocuments(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_ListDocuments_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).ListDocuments(ctx, req.(*ListDocumentsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_DatabaseCreate_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DatabaseCreateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).DatabaseCreate(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_DatabaseCreate_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).DatabaseCreate(ctx, req.(*DatabaseCreateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_DatabaseGet_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DatabaseGetRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).DatabaseGet(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_DatabaseGet_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).DatabaseGet(ctx, req.(*DatabaseGetRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_DatabaseList_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).DatabaseList(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_DatabaseList_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).DatabaseList(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_DatabaseDrop_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DatabaseDropRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).DatabaseDrop(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_DatabaseDrop_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).DatabaseDrop(ctx, req.(*DatabaseDropRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_DatabaseUpdateProtocol_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DatabaseUpdateProtocolRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).DatabaseUpdateProtocol(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_DatabaseUpdateProtocol_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).DatabaseUpdateProtocol(ctx, req.(*DatabaseUpdateProtocolRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_DatabaseUpdateEtcd_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DatabaseUpdateEtcdRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).DatabaseUpdateEtcd(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_DatabaseUpdateEtcd_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).DatabaseUpdateEtcd(ctx, req.(*DatabaseUpdateEtcdRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_DatabaseUpdateRaft_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DatabaseUpdateRaftRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).DatabaseUpdateRaft(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_DatabaseUpdateRaft_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).DatabaseUpdateRaft(ctx, req.(*DatabaseUpdateRaftRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_DatabaseUpdateBarrier_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DatabaseUpdateBarrierRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).DatabaseUpdateBarrier(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_DatabaseUpdateBarrier_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).DatabaseUpdateBarrier(ctx, req.(*DatabaseUpdateBarrierRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_DatabaseUpdateConnection_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DatabaseUpdateConnectionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).DatabaseUpdateConnection(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_DatabaseUpdateConnection_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).DatabaseUpdateConnection(ctx, req.(*DatabaseUpdateConnectionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_BarrierInitialize_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BarrierInitializeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).BarrierInitialize(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_BarrierInitialize_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).BarrierInitialize(ctx, req.(*BarrierInitializeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_BarrierUnseal_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BarrierUnsealRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).BarrierUnseal(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_BarrierUnseal_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).BarrierUnseal(ctx, req.(*BarrierUnsealRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_BarrierSeal_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).BarrierSeal(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_BarrierSeal_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).BarrierSeal(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_BarrierStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).BarrierStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_BarrierStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).BarrierStatus(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_BarrierShamirInitialize_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BarrierShamirInitializeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).BarrierShamirInitialize(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_BarrierShamirInitialize_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).BarrierShamirInitialize(ctx, req.(*BarrierShamirInitializeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_BarrierShamirUnsealShare_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BarrierShamirUnsealShareRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).BarrierShamirUnsealShare(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_BarrierShamirUnsealShare_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).BarrierShamirUnsealShare(ctx, req.(*BarrierShamirUnsealShareRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_BarrierShamirUnsealShares_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BarrierShamirUnsealSharesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).BarrierShamirUnsealShares(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_BarrierShamirUnsealShares_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).BarrierShamirUnsealShares(ctx, req.(*BarrierShamirUnsealSharesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_BarrierShamirListShares_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).BarrierShamirListShares(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_BarrierShamirListShares_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).BarrierShamirListShares(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_BarrierShamirDeleteShare_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BarrierShamirDeleteShareRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).BarrierShamirDeleteShare(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_BarrierShamirDeleteShare_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).BarrierShamirDeleteShare(ctx, req.(*BarrierShamirDeleteShareRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_BarrierShamirDeleteAllShares_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).BarrierShamirDeleteAllShares(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_BarrierShamirDeleteAllShares_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).BarrierShamirDeleteAllShares(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_BarrierShamirVerify_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).BarrierShamirVerify(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_BarrierShamirVerify_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).BarrierShamirVerify(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_BarrierRekey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BarrierRekeyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).BarrierRekey(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_BarrierRekey_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).BarrierRekey(ctx, req.(*BarrierRekeyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_BarrierRecoveryGenerate_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BarrierRecoveryGenerateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).BarrierRecoveryGenerate(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_BarrierRecoveryGenerate_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).BarrierRecoveryGenerate(ctx, req.(*BarrierRecoveryGenerateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_BarrierRecoveryRecover_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BarrierRecoveryRecoverRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).BarrierRecoveryRecover(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_BarrierRecoveryRecover_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).BarrierRecoveryRecover(ctx, req.(*BarrierRecoveryRecoverRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_BarrierRecoveryDelete_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).BarrierRecoveryDelete(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_BarrierRecoveryDelete_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).BarrierRecoveryDelete(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_BarrierRecoveryStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).BarrierRecoveryStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_BarrierRecoveryStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).BarrierRecoveryStatus(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_BarrierRootToken_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BarrierRootTokenRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).BarrierRootToken(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_BarrierRootToken_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).BarrierRootToken(ctx, req.(*BarrierRootTokenRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_CeremonyInitialize_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CeremonyInitializeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).CeremonyInitialize(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_CeremonyInitialize_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).CeremonyInitialize(ctx, req.(*CeremonyInitializeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_CeremonyStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).CeremonyStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_CeremonyStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).CeremonyStatus(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_CeremonyClaimCertBegin_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CeremonyClaimCertBeginRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).CeremonyClaimCertBegin(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_CeremonyClaimCertBegin_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).CeremonyClaimCertBegin(ctx, req.(*CeremonyClaimCertBeginRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_CeremonyClaimCertComplete_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CeremonyClaimCertCompleteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).CeremonyClaimCertComplete(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_CeremonyClaimCertComplete_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).CeremonyClaimCertComplete(ctx, req.(*CeremonyClaimCertCompleteRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_CeremonyClaimShare_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CeremonyClaimShareRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).CeremonyClaimShare(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_CeremonyClaimShare_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).CeremonyClaimShare(ctx, req.(*CeremonyClaimShareRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_CeremonySignCSR_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CeremonySignCSRRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).CeremonySignCSR(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_CeremonySignCSR_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).CeremonySignCSR(ctx, req.(*CeremonySignCSRRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // QRDBService_ServiceDesc is the grpc.ServiceDesc for QRDBService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -509,6 +4873,226 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "List",
 			Handler:    _QRDBService_List_Handler,
+		},
+		{
+			MethodName: "Scan",
+			Handler:    _QRDBService_Scan_Handler,
+		},
+		{
+			MethodName: "PutWithLease",
+			Handler:    _QRDBService_PutWithLease_Handler,
+		},
+		{
+			MethodName: "GetRevision",
+			Handler:    _QRDBService_GetRevision_Handler,
+		},
+		{
+			MethodName: "GetAtRevision",
+			Handler:    _QRDBService_GetAtRevision_Handler,
+		},
+		{
+			MethodName: "Range",
+			Handler:    _QRDBService_Range_Handler,
+		},
+		{
+			MethodName: "Compact",
+			Handler:    _QRDBService_Compact_Handler,
+		},
+		{
+			MethodName: "CurrentRevision",
+			Handler:    _QRDBService_CurrentRevision_Handler,
+		},
+		{
+			MethodName: "Transaction",
+			Handler:    _QRDBService_Transaction_Handler,
+		},
+		{
+			MethodName: "Batch",
+			Handler:    _QRDBService_Batch_Handler,
+		},
+		{
+			MethodName: "LeaseGrant",
+			Handler:    _QRDBService_LeaseGrant_Handler,
+		},
+		{
+			MethodName: "LeaseRevoke",
+			Handler:    _QRDBService_LeaseRevoke_Handler,
+		},
+		{
+			MethodName: "LeaseKeepAlive",
+			Handler:    _QRDBService_LeaseKeepAlive_Handler,
+		},
+		{
+			MethodName: "LeaseTimeToLive",
+			Handler:    _QRDBService_LeaseTimeToLive_Handler,
+		},
+		{
+			MethodName: "LeaseList",
+			Handler:    _QRDBService_LeaseList_Handler,
+		},
+		{
+			MethodName: "LockAcquire",
+			Handler:    _QRDBService_LockAcquire_Handler,
+		},
+		{
+			MethodName: "LockTryLock",
+			Handler:    _QRDBService_LockTryLock_Handler,
+		},
+		{
+			MethodName: "LockRelease",
+			Handler:    _QRDBService_LockRelease_Handler,
+		},
+		{
+			MethodName: "LockExtend",
+			Handler:    _QRDBService_LockExtend_Handler,
+		},
+		{
+			MethodName: "LockStatus",
+			Handler:    _QRDBService_LockStatus_Handler,
+		},
+		{
+			MethodName: "LockList",
+			Handler:    _QRDBService_LockList_Handler,
+		},
+		{
+			MethodName: "IndexCreate",
+			Handler:    _QRDBService_IndexCreate_Handler,
+		},
+		{
+			MethodName: "IndexDrop",
+			Handler:    _QRDBService_IndexDrop_Handler,
+		},
+		{
+			MethodName: "IndexQuery",
+			Handler:    _QRDBService_IndexQuery_Handler,
+		},
+		{
+			MethodName: "IndexScan",
+			Handler:    _QRDBService_IndexScan_Handler,
+		},
+		{
+			MethodName: "IndexList",
+			Handler:    _QRDBService_IndexList_Handler,
+		},
+		{
+			MethodName: "TSWrite",
+			Handler:    _QRDBService_TSWrite_Handler,
+		},
+		{
+			MethodName: "TSWriteBatch",
+			Handler:    _QRDBService_TSWriteBatch_Handler,
+		},
+		{
+			MethodName: "TSQuery",
+			Handler:    _QRDBService_TSQuery_Handler,
+		},
+		{
+			MethodName: "TSAggregate",
+			Handler:    _QRDBService_TSAggregate_Handler,
+		},
+		{
+			MethodName: "TSWritePoint",
+			Handler:    _QRDBService_TSWritePoint_Handler,
+		},
+		{
+			MethodName: "TSRichQuery",
+			Handler:    _QRDBService_TSRichQuery_Handler,
+		},
+		{
+			MethodName: "TSDeleteSeries",
+			Handler:    _QRDBService_TSDeleteSeries_Handler,
+		},
+		{
+			MethodName: "TSGetRetention",
+			Handler:    _QRDBService_TSGetRetention_Handler,
+		},
+		{
+			MethodName: "TSSetRetention",
+			Handler:    _QRDBService_TSSetRetention_Handler,
+		},
+		{
+			MethodName: "TSListMetrics",
+			Handler:    _QRDBService_TSListMetrics_Handler,
+		},
+		{
+			MethodName: "VectorCreateNamespace",
+			Handler:    _QRDBService_VectorCreateNamespace_Handler,
+		},
+		{
+			MethodName: "VectorDeleteNamespace",
+			Handler:    _QRDBService_VectorDeleteNamespace_Handler,
+		},
+		{
+			MethodName: "VectorListNamespaces",
+			Handler:    _QRDBService_VectorListNamespaces_Handler,
+		},
+		{
+			MethodName: "VectorGetNamespaceInfo",
+			Handler:    _QRDBService_VectorGetNamespaceInfo_Handler,
+		},
+		{
+			MethodName: "VectorUpsert",
+			Handler:    _QRDBService_VectorUpsert_Handler,
+		},
+		{
+			MethodName: "VectorGet",
+			Handler:    _QRDBService_VectorGet_Handler,
+		},
+		{
+			MethodName: "VectorDelete",
+			Handler:    _QRDBService_VectorDelete_Handler,
+		},
+		{
+			MethodName: "VectorBatchUpsert",
+			Handler:    _QRDBService_VectorBatchUpsert_Handler,
+		},
+		{
+			MethodName: "VectorBatchDelete",
+			Handler:    _QRDBService_VectorBatchDelete_Handler,
+		},
+		{
+			MethodName: "VectorList",
+			Handler:    _QRDBService_VectorList_Handler,
+		},
+		{
+			MethodName: "VectorUpdateMetadata",
+			Handler:    _QRDBService_VectorUpdateMetadata_Handler,
+		},
+		{
+			MethodName: "VectorSearchSimilar",
+			Handler:    _QRDBService_VectorSearchSimilar_Handler,
+		},
+		{
+			MethodName: "VectorSearchByMetadata",
+			Handler:    _QRDBService_VectorSearchByMetadata_Handler,
+		},
+		{
+			MethodName: "VectorHybridSearch",
+			Handler:    _QRDBService_VectorHybridSearch_Handler,
+		},
+		{
+			MethodName: "VectorSearchByID",
+			Handler:    _QRDBService_VectorSearchByID_Handler,
+		},
+		{
+			MethodName: "VectorRebuildIndex",
+			Handler:    _QRDBService_VectorRebuildIndex_Handler,
+		},
+		{
+			MethodName: "VectorGetRebuildProgress",
+			Handler:    _QRDBService_VectorGetRebuildProgress_Handler,
+		},
+		{
+			MethodName: "VectorGetIndexStats",
+			Handler:    _QRDBService_VectorGetIndexStats_Handler,
+		},
+		{
+			MethodName: "VectorCompactNamespace",
+			Handler:    _QRDBService_VectorCompactNamespace_Handler,
+		},
+		{
+			MethodName: "VectorGetCompactionProgress",
+			Handler:    _QRDBService_VectorGetCompactionProgress_Handler,
 		},
 		{
 			MethodName: "Health",
@@ -538,7 +5122,273 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "Drain",
 			Handler:    _QRDBService_Drain_Handler,
 		},
+		{
+			MethodName: "Capabilities",
+			Handler:    _QRDBService_Capabilities_Handler,
+		},
+		{
+			MethodName: "StartShard",
+			Handler:    _QRDBService_StartShard_Handler,
+		},
+		{
+			MethodName: "StopShard",
+			Handler:    _QRDBService_StopShard_Handler,
+		},
+		{
+			MethodName: "GetShardState",
+			Handler:    _QRDBService_GetShardState_Handler,
+		},
+		{
+			MethodName: "GetTopology",
+			Handler:    _QRDBService_GetTopology_Handler,
+		},
+		{
+			MethodName: "CreateUser",
+			Handler:    _QRDBService_CreateUser_Handler,
+		},
+		{
+			MethodName: "GetUser",
+			Handler:    _QRDBService_GetUser_Handler,
+		},
+		{
+			MethodName: "UpdateUser",
+			Handler:    _QRDBService_UpdateUser_Handler,
+		},
+		{
+			MethodName: "DeleteUser",
+			Handler:    _QRDBService_DeleteUser_Handler,
+		},
+		{
+			MethodName: "ListUsers",
+			Handler:    _QRDBService_ListUsers_Handler,
+		},
+		{
+			MethodName: "EnableUser",
+			Handler:    _QRDBService_EnableUser_Handler,
+		},
+		{
+			MethodName: "DisableUser",
+			Handler:    _QRDBService_DisableUser_Handler,
+		},
+		{
+			MethodName: "CreateRole",
+			Handler:    _QRDBService_CreateRole_Handler,
+		},
+		{
+			MethodName: "GetRole",
+			Handler:    _QRDBService_GetRole_Handler,
+		},
+		{
+			MethodName: "UpdateRole",
+			Handler:    _QRDBService_UpdateRole_Handler,
+		},
+		{
+			MethodName: "DeleteRole",
+			Handler:    _QRDBService_DeleteRole_Handler,
+		},
+		{
+			MethodName: "ListRoles",
+			Handler:    _QRDBService_ListRoles_Handler,
+		},
+		{
+			MethodName: "AssignRole",
+			Handler:    _QRDBService_AssignRole_Handler,
+		},
+		{
+			MethodName: "UnassignRole",
+			Handler:    _QRDBService_UnassignRole_Handler,
+		},
+		{
+			MethodName: "ListPermissions",
+			Handler:    _QRDBService_ListPermissions_Handler,
+		},
+		{
+			MethodName: "GenerateCert",
+			Handler:    _QRDBService_GenerateCert_Handler,
+		},
+		{
+			MethodName: "ExportCert",
+			Handler:    _QRDBService_ExportCert_Handler,
+		},
+		{
+			MethodName: "RevokeCert",
+			Handler:    _QRDBService_RevokeCert_Handler,
+		},
+		{
+			MethodName: "ListCerts",
+			Handler:    _QRDBService_ListCerts_Handler,
+		},
+		{
+			MethodName: "CreateCollection",
+			Handler:    _QRDBService_CreateCollection_Handler,
+		},
+		{
+			MethodName: "GetCollectionInfo",
+			Handler:    _QRDBService_GetCollectionInfo_Handler,
+		},
+		{
+			MethodName: "ListCollections",
+			Handler:    _QRDBService_ListCollections_Handler,
+		},
+		{
+			MethodName: "DropCollection",
+			Handler:    _QRDBService_DropCollection_Handler,
+		},
+		{
+			MethodName: "InsertDocument",
+			Handler:    _QRDBService_InsertDocument_Handler,
+		},
+		{
+			MethodName: "GetDocument",
+			Handler:    _QRDBService_GetDocument_Handler,
+		},
+		{
+			MethodName: "UpdateDocument",
+			Handler:    _QRDBService_UpdateDocument_Handler,
+		},
+		{
+			MethodName: "DeleteDocument",
+			Handler:    _QRDBService_DeleteDocument_Handler,
+		},
+		{
+			MethodName: "ListDocuments",
+			Handler:    _QRDBService_ListDocuments_Handler,
+		},
+		{
+			MethodName: "DatabaseCreate",
+			Handler:    _QRDBService_DatabaseCreate_Handler,
+		},
+		{
+			MethodName: "DatabaseGet",
+			Handler:    _QRDBService_DatabaseGet_Handler,
+		},
+		{
+			MethodName: "DatabaseList",
+			Handler:    _QRDBService_DatabaseList_Handler,
+		},
+		{
+			MethodName: "DatabaseDrop",
+			Handler:    _QRDBService_DatabaseDrop_Handler,
+		},
+		{
+			MethodName: "DatabaseUpdateProtocol",
+			Handler:    _QRDBService_DatabaseUpdateProtocol_Handler,
+		},
+		{
+			MethodName: "DatabaseUpdateEtcd",
+			Handler:    _QRDBService_DatabaseUpdateEtcd_Handler,
+		},
+		{
+			MethodName: "DatabaseUpdateRaft",
+			Handler:    _QRDBService_DatabaseUpdateRaft_Handler,
+		},
+		{
+			MethodName: "DatabaseUpdateBarrier",
+			Handler:    _QRDBService_DatabaseUpdateBarrier_Handler,
+		},
+		{
+			MethodName: "DatabaseUpdateConnection",
+			Handler:    _QRDBService_DatabaseUpdateConnection_Handler,
+		},
+		{
+			MethodName: "BarrierInitialize",
+			Handler:    _QRDBService_BarrierInitialize_Handler,
+		},
+		{
+			MethodName: "BarrierUnseal",
+			Handler:    _QRDBService_BarrierUnseal_Handler,
+		},
+		{
+			MethodName: "BarrierSeal",
+			Handler:    _QRDBService_BarrierSeal_Handler,
+		},
+		{
+			MethodName: "BarrierStatus",
+			Handler:    _QRDBService_BarrierStatus_Handler,
+		},
+		{
+			MethodName: "BarrierShamirInitialize",
+			Handler:    _QRDBService_BarrierShamirInitialize_Handler,
+		},
+		{
+			MethodName: "BarrierShamirUnsealShare",
+			Handler:    _QRDBService_BarrierShamirUnsealShare_Handler,
+		},
+		{
+			MethodName: "BarrierShamirUnsealShares",
+			Handler:    _QRDBService_BarrierShamirUnsealShares_Handler,
+		},
+		{
+			MethodName: "BarrierShamirListShares",
+			Handler:    _QRDBService_BarrierShamirListShares_Handler,
+		},
+		{
+			MethodName: "BarrierShamirDeleteShare",
+			Handler:    _QRDBService_BarrierShamirDeleteShare_Handler,
+		},
+		{
+			MethodName: "BarrierShamirDeleteAllShares",
+			Handler:    _QRDBService_BarrierShamirDeleteAllShares_Handler,
+		},
+		{
+			MethodName: "BarrierShamirVerify",
+			Handler:    _QRDBService_BarrierShamirVerify_Handler,
+		},
+		{
+			MethodName: "BarrierRekey",
+			Handler:    _QRDBService_BarrierRekey_Handler,
+		},
+		{
+			MethodName: "BarrierRecoveryGenerate",
+			Handler:    _QRDBService_BarrierRecoveryGenerate_Handler,
+		},
+		{
+			MethodName: "BarrierRecoveryRecover",
+			Handler:    _QRDBService_BarrierRecoveryRecover_Handler,
+		},
+		{
+			MethodName: "BarrierRecoveryDelete",
+			Handler:    _QRDBService_BarrierRecoveryDelete_Handler,
+		},
+		{
+			MethodName: "BarrierRecoveryStatus",
+			Handler:    _QRDBService_BarrierRecoveryStatus_Handler,
+		},
+		{
+			MethodName: "BarrierRootToken",
+			Handler:    _QRDBService_BarrierRootToken_Handler,
+		},
+		{
+			MethodName: "CeremonyInitialize",
+			Handler:    _QRDBService_CeremonyInitialize_Handler,
+		},
+		{
+			MethodName: "CeremonyStatus",
+			Handler:    _QRDBService_CeremonyStatus_Handler,
+		},
+		{
+			MethodName: "CeremonyClaimCertBegin",
+			Handler:    _QRDBService_CeremonyClaimCertBegin_Handler,
+		},
+		{
+			MethodName: "CeremonyClaimCertComplete",
+			Handler:    _QRDBService_CeremonyClaimCertComplete_Handler,
+		},
+		{
+			MethodName: "CeremonyClaimShare",
+			Handler:    _QRDBService_CeremonyClaimShare_Handler,
+		},
+		{
+			MethodName: "CeremonySignCSR",
+			Handler:    _QRDBService_CeremonySignCSR_Handler,
+		},
 	},
-	Streams:  []grpc.StreamDesc{},
-	Metadata: "pkg/api/grpc/proto/qrdbv1/qrdb.proto",
+	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "Watch",
+			Handler:       _QRDBService_Watch_Handler,
+			ServerStreams: true,
+		},
+	},
+	Metadata: "proto/qrdbv1/qrdb.proto",
 }

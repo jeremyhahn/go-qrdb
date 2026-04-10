@@ -45,6 +45,10 @@ var runners = map[string]RunnerFactory{
 	"qrdb-pebble-h2": newQRDBPebbleH2Runner,
 	"qrdb-pebble-h3": newQRDBPebbleH3Runner,
 	"qrdb-memory-h2": newQRDBMemoryH2Runner,
+	"qrdb-grpc":      newQRDBGRPCRunner,
+	"qrdb-quic":      newQRDBQUICRunner,
+	"qrdb-etcd":      newQRDBEtcdRunner,
+	"etcd":           newEtcdRunner,
 	"tikv":           newTiKVRunner,
 	"tikv-3n":        newTiKV3NRunner,
 }
@@ -243,6 +247,40 @@ func newQRDBMemoryH2Runner(baseDir string) *SystemRunner {
 	}
 }
 
+// newQRDBGRPCRunner creates a SystemRunner for QRDB using the gRPC/protobuf
+// protocol with PebbleDB storage. Only the GRPC-prefixed benchmarks are run
+// to isolate gRPC protocol overhead from the HTTP-based benchmarks.
+func newQRDBGRPCRunner(baseDir string) *SystemRunner {
+	return &SystemRunner{
+		System:       "qrdb-grpc",
+		Image:        "qrdb-kvbench-qrdb",
+		Dockerfile:   filepath.Join(baseDir, "contrib/qrdb/test/performance/qrdb/Dockerfile"),
+		BuildCtx:     baseDir,
+		BenchPattern: "BenchmarkQRDB_GRPC",
+		DockerRunArgs: []string{
+			"--env", "QRDB_BENCH_SM=pebble",
+			"--env", "QRDB_BENCH_PROTOCOL=grpc",
+		},
+	}
+}
+
+// newQRDBQUICRunner creates a SystemRunner for QRDB using the native QUIC
+// wire protocol with PebbleDB storage. Only the QUIC-prefixed benchmarks are
+// run to isolate native QUIC protocol characteristics.
+func newQRDBQUICRunner(baseDir string) *SystemRunner {
+	return &SystemRunner{
+		System:       "qrdb-quic",
+		Image:        "qrdb-kvbench-qrdb",
+		Dockerfile:   filepath.Join(baseDir, "contrib/qrdb/test/performance/qrdb/Dockerfile"),
+		BuildCtx:     baseDir,
+		BenchPattern: "BenchmarkQRDB_QUIC",
+		DockerRunArgs: []string{
+			"--env", "QRDB_BENCH_SM=pebble",
+			"--env", "QRDB_BENCH_PROTOCOL=quic",
+		},
+	}
+}
+
 // newTiKVRunner creates a SystemRunner for TiKV KV benchmarks.
 // PreRun starts TiKV via docker compose; PostRun tears it down.
 func newTiKVRunner(baseDir string) *SystemRunner {
@@ -266,6 +304,65 @@ func newTiKVRunner(baseDir string) *SystemRunner {
 		},
 		PostRun: func() {
 			fmt.Fprintf(os.Stderr, "  Stopping TiKV cluster ...\n")
+			cmd := exec.Command("docker", "compose", "-f", composeFile, "down", "-v")
+			cmd.Stderr = os.Stderr
+			cmd.Run()
+		},
+	}
+}
+
+// newQRDBEtcdRunner creates a SystemRunner for QRDB accessed via the etcd API.
+// The benchmark binary starts QRDB internally (ETCD_BENCH_MODE=qrdb).
+func newQRDBEtcdRunner(baseDir string) *SystemRunner {
+	return &SystemRunner{
+		System:     "qrdb-etcd",
+		Image:      "qrdb-kvbench-etcd",
+		Dockerfile: filepath.Join(baseDir, "contrib/qrdb/test/performance/etcd-benchmark/Dockerfile"),
+		BuildCtx:   baseDir,
+		DockerRunArgs: []string{
+			"--env", "ETCD_BENCH_SYSTEM=qrdb-etcd",
+			"--env", "ETCD_BENCH_MODE=qrdb",
+		},
+	}
+}
+
+// newEtcdRunner creates a SystemRunner for a standalone etcd server.
+// PreRun starts etcd via docker compose; PostRun tears it down.
+func newEtcdRunner(baseDir string) *SystemRunner {
+	composeFile := filepath.Join(baseDir, "contrib/qrdb/test/performance/etcd-benchmark/docker-compose-etcd.yml")
+
+	// The docker compose project name defaults to the compose file's parent
+	// directory name ("etcd-benchmark"), which prefixes all named volumes.
+	// The benchmark container must mount the same prefixed volume name.
+	const composeVolume = "etcd-benchmark_etcd_bench_certs"
+
+	return &SystemRunner{
+		System:     "etcd",
+		Image:      "qrdb-kvbench-etcd",
+		Dockerfile: filepath.Join(baseDir, "contrib/qrdb/test/performance/etcd-benchmark/Dockerfile"),
+		BuildCtx:   baseDir,
+		DockerRunArgs: []string{
+			"--network=host",
+			"-v", composeVolume + ":/certs:ro",
+			"--env", "ETCD_BENCH_SYSTEM=etcd",
+			"--env", "ETCD_BENCH_MODE=external",
+			"--env", "ETCD_ENDPOINT=127.0.0.1:2379",
+		},
+		PreRun: func() error {
+			// Force-remove any leftover containers and volumes from a prior
+			// failed run before attempting to start. This prevents port
+			// conflicts and stale cert volumes from causing hangs.
+			cleanup := exec.Command("docker", "compose", "-f", composeFile, "down", "-v")
+			cleanup.Stderr = os.Stderr
+			cleanup.Run() // best-effort, ignore errors
+
+			fmt.Fprintf(os.Stderr, "  Starting etcd server via docker compose ...\n")
+			cmd := exec.Command("docker", "compose", "-f", composeFile, "up", "-d", "--wait", "--wait-timeout", "120")
+			cmd.Stderr = os.Stderr
+			return cmd.Run()
+		},
+		PostRun: func() {
+			fmt.Fprintf(os.Stderr, "  Stopping etcd server ...\n")
 			cmd := exec.Command("docker", "compose", "-f", composeFile, "down", "-v")
 			cmd.Stderr = os.Stderr
 			cmd.Run()

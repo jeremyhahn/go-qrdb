@@ -36,7 +36,10 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
+	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
 
 // ---------------------------------------------------------------------------
@@ -79,6 +82,62 @@ func (m *mockKVService) List(ctx context.Context, prefix string) ([]string, erro
 	return nil, nil
 }
 
+func (m *mockKVService) Scan(_ context.Context, _ string) (map[string][]byte, error) {
+	return nil, nil
+}
+
+func (m *mockKVService) PutEntity(_ context.Context, _ *service.PutEntityRequest) (*service.PutEntityResponse, error) {
+	return nil, nil
+}
+
+func (m *mockKVService) GetEntity(_ context.Context, _ *service.GetEntityRequest) (*service.GetEntityResponse, error) {
+	return nil, nil
+}
+
+func (m *mockKVService) DeleteEntity(_ context.Context, _ *service.DeleteEntityRequest) (*service.DeleteEntityResponse, error) {
+	return nil, nil
+}
+
+func (m *mockKVService) ListEntities(_ context.Context, _ *service.ListEntitiesRequest) (*service.ListEntitiesResponse, error) {
+	return nil, nil
+}
+
+func (m *mockKVService) GetStale(ctx context.Context, key string) ([]byte, error) {
+	return m.Get(ctx, key)
+}
+
+func (m *mockKVService) ListStale(ctx context.Context, prefix string) ([]string, error) {
+	return m.List(ctx, prefix)
+}
+
+func (m *mockKVService) ScanStale(ctx context.Context, prefix string) (map[string][]byte, error) {
+	return m.Scan(ctx, prefix)
+}
+
+func (m *mockKVService) PutWithMode(_ context.Context, _ string, _ []byte, _ writemode.Mode) error {
+	return nil
+}
+
+func (m *mockKVService) DeleteWithMode(_ context.Context, _ string, _ writemode.Mode) error {
+	return nil
+}
+
+func (m *mockKVService) GetWithConsistency(_ context.Context, _ string, _ consistency.ReadOptions) ([]byte, error) {
+	return nil, nil
+}
+
+func (m *mockKVService) ListWithConsistency(_ context.Context, _ string, _ consistency.ReadOptions) ([]string, error) {
+	return nil, nil
+}
+
+func (m *mockKVService) ScanWithConsistency(_ context.Context, _ string, _ consistency.ReadOptions) (map[string][]byte, error) {
+	return nil, nil
+}
+
+func (m *mockKVService) ExistsWithConsistency(_ context.Context, _ string, _ consistency.ReadOptions) (bool, error) {
+	return false, nil
+}
+
 // mockAdminService implements service.AdminServicer for testing.
 type mockAdminService struct {
 	healthFn          func(ctx context.Context) (*service.HealthStatus, error)
@@ -88,6 +147,7 @@ type mockAdminService struct {
 	removeMemberFn    func(ctx context.Context, shardID, replicaID uint64) error
 	requestSnapshotFn func(ctx context.Context, shardID uint64) error
 	drainFn           func(ctx context.Context) error
+	capabilitiesFn    func(ctx context.Context) (*capabilities.Capabilities, error)
 }
 
 func (m *mockAdminService) Health(ctx context.Context) (*service.HealthStatus, error) {
@@ -153,6 +213,37 @@ func (m *mockAdminService) Drain(ctx context.Context) error {
 		return m.drainFn(ctx)
 	}
 	return nil
+}
+
+func (m *mockAdminService) Capabilities(ctx context.Context) (*capabilities.Capabilities, error) {
+	if m.capabilitiesFn != nil {
+		return m.capabilitiesFn(ctx)
+	}
+	return &capabilities.Capabilities{
+		KV:          true,
+		MVCC:        true,
+		Transaction: true,
+		Batch:       true,
+		Watch:       true,
+		Lease:       true,
+		Index:       true,
+	}, nil
+}
+
+func (m *mockAdminService) StartShard(_ context.Context, _ *service.StartShardRequest) error {
+	return nil
+}
+
+func (m *mockAdminService) StopShard(_ context.Context, _ uint64) error {
+	return nil
+}
+
+func (m *mockAdminService) GetShardState(_ context.Context, shardID uint64) (*service.ShardStateResponse, error) {
+	return &service.ShardStateResponse{ShardID: shardID}, nil
+}
+
+func (m *mockAdminService) GetTopology(_ context.Context) (*service.TopologyResponse, error) {
+	return &service.TopologyResponse{}, nil
 }
 
 // mockHost implements the Host interface for testing.
@@ -1941,4 +2032,103 @@ func generateTestTLSConfig(t *testing.T) (*tls.Config, *x509.CertPool) {
 	}
 
 	return tlsCfg, pool
+}
+
+// ---------------------------------------------------------------------------
+// CA bootstrap endpoint tests
+// ---------------------------------------------------------------------------
+
+func TestHandler_CABootstrap_ReturnsBundle(t *testing.T) {
+	certPEM := []byte("-----BEGIN CERTIFICATE-----\nMIIBtest\n-----END CERTIFICATE-----\n")
+	keyPEM := []byte("-----BEGIN EC PRIVATE KEY-----\nMIIBtest\n-----END EC PRIVATE KEY-----\n")
+
+	srv := NewServer(&mockKVService{}, &mockAdminService{}, "127.0.0.1:0",
+		WithCABootstrap(certPEM, keyPEM),
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/ca/bootstrap", nil)
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /v1/ca/bootstrap status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	ct := rec.Header().Get("Content-Type")
+	if ct != "application/pem-certificate-chain" {
+		t.Fatalf("Content-Type = %q, want %q", ct, "application/pem-certificate-chain")
+	}
+
+	body := rec.Body.String()
+	wantBody := string(certPEM) + string(keyPEM)
+	if body != wantBody {
+		t.Fatalf("body = %q, want %q", body, wantBody)
+	}
+}
+
+func TestHandler_CABootstrap_CertOnly(t *testing.T) {
+	certPEM := []byte("-----BEGIN CERTIFICATE-----\nMIIBtest\n-----END CERTIFICATE-----\n")
+
+	srv := NewServer(&mockKVService{}, &mockAdminService{}, "127.0.0.1:0",
+		WithCABootstrap(certPEM, nil),
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/ca/bootstrap", nil)
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /v1/ca/bootstrap status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	body := rec.Body.String()
+	if body != string(certPEM) {
+		t.Fatalf("body = %q, want cert-only %q", body, string(certPEM))
+	}
+}
+
+func TestHandler_CABootstrap_NotConfigured(t *testing.T) {
+	// Server created without WithCABootstrap -- route should not be
+	// registered, resulting in a 404 from dispatch.
+	srv := NewServer(&mockKVService{}, &mockAdminService{}, "127.0.0.1:0")
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/ca/bootstrap", nil)
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("GET /v1/ca/bootstrap (not configured) status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+func TestHandler_CABootstrap_WrongMethod(t *testing.T) {
+	certPEM := []byte("-----BEGIN CERTIFICATE-----\nMIIBtest\n-----END CERTIFICATE-----\n")
+
+	srv := NewServer(&mockKVService{}, &mockAdminService{}, "127.0.0.1:0",
+		WithCABootstrap(certPEM, nil),
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/ca/bootstrap", nil)
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST /v1/ca/bootstrap status = %d, want %d", rec.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+func TestWithCABootstrap_SetsFields(t *testing.T) {
+	certPEM := []byte("cert-data")
+	keyPEM := []byte("key-data")
+
+	srv := &Server{}
+	opt := WithCABootstrap(certPEM, keyPEM)
+	opt(srv)
+
+	if string(srv.caBootstrapCert) != "cert-data" {
+		t.Fatalf("caBootstrapCert = %q, want %q", srv.caBootstrapCert, "cert-data")
+	}
+	if string(srv.caBootstrapKey) != "key-data" {
+		t.Fatalf("caBootstrapKey = %q, want %q", srv.caBootstrapKey, "key-data")
+	}
 }

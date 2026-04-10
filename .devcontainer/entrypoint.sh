@@ -1,0 +1,38 @@
+#!/bin/sh
+# Copyright 2026 Jeremy Hahn
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Increase UDP receive/send buffer limits for QUIC transport.
+# quic-go requires at least 7168 KiB (~7.3 MB); we set 7500000 bytes
+# to provide headroom. See:
+# https://github.com/quic-go/quic-go/wiki/UDP-Buffer-Sizes
+sysctl -w net.core.rmem_max=7500000 >/dev/null 2>&1 || true
+sysctl -w net.core.wmem_max=7500000 >/dev/null 2>&1 || true
+
+# Mark the workspace as a safe git directory so that Go tooling and
+# golangci-lint can read VCS metadata when the repo is volume-mounted
+# from a host user with a different UID.
+git config --global --add safe.directory /workspace/go-qrdb 2>/dev/null || true
+git config --global --add safe.directory /workspace/go-quicraft 2>/dev/null || true
+git config --global --add safe.directory /workspace/go-truststrap 2>/dev/null || true
+
+# Probe for NVIDIA GPU and log status for diagnostics.
+if command -v nvidia-smi >/dev/null 2>&1 && [ -e /dev/nvidia0 ]; then
+    echo "GPU: NVIDIA device detected"
+    nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader 2>/dev/null || true
+else
+    echo "GPU: not detected (CPU-only mode)"
+fi
+
+exec "$@"

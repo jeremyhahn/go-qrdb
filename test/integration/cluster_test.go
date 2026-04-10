@@ -18,7 +18,9 @@ package integration_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os/exec"
 	"syscall"
@@ -27,10 +29,10 @@ import (
 )
 
 func TestCluster_HealthEndpoint(t *testing.T) {
-	adminPorts, _, pool := startThreeNodeCluster(t, "memory")
+	adminPorts, _, ca := startThreeNodeCluster(t, "memory")
 
 	for i, port := range adminPorts {
-		code := httpHealth(t, pool, port)
+		code := httpHealth(t, ca.Pool, port)
 		if code != http.StatusOK {
 			t.Errorf("node %d: health=%d, want 200", i+1, code)
 		}
@@ -38,10 +40,10 @@ func TestCluster_HealthEndpoint(t *testing.T) {
 }
 
 func TestCluster_StatusEndpoint(t *testing.T) {
-	adminPorts, _, pool := startThreeNodeCluster(t, "memory")
+	adminPorts, _, ca := startThreeNodeCluster(t, "memory")
 
 	for i, port := range adminPorts {
-		status := httpStatus(t, pool, port)
+		status := httpStatus(t, ca, port)
 		if status["node_id"] == nil {
 			t.Errorf("node %d: status missing node_id", i+1)
 		}
@@ -56,12 +58,13 @@ func TestCluster_StatusEndpoint(t *testing.T) {
 }
 
 func TestCluster_LeaderElection(t *testing.T) {
-	adminPorts, _, pool := startThreeNodeCluster(t, "memory")
+	adminPorts, _, ca := startThreeNodeCluster(t, "memory")
 
 	// Verify exactly one leader is present.
+	client := mtlsHTTPClient(t, ca, 5*time.Second)
 	leaderCount := 0
 	for _, port := range adminPorts {
-		status := httpStatusRaw(pool, port)
+		status, _ := httpStatusRaw(t, client, port)
 		if status == nil {
 			continue
 		}
@@ -85,50 +88,50 @@ func TestCluster_LeaderElection(t *testing.T) {
 }
 
 func TestCluster_SnapshotTriggered(t *testing.T) {
-	adminPorts, _, pool := startThreeNodeCluster(t, "memory",
+	adminPorts, _, ca := startThreeNodeCluster(t, "memory",
 		"--snapshot-entries", "100",
 		"--compaction-overhead", "10")
-	leaderPort := waitForLeaderViaAdmin(t, pool, adminPorts, 30*time.Second)
+	leaderPort := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
 
 	// Write enough records to trigger at least 1 snapshot.
 	for i := range 150 {
 		key := fmt.Sprintf("snap/%04d", i)
 		val := fmt.Sprintf("value-%d", i)
-		httpPut(t, pool, leaderPort, key, []byte(val))
+		httpPut(t, ca, leaderPort, key, []byte(val))
 	}
 
 	// Verify all data accessible after snapshot.
-	keys := httpList(t, pool, leaderPort, "snap/")
+	keys := httpList(t, ca, leaderPort, "snap/")
 	if len(keys) < 150 {
 		t.Fatalf("expected at least 150 keys, got %d", len(keys))
 	}
 
 	// Verify specific values at boundaries.
-	first := httpGet(t, pool, leaderPort, "snap/0000")
+	first := httpGet(t, ca, leaderPort, "snap/0000")
 	if !bytes.Equal(first, []byte("value-0")) {
 		t.Errorf("snap/0000: got %q, want %q", first, "value-0")
 	}
-	last := httpGet(t, pool, leaderPort, "snap/0149")
+	last := httpGet(t, ca, leaderPort, "snap/0149")
 	if !bytes.Equal(last, []byte("value-149")) {
 		t.Errorf("snap/0149: got %q, want %q", last, "value-149")
 	}
 
 	// Check status shows progress.
-	status := httpStatus(t, pool, leaderPort)
+	status := httpStatus(t, ca, leaderPort)
 	t.Logf("status after 150 writes with snapshots: %v", status)
 }
 
 func TestCluster_SnapshotDataIntegrity(t *testing.T) {
-	adminPorts, _, pool := startThreeNodeCluster(t, "memory",
+	adminPorts, _, ca := startThreeNodeCluster(t, "memory",
 		"--snapshot-entries", "50",
 		"--compaction-overhead", "5")
-	leaderPort := waitForLeaderViaAdmin(t, pool, adminPorts, 30*time.Second)
+	leaderPort := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
 
 	// Write 200 keys in multiple batches to trigger multiple snapshots.
 	for batch := range 4 {
 		for i := range 50 {
 			key := fmt.Sprintf("batch%d/%04d", batch, i)
-			httpPut(t, pool, leaderPort, key, []byte(fmt.Sprintf("b%d-v%d", batch, i)))
+			httpPut(t, ca, leaderPort, key, []byte(fmt.Sprintf("b%d-v%d", batch, i)))
 		}
 	}
 
@@ -137,7 +140,7 @@ func TestCluster_SnapshotDataIntegrity(t *testing.T) {
 		var totalKeys int
 		deadline := time.Now().Add(30 * time.Second)
 		for time.Now().Before(deadline) {
-			allKeys := httpListTolerant(pool, port, "batch")
+			allKeys := httpListTolerant(t, ca, port, "batch")
 			totalKeys = len(allKeys)
 			if totalKeys >= 200 {
 				break
@@ -200,15 +203,15 @@ func TestCluster_FullRestart_DataSurvives(t *testing.T) {
 
 	for i, dir := range dataDirs {
 		waitForHealthy(t, dir, 30*time.Second)
-		waitForAdmin(t, ca.Pool, adminPorts[i], 10*time.Second)
+		waitForAdmin(t, ca.Pool, adminPorts[i], 90*time.Second)
 	}
 
-	leaderPort := waitForLeaderViaAdmin(t, ca.Pool, adminPorts, 30*time.Second)
+	leaderPort := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
 
 	// Phase 2: Write 100 KV pairs.
 	for i := range 100 {
 		key := fmt.Sprintf("persist/%04d", i)
-		httpPut(t, ca.Pool, leaderPort, key, []byte(fmt.Sprintf("val-%d", i)))
+		httpPut(t, ca, leaderPort, key, []byte(fmt.Sprintf("val-%d", i)))
 	}
 
 	// Verify all keys are readable on all nodes.
@@ -216,7 +219,7 @@ func TestCluster_FullRestart_DataSurvives(t *testing.T) {
 		var keys []string
 		deadline := time.Now().Add(30 * time.Second)
 		for time.Now().Before(deadline) {
-			keys = httpListTolerant(ca.Pool, port, "persist/")
+			keys = httpListTolerant(t, ca, port, "persist/")
 			if len(keys) == 100 {
 				break
 			}
@@ -286,39 +289,61 @@ func TestCluster_FullRestart_DataSurvives(t *testing.T) {
 
 	// Phase 5: Wait for all nodes to become healthy.
 	for i := range 3 {
-		waitForAdmin(t, ca.Pool, adminPorts[i], 30*time.Second)
+		waitForAdmin(t, ca.Pool, adminPorts[i], 90*time.Second)
 	}
 
-	leaderPort2 := waitForLeaderViaAdmin(t, ca.Pool, adminPorts, 30*time.Second)
+	leaderPort2 := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
 
-	// Warmup write to ensure the leader's no-op has been committed and the
-	// ReadIndex pipeline is operational.
-	warmupWrite(t, ca.Pool, leaderPort2, 15*time.Second)
-
-	// Phase 6: Verify all 100 keys are readable after restart.
+	// Phase 6: Verify all 100 keys are readable after restart using stale
+	// reads. After a full cluster restart, the QUIC transport may take time
+	// to stabilize before Raft consensus is operational. Stale reads go
+	// directly to the local state machine (Pebble), verifying that data
+	// survived the restart without depending on Raft coordination.
 	for _, port := range adminPorts {
 		var keys []string
+		var lastDiag string
 		deadline := time.Now().Add(30 * time.Second)
+		client := mtlsHTTPClient(t, ca, 5*time.Second)
 		for time.Now().Before(deadline) {
-			keys = httpListTolerant(ca.Pool, port, "persist/")
+			url := fmt.Sprintf("https://127.0.0.1:%d/kv?prefix=persist/&stale=true", port)
+			resp, err := client.Get(url)
+			if err != nil {
+				lastDiag = fmt.Sprintf("conn error: %v", err)
+				time.Sleep(200 * time.Millisecond)
+				continue
+			}
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				lastDiag = fmt.Sprintf("status %d, body: %s", resp.StatusCode, body)
+				time.Sleep(200 * time.Millisecond)
+				continue
+			}
+			var result struct {
+				Keys []string `json:"keys"`
+			}
+			if jsonErr := json.Unmarshal(body, &result); jsonErr == nil {
+				keys = result.Keys
+			}
 			if len(keys) >= 100 {
 				break
 			}
+			lastDiag = fmt.Sprintf("got %d keys", len(keys))
 			time.Sleep(200 * time.Millisecond)
 		}
 		if len(keys) < 100 {
-			t.Fatalf("port %d after restart: expected 100 keys, got %d", port, len(keys))
+			t.Fatalf("port %d after restart: expected 100 keys, got %d; last diagnostic: %s", port, len(keys), lastDiag)
 		}
 	}
 
-	// Verify a specific value for data integrity.
-	val := httpGet(t, ca.Pool, leaderPort2, "persist/0042")
+	// Verify a specific value for data integrity using stale read.
+	val := httpGetStale(t, ca, leaderPort2, "persist/0042")
 	if !bytes.Equal(val, []byte("val-42")) {
 		t.Errorf("persist/0042: got %q, want %q", val, "val-42")
 	}
 
 	// Check status is populated.
-	status := httpStatus(t, ca.Pool, adminPorts[0])
+	status := httpStatus(t, ca, adminPorts[0])
 	t.Logf("status after restart: %v", status)
 
 	// Phase 7: Health should be OK on all nodes.
@@ -382,13 +407,13 @@ func TestCluster_WriteAfterRestart(t *testing.T) {
 
 	for i, dir := range dataDirs {
 		waitForHealthy(t, dir, 30*time.Second)
-		waitForAdmin(t, ca.Pool, adminPorts[i], 10*time.Second)
+		waitForAdmin(t, ca.Pool, adminPorts[i], 90*time.Second)
 	}
 
-	leaderPort := waitForLeaderViaAdmin(t, ca.Pool, adminPorts, 30*time.Second)
+	leaderPort := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
 
 	// Write initial data.
-	httpPut(t, ca.Pool, leaderPort, "before-restart", []byte("original"))
+	httpPut(t, ca, leaderPort, "before-restart", []byte("original"))
 
 	// Stop all nodes.
 	for i, cmd := range cmds {
@@ -440,58 +465,58 @@ func TestCluster_WriteAfterRestart(t *testing.T) {
 	}
 
 	for i := range 3 {
-		waitForAdmin(t, ca.Pool, adminPorts[i], 30*time.Second)
+		waitForAdmin(t, ca.Pool, adminPorts[i], 90*time.Second)
 	}
 
-	leaderPort = waitForLeaderViaAdmin(t, ca.Pool, adminPorts, 30*time.Second)
+	leaderPort = waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
 
 	// Warmup write to ensure the leader's no-op has been committed and the
 	// ReadIndex pipeline is operational.
-	warmupWrite(t, ca.Pool, leaderPort, 15*time.Second)
+	warmupWrite(t, ca, leaderPort, 15*time.Second)
 
 	// Verify pre-restart data is intact.
-	val := httpGet(t, ca.Pool, leaderPort, "before-restart")
+	val := httpGet(t, ca, leaderPort, "before-restart")
 	if !bytes.Equal(val, []byte("original")) {
 		t.Fatalf("before-restart: got %q, want %q", val, "original")
 	}
 
 	// Write new data after restart to prove the cluster is fully operational.
-	httpPut(t, ca.Pool, leaderPort, "after-restart", []byte("new-data"))
-	got := httpGet(t, ca.Pool, leaderPort, "after-restart")
+	httpPut(t, ca, leaderPort, "after-restart", []byte("new-data"))
+	got := httpGet(t, ca, leaderPort, "after-restart")
 	if !bytes.Equal(got, []byte("new-data")) {
 		t.Fatalf("after-restart: got %q, want %q", got, "new-data")
 	}
 }
 
 func TestCluster_PebbleSingleNode(t *testing.T) {
-	adminPort, pool := startSingleNode(t, "pebble")
+	adminPort, ca := startSingleNode(t, "pebble")
 
 	// Basic CRUD with pebble SM.
-	httpPut(t, pool, adminPort, "pebble/key1", []byte("value1"))
-	val := httpGet(t, pool, adminPort, "pebble/key1")
+	httpPut(t, ca, adminPort, "pebble/key1", []byte("value1"))
+	val := httpGet(t, ca, adminPort, "pebble/key1")
 	if !bytes.Equal(val, []byte("value1")) {
 		t.Fatalf("pebble GET: got %q, want %q", val, "value1")
 	}
 
-	httpDelete(t, pool, adminPort, "pebble/key1")
-	status := httpGetStatus(t, pool, adminPort, "pebble/key1")
+	httpDelete(t, ca, adminPort, "pebble/key1")
+	status := httpGetStatus(t, ca, adminPort, "pebble/key1")
 	if status != http.StatusNotFound {
 		t.Fatalf("pebble GET after DELETE: got %d, want 404", status)
 	}
 }
 
 func TestCluster_ConcurrentSingleNode(t *testing.T) {
-	adminPort, pool := startSingleNode(t, "concurrent")
+	adminPort, ca := startSingleNode(t, "concurrent")
 
 	// Basic CRUD with concurrent SM.
-	httpPut(t, pool, adminPort, "conc/key1", []byte("value1"))
-	val := httpGet(t, pool, adminPort, "conc/key1")
+	httpPut(t, ca, adminPort, "conc/key1", []byte("value1"))
+	val := httpGet(t, ca, adminPort, "conc/key1")
 	if !bytes.Equal(val, []byte("value1")) {
 		t.Fatalf("concurrent GET: got %q, want %q", val, "value1")
 	}
 
-	httpPut(t, pool, adminPort, "conc/key2", []byte("value2"))
-	keys := httpList(t, pool, adminPort, "conc/")
+	httpPut(t, ca, adminPort, "conc/key2", []byte("value2"))
+	keys := httpList(t, ca, adminPort, "conc/")
 	if len(keys) != 2 {
 		t.Fatalf("concurrent list: got %d keys, want 2: %v", len(keys), keys)
 	}

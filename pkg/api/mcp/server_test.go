@@ -32,7 +32,10 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
+	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
 
 // ---------------------------------------------------------------------------
@@ -102,6 +105,80 @@ func (m *mockKVService) List(ctx context.Context, prefix string) ([]string, erro
 	return keys, nil
 }
 
+func (m *mockKVService) Scan(_ context.Context, prefix string) (map[string][]byte, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	result := make(map[string][]byte)
+	for k, v := range m.store {
+		if prefix == "" || (len(k) >= len(prefix) && k[:len(prefix)] == prefix) {
+			result[k] = v
+		}
+	}
+	return result, nil
+}
+
+func (m *mockKVService) PutEntity(_ context.Context, _ *service.PutEntityRequest) (*service.PutEntityResponse, error) {
+	return nil, nil
+}
+
+func (m *mockKVService) GetEntity(_ context.Context, _ *service.GetEntityRequest) (*service.GetEntityResponse, error) {
+	return nil, nil
+}
+
+func (m *mockKVService) DeleteEntity(_ context.Context, _ *service.DeleteEntityRequest) (*service.DeleteEntityResponse, error) {
+	return nil, nil
+}
+
+func (m *mockKVService) ListEntities(_ context.Context, _ *service.ListEntitiesRequest) (*service.ListEntitiesResponse, error) {
+	return nil, nil
+}
+
+func (m *mockKVService) GetStale(ctx context.Context, key string) ([]byte, error) {
+	return m.Get(ctx, key)
+}
+
+func (m *mockKVService) ListStale(ctx context.Context, prefix string) ([]string, error) {
+	return m.List(ctx, prefix)
+}
+
+func (m *mockKVService) ScanStale(ctx context.Context, prefix string) (map[string][]byte, error) {
+	return m.Scan(ctx, prefix)
+}
+
+func (m *mockKVService) PutWithMode(_ context.Context, key string, value []byte, _ writemode.Mode) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.store[key] = value
+	return nil
+}
+
+func (m *mockKVService) DeleteWithMode(_ context.Context, key string, _ writemode.Mode) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.store, key)
+	return nil
+}
+
+func (m *mockKVService) GetWithConsistency(ctx context.Context, key string, _ consistency.ReadOptions) ([]byte, error) {
+	return m.Get(ctx, key)
+}
+
+func (m *mockKVService) ListWithConsistency(ctx context.Context, prefix string, _ consistency.ReadOptions) ([]string, error) {
+	return m.List(ctx, prefix)
+}
+
+func (m *mockKVService) ScanWithConsistency(ctx context.Context, prefix string, _ consistency.ReadOptions) (map[string][]byte, error) {
+	return m.Scan(ctx, prefix)
+}
+
+func (m *mockKVService) ExistsWithConsistency(ctx context.Context, key string, _ consistency.ReadOptions) (bool, error) {
+	v, err := m.Get(ctx, key)
+	if err != nil {
+		return false, nil
+	}
+	return v != nil, nil
+}
+
 // mockAdminService implements service.AdminServicer for testing.
 type mockAdminService struct {
 	healthFn          func(ctx context.Context) (*service.HealthStatus, error)
@@ -111,6 +188,11 @@ type mockAdminService struct {
 	removeMemberFn    func(ctx context.Context, shardID, replicaID uint64) error
 	requestSnapshotFn func(ctx context.Context, shardID uint64) error
 	drainFn           func(ctx context.Context) error
+	capabilitiesFn    func(ctx context.Context) (*capabilities.Capabilities, error)
+	startShardFn      func(ctx context.Context, req *service.StartShardRequest) error
+	stopShardFn       func(ctx context.Context, shardID uint64) error
+	getShardStateFn   func(ctx context.Context, shardID uint64) (*service.ShardStateResponse, error)
+	getTopologyFn     func(ctx context.Context) (*service.TopologyResponse, error)
 }
 
 func newMockAdminService() *mockAdminService {
@@ -180,6 +262,51 @@ func (m *mockAdminService) Drain(ctx context.Context) error {
 		return m.drainFn(ctx)
 	}
 	return nil
+}
+
+func (m *mockAdminService) Capabilities(ctx context.Context) (*capabilities.Capabilities, error) {
+	if m.capabilitiesFn != nil {
+		return m.capabilitiesFn(ctx)
+	}
+	return &capabilities.Capabilities{
+		KV:          true,
+		MVCC:        true,
+		Transaction: true,
+		Batch:       true,
+		Watch:       true,
+		Lease:       true,
+		Index:       true,
+		TimeSeries:  false,
+		Vector:      false,
+	}, nil
+}
+
+func (m *mockAdminService) StartShard(ctx context.Context, req *service.StartShardRequest) error {
+	if m.startShardFn != nil {
+		return m.startShardFn(ctx, req)
+	}
+	return nil
+}
+
+func (m *mockAdminService) StopShard(ctx context.Context, shardID uint64) error {
+	if m.stopShardFn != nil {
+		return m.stopShardFn(ctx, shardID)
+	}
+	return nil
+}
+
+func (m *mockAdminService) GetShardState(ctx context.Context, shardID uint64) (*service.ShardStateResponse, error) {
+	if m.getShardStateFn != nil {
+		return m.getShardStateFn(ctx, shardID)
+	}
+	return &service.ShardStateResponse{}, nil
+}
+
+func (m *mockAdminService) GetTopology(ctx context.Context) (*service.TopologyResponse, error) {
+	if m.getTopologyFn != nil {
+		return m.getTopologyFn(ctx)
+	}
+	return &service.TopologyResponse{}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -318,7 +445,7 @@ func TestServer_StartStop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
-	conn.Close()
+	_ = conn.Close()
 }
 
 func TestServer_StartStop_TLS(t *testing.T) {
@@ -352,7 +479,7 @@ func TestServer_StartStop_TLS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TLS dial: %v", err)
 	}
-	conn.Close()
+	_ = conn.Close()
 }
 
 func TestServer_Start_BadAddress(t *testing.T) {
@@ -408,6 +535,7 @@ func TestServer_ToolRegistration(t *testing.T) {
 		"qrdb_get",
 		"qrdb_delete",
 		"qrdb_list",
+		"qrdb_scan",
 		"qrdb_health",
 		"qrdb_status",
 		"qrdb_peers",
@@ -415,6 +543,11 @@ func TestServer_ToolRegistration(t *testing.T) {
 		"qrdb_remove_member",
 		"qrdb_snapshot",
 		"qrdb_drain",
+		"qrdb_capabilities",
+		"qrdb_start_shard",
+		"qrdb_stop_shard",
+		"qrdb_shard_state",
+		"qrdb_topology",
 	}
 
 	registeredTools := s.MCPServer().ListTools()
@@ -1111,6 +1244,75 @@ func TestHandleDrain_ServiceError(t *testing.T) {
 	var toolErr *ToolError
 	if !errors.As(err, &toolErr) {
 		t.Errorf("expected *ToolError, got %T", err)
+	}
+}
+
+func TestHandleCapabilities_Success(t *testing.T) {
+	adminSvc := newMockAdminService()
+	handler := handleCapabilities(adminSvc)
+
+	req := buildCallToolRequest(t, "qrdb_capabilities", nil)
+
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleCapabilities: %v", err)
+	}
+
+	text := resultText(t, result)
+	var caps capabilities.Capabilities
+	if jsonErr := json.Unmarshal([]byte(text), &caps); jsonErr != nil {
+		t.Fatalf("unmarshal: %v", jsonErr)
+	}
+
+	if !caps.KV {
+		t.Error("expected kv=true")
+	}
+	if !caps.MVCC {
+		t.Error("expected mvcc=true")
+	}
+	if !caps.Transaction {
+		t.Error("expected transaction=true")
+	}
+	if !caps.Batch {
+		t.Error("expected batch=true")
+	}
+	if !caps.Watch {
+		t.Error("expected watch=true")
+	}
+	if !caps.Lease {
+		t.Error("expected lease=true")
+	}
+	if !caps.Index {
+		t.Error("expected index=true")
+	}
+	if caps.TimeSeries {
+		t.Error("expected timeSeries=false")
+	}
+	if caps.Vector {
+		t.Error("expected vector=false")
+	}
+}
+
+func TestHandleCapabilities_ServiceError(t *testing.T) {
+	adminSvc := newMockAdminService()
+	adminSvc.capabilitiesFn = func(_ context.Context) (*capabilities.Capabilities, error) {
+		return nil, errors.New("capabilities unavailable")
+	}
+	handler := handleCapabilities(adminSvc)
+
+	req := buildCallToolRequest(t, "qrdb_capabilities", nil)
+
+	_, err := handler(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected error from service")
+	}
+
+	var toolErr *ToolError
+	if !errors.As(err, &toolErr) {
+		t.Errorf("expected *ToolError, got %T", err)
+	}
+	if toolErr.Tool != "qrdb_capabilities" {
+		t.Errorf("tool name: got %q, want %q", toolErr.Tool, "qrdb_capabilities")
 	}
 }
 

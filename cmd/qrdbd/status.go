@@ -15,6 +15,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"fmt"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
@@ -56,6 +57,8 @@ func (h healthValue) String() string {
 func newStatusCmd() *cobra.Command {
 	var address string
 	var tlsCAFile string
+	var tlsCertFile string
+	var tlsKeyFile string
 	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Show cluster/shard status",
@@ -67,7 +70,16 @@ func newStatusCmd() *cobra.Command {
 
 			url := "https://" + address + "/status"
 			var resp statusResponse
-			if err := rest.FetchJSON(url, &resp, pool); err != nil {
+			if tlsCertFile != "" && tlsKeyFile != "" {
+				cert, cerr := tls.LoadX509KeyPair(tlsCertFile, tlsKeyFile)
+				if cerr != nil {
+					return cerr
+				}
+				err = rest.FetchJSONWithMTLS(url, &resp, pool, cert)
+			} else {
+				err = rest.FetchJSON(url, &resp, pool)
+			}
+			if err != nil {
 				return err
 			}
 
@@ -90,5 +102,7 @@ func newStatusCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&address, "address", "127.0.0.1:63002", "Admin server address to query")
 	cmd.Flags().StringVar(&tlsCAFile, "tls-ca-file", "", "Path to CA certificate PEM file for server verification")
+	cmd.Flags().StringVar(&tlsCertFile, "tls-cert-file", "", "Path to client TLS certificate PEM file for mTLS authentication")
+	cmd.Flags().StringVar(&tlsKeyFile, "tls-key-file", "", "Path to client TLS private key PEM file for mTLS authentication")
 	return cmd
 }

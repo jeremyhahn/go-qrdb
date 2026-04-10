@@ -438,8 +438,9 @@ func Test_InvalidModeError_errorMessage(t *testing.T) {
 }
 
 func Test_InvalidModeError_implementsErrorInterface(t *testing.T) {
-	var err error = &InvalidModeError{Value: "bad"}
-	if err == nil {
+	err := &InvalidModeError{Value: "bad"}
+	var _ error = err
+	if err.Error() == "" {
 		t.Fatal("InvalidModeError should implement the error interface")
 	}
 }

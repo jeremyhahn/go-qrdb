@@ -95,6 +95,24 @@ index:
 timeseries:
   default_retention: 0
   max_metrics: 0
+
+auth:
+  enabled: true
+  admin_username: "admin"
+  default_tenant: "default"
+  cert_ttl: "8760h"
+  perm_cache_ttl: 30
+
+audit:
+  enabled: true
+  kv_backend: false
+  file_backend: true
+  file_path: ""
+
+cors:
+  allowed_origins: ["*"]
+  allowed_headers: ["Authorization", "Content-Type"]
+  max_age: 3600
 ```
 
 ---
@@ -158,7 +176,7 @@ Configures the QuicRaft consensus layer.
 | `compaction_overhead`       | uint64 | `0`                 | no       | `--compaction-overhead`         | Log entries to keep after a snapshot for follower catch-up    |
 | `max_in_mem_log_size`       | uint64 | `0`                 | no       | `--max-in-mem-log-size`         | Per-shard in-memory Raft log size limit in bytes             |
 | `max_total_in_mem_log_size` | uint64 | `0`                 | no       | `--max-total-in-mem-log-size`   | Total in-memory Raft log size across all shards in bytes     |
-| `sm_type`                   | string | `pebble`            | no       | `--sm`                          | State machine backend type                                   |
+| `sm_type`                   | string | `pebble`            | no       | `--sm`                          | Raft state machine wrapper type                              |
 
 **Validation rules:**
 
@@ -175,6 +193,13 @@ Configures the QuicRaft consensus layer.
 | `pebble` | PebbleDB-backed persistent disk state machine (default)  |
 | `memory` | In-memory state machine (data lost on restart)           |
 | `mvcc`   | MVCC versioned key-value engine with revision history    |
+
+The `sm_type` field selects which Raft state machine wrapper to use for
+distributed (Raft) mode. The state machine is a thin wrapper that delegates
+data operations to a store engine (`pkg/engine/`). For local/embedded mode,
+the `engine` and `backend` fields in the `databases` configuration select
+the store engine (`kv` or `mvcc`) and storage backend (`memory`, `file`,
+`pebble`) independently, without involving a Raft state machine.
 
 **Peers format:**
 
@@ -435,6 +460,251 @@ Configures the time-series storage engine.
 - Setting `default_retention` to `0` disables automatic data retention. Data points are retained indefinitely.
 - Setting `max_metrics` to `0` allows unlimited distinct metric names.
 - Data points older than `default_retention` seconds are eligible for automatic deletion.
+
+---
+
+### auth
+
+Configures authentication and role-based access control (RBAC).
+
+| Field              | Type   | Default     | Required | CLI Flag           | Description                                  |
+|--------------------|--------|-------------|----------|--------------------|----------------------------------------------|
+| `enabled`          | bool   | `true`      | no       | `--auth-enabled`   | Enable authentication and RBAC               |
+| `admin_username`   | string | `"admin"`   | no       | N/A                | Default admin username (certificate CN)      |
+| `default_tenant`   | string | `"default"` | no       | N/A                | Default tenant ID (certificate OU)           |
+| `cert_ttl`         | string | `"8760h"`   | no       | N/A                | Default certificate TTL (1 year)             |
+| `perm_cache_ttl`   | int    | `30`        | no       | N/A                | Permission cache TTL in seconds              |
+
+**Validation rules:**
+
+- `admin_username` must not be empty when `enabled` is `true`.
+- `default_tenant` must not be empty when `enabled` is `true`.
+- `cert_ttl` must be a valid Go duration string (e.g., `"8760h"`, `"720h"`).
+- `perm_cache_ttl` must not be negative (>= 0).
+
+**Notes:**
+
+- When `enabled` is `false`, all requests are treated as unauthenticated and all authorization checks are bypassed.
+- The `admin_username` is used as the CN for the auto-generated admin client certificate at first start.
+- The `default_tenant` is used as the OU for the admin certificate, establishing the initial tenant context.
+- The `perm_cache_ttl` controls how long resolved permissions are cached per user in the RBAC authorizer's `sync.Map`. Setting to `0` disables caching.
+
+---
+
+### audit
+
+Configures the dual-backend audit logging system.
+
+| Field          | Type   | Default | Required | CLI Flag           | Description                              |
+|----------------|--------|---------|----------|--------------------|------------------------------------------|
+| `enabled`      | bool   | `true`  | no       | `--audit-enabled`  | Enable audit logging                     |
+| `kv_backend`   | bool   | `false` | no       | N/A                | Store audit entries in KVStore           |
+| `file_backend` | bool   | `true`  | no       | N/A                | Write JSON audit log to file             |
+| `file_path`    | string | `""`    | no       | N/A                | Audit log file path                      |
+
+**Validation rules:**
+
+- When `enabled` is `true`, at least one of `kv_backend` or `file_backend` must be `true`.
+- `file_path`, when non-empty, must be a writable path.
+
+**Notes:**
+
+- When `file_path` is empty, the audit log is written to `{data_dir}/audit.log`.
+- The KV backend stores audit entries as structured records in the KVStore under the `__sys:audit/` prefix, enabling query and replication via Raft.
+- The file backend writes one JSON object per line using `slog` structured logging, suitable for external log aggregation.
+- Both backends can be enabled simultaneously for redundancy.
+
+---
+
+### cors
+
+Configures Cross-Origin Resource Sharing headers for the REST API.
+
+| Field             | Type     | Default                              | Required | Description                            |
+|-------------------|----------|--------------------------------------|----------|----------------------------------------|
+| `allowed_origins` | []string | `["*"]`                              | no       | Allowed origins for CORS               |
+| `allowed_headers` | []string | `["Authorization", "Content-Type"]`  | no       | Allowed request headers                |
+| `max_age`         | int      | `3600`                               | no       | Preflight cache duration in seconds    |
+
+**Validation rules:**
+
+- `allowed_origins` must not be empty when CORS is configured.
+- `max_age` must not be negative (>= 0).
+
+**Notes:**
+
+- Setting `allowed_origins` to `["*"]` allows all origins. For production, restrict to specific domains.
+- The `max_age` value controls how long browsers cache preflight (OPTIONS) responses. A value of `3600` (1 hour) is suitable for most deployments.
+- CORS headers are only added when the `cors` section is present in the configuration. Omitting the section entirely disables CORS.
+
+---
+
+### databases
+
+Configures named databases with per-database protocol support. Each database
+entry defines an isolated data store with its own engine, backend, and optional
+protocol endpoints.
+
+| Field      | Type   | Default | Required | Description                           |
+|------------|--------|---------|----------|---------------------------------------|
+| `name`     | string | --      | yes      | Unique database name                  |
+| `engine`   | string | `kv`    | yes      | Store engine (`kv` or `mvcc`)         |
+| `backend`  | string | `raft`  | yes      | Replication backend (`raft`)          |
+| `protocol` | object | --      | no       | Per-database protocol configuration   |
+
+#### ProtocolConfig
+
+The `protocol` field within each database entry configures wire protocol
+endpoints. This replaced the former top-level `SQLConfig` and now supports
+`mysql`, `postgresql`, and `etcd` alongside each other.
+
+| Field        | Type   | Default | Description                         |
+|--------------|--------|---------|-------------------------------------|
+| `mysql`      | object | --      | MySQL wire protocol configuration   |
+| `postgresql` | object | --      | PostgreSQL wire protocol configuration |
+| `etcd`       | object | --      | etcd v3 gRPC protocol configuration |
+
+#### EtcdConfig
+
+Configures the etcd-compatible gRPC endpoint for a database.
+
+| Field                   | Type     | Default  | Required | Description                                      |
+|-------------------------|----------|----------|----------|--------------------------------------------------|
+| `enabled`               | bool     | `false`  | no       | Enable etcd v3 gRPC endpoint for this database   |
+| `listen_addr`           | string   | `:2379`  | no       | Listen address for the etcd gRPC server          |
+| `advertise_client_urls` | []string | --       | no       | URLs advertised to clients for endpoint discovery |
+
+**Validation rules:**
+
+- When `enabled` is `true`, the database `engine` must be `kv` and `backend` must be `raft`.
+- When `enabled` is `true`, TLS and auth must be enabled at the server level.
+- `listen_addr` must be a valid `host:port` or `:port` format.
+
+**Example:**
+
+```yaml
+databases:
+  - name: k8s-prod
+    engine: kv
+    backend: raft
+    protocol:
+      etcd:
+        enabled: true
+        listen_addr: ":2379"
+        advertise_client_urls:
+          - "https://node1:2379"
+      mysql:
+        enabled: false
+      postgresql:
+        enabled: false
+```
+
+**Notes:**
+
+- Each database with `etcd: enabled` spawns its own gRPC server on the specified `listen_addr`.
+- Multiple databases can each have etcd enabled on different listen addresses.
+- The etcd endpoint is fully isolated per database: revision counters, watches, leases, and encryption barriers are scoped to the database's shard.
+- See [etcd documentation](etcd/README.md) for Kubernetes integration and client examples.
+
+---
+
+### embedding
+
+Configures the embedding service for vector generation. When disabled (no providers
+configured), all embedding API calls return `EmbeddingProviderNotFoundError`.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `default_provider` | string | `""` | Name of the provider used when none is specified in a request |
+| `cache_capacity` | int | `0` | Max embeddings in LRU cache; 0 disables caching |
+| `providers` | []EmbeddingProviderConfig | `[]` | List of configured embedding provider endpoints |
+
+#### EmbeddingProviderConfig
+
+Configures a single OpenAI-compatible embedding provider endpoint.
+
+| Field | Type | Default | Required | Description |
+|-------|------|---------|----------|-------------|
+| `name` | string | -- | yes | Unique provider identifier within the registry |
+| `base_url` | string | -- | yes | OpenAI-compatible API base URL (e.g., `http://localhost:11434/v1`) |
+| `api_key` | string | `""` | no | Bearer token for authentication; leave empty for unauthenticated endpoints |
+| `model` | string | -- | yes | Default embedding model name used when request does not specify one |
+| `timeout` | string | `"30s"` | no | Per-request timeout in Go duration format (e.g., `"60s"`) |
+| `max_retries` | int | `3` | no | Retry attempts for transient failures (5xx responses, network errors) |
+
+**Validation rules:**
+
+- Each provider name must be unique.
+- `base_url` must be a valid URL.
+- `model` must not be empty.
+
+**Example configuration with Ollama:**
+
+```yaml
+embedding:
+  default_provider: "ollama"
+  cache_capacity: 10000
+  providers:
+    - name: "ollama"
+      base_url: "http://localhost:11434/v1"
+      model: "mxbai-embed-large"
+      timeout: "30s"
+      max_retries: 3
+```
+
+**Notes:**
+
+- Caching is optional and improves performance by avoiding duplicate embedding requests.
+- Environment variable substitution is supported: `api_key: "${OPENAI_API_KEY}"`.
+- The embedding service is required by the RAG pipeline.
+
+---
+
+### rag
+
+Configures the Retrieval-Augmented Generation (RAG) pipeline for document ingestion
+and semantic retrieval.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `default_chunk_strategy` | string | `"fixed"` | Chunking strategy: `"fixed"`, `"sentence"`, or `"paragraph"` |
+| `default_chunk_size` | int | `512` | Target chunk size in characters |
+| `default_overlap` | int | `50` | Overlapping characters/sentences between adjacent chunks |
+| `max_document_size` | int64 | `0` | Max document size in bytes; 0 = unlimited |
+| `default_top_k` | int | `10` | Default number of retrieval results when caller does not specify |
+
+**Chunking strategies:**
+
+| Strategy | Description | Use Case |
+|----------|-------------|----------|
+| `fixed` | Fixed-size chunks with character overlap | Prose, unstructured text (default) |
+| `sentence` | Chunks split on sentence boundaries | Preserving semantic units |
+| `paragraph` | Chunks split on paragraph boundaries | Essays, articles with clear paragraph structure |
+
+**Example configuration:**
+
+```yaml
+rag:
+  default_chunk_strategy: "fixed"
+  default_chunk_size: 512
+  default_overlap: 50
+  max_document_size: 0
+  default_top_k: 10
+```
+
+**Validation rules:**
+
+- `default_chunk_strategy` must be one of: `"fixed"`, `"sentence"`, `"paragraph"`.
+- `default_chunk_size` must be greater than 0.
+- `default_overlap` must be non-negative.
+- `max_document_size` of 0 means unlimited.
+
+**Notes:**
+
+- RAG pipeline uses the embedding service to generate vectors for documents and queries.
+- Chunk size significantly impacts retrieval quality; 256-1024 characters is typical.
+- Overlap prevents losing context at chunk boundaries; 50+ characters is recommended.
+- Document size limits protect against memory exhaustion from very large documents.
 
 ---
 
@@ -756,6 +1026,8 @@ precedence. The following table maps CLI flags to their YAML equivalents.
 | `--multicast-secret`            | `discovery.multicast_secret`       |
 | `--dns-domain`                  | `discovery.dns_domain`             |
 | `--debug-raft`                  | N/A (forces `logging.level: debug`)|
+| `--auth-enabled`                | `auth.enabled`                     |
+| `--audit-enabled`               | `audit.enabled`                    |
 
 ---
 
@@ -766,3 +1038,4 @@ precedence. The following table maps CLI flags to their YAML equivalents.
 | Raft    | 63001       | QUIC (internal) | `raft.raft_address`  |
 | REST    | 63002       | HTTPS           | `server.admin_port`  |
 | gRPC    | 63003       | gRPC + TLS      | `server.grpc_port`   |
+| etcd    | 2379        | gRPC + mTLS     | `databases[].protocol.etcd.listen_addr` |

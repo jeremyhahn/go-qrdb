@@ -24,10 +24,12 @@ import (
 
 	"github.com/cockroachdb/pebble/v2"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/mvcc"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
+	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 )
 
 // ---------------------------------------------------------------------------
@@ -562,7 +564,7 @@ func TestMVCCStateMachine_TransactionEmptyCompareAlwaysSucceeds(t *testing.T) {
 		[]byte("auto"), []byte("win"), nil, 0,
 	)
 	txnCmd := protocol.EncodeTransaction(
-		nil,           // empty compares
+		nil, // empty compares
 		[][]byte{successOp},
 		nil,
 	)
@@ -981,9 +983,12 @@ func TestMVCCStateMachine_LookupByteSlice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Lookup([]byte): %v", err)
 	}
-	kv := val.(*service.KeyValue)
-	if string(kv.Value) != "bval" {
-		t.Fatalf("expected 'bval', got %q", kv.Value)
+	data, ok := val.([]byte)
+	if !ok {
+		t.Fatalf("expected []byte, got %T", val)
+	}
+	if string(data) != "bval" {
+		t.Fatalf("expected 'bval', got %q", data)
 	}
 }
 
@@ -998,9 +1003,12 @@ func TestMVCCStateMachine_LookupString(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Lookup(string): %v", err)
 	}
-	kv := val.(*service.KeyValue)
-	if string(kv.Value) != "sval" {
-		t.Fatalf("expected 'sval', got %q", kv.Value)
+	data, ok := val.([]byte)
+	if !ok {
+		t.Fatalf("expected []byte, got %T", val)
+	}
+	if string(data) != "sval" {
+		t.Fatalf("expected 'sval', got %q", data)
 	}
 }
 
@@ -1011,9 +1019,9 @@ func TestMVCCStateMachine_LookupUnsupportedQueryType(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unsupported query type")
 	}
-	var iqe *InvalidQueryError
+	var iqe *engine.InvalidQueryError
 	if !errors.As(err, &iqe) {
-		t.Fatalf("expected *InvalidQueryError, got %T: %v", err, err)
+		t.Fatalf("expected *engine.InvalidQueryError, got %T: %v", err, err)
 	}
 }
 
@@ -1024,9 +1032,9 @@ func TestMVCCStateMachine_LookupUnsupportedQueryTypeStruct(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unsupported query type")
 	}
-	var iqe *InvalidQueryError
+	var iqe *engine.InvalidQueryError
 	if !errors.As(err, &iqe) {
-		t.Fatalf("expected *InvalidQueryError, got %T: %v", err, err)
+		t.Fatalf("expected *engine.InvalidQueryError, got %T: %v", err, err)
 	}
 }
 
@@ -1428,7 +1436,7 @@ func TestNewMVCCCreateFunc_ReturnsNonNilCreateFunc(t *testing.T) {
 
 func TestNewMVCCCreateFunc_WithOptions(t *testing.T) {
 	cf := NewMVCCCreateFunc(
-		WithCacheSize(8 << 20),
+		WithCacheSize(8<<20),
 		WithMaxOpenFiles(256),
 	)
 	if cf == nil {
@@ -1491,9 +1499,6 @@ func TestNewMVCCStateMachine_NilOpts(t *testing.T) {
 	}
 	if s.opts == nil {
 		t.Fatal("expected default opts to be set")
-	}
-	if len(s.updateHandlers) == 0 {
-		t.Fatal("expected update handlers to be populated")
 	}
 }
 
@@ -1946,9 +1951,9 @@ func TestMVCCStateMachine_LookupRangeQueryCompactedRevision(t *testing.T) {
 
 	// Range at compacted revision should return an error.
 	_, err := s.Lookup(context.Background(), service.MVCCRangeQuery{
-		Start: []byte("a"),
-		End:   []byte("c"),
-		Opts:  []service.RangeOption{service.WithRevision(1)},
+		Start:    []byte("a"),
+		End:      []byte("c"),
+		Revision: 1,
 	})
 	if err != nil {
 		// The MVCC store Range returns an error for compacted revisions.
@@ -2060,26 +2065,24 @@ func TestMVCCStateMachine_TransactionCompareCreateRevision(t *testing.T) {
 func TestMVCCStateMachine_LookupByteSliceNonExistent(t *testing.T) {
 	s := newTestMVCCStateMachine(t)
 
-	_, err := s.Lookup(context.Background(), []byte("missing"))
-	if err == nil {
-		t.Fatal("expected error for non-existent key via []byte")
+	val, err := s.Lookup(context.Background(), []byte("missing"))
+	if err != nil {
+		t.Fatalf("expected nil error for non-existent key via []byte, got %v", err)
 	}
-	var knf *mvcc.KeyNotFoundError
-	if !errors.As(err, &knf) {
-		t.Fatalf("expected *KeyNotFoundError, got %T: %v", err, err)
+	if val != nil {
+		t.Fatalf("expected nil value for non-existent key via []byte, got %v", val)
 	}
 }
 
 func TestMVCCStateMachine_LookupStringNonExistent(t *testing.T) {
 	s := newTestMVCCStateMachine(t)
 
-	_, err := s.Lookup(context.Background(), "missing")
-	if err == nil {
-		t.Fatal("expected error for non-existent key via string")
+	val, err := s.Lookup(context.Background(), "missing")
+	if err != nil {
+		t.Fatalf("expected nil error for non-existent key via string, got %v", err)
 	}
-	var knf *mvcc.KeyNotFoundError
-	if !errors.As(err, &knf) {
-		t.Fatalf("expected *KeyNotFoundError, got %T: %v", err, err)
+	if val != nil {
+		t.Fatalf("expected nil value for non-existent key via string, got %v", val)
 	}
 }
 
@@ -2349,7 +2352,7 @@ func TestMVCCStateMachine_LookupRangeQueryWithLimit(t *testing.T) {
 	val, err := s.Lookup(context.Background(), service.MVCCRangeQuery{
 		Start: []byte("a"),
 		End:   []byte("d"),
-		Opts:  []service.RangeOption{service.WithLimit(2)},
+		Limit: 2,
 	})
 	if err != nil {
 		t.Fatalf("Lookup range: %v", err)
@@ -2614,5 +2617,160 @@ func TestMVCCStateMachine_RevisionsAccumulateAcrossUpdates(t *testing.T) {
 	rev := val.(int64)
 	if rev != 3 {
 		t.Fatalf("expected revision 3, got %d", rev)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests: ListQuery
+// ---------------------------------------------------------------------------
+
+func TestMVCCStateMachine_ListQuery_AllKeys(t *testing.T) {
+	s := newTestMVCCStateMachine(t)
+	ctx := context.Background()
+
+	applyMVCCEntries(t, s, []sm.Entry{
+		mvccPutEntry(1, []byte("b"), []byte("val-b"), 0),
+		mvccPutEntry(2, []byte("a"), []byte("val-a"), 0),
+		mvccPutEntry(3, []byte("c"), []byte("val-c"), 0),
+	})
+
+	result, err := s.Lookup(ctx, kv.ListQuery{})
+	if err != nil {
+		t.Fatalf("Lookup(ListQuery{}) failed: %v", err)
+	}
+
+	keys, ok := result.([]string)
+	if !ok {
+		t.Fatalf("expected []string, got %T", result)
+	}
+
+	// MVCC keys are stored with revision-encoded suffixes, so we
+	// verify the user keys appear sorted and are present.
+	if len(keys) == 0 {
+		t.Fatal("expected non-empty key list")
+	}
+}
+
+func TestMVCCStateMachine_ListQuery_WithPrefix(t *testing.T) {
+	s := newTestMVCCStateMachine(t)
+	ctx := context.Background()
+
+	applyMVCCEntries(t, s, []sm.Entry{
+		mvccPutEntry(1, []byte("app:config"), []byte("v1"), 0),
+		mvccPutEntry(2, []byte("app:name"), []byte("v2"), 0),
+		mvccPutEntry(3, []byte("db:host"), []byte("v3"), 0),
+	})
+
+	result, err := s.Lookup(ctx, kv.ListQuery{Prefix: "app:"})
+	if err != nil {
+		t.Fatalf("Lookup(ListQuery{Prefix: 'app:'}) failed: %v", err)
+	}
+
+	keys := result.([]string)
+	// Should contain app: keys but not db: keys.
+	for _, k := range keys {
+		if len(k) >= 3 && k[:3] == "db:" {
+			t.Fatalf("unexpected key with db: prefix: %q", k)
+		}
+	}
+	if len(keys) == 0 {
+		t.Fatal("expected at least one key with app: prefix")
+	}
+}
+
+func TestMVCCStateMachine_ListQuery_NoResults(t *testing.T) {
+	s := newTestMVCCStateMachine(t)
+	ctx := context.Background()
+
+	applyMVCCEntries(t, s, []sm.Entry{
+		mvccPutEntry(1, []byte("exists"), []byte("val"), 0),
+	})
+
+	result, err := s.Lookup(ctx, kv.ListQuery{Prefix: "nonexistent:"})
+	if err != nil {
+		t.Fatalf("Lookup(ListQuery) failed: %v", err)
+	}
+
+	keys := result.([]string)
+	if len(keys) != 0 {
+		t.Fatalf("expected empty slice, got %v", keys)
+	}
+}
+
+func TestMVCCStateMachine_ListQuery_EmptyStore(t *testing.T) {
+	s := newTestMVCCStateMachine(t)
+	ctx := context.Background()
+
+	result, err := s.Lookup(ctx, kv.ListQuery{})
+	if err != nil {
+		t.Fatalf("Lookup(ListQuery{}) failed: %v", err)
+	}
+
+	keys := result.([]string)
+	if keys == nil {
+		t.Fatal("expected non-nil empty slice, got nil")
+	}
+	if len(keys) != 0 {
+		t.Fatalf("expected empty slice, got %v", keys)
+	}
+}
+
+func TestMVCCStateMachine_ListQuery_ExcludesMetadata(t *testing.T) {
+	s := newTestMVCCStateMachine(t)
+	ctx := context.Background()
+
+	applyMVCCEntries(t, s, []sm.Entry{
+		mvccPutEntry(1, []byte("user-key"), []byte("val"), 0),
+	})
+
+	result, err := s.Lookup(ctx, kv.ListQuery{})
+	if err != nil {
+		t.Fatalf("Lookup(ListQuery{}) failed: %v", err)
+	}
+
+	keys := result.([]string)
+	for _, k := range keys {
+		if len(k) > 0 && k[0] == '\x00' {
+			t.Fatalf("metadata key should be excluded: %q", k)
+		}
+		if len(k) >= 6 && k[:6] == "__sys:" {
+			t.Fatalf("system key should be excluded: %q", k)
+		}
+	}
+}
+
+func TestMVCCStateMachine_ListQuery_SortedOrder(t *testing.T) {
+	s := newTestMVCCStateMachine(t)
+	ctx := context.Background()
+
+	applyMVCCEntries(t, s, []sm.Entry{
+		mvccPutEntry(1, []byte("z"), []byte("1"), 0),
+		mvccPutEntry(2, []byte("m"), []byte("2"), 0),
+		mvccPutEntry(3, []byte("a"), []byte("3"), 0),
+	})
+
+	result, err := s.Lookup(ctx, kv.ListQuery{})
+	if err != nil {
+		t.Fatalf("Lookup(ListQuery{}) failed: %v", err)
+	}
+
+	keys := result.([]string)
+	for i := 1; i < len(keys); i++ {
+		if keys[i-1] > keys[i] {
+			t.Fatalf("keys not sorted: %v", keys)
+		}
+	}
+}
+
+func TestMVCCStateMachine_ListQuery_NotOpen(t *testing.T) {
+	s := NewMVCCStateMachine(nil)
+
+	_, err := s.Lookup(context.Background(), kv.ListQuery{})
+	if err == nil {
+		t.Fatal("expected error for not-open state machine")
+	}
+	var notOpen *NotOpenError
+	if !errors.As(err, &notOpen) {
+		t.Fatalf("expected NotOpenError, got %T: %v", err, err)
 	}
 }

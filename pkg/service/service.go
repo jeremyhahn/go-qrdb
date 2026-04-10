@@ -19,11 +19,22 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strconv"
+	"strings"
+	"time"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
+	"github.com/jeremyhahn/go-quicraft/pkg/config"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
+	"github.com/jeremyhahn/go-qrdb/pkg/codec"
+	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
+	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
+	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
 
 // KVServicer provides KV data-plane operations with linearizable reads
@@ -41,6 +52,67 @@ type KVServicer interface {
 	// List returns sorted keys matching the given prefix with a
 	// linearizable read. An empty prefix returns all keys.
 	List(ctx context.Context, prefix string) ([]string, error)
+
+	// Scan returns all key-value pairs matching the given prefix
+	// using a PrefixQuery for compatibility with the FastStateMachine.
+	Scan(ctx context.Context, prefix string) (map[string][]byte, error)
+
+	// GetStale retrieves a value by key from the local state machine
+	// without Raft coordination. Returns potentially stale data but
+	// with sub-millisecond latency. Returns KeyNotFoundError when the
+	// key does not exist.
+	GetStale(ctx context.Context, key string) ([]byte, error)
+
+	// ListStale returns sorted keys matching the given prefix from the
+	// local state machine without Raft coordination. Returns potentially
+	// stale data but with sub-millisecond latency.
+	ListStale(ctx context.Context, prefix string) ([]string, error)
+
+	// ScanStale returns all key-value pairs matching the given prefix
+	// from the local state machine without Raft coordination. Returns
+	// potentially stale data but with sub-millisecond latency.
+	ScanStale(ctx context.Context, prefix string) (map[string][]byte, error)
+
+	// PutWithMode stores a key-value pair with the specified write
+	// durability. Allows trading consistency for performance: Sync
+	// (quorum), WALDurable (local WAL), or Batched (aggregated writes).
+	PutWithMode(ctx context.Context, key string, value []byte, mode writemode.Mode) error
+
+	// DeleteWithMode removes a key with the specified write durability.
+	// Allows trading consistency for performance: Sync (quorum),
+	// WALDurable (local WAL), or Batched (aggregated writes).
+	DeleteWithMode(ctx context.Context, key string, mode writemode.Mode) error
+
+	// GetWithConsistency retrieves a value by key with the specified
+	// consistency level. Strong uses full Raft consensus, Linearizable
+	// uses ReadIndex optimization, and Eventual reads from the local
+	// state machine.
+	GetWithConsistency(ctx context.Context, key string, opts consistency.ReadOptions) ([]byte, error)
+
+	// ListWithConsistency returns sorted keys matching the prefix with
+	// the specified consistency level. An empty prefix returns all keys.
+	ListWithConsistency(ctx context.Context, prefix string, opts consistency.ReadOptions) ([]string, error)
+
+	// ScanWithConsistency returns all key-value pairs matching the
+	// prefix with the specified consistency level.
+	ScanWithConsistency(ctx context.Context, prefix string, opts consistency.ReadOptions) (map[string][]byte, error)
+
+	// ExistsWithConsistency checks whether a key exists with the
+	// specified consistency level. Returns true when the key is present
+	// and false when it is not found.
+	ExistsWithConsistency(ctx context.Context, key string, opts consistency.ReadOptions) (bool, error)
+
+	// PutEntity stores a typed entity with consistency and write mode options.
+	PutEntity(ctx context.Context, req *PutEntityRequest) (*PutEntityResponse, error)
+
+	// GetEntity retrieves a typed entity with consistency options.
+	GetEntity(ctx context.Context, req *GetEntityRequest) (*GetEntityResponse, error)
+
+	// DeleteEntity removes a typed entity with consistency options.
+	DeleteEntity(ctx context.Context, req *DeleteEntityRequest) (*DeleteEntityResponse, error)
+
+	// ListEntities returns a paginated list of entity keys for a given type.
+	ListEntities(ctx context.Context, req *ListEntitiesRequest) (*ListEntitiesResponse, error)
 }
 
 // AdminServicer provides cluster control-plane operations for health
@@ -69,6 +141,26 @@ type AdminServicer interface {
 	// Drain transitions the host into drain mode where new proposals
 	// and reads are rejected while in-flight operations complete.
 	Drain(ctx context.Context) error
+
+	// Capabilities returns the compile-time feature set of the QRDB
+	// binary, indicating which optional services are available.
+	Capabilities(ctx context.Context) (*capabilities.Capabilities, error)
+
+	// StartShard initializes and starts a Raft group for the given shard.
+	// Members maps replicaID to address for initial cluster members.
+	// Set Join to true when this node is joining an existing cluster.
+	StartShard(ctx context.Context, req *StartShardRequest) error
+
+	// StopShard stops the Raft group for the given shard.
+	StopShard(ctx context.Context, shardID uint64) error
+
+	// GetShardState returns the Raft state for a shard including
+	// the configuration change index, term, and current leader.
+	GetShardState(ctx context.Context, shardID uint64) (*ShardStateResponse, error)
+
+	// GetTopology returns the full cluster topology as seen from
+	// this node, including all loaded shards and their membership.
+	GetTopology(ctx context.Context) (*TopologyResponse, error)
 }
 
 // HealthStatus describes the aggregate health of the host.
@@ -168,34 +260,109 @@ type Host interface {
 	SyncRead(ctx context.Context, shardID uint64, query interface{}) (interface{}, error)
 
 	// RequestAddNode requests adding a new replica to a shard.
-	RequestAddNode(ctx context.Context, shardID, replicaID uint64, addr string) (*quicraft.RequestState, error)
+	RequestAddNode(ctx context.Context, shardID, replicaID uint64, addr string, configChangeIndex uint64) (*quicraft.RequestState, error)
 
 	// RequestRemoveNode requests removing a replica from a shard.
-	RequestRemoveNode(ctx context.Context, shardID, replicaID uint64) (*quicraft.RequestState, error)
+	RequestRemoveNode(ctx context.Context, shardID, replicaID uint64, configChangeIndex uint64) (*quicraft.RequestState, error)
 
 	// RequestSnapshot requests an asynchronous snapshot for a shard.
 	RequestSnapshot(ctx context.Context, shardID uint64) (*quicraft.RequestState, error)
+
+	// ProposeWithMode proposes a write with specified durability guarantee.
+	// Allows trading consistency for performance: Sync (quorum), WALDurable
+	// (local WAL), or Batched (aggregated writes).
+	ProposeWithMode(ctx context.Context, shardID uint64, cmd []byte, mode writemode.Mode) (sm.Result, error)
+
+	// StaleRead reads from the local state machine without Raft coordination.
+	// Returns potentially stale data but with sub-millisecond latency.
+	StaleRead(ctx context.Context, shardID uint64, query interface{}) (interface{}, error)
+
+	// ReadWithConsistency performs a read with the specified consistency level.
+	// Strong: full Raft consensus. Linearizable: ReadIndex optimization.
+	// Eventual: local stale read. FollowerRead: ReadIndex on any node.
+	ReadWithConsistency(ctx context.Context, shardID uint64, query interface{}, opts consistency.ReadOptions) (interface{}, error)
+
+	// FollowerRead reads from the local state machine after confirming the
+	// node has applied up to the committed index via ReadIndex. Allows any
+	// node (leader or follower) to serve reads without forwarding to the
+	// leader, providing stronger guarantees than StaleRead with lower
+	// latency than requiring the leader to execute the query itself.
+	FollowerRead(ctx context.Context, shardID uint64, query interface{}) (interface{}, error)
+
+	// GetLeaderID returns the current leader's replica ID for the shard
+	// and whether a leader is known. Returns 0, false, error if the shard
+	// does not exist.
+	GetLeaderID(shardID uint64) (uint64, bool, error)
+
+	// GetShardRaftState returns the Raft state for a shard: the config
+	// change index and current term. Used for monitoring and consistency
+	// checks.
+	GetShardRaftState(shardID uint64) (configChangeIndex uint64, term uint64, err error)
+
+	// StartShard initializes and starts a Raft group for the given shard.
+	// members maps replicaID to address for initial cluster members. join
+	// indicates whether this node is joining an existing cluster. create
+	// is the state machine factory. cfg provides per-shard Raft
+	// configuration including ShardID and ReplicaID.
+	StartShard(members map[uint64]string, join bool, create sm.CreateFunc, cfg config.Config) error
+
+	// StopShard stops the Raft group for the given shard.
+	StopShard(shardID uint64) error
+
+	// Close gracefully shuts down the host and all its Raft groups.
+	Close() error
+}
+
+// KVServiceOption configures optional KVService behavior.
+type KVServiceOption func(*KVService)
+
+// WithCodecManager sets the dual-codec manager for storage encoding and
+// wire transcoding. When nil (the default), values pass through unmodified.
+func WithCodecManager(cm *codec.Manager) KVServiceOption {
+	return func(s *KVService) {
+		s.codec = cm
+	}
 }
 
 // KVService implements KVServicer backed by a QuicRaft host.
 type KVService struct {
 	host    Host
 	shardID uint64
+	codec   *codec.Manager
 }
 
 // NewKVService creates a new KVServicer that operates on the specified shard.
-func NewKVService(host Host, shardID uint64) KVServicer {
-	return &KVService{
+// Optional KVServiceOption values configure codec encoding and other behavior.
+func NewKVService(host Host, shardID uint64, opts ...KVServiceOption) KVServicer {
+	svc := &KVService{
 		host:    host,
 		shardID: shardID,
 	}
+	for _, opt := range opts {
+		opt(svc)
+	}
+	return svc
 }
 
 // Put stores a key-value pair through Raft consensus. The command is encoded
-// using the KV wire protocol and proposed to the shard's Raft group.
+// using the KV wire protocol and proposed to the shard's Raft group. When a
+// codec manager is configured, the value is encoded using the storage codec
+// before proposal.
 func (s *KVService) Put(ctx context.Context, key string, value []byte) error {
-	cmd := kv.EncodePut([]byte(key), value)
-	_, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+	storeValue := value
+	if s.codec != nil {
+		// Pass as string to prevent json.Marshal from base64-encoding []byte.
+		encoded, err := s.codec.EncodeForStorage(string(value))
+		if err != nil {
+			return &CodecEncodeError{Op: "put", Err: err}
+		}
+		storeValue = encoded
+	}
+	cmd, err := kv.EncodePut([]byte(key), storeValue)
+	if err != nil {
+		return &ProposeError{Err: err}
+	}
+	_, err = s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
 		return s.translateProposeError(err)
 	}
@@ -204,15 +371,28 @@ func (s *KVService) Put(ctx context.Context, key string, value []byte) error {
 
 // Get retrieves a value by key with a linearizable read through the Raft
 // consensus layer. Returns KeyNotFoundError when the key does not exist.
+// When a codec manager is configured, the stored value is transcoded from
+// the storage codec to the wire codec before being returned.
 func (s *KVService) Get(ctx context.Context, key string) ([]byte, error) {
 	result, err := s.host.SyncRead(ctx, s.shardID, []byte(key))
 	if err != nil {
 		return nil, s.translateReadError(err)
 	}
+	if result == nil {
+		return nil, &ReadError{Err: &KeyNotFoundError{Key: key}}
+	}
 
 	data, ok := result.([]byte)
 	if !ok {
 		return nil, &ReadError{Err: &unexpectedResultTypeError{}}
+	}
+
+	if s.codec != nil {
+		var decoded json.RawMessage
+		if err := s.codec.DecodeFromStorage(data, &decoded); err != nil {
+			return nil, &CodecDecodeError{Op: "get", Err: err}
+		}
+		return []byte(decoded), nil
 	}
 
 	return data, nil
@@ -221,8 +401,11 @@ func (s *KVService) Get(ctx context.Context, key string) ([]byte, error) {
 // Delete removes a key through Raft consensus. The command is encoded
 // using the KV wire protocol and proposed to the shard's Raft group.
 func (s *KVService) Delete(ctx context.Context, key string) error {
-	cmd := kv.EncodeDelete([]byte(key))
-	_, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+	cmd, err := kv.EncodeDelete([]byte(key))
+	if err != nil {
+		return &ProposeError{Err: err}
+	}
+	_, err = s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
 		return s.translateProposeError(err)
 	}
@@ -230,11 +413,15 @@ func (s *KVService) Delete(ctx context.Context, key string) error {
 }
 
 // List returns sorted keys matching the given prefix with a linearizable
-// read. An empty prefix returns all user keys.
+// read. An empty prefix returns all user keys. Internal system keys
+// (prefixed with "__sys:") are excluded from the results.
 func (s *KVService) List(ctx context.Context, prefix string) ([]string, error) {
 	result, err := s.host.SyncRead(ctx, s.shardID, kv.ListQuery{Prefix: prefix})
 	if err != nil {
 		return nil, s.translateReadError(err)
+	}
+	if result == nil {
+		return nil, nil
 	}
 
 	keys, ok := result.([]string)
@@ -242,8 +429,403 @@ func (s *KVService) List(ctx context.Context, prefix string) ([]string, error) {
 		return nil, &ReadError{Err: &unexpectedResultTypeError{}}
 	}
 
-	return keys, nil
+	return filterSystemKeys(keys, prefix), nil
 }
+
+// Scan returns all key-value pairs matching the given prefix. Uses a
+// PrefixQuery for compatibility with the basic FastStateMachine. Internal
+// system keys (prefixed with "__sys:") are excluded from the results
+// unless the prefix itself targets the system key namespace.
+func (s *KVService) Scan(ctx context.Context, prefix string) (map[string][]byte, error) {
+	query := &statemachine.PrefixQuery{
+		Prefix: []byte(prefix),
+		Limit:  0,
+	}
+	result, err := s.host.SyncRead(ctx, s.shardID, query)
+	if err != nil {
+		return nil, s.translateReadError(err)
+	}
+	if result == nil {
+		return nil, nil
+	}
+	data, ok := result.(map[string][]byte)
+	if !ok {
+		return nil, &ReadError{Err: &unexpectedResultTypeError{}}
+	}
+	return filterSystemMap(data, prefix), nil
+}
+
+// GetStale retrieves a value by key from the local state machine without
+// Raft coordination. Returns potentially stale data but with sub-millisecond
+// latency. Returns KeyNotFoundError when the key does not exist. When a
+// codec manager is configured, the stored value is transcoded from the
+// storage codec to the wire codec.
+func (s *KVService) GetStale(ctx context.Context, key string) ([]byte, error) {
+	result, err := s.host.StaleRead(ctx, s.shardID, []byte(key))
+	if err != nil {
+		return nil, s.translateReadError(err)
+	}
+	if result == nil {
+		return nil, &ReadError{Err: &KeyNotFoundError{Key: key}}
+	}
+
+	data, ok := result.([]byte)
+	if !ok {
+		return nil, &ReadError{Err: &unexpectedResultTypeError{}}
+	}
+
+	if s.codec != nil {
+		var decoded json.RawMessage
+		if err := s.codec.DecodeFromStorage(data, &decoded); err != nil {
+			return nil, &CodecDecodeError{Op: "get_stale", Err: err}
+		}
+		return []byte(decoded), nil
+	}
+
+	return data, nil
+}
+
+// ListStale returns sorted keys matching the given prefix from the local
+// state machine without Raft coordination. Returns potentially stale data
+// but with sub-millisecond latency.
+func (s *KVService) ListStale(ctx context.Context, prefix string) ([]string, error) {
+	result, err := s.host.StaleRead(ctx, s.shardID, kv.ListQuery{Prefix: prefix})
+	if err != nil {
+		return nil, s.translateReadError(err)
+	}
+	if result == nil {
+		return nil, nil
+	}
+
+	keys, ok := result.([]string)
+	if !ok {
+		return nil, &ReadError{Err: &unexpectedResultTypeError{}}
+	}
+
+	return filterSystemKeys(keys, prefix), nil
+}
+
+// ScanStale returns all key-value pairs matching the given prefix from the
+// local state machine without Raft coordination. Returns potentially stale
+// data but with sub-millisecond latency.
+func (s *KVService) ScanStale(ctx context.Context, prefix string) (map[string][]byte, error) {
+	query := &statemachine.PrefixQuery{
+		Prefix: []byte(prefix),
+		Limit:  0,
+	}
+	result, err := s.host.StaleRead(ctx, s.shardID, query)
+	if err != nil {
+		return nil, s.translateReadError(err)
+	}
+	if result == nil {
+		return nil, nil
+	}
+	data, ok := result.(map[string][]byte)
+	if !ok {
+		return nil, &ReadError{Err: &unexpectedResultTypeError{}}
+	}
+	return filterSystemMap(data, prefix), nil
+}
+
+// ---------------------------------------------------------------------------
+// Write mode operations
+// ---------------------------------------------------------------------------
+
+// PutWithMode stores a key-value pair with the specified write durability.
+// The command is encoded using the KV wire protocol and proposed to the
+// shard's Raft group via ProposeWithMode. When a codec manager is configured,
+// the value is encoded using the storage codec before proposal.
+func (s *KVService) PutWithMode(ctx context.Context, key string, value []byte, mode writemode.Mode) error {
+	storeValue := value
+	if s.codec != nil {
+		encoded, err := s.codec.EncodeForStorage(string(value))
+		if err != nil {
+			return &CodecEncodeError{Op: "put_with_mode", Err: err}
+		}
+		storeValue = encoded
+	}
+	cmd, err := kv.EncodePut([]byte(key), storeValue)
+	if err != nil {
+		return &ProposeError{Err: err}
+	}
+	_, err = s.host.ProposeWithMode(ctx, s.shardID, cmd, mode)
+	if err != nil {
+		return s.translateProposeError(err)
+	}
+	return nil
+}
+
+// DeleteWithMode removes a key with the specified write durability. The
+// command is encoded using the KV wire protocol and proposed to the shard's
+// Raft group via ProposeWithMode.
+func (s *KVService) DeleteWithMode(ctx context.Context, key string, mode writemode.Mode) error {
+	cmd, err := kv.EncodeDelete([]byte(key))
+	if err != nil {
+		return &ProposeError{Err: err}
+	}
+	_, err = s.host.ProposeWithMode(ctx, s.shardID, cmd, mode)
+	if err != nil {
+		return s.translateProposeError(err)
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Consistency-level read operations
+// ---------------------------------------------------------------------------
+
+// GetWithConsistency retrieves a value by key with the specified consistency
+// level. Returns KeyNotFoundError when the key does not exist. When a codec
+// manager is configured, the stored value is transcoded from the storage
+// codec to the wire codec before being returned.
+func (s *KVService) GetWithConsistency(ctx context.Context, key string, opts consistency.ReadOptions) ([]byte, error) {
+	result, err := s.host.ReadWithConsistency(ctx, s.shardID, []byte(key), opts)
+	if err != nil {
+		return nil, s.translateReadError(err)
+	}
+	if result == nil {
+		return nil, &ReadError{Err: &KeyNotFoundError{Key: key}}
+	}
+
+	data, ok := result.([]byte)
+	if !ok {
+		return nil, &ReadError{Err: &unexpectedResultTypeError{}}
+	}
+
+	if s.codec != nil {
+		var decoded json.RawMessage
+		if err := s.codec.DecodeFromStorage(data, &decoded); err != nil {
+			return nil, &CodecDecodeError{Op: "get_with_consistency", Err: err}
+		}
+		return []byte(decoded), nil
+	}
+
+	return data, nil
+}
+
+// ListWithConsistency returns sorted keys matching the given prefix with
+// the specified consistency level. An empty prefix returns all user keys.
+// Internal system keys (prefixed with "__sys:") are excluded from the
+// results.
+func (s *KVService) ListWithConsistency(ctx context.Context, prefix string, opts consistency.ReadOptions) ([]string, error) {
+	result, err := s.host.ReadWithConsistency(ctx, s.shardID, kv.ListQuery{Prefix: prefix}, opts)
+	if err != nil {
+		return nil, s.translateReadError(err)
+	}
+	if result == nil {
+		return nil, nil
+	}
+
+	keys, ok := result.([]string)
+	if !ok {
+		return nil, &ReadError{Err: &unexpectedResultTypeError{}}
+	}
+
+	return filterSystemKeys(keys, prefix), nil
+}
+
+// ScanWithConsistency returns all key-value pairs matching the given prefix
+// with the specified consistency level. Internal system keys (prefixed with
+// "__sys:") are excluded from the results unless the prefix itself targets
+// the system key namespace.
+func (s *KVService) ScanWithConsistency(ctx context.Context, prefix string, opts consistency.ReadOptions) (map[string][]byte, error) {
+	query := &statemachine.PrefixQuery{
+		Prefix: []byte(prefix),
+		Limit:  0,
+	}
+	result, err := s.host.ReadWithConsistency(ctx, s.shardID, query, opts)
+	if err != nil {
+		return nil, s.translateReadError(err)
+	}
+	if result == nil {
+		return nil, nil
+	}
+	data, ok := result.(map[string][]byte)
+	if !ok {
+		return nil, &ReadError{Err: &unexpectedResultTypeError{}}
+	}
+	return filterSystemMap(data, prefix), nil
+}
+
+// ExistsWithConsistency checks whether a key exists with the specified
+// consistency level. Returns true when the key is present and false when
+// it is not found. Other errors are propagated to the caller.
+func (s *KVService) ExistsWithConsistency(ctx context.Context, key string, opts consistency.ReadOptions) (bool, error) {
+	result, err := s.host.ReadWithConsistency(ctx, s.shardID, []byte(key), opts)
+	if err != nil {
+		var knf *KeyNotFoundError
+		if errors.As(err, &knf) {
+			return false, nil
+		}
+		// Check for the upstream kv.KeyNotFoundError as well.
+		var kvKnf *kv.KeyNotFoundError
+		if errors.As(err, &kvKnf) {
+			return false, nil
+		}
+		return false, s.translateReadError(err)
+	}
+	return result != nil, nil
+}
+
+// ---------------------------------------------------------------------------
+// Entity operations
+// ---------------------------------------------------------------------------
+
+// PutEntity stores a typed entity through Raft consensus. The entity key is
+// constructed as "{entityType}/{id}" and the data is stored via the basic
+// Put operation. WriteMode and Consistency are captured for future phases.
+func (s *KVService) PutEntity(ctx context.Context, req *PutEntityRequest) (*PutEntityResponse, error) {
+	if err := validateEntityWrite(req.EntityType, req.ID, req.Data); err != nil {
+		return nil, err
+	}
+
+	key := entityKey(req.EntityType, req.ID)
+	if err := s.Put(ctx, key, req.Data); err != nil {
+		return nil, err
+	}
+
+	now := time.Now().UnixNano()
+	return &PutEntityResponse{
+		Version:   1,
+		Revision:  1,
+		Timestamp: now,
+	}, nil
+}
+
+// GetEntity retrieves a typed entity with a linearizable read. The entity
+// key is constructed as "{entityType}/{id}" and looked up via the basic
+// Get operation. Returns KeyNotFoundError when the entity does not exist.
+func (s *KVService) GetEntity(ctx context.Context, req *GetEntityRequest) (*GetEntityResponse, error) {
+	if req.EntityType == "" {
+		return nil, &EntityEmptyTypeError{}
+	}
+	if req.ID == "" {
+		return nil, &EntityEmptyIDError{EntityType: req.EntityType}
+	}
+
+	key := entityKey(req.EntityType, req.ID)
+	data, err := s.Get(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+
+	now := time.Now().UnixNano()
+	return &GetEntityResponse{
+		Data:      data,
+		Version:   1,
+		Revision:  1,
+		Timestamp: now,
+	}, nil
+}
+
+// DeleteEntity removes a typed entity through Raft consensus. The entity
+// key is constructed as "{entityType}/{id}" and removed via the basic
+// Delete operation.
+func (s *KVService) DeleteEntity(ctx context.Context, req *DeleteEntityRequest) (*DeleteEntityResponse, error) {
+	if req.EntityType == "" {
+		return nil, &EntityEmptyTypeError{}
+	}
+	if req.ID == "" {
+		return nil, &EntityEmptyIDError{EntityType: req.EntityType}
+	}
+
+	key := entityKey(req.EntityType, req.ID)
+	if err := s.Delete(ctx, key); err != nil {
+		return nil, err
+	}
+
+	return &DeleteEntityResponse{
+		Deleted:  true,
+		Revision: 1,
+	}, nil
+}
+
+// ListEntities returns a paginated list of entity keys for a given type.
+// The entity type prefix is constructed as "{entityType}/" and listed via
+// the basic List operation. Results are paginated using page token and
+// page size. The page token is the last key from the previous page encoded
+// as an offset index.
+func (s *KVService) ListEntities(ctx context.Context, req *ListEntitiesRequest) (*ListEntitiesResponse, error) {
+	if req.EntityType == "" {
+		return nil, &EntityEmptyTypeError{}
+	}
+
+	prefix := entityPrefix(req.EntityType)
+	if req.Prefix != "" {
+		prefix = prefix + req.Prefix
+	}
+
+	allKeys, err := s.List(ctx, prefix)
+	if err != nil {
+		return nil, err
+	}
+
+	// Strip the entity type prefix from returned keys so callers
+	// receive entity IDs rather than full storage keys.
+	typePrefix := entityPrefix(req.EntityType)
+	stripped := make([]string, 0, len(allKeys))
+	for _, k := range allKeys {
+		stripped = append(stripped, strings.TrimPrefix(k, typePrefix))
+	}
+
+	totalCount := int64(len(stripped))
+
+	// Apply page token (offset-based).
+	startIdx := 0
+	if req.PageToken != "" {
+		offset, parseErr := strconv.Atoi(req.PageToken)
+		if parseErr != nil {
+			return nil, &InvalidPageTokenError{Token: req.PageToken}
+		}
+		startIdx = offset
+	}
+
+	if startIdx > len(stripped) {
+		startIdx = len(stripped)
+	}
+
+	remaining := stripped[startIdx:]
+
+	// Apply page size.
+	pageSize := int(req.PageSize)
+	if pageSize <= 0 {
+		pageSize = len(remaining)
+	}
+
+	var page []string
+	var nextPageToken string
+	if pageSize >= len(remaining) {
+		page = remaining
+	} else {
+		page = remaining[:pageSize]
+		nextPageToken = strconv.Itoa(startIdx + pageSize)
+	}
+
+	return &ListEntitiesResponse{
+		Keys:          page,
+		NextPageToken: nextPageToken,
+		TotalCount:    totalCount,
+	}, nil
+}
+
+// validateEntityWrite checks that the entity type, ID, and data are all
+// non-empty. Returns a typed error if any validation fails.
+func validateEntityWrite(entityType EntityType, id string, data []byte) error {
+	if entityType == "" {
+		return &EntityEmptyTypeError{}
+	}
+	if id == "" {
+		return &EntityEmptyIDError{EntityType: entityType}
+	}
+	if len(data) == 0 {
+		return &EntityEmptyDataError{EntityType: entityType, ID: id}
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Error translation
+// ---------------------------------------------------------------------------
 
 // translateProposeError converts QuicRaft proposal errors to service-level
 // typed errors. NotLeaderError is mapped to service.NotLeaderError so
@@ -290,14 +872,42 @@ func (e *unexpectedResultTypeError) Error() string {
 	return "unexpected result type from state machine"
 }
 
+// AdminServiceOption configures optional AdminService behavior.
+type AdminServiceOption func(*AdminService)
+
+// WithStateMachineFactory sets the state machine factory used by StartShard
+// to create state machines for new shards.
+func WithStateMachineFactory(factory sm.CreateFunc) AdminServiceOption {
+	return func(s *AdminService) {
+		s.smFactory = factory
+	}
+}
+
+// WithDefaultShardConfig sets the base Raft configuration used when starting
+// new shards. ShardID and ReplicaID are overridden per request from the
+// StartShardRequest fields.
+func WithDefaultShardConfig(cfg config.Config) AdminServiceOption {
+	return func(s *AdminService) {
+		s.defaultCfg = cfg
+	}
+}
+
 // AdminService implements AdminServicer backed by a QuicRaft host.
 type AdminService struct {
-	host Host
+	host       Host
+	smFactory  sm.CreateFunc
+	defaultCfg config.Config
 }
 
 // NewAdminService creates a new AdminServicer backed by the given host.
-func NewAdminService(host Host) AdminServicer {
-	return &AdminService{host: host}
+// Optional AdminServiceOption values configure state machine factories
+// and other behavior.
+func NewAdminService(host Host, opts ...AdminServiceOption) AdminServicer {
+	svc := &AdminService{host: host}
+	for _, opt := range opts {
+		opt(svc)
+	}
+	return svc
 }
 
 // Health returns the current health status of the host. The Status field
@@ -377,7 +987,7 @@ func (s *AdminService) Peers(_ context.Context) (*PeersInfo, error) {
 // proposed through Raft and completes when the membership change is
 // committed.
 func (s *AdminService) AddMember(ctx context.Context, shardID, replicaID uint64, raftAddr string) error {
-	rs, err := s.host.RequestAddNode(ctx, shardID, replicaID, raftAddr)
+	rs, err := s.host.RequestAddNode(ctx, shardID, replicaID, raftAddr, 0)
 	if err != nil {
 		return &MembershipError{Op: "add", Err: err}
 	}
@@ -393,7 +1003,7 @@ func (s *AdminService) AddMember(ctx context.Context, shardID, replicaID uint64,
 // proposed through Raft and completes when the membership change is
 // committed.
 func (s *AdminService) RemoveMember(ctx context.Context, shardID, replicaID uint64) error {
-	rs, err := s.host.RequestRemoveNode(ctx, shardID, replicaID)
+	rs, err := s.host.RequestRemoveNode(ctx, shardID, replicaID, 0)
 	if err != nil {
 		return &MembershipError{Op: "remove", Err: err}
 	}
@@ -428,4 +1038,121 @@ func (s *AdminService) Drain(_ context.Context) error {
 		return &DrainError{Err: err}
 	}
 	return nil
+}
+
+// Capabilities returns the compile-time feature set of the running binary.
+// Core features are always enabled; optional features (TimeSeries, Vector)
+// depend on build tags.
+func (s *AdminService) Capabilities(_ context.Context) (*capabilities.Capabilities, error) {
+	caps := capabilities.Get()
+	return &caps, nil
+}
+
+// StartShard initializes and starts a Raft group for the given shard.
+// A state machine factory must be registered via WithStateMachineFactory
+// before calling this method.
+func (s *AdminService) StartShard(_ context.Context, req *StartShardRequest) error {
+	if s.smFactory == nil {
+		return &NoStateMachineFactoryError{}
+	}
+	cfg := s.defaultCfg
+	cfg.ShardID = req.ShardID
+	cfg.ReplicaID = req.ReplicaID
+
+	if err := s.host.StartShard(req.Members, req.Join, s.smFactory, cfg); err != nil {
+		return &ShardStartError{ShardID: req.ShardID, Err: err}
+	}
+	return nil
+}
+
+// StopShard stops the Raft group for the given shard.
+func (s *AdminService) StopShard(_ context.Context, shardID uint64) error {
+	if err := s.host.StopShard(shardID); err != nil {
+		return &ShardStopError{ShardID: shardID, Err: err}
+	}
+	return nil
+}
+
+// GetShardState returns the Raft state for a shard including the
+// configuration change index, term, and current leader.
+func (s *AdminService) GetShardState(_ context.Context, shardID uint64) (*ShardStateResponse, error) {
+	configChangeIndex, term, err := s.host.GetShardRaftState(shardID)
+	if err != nil {
+		return nil, &ShardStateError{ShardID: shardID, Err: err}
+	}
+	leaderID, hasLeader, err := s.host.GetLeaderID(shardID)
+	if err != nil {
+		return nil, &ShardStateError{ShardID: shardID, Err: err}
+	}
+	return &ShardStateResponse{
+		ShardID:           shardID,
+		ConfigChangeIndex: configChangeIndex,
+		Term:              term,
+		LeaderID:          leaderID,
+		HasLeader:         hasLeader,
+	}, nil
+}
+
+// GetTopology returns the full cluster topology as seen from this node,
+// including all loaded shards and their membership.
+func (s *AdminService) GetTopology(_ context.Context) (*TopologyResponse, error) {
+	info := s.host.GetNodeHostInfo(quicraft.NodeHostInfoOption{SkipLogInfo: true})
+	shards := make([]TopologyShardInfo, 0, len(info.ShardInfoList))
+	for _, si := range info.ShardInfoList {
+		shards = append(shards, TopologyShardInfo{
+			ShardID:   si.ShardID,
+			ReplicaID: si.ReplicaID,
+			IsLeader:  si.IsLeader,
+			LeaderID:  si.LeaderID,
+			Nodes:     si.Nodes,
+		})
+	}
+	return &TopologyResponse{
+		NodeID:      s.host.ID(),
+		RaftAddress: s.host.RaftAddress(),
+		ShardCount:  s.host.ShardCount(),
+		Shards:      shards,
+	}, nil
+}
+
+// systemKeyPrefix is the prefix used for internal system keys (roles, users,
+// indexes) that should be hidden from user-facing list/scan operations.
+const systemKeyPrefix = "__sys:"
+
+// isSystemPrefix returns true when the query prefix itself targets system
+// keys. Internal stores (users, roles, certs) intentionally scan system
+// key space and must receive unfiltered results.
+func isSystemPrefix(prefix string) bool {
+	return strings.HasPrefix(prefix, systemKeyPrefix)
+}
+
+// filterSystemKeys returns a new slice with internal system keys removed.
+// When the query prefix targets the system key namespace, no filtering is
+// applied so that internal stores receive their own records.
+func filterSystemKeys(keys []string, prefix string) []string {
+	if isSystemPrefix(prefix) {
+		return keys
+	}
+	filtered := make([]string, 0, len(keys))
+	for _, k := range keys {
+		if !strings.HasPrefix(k, systemKeyPrefix) {
+			filtered = append(filtered, k)
+		}
+	}
+	return filtered
+}
+
+// filterSystemMap returns a new map with internal system keys removed.
+// When the query prefix targets the system key namespace, no filtering is
+// applied so that internal stores receive their own records.
+func filterSystemMap(data map[string][]byte, prefix string) map[string][]byte {
+	if isSystemPrefix(prefix) {
+		return data
+	}
+	for k := range data {
+		if strings.HasPrefix(k, systemKeyPrefix) {
+			delete(data, k)
+		}
+	}
+	return data
 }

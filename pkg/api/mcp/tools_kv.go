@@ -43,6 +43,10 @@ func kvTools(kvSvc service.KVServicer) []mcpserver.ServerTool {
 			Tool:    toolList(),
 			Handler: handleList(kvSvc),
 		},
+		{
+			Tool:    toolScan(),
+			Handler: handleScan(kvSvc),
+		},
 	}
 }
 
@@ -159,6 +163,41 @@ func handleList(kvSvc service.KVServicer) mcpserver.ToolHandlerFunc {
 		data, jsonErr := json.Marshal(keys)
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_list", Err: jsonErr}
+		}
+
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// toolScan defines the qrdb_scan tool schema.
+func toolScan() mcp.Tool {
+	return mcp.NewTool("qrdb_scan",
+		mcp.WithDescription("Scan key-value pairs matching a prefix. Returns a JSON map of key to value."),
+		mcp.WithString("prefix",
+			mcp.Description("Optional key prefix filter."),
+		),
+	)
+}
+
+// handleScan returns a tool handler that delegates to kvSvc.Scan.
+func handleScan(kvSvc service.KVServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		prefix := mcp.ParseString(req, "prefix", "")
+
+		pairs, err := kvSvc.Scan(ctx, prefix)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_scan", Err: err}
+		}
+
+		// Convert []byte values to strings for JSON readability.
+		out := make(map[string]string, len(pairs))
+		for k, v := range pairs {
+			out[k] = string(v)
+		}
+
+		data, jsonErr := json.Marshal(out)
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_scan", Err: jsonErr}
 		}
 
 		return mcp.NewToolResultText(string(data)), nil

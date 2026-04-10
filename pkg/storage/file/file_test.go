@@ -15,26 +15,29 @@
 package file
 
 import (
+	"bytes"
 	"errors"
+	"os"
+	"path/filepath"
 	"sort"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 )
 
-func TestFileEngine_PutGet(t *testing.T) {
+func TestFileEngine_SetGet(t *testing.T) {
 	dir := t.TempDir()
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer eng.Close()
+	defer func() { _ = eng.Close() }()
 
-	if err := eng.Put("key1", []byte("value1")); err != nil {
-		t.Fatalf("Put: %v", err)
+	if err := eng.Set([]byte("key1"), []byte("value1")); err != nil {
+		t.Fatalf("Set: %v", err)
 	}
 
-	got, err := eng.Get("key1")
+	got, err := eng.Get([]byte("key1"))
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -43,22 +46,22 @@ func TestFileEngine_PutGet(t *testing.T) {
 	}
 }
 
-func TestFileEngine_PutOverwrite(t *testing.T) {
+func TestFileEngine_SetOverwrite(t *testing.T) {
 	dir := t.TempDir()
 	eng, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer eng.Close()
+	defer func() { _ = eng.Close() }()
 
-	if err := eng.Put("key1", []byte("original")); err != nil {
-		t.Fatalf("Put original: %v", err)
+	if err := eng.Set([]byte("key1"), []byte("original")); err != nil {
+		t.Fatalf("Set original: %v", err)
 	}
-	if err := eng.Put("key1", []byte("overwritten")); err != nil {
-		t.Fatalf("Put overwrite: %v", err)
+	if err := eng.Set([]byte("key1"), []byte("overwritten")); err != nil {
+		t.Fatalf("Set overwrite: %v", err)
 	}
 
-	got, err := eng.Get("key1")
+	got, err := eng.Get([]byte("key1"))
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -73,11 +76,14 @@ func TestFileEngine_GetNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer eng.Close()
+	defer func() { _ = eng.Close() }()
 
-	_, getErr := eng.Get("nonexistent")
-	if !errors.Is(getErr, storage.ErrKeyNotFound) {
-		t.Fatalf("Get nonexistent: got %v, want %v", getErr, storage.ErrKeyNotFound)
+	got, getErr := eng.Get([]byte("nonexistent"))
+	if getErr != nil {
+		t.Fatalf("Get nonexistent: expected nil error, got %v", getErr)
+	}
+	if got != nil {
+		t.Fatalf("Get nonexistent: expected nil value, got %q", got)
 	}
 }
 
@@ -87,18 +93,21 @@ func TestFileEngine_Delete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer eng.Close()
+	defer func() { _ = eng.Close() }()
 
-	if err := eng.Put("key1", []byte("value1")); err != nil {
-		t.Fatalf("Put: %v", err)
+	if err := eng.Set([]byte("key1"), []byte("value1")); err != nil {
+		t.Fatalf("Set: %v", err)
 	}
-	if err := eng.Delete("key1"); err != nil {
+	if err := eng.Delete([]byte("key1")); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 
-	_, getErr := eng.Get("key1")
-	if !errors.Is(getErr, storage.ErrKeyNotFound) {
-		t.Fatalf("Get after Delete: got %v, want %v", getErr, storage.ErrKeyNotFound)
+	got, getErr := eng.Get([]byte("key1"))
+	if getErr != nil {
+		t.Fatalf("Get after Delete: expected nil error, got %v", getErr)
+	}
+	if got != nil {
+		t.Fatalf("Get after Delete: expected nil value, got %q", got)
 	}
 }
 
@@ -108,9 +117,9 @@ func TestFileEngine_DeleteNonExistent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer eng.Close()
+	defer func() { _ = eng.Close() }()
 
-	if err := eng.Delete("nonexistent"); err != nil {
+	if err := eng.Delete([]byte("nonexistent")); err != nil {
 		t.Fatalf("Delete nonexistent: unexpected error: %v", err)
 	}
 }
@@ -121,7 +130,7 @@ func TestFileEngine_List(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer eng.Close()
+	defer func() { _ = eng.Close() }()
 
 	entries := map[string]string{
 		"users/alice": "a",
@@ -129,21 +138,23 @@ func TestFileEngine_List(t *testing.T) {
 		"config/db":   "c",
 	}
 	for k, v := range entries {
-		if err := eng.Put(k, []byte(v)); err != nil {
-			t.Fatalf("Put %q: %v", k, err)
+		if err := eng.Set([]byte(k), []byte(v)); err != nil {
+			t.Fatalf("Set %q: %v", k, err)
 		}
 	}
 
-	keys, err := eng.List("users/")
+	keys, err := eng.List([]byte("users/"))
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	sort.Strings(keys)
+	sort.Slice(keys, func(i, j int) bool {
+		return bytes.Compare(keys[i], keys[j]) < 0
+	})
 
 	if len(keys) != 2 {
 		t.Fatalf("List: got %d keys, want 2", len(keys))
 	}
-	if keys[0] != "users/alice" || keys[1] != "users/bob" {
+	if !bytes.Equal(keys[0], []byte("users/alice")) || !bytes.Equal(keys[1], []byte("users/bob")) {
 		t.Fatalf("List: got %v, want [users/alice users/bob]", keys)
 	}
 }
@@ -154,9 +165,9 @@ func TestFileEngine_ListEmptyDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer eng.Close()
+	defer func() { _ = eng.Close() }()
 
-	keys, err := eng.List("")
+	keys, err := eng.List(nil)
 	if err != nil {
 		t.Fatalf("List empty dir: %v", err)
 	}
@@ -171,24 +182,26 @@ func TestFileEngine_ListAllKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer eng.Close()
+	defer func() { _ = eng.Close() }()
 
-	if err := eng.Put("alpha", []byte("1")); err != nil {
-		t.Fatalf("Put: %v", err)
+	if err := eng.Set([]byte("alpha"), []byte("1")); err != nil {
+		t.Fatalf("Set: %v", err)
 	}
-	if err := eng.Put("beta", []byte("2")); err != nil {
-		t.Fatalf("Put: %v", err)
+	if err := eng.Set([]byte("beta"), []byte("2")); err != nil {
+		t.Fatalf("Set: %v", err)
 	}
 
-	keys, err := eng.List("")
+	keys, err := eng.List(nil)
 	if err != nil {
 		t.Fatalf("List all: %v", err)
 	}
-	sort.Strings(keys)
+	sort.Slice(keys, func(i, j int) bool {
+		return bytes.Compare(keys[i], keys[j]) < 0
+	})
 	if len(keys) != 2 {
 		t.Fatalf("List all: got %d keys, want 2", len(keys))
 	}
-	if keys[0] != "alpha" || keys[1] != "beta" {
+	if !bytes.Equal(keys[0], []byte("alpha")) || !bytes.Equal(keys[1], []byte("beta")) {
 		t.Fatalf("List all: got %v, want [alpha beta]", keys)
 	}
 }
@@ -199,13 +212,13 @@ func TestFileEngine_ListNoMatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer eng.Close()
+	defer func() { _ = eng.Close() }()
 
-	if err := eng.Put("alpha", []byte("1")); err != nil {
-		t.Fatalf("Put: %v", err)
+	if err := eng.Set([]byte("alpha"), []byte("1")); err != nil {
+		t.Fatalf("Set: %v", err)
 	}
 
-	keys, err := eng.List("nonexistent/")
+	keys, err := eng.List([]byte("nonexistent/"))
 	if err != nil {
 		t.Fatalf("List no match: %v", err)
 	}
@@ -220,13 +233,13 @@ func TestFileEngine_Exists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer eng.Close()
+	defer func() { _ = eng.Close() }()
 
-	if err := eng.Put("key1", []byte("value1")); err != nil {
-		t.Fatalf("Put: %v", err)
+	if err := eng.Set([]byte("key1"), []byte("value1")); err != nil {
+		t.Fatalf("Set: %v", err)
 	}
 
-	exists, err := eng.Exists("key1")
+	exists, err := eng.Exists([]byte("key1"))
 	if err != nil {
 		t.Fatalf("Exists: %v", err)
 	}
@@ -234,7 +247,7 @@ func TestFileEngine_Exists(t *testing.T) {
 		t.Fatal("Exists: got false, want true")
 	}
 
-	exists, err = eng.Exists("nonexistent")
+	exists, err = eng.Exists([]byte("nonexistent"))
 	if err != nil {
 		t.Fatalf("Exists nonexistent: %v", err)
 	}
@@ -249,13 +262,13 @@ func TestFileEngine_NestedKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer eng.Close()
+	defer func() { _ = eng.Close() }()
 
-	key := "a/b/c/deep"
+	key := []byte("a/b/c/deep")
 	data := []byte("nested-value")
 
-	if err := eng.Put(key, data); err != nil {
-		t.Fatalf("Put nested: %v", err)
+	if err := eng.Set(key, data); err != nil {
+		t.Fatalf("Set nested: %v", err)
 	}
 
 	got, err := eng.Get(key)
@@ -266,11 +279,11 @@ func TestFileEngine_NestedKeys(t *testing.T) {
 		t.Fatalf("Get nested: got %q, want %q", got, "nested-value")
 	}
 
-	keys, err := eng.List("a/b/")
+	keys, err := eng.List([]byte("a/b/"))
 	if err != nil {
 		t.Fatalf("List nested: %v", err)
 	}
-	if len(keys) != 1 || keys[0] != "a/b/c/deep" {
+	if len(keys) != 1 || !bytes.Equal(keys[0], []byte("a/b/c/deep")) {
 		t.Fatalf("List nested: got %v, want [a/b/c/deep]", keys)
 	}
 }
@@ -281,18 +294,18 @@ func TestFileEngine_EmptyKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer eng.Close()
+	defer func() { _ = eng.Close() }()
 
-	if _, err := eng.Get(""); !errors.Is(err, storage.ErrEmptyKey) {
+	if _, err := eng.Get(nil); !errors.Is(err, storage.ErrEmptyKey) {
 		t.Fatalf("Get empty key: got %v, want %v", err, storage.ErrEmptyKey)
 	}
-	if err := eng.Put("", []byte("data")); !errors.Is(err, storage.ErrEmptyKey) {
-		t.Fatalf("Put empty key: got %v, want %v", err, storage.ErrEmptyKey)
+	if err := eng.Set(nil, []byte("data")); !errors.Is(err, storage.ErrEmptyKey) {
+		t.Fatalf("Set empty key: got %v, want %v", err, storage.ErrEmptyKey)
 	}
-	if err := eng.Delete(""); !errors.Is(err, storage.ErrEmptyKey) {
+	if err := eng.Delete(nil); !errors.Is(err, storage.ErrEmptyKey) {
 		t.Fatalf("Delete empty key: got %v, want %v", err, storage.ErrEmptyKey)
 	}
-	if _, err := eng.Exists(""); !errors.Is(err, storage.ErrEmptyKey) {
+	if _, err := eng.Exists(nil); !errors.Is(err, storage.ErrEmptyKey) {
 		t.Fatalf("Exists empty key: got %v, want %v", err, storage.ErrEmptyKey)
 	}
 }
@@ -304,28 +317,33 @@ func TestFileEngine_Closed(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	if err := eng.Put("key1", []byte("value1")); err != nil {
-		t.Fatalf("Put before close: %v", err)
+	if err := eng.Set([]byte("key1"), []byte("value1")); err != nil {
+		t.Fatalf("Set before close: %v", err)
 	}
 
 	if err := eng.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 
-	if _, err := eng.Get("key1"); !errors.Is(err, storage.ErrStorageClosed) {
-		t.Fatalf("Get after close: got %v, want %v", err, storage.ErrStorageClosed)
+	var closedErr *storage.ClosedError
+
+	if _, err := eng.Get([]byte("key1")); !errors.As(err, &closedErr) {
+		t.Fatalf("Get after close: got %v, want ClosedError", err)
 	}
-	if err := eng.Put("key2", []byte("value2")); !errors.Is(err, storage.ErrStorageClosed) {
-		t.Fatalf("Put after close: got %v, want %v", err, storage.ErrStorageClosed)
+	if err := eng.Set([]byte("key2"), []byte("value2")); !errors.As(err, &closedErr) {
+		t.Fatalf("Set after close: got %v, want ClosedError", err)
 	}
-	if err := eng.Delete("key1"); !errors.Is(err, storage.ErrStorageClosed) {
-		t.Fatalf("Delete after close: got %v, want %v", err, storage.ErrStorageClosed)
+	if err := eng.Delete([]byte("key1")); !errors.As(err, &closedErr) {
+		t.Fatalf("Delete after close: got %v, want ClosedError", err)
 	}
-	if _, err := eng.List(""); !errors.Is(err, storage.ErrStorageClosed) {
-		t.Fatalf("List after close: got %v, want %v", err, storage.ErrStorageClosed)
+	if _, err := eng.List(nil); !errors.As(err, &closedErr) {
+		t.Fatalf("List after close: got %v, want ClosedError", err)
 	}
-	if _, err := eng.Exists("key1"); !errors.Is(err, storage.ErrStorageClosed) {
-		t.Fatalf("Exists after close: got %v, want %v", err, storage.ErrStorageClosed)
+	if _, err := eng.Exists([]byte("key1")); !errors.As(err, &closedErr) {
+		t.Fatalf("Exists after close: got %v, want ClosedError", err)
+	}
+	if _, err := eng.Snapshot(); !errors.As(err, &closedErr) {
+		t.Fatalf("Snapshot after close: got %v, want ClosedError", err)
 	}
 }
 
@@ -333,5 +351,874 @@ func TestFileEngine_InvalidPath(t *testing.T) {
 	_, err := New("")
 	if !errors.Is(err, storage.ErrInvalidPath) {
 		t.Fatalf("New empty path: got %v, want %v", err, storage.ErrInvalidPath)
+	}
+}
+
+// TestNew_MkdirAllError verifies that New returns an OS error when the base directory
+// cannot be created because a regular file already occupies a component of the path.
+func TestNew_MkdirAllError(t *testing.T) {
+	base := t.TempDir()
+	// Create a regular file at the path we intend to use as a directory.
+	blockingFile := filepath.Join(base, "obstacle")
+	if err := os.WriteFile(blockingFile, []byte("x"), 0o600); err != nil {
+		t.Fatalf("setup: WriteFile: %v", err)
+	}
+	// Attempt to create an engine whose base dir requires "obstacle" to be a directory.
+	_, err := New(filepath.Join(blockingFile, "subdir"))
+	if err == nil {
+		t.Fatal("New: expected error when MkdirAll cannot create dir over a file, got nil")
+	}
+	// The error should be a real OS error, not one of our sentinel errors.
+	if errors.Is(err, storage.ErrInvalidPath) {
+		t.Fatalf("New: got ErrInvalidPath, want an OS mkdir error")
+	}
+}
+
+// TestGet_OSError verifies that Get propagates a non-not-exist OS error (e.g.,
+// reading a directory) rather than returning nil, nil.
+func TestGet_OSError(t *testing.T) {
+	base := t.TempDir()
+	eng, err := New(base)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = eng.Close() }()
+
+	// Store a key so the backing file and directory exist.
+	if err := eng.Set([]byte("secret/data"), []byte("value")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	// Replace the data file with a directory of the same name.
+	// os.ReadFile on a directory always fails, regardless of user.
+	filePath := filepath.Join(base, "secret", "data")
+	if err := os.Remove(filePath); err != nil {
+		t.Fatalf("setup: Remove: %v", err)
+	}
+	if err := os.Mkdir(filePath, 0o700); err != nil {
+		t.Fatalf("setup: Mkdir: %v", err)
+	}
+
+	_, getErr := eng.Get([]byte("secret/data"))
+	if getErr == nil {
+		t.Fatal("Get: expected error when path is a directory, got nil")
+	}
+}
+
+// TestSet_MkdirAllError verifies that Set returns an OS error when the parent directory
+// cannot be created because a regular file occupies a path component.
+func TestSet_MkdirAllError(t *testing.T) {
+	base := t.TempDir()
+	eng, err := New(base)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = eng.Close() }()
+
+	// Write a regular file at "namespace" inside the base dir.
+	obstacle := filepath.Join(base, "namespace")
+	if err := os.WriteFile(obstacle, []byte("blocker"), 0o600); err != nil {
+		t.Fatalf("setup: WriteFile: %v", err)
+	}
+
+	// Attempt to Set a key whose parent directory would require "namespace" to be a dir.
+	setErr := eng.Set([]byte("namespace/key"), []byte("value"))
+	if setErr == nil {
+		t.Fatal("Set: expected error when MkdirAll cannot mkdir over a file, got nil")
+	}
+	var closedErr *storage.ClosedError
+	if errors.Is(setErr, storage.ErrEmptyKey) || errors.As(setErr, &closedErr) {
+		t.Fatalf("Set: unexpected typed error %v, want an OS mkdir error", setErr)
+	}
+}
+
+// TestDelete_OSError verifies that Delete returns an OS error when os.Remove fails for
+// a reason other than the path not existing (e.g., attempting to remove a non-empty directory).
+func TestDelete_OSError(t *testing.T) {
+	base := t.TempDir()
+	eng, err := New(base)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = eng.Close() }()
+
+	// Place a non-empty directory where the engine would expect a regular file key.
+	// os.Remove on a non-empty directory returns ENOTEMPTY, which is not os.IsNotExist.
+	dirKey := filepath.Join(base, "nonemptydir")
+	if err := os.Mkdir(dirKey, 0o700); err != nil {
+		t.Fatalf("setup: Mkdir: %v", err)
+	}
+	childFile := filepath.Join(dirKey, "child")
+	if err := os.WriteFile(childFile, []byte("data"), 0o600); err != nil {
+		t.Fatalf("setup: WriteFile child: %v", err)
+	}
+
+	deleteErr := eng.Delete([]byte("nonemptydir"))
+	if deleteErr == nil {
+		t.Fatal("Delete: expected error when removing non-empty directory, got nil")
+	}
+	var closedErr *storage.ClosedError
+	if errors.Is(deleteErr, storage.ErrEmptyKey) || errors.As(deleteErr, &closedErr) {
+		t.Fatalf("Delete: unexpected typed error %v, want an OS remove error", deleteErr)
+	}
+}
+
+// TestList_WalkError verifies that List propagates an error when filepath.Walk
+// encounters a path it cannot traverse.
+func TestList_WalkError(t *testing.T) {
+	base := t.TempDir()
+	eng, err := New(base)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = eng.Close() }()
+
+	// Create a nested entry so the engine root has content.
+	if err := eng.Set([]byte("restricted/entry"), []byte("secret")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	// Remove the engine directory entirely so filepath.Walk fails on the
+	// root path with a "no such file or directory" error. This works
+	// regardless of whether we are running as root.
+	if err := os.RemoveAll(base); err != nil {
+		t.Fatalf("setup: RemoveAll: %v", err)
+	}
+	// Restore a directory so TempDir cleanup can succeed.
+	t.Cleanup(func() {
+		_ = os.MkdirAll(base, 0o700)
+	})
+
+	_, listErr := eng.List(nil)
+	if listErr == nil {
+		t.Fatal("List: expected error when engine directory is removed, got nil")
+	}
+}
+
+// TestExists_OSError verifies that Exists returns a non-nil error (not false) when
+// os.Stat fails for a reason other than the path not existing.
+func TestExists_OSError(t *testing.T) {
+	base := t.TempDir()
+	eng, err := New(base)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = eng.Close() }()
+
+	// Store a key inside a subdirectory.
+	if err := eng.Set([]byte("private/record"), []byte("value")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	// Replace the "private" subdirectory with a regular file. os.Stat on
+	// "private/record" will fail with ENOTDIR because "private" is now a
+	// file, not a directory. This error is not os.IsNotExist, so Exists
+	// must return it. Works regardless of whether we run as root.
+	subdir := filepath.Join(base, "private")
+	if err := os.RemoveAll(subdir); err != nil {
+		t.Fatalf("setup: RemoveAll: %v", err)
+	}
+	if err := os.WriteFile(subdir, []byte("blocker"), 0o600); err != nil {
+		t.Fatalf("setup: WriteFile: %v", err)
+	}
+
+	exists, existsErr := eng.Exists([]byte("private/record"))
+	if existsErr == nil {
+		t.Fatal("Exists: expected error when path component is not a directory, got nil")
+	}
+	if exists {
+		t.Fatal("Exists: got true alongside an error, want false")
+	}
+	var closedErr *storage.ClosedError
+	if errors.Is(existsErr, storage.ErrEmptyKey) || errors.As(existsErr, &closedErr) {
+		t.Fatalf("Exists: unexpected typed error %v, want an OS stat error", existsErr)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Batch tests
+// ---------------------------------------------------------------------------
+
+func TestFileEngine_BatchSetAndCommit(t *testing.T) {
+	dir := t.TempDir()
+	eng, err := New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = eng.Close() }()
+
+	batch := eng.Batch()
+	if err := batch.Set([]byte("b1"), []byte("v1")); err != nil {
+		t.Fatalf("batch Set: %v", err)
+	}
+	if err := batch.Set([]byte("b2"), []byte("v2")); err != nil {
+		t.Fatalf("batch Set: %v", err)
+	}
+
+	// Values should not be visible before commit.
+	got, getErr := eng.Get([]byte("b1"))
+	if getErr != nil {
+		t.Fatalf("Get before commit: %v", getErr)
+	}
+	if got != nil {
+		t.Fatalf("Get before commit: expected nil, got %q", got)
+	}
+
+	if err := batch.Commit(); err != nil {
+		t.Fatalf("batch Commit: %v", err)
+	}
+
+	got, getErr = eng.Get([]byte("b1"))
+	if getErr != nil {
+		t.Fatalf("Get after commit: %v", getErr)
+	}
+	if string(got) != "v1" {
+		t.Fatalf("Get after commit: got %q, want %q", got, "v1")
+	}
+}
+
+func TestFileEngine_BatchDeleteAndCommit(t *testing.T) {
+	dir := t.TempDir()
+	eng, err := New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = eng.Close() }()
+
+	if err := eng.Set([]byte("del1"), []byte("val")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	batch := eng.Batch()
+	if err := batch.Delete([]byte("del1")); err != nil {
+		t.Fatalf("batch Delete: %v", err)
+	}
+	if err := batch.Commit(); err != nil {
+		t.Fatalf("batch Commit: %v", err)
+	}
+
+	got, getErr := eng.Get([]byte("del1"))
+	if getErr != nil {
+		t.Fatalf("Get after batch delete: %v", getErr)
+	}
+	if got != nil {
+		t.Fatalf("Get after batch delete: expected nil, got %q", got)
+	}
+}
+
+func TestFileEngine_BatchRollback(t *testing.T) {
+	dir := t.TempDir()
+	eng, err := New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = eng.Close() }()
+
+	batch := eng.Batch()
+	if err := batch.Set([]byte("rb1"), []byte("v1")); err != nil {
+		t.Fatalf("batch Set: %v", err)
+	}
+	if err := batch.Rollback(); err != nil {
+		t.Fatalf("batch Rollback: %v", err)
+	}
+
+	got, getErr := eng.Get([]byte("rb1"))
+	if getErr != nil {
+		t.Fatalf("Get after rollback: %v", getErr)
+	}
+	if got != nil {
+		t.Fatalf("Get after rollback: expected nil, got %q", got)
+	}
+}
+
+func TestFileEngine_BatchClose(t *testing.T) {
+	dir := t.TempDir()
+	eng, err := New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = eng.Close() }()
+
+	batch := eng.Batch()
+	if err := batch.Set([]byte("c1"), []byte("v1")); err != nil {
+		t.Fatalf("batch Set: %v", err)
+	}
+	if err := batch.Close(); err != nil {
+		t.Fatalf("batch Close: %v", err)
+	}
+
+	// Double close should be a no-op.
+	if err := batch.Close(); err != nil {
+		t.Fatalf("batch double Close: %v", err)
+	}
+}
+
+func TestFileEngine_BatchEmptyKey(t *testing.T) {
+	dir := t.TempDir()
+	eng, err := New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = eng.Close() }()
+
+	batch := eng.Batch()
+	defer func() { _ = batch.Close() }()
+
+	if err := batch.Set(nil, []byte("v")); err == nil {
+		t.Fatal("batch Set nil key: expected error, got nil")
+	}
+	if err := batch.Delete(nil); err == nil {
+		t.Fatal("batch Delete nil key: expected error, got nil")
+	}
+}
+
+func TestFileEngine_BatchClosedOperations(t *testing.T) {
+	dir := t.TempDir()
+	eng, err := New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = eng.Close() }()
+
+	batch := eng.Batch()
+	if err := batch.Commit(); err != nil {
+		t.Fatalf("batch Commit: %v", err)
+	}
+
+	// All operations on a closed batch should return BatchError.
+	var batchErr *storage.BatchError
+	if err := batch.Set([]byte("k"), []byte("v")); !errors.As(err, &batchErr) {
+		t.Fatalf("Set on closed batch: got %v, want BatchError", err)
+	}
+	if err := batch.Delete([]byte("k")); !errors.As(err, &batchErr) {
+		t.Fatalf("Delete on closed batch: got %v, want BatchError", err)
+	}
+	if err := batch.Commit(); !errors.As(err, &batchErr) {
+		t.Fatalf("Commit on closed batch: got %v, want BatchError", err)
+	}
+	if err := batch.Rollback(); !errors.As(err, &batchErr) {
+		t.Fatalf("Rollback on closed batch: got %v, want BatchError", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Iterator tests
+// ---------------------------------------------------------------------------
+
+func TestFileEngine_IteratorForwardScan(t *testing.T) {
+	dir := t.TempDir()
+	eng, err := New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = eng.Close() }()
+
+	for _, k := range []string{"c", "a", "b"} {
+		if err := eng.Set([]byte(k), []byte(k+"v")); err != nil {
+			t.Fatalf("Set %q: %v", k, err)
+		}
+	}
+
+	it := eng.NewIterator(nil)
+	defer func() { _ = it.Close() }()
+
+	if !it.SeekToFirst() {
+		t.Fatal("SeekToFirst: expected true")
+	}
+	var keys []string
+	for it.Valid() {
+		keys = append(keys, string(it.Key()))
+		it.Next()
+	}
+	expected := []string{"a", "b", "c"}
+	if len(keys) != len(expected) {
+		t.Fatalf("iterator forward: got %v, want %v", keys, expected)
+	}
+	for i, k := range keys {
+		if k != expected[i] {
+			t.Fatalf("iterator forward[%d]: got %q, want %q", i, k, expected[i])
+		}
+	}
+}
+
+func TestFileEngine_IteratorReverse(t *testing.T) {
+	dir := t.TempDir()
+	eng, err := New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = eng.Close() }()
+
+	for _, k := range []string{"c", "a", "b"} {
+		if err := eng.Set([]byte(k), []byte(k+"v")); err != nil {
+			t.Fatalf("Set %q: %v", k, err)
+		}
+	}
+
+	it := eng.NewIterator(&storage.IteratorOptions{Reverse: true})
+	defer func() { _ = it.Close() }()
+
+	if !it.SeekToFirst() {
+		t.Fatal("SeekToFirst reverse: expected true")
+	}
+	var keys []string
+	for it.Valid() {
+		keys = append(keys, string(it.Key()))
+		it.Next()
+	}
+	expected := []string{"c", "b", "a"}
+	if len(keys) != len(expected) {
+		t.Fatalf("iterator reverse: got %v, want %v", keys, expected)
+	}
+	for i, k := range keys {
+		if k != expected[i] {
+			t.Fatalf("iterator reverse[%d]: got %q, want %q", i, k, expected[i])
+		}
+	}
+}
+
+func TestFileEngine_IteratorBounds(t *testing.T) {
+	dir := t.TempDir()
+	eng, err := New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = eng.Close() }()
+
+	for _, k := range []string{"a", "b", "c", "d", "e"} {
+		if err := eng.Set([]byte(k), []byte(k)); err != nil {
+			t.Fatalf("Set: %v", err)
+		}
+	}
+
+	it := eng.NewIterator(&storage.IteratorOptions{
+		LowerBound: []byte("b"),
+		UpperBound: []byte("d"),
+	})
+	defer func() { _ = it.Close() }()
+
+	if !it.SeekToFirst() {
+		t.Fatal("SeekToFirst bounded: expected true")
+	}
+	var keys []string
+	for it.Valid() {
+		keys = append(keys, string(it.Key()))
+		it.Next()
+	}
+	expected := []string{"b", "c"}
+	if len(keys) != len(expected) {
+		t.Fatalf("iterator bounded: got %v, want %v", keys, expected)
+	}
+	for i, k := range keys {
+		if k != expected[i] {
+			t.Fatalf("iterator bounded[%d]: got %q, want %q", i, k, expected[i])
+		}
+	}
+}
+
+func TestFileEngine_IteratorSeek(t *testing.T) {
+	dir := t.TempDir()
+	eng, err := New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = eng.Close() }()
+
+	for _, k := range []string{"a", "c", "e"} {
+		if err := eng.Set([]byte(k), []byte(k)); err != nil {
+			t.Fatalf("Set: %v", err)
+		}
+	}
+
+	it := eng.NewIterator(nil)
+	defer func() { _ = it.Close() }()
+
+	// Seek to "b" should land on "c".
+	if !it.Seek([]byte("b")) {
+		t.Fatal("Seek b: expected true")
+	}
+	if string(it.Key()) != "c" {
+		t.Fatalf("Seek b: got %q, want %q", it.Key(), "c")
+	}
+
+	// Seek past all entries should return false.
+	if it.Seek([]byte("z")) {
+		t.Fatal("Seek z: expected false")
+	}
+}
+
+func TestFileEngine_IteratorSeekToLast(t *testing.T) {
+	dir := t.TempDir()
+	eng, err := New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = eng.Close() }()
+
+	for _, k := range []string{"a", "b", "c"} {
+		if err := eng.Set([]byte(k), []byte(k)); err != nil {
+			t.Fatalf("Set: %v", err)
+		}
+	}
+
+	it := eng.NewIterator(nil)
+	defer func() { _ = it.Close() }()
+
+	if !it.SeekToLast() {
+		t.Fatal("SeekToLast: expected true")
+	}
+	if string(it.Key()) != "c" {
+		t.Fatalf("SeekToLast: got %q, want %q", it.Key(), "c")
+	}
+}
+
+func TestFileEngine_IteratorPrev(t *testing.T) {
+	dir := t.TempDir()
+	eng, err := New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = eng.Close() }()
+
+	for _, k := range []string{"a", "b", "c"} {
+		if err := eng.Set([]byte(k), []byte(k)); err != nil {
+			t.Fatalf("Set: %v", err)
+		}
+	}
+
+	it := eng.NewIterator(nil)
+	defer func() { _ = it.Close() }()
+
+	if !it.SeekToLast() {
+		t.Fatal("SeekToLast: expected true")
+	}
+	if string(it.Key()) != "c" {
+		t.Fatalf("SeekToLast key: got %q, want %q", it.Key(), "c")
+	}
+	if !it.Prev() {
+		t.Fatal("Prev from c: expected true")
+	}
+	if string(it.Key()) != "b" {
+		t.Fatalf("Prev key: got %q, want %q", it.Key(), "b")
+	}
+}
+
+func TestFileEngine_IteratorEmpty(t *testing.T) {
+	dir := t.TempDir()
+	eng, err := New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = eng.Close() }()
+
+	it := eng.NewIterator(nil)
+	defer func() { _ = it.Close() }()
+
+	if it.SeekToFirst() {
+		t.Fatal("SeekToFirst on empty: expected false")
+	}
+	if it.SeekToLast() {
+		t.Fatal("SeekToLast on empty: expected false")
+	}
+	if it.Valid() {
+		t.Fatal("Valid on empty: expected false")
+	}
+	if it.Key() != nil {
+		t.Fatal("Key on invalid: expected nil")
+	}
+	if it.Value() != nil {
+		t.Fatal("Value on invalid: expected nil")
+	}
+}
+
+func TestFileEngine_IteratorOnlyKeys(t *testing.T) {
+	dir := t.TempDir()
+	eng, err := New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = eng.Close() }()
+
+	if err := eng.Set([]byte("k1"), []byte("v1")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	it := eng.NewIterator(&storage.IteratorOptions{OnlyKeys: true})
+	defer func() { _ = it.Close() }()
+
+	if !it.SeekToFirst() {
+		t.Fatal("SeekToFirst: expected true")
+	}
+	if string(it.Key()) != "k1" {
+		t.Fatalf("Key: got %q, want %q", it.Key(), "k1")
+	}
+	// Value should be nil when OnlyKeys is set.
+	if it.Value() != nil {
+		t.Fatalf("Value with OnlyKeys: expected nil, got %q", it.Value())
+	}
+}
+
+func TestFileEngine_IteratorNextWithoutSeek(t *testing.T) {
+	dir := t.TempDir()
+	eng, err := New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = eng.Close() }()
+
+	if err := eng.Set([]byte("k1"), []byte("v1")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	it := eng.NewIterator(nil)
+	defer func() { _ = it.Close() }()
+
+	// Next/Prev without initialization should return false.
+	if it.Next() {
+		t.Fatal("Next without seek: expected false")
+	}
+	if it.Prev() {
+		t.Fatal("Prev without seek: expected false")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Snapshot tests
+// ---------------------------------------------------------------------------
+
+func TestFileEngine_SnapshotGet(t *testing.T) {
+	dir := t.TempDir()
+	eng, err := New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = eng.Close() }()
+
+	if err := eng.Set([]byte("sk1"), []byte("sv1")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	snap, err := eng.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	defer func() { _ = snap.Close() }()
+
+	got, err := snap.Get([]byte("sk1"))
+	if err != nil {
+		t.Fatalf("snapshot Get: %v", err)
+	}
+	if string(got) != "sv1" {
+		t.Fatalf("snapshot Get: got %q, want %q", got, "sv1")
+	}
+
+	// Snapshot should be isolated from subsequent mutations.
+	if err := eng.Set([]byte("sk1"), []byte("modified")); err != nil {
+		t.Fatalf("Set after snapshot: %v", err)
+	}
+	got, err = snap.Get([]byte("sk1"))
+	if err != nil {
+		t.Fatalf("snapshot Get after mutation: %v", err)
+	}
+	if string(got) != "sv1" {
+		t.Fatalf("snapshot Get after mutation: got %q, want %q (not isolated)", got, "sv1")
+	}
+}
+
+func TestFileEngine_SnapshotGetNotFound(t *testing.T) {
+	dir := t.TempDir()
+	eng, err := New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = eng.Close() }()
+
+	snap, err := eng.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	defer func() { _ = snap.Close() }()
+
+	got, getErr := snap.Get([]byte("nonexistent"))
+	if getErr != nil {
+		t.Fatalf("snapshot Get nonexistent: %v", getErr)
+	}
+	if got != nil {
+		t.Fatalf("snapshot Get nonexistent: expected nil, got %q", got)
+	}
+}
+
+func TestFileEngine_SnapshotGetEmptyKey(t *testing.T) {
+	dir := t.TempDir()
+	eng, err := New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = eng.Close() }()
+
+	snap, err := eng.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	defer func() { _ = snap.Close() }()
+
+	_, getErr := snap.Get(nil)
+	if getErr == nil {
+		t.Fatal("snapshot Get nil key: expected error, got nil")
+	}
+}
+
+func TestFileEngine_SnapshotIterator(t *testing.T) {
+	dir := t.TempDir()
+	eng, err := New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = eng.Close() }()
+
+	for _, k := range []string{"a", "b", "c"} {
+		if err := eng.Set([]byte(k), []byte(k+"v")); err != nil {
+			t.Fatalf("Set: %v", err)
+		}
+	}
+
+	snap, err := eng.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	defer func() { _ = snap.Close() }()
+
+	it := snap.NewIterator(nil)
+	defer func() { _ = it.Close() }()
+
+	if !it.SeekToFirst() {
+		t.Fatal("snapshot SeekToFirst: expected true")
+	}
+	var keys []string
+	for it.Valid() {
+		keys = append(keys, string(it.Key()))
+		it.Next()
+	}
+	expected := []string{"a", "b", "c"}
+	if len(keys) != len(expected) {
+		t.Fatalf("snapshot iterator: got %v, want %v", keys, expected)
+	}
+	for i, k := range keys {
+		if k != expected[i] {
+			t.Fatalf("snapshot iterator[%d]: got %q, want %q", i, k, expected[i])
+		}
+	}
+}
+
+func TestFileEngine_SnapshotClosed(t *testing.T) {
+	dir := t.TempDir()
+	eng, err := New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = eng.Close() }()
+
+	snap, err := eng.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+
+	if err := snap.Close(); err != nil {
+		t.Fatalf("snapshot Close: %v", err)
+	}
+
+	// Double close should be a no-op.
+	if err := snap.Close(); err != nil {
+		t.Fatalf("snapshot double Close: %v", err)
+	}
+
+	// Get on closed snapshot should return an error.
+	_, getErr := snap.Get([]byte("k"))
+	if getErr == nil {
+		t.Fatal("snapshot Get after close: expected error, got nil")
+	}
+
+	// Iterator on closed snapshot should be empty.
+	it := snap.NewIterator(nil)
+	if it.SeekToFirst() {
+		t.Fatal("snapshot iterator after close: expected SeekToFirst false")
+	}
+	_ = it.Close()
+}
+
+func TestFileEngine_SnapshotIteratorBounds(t *testing.T) {
+	dir := t.TempDir()
+	eng, err := New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = eng.Close() }()
+
+	for _, k := range []string{"a", "b", "c", "d"} {
+		if err := eng.Set([]byte(k), []byte(k)); err != nil {
+			t.Fatalf("Set: %v", err)
+		}
+	}
+
+	snap, err := eng.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	defer func() { _ = snap.Close() }()
+
+	it := snap.NewIterator(&storage.IteratorOptions{
+		LowerBound: []byte("b"),
+		UpperBound: []byte("d"),
+	})
+	defer func() { _ = it.Close() }()
+
+	if !it.SeekToFirst() {
+		t.Fatal("snapshot bounded SeekToFirst: expected true")
+	}
+	var keys []string
+	for it.Valid() {
+		keys = append(keys, string(it.Key()))
+		it.Next()
+	}
+	expected := []string{"b", "c"}
+	if len(keys) != len(expected) {
+		t.Fatalf("snapshot bounded iterator: got %v, want %v", keys, expected)
+	}
+}
+
+func TestFileEngine_SnapshotIteratorReverse(t *testing.T) {
+	dir := t.TempDir()
+	eng, err := New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = eng.Close() }()
+
+	for _, k := range []string{"a", "b", "c"} {
+		if err := eng.Set([]byte(k), []byte(k)); err != nil {
+			t.Fatalf("Set: %v", err)
+		}
+	}
+
+	snap, err := eng.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	defer func() { _ = snap.Close() }()
+
+	it := snap.NewIterator(&storage.IteratorOptions{Reverse: true})
+	defer func() { _ = it.Close() }()
+
+	if !it.SeekToFirst() {
+		t.Fatal("snapshot reverse SeekToFirst: expected true")
+	}
+	var keys []string
+	for it.Valid() {
+		keys = append(keys, string(it.Key()))
+		it.Next()
+	}
+	expected := []string{"c", "b", "a"}
+	if len(keys) != len(expected) {
+		t.Fatalf("snapshot reverse iterator: got %v, want %v", keys, expected)
 	}
 }

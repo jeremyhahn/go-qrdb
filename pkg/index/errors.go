@@ -14,8 +14,6 @@
 
 package index
 
-import "strconv"
-
 // ClosedError is returned when an operation is attempted on a closed index.
 type ClosedError struct {
 	Name string
@@ -54,19 +52,16 @@ func (e *NilFieldValueError) Error() string {
 
 // UniqueViolationError is returned when a unique index constraint is violated.
 type UniqueViolationError struct {
-	IndexName  string
-	FieldValue []byte
-	ExistingID uint64
-	NewID      uint64
+	IndexName   string
+	FieldValue  []byte
+	ExistingKey []byte
+	NewKey      []byte
 }
 
 // Error returns a human-readable description of the unique constraint violation.
 func (e *UniqueViolationError) Error() string {
-	return "index: unique violation on " + e.IndexName +
-		": field value already mapped to entity " +
-		strconv.FormatUint(e.ExistingID, 10) +
-		", cannot map to " +
-		strconv.FormatUint(e.NewID, 10)
+	return "index: unique constraint violation on " + e.IndexName +
+		": value " + string(e.FieldValue) + " already exists"
 }
 
 // KeyTooShortError is returned when an index key is too short to parse.
@@ -74,7 +69,7 @@ type KeyTooShortError struct{}
 
 // Error returns a human-readable description of the short key.
 func (e *KeyTooShortError) Error() string {
-	return "index: key too short to extract entity ID"
+	return "index: key too short to extract entity key"
 }
 
 // KeyPrefixMismatchError is returned when a key doesn't match the expected prefix.

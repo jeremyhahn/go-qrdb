@@ -19,7 +19,7 @@ import (
 func TestTenantBarrier_NewTenantBarrier_Success(t *testing.T) {
 	base := NewMemoryBackend()
 	config := BarrierConfig{RootKeyPath: ""}
-	strategy := NewSoftwareStrategy()
+	strategy := testSoftwareStrategy(t)
 
 	tb, err := NewTenantBarrier("tenant-1", testLogger(), base, config, strategy)
 	if err != nil {
@@ -43,7 +43,7 @@ func TestTenantBarrier_NewTenantBarrier_Success(t *testing.T) {
 func TestTenantBarrier_NewTenantBarrier_CustomRootKeyPath(t *testing.T) {
 	base := NewMemoryBackend()
 	config := BarrierConfig{RootKeyPath: "custom/path"}
-	strategy := NewSoftwareStrategy()
+	strategy := testSoftwareStrategy(t)
 
 	tb, err := NewTenantBarrier("tenant-1", testLogger(), base, config, strategy)
 	if err != nil {
@@ -57,14 +57,14 @@ func TestTenantBarrier_NewTenantBarrier_CustomRootKeyPath(t *testing.T) {
 
 func TestTenantBarrier_NewTenantBarrier_EmptyTenantID(t *testing.T) {
 	base := NewMemoryBackend()
-	_, err := NewTenantBarrier("", testLogger(), base, BarrierConfig{}, NewSoftwareStrategy())
+	_, err := NewTenantBarrier("", testLogger(), base, BarrierConfig{}, testSoftwareStrategy(t))
 	if err != ErrEmptyTenantID {
 		t.Errorf("expected ErrEmptyTenantID, got %v", err)
 	}
 }
 
 func TestTenantBarrier_NewTenantBarrier_NilBase(t *testing.T) {
-	_, err := NewTenantBarrier("tenant-1", testLogger(), nil, BarrierConfig{}, NewSoftwareStrategy())
+	_, err := NewTenantBarrier("tenant-1", testLogger(), nil, BarrierConfig{}, testSoftwareStrategy(t))
 	if err != ErrNilStorageBackend {
 		t.Errorf("expected ErrNilStorageBackend, got %v", err)
 	}
@@ -83,7 +83,7 @@ func TestTenantBarrier_NewTenantBarrier_NoStrategy(t *testing.T) {
 func TestTenantBarrier_Lifecycle_InitUnsealSeal(t *testing.T) {
 	base := NewMemoryBackend()
 	config := BarrierConfig{}
-	strategy := NewSoftwareStrategy()
+	strategy := testSoftwareStrategy(t)
 	ctx := context.Background()
 	creds := Credentials{Secret: "tenant-password"}
 
@@ -124,7 +124,7 @@ func TestTenantBarrier_Lifecycle_InitUnsealSeal(t *testing.T) {
 
 func TestTenantBarrier_Status(t *testing.T) {
 	base := NewMemoryBackend()
-	strategy := NewSoftwareStrategy()
+	strategy := testSoftwareStrategy(t)
 
 	tb, err := NewTenantBarrier("tenant-B", testLogger(), base, BarrierConfig{}, strategy)
 	if err != nil {
@@ -153,7 +153,7 @@ func TestTenantBarrier_Status(t *testing.T) {
 
 func TestTenantBarrier_DataRoundTrip(t *testing.T) {
 	base := NewMemoryBackend()
-	strategy := NewSoftwareStrategy()
+	strategy := testSoftwareStrategy(t)
 	ctx := context.Background()
 	creds := Credentials{Secret: "pw"}
 
@@ -167,11 +167,11 @@ func TestTenantBarrier_DataRoundTrip(t *testing.T) {
 	}
 
 	// Put and Get.
-	if err := tb.Put("key1", []byte("value1")); err != nil {
+	if err := tb.Put(ctx, "key1", []byte("value1")); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 
-	val, err := tb.Get("key1")
+	val, err := tb.Get(ctx, "key1")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestTenantBarrier_DataRoundTrip(t *testing.T) {
 	}
 
 	// Exists.
-	exists, err := tb.Exists("key1")
+	exists, err := tb.Exists(ctx, "key1")
 	if err != nil {
 		t.Fatalf("Exists: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestTenantBarrier_DataRoundTrip(t *testing.T) {
 	}
 
 	// List.
-	keys, err := tb.List("key")
+	keys, err := tb.List(ctx, "key")
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -198,11 +198,11 @@ func TestTenantBarrier_DataRoundTrip(t *testing.T) {
 	}
 
 	// Delete.
-	if err := tb.Delete("key1"); err != nil {
+	if err := tb.Delete(ctx, "key1"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 
-	exists, err = tb.Exists("key1")
+	exists, err = tb.Exists(ctx, "key1")
 	if err != nil {
 		t.Fatalf("Exists after delete: %v", err)
 	}
@@ -212,8 +212,9 @@ func TestTenantBarrier_DataRoundTrip(t *testing.T) {
 }
 
 func TestTenantBarrier_DataOperations_WhenSealed(t *testing.T) {
+	ctx := context.Background()
 	base := NewMemoryBackend()
-	strategy := NewSoftwareStrategy()
+	strategy := testSoftwareStrategy(t)
 
 	tb, err := NewTenantBarrier("tenant-D", testLogger(), base, BarrierConfig{}, strategy)
 	if err != nil {
@@ -221,26 +222,26 @@ func TestTenantBarrier_DataOperations_WhenSealed(t *testing.T) {
 	}
 
 	// All data ops should fail when sealed.
-	if _, err := tb.Get("key"); err != ErrSealed {
+	if _, err := tb.Get(ctx, "key"); err != ErrSealed {
 		t.Errorf("Get: expected ErrSealed, got %v", err)
 	}
-	if err := tb.Put("key", []byte("val")); err != ErrSealed {
+	if err := tb.Put(ctx, "key", []byte("val")); err != ErrSealed {
 		t.Errorf("Put: expected ErrSealed, got %v", err)
 	}
-	if err := tb.Delete("key"); err != ErrSealed {
+	if err := tb.Delete(ctx, "key"); err != ErrSealed {
 		t.Errorf("Delete: expected ErrSealed, got %v", err)
 	}
-	if _, err := tb.List(""); err != ErrSealed {
+	if _, err := tb.List(ctx, ""); err != ErrSealed {
 		t.Errorf("List: expected ErrSealed, got %v", err)
 	}
-	if _, err := tb.Exists("key"); err != ErrSealed {
+	if _, err := tb.Exists(ctx, "key"); err != ErrSealed {
 		t.Errorf("Exists: expected ErrSealed, got %v", err)
 	}
 }
 
 func TestTenantBarrier_Close(t *testing.T) {
 	base := NewMemoryBackend()
-	strategy := NewSoftwareStrategy()
+	strategy := testSoftwareStrategy(t)
 	ctx := context.Background()
 
 	tb, err := NewTenantBarrier("tenant-E", testLogger(), base, BarrierConfig{}, strategy)
@@ -265,7 +266,7 @@ func TestTenantBarrier_Close(t *testing.T) {
 
 func TestTenantBarrier_CrossTenantIsolation(t *testing.T) {
 	base := NewMemoryBackend()
-	strategy := NewSoftwareStrategy()
+	strategy := testSoftwareStrategy(t)
 	ctx := context.Background()
 	creds := Credentials{Secret: "pw"}
 
@@ -286,17 +287,17 @@ func TestTenantBarrier_CrossTenantIsolation(t *testing.T) {
 	}
 
 	// Tenant A stores data.
-	if err := tbA.Put("secret", []byte("A-data")); err != nil {
+	if err := tbA.Put(ctx, "secret", []byte("A-data")); err != nil {
 		t.Fatalf("Put(A): %v", err)
 	}
 
 	// Tenant B stores data with the same key.
-	if err := tbB.Put("secret", []byte("B-data")); err != nil {
+	if err := tbB.Put(ctx, "secret", []byte("B-data")); err != nil {
 		t.Fatalf("Put(B): %v", err)
 	}
 
 	// Each tenant should see only its own data.
-	valA, err := tbA.Get("secret")
+	valA, err := tbA.Get(ctx, "secret")
 	if err != nil {
 		t.Fatalf("Get(A): %v", err)
 	}
@@ -304,7 +305,7 @@ func TestTenantBarrier_CrossTenantIsolation(t *testing.T) {
 		t.Errorf("tenant A: expected A-data, got %s", string(valA))
 	}
 
-	valB, err := tbB.Get("secret")
+	valB, err := tbB.Get(ctx, "secret")
 	if err != nil {
 		t.Fatalf("Get(B): %v", err)
 	}
@@ -313,7 +314,7 @@ func TestTenantBarrier_CrossTenantIsolation(t *testing.T) {
 	}
 
 	// Tenant A listing should not show tenant B's keys.
-	keysA, err := tbA.List("secret")
+	keysA, err := tbA.List(ctx, "secret")
 	if err != nil {
 		t.Fatalf("List(A): %v", err)
 	}
@@ -325,15 +326,16 @@ func TestTenantBarrier_CrossTenantIsolation(t *testing.T) {
 // ---------- NamespacedBackend tests ----------
 
 func TestNamespacedBackend_PutGet(t *testing.T) {
+	ctx := context.Background()
 	base := NewMemoryBackend()
 	ns := NewNamespacedBackend("ns1/", base)
 
-	if err := ns.Put("key", []byte("val")); err != nil {
+	if err := ns.Put(ctx, "key", []byte("val")); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 
 	// Verify the key is stored with the prefix.
-	rawVal, err := base.Get("ns1/key")
+	rawVal, err := base.Get(ctx, "ns1/key")
 	if err != nil {
 		t.Fatalf("base.Get(ns1/key): %v", err)
 	}
@@ -342,7 +344,7 @@ func TestNamespacedBackend_PutGet(t *testing.T) {
 	}
 
 	// Get via namespace.
-	val, err := ns.Get("key")
+	val, err := ns.Get(ctx, "key")
 	if err != nil {
 		t.Fatalf("ns.Get(key): %v", err)
 	}
@@ -352,30 +354,32 @@ func TestNamespacedBackend_PutGet(t *testing.T) {
 }
 
 func TestNamespacedBackend_Get_NotFound(t *testing.T) {
+	ctx := context.Background()
 	base := NewMemoryBackend()
 	ns := NewNamespacedBackend("ns1/", base)
 
-	_, err := ns.Get("nonexistent")
+	_, err := ns.Get(ctx, "nonexistent")
 	if err != ErrSecretNotFound {
 		t.Errorf("expected ErrSecretNotFound, got %v", err)
 	}
 }
 
 func TestNamespacedBackend_List_StripPrefix(t *testing.T) {
+	ctx := context.Background()
 	base := NewMemoryBackend()
 	ns := NewNamespacedBackend("ns1/", base)
 
-	if err := ns.Put("data/a", []byte("1")); err != nil {
+	if err := ns.Put(ctx, "data/a", []byte("1")); err != nil {
 		t.Fatalf("Put(a): %v", err)
 	}
-	if err := ns.Put("data/b", []byte("2")); err != nil {
+	if err := ns.Put(ctx, "data/b", []byte("2")); err != nil {
 		t.Fatalf("Put(b): %v", err)
 	}
-	if err := ns.Put("other/c", []byte("3")); err != nil {
+	if err := ns.Put(ctx, "other/c", []byte("3")); err != nil {
 		t.Fatalf("Put(c): %v", err)
 	}
 
-	keys, err := ns.List("data/")
+	keys, err := ns.List(ctx, "data/")
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -385,37 +389,40 @@ func TestNamespacedBackend_List_StripPrefix(t *testing.T) {
 
 	// Keys should not have the namespace prefix.
 	for _, k := range keys {
-		if k != "data/a" && k != "data/b" {
+		ks := string(k)
+		if ks != "data/a" && ks != "data/b" {
 			t.Errorf("unexpected key: %s", k)
 		}
 	}
 }
 
 func TestNamespacedBackend_List_BaseError(t *testing.T) {
+	ctx := context.Background()
 	fb := newFailingBackend()
 	ns := NewNamespacedBackend("ns1/", fb)
 
 	fb.listErr = errors.New("list failed")
 
-	_, err := ns.List("")
+	_, err := ns.List(ctx, "")
 	if err == nil {
 		t.Fatal("expected error from base List failure")
 	}
 }
 
 func TestNamespacedBackend_Delete(t *testing.T) {
+	ctx := context.Background()
 	base := NewMemoryBackend()
 	ns := NewNamespacedBackend("ns1/", base)
 
-	if err := ns.Put("key", []byte("val")); err != nil {
+	if err := ns.Put(ctx, "key", []byte("val")); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 
-	if err := ns.Delete("key"); err != nil {
+	if err := ns.Delete(ctx, "key"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 
-	exists, err := ns.Exists("key")
+	exists, err := ns.Exists(ctx, "key")
 	if err != nil {
 		t.Fatalf("Exists: %v", err)
 	}
@@ -425,10 +432,11 @@ func TestNamespacedBackend_Delete(t *testing.T) {
 }
 
 func TestNamespacedBackend_Exists(t *testing.T) {
+	ctx := context.Background()
 	base := NewMemoryBackend()
 	ns := NewNamespacedBackend("ns1/", base)
 
-	exists, err := ns.Exists("nope")
+	exists, err := ns.Exists(ctx, "nope")
 	if err != nil {
 		t.Fatalf("Exists: %v", err)
 	}
@@ -436,11 +444,11 @@ func TestNamespacedBackend_Exists(t *testing.T) {
 		t.Error("expected false for non-existent key")
 	}
 
-	if err := ns.Put("yes", []byte("val")); err != nil {
+	if err := ns.Put(ctx, "yes", []byte("val")); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 
-	exists, err = ns.Exists("yes")
+	exists, err = ns.Exists(ctx, "yes")
 	if err != nil {
 		t.Fatalf("Exists: %v", err)
 	}
@@ -450,6 +458,7 @@ func TestNamespacedBackend_Exists(t *testing.T) {
 }
 
 func TestNamespacedBackend_Close_NoOp(t *testing.T) {
+	ctx := context.Background()
 	base := NewMemoryBackend()
 	ns := NewNamespacedBackend("ns1/", base)
 
@@ -458,24 +467,25 @@ func TestNamespacedBackend_Close_NoOp(t *testing.T) {
 	}
 
 	// Base should still be usable after namespace close.
-	if err := base.Put("test", []byte("data")); err != nil {
+	if err := base.Put(ctx, "test", []byte("data")); err != nil {
 		t.Errorf("base.Put after ns.Close: %v", err)
 	}
 }
 
 func TestNamespacedBackend_IsolationBetweenNamespaces(t *testing.T) {
+	ctx := context.Background()
 	base := NewMemoryBackend()
 	ns1 := NewNamespacedBackend("ns1/", base)
 	ns2 := NewNamespacedBackend("ns2/", base)
 
-	if err := ns1.Put("key", []byte("ns1-val")); err != nil {
+	if err := ns1.Put(ctx, "key", []byte("ns1-val")); err != nil {
 		t.Fatalf("ns1.Put: %v", err)
 	}
-	if err := ns2.Put("key", []byte("ns2-val")); err != nil {
+	if err := ns2.Put(ctx, "key", []byte("ns2-val")); err != nil {
 		t.Fatalf("ns2.Put: %v", err)
 	}
 
-	val1, err := ns1.Get("key")
+	val1, err := ns1.Get(ctx, "key")
 	if err != nil {
 		t.Fatalf("ns1.Get: %v", err)
 	}
@@ -483,7 +493,7 @@ func TestNamespacedBackend_IsolationBetweenNamespaces(t *testing.T) {
 		t.Errorf("ns1 expected ns1-val, got %s", string(val1))
 	}
 
-	val2, err := ns2.Get("key")
+	val2, err := ns2.Get(ctx, "key")
 	if err != nil {
 		t.Fatalf("ns2.Get: %v", err)
 	}

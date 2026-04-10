@@ -622,3 +622,284 @@ func TestTimeSeriesService_translateReadError_GenericError(t *testing.T) {
 		t.Fatalf("expected underlying sentinel, got %v", re.Unwrap())
 	}
 }
+
+// ---------------------------------------------------------------------------
+// WritePoint
+// ---------------------------------------------------------------------------
+
+func TestTimeSeriesService_WritePoint(t *testing.T) {
+	host := &mockHost{
+		syncProposeFn: func(_ context.Context, _ uint64, cmd []byte) (sm.Result, error) {
+			if cmd[0] != 62 { // OpTSWritePoint
+				t.Errorf("opcode = 0x%02x, want 0x3e", cmd[0])
+			}
+			return sm.Result{Value: 1}, nil
+		},
+	}
+	svc := NewTimeSeriesService(host, 1)
+	err := svc.WritePoint(context.Background(), &DataPoint{
+		Metric: "cpu.usage", Value: 42.5, Timestamp: time.Now(),
+		Tags: map[string]string{"host": "node1"},
+	})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+}
+
+func TestTimeSeriesService_WritePoint_ProposeError(t *testing.T) {
+	host := &mockHost{
+		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
+			return sm.Result{}, errors.New("raft down")
+		},
+	}
+	svc := NewTimeSeriesService(host, 1)
+	err := svc.WritePoint(context.Background(), &DataPoint{
+		Metric: "cpu", Value: 1.0, Timestamp: time.Now(),
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestTimeSeriesService_WritePoint_NotLeader(t *testing.T) {
+	host := &mockHost{
+		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
+			return sm.Result{}, &quicraft.NotLeaderError{}
+		},
+	}
+	svc := NewTimeSeriesService(host, 1)
+	err := svc.WritePoint(context.Background(), &DataPoint{
+		Metric: "cpu", Value: 1.0, Timestamp: time.Now(),
+	})
+	var nle *NotLeaderError
+	if !errors.As(err, &nle) {
+		t.Fatalf("expected *NotLeaderError, got %T", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// QueryRich
+// ---------------------------------------------------------------------------
+
+func TestTimeSeriesService_QueryRich(t *testing.T) {
+	expected := &QueryResult{Metric: "cpu.usage"}
+	host := &mockHost{
+		syncReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
+			return expected, nil
+		},
+	}
+	svc := NewTimeSeriesService(host, 1)
+	result, err := svc.QueryRich(context.Background(), &QueryRequest{
+		Metric: "cpu.usage", StartTime: time.Now().Add(-time.Hour), EndTime: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if result.Metric != "cpu.usage" {
+		t.Errorf("Metric = %q, want %q", result.Metric, "cpu.usage")
+	}
+}
+
+func TestTimeSeriesService_QueryRich_ReadError(t *testing.T) {
+	host := &mockHost{
+		syncReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
+			return nil, errors.New("read failed")
+		},
+	}
+	svc := NewTimeSeriesService(host, 1)
+	_, err := svc.QueryRich(context.Background(), &QueryRequest{Metric: "cpu"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestTimeSeriesService_QueryRich_UnexpectedType(t *testing.T) {
+	host := &mockHost{
+		syncReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
+			return "wrong type", nil
+		},
+	}
+	svc := NewTimeSeriesService(host, 1)
+	_, err := svc.QueryRich(context.Background(), &QueryRequest{Metric: "cpu"})
+	if err == nil {
+		t.Fatal("expected unexpectedResultTypeError")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DeleteSeries
+// ---------------------------------------------------------------------------
+
+func TestTimeSeriesService_DeleteSeries(t *testing.T) {
+	host := &mockHost{
+		syncProposeFn: func(_ context.Context, _ uint64, cmd []byte) (sm.Result, error) {
+			if cmd[0] != 63 { // OpTSDeleteSeries
+				t.Errorf("opcode = 0x%02x, want 0x3f", cmd[0])
+			}
+			return sm.Result{Value: 1}, nil
+		},
+	}
+	svc := NewTimeSeriesService(host, 1)
+	now := time.Now()
+	err := svc.DeleteSeries(context.Background(), &DeleteRequest{
+		Metric: "cpu", StartTime: now.Add(-time.Hour), EndTime: now,
+		Tags: map[string]string{"host": "node1"},
+	})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+}
+
+func TestTimeSeriesService_DeleteSeries_ZeroTimes(t *testing.T) {
+	host := &mockHost{
+		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
+			return sm.Result{Value: 1}, nil
+		},
+	}
+	svc := NewTimeSeriesService(host, 1)
+	err := svc.DeleteSeries(context.Background(), &DeleteRequest{Metric: "cpu"})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+}
+
+func TestTimeSeriesService_DeleteSeries_ProposeError(t *testing.T) {
+	host := &mockHost{
+		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
+			return sm.Result{}, errors.New("propose failed")
+		},
+	}
+	svc := NewTimeSeriesService(host, 1)
+	err := svc.DeleteSeries(context.Background(), &DeleteRequest{Metric: "cpu"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GetRetentionPolicy
+// ---------------------------------------------------------------------------
+
+func TestTimeSeriesService_GetRetentionPolicy(t *testing.T) {
+	expected := &RetentionPolicy{Duration: 24 * time.Hour}
+	host := &mockHost{
+		syncReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
+			return expected, nil
+		},
+	}
+	svc := NewTimeSeriesService(host, 1)
+	policy, err := svc.GetRetentionPolicy("cpu.usage")
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if policy.Duration != 24*time.Hour {
+		t.Errorf("Duration = %v, want 24h", policy.Duration)
+	}
+}
+
+func TestTimeSeriesService_GetRetentionPolicy_ReadError(t *testing.T) {
+	host := &mockHost{
+		syncReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
+			return nil, errors.New("read failed")
+		},
+	}
+	svc := NewTimeSeriesService(host, 1)
+	_, err := svc.GetRetentionPolicy("cpu")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestTimeSeriesService_GetRetentionPolicy_UnexpectedType(t *testing.T) {
+	host := &mockHost{
+		syncReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
+			return 42, nil
+		},
+	}
+	svc := NewTimeSeriesService(host, 1)
+	_, err := svc.GetRetentionPolicy("cpu")
+	if err == nil {
+		t.Fatal("expected unexpectedResultTypeError")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SetRetentionPolicy
+// ---------------------------------------------------------------------------
+
+func TestTimeSeriesService_SetRetentionPolicy(t *testing.T) {
+	host := &mockHost{
+		syncProposeFn: func(_ context.Context, _ uint64, cmd []byte) (sm.Result, error) {
+			if cmd[0] != 64 { // OpTSSetRetention
+				t.Errorf("opcode = 0x%02x, want 0x40", cmd[0])
+			}
+			return sm.Result{Value: 1}, nil
+		},
+	}
+	svc := NewTimeSeriesService(host, 1)
+	err := svc.SetRetentionPolicy("cpu.usage", &RetentionPolicy{
+		Duration: 7 * 24 * time.Hour, Resolution: time.Minute, Aggregation: 1,
+	})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+}
+
+func TestTimeSeriesService_SetRetentionPolicy_ProposeError(t *testing.T) {
+	host := &mockHost{
+		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
+			return sm.Result{}, errors.New("propose failed")
+		},
+	}
+	svc := NewTimeSeriesService(host, 1)
+	err := svc.SetRetentionPolicy("cpu", &RetentionPolicy{Duration: time.Hour})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ListMetrics
+// ---------------------------------------------------------------------------
+
+func TestTimeSeriesService_ListMetrics(t *testing.T) {
+	host := &mockHost{
+		syncReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
+			return []string{"cpu.usage", "mem.free", "disk.io"}, nil
+		},
+	}
+	svc := NewTimeSeriesService(host, 1)
+	metrics, err := svc.ListMetrics("cpu", 10)
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if len(metrics) != 3 {
+		t.Fatalf("expected 3 metrics, got %d", len(metrics))
+	}
+}
+
+func TestTimeSeriesService_ListMetrics_ReadError(t *testing.T) {
+	host := &mockHost{
+		syncReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
+			return nil, errors.New("read failed")
+		},
+	}
+	svc := NewTimeSeriesService(host, 1)
+	_, err := svc.ListMetrics("", 0)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestTimeSeriesService_ListMetrics_UnexpectedType(t *testing.T) {
+	host := &mockHost{
+		syncReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
+			return 123, nil
+		},
+	}
+	svc := NewTimeSeriesService(host, 1)
+	_, err := svc.ListMetrics("", 0)
+	if err == nil {
+		t.Fatal("expected unexpectedResultTypeError")
+	}
+}

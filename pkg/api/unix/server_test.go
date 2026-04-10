@@ -17,6 +17,7 @@ package unix
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -28,7 +29,21 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/index"
+	"github.com/jeremyhahn/go-qrdb/pkg/lease"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
+	"github.com/jeremyhahn/go-qrdb/pkg/watch"
+	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
 
 // ---------------------------------------------------------------------------
@@ -71,6 +86,74 @@ func (m *mockKVService) List(_ context.Context, prefix string) ([]string, error)
 	return keys, nil
 }
 
+func (m *mockKVService) Scan(_ context.Context, prefix string) (map[string][]byte, error) {
+	result := make(map[string][]byte)
+	for k, v := range m.store {
+		if prefix == "" || strings.HasPrefix(k, prefix) {
+			result[k] = v
+		}
+	}
+	return result, nil
+}
+
+func (m *mockKVService) PutEntity(_ context.Context, _ *service.PutEntityRequest) (*service.PutEntityResponse, error) {
+	return nil, nil
+}
+
+func (m *mockKVService) GetEntity(_ context.Context, _ *service.GetEntityRequest) (*service.GetEntityResponse, error) {
+	return nil, nil
+}
+
+func (m *mockKVService) DeleteEntity(_ context.Context, _ *service.DeleteEntityRequest) (*service.DeleteEntityResponse, error) {
+	return nil, nil
+}
+
+func (m *mockKVService) ListEntities(_ context.Context, _ *service.ListEntitiesRequest) (*service.ListEntitiesResponse, error) {
+	return nil, nil
+}
+
+func (m *mockKVService) GetStale(ctx context.Context, key string) ([]byte, error) {
+	return m.Get(ctx, key)
+}
+
+func (m *mockKVService) ListStale(ctx context.Context, prefix string) ([]string, error) {
+	return m.List(ctx, prefix)
+}
+
+func (m *mockKVService) ScanStale(ctx context.Context, prefix string) (map[string][]byte, error) {
+	return m.Scan(ctx, prefix)
+}
+
+func (m *mockKVService) PutWithMode(_ context.Context, key string, value []byte, _ writemode.Mode) error {
+	m.store[key] = value
+	return nil
+}
+
+func (m *mockKVService) DeleteWithMode(_ context.Context, key string, _ writemode.Mode) error {
+	delete(m.store, key)
+	return nil
+}
+
+func (m *mockKVService) GetWithConsistency(ctx context.Context, key string, _ consistency.ReadOptions) ([]byte, error) {
+	return m.Get(ctx, key)
+}
+
+func (m *mockKVService) ListWithConsistency(ctx context.Context, prefix string, _ consistency.ReadOptions) ([]string, error) {
+	return m.List(ctx, prefix)
+}
+
+func (m *mockKVService) ScanWithConsistency(ctx context.Context, prefix string, _ consistency.ReadOptions) (map[string][]byte, error) {
+	return m.Scan(ctx, prefix)
+}
+
+func (m *mockKVService) ExistsWithConsistency(ctx context.Context, key string, _ consistency.ReadOptions) (bool, error) {
+	_, err := m.Get(ctx, key)
+	if err != nil {
+		return false, nil
+	}
+	return true, nil
+}
+
 type mockAdminService struct{}
 
 func (m *mockAdminService) Health(_ context.Context) (*service.HealthStatus, error) {
@@ -111,6 +194,45 @@ func (m *mockAdminService) Drain(_ context.Context) error {
 	return nil
 }
 
+func (m *mockAdminService) Capabilities(_ context.Context) (*capabilities.Capabilities, error) {
+	return &capabilities.Capabilities{
+		KV:          true,
+		MVCC:        true,
+		Transaction: true,
+		Batch:       true,
+		Watch:       true,
+		Lease:       true,
+		Index:       true,
+	}, nil
+}
+
+func (m *mockAdminService) StartShard(_ context.Context, _ *service.StartShardRequest) error {
+	return nil
+}
+
+func (m *mockAdminService) StopShard(_ context.Context, _ uint64) error {
+	return nil
+}
+
+func (m *mockAdminService) GetShardState(_ context.Context, shardID uint64) (*service.ShardStateResponse, error) {
+	return &service.ShardStateResponse{
+		ShardID:           shardID,
+		ConfigChangeIndex: 0,
+		Term:              0,
+		LeaderID:          0,
+		HasLeader:         false,
+	}, nil
+}
+
+func (m *mockAdminService) GetTopology(_ context.Context) (*service.TopologyResponse, error) {
+	return &service.TopologyResponse{
+		NodeID:      "test-node",
+		RaftAddress: "127.0.0.1:63001",
+		ShardCount:  1,
+		Shards:      []service.TopologyShardInfo{},
+	}, nil
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -125,12 +247,9 @@ func tempSocketPath(t *testing.T) string {
 // dialUnix creates a gRPC client connection to the given Unix socket path.
 func dialUnix(t *testing.T, socketPath string) *grpc.ClientConn {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
 
-	conn, err := grpc.DialContext(ctx, "unix://"+socketPath,
+	conn, err := grpc.NewClient("unix://"+socketPath,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithBlock(),
 	)
 	if err != nil {
 		t.Fatalf("failed to dial unix socket %s: %v", socketPath, err)
@@ -549,8 +668,681 @@ func TestGRPC_Status(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// ServerOption coverage: WithUserService, WithRoleService, WithCertProvider
+// ---------------------------------------------------------------------------
+
+func TestWithUserService_Applied(t *testing.T) {
+	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
+		WithUserService(nil),
+	)
+	if srv.userSvc != nil {
+		t.Fatal("expected nil userSvc")
+	}
+}
+
+func TestWithRoleService_Applied(t *testing.T) {
+	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
+		WithRoleService(nil),
+	)
+	if srv.roleSvc != nil {
+		t.Fatal("expected nil roleSvc")
+	}
+}
+
+func TestWithCertProvider_Applied(t *testing.T) {
+	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
+		WithCertProvider(nil),
+	)
+	if srv.certProv != nil {
+		t.Fatal("expected nil certProv")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Start with optional services exercises the non-nil branches in Start()
+// ---------------------------------------------------------------------------
+
+// stubUserSvc satisfies user.UserServicer for option propagation tests.
+type stubUserSvc struct{}
+
+func (s *stubUserSvc) CreateUser(_ context.Context, _ *user.CreateUserRequest) (*user.User, error) {
+	return nil, nil
+}
+func (s *stubUserSvc) GetUser(_ context.Context, _ string) (*user.User, error) { return nil, nil }
+func (s *stubUserSvc) GetUserByUsername(_ context.Context, _, _ string) (*user.User, error) {
+	return nil, nil
+}
+func (s *stubUserSvc) UpdateUser(_ context.Context, _ *user.UpdateUserRequest) (*user.User, error) {
+	return nil, nil
+}
+func (s *stubUserSvc) DeleteUser(_ context.Context, _ string) error { return nil }
+func (s *stubUserSvc) ListUsers(_ context.Context, _ *user.ListUsersRequest) (*user.ListUsersResponse, error) {
+	return nil, nil
+}
+func (s *stubUserSvc) EnableUser(_ context.Context, _ string) error  { return nil }
+func (s *stubUserSvc) DisableUser(_ context.Context, _ string) error { return nil }
+
+// stubRoleSvc satisfies role.RoleServicer for option propagation tests.
+type stubRoleSvc struct{}
+
+func (s *stubRoleSvc) CreateRole(_ context.Context, _ *role.CreateRoleRequest) (*role.Role, error) {
+	return nil, nil
+}
+func (s *stubRoleSvc) GetRole(_ context.Context, _ string) (*role.Role, error) { return nil, nil }
+func (s *stubRoleSvc) GetRoleByName(_ context.Context, _, _ string) (*role.Role, error) {
+	return nil, nil
+}
+func (s *stubRoleSvc) UpdateRole(_ context.Context, _ *role.UpdateRoleRequest) (*role.Role, error) {
+	return nil, nil
+}
+func (s *stubRoleSvc) DeleteRole(_ context.Context, _ string) error { return nil }
+func (s *stubRoleSvc) ListRoles(_ context.Context, _ *role.ListRolesRequest) (*role.ListRolesResponse, error) {
+	return nil, nil
+}
+func (s *stubRoleSvc) ResolvePermissions(_ context.Context, _ []string) ([]permission.Permission, error) {
+	return nil, nil
+}
+
+// stubCertProv satisfies cert.CertProvider for option propagation tests.
+type stubCertProv struct{}
+
+func (s *stubCertProv) GenerateClientCert(_ context.Context, _ *cert.GenerateRequest) (*cert.CertBundle, error) {
+	return nil, nil
+}
+func (s *stubCertProv) ExportPKCS12(_ context.Context, _, _ []byte, _ string) ([]byte, error) {
+	return nil, nil
+}
+func (s *stubCertProv) RevokeCert(_ context.Context, _ string) error        { return nil }
+func (s *stubCertProv) IsRevoked(_ context.Context, _ string) (bool, error) { return false, nil }
+func (s *stubCertProv) ListCerts(_ context.Context, _ string) ([]*cert.CertRecord, error) {
+	return nil, nil
+}
+func (s *stubCertProv) CACertPEM() []byte { return nil }
+
+func TestStart_WithAllOptionalServices(t *testing.T) {
+	socketPath := tempSocketPath(t)
+	srv := NewServer(newMockKVService(), &mockAdminService{}, socketPath,
+		WithUserService(&stubUserSvc{}),
+		WithRoleService(&stubRoleSvc{}),
+		WithCertProvider(&stubCertProv{}),
+	)
+
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer srv.Stop()
+
+	if srv.Addr() == "" {
+		t.Fatal("expected non-empty Addr")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// recoveryInterceptor: panic recovery path
+// ---------------------------------------------------------------------------
+
+func TestRecoveryInterceptor_NoPanic(t *testing.T) {
+	handler := func(_ context.Context, _ any) (any, error) {
+		return "ok", nil
+	}
+	info := &grpc.UnaryServerInfo{FullMethod: "/test/Method"}
+
+	resp, err := recoveryInterceptor(context.Background(), nil, info, handler)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if resp != "ok" {
+		t.Fatalf("expected response %q, got %v", "ok", resp)
+	}
+}
+
+func TestRecoveryInterceptor_PanicRecovered(t *testing.T) {
+	handler := func(_ context.Context, _ any) (any, error) {
+		panic("test panic")
+	}
+	info := &grpc.UnaryServerInfo{FullMethod: "/test/Panicker"}
+
+	resp, err := recoveryInterceptor(context.Background(), nil, info, handler)
+	if err == nil {
+		t.Fatal("expected error from panic recovery")
+	}
+	if resp != nil {
+		t.Fatalf("expected nil response after panic, got %v", resp)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Stubs for remaining ServerOption interfaces
+// ---------------------------------------------------------------------------
+
+// stubBarrierSvc satisfies service.BarrierServicer for option propagation tests.
+type stubBarrierSvc struct{}
+
+func (s *stubBarrierSvc) BarrierInitialize(_ context.Context, _ string) error { return nil }
+func (s *stubBarrierSvc) BarrierUnseal(_ context.Context, _ string) error     { return nil }
+func (s *stubBarrierSvc) BarrierSeal(_ context.Context) error                 { return nil }
+func (s *stubBarrierSvc) BarrierStatus(_ context.Context) (*service.BarrierStatusInfo, error) {
+	return nil, nil
+}
+func (s *stubBarrierSvc) BarrierInitializeShamir(_ context.Context, _ string, _, _ int) (*service.ShamirInitInfo, error) {
+	return nil, nil
+}
+func (s *stubBarrierSvc) BarrierUnsealWithShare(_ context.Context, _ string) (*service.UnsealShareProgress, error) {
+	return nil, nil
+}
+func (s *stubBarrierSvc) BarrierUnsealWithShares(_ context.Context, _ []string) error { return nil }
+func (s *stubBarrierSvc) BarrierShamirListShares(_ context.Context) (*service.ShamirSharesInfo, error) {
+	return nil, nil
+}
+func (s *stubBarrierSvc) BarrierShamirDeleteShare(_ context.Context, _ int) error { return nil }
+func (s *stubBarrierSvc) BarrierShamirDeleteAllShares(_ context.Context) error    { return nil }
+func (s *stubBarrierSvc) BarrierShamirVerify(_ context.Context) error             { return nil }
+func (s *stubBarrierSvc) BarrierRekey(_ context.Context, _, _ int) (*service.ShamirInitInfo, error) {
+	return nil, nil
+}
+func (s *stubBarrierSvc) BarrierGenerateRecoveryKeys(_ context.Context, _, _ int) (*service.RecoveryKeysInfo, error) {
+	return nil, nil
+}
+func (s *stubBarrierSvc) BarrierRecoverWithKeys(_ context.Context, _ []string) error { return nil }
+func (s *stubBarrierSvc) BarrierDeleteRecoveryKeys(_ context.Context) error          { return nil }
+func (s *stubBarrierSvc) BarrierHasRecoveryKeys(_ context.Context) (bool, error)     { return false, nil }
+func (s *stubBarrierSvc) BarrierGenerateRootToken(_ context.Context, _ []string) (*service.RootTokenInfo, error) {
+	return nil, nil
+}
+
+// stubCeremonySvc satisfies service.CeremonyServicer for option propagation tests.
+type stubCeremonySvc struct{}
+
+func (s *stubCeremonySvc) CeremonyInitialize(_ context.Context, _ ceremony.CeremonyCA) (*service.CeremonyInitResult, error) {
+	return nil, nil
+}
+func (s *stubCeremonySvc) CeremonyBeginClaimCert(_ context.Context, _ string) (*service.CeremonyChallenge, error) {
+	return nil, nil
+}
+func (s *stubCeremonySvc) CeremonyCompleteClaimCert(_ context.Context, _, _ string, _ []byte) (*service.CeremonyClaimCertResult, error) {
+	return nil, nil
+}
+func (s *stubCeremonySvc) CeremonyClaimShare(_ context.Context, _ string) ([]byte, error) {
+	return nil, nil
+}
+func (s *stubCeremonySvc) CeremonySignCSR(_ context.Context, _, _, _, _ string) (*service.CeremonySignCSRResult, error) {
+	return nil, nil
+}
+func (s *stubCeremonySvc) CeremonyStatus(_ context.Context) (*service.CeremonyStatusInfo, error) {
+	return nil, nil
+}
+
+// stubCredentialSvc satisfies service.CredentialServicer for option propagation tests.
+type stubCredentialSvc struct{}
+
+func (s *stubCredentialSvc) CredentialStore(_ context.Context, _ string, _ []byte) error {
+	return nil
+}
+func (s *stubCredentialSvc) CredentialRetrieve(_ context.Context, _ string) ([]byte, error) {
+	return nil, nil
+}
+func (s *stubCredentialSvc) CredentialSubmit(_ context.Context, _ string, _ []byte) error {
+	return nil
+}
+func (s *stubCredentialSvc) CredentialDelete(_ context.Context, _ string) error { return nil }
+func (s *stubCredentialSvc) CredentialStrategy() string                         { return "stub" }
+
+// stubCollectionSvc satisfies service.CollectionServicer for option propagation tests.
+type stubCollectionSvc struct{}
+
+func (s *stubCollectionSvc) CreateCollection(_ context.Context, _ *service.CreateCollectionRequest) (*service.CollectionInfo, error) {
+	return nil, nil
+}
+func (s *stubCollectionSvc) DropCollection(_ context.Context, _ *service.DropCollectionRequest) error {
+	return nil
+}
+func (s *stubCollectionSvc) ListCollections(_ context.Context, _ *service.ListCollectionsRequest) (*service.ListCollectionsResponse, error) {
+	return nil, nil
+}
+func (s *stubCollectionSvc) GetCollectionInfo(_ context.Context, _, _ string) (*service.CollectionInfo, error) {
+	return nil, nil
+}
+func (s *stubCollectionSvc) InsertDocument(_ context.Context, _ *service.InsertDocumentRequest) (*service.InsertDocumentResponse, error) {
+	return nil, nil
+}
+func (s *stubCollectionSvc) GetDocument(_ context.Context, _ *service.GetDocumentRequest) (*service.GetDocumentResponse, error) {
+	return nil, nil
+}
+func (s *stubCollectionSvc) UpdateDocument(_ context.Context, _ *service.UpdateDocumentRequest) (*service.UpdateDocumentResponse, error) {
+	return nil, nil
+}
+func (s *stubCollectionSvc) DeleteDocument(_ context.Context, _ *service.DeleteDocumentRequest) (*service.DeleteDocumentResponse, error) {
+	return nil, nil
+}
+func (s *stubCollectionSvc) ListDocuments(_ context.Context, _ *service.ListDocumentsRequest) (*service.ListDocumentsResponse, error) {
+	return nil, nil
+}
+
+// stubTransactionSvc satisfies service.TransactionServicer for option propagation tests.
+type stubTransactionSvc struct{}
+
+func (s *stubTransactionSvc) Execute(_ context.Context, _ []service.Compare, _, _ []service.Op) (*service.TransactionResponse, error) {
+	return nil, nil
+}
+func (s *stubTransactionSvc) ExecuteWithMode(_ context.Context, _ []service.Compare, _, _ []service.Op, _ writemode.Mode) (*service.TransactionResponse, error) {
+	return nil, nil
+}
+func (s *stubTransactionSvc) ExecuteEntity(_ context.Context, _ *service.TransactionEntityRequest) (*service.TransactionEntityResponse, error) {
+	return nil, nil
+}
+
+// stubBatchSvc satisfies service.BatchServicer for option propagation tests.
+type stubBatchSvc struct{}
+
+func (s *stubBatchSvc) Execute(_ context.Context, _ []service.Op) ([]service.OpResponse, error) {
+	return nil, nil
+}
+func (s *stubBatchSvc) ExecuteWithMode(_ context.Context, _ []service.Op, _ writemode.Mode) ([]service.OpResponse, error) {
+	return nil, nil
+}
+func (s *stubBatchSvc) ExecuteEntity(_ context.Context, _ *service.BatchEntityRequest) (*service.BatchEntityResponse, error) {
+	return nil, nil
+}
+func (s *stubBatchSvc) Import(_ context.Context, _ io.Reader, _ service.ImportOptions) (*service.ImportResult, error) {
+	return nil, nil
+}
+
+// stubWatchSvc satisfies service.WatchServicer for option propagation tests.
+type stubWatchSvc struct{}
+
+func (s *stubWatchSvc) Watch(_ context.Context, _ string, _ ...watch.WatchOption) (watch.Watcher, error) {
+	return nil, nil
+}
+func (s *stubWatchSvc) WatchPrefix(_ context.Context, _ string, _ ...watch.WatchOption) (watch.Watcher, error) {
+	return nil, nil
+}
+func (s *stubWatchSvc) WatchEntity(_ context.Context, _ *service.WatchEntityRequest) (<-chan service.WatchEntityEvent, error) {
+	return nil, nil
+}
+func (s *stubWatchSvc) WatchEntityType(_ context.Context, _ *service.WatchEntityTypeRequest) (<-chan service.WatchEntityEvent, error) {
+	return nil, nil
+}
+
+// stubLeaseSvc satisfies lease.LeaseServicer for option propagation tests.
+type stubLeaseSvc struct{}
+
+func (s *stubLeaseSvc) Grant(_ context.Context, _ int64) (*lease.Lease, error)     { return nil, nil }
+func (s *stubLeaseSvc) Revoke(_ context.Context, _ int64) error                    { return nil }
+func (s *stubLeaseSvc) KeepAlive(_ context.Context, _ int64) (*lease.Lease, error) { return nil, nil }
+func (s *stubLeaseSvc) TimeToLive(_ context.Context, _ int64) (*lease.Lease, error) {
+	return nil, nil
+}
+func (s *stubLeaseSvc) Leases(_ context.Context) ([]*lease.Lease, error) { return nil, nil }
+
+// stubIndexSvc satisfies index.IndexServicer for option propagation tests.
+type stubIndexSvc struct{}
+
+func (s *stubIndexSvc) CreateIndex(_ context.Context, _, _ string, _ index.IndexConfig) error {
+	return nil
+}
+func (s *stubIndexSvc) DropIndex(_ context.Context, _ string) error { return nil }
+func (s *stubIndexSvc) Query(_ context.Context, _ string, _ []byte) ([][]byte, error) {
+	return nil, nil
+}
+func (s *stubIndexSvc) Scan(_ context.Context, _ string, _, _ []byte) (map[string][][]byte, error) {
+	return nil, nil
+}
+func (s *stubIndexSvc) ListIndexes(_ context.Context) ([]string, error) { return nil, nil }
+
+// stubTimeSeriesSvc satisfies timeseries.TimeSeriesServicer for option propagation tests.
+type stubTimeSeriesSvc struct{}
+
+func (s *stubTimeSeriesSvc) Write(_ context.Context, _ string, _ float64, _ time.Time, _ map[string]string) error {
+	return nil
+}
+func (s *stubTimeSeriesSvc) WriteBatch(_ context.Context, _ []timeseries.DataPoint) error {
+	return nil
+}
+func (s *stubTimeSeriesSvc) Query(_ context.Context, _ string, _, _ time.Time, _ ...timeseries.TSQueryOption) ([]timeseries.DataPoint, error) {
+	return nil, nil
+}
+func (s *stubTimeSeriesSvc) Aggregate(_ context.Context, _ string, _, _ time.Time, _ timeseries.AggFunc, _ time.Duration) ([]timeseries.AggResult, error) {
+	return nil, nil
+}
+func (s *stubTimeSeriesSvc) WritePoint(_ context.Context, _ *timeseries.DataPoint) error { return nil }
+func (s *stubTimeSeriesSvc) QueryRich(_ context.Context, _ *timeseries.QueryRequest) (*timeseries.QueryResult, error) {
+	return nil, nil
+}
+func (s *stubTimeSeriesSvc) DeleteSeries(_ context.Context, _ *timeseries.DeleteRequest) error {
+	return nil
+}
+func (s *stubTimeSeriesSvc) GetRetentionPolicy(_ string) (*timeseries.RetentionPolicy, error) {
+	return nil, nil
+}
+func (s *stubTimeSeriesSvc) SetRetentionPolicy(_ string, _ *timeseries.RetentionPolicy) error {
+	return nil
+}
+func (s *stubTimeSeriesSvc) ListMetrics(_ string, _ int) ([]string, error) { return nil, nil }
+
+// stubDatabaseSvc satisfies service.DatabaseServicer for option propagation tests.
+type stubDatabaseSvc struct{}
+
+func (s *stubDatabaseSvc) Create(_ database.DatabaseConfig) (*database.DatabaseInfo, error) {
+	return nil, nil
+}
+func (s *stubDatabaseSvc) Get(_ string) (*database.DatabaseInfo, error) { return nil, nil }
+func (s *stubDatabaseSvc) List() ([]database.DatabaseInfo, error)       { return nil, nil }
+func (s *stubDatabaseSvc) Drop(_ string) error                          { return nil }
+func (s *stubDatabaseSvc) UpdateProtocol(_ string, _ database.ProtocolConfig) (*database.DatabaseInfo, error) {
+	return nil, nil
+}
+func (s *stubDatabaseSvc) UpdateEtcd(_ string, _ *database.EtcdConfig) (*database.DatabaseInfo, error) {
+	return nil, nil
+}
+func (s *stubDatabaseSvc) UpdateRaft(_ string, _ *database.DatabaseRaftConfig) (*database.DatabaseInfo, error) {
+	return nil, nil
+}
+func (s *stubDatabaseSvc) UpdateBarrier(_ string, _ *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
+	return nil, nil
+}
+func (s *stubDatabaseSvc) UpdateConnection(_ string, _ *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
+	return nil, nil
+}
+func (s *stubDatabaseSvc) SealDatabase(_ context.Context, _ string) error { return nil }
+func (s *stubDatabaseSvc) UnsealDatabase(_ context.Context, _ string, _ seal.Credentials) error {
+	return nil
+}
+func (s *stubDatabaseSvc) DatabaseBarrierStatus(_ string) (*seal.BarrierStatus, error) {
+	return nil, nil
+}
+func (s *stubDatabaseSvc) CreateForTenant(_ context.Context, _ database.DatabaseConfig) (*database.DatabaseInfo, error) {
+	return nil, nil
+}
+func (s *stubDatabaseSvc) GetForTenant(_ context.Context, _ string) (*database.DatabaseInfo, error) {
+	return nil, nil
+}
+func (s *stubDatabaseSvc) ListForTenant(_ context.Context) ([]database.DatabaseInfo, error) {
+	return nil, nil
+}
+func (s *stubDatabaseSvc) DropForTenant(_ context.Context, _ string) error { return nil }
+func (s *stubDatabaseSvc) UpdateProtocolForTenant(_ context.Context, _ string, _ database.ProtocolConfig) (*database.DatabaseInfo, error) {
+	return nil, nil
+}
+func (s *stubDatabaseSvc) UpdateEtcdForTenant(_ context.Context, _ string, _ *database.EtcdConfig) (*database.DatabaseInfo, error) {
+	return nil, nil
+}
+func (s *stubDatabaseSvc) UpdateRaftForTenant(_ context.Context, _ string, _ *database.DatabaseRaftConfig) (*database.DatabaseInfo, error) {
+	return nil, nil
+}
+func (s *stubDatabaseSvc) UpdateBarrierForTenant(_ context.Context, _ string, _ *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
+	return nil, nil
+}
+func (s *stubDatabaseSvc) UpdateConnectionForTenant(_ context.Context, _ string, _ *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
+	return nil, nil
+}
+
+// ---------------------------------------------------------------------------
+// ServerOption tests: With* option functions that were previously uncovered
+// ---------------------------------------------------------------------------
+
+func TestWithBarrierService_Applied(t *testing.T) {
+	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
+		WithBarrierService(nil),
+	)
+	if srv.barrierSvc != nil {
+		t.Fatal("expected nil barrierSvc")
+	}
+}
+
+func TestWithCeremonyService_Applied(t *testing.T) {
+	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
+		WithCeremonyService(nil),
+	)
+	if srv.ceremonySvc != nil {
+		t.Fatal("expected nil ceremonySvc")
+	}
+}
+
+func TestWithCredentialService_Applied(t *testing.T) {
+	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
+		WithCredentialService(nil),
+	)
+	if srv.credentialSvc != nil {
+		t.Fatal("expected nil credentialSvc")
+	}
+}
+
+func TestWithCollectionService_Applied(t *testing.T) {
+	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
+		WithCollectionService(nil),
+	)
+	if srv.collectionSvc != nil {
+		t.Fatal("expected nil collectionSvc")
+	}
+}
+
+func TestWithMVCC_Applied(t *testing.T) {
+	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
+		WithMVCC(nil),
+	)
+	if srv.mvccSvc != nil {
+		t.Fatal("expected nil mvccSvc")
+	}
+}
+
+func TestWithTransaction_Applied(t *testing.T) {
+	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
+		WithTransaction(nil),
+	)
+	if srv.txSvc != nil {
+		t.Fatal("expected nil txSvc")
+	}
+}
+
+func TestWithBatch_Applied(t *testing.T) {
+	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
+		WithBatch(nil),
+	)
+	if srv.batchSvc != nil {
+		t.Fatal("expected nil batchSvc")
+	}
+}
+
+func TestWithWatch_Applied(t *testing.T) {
+	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
+		WithWatch(nil),
+	)
+	if srv.watchSvc != nil {
+		t.Fatal("expected nil watchSvc")
+	}
+}
+
+func TestWithLease_Applied(t *testing.T) {
+	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
+		WithLease(nil),
+	)
+	if srv.leaseSvc != nil {
+		t.Fatal("expected nil leaseSvc")
+	}
+}
+
+func TestWithIndex_Applied(t *testing.T) {
+	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
+		WithIndex(nil),
+	)
+	if srv.indexSvc != nil {
+		t.Fatal("expected nil indexSvc")
+	}
+}
+
+func TestWithTimeSeries_Applied(t *testing.T) {
+	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
+		WithTimeSeries(nil),
+	)
+	if srv.tsSvc != nil {
+		t.Fatal("expected nil tsSvc")
+	}
+}
+
+func TestWithVector_Applied(t *testing.T) {
+	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
+		WithVector(nil),
+	)
+	if srv.vectorSvc != nil {
+		t.Fatal("expected nil vectorSvc")
+	}
+}
+
+func TestWithDatabaseService_Applied(t *testing.T) {
+	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
+		WithDatabaseService(nil),
+	)
+	if srv.databaseSvc != nil {
+		t.Fatal("expected nil databaseSvc")
+	}
+}
+
+// stubMVCCSvc satisfies service.MVCCKVServicer (extends KVServicer) for option propagation tests.
+type stubMVCCSvc struct {
+	mockKVService
+}
+
+func (s *stubMVCCSvc) PutWithLease(_ context.Context, _ string, _ []byte, _ int64) (*service.KeyValue, error) {
+	return nil, nil
+}
+func (s *stubMVCCSvc) PutWithLeaseAndMode(_ context.Context, _ string, _ []byte, _ int64, _ writemode.Mode) (*service.KeyValue, error) {
+	return nil, nil
+}
+func (s *stubMVCCSvc) GetRevision(_ context.Context, _ string) (*service.KeyValue, error) {
+	return nil, nil
+}
+func (s *stubMVCCSvc) GetRevisionWithConsistency(_ context.Context, _ string, _ consistency.ReadOptions) (*service.KeyValue, error) {
+	return nil, nil
+}
+func (s *stubMVCCSvc) GetAtRevision(_ context.Context, _ string, _ int64) (*service.KeyValue, error) {
+	return nil, nil
+}
+func (s *stubMVCCSvc) GetAtRevisionWithConsistency(_ context.Context, _ string, _ int64, _ consistency.ReadOptions) (*service.KeyValue, error) {
+	return nil, nil
+}
+func (s *stubMVCCSvc) Range(_ context.Context, _, _ []byte, _ ...service.RangeOption) ([]*service.KeyValue, int64, error) {
+	return nil, 0, nil
+}
+func (s *stubMVCCSvc) RangeWithConsistency(_ context.Context, _, _ []byte, _ consistency.ReadOptions, _ ...service.RangeOption) ([]*service.KeyValue, int64, error) {
+	return nil, 0, nil
+}
+func (s *stubMVCCSvc) Compact(_ context.Context, _ int64) error         { return nil }
+func (s *stubMVCCSvc) CurrentRevision(_ context.Context) (int64, error) { return 0, nil }
+
+// stubVectorSvc satisfies service.VectorServicer for option propagation tests.
+type stubVectorSvc struct{}
+
+func (s *stubVectorSvc) CreateNamespace(_ context.Context, _ *service.CreateNamespaceRequest) (*service.CreateNamespaceResponse, error) {
+	return nil, nil
+}
+func (s *stubVectorSvc) DeleteNamespace(_ context.Context, _ *service.DeleteNamespaceRequest) (*service.DeleteNamespaceResponse, error) {
+	return nil, nil
+}
+func (s *stubVectorSvc) ListNamespaces(_ context.Context, _ *service.ListNamespacesRequest) (*service.ListNamespacesResponse, error) {
+	return nil, nil
+}
+func (s *stubVectorSvc) GetNamespaceInfo(_ context.Context, _ *service.GetNamespaceInfoRequest) (*service.GetNamespaceInfoResponse, error) {
+	return nil, nil
+}
+func (s *stubVectorSvc) UpsertVector(_ context.Context, _ *service.UpsertVectorRequest) (*service.UpsertVectorResponse, error) {
+	return nil, nil
+}
+func (s *stubVectorSvc) GetVector(_ context.Context, _ *service.GetVectorRequest) (*service.GetVectorResponse, error) {
+	return nil, nil
+}
+func (s *stubVectorSvc) DeleteVector(_ context.Context, _ *service.DeleteVectorRequest) (*service.DeleteVectorResponse, error) {
+	return nil, nil
+}
+func (s *stubVectorSvc) BatchUpsert(_ context.Context, _ *service.BatchUpsertRequest) (*service.BatchUpsertResponse, error) {
+	return nil, nil
+}
+func (s *stubVectorSvc) BatchDeleteVectors(_ context.Context, _ *service.BatchDeleteVectorsRequest) (*service.BatchDeleteVectorsResponse, error) {
+	return nil, nil
+}
+func (s *stubVectorSvc) ListVectors(_ context.Context, _ *service.ListVectorsRequest) (*service.ListVectorsResponse, error) {
+	return nil, nil
+}
+func (s *stubVectorSvc) UpdateMetadata(_ context.Context, _ *service.UpdateVectorMetadataRequest) (*service.UpdateVectorMetadataResponse, error) {
+	return nil, nil
+}
+func (s *stubVectorSvc) SearchSimilar(_ context.Context, _ *service.SearchSimilarRequest) (*service.SearchSimilarResponse, error) {
+	return nil, nil
+}
+func (s *stubVectorSvc) SearchByMetadata(_ context.Context, _ *service.SearchByMetadataRequest) (*service.SearchByMetadataResponse, error) {
+	return nil, nil
+}
+func (s *stubVectorSvc) HybridSearch(_ context.Context, _ *service.HybridSearchRequest) (*service.HybridSearchResponse, error) {
+	return nil, nil
+}
+func (s *stubVectorSvc) SearchByID(_ context.Context, _ *service.SearchByIDRequest) (*service.SearchByIDResponse, error) {
+	return nil, nil
+}
+func (s *stubVectorSvc) RebuildIndex(_ context.Context, _ *service.RebuildIndexRequest) (*service.RebuildIndexResponse, error) {
+	return nil, nil
+}
+func (s *stubVectorSvc) GetRebuildProgress(_ context.Context, _ *service.GetRebuildProgressRequest) (*service.GetRebuildProgressResponse, error) {
+	return nil, nil
+}
+func (s *stubVectorSvc) GetIndexStats(_ context.Context, _ *service.GetIndexStatsRequest) (*service.GetIndexStatsResponse, error) {
+	return nil, nil
+}
+func (s *stubVectorSvc) CompactNamespace(_ context.Context, _ *service.CompactNamespaceRequest) (*service.CompactNamespaceResponse, error) {
+	return nil, nil
+}
+func (s *stubVectorSvc) GetCompactionProgress(_ context.Context, _ *service.GetCompactionProgressRequest) (*service.GetCompactionProgressResponse, error) {
+	return nil, nil
+}
+
+// TestStart_WithNonNilOptionalServices exercises all non-nil conditional
+// branches inside Start() that build the grpcpkg.RegisterOption slice.
+func TestStart_WithNonNilOptionalServices(t *testing.T) {
+	socketPath := tempSocketPath(t)
+	srv := NewServer(newMockKVService(), &mockAdminService{}, socketPath,
+		WithBarrierService(&stubBarrierSvc{}),
+		WithCeremonyService(&stubCeremonySvc{}),
+		WithCredentialService(&stubCredentialSvc{}),
+		WithCollectionService(&stubCollectionSvc{}),
+		WithMVCC(&stubMVCCSvc{mockKVService: mockKVService{store: make(map[string][]byte)}}),
+		WithTransaction(&stubTransactionSvc{}),
+		WithBatch(&stubBatchSvc{}),
+		WithWatch(&stubWatchSvc{}),
+		WithLease(&stubLeaseSvc{}),
+		WithIndex(&stubIndexSvc{}),
+		WithTimeSeries(&stubTimeSeriesSvc{}),
+		WithVector(&stubVectorSvc{}),
+		WithDatabaseService(&stubDatabaseSvc{}),
+	)
+
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start with full optional services failed: %v", err)
+	}
+	defer srv.Stop()
+
+	addr := srv.Addr()
+	if addr == "" {
+		t.Fatal("expected non-empty Addr after Start")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Interface compliance
 // ---------------------------------------------------------------------------
 
 var _ service.KVServicer = (*mockKVService)(nil)
 var _ service.AdminServicer = (*mockAdminService)(nil)
+var _ user.UserServicer = (*stubUserSvc)(nil)
+var _ role.RoleServicer = (*stubRoleSvc)(nil)
+var _ cert.CertProvider = (*stubCertProv)(nil)
+var _ service.BarrierServicer = (*stubBarrierSvc)(nil)
+var _ service.CeremonyServicer = (*stubCeremonySvc)(nil)
+var _ service.CredentialServicer = (*stubCredentialSvc)(nil)
+var _ service.CollectionServicer = (*stubCollectionSvc)(nil)
+var _ service.MVCCKVServicer = (*stubMVCCSvc)(nil)
+var _ service.TransactionServicer = (*stubTransactionSvc)(nil)
+var _ service.BatchServicer = (*stubBatchSvc)(nil)
+var _ service.WatchServicer = (*stubWatchSvc)(nil)
+var _ lease.LeaseServicer = (*stubLeaseSvc)(nil)
+var _ index.IndexServicer = (*stubIndexSvc)(nil)
+var _ timeseries.TimeSeriesServicer = (*stubTimeSeriesSvc)(nil)
+var _ service.VectorServicer = (*stubVectorSvc)(nil)
+var _ service.DatabaseServicer = (*stubDatabaseSvc)(nil)

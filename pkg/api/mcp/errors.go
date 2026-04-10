@@ -31,6 +31,18 @@ func (e *StartError) Unwrap() error {
 	return e.Err
 }
 
+// CeremonyCANotConfiguredError is returned when a ceremony operation
+// requires a CA but one was not configured.
+type CeremonyCANotConfiguredError struct{}
+
+// Error returns a human-readable description.
+func (e *CeremonyCANotConfiguredError) Error() string {
+	return "mcp: ceremony CA not configured"
+}
+
+// ErrCeremonyCANotConfigured is a convenience instance.
+var ErrCeremonyCANotConfigured = &CeremonyCANotConfiguredError{}
+
 // ToolError is returned when an MCP tool execution fails.
 type ToolError struct {
 	Tool string

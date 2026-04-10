@@ -34,7 +34,7 @@ func printJSON(v any) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintln(outputWriter, string(data))
+	_, _ = fmt.Fprintln(outputWriter, string(data))
 	return nil
 }
 
@@ -44,7 +44,7 @@ func printYAML(v any) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprint(outputWriter, string(data))
+	_, _ = fmt.Fprint(outputWriter, string(data))
 	return nil
 }
 
@@ -53,31 +53,31 @@ func printTable(headers []string, rows [][]string) {
 	w := tabwriter.NewWriter(outputWriter, 0, 0, 2, ' ', 0)
 	for i, h := range headers {
 		if i > 0 {
-			fmt.Fprint(w, "\t")
+			_, _ = fmt.Fprint(w, "\t")
 		}
-		fmt.Fprint(w, h)
+		_, _ = fmt.Fprint(w, h)
 	}
-	fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w)
 	for _, row := range rows {
 		for i, cell := range row {
 			if i > 0 {
-				fmt.Fprint(w, "\t")
+				_, _ = fmt.Fprint(w, "\t")
 			}
-			fmt.Fprint(w, cell)
+			_, _ = fmt.Fprint(w, cell)
 		}
-		fmt.Fprintln(w)
+		_, _ = fmt.Fprintln(w)
 	}
 	_ = w.Flush()
 }
 
 // printValue writes a single value to outputWriter.
 func printValue(v string) {
-	fmt.Fprintln(outputWriter, v)
+	_, _ = fmt.Fprintln(outputWriter, v)
 }
 
 // printOK writes "OK" to outputWriter for void operations.
 func printOK() {
-	fmt.Fprintln(outputWriter, "OK")
+	_, _ = fmt.Fprintln(outputWriter, "OK")
 }
 
 // printList writes items in the configured output format. In table mode,
@@ -91,7 +91,7 @@ func printList(items []string, format string) error {
 		return printYAML(items)
 	default:
 		for _, item := range items {
-			fmt.Fprintln(outputWriter, item)
+			_, _ = fmt.Fprintln(outputWriter, item)
 		}
 		return nil
 	}

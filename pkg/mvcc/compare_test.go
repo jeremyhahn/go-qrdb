@@ -26,11 +26,11 @@ import (
 
 func TestEvaluate_CompareVersion(t *testing.T) {
 	tests := []struct {
-		name    string
-		kvVer   int64
-		cmpVer  int64
-		op      service.CompareResult
-		want    bool
+		name   string
+		kvVer  int64
+		cmpVer int64
+		op     service.CompareResult
+		want   bool
 	}{
 		{"equal_match", 5, 5, service.CompareEqual, true},
 		{"equal_no_match", 5, 6, service.CompareEqual, false},

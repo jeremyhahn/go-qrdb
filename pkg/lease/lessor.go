@@ -31,11 +31,11 @@ import (
 
 // lease is the internal lease state tracked by the Lessor.
 type lease struct {
-	id         int64
-	ttl        int64 // granted TTL in seconds
-	expiry     time.Time
-	keys       map[string]struct{} // attached keys
-	mu         sync.RWMutex
+	id     int64
+	ttl    int64 // granted TTL in seconds
+	expiry time.Time
+	keys   map[string]struct{} // attached keys
+	mu     sync.RWMutex
 }
 
 // remainingTTL returns the remaining TTL in seconds.
@@ -56,10 +56,10 @@ func (l *lease) isExpired() bool {
 // (grant, revoke, keep-alive) are driven by the state machine after
 // Raft consensus, ensuring all replicas maintain consistent state.
 type Lessor struct {
-	mu      sync.RWMutex
-	leases  map[int64]*lease
-	idSeq   atomic.Int64
-	closed  atomic.Bool
+	mu     sync.RWMutex
+	leases map[int64]*lease
+	idSeq  atomic.Int64
+	closed atomic.Bool
 }
 
 // NewLessor creates a new Lessor.
@@ -175,13 +175,16 @@ func (lr *Lessor) Lookup(id int64) *Lease {
 	return lr.toLease(l)
 }
 
-// Leases returns info for all active leases.
+// Leases returns info for all active (non-expired) leases.
 func (lr *Lessor) Leases() []*Lease {
 	lr.mu.RLock()
 	defer lr.mu.RUnlock()
 
 	result := make([]*Lease, 0, len(lr.leases))
 	for _, l := range lr.leases {
+		if l.isExpired() {
+			continue
+		}
 		result = append(result, lr.toLease(l))
 	}
 	return result

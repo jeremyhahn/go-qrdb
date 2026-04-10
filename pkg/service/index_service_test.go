@@ -271,7 +271,7 @@ func TestIndexService_Query(t *testing.T) {
 			if string(q.Value) != "alice" {
 				t.Fatalf("expected value alice, got %s", string(q.Value))
 			}
-			return []uint64{100, 200, 300}, nil
+			return [][]byte{[]byte("100"), []byte("200"), []byte("300")}, nil
 		},
 	}
 
@@ -283,15 +283,15 @@ func TestIndexService_Query(t *testing.T) {
 	if len(ids) != 3 {
 		t.Fatalf("expected 3 IDs, got %d", len(ids))
 	}
-	if ids[0] != 100 || ids[1] != 200 || ids[2] != 300 {
-		t.Fatalf("unexpected IDs: %v", ids)
+	if string(ids[0]) != "100" || string(ids[1]) != "200" || string(ids[2]) != "300" {
+		t.Fatalf("unexpected keys: %v", ids)
 	}
 }
 
 func TestIndexService_Query_EmptyResult(t *testing.T) {
 	host := &mockHost{
 		syncReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
-			return []uint64{}, nil
+			return [][]byte{}, nil
 		},
 	}
 
@@ -378,9 +378,9 @@ func TestIndexService_Scan(t *testing.T) {
 			if string(q.End) != "z" {
 				t.Fatalf("expected end 'z', got %s", string(q.End))
 			}
-			return map[string][]uint64{
-				"apple":  {1, 2},
-				"banana": {3},
+			return map[string][][]byte{
+				"apple":  {[]byte("1"), []byte("2")},
+				"banana": {[]byte("3")},
 			}, nil
 		},
 	}
@@ -404,7 +404,7 @@ func TestIndexService_Scan(t *testing.T) {
 func TestIndexService_Scan_EmptyResult(t *testing.T) {
 	host := &mockHost{
 		syncReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
-			return map[string][]uint64{}, nil
+			return map[string][][]byte{}, nil
 		},
 	}
 

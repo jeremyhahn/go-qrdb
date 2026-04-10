@@ -1,7 +1,9 @@
 # go-qrdb Suggested Commands
 
 ## Build
-- `make build` - Compile daemon binary to bin/qrdbd
+- `make build` - Compile server and client binaries
+- `make build-server` - Compile daemon binary to bin/qrdbd
+- `make build-client` - Compile client binary in devcontainer (CLI + GUI)
 - `make clean` - Remove build artifacts and coverage reports
 - `make proto` - Regenerate protobuf code
 - `make all` - Build, test, and lint

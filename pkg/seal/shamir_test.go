@@ -15,8 +15,6 @@ import (
 	"log/slog"
 	"testing"
 	"time"
-
-	"github.com/jeremyhahn/go-qrdb/pkg/shamir"
 )
 
 // testLogger returns a discard logger shared across all test files.
@@ -34,12 +32,23 @@ func initializeBarrier(t *testing.T, b *Barrier) {
 	}
 }
 
+// testSoftwareStrategy creates a SoftwareStrategy with a test passphrase.
+// Shared across multiple test files.
+func testSoftwareStrategy(t *testing.T) *SoftwareStrategy {
+	t.Helper()
+	s, err := NewSoftwareStrategy([]byte("test-master-password"))
+	if err != nil {
+		t.Fatalf("NewSoftwareStrategy: %v", err)
+	}
+	return s
+}
+
 // newShamirTestBarrier creates a barrier with a SoftwareStrategy for
 // credential-mode Shamir tests.
 func newShamirTestBarrier(t *testing.T) *Barrier {
 	t.Helper()
 	store := NewMemoryBackend()
-	strategy := NewSoftwareStrategy()
+	strategy := testSoftwareStrategy(t)
 	b, err := NewBarrier(testLogger(), store, BarrierConfig{
 		RootKeyPath: "test/root-key",
 		Shamir: &ShamirConfig{
@@ -63,7 +72,7 @@ func newShamirTestBarrierDirect(t *testing.T) *Barrier {
 	if err != nil {
 		t.Fatalf("NewShamirStrategy: %v", err)
 	}
-	swStrat := NewSoftwareStrategy()
+	swStrat := testSoftwareStrategy(t)
 	b, err := NewBarrier(testLogger(), store, BarrierConfig{
 		RootKeyPath: "test/root-key",
 		Shamir: &ShamirConfig{
@@ -75,117 +84,6 @@ func newShamirTestBarrierDirect(t *testing.T) *Barrier {
 		t.Fatalf("NewBarrier: %v", err)
 	}
 	return b
-}
-
-// ---------- shamirAccumulator tests ----------
-
-func TestShamirAccumulator_AddShare_UniqueShares(t *testing.T) {
-	acc := newShamirAccumulator(2, 3, 5*time.Minute)
-
-	share1 := &shamir.Share{Index: 1, Threshold: 2, Total: 3, Value: "share-a"}
-	share2 := &shamir.Share{Index: 2, Threshold: 2, Total: 3, Value: "share-b"}
-
-	if err := acc.addShare(share1); err != nil {
-		t.Fatalf("addShare(share1): %v", err)
-	}
-	if err := acc.addShare(share2); err != nil {
-		t.Fatalf("addShare(share2): %v", err)
-	}
-
-	got := acc.getShares()
-	if len(got) != 2 {
-		t.Fatalf("expected 2 shares, got %d", len(got))
-	}
-	if got[0].Value != "share-a" {
-		t.Errorf("expected share-a, got %s", got[0].Value)
-	}
-	if got[1].Value != "share-b" {
-		t.Errorf("expected share-b, got %s", got[1].Value)
-	}
-}
-
-func TestShamirAccumulator_AddShare_DuplicateRejected(t *testing.T) {
-	acc := newShamirAccumulator(2, 3, 5*time.Minute)
-
-	share := &shamir.Share{Index: 1, Threshold: 2, Total: 3, Value: "dup-val"}
-	if err := acc.addShare(share); err != nil {
-		t.Fatalf("first addShare: %v", err)
-	}
-
-	err := acc.addShare(share)
-	if err != ErrShamirDuplicateShare {
-		t.Errorf("expected ErrShamirDuplicateShare, got %v", err)
-	}
-}
-
-func TestShamirAccumulator_AddShare_ExpiredTTL(t *testing.T) {
-	acc := newShamirAccumulator(2, 3, 0)
-	acc.createdAt = time.Now().Add(-1 * time.Second)
-
-	share := &shamir.Share{Index: 1, Threshold: 2, Total: 3, Value: "late"}
-	err := acc.addShare(share)
-	if err != ErrShamirQuorumExpired {
-		t.Errorf("expected ErrShamirQuorumExpired, got %v", err)
-	}
-}
-
-func TestShamirAccumulator_Progress(t *testing.T) {
-	acc := newShamirAccumulator(3, 5, 5*time.Minute)
-
-	prog := acc.progress()
-	if prog.Required != 3 {
-		t.Errorf("expected Required=3, got %d", prog.Required)
-	}
-	if prog.Submitted != 0 {
-		t.Errorf("expected Submitted=0, got %d", prog.Submitted)
-	}
-	if prog.Complete {
-		t.Error("expected Complete=false")
-	}
-
-	for i := 1; i <= 3; i++ {
-		share := &shamir.Share{Index: i, Threshold: 3, Total: 5, Value: string(rune('a' + i))}
-		if err := acc.addShare(share); err != nil {
-			t.Fatalf("addShare(%d): %v", i, err)
-		}
-	}
-
-	prog = acc.progress()
-	if prog.Submitted != 3 {
-		t.Errorf("expected Submitted=3, got %d", prog.Submitted)
-	}
-	if !prog.Complete {
-		t.Error("expected Complete=true")
-	}
-}
-
-func TestShamirAccumulator_GetShares_DefensiveCopy(t *testing.T) {
-	acc := newShamirAccumulator(2, 3, 5*time.Minute)
-
-	share := &shamir.Share{Index: 1, Threshold: 2, Total: 3, Value: "val"}
-	if err := acc.addShare(share); err != nil {
-		t.Fatalf("addShare: %v", err)
-	}
-
-	copy1 := acc.getShares()
-	copy2 := acc.getShares()
-
-	copy1[0] = &shamir.Share{Index: 99}
-	if copy2[0].Index == 99 {
-		t.Error("getShares did not return a defensive copy")
-	}
-}
-
-func TestShamirAccumulator_Expired(t *testing.T) {
-	acc := newShamirAccumulator(2, 3, 5*time.Minute)
-	if acc.expired() {
-		t.Error("fresh accumulator should not be expired")
-	}
-
-	acc.createdAt = time.Now().Add(-6 * time.Minute)
-	if !acc.expired() {
-		t.Error("accumulator should be expired after TTL")
-	}
 }
 
 // ---------- InitializeShamir tests ----------
@@ -243,7 +141,7 @@ func TestShamirInitializeShamir_NotConfigured(t *testing.T) {
 	store := NewMemoryBackend()
 	b, err := NewBarrier(testLogger(), store, BarrierConfig{
 		RootKeyPath: "test/root-key",
-	}, NewSoftwareStrategy())
+	}, testSoftwareStrategy(t))
 	if err != nil {
 		t.Fatalf("NewBarrier: %v", err)
 	}
@@ -273,7 +171,7 @@ func TestShamirInitializeShamir_ThresholdInvalid(t *testing.T) {
 					Threshold:   tc.threshold,
 					TotalShares: tc.total,
 				},
-			}, NewSoftwareStrategy())
+			}, testSoftwareStrategy(t))
 			if err != nil {
 				t.Fatalf("NewBarrier: %v", err)
 			}
@@ -315,7 +213,7 @@ func TestShamirInitializeShamir_DirectMode_BaseExistsError(t *testing.T) {
 			Threshold:   2,
 			TotalShares: 3,
 		},
-	}, shamirStrat, NewSoftwareStrategy())
+	}, shamirStrat, testSoftwareStrategy(t))
 	if err != nil {
 		t.Fatalf("NewBarrier: %v", err)
 	}
@@ -402,7 +300,7 @@ func TestShamirUnsealWithShare_NotConfigured(t *testing.T) {
 	store := NewMemoryBackend()
 	b, err := NewBarrier(testLogger(), store, BarrierConfig{
 		RootKeyPath: "test/root-key",
-	}, NewSoftwareStrategy())
+	}, testSoftwareStrategy(t))
 	if err != nil {
 		t.Fatalf("NewBarrier: %v", err)
 	}
@@ -541,7 +439,7 @@ func TestShamirUnsealWithShares_NotConfigured(t *testing.T) {
 	store := NewMemoryBackend()
 	b, err := NewBarrier(testLogger(), store, BarrierConfig{
 		RootKeyPath: "test/root-key",
-	}, NewSoftwareStrategy())
+	}, testSoftwareStrategy(t))
 	if err != nil {
 		t.Fatalf("NewBarrier: %v", err)
 	}
@@ -624,8 +522,16 @@ func TestShamirLoadOrCreateAccumulator_CreatesNew(t *testing.T) {
 	if acc == nil {
 		t.Fatal("expected non-nil accumulator")
 	}
-	if acc.threshold != 3 {
-		t.Errorf("expected threshold=3, got %d", acc.threshold)
+
+	// Verify the accumulator is functional with the configured threshold.
+	// AddShare should succeed and report Required=3.
+	ctx := context.Background()
+	prog, err := acc.AddShare(ctx, "share-1")
+	if err != nil {
+		t.Fatalf("AddShare: %v", err)
+	}
+	if prog.Required != 3 {
+		t.Errorf("expected Required=3, got %d", prog.Required)
 	}
 }
 
@@ -635,19 +541,44 @@ func TestShamirLoadOrCreateAccumulator_ReusesExisting(t *testing.T) {
 	acc1 := b.loadOrCreateAccumulator(3, 5, 5*time.Minute)
 	acc2 := b.loadOrCreateAccumulator(3, 5, 5*time.Minute)
 
-	if acc1 != acc2 {
-		t.Error("expected same accumulator to be reused")
+	// Add a share via acc1, then verify acc2 sees it (same instance).
+	ctx := context.Background()
+	_, err := acc1.AddShare(ctx, "test-share")
+	if err != nil {
+		t.Fatalf("AddShare via acc1: %v", err)
+	}
+
+	// If acc2 is the same instance, adding the same share should be rejected.
+	_, err = acc2.AddShare(ctx, "test-share")
+	if err != ErrShamirDuplicateShare {
+		t.Errorf("expected ErrShamirDuplicateShare (same instance), got %v", err)
 	}
 }
 
 func TestShamirLoadOrCreateAccumulator_ReplacesExpired(t *testing.T) {
 	b := newShamirTestBarrier(t)
 
+	// Create an accumulator with zero TTL (immediately expired).
 	acc1 := b.loadOrCreateAccumulator(3, 5, 0)
-	acc1.createdAt = time.Now().Add(-1 * time.Second)
+
+	// The zero-TTL accumulator should expire immediately or after
+	// a brief pause. Force expiration by adding a share to confirm
+	// it was created, then verify a new one replaces it.
+	ctx := context.Background()
+	_, _ = acc1.AddShare(ctx, "share-a")
+
+	// Wait just enough for the zero TTL to kick in.
+	time.Sleep(1 * time.Millisecond)
 
 	acc2 := b.loadOrCreateAccumulator(3, 5, 5*time.Minute)
-	if acc1 == acc2 {
-		t.Error("expected new accumulator to replace expired one")
+
+	// acc2 should be a fresh accumulator. Adding "share-a" should succeed
+	// (no duplicate error), proving it is a different instance.
+	prog, err := acc2.AddShare(ctx, "share-a")
+	if err != nil {
+		t.Fatalf("AddShare on fresh accumulator: %v", err)
+	}
+	if prog.Submitted != 1 {
+		t.Errorf("expected Submitted=1, got %d", prog.Submitted)
 	}
 }

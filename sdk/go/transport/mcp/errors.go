@@ -91,3 +91,18 @@ type unexpectedContentTypeError struct {
 func (e *unexpectedContentTypeError) Error() string {
 	return "mcp transport: tool " + e.Tool + " returned unexpected content type"
 }
+
+// jsonEncodeError is returned when JSON request encoding fails.
+type jsonEncodeError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *jsonEncodeError) Error() string {
+	return "mcp transport: JSON encode failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *jsonEncodeError) Unwrap() error {
+	return e.Err
+}

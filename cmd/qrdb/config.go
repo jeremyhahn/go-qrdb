@@ -24,6 +24,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	grpctransport "github.com/jeremyhahn/go-qrdb/sdk/go/transport/grpc"
 	mcptransport "github.com/jeremyhahn/go-qrdb/sdk/go/transport/mcp"
+	quictransport "github.com/jeremyhahn/go-qrdb/sdk/go/transport/quic"
 	resttransport "github.com/jeremyhahn/go-qrdb/sdk/go/transport/rest"
 	unixtransport "github.com/jeremyhahn/go-qrdb/sdk/go/transport/unix"
 )
@@ -46,6 +47,12 @@ const (
 
 	// transportMCP identifies the MCP transport type.
 	transportMCP = "mcp"
+
+	// transportQUIC identifies the QUIC transport type.
+	transportQUIC = "quic"
+
+	// defaultQUICAddress is the default QUIC server address.
+	defaultQUICAddress = "localhost:63004"
 )
 
 // resolveTransport determines the transport type and server address from
@@ -68,6 +75,8 @@ func resolveTransport(serverFlag, transportFlag string) (transportType string, a
 				address = defaultUnixSocket
 			case transportGRPC:
 				address = defaultGRPCAddress
+			case transportQUIC:
+				address = defaultQUICAddress
 			default:
 				address = defaultGRPCAddress
 			}
@@ -82,6 +91,24 @@ func resolveTransport(serverFlag, transportFlag string) (transportType string, a
 		}
 		if strings.HasPrefix(serverFlag, "http://") || strings.HasPrefix(serverFlag, "https://") {
 			return transportREST, serverFlag
+		}
+		if strings.HasPrefix(serverFlag, "quic://") {
+			return transportQUIC, strings.TrimPrefix(serverFlag, "quic://")
+		}
+		if strings.HasPrefix(serverFlag, "quics://") {
+			return transportQUIC, strings.TrimPrefix(serverFlag, "quics://")
+		}
+		if strings.HasPrefix(serverFlag, "grpcs://") {
+			return transportGRPC, strings.TrimPrefix(serverFlag, "grpcs://")
+		}
+		if strings.HasPrefix(serverFlag, "grpc://") {
+			return transportGRPC, strings.TrimPrefix(serverFlag, "grpc://")
+		}
+		if strings.HasPrefix(serverFlag, "mcp://") {
+			// MCP transport expects a full HTTP URL. Convert mcp://host:port
+			// to https://host:port/mcp for the MCP HTTP client.
+			host := strings.TrimPrefix(serverFlag, "mcp://")
+			return transportMCP, "https://" + host + "/mcp"
 		}
 		// No scheme: default to gRPC.
 		return transportGRPC, serverFlag
@@ -156,5 +183,8 @@ var transportBuilders = map[string]transportBuilder{
 	},
 	transportMCP: func(opts ...transport.Option) (transport.Transport, error) {
 		return mcptransport.New(opts...)
+	},
+	transportQUIC: func(opts ...transport.Option) (transport.Transport, error) {
+		return quictransport.New(opts...)
 	},
 }
