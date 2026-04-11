@@ -688,6 +688,8 @@ func mapHTTPError(err error) int {
 	var lhe *lock.LockHeldError
 	var nlhe *lock.NotLockHolderError
 	var lnfe *lock.LockNotFoundError
+	var ragdnf *service.RAGDocumentNotFoundError
+	var ragclosed *service.RAGServiceClosedError
 
 	switch {
 	case errors.As(err, &knf):
@@ -778,6 +780,10 @@ func mapHTTPError(err error) int {
 		return http.StatusForbidden
 	case errors.As(err, &lnfe):
 		return http.StatusNotFound
+	case errors.As(err, &ragdnf):
+		return http.StatusNotFound
+	case errors.As(err, &ragclosed):
+		return http.StatusServiceUnavailable
 	default:
 		// Allow build-tagged packages to extend the error mapping.
 		if ragErrorMapperFn != nil {
