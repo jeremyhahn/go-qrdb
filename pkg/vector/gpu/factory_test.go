@@ -71,7 +71,7 @@ func TestGPUIndexFactory_CreateIndex_GPUDisabled_FallsToCPU(t *testing.T) {
 	cfg := DefaultGPUConfig()
 	cfg.Enabled = false
 
-	factory := NewGPUIndexFactory(cfg, fallback)
+	factory := NewGPUIndexFactory(cfg, nil, fallback)
 	idx, err := factory.CreateIndex(interfaces.DefaultHNSWConfig())
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
@@ -115,7 +115,7 @@ func TestGPUIndexFactory_NilFallback_ReturnsError(t *testing.T) {
 	cfg := DefaultGPUConfig()
 	cfg.Enabled = false
 
-	factory := NewGPUIndexFactory(cfg, nil)
+	factory := NewGPUIndexFactory(cfg, nil, nil)
 	_, err := factory.CreateIndex(interfaces.DefaultHNSWConfig())
 	if err == nil {
 		t.Fatal("expected error with nil fallback, got nil")
@@ -132,7 +132,7 @@ func TestGPUIndexFactory_FallbackError_PropagatesError(t *testing.T) {
 	cfg := DefaultGPUConfig()
 	cfg.Enabled = false
 
-	factory := NewGPUIndexFactory(cfg, fallback)
+	factory := NewGPUIndexFactory(cfg, nil, fallback)
 	_, err := factory.CreateIndex(interfaces.DefaultHNSWConfig())
 	if !errors.Is(err, sentinel) {
 		t.Errorf("expected sentinel error, got: %v", err)
@@ -140,7 +140,7 @@ func TestGPUIndexFactory_FallbackError_PropagatesError(t *testing.T) {
 }
 
 func TestGPUIndexFactory_ImplementsHNSWIndexFactory(t *testing.T) {
-	factory := NewGPUIndexFactory(DefaultGPUConfig(), &mockHNSWFactory{})
+	factory := NewGPUIndexFactory(DefaultGPUConfig(), nil, &mockHNSWFactory{})
 	var _ interfaces.HNSWIndexFactory = factory
 }
 
@@ -148,7 +148,7 @@ func TestNewGPUIndexFactory_StoresConfig(t *testing.T) {
 	cfg := DefaultGPUConfig()
 	cfg.DeviceID = 2
 
-	factory := NewGPUIndexFactory(cfg, &mockHNSWFactory{})
+	factory := NewGPUIndexFactory(cfg, nil, &mockHNSWFactory{})
 	if factory.config.DeviceID != 2 {
 		t.Errorf("expected DeviceID 2, got %d", factory.config.DeviceID)
 	}

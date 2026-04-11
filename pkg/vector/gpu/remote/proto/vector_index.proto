@@ -1,0 +1,103 @@
+// Copyright (c) 2025 Jeremy Hahn
+// Copyright (c) 2025 Automate The Things, LLC
+//
+// This file is part of go-qrdb.
+//
+// go-qrdb is dual-licensed:
+//
+// 1. GNU Affero General Public License v3.0 (AGPL-3.0)
+//    See LICENSE file or visit https://www.gnu.org/licenses/agpl-3.0.html
+//
+// 2. Commercial License
+//    Contact licensing@automatethethings.com for commercial licensing options.
+
+syntax = "proto3";
+
+package qrdb.vector.gpu.remote;
+
+option go_package = "github.com/jeremyhahn/go-qrdb/pkg/vector/gpu/remote/proto";
+
+// VectorIndexService is the gRPC service that exposes GPU-accelerated vector
+// index operations over the network. It mirrors the interfaces.HNSWIndex
+// contract so that a RemoteGPUIndex can delegate to it transparently.
+service VectorIndexService {
+    // Insert adds a single vector to the index.
+    rpc Insert(InsertRequest) returns (InsertResponse);
+
+    // Delete removes a vector from the index by ID.
+    rpc Delete(DeleteRequest) returns (DeleteResponse);
+
+    // Search performs k-nearest neighbor search for the given query vector.
+    rpc Search(SearchRequest) returns (SearchResponse);
+
+    // BatchInsert adds multiple vectors in a single RPC.
+    rpc BatchInsert(BatchInsertRequest) returns (BatchInsertResponse);
+
+    // Count returns the number of vectors currently indexed.
+    rpc Count(CountRequest) returns (CountResponse);
+
+    // GetStats returns index statistics.
+    rpc GetStats(StatsRequest) returns (StatsResponse);
+}
+
+// InsertRequest carries a single vector with its unique ID.
+message InsertRequest {
+    uint64 id     = 1;
+    repeated float vector = 2;
+}
+
+// InsertResponse is empty; errors are conveyed via gRPC status codes.
+message InsertResponse {}
+
+// DeleteRequest identifies the vector to remove.
+message DeleteRequest {
+    uint64 id = 1;
+}
+
+// DeleteResponse is empty; errors are conveyed via gRPC status codes.
+message DeleteResponse {}
+
+// SearchRequest carries the query vector and the desired result count.
+message SearchRequest {
+    repeated float query = 1;
+    int32          k     = 2;
+}
+
+// SearchResponse holds the ordered list of nearest neighbours.
+message SearchResponse {
+    repeated SearchResult results = 1;
+}
+
+// SearchResult is one entry in a nearest-neighbour result set.
+message SearchResult {
+    uint64 id       = 1;
+    float  distance = 2;
+}
+
+// BatchInsertRequest groups multiple inserts into a single RPC.
+message BatchInsertRequest {
+    repeated InsertRequest items = 1;
+}
+
+// BatchInsertResponse reports how many vectors were actually inserted.
+message BatchInsertResponse {
+    int32 count = 1;
+}
+
+// CountRequest has no fields; it is a simple ping for the current vector count.
+message CountRequest {}
+
+// CountResponse carries the current vector count.
+message CountResponse {
+    int64 count = 1;
+}
+
+// StatsRequest has no fields.
+message StatsRequest {}
+
+// StatsResponse mirrors interfaces.HNSWStats.
+message StatsResponse {
+    int64 count      = 1;
+    int64 capacity   = 2;
+    int32 dimensions = 3;
+}

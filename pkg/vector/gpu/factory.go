@@ -17,19 +17,27 @@ package gpu
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/interfaces"
+	"github.com/jeremyhahn/go-qrdb/pkg/vector/gpu/remote"
 )
 
 // ErrNoFallbackFactory is returned when a GPU index cannot be created and no
 // CPU fallback factory was provided.
 var ErrNoFallbackFactory = errors.New("no CPU fallback factory provided")
 
-// GPUIndexFactory creates GPU-accelerated HNSW-compatible indexes, falling
-// back to a CPU factory when GPU acceleration is disabled or unavailable.
+// GPUIndexFactory creates GPU-accelerated HNSW-compatible indexes. The
+// priority order is:
+//  1. Remote GPU — when RemoteGPUConfig.Enabled is true, all index operations
+//     are forwarded to a VectorIndexService running on a dedicated GPU host.
+//  2. Local GPU — when GPUConfig.Enabled is true and CUDA hardware is present.
+//  3. CPU fallback — delegated to the provided fallback factory.
+//
 // It implements interfaces.HNSWIndexFactory.
 type GPUIndexFactory struct {
 	config       *GPUConfig
+	remoteConfig *RemoteGPUConfig
 	gpuAvailable bool
 	fallback     interfaces.HNSWIndexFactory
 }
@@ -37,25 +45,39 @@ type GPUIndexFactory struct {
 // NewGPUIndexFactory returns a factory that creates GPU indexes when
 // config.Enabled is true and GPU hardware is available, otherwise delegating
 // to fallback. Pass nil as fallback only when GPU is guaranteed to be present.
-func NewGPUIndexFactory(config *GPUConfig, fallback interfaces.HNSWIndexFactory) *GPUIndexFactory {
+//
+// remoteConfig may be nil; when non-nil and Enabled it takes priority over the
+// local GPU path.
+func NewGPUIndexFactory(config *GPUConfig, remoteConfig *RemoteGPUConfig, fallback interfaces.HNSWIndexFactory) *GPUIndexFactory {
 	return &GPUIndexFactory{
 		config:       config,
+		remoteConfig: remoteConfig,
 		gpuAvailable: GPUAvailable(),
 		fallback:     fallback,
 	}
 }
 
-// CreateIndex creates a GPU-backed index when GPU acceleration is both enabled
-// and available. It wraps the resulting index in a GPUIndexAdapter so that
-// callers receive the standard interfaces.HNSWIndex interface.
-//
-// When GPU is disabled or hardware is absent, CreateIndex delegates to the CPU
-// fallback factory. If no fallback was provided, ErrNoFallbackFactory is returned.
+// CreateIndex selects the appropriate index backend using the priority order
+// described on GPUIndexFactory. It wraps local GPU results in GPUIndexAdapter
+// and remote results in RemoteGPUIndex, both satisfying interfaces.HNSWIndex.
 func (f *GPUIndexFactory) CreateIndex(config *interfaces.HNSWConfig) (interfaces.HNSWIndex, error) {
+	if f.remoteConfig != nil && f.remoteConfig.Enabled {
+		return f.createRemoteIndex()
+	}
 	if f.config.Enabled && f.gpuAvailable {
 		return f.createGPUIndex(config)
 	}
 	return f.createFallbackIndex(config)
+}
+
+// createRemoteIndex builds a RemoteGPUIndex connected to the configured
+// VectorIndexService endpoint.
+func (f *GPUIndexFactory) createRemoteIndex() (interfaces.HNSWIndex, error) {
+	idx, err := remote.NewRemoteGPUIndex(remoteConfigToConnConfig(f.remoteConfig))
+	if err != nil {
+		return nil, fmt.Errorf("gpu factory: create remote index: %w", err)
+	}
+	return idx, nil
 }
 
 // createGPUIndex selects the appropriate GPU index type based on the configured
