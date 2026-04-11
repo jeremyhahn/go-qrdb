@@ -20,17 +20,12 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"math"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/retry"
 )
-
-// retryBaseDelay is the initial backoff duration before the first retry.
-const retryBaseDelay = 500 * time.Millisecond
-
-// retryMaxDelay caps the exponential backoff to avoid unbounded waits.
-const retryMaxDelay = 10 * time.Second
 
 // Compile-time assertion that Client satisfies Provider.
 var _ Provider = (*Client)(nil)
@@ -206,16 +201,24 @@ func (c *Client) Close() error {
 // doWithRetry executes req, retrying on 5xx responses and network errors.
 // For POST requests, body contains the raw bytes so the body can be replayed
 // on retry (http.Request.Body is consumed after the first read).
+// Backoff between attempts uses exponential backoff via retry.ExponentialBackoff.
 func (c *Client) doWithRetry(ctx context.Context, req *http.Request, body []byte) (*http.Response, error) {
 	maxAttempts := c.config.MaxRetries + 1
 	if maxAttempts < 1 {
 		maxAttempts = 1
 	}
 
+	backoff := &retry.ExponentialBackoff{
+		InitialDelay: 500 * time.Millisecond,
+		MaxDelay:     10 * time.Second,
+		Multiplier:   2.0,
+		Jitter:       0,
+	}
+
 	var lastErr error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if attempt > 0 {
-			delay := backoffDelay(attempt)
+			delay := backoff.Next(attempt - 1)
 			select {
 			case <-ctx.Done():
 				return nil, &ProviderUnavailableError{BaseURL: c.config.BaseURL, Cause: ctx.Err()}
@@ -253,14 +256,4 @@ func (c *Client) doWithRetry(ctx context.Context, req *http.Request, body []byte
 	}
 
 	return nil, &RetryExhaustedError{Attempts: maxAttempts, Cause: lastErr}
-}
-
-// backoffDelay returns the exponential backoff duration for the given attempt
-// number (1-based), capped at retryMaxDelay.
-func backoffDelay(attempt int) time.Duration {
-	d := time.Duration(float64(retryBaseDelay) * math.Pow(2, float64(attempt-1)))
-	if d > retryMaxDelay {
-		return retryMaxDelay
-	}
-	return d
 }
