@@ -41,6 +41,7 @@ var _ Provider = (*Client)(nil)
 type Client struct {
 	config     *ProviderConfig
 	httpClient *http.Client
+	dimensions int
 }
 
 // NewClient creates a new Client from the given ProviderConfig.
@@ -126,6 +127,13 @@ func (c *Client) Embed(ctx context.Context, texts []string, model string) (*Embe
 		embeddings[d.Index] = d.Embedding
 	}
 
+	// Auto-detect dimensions from the first embedding in the first successful
+	// response. Subsequent responses are not re-checked; dimension mismatches
+	// surface as incorrect vector data rather than an error at this layer.
+	if c.dimensions == 0 && len(embeddings) > 0 && len(embeddings[0]) > 0 {
+		c.dimensions = len(embeddings[0])
+	}
+
 	return &EmbeddingResult{
 		Embeddings: embeddings,
 		Model:      embResp.Model,
@@ -168,6 +176,18 @@ func (c *Client) Models(ctx context.Context) ([]ModelInfo, error) {
 		models[i] = ModelInfo{Name: d.ID}
 	}
 	return models, nil
+}
+
+// Dimensions returns the dimensionality of the embedding vectors produced by
+// this provider. Returns 0 until the first successful Embed call sets it.
+func (c *Client) Dimensions() int {
+	return c.dimensions
+}
+
+// Name returns the human-readable identifier for this provider, taken from
+// the ProviderConfig.Name field set at construction time.
+func (c *Client) Name() string {
+	return c.config.Name
 }
 
 // Close releases idle HTTP connections held by the underlying transport.

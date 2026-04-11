@@ -16,8 +16,36 @@
 package embedding
 
 import (
+	"errors"
 	"fmt"
 	"strings"
+)
+
+// Configuration validation sentinel errors used by NewManager.
+var (
+	// ErrProviderRequired is returned when the provider field is empty.
+	ErrProviderRequired = errors.New("embedding: provider is required")
+
+	// ErrProviderInvalid is returned when the provider name is not supported.
+	ErrProviderInvalid = errors.New("embedding: provider must be one of: openai, ollama, lmstudio, voyage")
+
+	// ErrAPIURLRequired is returned when the API URL is empty.
+	ErrAPIURLRequired = errors.New("embedding: api_url is required")
+
+	// ErrAPIKeyRequired is returned when an API key is required but not provided.
+	ErrAPIKeyRequired = errors.New("embedding: api_key is required for this provider")
+
+	// ErrModelRequired is returned when the model field is empty.
+	ErrModelRequired = errors.New("embedding: model is required")
+
+	// ErrDimensionsPositive is returned when dimensions is negative.
+	ErrDimensionsPositive = errors.New("embedding: dimensions must be non-negative")
+
+	// ErrMaxBatchSizePositive is returned when max_batch_size is negative.
+	ErrMaxBatchSizePositive = errors.New("embedding: max_batch_size must be non-negative")
+
+	// ErrTimeoutPositive is returned when timeout is negative.
+	ErrTimeoutPositive = errors.New("embedding: timeout must be non-negative")
 )
 
 // InvalidInputError is returned when the caller passes an empty or nil text slice.
@@ -171,6 +199,29 @@ type ProviderNotFoundError struct {
 // Error implements the error interface.
 func (e *ProviderNotFoundError) Error() string {
 	return fmt.Sprintf("embedding: provider not found: %s", e.Name)
+}
+
+// ModelNotFoundError is returned when a provider does not recognise the
+// requested model name.
+type ModelNotFoundError struct {
+	// Model is the unrecognised model identifier.
+	Model string
+
+	// Cause is the optional underlying error that triggered this condition.
+	Cause error
+}
+
+// Error implements the error interface.
+func (e *ModelNotFoundError) Error() string {
+	if e.Cause != nil {
+		return fmt.Sprintf("embedding: model not found: %s: %v", e.Model, e.Cause)
+	}
+	return fmt.Sprintf("embedding: model not found: %s", e.Model)
+}
+
+// Unwrap returns the underlying cause for errors.Is and errors.As support.
+func (e *ModelNotFoundError) Unwrap() error {
+	return e.Cause
 }
 
 // CloseError is returned when one or more errors occur during cleanup.

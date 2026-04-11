@@ -69,6 +69,12 @@ type SoftwareStrategy = quicraftseal.SoftwareStrategy
 // based on FIPS mode: PBKDF2-SHA256 when GOFIPS140 is set, Argon2id otherwise.
 var NewSoftwareStrategy = quicraftseal.NewSoftwareStrategy
 
+// NewDeferredSoftwareStrategy creates a SoftwareStrategy that defers passphrase
+// binding to Seal/Unseal time. The passphrase is extracted from
+// Credentials.Secret on each SealRootKey and UnsealRootKey call, enabling
+// scenarios where the passphrase is not known at construction time.
+var NewDeferredSoftwareStrategy = quicraftseal.NewDeferredSoftwareStrategy
+
 // EpochBarrier is a type alias for go-quicraft's Barrier. The EpochBarrier
 // provides algorithm-agile authenticated encryption with epoch-based key
 // rotation, HKDF DEK derivation, and AEAD safety tracking.

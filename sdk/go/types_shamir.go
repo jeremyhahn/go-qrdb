@@ -1,0 +1,57 @@
+// Copyright 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package sdk
+
+import "github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir"
+
+// ---------------------------------------------------------------------------
+// Shamir secret sharing types
+// ---------------------------------------------------------------------------
+
+// ShamirShare represents a single piece of a secret split using Shamir's
+// Secret Sharing scheme.
+type ShamirShare = shamir.Share
+
+// ---------------------------------------------------------------------------
+// Shamir error types
+// ---------------------------------------------------------------------------
+
+// ShamirSplitError is returned when splitting a secret fails.
+type ShamirSplitError = shamir.SplitError
+
+// ShamirCombineError is returned when combining shares fails.
+type ShamirCombineError = shamir.CombineError
+
+// ShamirValidationError is returned when share validation fails.
+type ShamirValidationError = shamir.ValidationError
+
+// ShamirIntegrityError is returned when the reconstructed secret's digest
+// does not match the digest stored in the shares.
+type ShamirIntegrityError = shamir.IntegrityError
+
+// ---------------------------------------------------------------------------
+// Shamir functions
+// ---------------------------------------------------------------------------
+
+// ShamirSplit divides a secret into N shares where any M shares can
+// reconstruct it.
+var ShamirSplit = shamir.Split
+
+// ShamirCombine reconstructs the original secret from M or more shares.
+var ShamirCombine = shamir.Combine
+
+// ShamirVerifyShare checks if a share is valid and consistent with other
+// shares.
+var ShamirVerifyShare = shamir.VerifyShare

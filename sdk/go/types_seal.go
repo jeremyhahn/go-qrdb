@@ -238,6 +238,12 @@ var NewShamirStrategy = seal.NewShamirStrategy
 // NewSoftwareStrategy creates a new software-only sealing strategy.
 var NewSoftwareStrategy = seal.NewSoftwareStrategy
 
+// NewDeferredSoftwareStrategy creates a SoftwareStrategy that defers passphrase
+// binding to Seal/Unseal time. The passphrase is extracted from
+// Credentials.Secret on each call, enabling scenarios where the passphrase is
+// not known at construction time.
+var NewDeferredSoftwareStrategy = seal.NewDeferredSoftwareStrategy
+
 // NewSealStore creates a new SealStore backed by the given barrier.
 var NewSealStore = seal.NewSealStore
 

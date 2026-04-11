@@ -17,14 +17,22 @@ package embedding
 
 import "context"
 
-// Provider generates vector embeddings from text using an OpenAI-compatible API.
-// Any service that exposes the /v1/embeddings endpoint (Ollama, OpenAI, vLLM,
-// etc.) can be wrapped by a Provider implementation.
+// Provider generates vector embeddings from text.
+// Any service that exposes an embeddings API (OpenAI-compatible, Voyage AI,
+// Ollama, LMStudio, etc.) can be wrapped by a Provider implementation.
 type Provider interface {
 	// Embed generates embeddings for the given texts using the specified model.
 	// The returned EmbeddingResult contains one embedding vector per input text,
 	// in the same order as the input slice.
 	Embed(ctx context.Context, texts []string, model string) (*EmbeddingResult, error)
+
+	// Dimensions returns the dimensionality of the embedding vectors produced
+	// by this provider. Returns 0 if the dimension count is not yet known
+	// (e.g. before the first successful Embed call).
+	Dimensions() int
+
+	// Name returns the human-readable identifier for this provider.
+	Name() string
 
 	// Models returns the list of embedding models available from the provider.
 	Models(ctx context.Context) ([]ModelInfo, error)
