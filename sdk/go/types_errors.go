@@ -41,11 +41,11 @@ const (
 )
 
 // ---------------------------------------------------------------------------
-// DragonError — the structured database error type
+// QRDBError — the structured database error type
 // ---------------------------------------------------------------------------
 
-// DragonError is the structured error type with code, operation, and context.
-type DragonError = dberrors.DragonError
+// QRDBError is the structured error type with code, operation, and context.
+type QRDBError = dberrors.QRDBError
 
 // QuotaExceededError is returned when a resource quota is exceeded.
 type QuotaExceededError = dberrors.QuotaExceededError
@@ -63,16 +63,16 @@ type ParameterNotFoundError = dberrors.ParameterNotFoundError
 // Error constructors
 // ---------------------------------------------------------------------------
 
-// NewError creates a new DragonError with the given code and operation.
+// NewError creates a new QRDBError with the given code and operation.
 var NewError = dberrors.New
 
-// NewErrorf creates a new DragonError with a formatted message.
+// NewErrorf creates a new QRDBError with a formatted message.
 var NewErrorf = dberrors.Newf
 
-// WrapError wraps an existing error with a DragonError code and operation.
+// WrapError wraps an existing error with a QRDBError code and operation.
 var WrapError = dberrors.Wrap
 
-// WrapErrorf wraps an existing error with a formatted DragonError.
+// WrapErrorf wraps an existing error with a formatted QRDBError.
 var WrapErrorf = dberrors.Wrapf
 
 // ---------------------------------------------------------------------------
@@ -82,7 +82,7 @@ var WrapErrorf = dberrors.Wrapf
 // IsErrorCode checks if the error matches the given error code.
 var IsErrorCode = dberrors.Is
 
-// AsError extracts a DragonError from the error chain if present.
+// AsError extracts a QRDBError from the error chain if present.
 var AsError = dberrors.As
 
 // ErrorCodeOf returns the ErrorCode from the error chain.

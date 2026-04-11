@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Raft-backed MVCC compare operations from DragonDB.
+// Raft-backed MVCC compare operations from QRDB.
 // These provide extended comparison operators (>=, <=) and lease comparison
 // beyond what the base qrdb compare.go offers.
 

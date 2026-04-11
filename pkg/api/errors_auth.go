@@ -1,9 +1,9 @@
 // Copyright (c) 2025 Jeremy Hahn
 // Copyright (c) 2025 Automate The Things, LLC
 //
-// This file is part of go-dragondb.
+// This file is part of go-qrdb.
 //
-// go-dragondb is dual-licensed:
+// go-qrdb is dual-licensed:
 //
 // 1. GNU Affero General Public License v3.0 (AGPL-3.0)
 //    See LICENSE file or visit https://www.gnu.org/licenses/agpl-3.0.html
@@ -11,7 +11,7 @@
 // 2. Commercial License
 //    Contact licensing@automatethethings.com for commercial licensing options.
 
-// Package api provides shared types for all DragonDB API transports.
+// Package api provides shared types for all QRDB API transports.
 // This file contains error types used by the auth layer.
 package api
 
@@ -37,9 +37,9 @@ func (e *UserNotFoundError) Error() string {
 	return "user not found: " + e.UserID
 }
 
-// NewUserNotFoundError creates a DragonError for a missing user.
-func NewUserNotFoundError(op, userID string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewUserNotFoundError creates a QRDBError for a missing user.
+func NewUserNotFoundError(op, userID string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrNotFound,
 		Op:   op,
 		Err:  &UserNotFoundError{UserID: userID},
@@ -56,9 +56,9 @@ func (e *RoleNotFoundError) Error() string {
 	return "role not found: " + e.RoleName
 }
 
-// NewRoleNotFoundError creates a DragonError for a missing role.
-func NewRoleNotFoundError(op, roleName string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewRoleNotFoundError creates a QRDBError for a missing role.
+func NewRoleNotFoundError(op, roleName string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &RoleNotFoundError{RoleName: roleName},
@@ -75,9 +75,9 @@ func (e *UserAlreadyHasRoleError) Error() string {
 	return "user already has role: " + e.RoleName
 }
 
-// NewUserAlreadyHasRoleError creates a DragonError for a duplicate role assignment.
-func NewUserAlreadyHasRoleError(op, roleName string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewUserAlreadyHasRoleError creates a QRDBError for a duplicate role assignment.
+func NewUserAlreadyHasRoleError(op, roleName string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &UserAlreadyHasRoleError{RoleName: roleName},
@@ -94,9 +94,9 @@ func (e *UserDoesNotHaveRoleError) Error() string {
 	return "user does not have role: " + e.RoleName
 }
 
-// NewUserDoesNotHaveRoleError creates a DragonError for revoking a role the user does not have.
-func NewUserDoesNotHaveRoleError(op, roleName string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewUserDoesNotHaveRoleError creates a QRDBError for revoking a role the user does not have.
+func NewUserDoesNotHaveRoleError(op, roleName string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &UserDoesNotHaveRoleError{RoleName: roleName},
@@ -118,9 +118,9 @@ func (e *NonceGenerationError) Unwrap() error {
 	return e.Cause
 }
 
-// NewNonceGenerationError creates a DragonError for a nonce generation failure.
-func NewNonceGenerationError(op string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewNonceGenerationError creates a QRDBError for a nonce generation failure.
+func NewNonceGenerationError(op string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   op,
 		Err:  &NonceGenerationError{Cause: cause},
@@ -143,9 +143,9 @@ func (e *TokenSigningError) Unwrap() error {
 	return e.Cause
 }
 
-// NewTokenSigningError creates a DragonError for a token signing failure.
-func NewTokenSigningError(op, tokenType string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewTokenSigningError creates a QRDBError for a token signing failure.
+func NewTokenSigningError(op, tokenType string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   op,
 		Err:  &TokenSigningError{TokenType: tokenType, Cause: cause},
@@ -170,9 +170,9 @@ func (e *AdminUserDeleteError) Unwrap() error {
 	return e.Cause
 }
 
-// NewAdminUserDeleteError creates a DragonError for a failed admin user deletion.
-func NewAdminUserDeleteError(op string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewAdminUserDeleteError creates a QRDBError for a failed admin user deletion.
+func NewAdminUserDeleteError(op string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   op,
 		Err:  &AdminUserDeleteError{Cause: cause},
@@ -194,9 +194,9 @@ func (e *AdminUserCreateError) Unwrap() error {
 	return e.Cause
 }
 
-// NewAdminUserCreateError creates a DragonError for a failed admin user creation.
-func NewAdminUserCreateError(op string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewAdminUserCreateError creates a QRDBError for a failed admin user creation.
+func NewAdminUserCreateError(op string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   op,
 		Err:  &AdminUserCreateError{Cause: cause},
@@ -218,9 +218,9 @@ func (e *BootstrapMarkerError) Unwrap() error {
 	return e.Cause
 }
 
-// NewBootstrapMarkerError creates a DragonError for a failed bootstrap marker write.
-func NewBootstrapMarkerError(op string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewBootstrapMarkerError creates a QRDBError for a failed bootstrap marker write.
+func NewBootstrapMarkerError(op string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   op,
 		Err:  &BootstrapMarkerError{Cause: cause},
@@ -235,9 +235,9 @@ func (e *AdminUserNotFoundError) Error() string {
 	return "admin user not found"
 }
 
-// NewAdminUserNotFoundError creates a DragonError for a missing admin user.
-func NewAdminUserNotFoundError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewAdminUserNotFoundError creates a QRDBError for a missing admin user.
+func NewAdminUserNotFoundError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrNotFound,
 		Op:   op,
 		Err:  &AdminUserNotFoundError{},
@@ -254,9 +254,9 @@ func (e *PasswordAuthDeprecatedError) Error() string {
 	return "password-based authentication is disabled; use IAM (WebAuthn, OIDC, OAuth) instead"
 }
 
-// NewPasswordAuthDeprecatedError creates a DragonError for a deprecated password auth function.
-func NewPasswordAuthDeprecatedError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewPasswordAuthDeprecatedError creates a QRDBError for a deprecated password auth function.
+func NewPasswordAuthDeprecatedError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrUnimplemented,
 		Op:   op,
 		Err:  &PasswordAuthDeprecatedError{},
@@ -278,9 +278,9 @@ func (e *PasswordTooShortError) Error() string {
 	return fmt.Sprintf("password must be at least %d characters, got %d", e.MinLength, e.GotLength)
 }
 
-// NewPasswordTooShortError creates a DragonError for a password that is too short.
-func NewPasswordTooShortError(op string, minLength, gotLength int) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewPasswordTooShortError creates a QRDBError for a password that is too short.
+func NewPasswordTooShortError(op string, minLength, gotLength int) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &PasswordTooShortError{MinLength: minLength, GotLength: gotLength},
@@ -302,9 +302,9 @@ func (e *PasswordHashError) Unwrap() error {
 	return e.Cause
 }
 
-// NewPasswordHashError creates a DragonError for a password hashing failure.
-func NewPasswordHashError(op string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewPasswordHashError creates a QRDBError for a password hashing failure.
+func NewPasswordHashError(op string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   op,
 		Err:  &PasswordHashError{Cause: cause},
@@ -323,9 +323,9 @@ func (e *NilLoggerError) Error() string {
 	return "logger cannot be nil"
 }
 
-// NewNilLoggerError creates a DragonError for a nil logger.
-func NewNilLoggerError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewNilLoggerError creates a QRDBError for a nil logger.
+func NewNilLoggerError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &NilLoggerError{},
@@ -340,9 +340,9 @@ func (e *NilStorageError) Error() string {
 	return "storage cannot be nil for persistent auth"
 }
 
-// NewNilStorageError creates a DragonError for a nil storage.
-func NewNilStorageError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewNilStorageError creates a QRDBError for a nil storage.
+func NewNilStorageError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &NilStorageError{},
@@ -359,9 +359,9 @@ func (e *UnknownAuthManagerTypeError) Error() string {
 	return "unknown auth manager type: " + e.TypeName
 }
 
-// NewUnknownAuthManagerTypeError creates a DragonError for an unknown auth manager type.
-func NewUnknownAuthManagerTypeError(op, typeName string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewUnknownAuthManagerTypeError creates a QRDBError for an unknown auth manager type.
+func NewUnknownAuthManagerTypeError(op, typeName string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &UnknownAuthManagerTypeError{TypeName: typeName},
@@ -376,9 +376,9 @@ func (e *StorageClosedAuthError) Error() string {
 	return "storage closed"
 }
 
-// NewStorageClosedAuthError creates a DragonError for a closed auth storage backend.
-func NewStorageClosedAuthError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewStorageClosedAuthError creates a QRDBError for a closed auth storage backend.
+func NewStorageClosedAuthError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrUnavailable,
 		Op:   op,
 		Err:  &StorageClosedAuthError{},
@@ -393,9 +393,9 @@ func (e *KeyNotFoundError) Error() string {
 	return "key not found"
 }
 
-// NewKeyNotFoundError creates a DragonError for a missing storage key.
-func NewKeyNotFoundError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewKeyNotFoundError creates a QRDBError for a missing storage key.
+func NewKeyNotFoundError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrNotFound,
 		Op:   op,
 		Err:  &KeyNotFoundError{},
@@ -410,9 +410,9 @@ func (e *SnapshotNotSupportedError) Error() string {
 	return "snapshots not implemented in mock"
 }
 
-// NewSnapshotNotSupportedError creates a DragonError for unsupported snapshots.
-func NewSnapshotNotSupportedError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewSnapshotNotSupportedError creates a QRDBError for unsupported snapshots.
+func NewSnapshotNotSupportedError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrUnimplemented,
 		Op:   op,
 		Err:  &SnapshotNotSupportedError{},
@@ -427,9 +427,9 @@ func (e *BatchFinalizedError) Error() string {
 	return "batch already finalized"
 }
 
-// NewBatchFinalizedError creates a DragonError for a finalized batch.
-func NewBatchFinalizedError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewBatchFinalizedError creates a QRDBError for a finalized batch.
+func NewBatchFinalizedError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &BatchFinalizedError{},
@@ -467,9 +467,9 @@ func (e *AccountLockedError) Error() string {
 	return "account locked for user " + e.Username + ": too many failed login attempts, retry after " + e.RetryAfter.String()
 }
 
-// NewAccountLockedError creates a DragonError for a locked account.
-func NewAccountLockedError(op, username string, retryAfter time.Duration) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewAccountLockedError creates a QRDBError for a locked account.
+func NewAccountLockedError(op, username string, retryAfter time.Duration) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrRateLimited,
 		Op:   op,
 		Err:  &AccountLockedError{Username: username, RetryAfter: retryAfter},

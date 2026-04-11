@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Raft-backed MVCC transactions from DragonDB. Provides distributed
+// Raft-backed MVCC transactions from QRDB. Provides distributed
 // transactions with compare-and-swap semantics, batched Raft proposals,
 // and snapshot isolation.
 
@@ -465,7 +465,7 @@ func (t *raftTransaction) executeOpsViaRaft(ops []RaftTxnOp) ([]*RaftKeyValue, i
 			responses = append(responses, nil)
 
 		default:
-			return nil, 0, &errors.DragonError{
+			return nil, 0, &errors.QRDBError{
 				Code: errors.ErrInvalidInput,
 				Op:   "raftTransaction.executeOpsViaRaft",
 				Err:  &RaftUnknownOperationTypeError{OpType: op.Type},
@@ -561,7 +561,7 @@ func (t *raftTransaction) executeOpsLocal(ops []RaftTxnOp) ([]*RaftKeyValue, int
 			responses = append(responses, kv)
 
 		default:
-			return nil, 0, &errors.DragonError{
+			return nil, 0, &errors.QRDBError{
 				Code: errors.ErrInvalidInput,
 				Op:   "raftTransaction.executeOpsLocal",
 				Err:  &RaftUnknownOperationTypeError{OpType: op.Type},

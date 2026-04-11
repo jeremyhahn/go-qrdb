@@ -82,9 +82,9 @@ func TestVectorStateMachine_CrossTenantAccessDenied(t *testing.T) {
 	require.Error(t, err)
 
 	// Verify it's a cross-tenant access error
-	var dragonErr *errors.DragonError
-	if assert.ErrorAs(t, err, &dragonErr) {
-		assert.Equal(t, errors.ErrCrossTenantAccess, dragonErr.Code)
+	var qrdbErr *errors.QRDBError
+	if assert.ErrorAs(t, err, &qrdbErr) {
+		assert.Equal(t, errors.ErrCrossTenantAccess, qrdbErr.Code)
 	}
 }
 
@@ -127,9 +127,9 @@ func TestVectorStateMachine_MissingTenantContext(t *testing.T) {
 	require.Error(t, err)
 
 	// Verify it's a missing tenant context error
-	var dragonErr *errors.DragonError
-	if assert.ErrorAs(t, err, &dragonErr) {
-		assert.Equal(t, errors.ErrMissingTenantContext, dragonErr.Code)
+	var qrdbErr *errors.QRDBError
+	if assert.ErrorAs(t, err, &qrdbErr) {
+		assert.Equal(t, errors.ErrMissingTenantContext, qrdbErr.Code)
 	}
 }
 
@@ -382,9 +382,9 @@ func TestVectorStateMachine_TenantOwnershipValidation(t *testing.T) {
 			err = vsm.Update(context.Background(), []sm.Entry{{Index: 100, Cmd: data}}, make([]sm.Result, 1))
 			require.Error(t, err)
 
-			var dragonErr *errors.DragonError
-			if assert.ErrorAs(t, err, &dragonErr) {
-				assert.Equal(t, errors.ErrCrossTenantAccess, dragonErr.Code)
+			var qrdbErr *errors.QRDBError
+			if assert.ErrorAs(t, err, &qrdbErr) {
+				assert.Equal(t, errors.ErrCrossTenantAccess, qrdbErr.Code)
 			}
 		})
 	}
@@ -458,9 +458,9 @@ func TestVectorStateMachine_TenantOwnershipValidation(t *testing.T) {
 			_, err = vsm.Lookup(context.Background(), data)
 			require.Error(t, err)
 
-			var dragonErr *errors.DragonError
-			if assert.ErrorAs(t, err, &dragonErr) {
-				assert.Equal(t, errors.ErrCrossTenantAccess, dragonErr.Code)
+			var qrdbErr *errors.QRDBError
+			if assert.ErrorAs(t, err, &qrdbErr) {
+				assert.Equal(t, errors.ErrCrossTenantAccess, qrdbErr.Code)
 			}
 		})
 	}
@@ -539,9 +539,9 @@ func TestVectorStateMachine_ValidateTenantOwnership_DirectCall(t *testing.T) {
 
 			if tt.expectError {
 				require.Error(t, err)
-				var dragonErr *errors.DragonError
-				if assert.ErrorAs(t, err, &dragonErr) {
-					assert.Equal(t, tt.expectedCode, dragonErr.Code)
+				var qrdbErr *errors.QRDBError
+				if assert.ErrorAs(t, err, &qrdbErr) {
+					assert.Equal(t, tt.expectedCode, qrdbErr.Code)
 				}
 			} else {
 				require.NoError(t, err)

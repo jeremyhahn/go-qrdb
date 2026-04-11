@@ -27,7 +27,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	dragondbErrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
+	qrdbErrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 )
 
@@ -510,9 +510,9 @@ func TestVectorService_CreateNamespace_StorageError(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, resp)
-	var dErr *dragondbErrors.DragonError
+	var dErr *qrdbErrors.QRDBError
 	if errors.As(err, &dErr) {
-		assert.Equal(t, dragondbErrors.ErrStorage, dErr.Code)
+		assert.Equal(t, qrdbErrors.ErrStorage, dErr.Code)
 	}
 }
 
@@ -771,9 +771,9 @@ func TestVectorService_GetNamespaceInfo_NotFound(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, resp)
-	var dErr *dragondbErrors.DragonError
+	var dErr *qrdbErrors.QRDBError
 	if errors.As(err, &dErr) {
-		assert.Equal(t, dragondbErrors.ErrNotFound, dErr.Code)
+		assert.Equal(t, qrdbErrors.ErrNotFound, dErr.Code)
 	}
 }
 
@@ -897,9 +897,9 @@ func TestVectorService_UpsertVector_NamespaceNotFound(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, resp)
-	var dErr *dragondbErrors.DragonError
+	var dErr *qrdbErrors.QRDBError
 	if errors.As(err, &dErr) {
-		assert.Equal(t, dragondbErrors.ErrNotFound, dErr.Code)
+		assert.Equal(t, qrdbErrors.ErrNotFound, dErr.Code)
 	}
 }
 
@@ -1012,9 +1012,9 @@ func TestVectorService_GetVector_NotFound(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, resp)
-	var dErr *dragondbErrors.DragonError
+	var dErr *qrdbErrors.QRDBError
 	if errors.As(err, &dErr) {
-		assert.Equal(t, dragondbErrors.ErrNotFound, dErr.Code)
+		assert.Equal(t, qrdbErrors.ErrNotFound, dErr.Code)
 	}
 }
 
@@ -1574,9 +1574,9 @@ func TestVectorService_RebuildIndex_NamespaceNotFound(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, resp)
-	var dErr *dragondbErrors.DragonError
+	var dErr *qrdbErrors.QRDBError
 	if errors.As(err, &dErr) {
-		assert.Equal(t, dragondbErrors.ErrNotFound, dErr.Code)
+		assert.Equal(t, qrdbErrors.ErrNotFound, dErr.Code)
 	}
 }
 
@@ -1861,9 +1861,9 @@ func TestVectorService_GetIndexStats_NamespaceNotFound(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, resp)
-	var dErr *dragondbErrors.DragonError
+	var dErr *qrdbErrors.QRDBError
 	if errors.As(err, &dErr) {
-		assert.Equal(t, dragondbErrors.ErrNotFound, dErr.Code)
+		assert.Equal(t, qrdbErrors.ErrNotFound, dErr.Code)
 	}
 }
 

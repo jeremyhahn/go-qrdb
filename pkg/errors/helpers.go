@@ -1,9 +1,9 @@
 // Copyright (c) 2025 Jeremy Hahn
 // Copyright (c) 2025 Automate The Things, LLC
 //
-// This file is part of go-dragondb.
+// This file is part of go-qrdb.
 //
-// go-dragondb is dual-licensed:
+// go-qrdb is dual-licensed:
 //
 // 1. GNU Affero General Public License v3.0 (AGPL-3.0)
 //    See LICENSE file or visit https://www.gnu.org/licenses/agpl-3.0.html
@@ -18,9 +18,9 @@ import (
 	"fmt"
 )
 
-// New creates a new DragonError with the specified code, operation, and message.
-func New(code ErrorCode, op string, message string) *DragonError {
-	return &DragonError{
+// New creates a new QRDBError with the specified code, operation, and message.
+func New(code ErrorCode, op string, message string) *QRDBError {
+	return &QRDBError{
 		Code:  code,
 		Op:    op,
 		Err:   errors.New(message),
@@ -28,9 +28,9 @@ func New(code ErrorCode, op string, message string) *DragonError {
 	}
 }
 
-// Newf creates a new DragonError with formatted message.
-func Newf(code ErrorCode, op string, format string, args ...interface{}) *DragonError {
-	return &DragonError{
+// Newf creates a new QRDBError with formatted message.
+func Newf(code ErrorCode, op string, format string, args ...interface{}) *QRDBError {
+	return &QRDBError{
 		Code:  code,
 		Op:    op,
 		Err:   &MessageError{Message: fmt.Sprintf(format, args...)},
@@ -38,17 +38,17 @@ func Newf(code ErrorCode, op string, format string, args ...interface{}) *Dragon
 	}
 }
 
-// Wrap wraps an existing error with DragonDB error context.
+// Wrap wraps an existing error with QRDB error context.
 func Wrap(err error, code ErrorCode, op string) error {
 	if err == nil {
 		return nil
 	}
 
-	// If it's already a DragonError, just update the operation
-	var de *DragonError
+	// If it's already a QRDBError, just update the operation
+	var de *QRDBError
 	if errors.As(err, &de) {
 		// Preserve the original error but add operation context
-		return &DragonError{
+		return &QRDBError{
 			Code:    de.Code,
 			Op:      op,
 			Err:     de,
@@ -57,7 +57,7 @@ func Wrap(err error, code ErrorCode, op string) error {
 		}
 	}
 
-	return &DragonError{
+	return &QRDBError{
 		Code:  code,
 		Op:    op,
 		Err:   err,
@@ -71,7 +71,7 @@ func Wrapf(err error, code ErrorCode, op string, format string, args ...interfac
 		return nil
 	}
 
-	return &DragonError{
+	return &QRDBError{
 		Code:  code,
 		Op:    op,
 		Err:   &WrappedMessageError{Message: fmt.Sprintf(format, args...), Cause: err},
@@ -85,7 +85,7 @@ func Is(err error, code ErrorCode) bool {
 		return false
 	}
 
-	var de *DragonError
+	var de *QRDBError
 	if errors.As(err, &de) {
 		return de.Code == code
 	}
@@ -93,8 +93,8 @@ func Is(err error, code ErrorCode) bool {
 	return false
 }
 
-// As is a helper for errors.As with DragonError.
-func As(err error, target **DragonError) bool {
+// As is a helper for errors.As with QRDBError.
+func As(err error, target **QRDBError) bool {
 	return errors.As(err, target)
 }
 
@@ -104,7 +104,7 @@ func Code(err error) ErrorCode {
 		return ErrUnknown
 	}
 
-	var de *DragonError
+	var de *QRDBError
 	if errors.As(err, &de) {
 		return de.Code
 	}
@@ -118,7 +118,7 @@ func Operation(err error) string {
 		return ""
 	}
 
-	var de *DragonError
+	var de *QRDBError
 	if errors.As(err, &de) {
 		return de.Op
 	}
@@ -132,7 +132,7 @@ func IsRetryable(err error) bool {
 		return false
 	}
 
-	var de *DragonError
+	var de *QRDBError
 	if errors.As(err, &de) {
 		return de.IsRetryable()
 	}
@@ -140,13 +140,13 @@ func IsRetryable(err error) bool {
 	return false
 }
 
-// GetContext retrieves context from a DragonError.
+// GetContext retrieves context from a QRDBError.
 func GetContext(err error, key string) (interface{}, bool) {
 	if err == nil {
 		return nil, false
 	}
 
-	var de *DragonError
+	var de *QRDBError
 	if errors.As(err, &de) {
 		return de.GetContext(key)
 	}
@@ -216,7 +216,7 @@ func IsCircuitOpen(err error) bool {
 	if err == nil {
 		return false
 	}
-	var de *DragonError
+	var de *QRDBError
 	if errors.As(err, &de) {
 		return de.Code == ErrCircuitOpen
 	}

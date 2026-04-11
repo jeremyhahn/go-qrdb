@@ -213,20 +213,20 @@ func TestStorageSimpleFieldErrors(t *testing.T) {
 func TestStorageConstructors(t *testing.T) {
 	tests := []struct {
 		name     string
-		newFn    func() *dberrors.DragonError
+		newFn    func() *dberrors.QRDBError
 		wantCode dberrors.ErrorCode
 	}{
-		{"UnknownCompareTarget", func() *dberrors.DragonError { return NewUnknownCompareTargetError("op", 3) }, dberrors.ErrInvalidInput},
-		{"UnknownCompareResult", func() *dberrors.DragonError { return NewUnknownCompareResultError("op", 4) }, dberrors.ErrInvalidInput},
-		{"UnsupportedValueType", func() *dberrors.DragonError { return NewUnsupportedValueTypeError("op", "func") }, dberrors.ErrInvalidInput},
-		{"InvalidLength", func() *dberrors.DragonError { return NewInvalidLengthError("op", "iv", 16, 12) }, dberrors.ErrInvalidInput},
-		{"RevisionBeforeCreation", func() *dberrors.DragonError { return NewRevisionBeforeCreationError("op", 1, 5) }, dberrors.ErrNotFound},
-		{"UnknownOperationType", func() *dberrors.DragonError { return NewUnknownOperationTypeError("op", 99) }, dberrors.ErrInvalidInput},
-		{"ExpectedStruct", func() *dberrors.DragonError { return NewExpectedStructError("op", "int") }, dberrors.ErrInvalidInput},
-		{"ExpectedStructType", func() *dberrors.DragonError { return NewExpectedStructTypeError("op", "slice") }, dberrors.ErrInvalidInput},
-		{"InvalidUint64Encoding", func() *dberrors.DragonError { return NewInvalidUint64EncodingError("op", 8, 2) }, dberrors.ErrInvalidInput},
-		{"PointerRequired", func() *dberrors.DragonError { return NewPointerRequiredError("op") }, dberrors.ErrInvalidInput},
-		{"KeyDerivationNotImplemented", func() *dberrors.DragonError { return NewKeyDerivationNotImplementedError("op") }, dberrors.ErrUnimplemented},
+		{"UnknownCompareTarget", func() *dberrors.QRDBError { return NewUnknownCompareTargetError("op", 3) }, dberrors.ErrInvalidInput},
+		{"UnknownCompareResult", func() *dberrors.QRDBError { return NewUnknownCompareResultError("op", 4) }, dberrors.ErrInvalidInput},
+		{"UnsupportedValueType", func() *dberrors.QRDBError { return NewUnsupportedValueTypeError("op", "func") }, dberrors.ErrInvalidInput},
+		{"InvalidLength", func() *dberrors.QRDBError { return NewInvalidLengthError("op", "iv", 16, 12) }, dberrors.ErrInvalidInput},
+		{"RevisionBeforeCreation", func() *dberrors.QRDBError { return NewRevisionBeforeCreationError("op", 1, 5) }, dberrors.ErrNotFound},
+		{"UnknownOperationType", func() *dberrors.QRDBError { return NewUnknownOperationTypeError("op", 99) }, dberrors.ErrInvalidInput},
+		{"ExpectedStruct", func() *dberrors.QRDBError { return NewExpectedStructError("op", "int") }, dberrors.ErrInvalidInput},
+		{"ExpectedStructType", func() *dberrors.QRDBError { return NewExpectedStructTypeError("op", "slice") }, dberrors.ErrInvalidInput},
+		{"InvalidUint64Encoding", func() *dberrors.QRDBError { return NewInvalidUint64EncodingError("op", 8, 2) }, dberrors.ErrInvalidInput},
+		{"PointerRequired", func() *dberrors.QRDBError { return NewPointerRequiredError("op") }, dberrors.ErrInvalidInput},
+		{"KeyDerivationNotImplemented", func() *dberrors.QRDBError { return NewKeyDerivationNotImplementedError("op") }, dberrors.ErrUnimplemented},
 	}
 
 	for _, tt := range tests {
@@ -291,35 +291,35 @@ func TestStorageCauseErrors(t *testing.T) {
 	tests := []struct {
 		name     string
 		errFn    func() error
-		newFn    func() *dberrors.DragonError
+		newFn    func() *dberrors.QRDBError
 		wantMsg  string
 		wantCode dberrors.ErrorCode
 	}{
 		{
 			"JSONMarshal",
 			func() error { return &JSONMarshalError{Cause: cause} },
-			func() *dberrors.DragonError { return NewJSONMarshalError("storage.put", cause) },
+			func() *dberrors.QRDBError { return NewJSONMarshalError("storage.put", cause) },
 			"json marshal failed: underlying",
 			dberrors.ErrInternal,
 		},
 		{
 			"JSONUnmarshal",
 			func() error { return &JSONUnmarshalError{Cause: cause} },
-			func() *dberrors.DragonError { return NewJSONUnmarshalError("storage.get", cause) },
+			func() *dberrors.QRDBError { return NewJSONUnmarshalError("storage.get", cause) },
 			"json unmarshal failed: underlying",
 			dberrors.ErrInternal,
 		},
 		{
 			"Base64Decode",
 			func() error { return &Base64DecodeError{FieldName: "ciphertext", Cause: cause} },
-			func() *dberrors.DragonError { return NewBase64DecodeError("decrypt", "ciphertext", cause) },
+			func() *dberrors.QRDBError { return NewBase64DecodeError("decrypt", "ciphertext", cause) },
 			"failed to decode base64 for field 'ciphertext': underlying",
 			dberrors.ErrDecryption,
 		},
 		{
 			"InvalidBatchPoint",
 			func() error { return &InvalidBatchPointError{Index: 7, Cause: cause} },
-			func() *dberrors.DragonError { return NewInvalidBatchPointError("batch", 7, cause) },
+			func() *dberrors.QRDBError { return NewInvalidBatchPointError("batch", 7, cause) },
 			"invalid point at index 7: underlying",
 			dberrors.ErrInvalidInput,
 		},

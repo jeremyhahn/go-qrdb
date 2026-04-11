@@ -25,7 +25,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	dragonErrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
+	qrdbErrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
 	"github.com/jeremyhahn/go-qrdb/pkg/interfaces"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -189,9 +189,9 @@ func TestVectorPerformCompaction_JobNotFound(t *testing.T) {
 	err := svc.performCompaction(context.Background(), "nonexistent-op", "compact-ns")
 
 	require.Error(t, err)
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrNotFound, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrNotFound, qrdbErr.Code)
 }
 
 func TestVectorPerformCompaction_StorageCompactError(t *testing.T) {
@@ -216,9 +216,9 @@ func TestVectorPerformCompaction_StorageCompactError(t *testing.T) {
 	err := svc.performCompaction(context.Background(), opID, "compact-ns")
 
 	require.Error(t, err)
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrStorage, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrStorage, qrdbErr.Code)
 
 	job.mu.RLock()
 	defer job.mu.RUnlock()
@@ -337,9 +337,9 @@ func TestVectorCompactNamespace_NamespaceNotFound(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, resp)
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrNotFound, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrNotFound, qrdbErr.Code)
 }
 
 func TestVectorCompactNamespace_ServiceClosed(t *testing.T) {
@@ -355,9 +355,9 @@ func TestVectorCompactNamespace_ServiceClosed(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, resp)
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrInternal, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrInternal, qrdbErr.Code)
 }
 
 func TestVectorCompactNamespace_TenantAccessDenied(t *testing.T) {
@@ -381,9 +381,9 @@ func TestVectorCompactNamespace_TenantAccessDenied(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, resp)
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrForbidden, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrForbidden, qrdbErr.Code)
 }
 
 func TestVectorCompactNamespace_SyncStorageError(t *testing.T) {
@@ -400,9 +400,9 @@ func TestVectorCompactNamespace_SyncStorageError(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, resp)
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrStorage, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrStorage, qrdbErr.Code)
 }
 
 // =============================================================================
@@ -521,9 +521,9 @@ func TestVectorGetCompactionProgress_ByNamespace_NotFound(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, resp)
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrNotFound, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrNotFound, qrdbErr.Code)
 }
 
 func TestVectorGetCompactionProgress_ServiceClosed(t *testing.T) {
@@ -539,9 +539,9 @@ func TestVectorGetCompactionProgress_ServiceClosed(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, resp)
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrInternal, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrInternal, qrdbErr.Code)
 }
 
 func TestVectorGetCompactionProgress_OperationIDNotFound(t *testing.T) {
@@ -553,9 +553,9 @@ func TestVectorGetCompactionProgress_OperationIDNotFound(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, resp)
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrNotFound, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrNotFound, qrdbErr.Code)
 }
 
 func TestVectorGetCompactionProgress_InProgressWithPartialBytes(t *testing.T) {
@@ -639,9 +639,9 @@ func TestVectorPerformIndexRebuild_JobNotFound(t *testing.T) {
 	err := svc.performIndexRebuild(context.Background(), "nonexistent-job", "rebuild-ns", nil)
 
 	require.Error(t, err)
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrNotFound, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrNotFound, qrdbErr.Code)
 }
 
 func TestVectorPerformIndexRebuild_ScanError(t *testing.T) {
@@ -666,9 +666,9 @@ func TestVectorPerformIndexRebuild_ScanError(t *testing.T) {
 	err := svc.performIndexRebuild(context.Background(), jobID, "rebuild-ns", nil)
 
 	require.Error(t, err)
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrInternal, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrInternal, qrdbErr.Code)
 
 	job.mu.RLock()
 	defer job.mu.RUnlock()
@@ -870,9 +870,9 @@ func TestVectorRebuildIndex_NamespaceNotFound(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, resp)
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrNotFound, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrNotFound, qrdbErr.Code)
 }
 
 func TestVectorRebuildIndex_SyncScanError(t *testing.T) {
@@ -889,9 +889,9 @@ func TestVectorRebuildIndex_SyncScanError(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, resp)
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrInternal, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrInternal, qrdbErr.Code)
 }
 
 // =============================================================================
@@ -1036,9 +1036,9 @@ func TestVectorGetRebuildProgress_NotFoundByJobID(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, resp)
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrNotFound, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrNotFound, qrdbErr.Code)
 }
 
 func TestVectorGetRebuildProgress_NotFoundByNamespace(t *testing.T) {
@@ -1050,9 +1050,9 @@ func TestVectorGetRebuildProgress_NotFoundByNamespace(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, resp)
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrNotFound, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrNotFound, qrdbErr.Code)
 }
 
 func TestVectorGetRebuildProgress_PendingJob(t *testing.T) {
@@ -1144,9 +1144,9 @@ func TestVectorGetIndexStats_NamespaceNotFound(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, resp)
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrNotFound, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrNotFound, qrdbErr.Code)
 }
 
 func TestVectorGetIndexStats_ServiceClosed(t *testing.T) {
@@ -1162,9 +1162,9 @@ func TestVectorGetIndexStats_ServiceClosed(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, resp)
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrInternal, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrInternal, qrdbErr.Code)
 }
 
 func TestVectorGetIndexStats_NilStats(t *testing.T) {

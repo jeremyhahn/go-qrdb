@@ -601,7 +601,7 @@ func (vsm *VectorStateMachine) GetStorageAdapter() StorageAdapter {
 func (vsm *VectorStateMachine) PreUpdate(entry sm.Entry) error {
 	// Validate that state machine is not closed
 	if vsm.closed {
-		return &errors.DragonError{
+		return &errors.QRDBError{
 			Code: errors.ErrInternal,
 			Op:   "VectorStateMachine.PreUpdate",
 			Err:  &api.InvalidInputError{Message: "state machine is closed"},
@@ -633,7 +633,7 @@ func (vsm *VectorStateMachine) HealthCheck() error {
 	defer vsm.mu.RUnlock()
 
 	if vsm.closed {
-		return &errors.DragonError{
+		return &errors.QRDBError{
 			Code: errors.ErrInternal,
 			Op:   "VectorStateMachine.HealthCheck",
 			Err:  &api.InvalidInputError{Message: "state machine is closed"},
@@ -641,7 +641,7 @@ func (vsm *VectorStateMachine) HealthCheck() error {
 	}
 
 	if vsm.adapter == nil {
-		return &errors.DragonError{
+		return &errors.QRDBError{
 			Code: errors.ErrInternal,
 			Op:   "VectorStateMachine.HealthCheck",
 			Err:  &api.InvalidInputError{Message: "storage adapter is nil"},
@@ -1025,7 +1025,7 @@ func (vsm *VectorStateMachine) handleBatchUpsert(ctx context.Context, cmd *Vecto
 func (vsm *VectorStateMachine) handleCreateNamespace(ctx context.Context, cmd *VectorCommand) (sm.Result, error) {
 	// Check if namespace already exists
 	if _, exists := vsm.namespaces[cmd.Namespace]; exists {
-		return sm.Result{}, &errors.DragonError{
+		return sm.Result{}, &errors.QRDBError{
 			Code: errors.ErrConflict,
 			Op:   "VectorStateMachine.handleCreateNamespace",
 			Err:  &api.InvalidInputError{Message: "namespace " + cmd.Namespace + " already exists"},
@@ -1297,7 +1297,7 @@ func (vsm *VectorStateMachine) Lookup(ctx context.Context, query interface{}) (i
 	defer vsm.mu.RUnlock()
 
 	if vsm.closed {
-		return nil, &errors.DragonError{
+		return nil, &errors.QRDBError{
 			Code: errors.ErrInternal,
 			Op:   "VectorStateMachine.Lookup",
 			Err:  &api.InvalidInputError{Message: "state machine is closed"},

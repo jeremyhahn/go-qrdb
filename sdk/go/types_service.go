@@ -95,3 +95,54 @@ type DatabaseServiceOption = service.DatabaseServiceOption
 
 // NewDatabaseService creates a new DatabaseService backed by the given manager.
 var NewDatabaseService = service.NewDatabaseService
+
+// ---------------------------------------------------------------------------
+// Ceremony service types (service-layer wrappers around pkg/ceremony)
+// ---------------------------------------------------------------------------
+
+// ServiceCeremonyServicer provides ceremony lifecycle operations including
+// initialization, certificate claiming, share distribution, CSR signing,
+// and status queries. This is the service-layer wrapper around the ceremony
+// package's lower-level CeremonyService.
+type ServiceCeremonyServicer = service.CeremonyServicer
+
+// CeremonyInitResult contains the output of a successful ceremony
+// initialization including certificates, keys, and enrollment state.
+type CeremonyInitResult = service.CeremonyInitResult
+
+// CeremonyChallenge contains the challenge nonce issued during the
+// certificate claim handshake.
+type CeremonyChallenge = service.CeremonyChallenge
+
+// CeremonyClaimCertResult contains the output of a successful certificate
+// claim operation.
+type CeremonyClaimCertResult = service.CeremonyClaimCertResult
+
+// CeremonySignCSRResult contains the output of a successful CSR signing
+// operation during the ceremony.
+type CeremonySignCSRResult = service.CeremonySignCSRResult
+
+// CeremonyStatusInfo describes the current state of the initialization
+// ceremony.
+type CeremonyStatusInfo = service.CeremonyStatusInfo
+
+// NewServiceCeremonyService creates a new service-layer CeremonyServicer
+// backed by the given ceremony.CeremonyService.
+var NewServiceCeremonyService = service.NewCeremonyService
+
+// ---------------------------------------------------------------------------
+// Credential service types (service-layer)
+// ---------------------------------------------------------------------------
+
+// ServiceCredentialServicer provides credential management operations
+// including store, retrieve, submit, delete, and strategy queries. This is
+// the service-layer interface, distinct from the ceremony package's simpler
+// CredentialServicer which only provides StoreCredential.
+type ServiceCredentialServicer = service.CredentialServicer
+
+// CredentialService implements ServiceCredentialServicer by delegating to a
+// credential store backend.
+type CredentialService = service.CredentialService
+
+// NewCredentialService creates a new service-layer CredentialServicer.
+var NewCredentialService = service.NewCredentialService

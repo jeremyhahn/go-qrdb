@@ -1,9 +1,9 @@
 // Copyright (c) 2025 Jeremy Hahn
 // Copyright (c) 2025 Automate The Things, LLC
 //
-// This file is part of go-dragondb.
+// This file is part of go-qrdb.
 //
-// go-dragondb is dual-licensed:
+// go-qrdb is dual-licensed:
 //
 // 1. GNU Affero General Public License v3.0 (AGPL-3.0)
 //    See LICENSE file or visit https://www.gnu.org/licenses/agpl-3.0.html
@@ -127,7 +127,7 @@ func TestParameterTagLimitError_Error(t *testing.T) {
 }
 
 func TestNewParameterNotFoundError(t *testing.T) {
-	t.Run("creates DragonError with correct code", func(t *testing.T) {
+	t.Run("creates QRDBError with correct code", func(t *testing.T) {
 		err := NewParameterNotFoundError("/app/missing")
 		require.NotNil(t, err)
 		assert.Equal(t, ErrNotFound, err.Code)
@@ -146,7 +146,7 @@ func TestNewParameterNotFoundError(t *testing.T) {
 }
 
 func TestNewParameterExistsError(t *testing.T) {
-	t.Run("creates DragonError with correct code", func(t *testing.T) {
+	t.Run("creates QRDBError with correct code", func(t *testing.T) {
 		err := NewParameterExistsError("/app/existing")
 		require.NotNil(t, err)
 		assert.Equal(t, ErrAlreadyExists, err.Code)
@@ -165,7 +165,7 @@ func TestNewParameterExistsError(t *testing.T) {
 }
 
 func TestNewInvalidPathError(t *testing.T) {
-	t.Run("creates DragonError with correct code", func(t *testing.T) {
+	t.Run("creates QRDBError with correct code", func(t *testing.T) {
 		err := NewInvalidPathError("bad//path", "double slash")
 		require.NotNil(t, err)
 		assert.Equal(t, ErrInvalidInput, err.Code)
@@ -185,7 +185,7 @@ func TestNewInvalidPathError(t *testing.T) {
 }
 
 func TestNewParameterExpiredError(t *testing.T) {
-	t.Run("creates DragonError with correct code", func(t *testing.T) {
+	t.Run("creates QRDBError with correct code", func(t *testing.T) {
 		expiry := time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC)
 		err := NewParameterExpiredError("/app/secret", expiry)
 		require.NotNil(t, err)
@@ -206,7 +206,7 @@ func TestNewParameterExpiredError(t *testing.T) {
 }
 
 func TestNewParameterEncryptionError(t *testing.T) {
-	t.Run("creates DragonError with encryption code", func(t *testing.T) {
+	t.Run("creates QRDBError with encryption code", func(t *testing.T) {
 		inner := errors.New("AES key too short")
 		err := NewParameterEncryptionError("encrypt", inner)
 		require.NotNil(t, err)
@@ -226,7 +226,7 @@ func TestNewParameterEncryptionError(t *testing.T) {
 }
 
 func TestNewParameterDecryptionError(t *testing.T) {
-	t.Run("creates DragonError with decryption code", func(t *testing.T) {
+	t.Run("creates QRDBError with decryption code", func(t *testing.T) {
 		inner := errors.New("cipher: message authentication failed")
 		err := NewParameterDecryptionError("decrypt", inner)
 		require.NotNil(t, err)
@@ -245,7 +245,7 @@ func TestNewParameterDecryptionError(t *testing.T) {
 }
 
 func TestNewParameterValueTooLargeError(t *testing.T) {
-	t.Run("creates DragonError with correct fields", func(t *testing.T) {
+	t.Run("creates QRDBError with correct fields", func(t *testing.T) {
 		err := NewParameterValueTooLargeError("/big/val", 65536, 4096)
 		require.NotNil(t, err)
 		assert.Equal(t, ErrInvalidInput, err.Code)
@@ -260,7 +260,7 @@ func TestNewParameterValueTooLargeError(t *testing.T) {
 }
 
 func TestNewParameterPathTooLongError(t *testing.T) {
-	t.Run("creates DragonError with correct fields", func(t *testing.T) {
+	t.Run("creates QRDBError with correct fields", func(t *testing.T) {
 		err := NewParameterPathTooLongError("/very/long", 2048, 512)
 		require.NotNil(t, err)
 		assert.Equal(t, ErrInvalidInput, err.Code)
@@ -274,7 +274,7 @@ func TestNewParameterPathTooLongError(t *testing.T) {
 }
 
 func TestNewParameterTagLimitError(t *testing.T) {
-	t.Run("creates DragonError with correct fields", func(t *testing.T) {
+	t.Run("creates QRDBError with correct fields", func(t *testing.T) {
 		err := NewParameterTagLimitError("/tagged", 55, 50)
 		require.NotNil(t, err)
 		assert.Equal(t, ErrInvalidInput, err.Code)

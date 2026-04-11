@@ -23,7 +23,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	dragonErrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
+	qrdbErrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
 	"github.com/jeremyhahn/go-qrdb/pkg/interfaces"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 )
@@ -225,9 +225,9 @@ func TestNewVectorService_LoadNamespacesError(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, svc)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrInternal, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrInternal, qrdbErr.Code)
 	assert.Contains(t, err.Error(), "load namespaces failed")
 }
 
@@ -238,7 +238,7 @@ func TestNewVectorService_LoadNamespacesError(t *testing.T) {
 func TestWithRaftNode_Option(t *testing.T) {
 	storage := newVecMockStorage()
 	logger := newVecTestLogger()
-	// reuse existing mockRaftNode from dragondb_test.go
+	// reuse existing mockRaftNode from qrdb_test.go
 	raftNode := &mockRaftNode{}
 
 	svc, err := NewVectorService(storage, logger, WithRaftNode(raftNode))
@@ -309,8 +309,8 @@ func TestVectorService_CreateNamespace_WithIndexType(t *testing.T) {
 	resp, err := svc.CreateNamespace(context.Background(), req)
 	if err != nil {
 		// Expected: HNSW stub fails without vector build tag
-		var dragonErr *dragonErrors.DragonError
-		require.True(t, errors.As(err, &dragonErr))
+		var qrdbErr *qrdbErrors.QRDBError
+		require.True(t, errors.As(err, &qrdbErr))
 	} else {
 		require.NotNil(t, resp)
 		assert.Equal(t, "test-ns", resp.Namespace)
@@ -334,9 +334,9 @@ func TestVectorService_CreateNamespace_EmptyName(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrInvalidInput, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
 }
 
 func TestVectorService_CreateNamespace_AlreadyExists(t *testing.T) {
@@ -362,9 +362,9 @@ func TestVectorService_CreateNamespace_AlreadyExists(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrAlreadyExists, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrAlreadyExists, qrdbErr.Code)
 }
 
 func TestVectorService_DeleteNamespace_EmptyNamespace(t *testing.T) {

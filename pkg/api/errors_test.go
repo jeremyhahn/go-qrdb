@@ -84,8 +84,8 @@ func TestNotImplementedError(t *testing.T) {
 
 func TestUnknownToolError(t *testing.T) {
 	t.Run("Error", func(t *testing.T) {
-		e := &UnknownToolError{Tool: "dragondb_foo"}
-		if got := e.Error(); got != "unknown tool: dragondb_foo" {
+		e := &UnknownToolError{Tool: "qrdb_foo"}
+		if got := e.Error(); got != "unknown tool: qrdb_foo" {
 			t.Errorf("got %q", got)
 		}
 	})
@@ -793,22 +793,22 @@ func TestUnknownFederationSubOpError(t *testing.T) {
 func TestAuthenticationErrors(t *testing.T) {
 	tests := []struct {
 		name        string
-		constructor func() *dberrors.DragonError
+		constructor func() *dberrors.QRDBError
 		wantMsg     string
 		wantCode    dberrors.ErrorCode
 	}{
-		{"AuthenticationDisabled", func() *dberrors.DragonError { return NewAuthenticationDisabledError("login") }, "authentication is not enabled", dberrors.ErrConfiguration},
-		{"PasswordAuthDisabled", func() *dberrors.DragonError { return NewPasswordAuthDisabledError("login") }, "password-based authentication is disabled; use mTLS certificate or FIDO2/WebAuthn authentication", dberrors.ErrUnauthorized},
-		{"TokenRequired", func() *dberrors.DragonError { return NewTokenRequiredError("api") }, "authentication token required", dberrors.ErrUnauthorized},
-		{"TokenRevoked", func() *dberrors.DragonError { return NewTokenRevokedError("api") }, "token has been revoked", dberrors.ErrUnauthorized},
-		{"InsufficientPermissions", func() *dberrors.DragonError { return NewInsufficientPermissionsError("admin") }, "insufficient permissions", dberrors.ErrForbidden},
-		{"InvalidCredentials", func() *dberrors.DragonError { return NewInvalidCredentialsError("login") }, "invalid credentials", dberrors.ErrUnauthorized},
-		{"CredentialsRequired", func() *dberrors.DragonError { return NewCredentialsRequiredError("login") }, "username and password are required", dberrors.ErrUnauthorized},
-		{"NoPasswordSet", func() *dberrors.DragonError { return NewNoPasswordSetError("login") }, "user has no password set; use IAM authentication", dberrors.ErrUnauthorized},
-		{"InvalidTokenClaims", func() *dberrors.DragonError { return NewInvalidTokenClaimsError("auth") }, "invalid token claims", dberrors.ErrUnauthorized},
-		{"InvalidRefreshToken", func() *dberrors.DragonError { return NewInvalidRefreshTokenError("refresh") }, "invalid refresh token", dberrors.ErrUnauthorized},
-		{"InvalidUserType", func() *dberrors.DragonError { return NewInvalidUserTypeError("auth") }, "invalid user type", dberrors.ErrInternal},
-		{"RolesNotFound", func() *dberrors.DragonError { return NewRolesNotFoundError("assign") }, "one or more roles do not exist", dberrors.ErrInvalidInput},
+		{"AuthenticationDisabled", func() *dberrors.QRDBError { return NewAuthenticationDisabledError("login") }, "authentication is not enabled", dberrors.ErrConfiguration},
+		{"PasswordAuthDisabled", func() *dberrors.QRDBError { return NewPasswordAuthDisabledError("login") }, "password-based authentication is disabled; use mTLS certificate or FIDO2/WebAuthn authentication", dberrors.ErrUnauthorized},
+		{"TokenRequired", func() *dberrors.QRDBError { return NewTokenRequiredError("api") }, "authentication token required", dberrors.ErrUnauthorized},
+		{"TokenRevoked", func() *dberrors.QRDBError { return NewTokenRevokedError("api") }, "token has been revoked", dberrors.ErrUnauthorized},
+		{"InsufficientPermissions", func() *dberrors.QRDBError { return NewInsufficientPermissionsError("admin") }, "insufficient permissions", dberrors.ErrForbidden},
+		{"InvalidCredentials", func() *dberrors.QRDBError { return NewInvalidCredentialsError("login") }, "invalid credentials", dberrors.ErrUnauthorized},
+		{"CredentialsRequired", func() *dberrors.QRDBError { return NewCredentialsRequiredError("login") }, "username and password are required", dberrors.ErrUnauthorized},
+		{"NoPasswordSet", func() *dberrors.QRDBError { return NewNoPasswordSetError("login") }, "user has no password set; use IAM authentication", dberrors.ErrUnauthorized},
+		{"InvalidTokenClaims", func() *dberrors.QRDBError { return NewInvalidTokenClaimsError("auth") }, "invalid token claims", dberrors.ErrUnauthorized},
+		{"InvalidRefreshToken", func() *dberrors.QRDBError { return NewInvalidRefreshTokenError("refresh") }, "invalid refresh token", dberrors.ErrUnauthorized},
+		{"InvalidUserType", func() *dberrors.QRDBError { return NewInvalidUserTypeError("auth") }, "invalid user type", dberrors.ErrInternal},
+		{"RolesNotFound", func() *dberrors.QRDBError { return NewRolesNotFoundError("assign") }, "one or more roles do not exist", dberrors.ErrInvalidInput},
 	}
 
 	for _, tt := range tests {

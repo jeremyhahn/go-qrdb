@@ -3,9 +3,9 @@
 // Copyright (c) 2025 Jeremy Hahn
 // Copyright (c) 2025 Automate The Things, LLC
 //
-// This file is part of go-dragondb.
+// This file is part of go-qrdb.
 //
-// go-dragondb is dual-licensed:
+// go-qrdb is dual-licensed:
 //
 // 1. GNU Affero General Public License v3.0 (AGPL-3.0)
 //    See LICENSE file or visit https://www.gnu.org/licenses/agpl-3.0.html
@@ -575,8 +575,8 @@ func TestIsTimeSeriesError(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "non-time series dragon error",
-			err:  &DragonError{Code: ErrNotFound, Op: "test"},
+			name: "non-time series qrdb error",
+			err:  &QRDBError{Code: ErrNotFound, Op: "test"},
 			want: false,
 		},
 		{
@@ -617,8 +617,8 @@ func TestIsTimeSeriesNotFound(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "different dragon error",
-			err:  &DragonError{Code: ErrNotFound, Op: "test"},
+			name: "different qrdb error",
+			err:  &QRDBError{Code: ErrNotFound, Op: "test"},
 			want: false,
 		},
 		{
@@ -904,9 +904,9 @@ func TestTimeSeriesErrorUnwrap(t *testing.T) {
 		t.Error("errors.As should find TimeSeriesNotFoundError")
 	}
 
-	var de *DragonError
+	var de *QRDBError
 	if !errors.As(notFoundErr, &de) {
-		t.Error("errors.As should find DragonError")
+		t.Error("errors.As should find QRDBError")
 	}
 }
 
@@ -935,7 +935,7 @@ func TestTimeSeriesErrorCodes(t *testing.T) {
 func TestTimeSeriesErrorRetryable(t *testing.T) {
 	tests := []struct {
 		name string
-		err  *DragonError
+		err  *QRDBError
 		want bool
 	}{
 		{
@@ -989,7 +989,7 @@ func TestTimeSeriesErrorWithContext(t *testing.T) {
 func TestTimeSeriesErrorMessage(t *testing.T) {
 	tests := []struct {
 		name     string
-		err      *DragonError
+		err      *QRDBError
 		contains []string
 	}{
 		{

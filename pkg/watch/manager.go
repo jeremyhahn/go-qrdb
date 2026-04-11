@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Manager implements the original DragonDB watch manager with full-featured
+// Manager implements the original QRDB watch manager with full-featured
 // pub/sub for key change notifications including delta mode, stats, and
 // gRPC stream delivery.
 //

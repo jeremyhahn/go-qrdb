@@ -1,9 +1,9 @@
 // Copyright (c) 2025 Jeremy Hahn
 // Copyright (c) 2025 Automate The Things, LLC
 //
-// This file is part of go-dragondb.
+// This file is part of go-qrdb.
 //
-// go-dragondb is dual-licensed:
+// go-qrdb is dual-licensed:
 //
 // 1. GNU Affero General Public License v3.0 (AGPL-3.0)
 //    See LICENSE file or visit https://www.gnu.org/licenses/agpl-3.0.html
@@ -34,9 +34,9 @@ func (e *IVFConfigValidationError) Error() string {
 	return e.Message
 }
 
-// NewIVFConfigValidationError creates a DragonError for an IVF config validation failure.
-func NewIVFConfigValidationError(op, message string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewIVFConfigValidationError creates a QRDBError for an IVF config validation failure.
+func NewIVFConfigValidationError(op, message string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &IVFConfigValidationError{Message: message},
@@ -58,9 +58,9 @@ func (e *IVFInvalidConfigError) Unwrap() error {
 	return e.Cause
 }
 
-// NewIVFInvalidConfigError creates a DragonError for an invalid IVF configuration.
-func NewIVFInvalidConfigError(op string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewIVFInvalidConfigError creates a QRDBError for an invalid IVF configuration.
+func NewIVFInvalidConfigError(op string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &IVFInvalidConfigError{Cause: cause},
@@ -75,9 +75,9 @@ func (e *IVFEmptyTrainingSetError) Error() string {
 	return "cannot train on empty vector set"
 }
 
-// NewIVFEmptyTrainingSetError creates a DragonError for training on an empty set.
-func NewIVFEmptyTrainingSetError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewIVFEmptyTrainingSetError creates a QRDBError for training on an empty set.
+func NewIVFEmptyTrainingSetError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &IVFEmptyTrainingSetError{},
@@ -99,9 +99,9 @@ func (e *IVFDimensionMismatchError) Error() string {
 	return fmt.Sprintf("vector has %d dimensions, expected %d", e.Got, e.Expected)
 }
 
-// NewIVFDimensionMismatchError creates a DragonError for a vector dimension mismatch.
-func NewIVFDimensionMismatchError(op string, index, got, expected int) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewIVFDimensionMismatchError creates a QRDBError for a vector dimension mismatch.
+func NewIVFDimensionMismatchError(op string, index, got, expected int) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &IVFDimensionMismatchError{Index: index, Got: got, Expected: expected},
@@ -123,9 +123,9 @@ func (e *IVFClusteringFailedError) Unwrap() error {
 	return e.Cause
 }
 
-// NewIVFClusteringFailedError creates a DragonError for a clustering failure.
-func NewIVFClusteringFailedError(op string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewIVFClusteringFailedError creates a QRDBError for a clustering failure.
+func NewIVFClusteringFailedError(op string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   op,
 		Err:  &IVFClusteringFailedError{Cause: cause},
@@ -149,9 +149,9 @@ func (e *IVFNotTrainedError) suffix() string {
 	return ""
 }
 
-// NewIVFNotTrainedError creates a DragonError for an untrained index operation.
-func NewIVFNotTrainedError(op, operation string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewIVFNotTrainedError creates a QRDBError for an untrained index operation.
+func NewIVFNotTrainedError(op, operation string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrPreconditionFailed,
 		Op:   op,
 		Err:  &IVFNotTrainedError{Operation: operation},
@@ -168,9 +168,9 @@ func (e *IVFDuplicateIDError) Error() string {
 	return "vector with ID " + e.ID + " already exists"
 }
 
-// NewIVFDuplicateIDError creates a DragonError for a duplicate vector ID.
-func NewIVFDuplicateIDError(op, id string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewIVFDuplicateIDError creates a QRDBError for a duplicate vector ID.
+func NewIVFDuplicateIDError(op, id string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrAlreadyExists,
 		Op:   op,
 		Err:  &IVFDuplicateIDError{ID: id},
@@ -187,9 +187,9 @@ func (e *IVFVectorNotFoundError) Error() string {
 	return "vector with ID " + e.ID + " not found"
 }
 
-// NewIVFVectorNotFoundError creates a DragonError for a missing vector.
-func NewIVFVectorNotFoundError(op, id string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewIVFVectorNotFoundError creates a QRDBError for a missing vector.
+func NewIVFVectorNotFoundError(op, id string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrNotFound,
 		Op:   op,
 		Err:  &IVFVectorNotFoundError{ID: id},
@@ -212,9 +212,9 @@ func (e *IVFSaveError) Unwrap() error {
 	return e.Cause
 }
 
-// NewIVFSaveError creates a DragonError for an IVF index save/load failure.
-func NewIVFSaveError(op, action string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewIVFSaveError creates a QRDBError for an IVF index save/load failure.
+func NewIVFSaveError(op, action string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrStorage,
 		Op:   op,
 		Err:  &IVFSaveError{Action: action, Cause: cause},
@@ -229,9 +229,9 @@ func (e *IVFUntrainedSaveError) Error() string {
 	return "cannot save untrained index"
 }
 
-// NewIVFUntrainedSaveError creates a DragonError for saving an untrained index.
-func NewIVFUntrainedSaveError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewIVFUntrainedSaveError creates a QRDBError for saving an untrained index.
+func NewIVFUntrainedSaveError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrPreconditionFailed,
 		Op:   op,
 		Err:  &IVFUntrainedSaveError{},
@@ -249,9 +249,9 @@ func (e *IVFQueryDimensionError) Error() string {
 	return fmt.Sprintf("query has %d dimensions, expected %d", e.Got, e.Expected)
 }
 
-// NewIVFQueryDimensionError creates a DragonError for a query dimension mismatch.
-func NewIVFQueryDimensionError(op string, got, expected int) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewIVFQueryDimensionError creates a QRDBError for a query dimension mismatch.
+func NewIVFQueryDimensionError(op string, got, expected int) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &IVFQueryDimensionError{Got: got, Expected: expected},
@@ -270,9 +270,9 @@ func (e *KMeansEmptyVectorSetError) Error() string {
 	return "cannot cluster empty vector set"
 }
 
-// NewKMeansEmptyVectorSetError creates a DragonError for clustering an empty set.
-func NewKMeansEmptyVectorSetError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewKMeansEmptyVectorSetError creates a QRDBError for clustering an empty set.
+func NewKMeansEmptyVectorSetError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &KMeansEmptyVectorSetError{},
@@ -290,9 +290,9 @@ func (e *KMeansInsufficientVectorsError) Error() string {
 	return fmt.Sprintf("cannot create %d clusters from %d vectors", e.Clusters, e.Vectors)
 }
 
-// NewKMeansInsufficientVectorsError creates a DragonError for insufficient vectors.
-func NewKMeansInsufficientVectorsError(op string, clusters, vectors int) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewKMeansInsufficientVectorsError creates a QRDBError for insufficient vectors.
+func NewKMeansInsufficientVectorsError(op string, clusters, vectors int) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &KMeansInsufficientVectorsError{Clusters: clusters, Vectors: vectors},
@@ -314,9 +314,9 @@ func (e *KMeansInitError) Unwrap() error {
 	return e.Cause
 }
 
-// NewKMeansInitError creates a DragonError for a centroid initialization failure.
-func NewKMeansInitError(op string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewKMeansInitError creates a QRDBError for a centroid initialization failure.
+func NewKMeansInitError(op string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   op,
 		Err:  &KMeansInitError{Cause: cause},
@@ -339,9 +339,9 @@ func (e *KMeansRecomputeError) Unwrap() error {
 	return e.Cause
 }
 
-// NewKMeansRecomputeError creates a DragonError for a centroid recompute failure.
-func NewKMeansRecomputeError(op string, iteration int, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewKMeansRecomputeError creates a QRDBError for a centroid recompute failure.
+func NewKMeansRecomputeError(op string, iteration int, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   op,
 		Err:  &KMeansRecomputeError{Iteration: iteration, Cause: cause},
@@ -368,9 +368,9 @@ func (e *HNSWPersistenceError) Unwrap() error {
 	return e.Cause
 }
 
-// NewHNSWPersistenceError creates a DragonError for an HNSW persistence failure.
-func NewHNSWPersistenceError(op, action string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewHNSWPersistenceError creates a QRDBError for an HNSW persistence failure.
+func NewHNSWPersistenceError(op, action string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrStorage,
 		Op:   op,
 		Err:  &HNSWPersistenceError{Action: action, Cause: cause},
@@ -397,9 +397,9 @@ func (e *RAGSearchError) Unwrap() error {
 	return e.Cause
 }
 
-// NewRAGSearchError creates a DragonError for a RAG search failure.
-func NewRAGSearchError(op, action string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewRAGSearchError creates a QRDBError for a RAG search failure.
+func NewRAGSearchError(op, action string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   op,
 		Err:  &RAGSearchError{Action: action, Cause: cause},

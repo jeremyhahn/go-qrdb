@@ -112,12 +112,12 @@ func TestIVFSimpleFieldErrors(t *testing.T) {
 	tests := []struct {
 		name    string
 		errFn   func() error
-		newFn   func() *dberrors.DragonError
+		newFn   func() *dberrors.QRDBError
 		wantMsg string
 	}{
-		{"DuplicateID", func() error { return &IVFDuplicateIDError{ID: "v1"} }, func() *dberrors.DragonError { return NewIVFDuplicateIDError("ivf.add", "v1") }, "vector with ID v1 already exists"},
-		{"VectorNotFound", func() error { return &IVFVectorNotFoundError{ID: "v2"} }, func() *dberrors.DragonError { return NewIVFVectorNotFoundError("ivf.get", "v2") }, "vector with ID v2 not found"},
-		{"UntrainedSave", func() error { return &IVFUntrainedSaveError{} }, func() *dberrors.DragonError { return NewIVFUntrainedSaveError("ivf.save") }, "cannot save untrained index"},
+		{"DuplicateID", func() error { return &IVFDuplicateIDError{ID: "v1"} }, func() *dberrors.QRDBError { return NewIVFDuplicateIDError("ivf.add", "v1") }, "vector with ID v1 already exists"},
+		{"VectorNotFound", func() error { return &IVFVectorNotFoundError{ID: "v2"} }, func() *dberrors.QRDBError { return NewIVFVectorNotFoundError("ivf.get", "v2") }, "vector with ID v2 not found"},
+		{"UntrainedSave", func() error { return &IVFUntrainedSaveError{} }, func() *dberrors.QRDBError { return NewIVFUntrainedSaveError("ivf.save") }, "cannot save untrained index"},
 	}
 
 	for _, tt := range tests {

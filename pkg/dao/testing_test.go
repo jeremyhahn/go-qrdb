@@ -3,9 +3,9 @@
 // Copyright (c) 2025 Jeremy Hahn
 // Copyright (c) 2025 Automate The Things, LLC
 //
-// This file is part of go-dragondb.
+// This file is part of go-qrdb.
 //
-// go-dragondb is dual-licensed:
+// go-qrdb is dual-licensed:
 //
 // 1. GNU Affero General Public License v3.0 (AGPL-3.0)
 //    See LICENSE file or visit https://www.gnu.org/licenses/agpl-3.0.html
@@ -55,7 +55,7 @@ func (m *memoryKVStore) Get(_ context.Context, key string) ([]byte, error) {
 
 	value, ok := m.data[key]
 	if !ok {
-		return nil, &dberrors.DragonError{Code: dberrors.ErrNotFound, Op: "kv.get"}
+		return nil, &dberrors.QRDBError{Code: dberrors.ErrNotFound, Op: "kv.get"}
 	}
 	valueCopy := make([]byte, len(value))
 	copy(valueCopy, value)

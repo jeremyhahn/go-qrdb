@@ -1,9 +1,9 @@
 // Copyright (c) 2025 Jeremy Hahn
 // Copyright (c) 2025 Automate The Things, LLC
 //
-// This file is part of go-dragondb.
+// This file is part of go-qrdb.
 //
-// go-dragondb is dual-licensed:
+// go-qrdb is dual-licensed:
 //
 // 1. GNU Affero General Public License v3.0 (AGPL-3.0)
 //    See LICENSE file or visit https://www.gnu.org/licenses/agpl-3.0.html
@@ -18,15 +18,15 @@ import (
 	"testing"
 )
 
-func TestDragonError_Error(t *testing.T) {
+func TestQRDBError_Error(t *testing.T) {
 	tests := []struct {
 		name string
-		err  *DragonError
+		err  *QRDBError
 		want string
 	}{
 		{
 			name: "with operation and underlying error",
-			err: &DragonError{
+			err: &QRDBError{
 				Code: ErrNotFound,
 				Op:   "storage.Get",
 				Err:  errors.New("key not found"),
@@ -35,7 +35,7 @@ func TestDragonError_Error(t *testing.T) {
 		},
 		{
 			name: "with operation only",
-			err: &DragonError{
+			err: &QRDBError{
 				Code: ErrTimeout,
 				Op:   "raft.Propose",
 			},
@@ -43,7 +43,7 @@ func TestDragonError_Error(t *testing.T) {
 		},
 		{
 			name: "with underlying error only",
-			err: &DragonError{
+			err: &QRDBError{
 				Code: ErrInternal,
 				Err:  errors.New("unexpected error"),
 			},
@@ -51,7 +51,7 @@ func TestDragonError_Error(t *testing.T) {
 		},
 		{
 			name: "code only",
-			err: &DragonError{
+			err: &QRDBError{
 				Code: ErrConflict,
 			},
 			want: "conflict",
@@ -61,15 +61,15 @@ func TestDragonError_Error(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := tt.err.Error(); got != tt.want {
-				t.Errorf("DragonError.Error() = %v, want %v", got, tt.want)
+				t.Errorf("QRDBError.Error() = %v, want %v", got, tt.want)
 			}
 		})
 	}
 }
 
-func TestDragonError_Is(t *testing.T) {
+func TestQRDBError_Is(t *testing.T) {
 	baseErr := errors.New("base error")
-	dragonErr := &DragonError{
+	qrdbErr := &QRDBError{
 		Code: ErrNotFound,
 		Op:   "test",
 		Err:  baseErr,
@@ -77,31 +77,31 @@ func TestDragonError_Is(t *testing.T) {
 
 	tests := []struct {
 		name   string
-		err    *DragonError
+		err    *QRDBError
 		target error
 		want   bool
 	}{
 		{
 			name:   "matches same code",
-			err:    dragonErr,
-			target: &DragonError{Code: ErrNotFound},
+			err:    qrdbErr,
+			target: &QRDBError{Code: ErrNotFound},
 			want:   true,
 		},
 		{
 			name:   "does not match different code",
-			err:    dragonErr,
-			target: &DragonError{Code: ErrTimeout},
+			err:    qrdbErr,
+			target: &QRDBError{Code: ErrTimeout},
 			want:   false,
 		},
 		{
 			name:   "matches underlying error",
-			err:    dragonErr,
+			err:    qrdbErr,
 			target: baseErr,
 			want:   true,
 		},
 		{
 			name:   "nil target",
-			err:    dragonErr,
+			err:    qrdbErr,
 			target: nil,
 			want:   false,
 		},
@@ -110,26 +110,26 @@ func TestDragonError_Is(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := tt.err.Is(tt.target); got != tt.want {
-				t.Errorf("DragonError.Is() = %v, want %v", got, tt.want)
+				t.Errorf("QRDBError.Is() = %v, want %v", got, tt.want)
 			}
 		})
 	}
 }
 
-func TestDragonError_Unwrap(t *testing.T) {
+func TestQRDBError_Unwrap(t *testing.T) {
 	baseErr := errors.New("base error")
-	dragonErr := &DragonError{
+	qrdbErr := &QRDBError{
 		Code: ErrInternal,
 		Err:  baseErr,
 	}
 
-	if got := dragonErr.Unwrap(); !errors.Is(got, baseErr) {
-		t.Errorf("DragonError.Unwrap() = %v, want %v", got, baseErr)
+	if got := qrdbErr.Unwrap(); !errors.Is(got, baseErr) {
+		t.Errorf("QRDBError.Unwrap() = %v, want %v", got, baseErr)
 	}
 }
 
-func TestDragonError_WithContext(t *testing.T) {
-	err := &DragonError{Code: ErrNotFound}
+func TestQRDBError_WithContext(t *testing.T) {
+	err := &QRDBError{Code: ErrNotFound}
 	err = err.WithContext("key", "test-key")
 	err = err.WithContext("table", "users")
 
@@ -146,30 +146,30 @@ func TestDragonError_WithContext(t *testing.T) {
 	}
 }
 
-func TestDragonError_IsRetryable(t *testing.T) {
+func TestQRDBError_IsRetryable(t *testing.T) {
 	tests := []struct {
 		name string
-		err  *DragonError
+		err  *QRDBError
 		want bool
 	}{
 		{
 			name: "timeout is retryable",
-			err:  &DragonError{Code: ErrTimeout},
+			err:  &QRDBError{Code: ErrTimeout},
 			want: true,
 		},
 		{
 			name: "unavailable is retryable",
-			err:  &DragonError{Code: ErrUnavailable},
+			err:  &QRDBError{Code: ErrUnavailable},
 			want: true,
 		},
 		{
 			name: "not found is not retryable",
-			err:  &DragonError{Code: ErrNotFound},
+			err:  &QRDBError{Code: ErrNotFound},
 			want: false,
 		},
 		{
 			name: "explicit retry flag",
-			err:  &DragonError{Code: ErrNotFound, Retry: true},
+			err:  &QRDBError{Code: ErrNotFound, Retry: true},
 			want: true,
 		},
 	}
@@ -177,7 +177,7 @@ func TestDragonError_IsRetryable(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := tt.err.IsRetryable(); got != tt.want {
-				t.Errorf("DragonError.IsRetryable() = %v, want %v", got, tt.want)
+				t.Errorf("QRDBError.IsRetryable() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -237,8 +237,8 @@ func TestWrap(t *testing.T) {
 			wantNil: false,
 		},
 		{
-			name:    "wrap DragonError",
-			err:     &DragonError{Code: ErrNotFound, Op: "inner"},
+			name:    "wrap QRDBError",
+			err:     &QRDBError{Code: ErrNotFound, Op: "inner"},
 			code:    ErrStorage,
 			op:      "outer",
 			wantNil: false,
@@ -261,9 +261,9 @@ func TestWrap(t *testing.T) {
 				return
 			}
 
-			var de *DragonError
+			var de *QRDBError
 			if !errors.As(got, &de) {
-				t.Error("Wrap() did not return DragonError")
+				t.Error("Wrap() did not return QRDBError")
 				return
 			}
 
@@ -337,7 +337,7 @@ func TestCode(t *testing.T) {
 		want ErrorCode
 	}{
 		{
-			name: "DragonError",
+			name: "QRDBError",
 			err:  New(ErrNotFound, "test", "not found"),
 			want: ErrNotFound,
 		},
@@ -369,7 +369,7 @@ func TestOperation(t *testing.T) {
 		want string
 	}{
 		{
-			name: "DragonError with op",
+			name: "QRDBError with op",
 			err:  New(ErrNotFound, "storage.Get", "not found"),
 			want: "storage.Get",
 		},
@@ -684,13 +684,13 @@ func TestIsQuotaExceeded(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "dragon error with resource exhausted code",
+			name: "qrdb error with resource exhausted code",
 			err:  NewQuotaExceededError("storage", "ns", "tenant", 100, 90, 20),
 			want: true,
 		},
 		{
 			name: "different error",
-			err:  &DragonError{Code: ErrNotFound, Op: "test"},
+			err:  &QRDBError{Code: ErrNotFound, Op: "test"},
 			want: false,
 		},
 		{
@@ -722,12 +722,12 @@ func TestIsResourceExhausted(t *testing.T) {
 		},
 		{
 			name: "resource exhausted error",
-			err:  &DragonError{Code: ErrResourceExhausted},
+			err:  &QRDBError{Code: ErrResourceExhausted},
 			want: true,
 		},
 		{
 			name: "different error code",
-			err:  &DragonError{Code: ErrNotFound},
+			err:  &QRDBError{Code: ErrNotFound},
 			want: false,
 		},
 	}
@@ -758,13 +758,13 @@ func TestIsMissingJustification(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "dragon error with missing justification code",
-			err:  &DragonError{Code: ErrMissingJustification},
+			name: "qrdb error with missing justification code",
+			err:  &QRDBError{Code: ErrMissingJustification},
 			want: true,
 		},
 		{
 			name: "different error code",
-			err:  &DragonError{Code: ErrNotFound},
+			err:  &QRDBError{Code: ErrNotFound},
 			want: false,
 		},
 		{
@@ -800,13 +800,13 @@ func TestIsMissingUserContext(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "dragon error with missing user context code",
-			err:  &DragonError{Code: ErrMissingUserContext},
+			name: "qrdb error with missing user context code",
+			err:  &QRDBError{Code: ErrMissingUserContext},
 			want: true,
 		},
 		{
 			name: "different error code",
-			err:  &DragonError{Code: ErrNotFound},
+			err:  &QRDBError{Code: ErrNotFound},
 			want: false,
 		},
 		{

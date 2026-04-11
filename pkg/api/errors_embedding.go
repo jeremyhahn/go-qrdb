@@ -1,9 +1,9 @@
 // Copyright (c) 2025 Jeremy Hahn
 // Copyright (c) 2025 Automate The Things, LLC
 //
-// This file is part of go-dragondb.
+// This file is part of go-qrdb.
 //
-// go-dragondb is dual-licensed:
+// go-qrdb is dual-licensed:
 //
 // 1. GNU Affero General Public License v3.0 (AGPL-3.0)
 //    See LICENSE file or visit https://www.gnu.org/licenses/agpl-3.0.html
@@ -40,9 +40,9 @@ func (e *EmbeddingInvalidInputError) Unwrap() error {
 	return e.Sentinel
 }
 
-// NewEmbeddingInvalidInputError creates a DragonError for invalid embedding input.
-func NewEmbeddingInvalidInputError(op, message string, sentinel error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewEmbeddingInvalidInputError creates a QRDBError for invalid embedding input.
+func NewEmbeddingInvalidInputError(op, message string, sentinel error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &EmbeddingInvalidInputError{Message: message, Sentinel: sentinel},
@@ -57,9 +57,9 @@ func (e *EmbeddingEmptyResponseError) Error() string {
 	return "no embeddings returned"
 }
 
-// NewEmbeddingEmptyResponseError creates a DragonError for an empty embedding response.
-func NewEmbeddingEmptyResponseError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewEmbeddingEmptyResponseError creates a QRDBError for an empty embedding response.
+func NewEmbeddingEmptyResponseError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   op,
 		Err:  &EmbeddingEmptyResponseError{},
@@ -74,9 +74,9 @@ func (e *EmbeddingEmptyInResponseError) Error() string {
 	return "no embeddings in response"
 }
 
-// NewEmbeddingEmptyInResponseError creates a DragonError for an empty parsed embedding response.
-func NewEmbeddingEmptyInResponseError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewEmbeddingEmptyInResponseError creates a QRDBError for an empty parsed embedding response.
+func NewEmbeddingEmptyInResponseError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   op,
 		Err:  &EmbeddingEmptyInResponseError{},
@@ -99,9 +99,9 @@ func (e *EmbeddingRetryExhaustedError) Unwrap() error {
 	return e.Cause
 }
 
-// NewEmbeddingRetryExhaustedError creates a DragonError for exhausted retries.
-func NewEmbeddingRetryExhaustedError(op string, retries int, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewEmbeddingRetryExhaustedError creates a QRDBError for exhausted retries.
+func NewEmbeddingRetryExhaustedError(op string, retries int, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrUnavailable,
 		Op:   op,
 		Err:  &EmbeddingRetryExhaustedError{Retries: retries, Cause: cause},
@@ -123,9 +123,9 @@ func (e *EmbeddingMarshalRequestError) Unwrap() error {
 	return e.Cause
 }
 
-// NewEmbeddingMarshalRequestError creates a DragonError for a request marshaling failure.
-func NewEmbeddingMarshalRequestError(op string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewEmbeddingMarshalRequestError creates a QRDBError for a request marshaling failure.
+func NewEmbeddingMarshalRequestError(op string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   op,
 		Err:  &EmbeddingMarshalRequestError{Cause: cause},
@@ -147,9 +147,9 @@ func (e *EmbeddingCreateRequestError) Unwrap() error {
 	return e.Cause
 }
 
-// NewEmbeddingCreateRequestError creates a DragonError for a request creation failure.
-func NewEmbeddingCreateRequestError(op string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewEmbeddingCreateRequestError creates a QRDBError for a request creation failure.
+func NewEmbeddingCreateRequestError(op string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   op,
 		Err:  &EmbeddingCreateRequestError{Cause: cause},
@@ -175,18 +175,18 @@ func (e *EmbeddingProviderUnavailableError) Unwrap() error {
 	return e.Cause
 }
 
-// NewEmbeddingProviderUnavailableError creates a DragonError for an unavailable provider.
-func NewEmbeddingProviderUnavailableError(op string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewEmbeddingProviderUnavailableError creates a QRDBError for an unavailable provider.
+func NewEmbeddingProviderUnavailableError(op string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrUnavailable,
 		Op:   op,
 		Err:  &EmbeddingProviderUnavailableError{Cause: cause},
 	}
 }
 
-// NewEmbeddingServerNotRunningError creates a DragonError for a server that is not running.
-func NewEmbeddingServerNotRunningError(op, url string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewEmbeddingServerNotRunningError creates a QRDBError for a server that is not running.
+func NewEmbeddingServerNotRunningError(op, url string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrUnavailable,
 		Op:   op,
 		Err:  &EmbeddingProviderUnavailableError{Detail: "server not running at " + url},
@@ -208,9 +208,9 @@ func (e *EmbeddingReadResponseError) Unwrap() error {
 	return e.Cause
 }
 
-// NewEmbeddingReadResponseError creates a DragonError for a response read failure.
-func NewEmbeddingReadResponseError(op string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewEmbeddingReadResponseError creates a QRDBError for a response read failure.
+func NewEmbeddingReadResponseError(op string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   op,
 		Err:  &EmbeddingReadResponseError{Cause: cause},
@@ -232,9 +232,9 @@ func (e *EmbeddingUnmarshalResponseError) Unwrap() error {
 	return e.Cause
 }
 
-// NewEmbeddingUnmarshalResponseError creates a DragonError for a response unmarshal failure.
-func NewEmbeddingUnmarshalResponseError(op string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewEmbeddingUnmarshalResponseError creates a QRDBError for a response unmarshal failure.
+func NewEmbeddingUnmarshalResponseError(op string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   op,
 		Err:  &EmbeddingUnmarshalResponseError{Cause: cause},
@@ -251,9 +251,9 @@ func (e *EmbeddingInvalidIndexError) Error() string {
 	return "invalid embedding index: " + strconv.Itoa(e.Index)
 }
 
-// NewEmbeddingInvalidIndexError creates a DragonError for an invalid embedding index.
-func NewEmbeddingInvalidIndexError(op string, index int) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewEmbeddingInvalidIndexError creates a QRDBError for an invalid embedding index.
+func NewEmbeddingInvalidIndexError(op string, index int) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   op,
 		Err:  &EmbeddingInvalidIndexError{Index: index},
@@ -270,9 +270,9 @@ func (e *EmbeddingEmptyAtIndexError) Error() string {
 	return "received empty embedding at index " + strconv.Itoa(e.Index)
 }
 
-// NewEmbeddingEmptyAtIndexError creates a DragonError for an empty embedding at a specific index.
-func NewEmbeddingEmptyAtIndexError(op string, index int) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewEmbeddingEmptyAtIndexError creates a QRDBError for an empty embedding at a specific index.
+func NewEmbeddingEmptyAtIndexError(op string, index int) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   op,
 		Err:  &EmbeddingEmptyAtIndexError{Index: index},
@@ -289,9 +289,9 @@ func (e *EmbeddingMissingAtIndexError) Error() string {
 	return "missing embedding at index " + strconv.Itoa(e.Index)
 }
 
-// NewEmbeddingMissingAtIndexError creates a DragonError for a missing embedding at a specific index.
-func NewEmbeddingMissingAtIndexError(op string, index int) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewEmbeddingMissingAtIndexError creates a QRDBError for a missing embedding at a specific index.
+func NewEmbeddingMissingAtIndexError(op string, index int) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   op,
 		Err:  &EmbeddingMissingAtIndexError{Index: index},
@@ -309,9 +309,9 @@ func (e *EmbeddingDimensionsMismatchError) Error() string {
 	return fmt.Sprintf("dimensions mismatch: expected %d dimensions, got %d", e.Expected, e.Received)
 }
 
-// NewEmbeddingDimensionsMismatchError creates a DragonError for a dimensions mismatch.
-func NewEmbeddingDimensionsMismatchError(op string, expected, received int) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewEmbeddingDimensionsMismatchError creates a QRDBError for a dimensions mismatch.
+func NewEmbeddingDimensionsMismatchError(op string, expected, received int) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &EmbeddingDimensionsMismatchError{Expected: expected, Received: received},
@@ -338,8 +338,8 @@ func (e *EmbeddingHTTPError) Unwrap() error {
 	return e.Sentinel
 }
 
-// NewEmbeddingHTTPError creates a DragonError for an HTTP embedding provider error.
-func NewEmbeddingHTTPError(op string, statusCode int, message string, sentinel error) *dberrors.DragonError {
+// NewEmbeddingHTTPError creates a QRDBError for an HTTP embedding provider error.
+func NewEmbeddingHTTPError(op string, statusCode int, message string, sentinel error) *dberrors.QRDBError {
 	code := dberrors.ErrInternal
 	if sentinel != nil {
 		switch {
@@ -355,25 +355,25 @@ func NewEmbeddingHTTPError(op string, statusCode int, message string, sentinel e
 			code = dberrors.ErrUnavailable
 		}
 	}
-	return &dberrors.DragonError{
+	return &dberrors.QRDBError{
 		Code: code,
 		Op:   op,
 		Err:  &EmbeddingHTTPError{StatusCode: statusCode, Message: message, Sentinel: sentinel},
 	}
 }
 
-// NewEmbeddingHTTPModelNotFoundError creates a DragonError for a model not found HTTP error.
-func NewEmbeddingHTTPModelNotFoundError(op, model, message string, sentinel error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewEmbeddingHTTPModelNotFoundError creates a QRDBError for a model not found HTTP error.
+func NewEmbeddingHTTPModelNotFoundError(op, model, message string, sentinel error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrNotFound,
 		Op:   op,
 		Err:  &EmbeddingHTTPError{StatusCode: 404, Message: "model '" + model + "' - " + message, Sentinel: sentinel},
 	}
 }
 
-// NewEmbeddingHTTPUnknownError creates a DragonError for an unknown HTTP status error.
-func NewEmbeddingHTTPUnknownError(op string, statusCode int, message string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewEmbeddingHTTPUnknownError creates a QRDBError for an unknown HTTP status error.
+func NewEmbeddingHTTPUnknownError(op string, statusCode int, message string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   op,
 		Err:  &EmbeddingHTTPError{StatusCode: statusCode, Message: message},
@@ -390,9 +390,9 @@ func (e *EmbeddingProviderAlreadyRegisteredError) Error() string {
 	return "provider " + e.Name + " already registered"
 }
 
-// NewEmbeddingProviderAlreadyRegisteredError creates a DragonError for a duplicate provider registration.
-func NewEmbeddingProviderAlreadyRegisteredError(op, name string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewEmbeddingProviderAlreadyRegisteredError creates a QRDBError for a duplicate provider registration.
+func NewEmbeddingProviderAlreadyRegisteredError(op, name string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrAlreadyExists,
 		Op:   op,
 		Err:  &EmbeddingProviderAlreadyRegisteredError{Name: name},
@@ -425,9 +425,9 @@ func (e *EmbeddingCloseError) Error() string {
 	return fmt.Sprintf("errors closing providers: %v", e.Errors)
 }
 
-// NewEmbeddingCloseError creates a DragonError for errors closing providers.
-func NewEmbeddingCloseError(op string, errs []error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewEmbeddingCloseError creates a QRDBError for errors closing providers.
+func NewEmbeddingCloseError(op string, errs []error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   op,
 		Err:  &EmbeddingCloseError{Errors: errs},
@@ -442,9 +442,9 @@ func (e *EmbeddingCacheCapacityError) Error() string {
 	return "capacity must be positive"
 }
 
-// NewEmbeddingCacheCapacityError creates a DragonError for an invalid cache capacity.
-func NewEmbeddingCacheCapacityError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewEmbeddingCacheCapacityError creates a QRDBError for an invalid cache capacity.
+func NewEmbeddingCacheCapacityError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &EmbeddingCacheCapacityError{},
@@ -470,9 +470,9 @@ func (e *EmbeddingModelNotFoundError) Unwrap() error {
 	return e.Sentinel
 }
 
-// NewEmbeddingModelNotFoundError creates a DragonError for a model not found condition.
-func NewEmbeddingModelNotFoundError(op, model string, sentinel error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewEmbeddingModelNotFoundError creates a QRDBError for a model not found condition.
+func NewEmbeddingModelNotFoundError(op, model string, sentinel error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrNotFound,
 		Op:   op,
 		Err:  &EmbeddingModelNotFoundError{Model: model, Sentinel: sentinel},

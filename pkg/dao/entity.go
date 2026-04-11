@@ -1,9 +1,9 @@
 // Copyright (c) 2025 Jeremy Hahn
 // Copyright (c) 2025 Automate The Things, LLC
 //
-// This file is part of go-dragondb.
+// This file is part of go-qrdb.
 //
-// go-dragondb is dual-licensed:
+// go-qrdb is dual-licensed:
 //
 // 1. GNU Affero General Public License v3.0 (AGPL-3.0)
 //    See LICENSE file or visit https://www.gnu.org/licenses/agpl-3.0.html
@@ -11,9 +11,9 @@
 // 2. Commercial License
 //    Contact licensing@automatethethings.com for commercial licensing options.
 
-// Package dao provides a generic Data Access Object layer for DragonDB.
+// Package dao provides a generic Data Access Object layer for QRDB.
 // It offers type-safe CRUD operations with pagination support, working
-// seamlessly with all DragonDB storage backends (Raft, PebbleDB, Memory).
+// seamlessly with all QRDB storage backends (Raft, PebbleDB, Memory).
 package dao
 
 // Entity is the base interface for all persistable entities.

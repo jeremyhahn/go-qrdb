@@ -1,9 +1,9 @@
 // Copyright (c) 2025 Jeremy Hahn
 // Copyright (c) 2025 Automate The Things, LLC
 //
-// This file is part of go-dragondb.
+// This file is part of go-qrdb.
 //
-// go-dragondb is dual-licensed:
+// go-qrdb is dual-licensed:
 //
 // 1. GNU Affero General Public License v3.0 (AGPL-3.0)
 //    See LICENSE file or visit https://www.gnu.org/licenses/agpl-3.0.html
@@ -28,7 +28,7 @@ func TestWrapf(t *testing.T) {
 
 		require.Error(t, err)
 
-		var de *DragonError
+		var de *QRDBError
 		require.ErrorAs(t, err, &de)
 		assert.Equal(t, ErrStorage, de.Code)
 		assert.Equal(t, "storage.Get", de.Op)
@@ -50,9 +50,9 @@ func TestWrapf(t *testing.T) {
 	})
 }
 
-func TestDragonError_WithRetry(t *testing.T) {
+func TestQRDBError_WithRetry(t *testing.T) {
 	t.Run("set retry to true", func(t *testing.T) {
-		err := &DragonError{Code: ErrNotFound}
+		err := &QRDBError{Code: ErrNotFound}
 		assert.False(t, err.IsRetryable())
 
 		err = err.WithRetry(true)
@@ -60,7 +60,7 @@ func TestDragonError_WithRetry(t *testing.T) {
 	})
 
 	t.Run("set retry to false", func(t *testing.T) {
-		err := &DragonError{Code: ErrTimeout, Retry: true}
+		err := &QRDBError{Code: ErrTimeout, Retry: true}
 		assert.True(t, err.IsRetryable())
 
 		err = err.WithRetry(false)
@@ -69,7 +69,7 @@ func TestDragonError_WithRetry(t *testing.T) {
 	})
 
 	t.Run("explicit retry takes precedence", func(t *testing.T) {
-		err := &DragonError{Code: ErrNotFound, Retry: false}
+		err := &QRDBError{Code: ErrNotFound, Retry: false}
 		assert.False(t, err.IsRetryable())
 
 		err.Retry = true
@@ -77,8 +77,8 @@ func TestDragonError_WithRetry(t *testing.T) {
 	})
 }
 
-func TestDragonError_GetContext_Nil(t *testing.T) {
-	err := &DragonError{Code: ErrNotFound, Context: nil}
+func TestQRDBError_GetContext_Nil(t *testing.T) {
+	err := &QRDBError{Code: ErrNotFound, Context: nil}
 	val, ok := err.GetContext("key")
 	assert.Nil(t, val)
 	assert.False(t, ok)
@@ -87,28 +87,28 @@ func TestDragonError_GetContext_Nil(t *testing.T) {
 func TestAs(t *testing.T) {
 	t.Run("successful As", func(t *testing.T) {
 		err := New(ErrNotFound, "test", "not found")
-		var de *DragonError
+		var de *QRDBError
 		ok := As(err, &de)
 		assert.True(t, ok)
 		assert.Equal(t, ErrNotFound, de.Code)
 	})
 
-	t.Run("As with non-DragonError", func(t *testing.T) {
+	t.Run("As with non-QRDBError", func(t *testing.T) {
 		err := errors.New("standard error")
-		var de *DragonError
+		var de *QRDBError
 		ok := As(err, &de)
 		assert.False(t, ok)
 	})
 
 	t.Run("As with nil", func(t *testing.T) {
-		var de *DragonError
+		var de *QRDBError
 		ok := As(nil, &de)
 		assert.False(t, ok)
 	})
 }
 
 func TestGetContext(t *testing.T) {
-	t.Run("get context from DragonError", func(t *testing.T) {
+	t.Run("get context from QRDBError", func(t *testing.T) {
 		err := New(ErrNotFound, "test", "not found")
 		_ = err.WithContext("key", "value")
 		_ = err.WithContext("number", 42)
@@ -122,7 +122,7 @@ func TestGetContext(t *testing.T) {
 		assert.Equal(t, 42, val)
 	})
 
-	t.Run("get context from non-DragonError", func(t *testing.T) {
+	t.Run("get context from non-QRDBError", func(t *testing.T) {
 		err := errors.New("standard error")
 		val, ok := GetContext(err, "key")
 		assert.False(t, ok)
@@ -147,7 +147,7 @@ func TestInternalf(t *testing.T) {
 	err := Internalf("process", "unexpected state: %s", "invalid")
 	require.Error(t, err)
 
-	var de *DragonError
+	var de *QRDBError
 	require.ErrorAs(t, err, &de)
 	assert.Equal(t, ErrInternal, de.Code)
 	assert.Equal(t, "process", de.Op)
@@ -158,7 +158,7 @@ func TestUnavailablef(t *testing.T) {
 	err := Unavailablef("cluster", "no leader available in %d nodes", 3)
 	require.Error(t, err)
 
-	var de *DragonError
+	var de *QRDBError
 	require.ErrorAs(t, err, &de)
 	assert.Equal(t, ErrUnavailable, de.Code)
 	assert.Equal(t, "cluster", de.Op)
@@ -258,7 +258,7 @@ func TestWrap_PreservesContext(t *testing.T) {
 	wrappedErr := Wrap(originalErr, ErrStorage, "outer")
 	require.Error(t, wrappedErr)
 
-	var de *DragonError
+	var de *QRDBError
 	require.ErrorAs(t, wrappedErr, &de)
 	assert.Equal(t, "outer", de.Op)
 
@@ -282,10 +282,10 @@ func TestWrap_PreservesRetry(t *testing.T) {
 	assert.True(t, IsRetryable(wrappedErr))
 }
 
-func TestDragonError_IsWithNilUnderlying(t *testing.T) {
-	err := &DragonError{Code: ErrNotFound, Err: nil}
+func TestQRDBError_IsWithNilUnderlying(t *testing.T) {
+	err := &QRDBError{Code: ErrNotFound, Err: nil}
 	standardErr := errors.New("standard")
 
 	assert.False(t, err.Is(standardErr))
-	assert.True(t, err.Is(&DragonError{Code: ErrNotFound}))
+	assert.True(t, err.Is(&QRDBError{Code: ErrNotFound}))
 }

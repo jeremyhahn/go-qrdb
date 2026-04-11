@@ -92,15 +92,15 @@ func caseInsensitiveConfig(name string) IndexConfig {
 	}
 }
 
-// assertDragonErrorCode checks that err is a *DragonError with the expected code.
-func assertDragonErrorCode(t *testing.T, err error, code qrdbErrors.ErrorCode, msgContext string) {
+// assertQRDBErrorCode checks that err is a *QRDBError with the expected code.
+func assertQRDBErrorCode(t *testing.T, err error, code qrdbErrors.ErrorCode, msgContext string) {
 	t.Helper()
 	if err == nil {
 		t.Fatalf("%s: expected error with code %v, got nil", msgContext, code)
 	}
-	var de *qrdbErrors.DragonError
+	var de *qrdbErrors.QRDBError
 	if !errors.As(err, &de) {
-		t.Fatalf("%s: expected *DragonError, got %T: %v", msgContext, err, err)
+		t.Fatalf("%s: expected *QRDBError, got %T: %v", msgContext, err, err)
 	}
 	if de.Code != code {
 		t.Fatalf("%s: expected error code %v, got %v: %v", msgContext, code, de.Code, err)
@@ -205,7 +205,7 @@ func TestNewStoragePebbleIndex_Success(t *testing.T) {
 
 func TestNewStoragePebbleIndex_NilStorage(t *testing.T) {
 	_, err := NewStoragePebbleIndex(nil, normalConfig("test"), testLogger(t))
-	assertDragonErrorCode(t, err, qrdbErrors.ErrInvalidInput, "nil storage")
+	assertQRDBErrorCode(t, err, qrdbErrors.ErrInvalidInput, "nil storage")
 }
 
 func TestNewStoragePebbleIndex_NilLogger(t *testing.T) {
@@ -216,7 +216,7 @@ func TestNewStoragePebbleIndex_NilLogger(t *testing.T) {
 	t.Cleanup(func() { _ = s.Close() })
 
 	_, err = NewStoragePebbleIndex(s, normalConfig("test"), nil)
-	assertDragonErrorCode(t, err, qrdbErrors.ErrInvalidInput, "nil logger")
+	assertQRDBErrorCode(t, err, qrdbErrors.ErrInvalidInput, "nil logger")
 }
 
 func TestNewStoragePebbleIndex_EmptyName(t *testing.T) {
@@ -227,7 +227,7 @@ func TestNewStoragePebbleIndex_EmptyName(t *testing.T) {
 	t.Cleanup(func() { _ = s.Close() })
 
 	_, err = NewStoragePebbleIndex(s, normalConfig(""), testLogger(t))
-	assertDragonErrorCode(t, err, qrdbErrors.ErrInvalidInput, "empty name")
+	assertQRDBErrorCode(t, err, qrdbErrors.ErrInvalidInput, "empty name")
 }
 
 // ---------------------------------------------------------------------------
@@ -293,7 +293,7 @@ func TestStoragePebbleIndex_Put_UniqueConstraintViolation(t *testing.T) {
 	}
 
 	err := idx.Put([]byte("2"), []byte("alice@test.com"))
-	assertDragonErrorCode(t, err, qrdbErrors.ErrConflict, "unique violation")
+	assertQRDBErrorCode(t, err, qrdbErrors.ErrConflict, "unique violation")
 }
 
 func TestStoragePebbleIndex_Put_UniqueSameEntityAllowed(t *testing.T) {
@@ -343,7 +343,7 @@ func TestStoragePebbleIndex_Put_StorageSetError(t *testing.T) {
 	fs.setErr.Store(&qrdbErrors.MessageError{Message: "disk full"})
 
 	putErr := idx.Put([]byte("1"), []byte("alice"))
-	assertDragonErrorCode(t, putErr, qrdbErrors.ErrStorage, "Put storage error")
+	assertQRDBErrorCode(t, putErr, qrdbErrors.ErrStorage, "Put storage error")
 }
 
 // ---------------------------------------------------------------------------
@@ -462,7 +462,7 @@ func TestStoragePebbleIndex_Delete_StorageDeleteError(t *testing.T) {
 	fs.deleteErr.Store(&qrdbErrors.MessageError{Message: "storage failure"})
 
 	delErr := idx.Delete([]byte("1"), []byte("alice"))
-	assertDragonErrorCode(t, delErr, qrdbErrors.ErrStorage, "Delete storage error")
+	assertQRDBErrorCode(t, delErr, qrdbErrors.ErrStorage, "Delete storage error")
 }
 
 // ---------------------------------------------------------------------------
@@ -764,7 +764,7 @@ func TestStoragePebbleIndex_Clear_BatchDeleteError(t *testing.T) {
 	fs.batchErr.Store(&qrdbErrors.MessageError{Message: "batch delete failure"})
 
 	clearErr := idx.Clear()
-	assertDragonErrorCode(t, clearErr, qrdbErrors.ErrStorage, "Clear batch delete error")
+	assertQRDBErrorCode(t, clearErr, qrdbErrors.ErrStorage, "Clear batch delete error")
 }
 
 // ---------------------------------------------------------------------------
@@ -808,7 +808,7 @@ func TestStoragePebbleIndex_PutWithContext_CanceledContext(t *testing.T) {
 	cancel() // Cancel immediately.
 
 	err := idx.PutWithContext(ctx, []byte("1"), []byte("alice"))
-	assertDragonErrorCode(t, err, qrdbErrors.ErrCanceled, "PutWithContext canceled")
+	assertQRDBErrorCode(t, err, qrdbErrors.ErrCanceled, "PutWithContext canceled")
 }
 
 func TestStoragePebbleIndex_PutWithContext_UniqueViolation(t *testing.T) {
@@ -818,7 +818,7 @@ func TestStoragePebbleIndex_PutWithContext_UniqueViolation(t *testing.T) {
 	_ = idx.PutWithContext(ctx, []byte("1"), []byte("alice@test.com"))
 
 	err := idx.PutWithContext(ctx, []byte("2"), []byte("alice@test.com"))
-	assertDragonErrorCode(t, err, qrdbErrors.ErrConflict, "PutWithContext unique violation")
+	assertQRDBErrorCode(t, err, qrdbErrors.ErrConflict, "PutWithContext unique violation")
 }
 
 // ---------------------------------------------------------------------------
@@ -846,7 +846,7 @@ func TestStoragePebbleIndex_GetWithContext_CanceledContext(t *testing.T) {
 	cancel()
 
 	_, err := idx.GetWithContext(ctx, []byte("alice"))
-	assertDragonErrorCode(t, err, qrdbErrors.ErrCanceled, "GetWithContext canceled")
+	assertQRDBErrorCode(t, err, qrdbErrors.ErrCanceled, "GetWithContext canceled")
 }
 
 func TestStoragePebbleIndex_GetWithContext_NonExistent(t *testing.T) {
@@ -888,7 +888,7 @@ func TestStoragePebbleIndex_DeleteWithContext_CanceledContext(t *testing.T) {
 	cancel()
 
 	err := idx.DeleteWithContext(ctx, []byte("1"), []byte("alice"))
-	assertDragonErrorCode(t, err, qrdbErrors.ErrCanceled, "DeleteWithContext canceled")
+	assertQRDBErrorCode(t, err, qrdbErrors.ErrCanceled, "DeleteWithContext canceled")
 }
 
 func TestStoragePebbleIndex_DeleteWithContext_NonExistent(t *testing.T) {
@@ -928,7 +928,7 @@ func TestStoragePebbleIndex_ScanWithContext_CanceledContext(t *testing.T) {
 	cancel()
 
 	_, err := idx.ScanWithContext(ctx, []byte("a"), []byte("z"))
-	assertDragonErrorCode(t, err, qrdbErrors.ErrCanceled, "ScanWithContext canceled")
+	assertQRDBErrorCode(t, err, qrdbErrors.ErrCanceled, "ScanWithContext canceled")
 }
 
 func TestStoragePebbleIndex_ScanWithContext_NilBounds(t *testing.T) {
@@ -977,7 +977,7 @@ func TestStoragePebbleIndex_CheckUniqueConstraint_Violation(t *testing.T) {
 
 	// Different entity key with same value should fail.
 	err := idx.checkUniqueConstraint([]byte("2"), []byte("alice@test.com"))
-	assertDragonErrorCode(t, err, qrdbErrors.ErrConflict, "unique violation")
+	assertQRDBErrorCode(t, err, qrdbErrors.ErrConflict, "unique violation")
 }
 
 // ---------------------------------------------------------------------------
@@ -1027,7 +1027,7 @@ func TestStoragePebbleIndex_ExtractEntityKey_EmptyKey(t *testing.T) {
 	idx := newTestStoragePebbleIndex(t, normalConfig("test"))
 
 	_, err := idx.extractEntityKey([]byte{})
-	assertDragonErrorCode(t, err, qrdbErrors.ErrInvalidInput, "empty key")
+	assertQRDBErrorCode(t, err, qrdbErrors.ErrInvalidInput, "empty key")
 }
 
 // ---------------------------------------------------------------------------
@@ -1075,7 +1075,7 @@ func TestStoragePebbleIndex_ParseKey_WrongPrefix(t *testing.T) {
 	wrongKey := []byte("idx:other:alice:key1")
 
 	_, _, err := idx.parseKey(wrongKey)
-	assertDragonErrorCode(t, err, qrdbErrors.ErrInvalidInput, "wrong prefix")
+	assertQRDBErrorCode(t, err, qrdbErrors.ErrInvalidInput, "wrong prefix")
 }
 
 func TestStoragePebbleIndex_ParseKey_TooShort(t *testing.T) {
@@ -1085,7 +1085,7 @@ func TestStoragePebbleIndex_ParseKey_TooShort(t *testing.T) {
 	shortKey := []byte("idx:test:")
 
 	_, _, err := idx.parseKey(shortKey)
-	assertDragonErrorCode(t, err, qrdbErrors.ErrInvalidInput, "key too short")
+	assertQRDBErrorCode(t, err, qrdbErrors.ErrInvalidInput, "key too short")
 }
 
 func TestStoragePebbleIndex_ParseKey_LargeEntityKey(t *testing.T) {
@@ -1593,7 +1593,7 @@ func TestStoragePebbleIndex_PutBatch_UniqueConstraintViolation(t *testing.T) {
 	defer func() { _ = batch.Close() }()
 
 	err := idx.PutBatch(batch, []byte("entity-2"), fieldValue)
-	assertDragonErrorCode(t, err, qrdbErrors.ErrConflict, "PutBatch unique violation")
+	assertQRDBErrorCode(t, err, qrdbErrors.ErrConflict, "PutBatch unique violation")
 }
 
 func TestStoragePebbleIndex_PutBatch_UniqueConstraintSameEntity(t *testing.T) {

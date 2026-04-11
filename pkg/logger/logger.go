@@ -1,9 +1,9 @@
 // Copyright (c) 2025 Jeremy Hahn
 // Copyright (c) 2025 Automate The Things, LLC
 //
-// This file is part of go-dragondb.
+// This file is part of go-qrdb.
 //
-// go-dragondb is dual-licensed:
+// go-qrdb is dual-licensed:
 //
 // 1. GNU Affero General Public License v3.0 (AGPL-3.0)
 //    See LICENSE file or visit https://www.gnu.org/licenses/agpl-3.0.html
@@ -11,7 +11,7 @@
 // 2. Commercial License
 //    Contact licensing@automatethethings.com for commercial licensing options.
 
-// Package logger provides structured logging for DragonDB using log/slog.
+// Package logger provides structured logging for QRDB using log/slog.
 // It supports context-aware logging, multiple output formats, and log levels.
 package logger
 
@@ -65,7 +65,7 @@ func New(config LogConfig) (*Logger, error) {
 		output = os.Stderr
 	case "file":
 		if config.File == "" {
-			config.File = "dragondb.log"
+			config.File = "qrdb.log"
 		}
 		file, err := os.OpenFile(config.File, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 		if err != nil {

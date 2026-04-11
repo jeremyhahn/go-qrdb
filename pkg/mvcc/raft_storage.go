@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Raft-backed MVCC storage from DragonDB. Provides transactional semantics
+// Raft-backed MVCC storage from QRDB. Provides transactional semantics
 // with revision tracking, optional Raft integration for distributed consensus,
 // and Prometheus metrics.
 

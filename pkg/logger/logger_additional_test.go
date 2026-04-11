@@ -1,9 +1,9 @@
 // Copyright (c) 2025 Jeremy Hahn
 // Copyright (c) 2025 Automate The Things, LLC
 //
-// This file is part of go-dragondb.
+// This file is part of go-qrdb.
 //
-// go-dragondb is dual-licensed:
+// go-qrdb is dual-licensed:
 //
 // 1. GNU Affero General Public License v3.0 (AGPL-3.0)
 //    See LICENSE file or visit https://www.gnu.org/licenses/agpl-3.0.html
@@ -447,7 +447,7 @@ func TestLogger_WithAttrs(t *testing.T) {
 
 	// Test WithAttrs with various slog attribute types
 	attrLogger := logger.WithAttrs(
-		slog.String("service", "dragondb"),
+		slog.String("service", "qrdb"),
 		slog.Int("port", 8080),
 		slog.Bool("debug", true),
 	)
@@ -458,8 +458,8 @@ func TestLogger_WithAttrs(t *testing.T) {
 
 	// Verify fields are stored
 	fields := attrLogger.GetFields()
-	if fields["service"] != "dragondb" {
-		t.Errorf("WithAttrs() service = %v, want dragondb", fields["service"])
+	if fields["service"] != "qrdb" {
+		t.Errorf("WithAttrs() service = %v, want qrdb", fields["service"])
 	}
 	if fields["port"] != int64(8080) {
 		t.Errorf("WithAttrs() port = %v, want 8080", fields["port"])
@@ -565,13 +565,13 @@ func TestLogger_WithAttrsChaining(t *testing.T) {
 
 	// Chain multiple WithAttrs calls
 	chainedLogger := logger.
-		WithAttrs(slog.String("service", "dragondb")).
+		WithAttrs(slog.String("service", "qrdb")).
 		WithAttrs(slog.Int("version", 1)).
 		WithAttrs(slog.Bool("production", false))
 
 	fields := chainedLogger.GetFields()
-	if fields["service"] != "dragondb" {
-		t.Errorf("chained WithAttrs() service = %v, want dragondb", fields["service"])
+	if fields["service"] != "qrdb" {
+		t.Errorf("chained WithAttrs() service = %v, want qrdb", fields["service"])
 	}
 	if fields["version"] != int64(1) {
 		t.Errorf("chained WithAttrs() version = %v, want 1", fields["version"])

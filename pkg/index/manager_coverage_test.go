@@ -163,9 +163,9 @@ func TestNewIndexManager_NilStorageReturnsTypedError(t *testing.T) {
 	assert.Nil(t, mgr)
 	require.Error(t, err)
 
-	var dragonErr *dberrors.DragonError
-	assert.ErrorAs(t, err, &dragonErr)
-	assert.Equal(t, dberrors.ErrInvalidInput, dragonErr.Code)
+	var qrdbErr *dberrors.QRDBError
+	assert.ErrorAs(t, err, &qrdbErr)
+	assert.Equal(t, dberrors.ErrInvalidInput, qrdbErr.Code)
 }
 
 func TestNewIndexManager_NilLoggerReturnsTypedError(t *testing.T) {
@@ -175,9 +175,9 @@ func TestNewIndexManager_NilLoggerReturnsTypedError(t *testing.T) {
 	assert.Nil(t, mgr)
 	require.Error(t, err)
 
-	var dragonErr *dberrors.DragonError
-	assert.ErrorAs(t, err, &dragonErr)
-	assert.Equal(t, dberrors.ErrInvalidInput, dragonErr.Code)
+	var qrdbErr *dberrors.QRDBError
+	assert.ErrorAs(t, err, &qrdbErr)
+	assert.Equal(t, dberrors.ErrInvalidInput, qrdbErr.Code)
 }
 
 // ---------------------------------------------------------------------------

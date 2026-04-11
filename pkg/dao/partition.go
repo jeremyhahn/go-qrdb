@@ -1,9 +1,9 @@
 // Copyright (c) 2025 Jeremy Hahn
 // Copyright (c) 2025 Automate The Things, LLC
 //
-// This file is part of go-dragondb.
+// This file is part of go-qrdb.
 //
-// go-dragondb is dual-licensed:
+// go-qrdb is dual-licensed:
 //
 // 1. GNU Affero General Public License v3.0 (AGPL-3.0)
 //    See LICENSE file or visit https://www.gnu.org/licenses/agpl-3.0.html
@@ -270,7 +270,7 @@ func IsPartitionError(err error) bool {
 	}
 
 	// Check for wrapped partition errors from the partition package
-	var dbErr *dberrors.DragonError
+	var dbErr *dberrors.QRDBError
 	if ok := dberrors.As(err, &dbErr); ok {
 		return dbErr.Code == dberrors.ErrNotFound
 	}

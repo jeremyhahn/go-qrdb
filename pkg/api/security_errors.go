@@ -1,9 +1,9 @@
 // Copyright (c) 2025 Jeremy Hahn
 // Copyright (c) 2025 Automate The Things, LLC
 //
-// This file is part of go-dragondb.
+// This file is part of go-qrdb.
 //
-// go-dragondb is dual-licensed:
+// go-qrdb is dual-licensed:
 //
 // 1. GNU Affero General Public License v3.0 (AGPL-3.0)
 //    See LICENSE file or visit https://www.gnu.org/licenses/agpl-3.0.html
@@ -33,9 +33,9 @@ func (e *ManagerClosedError) Error() string {
 	return e.Manager + " is closed"
 }
 
-// NewManagerClosedError creates a DragonError for a closed manager.
-func NewManagerClosedError(op, manager string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewManagerClosedError creates a QRDBError for a closed manager.
+func NewManagerClosedError(op, manager string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrUnavailable,
 		Op:   op,
 		Err:  &ManagerClosedError{Manager: manager},
@@ -56,9 +56,9 @@ func (e *DataTruncatedError) Error() string {
 	return e.Message
 }
 
-// NewDataTruncatedError creates a DragonError for truncated or corrupted data.
-func NewDataTruncatedError(op, field, message string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewDataTruncatedError creates a QRDBError for truncated or corrupted data.
+func NewDataTruncatedError(op, field, message string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   op,
 		Err:  &DataTruncatedError{Field: field, Message: message},
@@ -75,9 +75,9 @@ func (e *NotInitializedError) Error() string {
 	return e.Component + " not initialized"
 }
 
-// NewNotInitializedError creates a DragonError for an uninitialized component.
-func NewNotInitializedError(op, component string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewNotInitializedError creates a QRDBError for an uninitialized component.
+func NewNotInitializedError(op, component string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrPreconditionFailed,
 		Op:   op,
 		Err:  &NotInitializedError{Component: component},
@@ -94,9 +94,9 @@ func (e *AlreadyInProgressError) Error() string {
 	return e.Operation + " already in progress"
 }
 
-// NewAlreadyInProgressError creates a DragonError for an operation already in progress.
-func NewAlreadyInProgressError(op, operation string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewAlreadyInProgressError creates a QRDBError for an operation already in progress.
+func NewAlreadyInProgressError(op, operation string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrAlreadyExists,
 		Op:   op,
 		Err:  &AlreadyInProgressError{Operation: operation},
@@ -113,9 +113,9 @@ func (e *NoActiveOperationError) Error() string {
 	return "no active " + e.Operation + " to cancel"
 }
 
-// NewNoActiveOperationError creates a DragonError for a missing active operation.
-func NewNoActiveOperationError(op, operation string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewNoActiveOperationError creates a QRDBError for a missing active operation.
+func NewNoActiveOperationError(op, operation string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrNotFound,
 		Op:   op,
 		Err:  &NoActiveOperationError{Operation: operation},
@@ -132,9 +132,9 @@ func (e *UnsupportedProviderError) Error() string {
 	return "unsupported key provider: " + e.Provider
 }
 
-// NewUnsupportedProviderError creates a DragonError for an unsupported key provider.
-func NewUnsupportedProviderError(op, provider string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewUnsupportedProviderError creates a QRDBError for an unsupported key provider.
+func NewUnsupportedProviderError(op, provider string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrConfiguration,
 		Op:   op,
 		Err:  &UnsupportedProviderError{Provider: provider},
@@ -152,9 +152,9 @@ func (e *InitializationRequiredError) Error() string {
 	return e.Backend + " backend requires explicit initialization - use " + e.Initializer
 }
 
-// NewInitializationRequiredError creates a DragonError for a backend needing explicit initialization.
-func NewInitializationRequiredError(op, backend, initializer string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewInitializationRequiredError creates a QRDBError for a backend needing explicit initialization.
+func NewInitializationRequiredError(op, backend, initializer string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrConfiguration,
 		Op:   op,
 		Err:  &InitializationRequiredError{Backend: backend, Initializer: initializer},
@@ -172,9 +172,9 @@ func (e *UnsupportedOperationError) Error() string {
 	return e.Operation + " operation not supported for " + e.Backend + " backend"
 }
 
-// NewUnsupportedOperationError creates a DragonError for an unsupported operation.
-func NewUnsupportedOperationError(op, operation, backend string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewUnsupportedOperationError creates a QRDBError for an unsupported operation.
+func NewUnsupportedOperationError(op, operation, backend string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrNotImplemented,
 		Op:   op,
 		Err:  &UnsupportedOperationError{Operation: operation, Backend: backend},
@@ -191,9 +191,9 @@ func (e *EnvVarNotFoundError) Error() string {
 	return "environment variable not found: " + e.Name
 }
 
-// NewEnvVarNotFoundError creates a DragonError for a missing environment variable.
-func NewEnvVarNotFoundError(op, name string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewEnvVarNotFoundError creates a QRDBError for a missing environment variable.
+func NewEnvVarNotFoundError(op, name string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrNotFound,
 		Op:   op,
 		Err:  &EnvVarNotFoundError{Name: name},
@@ -210,9 +210,9 @@ func (e *KeyVersionNotFoundError) Error() string {
 	return fmt.Sprintf("encryption key version %d not found", e.Version)
 }
 
-// NewKeyVersionNotFoundError creates a DragonError for a missing encryption key version.
-func NewKeyVersionNotFoundError(op string, version byte) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewKeyVersionNotFoundError creates a QRDBError for a missing encryption key version.
+func NewKeyVersionNotFoundError(op string, version byte) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrNotFound,
 		Op:   op,
 		Err:  &KeyVersionNotFoundError{Version: version},
@@ -229,9 +229,9 @@ func (e *PEMDecodeError) Error() string {
 	return "failed to decode " + e.Subject + " PEM"
 }
 
-// NewPEMDecodeError creates a DragonError for a PEM decoding failure.
-func NewPEMDecodeError(op, subject string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewPEMDecodeError creates a QRDBError for a PEM decoding failure.
+func NewPEMDecodeError(op, subject string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   op,
 		Err:  &PEMDecodeError{Subject: subject},
@@ -246,9 +246,9 @@ func (e *SealedError) Error() string {
 	return "database is sealed"
 }
 
-// NewSealedError creates a DragonError for a sealed database condition.
-func NewSealedError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewSealedError creates a QRDBError for a sealed database condition.
+func NewSealedError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrUnavailable,
 		Op:   op,
 		Err:  &SealedError{},
@@ -274,9 +274,9 @@ func (e *CryptoError) Unwrap() error {
 	return e.Cause
 }
 
-// NewCryptoError creates a DragonError for a cryptographic operation failure.
-func NewCryptoError(op, operation string, code dberrors.ErrorCode, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewCryptoError creates a QRDBError for a cryptographic operation failure.
+func NewCryptoError(op, operation string, code dberrors.ErrorCode, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: code,
 		Op:   op,
 		Err:  &CryptoError{Operation: operation, Cause: cause},
@@ -293,9 +293,9 @@ func (e *WrappingKeyError) Error() string {
 	return e.Message
 }
 
-// NewWrappingKeyError creates a DragonError for a wrapping key issue.
-func NewWrappingKeyError(op, message string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewWrappingKeyError creates a QRDBError for a wrapping key issue.
+func NewWrappingKeyError(op, message string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &WrappingKeyError{Message: message},
@@ -319,9 +319,9 @@ func (e *BatchEncryptionError) Unwrap() error {
 	return e.Cause
 }
 
-// NewBatchEncryptionError creates a DragonError for a batch encryption/decryption failure.
-func NewBatchEncryptionError(op, operation string, index int, code dberrors.ErrorCode, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewBatchEncryptionError creates a QRDBError for a batch encryption/decryption failure.
+func NewBatchEncryptionError(op, operation string, index int, code dberrors.ErrorCode, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: code,
 		Op:   op,
 		Err:  &BatchEncryptionError{Index: index, Operation: operation, Cause: cause},
@@ -336,9 +336,9 @@ func (e *NoActiveKeyError) Error() string {
 	return "no active encryption key available"
 }
 
-// NewNoActiveKeyError creates a DragonError for a missing active encryption key.
-func NewNoActiveKeyError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewNoActiveKeyError creates a QRDBError for a missing active encryption key.
+func NewNoActiveKeyError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrUnavailable,
 		Op:   op,
 		Err:  &NoActiveKeyError{},
@@ -358,9 +358,9 @@ func (e *CiphertextTooShortError) Error() string {
 	return "ciphertext too short"
 }
 
-// NewCiphertextTooShortError creates a DragonError for a ciphertext that is too short.
-func NewCiphertextTooShortError(op, detail string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewCiphertextTooShortError creates a QRDBError for a ciphertext that is too short.
+func NewCiphertextTooShortError(op, detail string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrDecryption,
 		Op:   op,
 		Err:  &CiphertextTooShortError{Detail: detail},
@@ -375,9 +375,9 @@ func (e *NoEncrypterError) Error() string {
 	return "no encrypter available"
 }
 
-// NewNoEncrypterError creates a DragonError for a missing encrypter.
-func NewNoEncrypterError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewNoEncrypterError creates a QRDBError for a missing encrypter.
+func NewNoEncrypterError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrUnavailable,
 		Op:   op,
 		Err:  &NoEncrypterError{},
@@ -403,9 +403,9 @@ func (e *UnsupportedAlgorithmError) Unwrap() error {
 	return e.Cause
 }
 
-// NewUnsupportedAlgorithmError creates a DragonError for an unsupported algorithm.
-func NewUnsupportedAlgorithmError(op, algorithm string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewUnsupportedAlgorithmError creates a QRDBError for an unsupported algorithm.
+func NewUnsupportedAlgorithmError(op, algorithm string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &UnsupportedAlgorithmError{Algorithm: algorithm, Cause: cause},
@@ -428,9 +428,9 @@ func (e *StorageOperationError) Unwrap() error {
 	return e.Cause
 }
 
-// NewStorageOperationError creates a DragonError for a storage operation failure.
-func NewStorageOperationError(op, operation string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewStorageOperationError creates a QRDBError for a storage operation failure.
+func NewStorageOperationError(op, operation string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrStorage,
 		Op:   op,
 		Err:  &StorageOperationError{Operation: operation, Cause: cause},

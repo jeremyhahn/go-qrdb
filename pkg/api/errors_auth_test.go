@@ -76,42 +76,42 @@ func TestAuthCauseErrors(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		newFn    func() *dberrors.DragonError
+		newFn    func() *dberrors.QRDBError
 		errFn    func() error
 		wantMsg  string
 		wantCode dberrors.ErrorCode
 	}{
 		{
 			"NonceGenerationError",
-			func() *dberrors.DragonError { return NewNonceGenerationError("auth", cause) },
+			func() *dberrors.QRDBError { return NewNonceGenerationError("auth", cause) },
 			func() error { return &NonceGenerationError{Cause: cause} },
 			"failed to generate nonce: underlying",
 			dberrors.ErrInternal,
 		},
 		{
 			"TokenSigningError",
-			func() *dberrors.DragonError { return NewTokenSigningError("auth", "access", cause) },
+			func() *dberrors.QRDBError { return NewTokenSigningError("auth", "access", cause) },
 			func() error { return &TokenSigningError{TokenType: "access", Cause: cause} },
 			"failed to sign access token: underlying",
 			dberrors.ErrInternal,
 		},
 		{
 			"AdminUserDeleteError",
-			func() *dberrors.DragonError { return NewAdminUserDeleteError("bootstrap", cause) },
+			func() *dberrors.QRDBError { return NewAdminUserDeleteError("bootstrap", cause) },
 			func() error { return &AdminUserDeleteError{Cause: cause} },
 			"failed to delete existing admin user: underlying",
 			dberrors.ErrInternal,
 		},
 		{
 			"AdminUserCreateError",
-			func() *dberrors.DragonError { return NewAdminUserCreateError("bootstrap", cause) },
+			func() *dberrors.QRDBError { return NewAdminUserCreateError("bootstrap", cause) },
 			func() error { return &AdminUserCreateError{Cause: cause} },
 			"failed to create admin user: underlying",
 			dberrors.ErrInternal,
 		},
 		{
 			"BootstrapMarkerError",
-			func() *dberrors.DragonError { return NewBootstrapMarkerError("bootstrap", cause) },
+			func() *dberrors.QRDBError { return NewBootstrapMarkerError("bootstrap", cause) },
 			func() error { return &BootstrapMarkerError{Cause: cause} },
 			"failed to mark bootstrap complete: underlying",
 			dberrors.ErrInternal,
@@ -143,18 +143,18 @@ func TestAuthCauseErrors(t *testing.T) {
 func TestAuthSimpleErrors(t *testing.T) {
 	tests := []struct {
 		name     string
-		newFn    func() *dberrors.DragonError
+		newFn    func() *dberrors.QRDBError
 		wantMsg  string
 		wantCode dberrors.ErrorCode
 	}{
-		{"AdminUserNotFound", func() *dberrors.DragonError { return NewAdminUserNotFoundError("bootstrap") }, "admin user not found", dberrors.ErrNotFound},
-		{"PasswordAuthDeprecated", func() *dberrors.DragonError { return NewPasswordAuthDeprecatedError("login") }, "password-based authentication is disabled; use IAM (WebAuthn, OIDC, OAuth) instead", dberrors.ErrUnimplemented},
-		{"NilLogger", func() *dberrors.DragonError { return NewNilLoggerError("auth.new") }, "logger cannot be nil", dberrors.ErrInvalidInput},
-		{"NilStorage", func() *dberrors.DragonError { return NewNilStorageError("auth.new") }, "storage cannot be nil for persistent auth", dberrors.ErrInvalidInput},
-		{"StorageClosedAuth", func() *dberrors.DragonError { return NewStorageClosedAuthError("auth.get") }, "storage closed", dberrors.ErrUnavailable},
-		{"KeyNotFound", func() *dberrors.DragonError { return NewKeyNotFoundError("auth.get") }, "key not found", dberrors.ErrNotFound},
-		{"SnapshotNotSupported", func() *dberrors.DragonError { return NewSnapshotNotSupportedError("auth.snapshot") }, "snapshots not implemented in mock", dberrors.ErrUnimplemented},
-		{"BatchFinalized", func() *dberrors.DragonError { return NewBatchFinalizedError("auth.batch") }, "batch already finalized", dberrors.ErrInvalidInput},
+		{"AdminUserNotFound", func() *dberrors.QRDBError { return NewAdminUserNotFoundError("bootstrap") }, "admin user not found", dberrors.ErrNotFound},
+		{"PasswordAuthDeprecated", func() *dberrors.QRDBError { return NewPasswordAuthDeprecatedError("login") }, "password-based authentication is disabled; use IAM (WebAuthn, OIDC, OAuth) instead", dberrors.ErrUnimplemented},
+		{"NilLogger", func() *dberrors.QRDBError { return NewNilLoggerError("auth.new") }, "logger cannot be nil", dberrors.ErrInvalidInput},
+		{"NilStorage", func() *dberrors.QRDBError { return NewNilStorageError("auth.new") }, "storage cannot be nil for persistent auth", dberrors.ErrInvalidInput},
+		{"StorageClosedAuth", func() *dberrors.QRDBError { return NewStorageClosedAuthError("auth.get") }, "storage closed", dberrors.ErrUnavailable},
+		{"KeyNotFound", func() *dberrors.QRDBError { return NewKeyNotFoundError("auth.get") }, "key not found", dberrors.ErrNotFound},
+		{"SnapshotNotSupported", func() *dberrors.QRDBError { return NewSnapshotNotSupportedError("auth.snapshot") }, "snapshots not implemented in mock", dberrors.ErrUnimplemented},
+		{"BatchFinalized", func() *dberrors.QRDBError { return NewBatchFinalizedError("auth.batch") }, "batch already finalized", dberrors.ErrInvalidInput},
 	}
 
 	for _, tt := range tests {

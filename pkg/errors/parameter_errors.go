@@ -1,9 +1,9 @@
 // Copyright (c) 2025 Jeremy Hahn
 // Copyright (c) 2025 Automate The Things, LLC
 //
-// This file is part of go-dragondb.
+// This file is part of go-qrdb.
 //
-// go-dragondb is dual-licensed:
+// go-qrdb is dual-licensed:
 //
 // 1. GNU Affero General Public License v3.0 (AGPL-3.0)
 //    See LICENSE file or visit https://www.gnu.org/licenses/agpl-3.0.html
@@ -113,81 +113,81 @@ func (e *ParameterTagLimitError) Error() string {
 	return fmt.Sprintf("parameter '%s' has %d tags, exceeds maximum %d", e.Path, e.Count, e.MaxCount)
 }
 
-// NewParameterNotFoundError creates a new ParameterNotFoundError wrapped in DragonError.
-func NewParameterNotFoundError(path string) *DragonError {
-	return &DragonError{
+// NewParameterNotFoundError creates a new ParameterNotFoundError wrapped in QRDBError.
+func NewParameterNotFoundError(path string) *QRDBError {
+	return &QRDBError{
 		Code: ErrNotFound,
 		Op:   "parameterstore",
 		Err:  &ParameterNotFoundError{Path: path},
 	}
 }
 
-// NewParameterExistsError creates a new ParameterExistsError wrapped in DragonError.
-func NewParameterExistsError(path string) *DragonError {
-	return &DragonError{
+// NewParameterExistsError creates a new ParameterExistsError wrapped in QRDBError.
+func NewParameterExistsError(path string) *QRDBError {
+	return &QRDBError{
 		Code: ErrAlreadyExists,
 		Op:   "parameterstore",
 		Err:  &ParameterExistsError{Path: path},
 	}
 }
 
-// NewInvalidPathError creates a new InvalidPathError wrapped in DragonError.
-func NewInvalidPathError(path, reason string) *DragonError {
-	return &DragonError{
+// NewInvalidPathError creates a new InvalidPathError wrapped in QRDBError.
+func NewInvalidPathError(path, reason string) *QRDBError {
+	return &QRDBError{
 		Code: ErrInvalidInput,
 		Op:   "parameterstore",
 		Err:  &InvalidPathError{Path: path, Reason: reason},
 	}
 }
 
-// NewParameterExpiredError creates a new ParameterExpiredError wrapped in DragonError.
-func NewParameterExpiredError(path string, expiredAt time.Time) *DragonError {
-	return &DragonError{
+// NewParameterExpiredError creates a new ParameterExpiredError wrapped in QRDBError.
+func NewParameterExpiredError(path string, expiredAt time.Time) *QRDBError {
+	return &QRDBError{
 		Code: ErrNotFound,
 		Op:   "parameterstore",
 		Err:  &ParameterExpiredError{Path: path, ExpiredAt: expiredAt},
 	}
 }
 
-// NewParameterEncryptionError creates a new ParameterEncryptionError wrapped in DragonError.
-func NewParameterEncryptionError(op string, err error) *DragonError {
-	return &DragonError{
+// NewParameterEncryptionError creates a new ParameterEncryptionError wrapped in QRDBError.
+func NewParameterEncryptionError(op string, err error) *QRDBError {
+	return &QRDBError{
 		Code: ErrEncryption,
 		Op:   op,
 		Err:  &ParameterEncryptionError{Op: op, Err: err},
 	}
 }
 
-// NewParameterDecryptionError creates a new decryption error wrapped in DragonError.
-func NewParameterDecryptionError(op string, err error) *DragonError {
-	return &DragonError{
+// NewParameterDecryptionError creates a new decryption error wrapped in QRDBError.
+func NewParameterDecryptionError(op string, err error) *QRDBError {
+	return &QRDBError{
 		Code: ErrDecryption,
 		Op:   op,
 		Err:  &ParameterEncryptionError{Op: op, Err: err},
 	}
 }
 
-// NewParameterValueTooLargeError creates a new ParameterValueTooLargeError wrapped in DragonError.
-func NewParameterValueTooLargeError(path string, size, maxSize int) *DragonError {
-	return &DragonError{
+// NewParameterValueTooLargeError creates a new ParameterValueTooLargeError wrapped in QRDBError.
+func NewParameterValueTooLargeError(path string, size, maxSize int) *QRDBError {
+	return &QRDBError{
 		Code: ErrInvalidInput,
 		Op:   "parameterstore",
 		Err:  &ParameterValueTooLargeError{Path: path, Size: size, MaxSize: maxSize},
 	}
 }
 
-// NewParameterPathTooLongError creates a new ParameterPathTooLongError wrapped in DragonError.
-func NewParameterPathTooLongError(path string, length, maxLength int) *DragonError {
-	return &DragonError{
+// NewParameterPathTooLongError creates a new ParameterPathTooLongError wrapped in QRDBError.
+func NewParameterPathTooLongError(path string, length, maxLength int) *QRDBError {
+	return &QRDBError{
 		Code: ErrInvalidInput,
 		Op:   "parameterstore",
 		Err:  &ParameterPathTooLongError{Path: path, Length: length, MaxLength: maxLength},
 	}
 }
 
-// NewParameterTagLimitError creates a new ParameterTagLimitError wrapped in DragonError.
-func NewParameterTagLimitError(path string, count, maxCount int) *DragonError {
-	return &DragonError{
+// NewParameterTagLimitError creates a new ParameterTagLimitError wrapped in QRDBError.
+func NewParameterTagLimitError(path string, count, maxCount int) *QRDBError {
+	return &QRDBError{
 		Code: ErrInvalidInput,
 		Op:   "parameterstore",
 		Err:  &ParameterTagLimitError{Path: path, Count: count, MaxCount: maxCount},

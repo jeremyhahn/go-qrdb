@@ -113,6 +113,9 @@ const (
 	DefaultOllamaEmbeddingModel   = embedding.DefaultOllamaModel
 )
 
+// DefaultOllamaEmbeddingTimeout is the per-request HTTP timeout for Ollama requests.
+var DefaultOllamaEmbeddingTimeout = embedding.DefaultOllamaTimeout
+
 // ---------------------------------------------------------------------------
 // LMStudio provider
 // ---------------------------------------------------------------------------
@@ -134,6 +137,9 @@ const (
 	DefaultLMStudioEmbeddingBaseURL = embedding.DefaultLMStudioBaseURL
 	DefaultLMStudioEmbeddingModel   = embedding.DefaultLMStudioModel
 )
+
+// DefaultLMStudioEmbeddingTimeout is the default per-request HTTP timeout for LMStudio.
+var DefaultLMStudioEmbeddingTimeout = embedding.DefaultLMStudioTimeout
 
 // ---------------------------------------------------------------------------
 // Voyage AI provider

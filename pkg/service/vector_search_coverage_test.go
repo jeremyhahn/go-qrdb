@@ -24,7 +24,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	dragonErrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
+	qrdbErrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
 	"github.com/jeremyhahn/go-qrdb/pkg/interfaces"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -529,9 +529,9 @@ func TestVectorSearchSimilar_IndexSearchError(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrInternal, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrInternal, qrdbErr.Code)
 }
 
 func TestVectorSearchSimilar_EmptyIndexReturnsEmptyResults(t *testing.T) {
@@ -577,9 +577,9 @@ func TestVectorSearchSimilar_ClosedService(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrInternal, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrInternal, qrdbErr.Code)
 }
 
 func TestVectorSearchSimilar_TenantAccessDenied(t *testing.T) {
@@ -606,9 +606,9 @@ func TestVectorSearchSimilar_TenantAccessDenied(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrForbidden, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrForbidden, qrdbErr.Code)
 }
 
 func TestVectorSearchSimilar_NamespaceDoesNotExist(t *testing.T) {
@@ -728,9 +728,9 @@ func TestVectorSearchByID_NilRequest(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrInvalidInput, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
 }
 
 func TestVectorSearchByID_ZeroID(t *testing.T) {
@@ -753,9 +753,9 @@ func TestVectorSearchByID_ZeroID(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrInvalidInput, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
 }
 
 func TestVectorSearchByID_InvalidK(t *testing.T) {
@@ -778,9 +778,9 @@ func TestVectorSearchByID_InvalidK(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrInvalidInput, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
 }
 
 func TestVectorSearchByID_SourceVectorNotFound(t *testing.T) {
@@ -809,9 +809,9 @@ func TestVectorSearchByID_SourceVectorNotFound(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrNotFound, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrNotFound, qrdbErr.Code)
 }
 
 func TestVectorSearchByID_WithoutExcludeSelf(t *testing.T) {
@@ -882,9 +882,9 @@ func TestVectorSearchByID_TenantAccessDenied(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrForbidden, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrForbidden, qrdbErr.Code)
 }
 
 func TestVectorSearchByID_ExcludeSelfTruncatesResults(t *testing.T) {
@@ -1131,7 +1131,7 @@ func TestVectorHybridSearch_TenantAccessDenied(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrForbidden, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrForbidden, qrdbErr.Code)
 }

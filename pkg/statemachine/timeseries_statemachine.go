@@ -476,7 +476,7 @@ func (tsm *TimeSeriesStateMachine) lookupListMetrics(prefix string, tags map[str
 	}
 
 	if err := iter.Error(); err != nil {
-		return nil, &errors.DragonError{
+		return nil, &errors.QRDBError{
 			Code: errors.ErrInternal,
 			Op:   "TimeSeriesStateMachine.lookupListMetrics",
 			Err:  &api.OperationFailedError{Operation: "iterator", Cause: err},

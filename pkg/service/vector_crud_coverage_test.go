@@ -24,7 +24,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	dragonErrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
+	qrdbErrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
@@ -127,9 +127,9 @@ func TestVectorCRUD_CreateNamespace_RaftProposalError(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrRaft, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrRaft, qrdbErr.Code)
 }
 
 func TestVectorCRUD_CreateNamespace_AlreadyExistsReturnsError(t *testing.T) {
@@ -150,9 +150,9 @@ func TestVectorCRUD_CreateNamespace_AlreadyExistsReturnsError(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrAlreadyExists, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrAlreadyExists, qrdbErr.Code)
 }
 
 func TestVectorCRUD_CreateNamespace_RaftWithNilMetadata(t *testing.T) {
@@ -256,9 +256,9 @@ func TestVectorCRUD_DeleteNamespace_RaftProposalError(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrRaft, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrRaft, qrdbErr.Code)
 }
 
 func TestVectorCRUD_DeleteNamespace_GetNamespaceInfoFails(t *testing.T) {
@@ -298,9 +298,9 @@ func TestVectorCRUD_DeleteNamespace_StorageDeleteError(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrStorage, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrStorage, qrdbErr.Code)
 }
 
 // =============================================================================
@@ -374,9 +374,9 @@ func TestVectorCRUD_UpsertVector_RaftProposalError(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrRaft, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrRaft, qrdbErr.Code)
 }
 
 func TestVectorCRUD_UpsertVector_HNSWInsertErrorNonRaft(t *testing.T) {
@@ -490,9 +490,9 @@ func TestVectorCRUD_DeleteVector_RaftProposalError(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrRaft, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrRaft, qrdbErr.Code)
 }
 
 func TestVectorCRUD_DeleteVector_RaftWithHNSWDeleteError(t *testing.T) {
@@ -652,9 +652,9 @@ func TestVectorCRUD_BatchUpsert_RaftProposalError(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrRaft, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrRaft, qrdbErr.Code)
 }
 
 func TestVectorCRUD_BatchUpsert_RaftWithHNSWInsertError(t *testing.T) {
@@ -791,9 +791,9 @@ func TestVectorCRUD_LoadNamespaces_ListNamespacesError(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, svc)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrInternal, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrInternal, qrdbErr.Code)
 }
 
 func TestVectorCRUD_LoadNamespaces_EmptyNamespaceList(t *testing.T) {
@@ -824,9 +824,9 @@ func TestVectorCRUD_ValidateCreateNamespaceRequest_NilRequest(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrInvalidInput, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
 }
 
 func TestVectorCRUD_ValidateCreateNamespaceRequest_EmptyNamespace(t *testing.T) {
@@ -839,9 +839,9 @@ func TestVectorCRUD_ValidateCreateNamespaceRequest_EmptyNamespace(t *testing.T) 
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrInvalidInput, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
 }
 
 func TestVectorCRUD_ValidateCreateNamespaceRequest_ZeroDimension(t *testing.T) {
@@ -854,9 +854,9 @@ func TestVectorCRUD_ValidateCreateNamespaceRequest_ZeroDimension(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrInvalidInput, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
 }
 
 func TestVectorCRUD_ValidateUpsertVectorRequest_NilRequest(t *testing.T) {
@@ -866,9 +866,9 @@ func TestVectorCRUD_ValidateUpsertVectorRequest_NilRequest(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrInvalidInput, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
 }
 
 func TestVectorCRUD_ValidateUpsertVectorRequest_EmptyNamespace(t *testing.T) {
@@ -882,9 +882,9 @@ func TestVectorCRUD_ValidateUpsertVectorRequest_EmptyNamespace(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrInvalidInput, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
 }
 
 func TestVectorCRUD_ValidateUpsertVectorRequest_ZeroID(t *testing.T) {
@@ -898,9 +898,9 @@ func TestVectorCRUD_ValidateUpsertVectorRequest_ZeroID(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrInvalidInput, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
 }
 
 func TestVectorCRUD_ValidateUpsertVectorRequest_EmptyVector(t *testing.T) {
@@ -914,9 +914,9 @@ func TestVectorCRUD_ValidateUpsertVectorRequest_EmptyVector(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrInvalidInput, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
 }
 
 func TestVectorCRUD_ValidateGetVectorRequest_NilRequest(t *testing.T) {
@@ -926,9 +926,9 @@ func TestVectorCRUD_ValidateGetVectorRequest_NilRequest(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrInvalidInput, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
 }
 
 func TestVectorCRUD_ValidateGetVectorRequest_EmptyNamespace(t *testing.T) {
@@ -941,9 +941,9 @@ func TestVectorCRUD_ValidateGetVectorRequest_EmptyNamespace(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrInvalidInput, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
 }
 
 func TestVectorCRUD_ValidateGetVectorRequest_ZeroID(t *testing.T) {
@@ -956,9 +956,9 @@ func TestVectorCRUD_ValidateGetVectorRequest_ZeroID(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrInvalidInput, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
 }
 
 func TestVectorCRUD_ValidateDeleteVectorRequest_NilRequest(t *testing.T) {
@@ -968,9 +968,9 @@ func TestVectorCRUD_ValidateDeleteVectorRequest_NilRequest(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrInvalidInput, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
 }
 
 func TestVectorCRUD_ValidateDeleteVectorRequest_EmptyNamespace(t *testing.T) {
@@ -983,9 +983,9 @@ func TestVectorCRUD_ValidateDeleteVectorRequest_EmptyNamespace(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrInvalidInput, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
 }
 
 func TestVectorCRUD_ValidateDeleteVectorRequest_ZeroID(t *testing.T) {
@@ -998,9 +998,9 @@ func TestVectorCRUD_ValidateDeleteVectorRequest_ZeroID(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrInvalidInput, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
 }
 
 func TestVectorCRUD_ValidateBatchUpsertRequest_NilRequest(t *testing.T) {
@@ -1010,9 +1010,9 @@ func TestVectorCRUD_ValidateBatchUpsertRequest_NilRequest(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrInvalidInput, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
 }
 
 func TestVectorCRUD_ValidateBatchUpsertRequest_EmptyNamespace(t *testing.T) {
@@ -1025,9 +1025,9 @@ func TestVectorCRUD_ValidateBatchUpsertRequest_EmptyNamespace(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrInvalidInput, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
 }
 
 func TestVectorCRUD_ValidateBatchUpsertRequest_EmptyVectors(t *testing.T) {
@@ -1040,9 +1040,9 @@ func TestVectorCRUD_ValidateBatchUpsertRequest_EmptyVectors(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrInvalidInput, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
 }
 
 func TestVectorCRUD_ValidateCompactNamespaceRequest_NilRequest(t *testing.T) {
@@ -1052,9 +1052,9 @@ func TestVectorCRUD_ValidateCompactNamespaceRequest_NilRequest(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrInvalidInput, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
 }
 
 func TestVectorCRUD_ValidateCompactNamespaceRequest_EmptyNamespace(t *testing.T) {
@@ -1066,9 +1066,9 @@ func TestVectorCRUD_ValidateCompactNamespaceRequest_EmptyNamespace(t *testing.T)
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrInvalidInput, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
 }
 
 // =============================================================================
@@ -1082,9 +1082,9 @@ func TestVectorCRUD_ValidateDeleteNamespaceRequest_NilRequest(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrInvalidInput, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
 }
 
 func TestVectorCRUD_ValidateDeleteNamespaceRequest_EmptyNamespace(t *testing.T) {
@@ -1096,9 +1096,9 @@ func TestVectorCRUD_ValidateDeleteNamespaceRequest_EmptyNamespace(t *testing.T) 
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrInvalidInput, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
 }
 
 // =============================================================================

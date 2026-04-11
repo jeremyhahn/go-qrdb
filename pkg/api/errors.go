@@ -1,9 +1,9 @@
 // Copyright (c) 2025 Jeremy Hahn
 // Copyright (c) 2025 Automate The Things, LLC
 //
-// This file is part of go-dragondb.
+// This file is part of go-qrdb.
 //
-// go-dragondb is dual-licensed:
+// go-qrdb is dual-licensed:
 //
 // 1. GNU Affero General Public License v3.0 (AGPL-3.0)
 //    See LICENSE file or visit https://www.gnu.org/licenses/agpl-3.0.html
@@ -11,7 +11,7 @@
 // 2. Commercial License
 //    Contact licensing@automatethethings.com for commercial licensing options.
 
-// Package api provides shared types for all DragonDB API transports
+// Package api provides shared types for all QRDB API transports
 // (MCP, QUIC, REST, gRPC). Error types defined here ensure consistent
 // error handling across every transport layer.
 package api
@@ -32,9 +32,9 @@ func (e *RequiredFieldError) Error() string {
 	return e.Field + " is required"
 }
 
-// NewRequiredFieldError creates a DragonError for a missing required field.
-func NewRequiredFieldError(field string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewRequiredFieldError creates a QRDBError for a missing required field.
+func NewRequiredFieldError(field string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   "api.validate",
 		Err:  &RequiredFieldError{Field: field},
@@ -51,9 +51,9 @@ func (e *ServiceUnavailableError) Error() string {
 	return e.Service + " service not available"
 }
 
-// NewServiceUnavailableError creates a DragonError for an unavailable service.
-func NewServiceUnavailableError(service string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewServiceUnavailableError creates a QRDBError for an unavailable service.
+func NewServiceUnavailableError(service string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrUnavailable,
 		Op:   "api.service",
 		Err:  &ServiceUnavailableError{Service: service},
@@ -73,9 +73,9 @@ func (e *NotImplementedError) Error() string {
 	return "not yet implemented"
 }
 
-// NewNotImplementedError creates a DragonError for an unimplemented feature.
-func NewNotImplementedError(feature string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewNotImplementedError creates a QRDBError for an unimplemented feature.
+func NewNotImplementedError(feature string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrNotImplemented,
 		Op:   "api",
 		Err:  &NotImplementedError{Feature: feature},
@@ -92,9 +92,9 @@ func (e *UnknownToolError) Error() string {
 	return "unknown tool: " + e.Tool
 }
 
-// NewUnknownToolError creates a DragonError for an unrecognized tool name.
-func NewUnknownToolError(tool string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewUnknownToolError creates a QRDBError for an unrecognized tool name.
+func NewUnknownToolError(tool string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   "api.tool",
 		Err:  &UnknownToolError{Tool: tool},
@@ -121,18 +121,18 @@ func (e *InvalidFormatError) Unwrap() error {
 	return e.Cause
 }
 
-// NewInvalidFormatError creates a DragonError for an invalid input format.
-func NewInvalidFormatError(field string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewInvalidFormatError creates a QRDBError for an invalid input format.
+func NewInvalidFormatError(field string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   "api.validate",
 		Err:  &InvalidFormatError{Field: field, Cause: cause},
 	}
 }
 
-// NewInvalidFormatMessageError creates a DragonError for an invalid format with a message string.
-func NewInvalidFormatMessageError(field, message string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewInvalidFormatMessageError creates a QRDBError for an invalid format with a message string.
+func NewInvalidFormatMessageError(field, message string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   "api.validate",
 		Err:  &InvalidFormatError{Field: field, Message: message},
@@ -150,9 +150,9 @@ func (e *UnexpectedResponseError) Error() string {
 	return fmt.Sprintf("unexpected response type from %s %s", e.Service, e.Method)
 }
 
-// NewUnexpectedResponseError creates a DragonError for an unexpected service response.
-func NewUnexpectedResponseError(service, method string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewUnexpectedResponseError creates a QRDBError for an unexpected service response.
+func NewUnexpectedResponseError(service, method string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   "api.response",
 		Err:  &UnexpectedResponseError{Service: service, Method: method},
@@ -175,9 +175,9 @@ func (e *OperationFailedError) Unwrap() error {
 	return e.Cause
 }
 
-// NewOperationFailedError creates a DragonError for a failed operation.
-func NewOperationFailedError(operation string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewOperationFailedError creates a QRDBError for a failed operation.
+func NewOperationFailedError(operation string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   "api." + operation,
 		Err:  &OperationFailedError{Operation: operation, Cause: cause},
@@ -200,9 +200,9 @@ func (e *InvalidBase64Error) Unwrap() error {
 	return e.Cause
 }
 
-// NewInvalidBase64Error creates a DragonError for a base64 decoding failure.
-func NewInvalidBase64Error(field string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewInvalidBase64Error creates a QRDBError for a base64 decoding failure.
+func NewInvalidBase64Error(field string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   "api.validate",
 		Err:  &InvalidBase64Error{Field: field, Cause: cause},
@@ -224,9 +224,9 @@ func (e *StreamError) Unwrap() error {
 	return e.Cause
 }
 
-// NewStreamError creates a DragonError for a stream receive failure.
-func NewStreamError(cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewStreamError creates a QRDBError for a stream receive failure.
+func NewStreamError(cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   "api.stream",
 		Err:  &StreamError{Cause: cause},
@@ -254,9 +254,9 @@ func (e *BatchItemError) Unwrap() error {
 	return e.Cause
 }
 
-// NewBatchItemError creates a DragonError for a batch item failure.
-func NewBatchItemError(index int, field string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewBatchItemError creates a QRDBError for a batch item failure.
+func NewBatchItemError(index int, field string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   "api.batch",
 		Err: &BatchItemError{
@@ -267,9 +267,9 @@ func NewBatchItemError(index int, field string, cause error) *dberrors.DragonErr
 	}
 }
 
-// NewBatchItemMessageError creates a DragonError for a batch item failure with a message.
-func NewBatchItemMessageError(index int, message string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewBatchItemMessageError creates a QRDBError for a batch item failure with a message.
+func NewBatchItemMessageError(index int, message string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   "api.batch",
 		Err: &BatchItemError{
@@ -289,9 +289,9 @@ func (e *ServiceNotConfiguredError) Error() string {
 	return e.Service + " service not configured"
 }
 
-// NewServiceNotConfiguredError creates a DragonError for a service that is not configured.
-func NewServiceNotConfiguredError(service string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewServiceNotConfiguredError creates a QRDBError for a service that is not configured.
+func NewServiceNotConfiguredError(service string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrUnavailable,
 		Op:   "api.service",
 		Err:  &ServiceNotConfiguredError{Service: service},
@@ -308,9 +308,9 @@ func (e *EmptyCollectionError) Error() string {
 	return e.Field + " cannot be empty"
 }
 
-// NewEmptyCollectionError creates a DragonError for an empty required collection.
-func NewEmptyCollectionError(field string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewEmptyCollectionError creates a QRDBError for an empty required collection.
+func NewEmptyCollectionError(field string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   "api.validate",
 		Err:  &EmptyCollectionError{Field: field},
@@ -329,9 +329,9 @@ func (e *RangeError) Error() string {
 	return fmt.Sprintf("%s must be between %d and %d", e.Field, e.Min, e.Max)
 }
 
-// NewRangeError creates a DragonError for an out-of-range value.
-func NewRangeError(field string, min, max int) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewRangeError creates a QRDBError for an out-of-range value.
+func NewRangeError(field string, min, max int) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   "api.validate",
 		Err:  &RangeError{Field: field, Min: min, Max: max},
@@ -349,9 +349,9 @@ func (e *NotFoundError) Error() string {
 	return fmt.Sprintf("%s not found: %s", e.Resource, e.ID)
 }
 
-// NewNotFoundError creates a DragonError for a resource not found condition.
-func NewNotFoundError(resource, id string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewNotFoundError creates a QRDBError for a resource not found condition.
+func NewNotFoundError(resource, id string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrNotFound,
 		Op:   "api.lookup",
 		Err:  &NotFoundError{Resource: resource, ID: id},
@@ -368,9 +368,9 @@ func (e *NoResponseError) Error() string {
 	return "no response received from " + e.Operation
 }
 
-// NewNoResponseError creates a DragonError for a missing streaming response.
-func NewNoResponseError(operation string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewNoResponseError creates a QRDBError for a missing streaming response.
+func NewNoResponseError(operation string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   "api." + operation,
 		Err:  &NoResponseError{Operation: operation},
@@ -388,9 +388,9 @@ func (e *MaxLimitError) Error() string {
 	return fmt.Sprintf("maximum %d %s allowed per batch", e.Max, e.Field)
 }
 
-// NewMaxLimitError creates a DragonError for exceeding a batch size limit.
-func NewMaxLimitError(field string, max int) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewMaxLimitError creates a QRDBError for exceeding a batch size limit.
+func NewMaxLimitError(field string, max int) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   "api.validate",
 		Err:  &MaxLimitError{Field: field, Max: max},
@@ -412,9 +412,9 @@ func (e *MarshalError) Unwrap() error {
 	return e.Cause
 }
 
-// NewMarshalError creates a DragonError for a JSON marshaling failure.
-func NewMarshalError(cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewMarshalError creates a QRDBError for a JSON marshaling failure.
+func NewMarshalError(cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   "api.marshal",
 		Err:  &MarshalError{Cause: cause},
@@ -432,9 +432,9 @@ func (e *InvalidTypeError) Error() string {
 	return fmt.Sprintf("%s must be %s", e.Field, e.Expected)
 }
 
-// NewInvalidTypeError creates a DragonError for an invalid field type.
-func NewInvalidTypeError(field, expected string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewInvalidTypeError creates a QRDBError for an invalid field type.
+func NewInvalidTypeError(field, expected string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   "api.validate",
 		Err:  &InvalidTypeError{Field: field, Expected: expected},
@@ -455,9 +455,9 @@ func (e *NilInputError) Error() string {
 	return e.Name + " cannot be nil"
 }
 
-// NewNilInputError creates a DragonError for a nil input parameter.
-func NewNilInputError(op, name string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewNilInputError creates a QRDBError for a nil input parameter.
+func NewNilInputError(op, name string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &NilInputError{Name: name},
@@ -480,9 +480,9 @@ func (e *EncodeError) Unwrap() error {
 	return e.Cause
 }
 
-// NewEncodeError creates a DragonError for an encoding failure.
-func NewEncodeError(op, subject string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewEncodeError creates a QRDBError for an encoding failure.
+func NewEncodeError(op, subject string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   op,
 		Err:  &EncodeError{Subject: subject, Cause: cause},
@@ -505,9 +505,9 @@ func (e *DecodeError) Unwrap() error {
 	return e.Cause
 }
 
-// NewDecodeError creates a DragonError for a decoding failure.
-func NewDecodeError(op, subject string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewDecodeError creates a QRDBError for a decoding failure.
+func NewDecodeError(op, subject string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   op,
 		Err:  &DecodeError{Subject: subject, Cause: cause},
@@ -522,9 +522,9 @@ func (e *ClientClosedError) Error() string {
 	return "client is closed"
 }
 
-// NewClientClosedError creates a DragonError for a closed client.
-func NewClientClosedError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewClientClosedError creates a QRDBError for a closed client.
+func NewClientClosedError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrUnavailable,
 		Op:   op,
 		Err:  &ClientClosedError{},
@@ -551,9 +551,9 @@ func (e *ConnectionError) Unwrap() error {
 	return e.Cause
 }
 
-// NewConnectionError creates a DragonError for a connection failure.
-func NewConnectionError(op, action, target string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewConnectionError creates a QRDBError for a connection failure.
+func NewConnectionError(op, action, target string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrUnavailable,
 		Op:   op,
 		Err:  &ConnectionError{Action: action, Target: target, Cause: cause},
@@ -576,9 +576,9 @@ func (e *WriteError) Unwrap() error {
 	return e.Cause
 }
 
-// NewWriteError creates a DragonError for a write failure.
-func NewWriteError(op, field string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewWriteError creates a QRDBError for a write failure.
+func NewWriteError(op, field string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   op,
 		Err:  &WriteError{Field: field, Cause: cause},
@@ -601,9 +601,9 @@ func (e *ReadError) Unwrap() error {
 	return e.Cause
 }
 
-// NewReadError creates a DragonError for a read failure.
-func NewReadError(op, field string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewReadError creates a QRDBError for a read failure.
+func NewReadError(op, field string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   op,
 		Err:  &ReadError{Field: field, Cause: cause},
@@ -622,9 +622,9 @@ func (e *SizeLimitError) Error() string {
 	return fmt.Sprintf("%s size %d exceeds maximum %d", e.Field, e.Size, e.Maximum)
 }
 
-// NewSizeLimitError creates a DragonError for a size limit violation.
-func NewSizeLimitError(op, field string, size, maximum uint32) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewSizeLimitError creates a QRDBError for a size limit violation.
+func NewSizeLimitError(op, field string, size, maximum uint32) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &SizeLimitError{Field: field, Size: size, Maximum: maximum},
@@ -647,9 +647,9 @@ func (e *ConfigurationError) Unwrap() error {
 	return e.Cause
 }
 
-// NewConfigurationError creates a DragonError for a configuration failure.
-func NewConfigurationError(op, action string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewConfigurationError creates a QRDBError for a configuration failure.
+func NewConfigurationError(op, action string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrConfiguration,
 		Op:   op,
 		Err:  &ConfigurationError{Action: action, Cause: cause},
@@ -666,9 +666,9 @@ func (e *ComponentUnavailableError) Error() string {
 	return e.Component + " not available"
 }
 
-// NewComponentUnavailableError creates a DragonError for an unavailable component.
-func NewComponentUnavailableError(component string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewComponentUnavailableError creates a QRDBError for an unavailable component.
+func NewComponentUnavailableError(component string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrUnavailable,
 		Op:   "api.service",
 		Err:  &ComponentUnavailableError{Component: component},
@@ -686,9 +686,9 @@ func (e *BatchItemValidationError) Error() string {
 	return fmt.Sprintf("item %d %s", e.Index, e.Message)
 }
 
-// NewBatchItemValidationError creates a DragonError for a batch item validation failure.
-func NewBatchItemValidationError(index int, message string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewBatchItemValidationError creates a QRDBError for a batch item validation failure.
+func NewBatchItemValidationError(index int, message string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   "api.batch",
 		Err:  &BatchItemValidationError{Index: index, Message: message},
@@ -714,18 +714,18 @@ func (e *InvalidInputError) Unwrap() error {
 	return e.Cause
 }
 
-// NewInvalidInputError creates a DragonError for an invalid input with a custom message.
-func NewInvalidInputError(message string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewInvalidInputError creates a QRDBError for an invalid input with a custom message.
+func NewInvalidInputError(message string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   "api.validate",
 		Err:  &InvalidInputError{Message: message},
 	}
 }
 
-// NewInvalidInputCauseError creates a DragonError for an invalid input with a cause.
-func NewInvalidInputCauseError(message string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewInvalidInputCauseError creates a QRDBError for an invalid input with a cause.
+func NewInvalidInputCauseError(message string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   "api.validate",
 		Err:  &InvalidInputError{Message: message, Cause: cause},
@@ -746,9 +746,9 @@ func (e *DataTooShortError) Error() string {
 	return fmt.Sprintf("data too short: %d bytes", e.Size)
 }
 
-// NewDataTooShortError creates a DragonError for data that is too short to decode.
-func NewDataTooShortError(op string, size int) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewDataTooShortError creates a QRDBError for data that is too short to decode.
+func NewDataTooShortError(op string, size int) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &DataTooShortError{Size: size},
@@ -765,9 +765,9 @@ func (e *MissingSubOpcodeError) Error() string {
 	return e.Service + " request missing sub-opcode"
 }
 
-// NewMissingSubOpcodeError creates a DragonError for a missing sub-opcode.
-func NewMissingSubOpcodeError(op, service string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewMissingSubOpcodeError creates a QRDBError for a missing sub-opcode.
+func NewMissingSubOpcodeError(op, service string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &MissingSubOpcodeError{Service: service},
@@ -785,9 +785,9 @@ func (e *UnknownSubOpcodeError) Error() string {
 	return fmt.Sprintf("unknown %s sub-opcode: 0x%02X", e.Service, e.SubOpcode)
 }
 
-// NewUnknownSubOpcodeError creates a DragonError for an unknown sub-opcode.
-func NewUnknownSubOpcodeError(op, service string, subOpcode byte) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewUnknownSubOpcodeError creates a QRDBError for an unknown sub-opcode.
+func NewUnknownSubOpcodeError(op, service string, subOpcode byte) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &UnknownSubOpcodeError{Service: service, SubOpcode: subOpcode},
@@ -810,9 +810,9 @@ func (e *InvalidBatchCheckError) Unwrap() error {
 	return e.Cause
 }
 
-// NewInvalidBatchCheckError creates a DragonError for an invalid batch check item.
-func NewInvalidBatchCheckError(op string, index int, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewInvalidBatchCheckError creates a QRDBError for an invalid batch check item.
+func NewInvalidBatchCheckError(op string, index int, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &InvalidBatchCheckError{Index: index, Cause: cause},
@@ -829,9 +829,9 @@ func (e *ShardNotFoundError) Error() string {
 	return fmt.Sprintf("shard %d not found on this node", e.ShardID)
 }
 
-// NewShardNotFoundError creates a DragonError for a missing shard.
-func NewShardNotFoundError(op string, shardID uint64) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewShardNotFoundError creates a QRDBError for a missing shard.
+func NewShardNotFoundError(op string, shardID uint64) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrNotFound,
 		Op:   op,
 		Err:  &ShardNotFoundError{ShardID: shardID},
@@ -855,9 +855,9 @@ func (e *ItemReadError) Unwrap() error {
 	return e.Cause
 }
 
-// NewItemReadError creates a DragonError for a batch item read failure.
-func NewItemReadError(op, field string, index uint32, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewItemReadError creates a QRDBError for a batch item read failure.
+func NewItemReadError(op, field string, index uint32, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &ItemReadError{Field: field, Index: index, Cause: cause},
@@ -874,9 +874,9 @@ func (e *EmptyListError) Error() string {
 	return e.Field + " is empty"
 }
 
-// NewEmptyListError creates a DragonError for an empty required list.
-func NewEmptyListError(op, field string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewEmptyListError creates a QRDBError for an empty required list.
+func NewEmptyListError(op, field string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &EmptyListError{Field: field},
@@ -893,9 +893,9 @@ func (e *UnknownFederationSubOpError) Error() string {
 	return fmt.Sprintf("unknown federation sub-operation: 0x%02X", e.SubOp)
 }
 
-// NewUnknownFederationSubOpError creates a DragonError for an unknown federation sub-operation.
-func NewUnknownFederationSubOpError(op string, subOp byte) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewUnknownFederationSubOpError creates a QRDBError for an unknown federation sub-operation.
+func NewUnknownFederationSubOpError(op string, subOp byte) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &UnknownFederationSubOpError{SubOp: subOp},
@@ -914,9 +914,9 @@ func (e *AuthenticationDisabledError) Error() string {
 	return "authentication is not enabled"
 }
 
-// NewAuthenticationDisabledError creates a DragonError for disabled authentication.
-func NewAuthenticationDisabledError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewAuthenticationDisabledError creates a QRDBError for disabled authentication.
+func NewAuthenticationDisabledError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrConfiguration,
 		Op:   op,
 		Err:  &AuthenticationDisabledError{},
@@ -931,9 +931,9 @@ func (e *PasswordAuthDisabledError) Error() string {
 	return "password-based authentication is disabled; use mTLS certificate or FIDO2/WebAuthn authentication"
 }
 
-// NewPasswordAuthDisabledError creates a DragonError for disabled password authentication.
-func NewPasswordAuthDisabledError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewPasswordAuthDisabledError creates a QRDBError for disabled password authentication.
+func NewPasswordAuthDisabledError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrUnauthorized,
 		Op:   op,
 		Err:  &PasswordAuthDisabledError{},
@@ -948,9 +948,9 @@ func (e *TokenRequiredError) Error() string {
 	return "authentication token required"
 }
 
-// NewTokenRequiredError creates a DragonError for a missing authentication token.
-func NewTokenRequiredError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewTokenRequiredError creates a QRDBError for a missing authentication token.
+func NewTokenRequiredError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrUnauthorized,
 		Op:   op,
 		Err:  &TokenRequiredError{},
@@ -965,9 +965,9 @@ func (e *TokenRevokedError) Error() string {
 	return "token has been revoked"
 }
 
-// NewTokenRevokedError creates a DragonError for a revoked token.
-func NewTokenRevokedError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewTokenRevokedError creates a QRDBError for a revoked token.
+func NewTokenRevokedError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrUnauthorized,
 		Op:   op,
 		Err:  &TokenRevokedError{},
@@ -982,9 +982,9 @@ func (e *InsufficientPermissionsError) Error() string {
 	return "insufficient permissions"
 }
 
-// NewInsufficientPermissionsError creates a DragonError for insufficient permissions.
-func NewInsufficientPermissionsError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewInsufficientPermissionsError creates a QRDBError for insufficient permissions.
+func NewInsufficientPermissionsError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrForbidden,
 		Op:   op,
 		Err:  &InsufficientPermissionsError{},
@@ -999,9 +999,9 @@ func (e *InvalidCredentialsError) Error() string {
 	return "invalid credentials"
 }
 
-// NewInvalidCredentialsError creates a DragonError for invalid credentials.
-func NewInvalidCredentialsError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewInvalidCredentialsError creates a QRDBError for invalid credentials.
+func NewInvalidCredentialsError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrUnauthorized,
 		Op:   op,
 		Err:  &InvalidCredentialsError{},
@@ -1016,9 +1016,9 @@ func (e *CredentialsRequiredError) Error() string {
 	return "username and password are required"
 }
 
-// NewCredentialsRequiredError creates a DragonError for missing credentials.
-func NewCredentialsRequiredError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewCredentialsRequiredError creates a QRDBError for missing credentials.
+func NewCredentialsRequiredError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrUnauthorized,
 		Op:   op,
 		Err:  &CredentialsRequiredError{},
@@ -1033,9 +1033,9 @@ func (e *NoPasswordSetError) Error() string {
 	return "user has no password set; use IAM authentication"
 }
 
-// NewNoPasswordSetError creates a DragonError for a user without a password.
-func NewNoPasswordSetError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewNoPasswordSetError creates a QRDBError for a user without a password.
+func NewNoPasswordSetError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrUnauthorized,
 		Op:   op,
 		Err:  &NoPasswordSetError{},
@@ -1060,9 +1060,9 @@ func (e *InvalidTokenError) Unwrap() error {
 	return e.Cause
 }
 
-// NewInvalidTokenError creates a DragonError for an invalid token.
-func NewInvalidTokenError(op string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewInvalidTokenError creates a QRDBError for an invalid token.
+func NewInvalidTokenError(op string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrUnauthorized,
 		Op:   op,
 		Err:  &InvalidTokenError{Cause: cause},
@@ -1077,9 +1077,9 @@ func (e *InvalidTokenClaimsError) Error() string {
 	return "invalid token claims"
 }
 
-// NewInvalidTokenClaimsError creates a DragonError for invalid token claims.
-func NewInvalidTokenClaimsError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewInvalidTokenClaimsError creates a QRDBError for invalid token claims.
+func NewInvalidTokenClaimsError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrUnauthorized,
 		Op:   op,
 		Err:  &InvalidTokenClaimsError{},
@@ -1096,9 +1096,9 @@ func (e *UnexpectedSigningMethodError) Error() string {
 	return fmt.Sprintf("unexpected signing method: %v", e.Algorithm)
 }
 
-// NewUnexpectedSigningMethodError creates a DragonError for an unexpected signing method.
-func NewUnexpectedSigningMethodError(op string, algorithm interface{}) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewUnexpectedSigningMethodError creates a QRDBError for an unexpected signing method.
+func NewUnexpectedSigningMethodError(op string, algorithm interface{}) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrUnauthorized,
 		Op:   op,
 		Err:  &UnexpectedSigningMethodError{Algorithm: algorithm},
@@ -1113,9 +1113,9 @@ func (e *InvalidRefreshTokenError) Error() string {
 	return "invalid refresh token"
 }
 
-// NewInvalidRefreshTokenError creates a DragonError for an invalid refresh token.
-func NewInvalidRefreshTokenError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewInvalidRefreshTokenError creates a QRDBError for an invalid refresh token.
+func NewInvalidRefreshTokenError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrUnauthorized,
 		Op:   op,
 		Err:  &InvalidRefreshTokenError{},
@@ -1133,9 +1133,9 @@ func (e *AlreadyExistsError) Error() string {
 	return e.Resource + " already exists: " + e.ID
 }
 
-// NewAlreadyExistsError creates a DragonError for a resource that already exists.
-func NewAlreadyExistsError(op, resource, id string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewAlreadyExistsError creates a QRDBError for a resource that already exists.
+func NewAlreadyExistsError(op, resource, id string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrAlreadyExists,
 		Op:   op,
 		Err:  &AlreadyExistsError{Resource: resource, ID: id},
@@ -1150,9 +1150,9 @@ func (e *InvalidUserTypeError) Error() string {
 	return "invalid user type"
 }
 
-// NewInvalidUserTypeError creates a DragonError for an invalid user type.
-func NewInvalidUserTypeError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewInvalidUserTypeError creates a QRDBError for an invalid user type.
+func NewInvalidUserTypeError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   op,
 		Err:  &InvalidUserTypeError{},
@@ -1170,9 +1170,9 @@ func (e *BuiltInRoleError) Error() string {
 	return fmt.Sprintf("cannot %s built-in role: %s", e.Action, e.RoleName)
 }
 
-// NewBuiltInRoleError creates a DragonError for a built-in role modification attempt.
-func NewBuiltInRoleError(op, action, roleName string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewBuiltInRoleError creates a QRDBError for a built-in role modification attempt.
+func NewBuiltInRoleError(op, action, roleName string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &BuiltInRoleError{Action: action, RoleName: roleName},
@@ -1189,9 +1189,9 @@ func (e *UserHasRoleError) Error() string {
 	return "user already has role: " + e.RoleName
 }
 
-// NewUserHasRoleError creates a DragonError for a duplicate role assignment.
-func NewUserHasRoleError(op, roleName string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewUserHasRoleError creates a QRDBError for a duplicate role assignment.
+func NewUserHasRoleError(op, roleName string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &UserHasRoleError{RoleName: roleName},
@@ -1208,9 +1208,9 @@ func (e *UserMissingRoleError) Error() string {
 	return "user does not have role: " + e.RoleName
 }
 
-// NewUserMissingRoleError creates a DragonError for a missing role revocation.
-func NewUserMissingRoleError(op, roleName string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewUserMissingRoleError creates a QRDBError for a missing role revocation.
+func NewUserMissingRoleError(op, roleName string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &UserMissingRoleError{RoleName: roleName},
@@ -1225,9 +1225,9 @@ func (e *RolesNotFoundError) Error() string {
 	return "one or more roles do not exist"
 }
 
-// NewRolesNotFoundError creates a DragonError for missing roles.
-func NewRolesNotFoundError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewRolesNotFoundError creates a QRDBError for missing roles.
+func NewRolesNotFoundError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &RolesNotFoundError{},
@@ -1244,9 +1244,9 @@ func (e *ReservedKeyPrefixError) Error() string {
 	return "key uses reserved internal prefix '" + e.Prefix + "'"
 }
 
-// NewReservedKeyPrefixError creates a DragonError for a reserved key prefix violation.
-func NewReservedKeyPrefixError(op, prefix string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewReservedKeyPrefixError creates a QRDBError for a reserved key prefix violation.
+func NewReservedKeyPrefixError(op, prefix string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &ReservedKeyPrefixError{Prefix: prefix},
@@ -1263,9 +1263,9 @@ func (e *DeprecatedOperationError) Error() string {
 	return e.Message
 }
 
-// NewDeprecatedOperationError creates a DragonError for a deprecated operation.
-func NewDeprecatedOperationError(op, message string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewDeprecatedOperationError creates a QRDBError for a deprecated operation.
+func NewDeprecatedOperationError(op, message string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrUnimplemented,
 		Op:   op,
 		Err:  &DeprecatedOperationError{Message: message},
@@ -1282,9 +1282,9 @@ func (e *UnknownManagerTypeError) Error() string {
 	return "unknown auth manager type: " + e.TypeName
 }
 
-// NewUnknownManagerTypeError creates a DragonError for an unknown manager type.
-func NewUnknownManagerTypeError(op, typeName string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewUnknownManagerTypeError creates a QRDBError for an unknown manager type.
+func NewUnknownManagerTypeError(op, typeName string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   op,
 		Err:  &UnknownManagerTypeError{TypeName: typeName},
@@ -1306,9 +1306,9 @@ func (e *IteratorError) Unwrap() error {
 	return e.Cause
 }
 
-// NewIteratorError creates a DragonError for an iterator failure.
-func NewIteratorError(op string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewIteratorError creates a QRDBError for an iterator failure.
+func NewIteratorError(op string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   op,
 		Err:  &IteratorError{Cause: cause},
@@ -1329,9 +1329,9 @@ func (e *UnknownOpcodeError) Error() string {
 	return fmt.Sprintf("unknown opcode: 0x%02X", e.Opcode)
 }
 
-// NewUnknownOpcodeError creates a DragonError for an unknown opcode.
-func NewUnknownOpcodeError(op string, opcode byte) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewUnknownOpcodeError creates a QRDBError for an unknown opcode.
+func NewUnknownOpcodeError(op string, opcode byte) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &UnknownOpcodeError{Opcode: opcode},
@@ -1346,9 +1346,9 @@ func (e *HandlerClosedError) Error() string {
 	return "handler is closed"
 }
 
-// NewHandlerClosedError creates a DragonError for a closed handler.
-func NewHandlerClosedError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewHandlerClosedError creates a QRDBError for a closed handler.
+func NewHandlerClosedError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrUnavailable,
 		Op:   op,
 		Err:  &HandlerClosedError{},
@@ -1365,9 +1365,9 @@ func (e *ProtocolStatusError) Error() string {
 	return e.Message
 }
 
-// NewProtocolStatusError creates a DragonError for a protocol status error with a given error code.
-func NewProtocolStatusError(op string, code dberrors.ErrorCode, message string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewProtocolStatusError creates a QRDBError for a protocol status error with a given error code.
+func NewProtocolStatusError(op string, code dberrors.ErrorCode, message string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: code,
 		Op:   op,
 		Err:  &ProtocolStatusError{Message: message},
@@ -1384,9 +1384,9 @@ func (e *FeatureUnsupportedError) Error() string {
 	return e.Feature + " is not supported"
 }
 
-// NewFeatureUnsupportedError creates a DragonError for an unsupported feature.
-func NewFeatureUnsupportedError(op, feature string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewFeatureUnsupportedError creates a QRDBError for an unsupported feature.
+func NewFeatureUnsupportedError(op, feature string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   op,
 		Err:  &FeatureUnsupportedError{Feature: feature},
@@ -1407,9 +1407,9 @@ func (e *NilEntityError) Error() string {
 	return "cannot " + e.Operation + " nil entity"
 }
 
-// NewNilEntityError creates a DragonError for a nil entity in a codec operation.
-func NewNilEntityError(op, operation string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewNilEntityError creates a QRDBError for a nil entity in a codec operation.
+func NewNilEntityError(op, operation string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &NilEntityError{Operation: operation},
@@ -1424,9 +1424,9 @@ func (e *EmptyDataError) Error() string {
 	return "cannot decode empty data"
 }
 
-// NewEmptyDataError creates a DragonError for empty data in a decode operation.
-func NewEmptyDataError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewEmptyDataError creates a QRDBError for empty data in a decode operation.
+func NewEmptyDataError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &EmptyDataError{},
@@ -1443,9 +1443,9 @@ func (e *CodecNotFoundError) Error() string {
 	return "codec " + e.Codec + " not found in registry"
 }
 
-// NewCodecNotFoundError creates a DragonError for a missing codec in the registry.
-func NewCodecNotFoundError(op, codec string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewCodecNotFoundError creates a QRDBError for a missing codec in the registry.
+func NewCodecNotFoundError(op, codec string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   op,
 		Err:  &CodecNotFoundError{Codec: codec},
@@ -1462,9 +1462,9 @@ func (e *NoSuitableCodecError) Error() string {
 	return "no suitable codec found for entity type " + e.EntityType
 }
 
-// NewNoSuitableCodecError creates a DragonError for a missing suitable codec.
-func NewNoSuitableCodecError(op, entityType string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewNoSuitableCodecError creates a QRDBError for a missing suitable codec.
+func NewNoSuitableCodecError(op, entityType string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   op,
 		Err:  &NoSuitableCodecError{EntityType: entityType},
@@ -1481,9 +1481,9 @@ func (e *NonPointerError) Error() string {
 	return "entity must be a pointer, got " + e.TypeName
 }
 
-// NewNonPointerError creates a DragonError for a non-pointer entity in a decode operation.
-func NewNonPointerError(op, typeName string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewNonPointerError creates a QRDBError for a non-pointer entity in a decode operation.
+func NewNonPointerError(op, typeName string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &NonPointerError{TypeName: typeName},
@@ -1504,9 +1504,9 @@ func (e *UnsupportedOpcodeError) Error() string {
 	return fmt.Sprintf("unsupported operation: 0x%02x", e.Opcode)
 }
 
-// NewUnsupportedOpcodeError creates a DragonError for an unsupported opcode.
-func NewUnsupportedOpcodeError(op string, opcode byte) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewUnsupportedOpcodeError creates a QRDBError for an unsupported opcode.
+func NewUnsupportedOpcodeError(op string, opcode byte) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &UnsupportedOpcodeError{Opcode: opcode},
@@ -1523,9 +1523,9 @@ func (e *InvalidDataError) Error() string {
 	return "invalid data: " + e.Context
 }
 
-// NewInvalidDataError creates a DragonError for invalid binary data.
-func NewInvalidDataError(op, context string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewInvalidDataError creates a QRDBError for invalid binary data.
+func NewInvalidDataError(op, context string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &InvalidDataError{Context: context},
@@ -1542,9 +1542,9 @@ func (e *UnsupportedQueryTypeError) Error() string {
 	return "unsupported query type: " + e.TypeName
 }
 
-// NewUnsupportedQueryTypeError creates a DragonError for an unsupported query type.
-func NewUnsupportedQueryTypeError(op, typeName string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewUnsupportedQueryTypeError creates a QRDBError for an unsupported query type.
+func NewUnsupportedQueryTypeError(op, typeName string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &UnsupportedQueryTypeError{TypeName: typeName},
@@ -1561,9 +1561,9 @@ func (e *UnexpectedResultTypeError) Error() string {
 	return "unexpected result type: " + e.TypeName
 }
 
-// NewUnexpectedResultTypeError creates a DragonError for an unexpected result type.
-func NewUnexpectedResultTypeError(op, typeName string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewUnexpectedResultTypeError creates a QRDBError for an unexpected result type.
+func NewUnexpectedResultTypeError(op, typeName string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   op,
 		Err:  &UnexpectedResultTypeError{TypeName: typeName},
@@ -1581,9 +1581,9 @@ func (e *UnsupportedModeOperationError) Error() string {
 	return e.Operation + " not supported in " + e.Mode
 }
 
-// NewUnsupportedModeOperationError creates a DragonError for an operation unsupported in the current mode.
-func NewUnsupportedModeOperationError(op, operation, mode string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewUnsupportedModeOperationError creates a QRDBError for an operation unsupported in the current mode.
+func NewUnsupportedModeOperationError(op, operation, mode string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &UnsupportedModeOperationError{Operation: operation, Mode: mode},
@@ -1601,9 +1601,9 @@ func (e *ShardNotFoundInModeError) Error() string {
 	return fmt.Sprintf("shard %d not found in %s", e.ShardID, e.Mode)
 }
 
-// NewShardNotFoundInModeError creates a DragonError for a shard not found in the current mode.
-func NewShardNotFoundInModeError(op string, shardID uint64, mode string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewShardNotFoundInModeError creates a QRDBError for a shard not found in the current mode.
+func NewShardNotFoundInModeError(op string, shardID uint64, mode string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrNotFound,
 		Op:   op,
 		Err:  &ShardNotFoundInModeError{ShardID: shardID, Mode: mode},
@@ -1620,9 +1620,9 @@ func (e *UnknownServerModeError) Error() string {
 	return fmt.Sprintf("unknown server mode %q, valid modes are: standalone, cluster, devcluster", e.Mode)
 }
 
-// NewUnknownServerModeError creates a DragonError for an unknown server mode.
-func NewUnknownServerModeError(op, mode string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewUnknownServerModeError creates a QRDBError for an unknown server mode.
+func NewUnknownServerModeError(op, mode string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrConfiguration,
 		Op:   op,
 		Err:  &UnknownServerModeError{Mode: mode},
@@ -1639,9 +1639,9 @@ func (e *ServerStateError) Error() string {
 	return e.State
 }
 
-// NewServerStateError creates a DragonError for an invalid server state.
-func NewServerStateError(op, state string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewServerStateError creates a QRDBError for an invalid server state.
+func NewServerStateError(op, state string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   op,
 		Err:  &ServerStateError{State: state},
@@ -1658,9 +1658,9 @@ func (e *NoListenersConfiguredError) Error() string {
 	return e.Message
 }
 
-// NewNoListenersConfiguredError creates a DragonError for no configured listeners.
-func NewNoListenersConfiguredError(op, message string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewNoListenersConfiguredError creates a QRDBError for no configured listeners.
+func NewNoListenersConfiguredError(op, message string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrConfiguration,
 		Op:   op,
 		Err:  &NoListenersConfiguredError{Message: message},
@@ -1678,9 +1678,9 @@ func (e *ShutdownError) Error() string {
 	return fmt.Sprintf("shutdown completed with %d errors: %v", e.Count, e.Errors)
 }
 
-// NewShutdownError creates a DragonError for a shutdown with errors.
-func NewShutdownError(op string, errs []error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewShutdownError creates a QRDBError for a shutdown with errors.
+func NewShutdownError(op string, errs []error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   op,
 		Err:  &ShutdownError{Count: len(errs), Errors: errs},
@@ -1697,9 +1697,9 @@ func (e *UnknownProviderError) Error() string {
 	return "unknown provider: " + e.Provider
 }
 
-// NewUnknownProviderError creates a DragonError for an unknown provider.
-func NewUnknownProviderError(op, provider string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewUnknownProviderError creates a QRDBError for an unknown provider.
+func NewUnknownProviderError(op, provider string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrConfiguration,
 		Op:   op,
 		Err:  &UnknownProviderError{Provider: provider},
@@ -1717,9 +1717,9 @@ func (e *EntityShardPinError) Error() string {
 	return fmt.Sprintf("entity %q pinned to unknown shard %d", e.EntityType, e.ShardID)
 }
 
-// NewEntityShardPinError creates a DragonError for an invalid entity shard pin.
-func NewEntityShardPinError(op, entityType string, shardID uint64) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewEntityShardPinError creates a QRDBError for an invalid entity shard pin.
+func NewEntityShardPinError(op, entityType string, shardID uint64) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrConfiguration,
 		Op:   op,
 		Err:  &EntityShardPinError{EntityType: entityType, ShardID: shardID},
@@ -1737,9 +1737,9 @@ func (e *EncryptionKeySizeError) Error() string {
 	return fmt.Sprintf("encryption key must be %d bytes, got %d bytes", e.Expected, e.Actual)
 }
 
-// NewEncryptionKeySizeError creates a DragonError for an invalid encryption key size.
-func NewEncryptionKeySizeError(op string, expected, actual int) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewEncryptionKeySizeError creates a QRDBError for an invalid encryption key size.
+func NewEncryptionKeySizeError(op string, expected, actual int) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrConfiguration,
 		Op:   op,
 		Err:  &EncryptionKeySizeError{Expected: expected, Actual: actual},
@@ -1762,9 +1762,9 @@ func (e *CertGenerationError) Unwrap() error {
 	return e.Cause
 }
 
-// NewCertGenerationError creates a DragonError for a certificate generation failure.
-func NewCertGenerationError(op, step string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewCertGenerationError creates a QRDBError for a certificate generation failure.
+func NewCertGenerationError(op, step string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   op,
 		Err:  &CertGenerationError{Step: step, Cause: cause},
@@ -1788,9 +1788,9 @@ func (e *DataDirOperationError) Unwrap() error {
 	return e.Cause
 }
 
-// NewDataDirOperationError creates a DragonError for a data directory operation failure.
-func NewDataDirOperationError(op, action, path string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewDataDirOperationError creates a QRDBError for a data directory operation failure.
+func NewDataDirOperationError(op, action, path string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   op,
 		Err:  &DataDirOperationError{Action: action, Path: path, Cause: cause},
@@ -1809,9 +1809,9 @@ func (e *StateMachineClosedError) Error() string {
 	return "state machine is closed"
 }
 
-// NewStateMachineClosedError creates a DragonError for a closed state machine.
-func NewStateMachineClosedError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewStateMachineClosedError creates a QRDBError for a closed state machine.
+func NewStateMachineClosedError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrUnavailable,
 		Op:   op,
 		Err:  &StateMachineClosedError{},
@@ -1828,9 +1828,9 @@ func (e *NilFieldError) Error() string {
 	return e.Field + " must not be nil"
 }
 
-// NewNilFieldError creates a DragonError for a nil required field.
-func NewNilFieldError(op, field string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewNilFieldError creates a QRDBError for a nil required field.
+func NewNilFieldError(op, field string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &NilFieldError{Field: field},
@@ -1847,9 +1847,9 @@ func (e *EmptyFieldError) Error() string {
 	return e.Field + " must not be empty"
 }
 
-// NewEmptyFieldError creates a DragonError for an empty required field.
-func NewEmptyFieldError(op, field string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewEmptyFieldError creates a QRDBError for an empty required field.
+func NewEmptyFieldError(op, field string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &EmptyFieldError{Field: field},
@@ -1867,9 +1867,9 @@ func (e *KeyLengthError) Error() string {
 	return fmt.Sprintf("expected key length %d, got %d", e.Expected, e.Actual)
 }
 
-// NewKeyLengthError creates a DragonError for a key length mismatch.
-func NewKeyLengthError(op string, expected, actual int) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewKeyLengthError creates a QRDBError for a key length mismatch.
+func NewKeyLengthError(op string, expected, actual int) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &KeyLengthError{Expected: expected, Actual: actual},
@@ -1886,9 +1886,9 @@ func (e *KeyTooShortError) Error() string {
 	return "key too short for " + e.Component
 }
 
-// NewKeyTooShortError creates a DragonError for a key that is too short.
-func NewKeyTooShortError(op, component string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewKeyTooShortError creates a QRDBError for a key that is too short.
+func NewKeyTooShortError(op, component string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &KeyTooShortError{Component: component},
@@ -1905,9 +1905,9 @@ func (e *FeatureDisabledError) Error() string {
 	return e.Feature + " not enabled"
 }
 
-// NewFeatureDisabledError creates a DragonError for a disabled feature.
-func NewFeatureDisabledError(op, feature string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewFeatureDisabledError creates a QRDBError for a disabled feature.
+func NewFeatureDisabledError(op, feature string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrPreconditionFailed,
 		Op:   op,
 		Err:  &FeatureDisabledError{Feature: feature},
@@ -1924,9 +1924,9 @@ func (e *ZeroValueError) Error() string {
 	return e.Field + " must not be zero"
 }
 
-// NewZeroValueError creates a DragonError for a zero-valued required field.
-func NewZeroValueError(op, field string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewZeroValueError creates a QRDBError for a zero-valued required field.
+func NewZeroValueError(op, field string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &ZeroValueError{Field: field},
@@ -1948,9 +1948,9 @@ func (e *HTTPStatusError) Error() string {
 	return fmt.Sprintf("HTTP %d: %s", e.StatusCode, e.Body)
 }
 
-// NewHTTPStatusError creates a DragonError for an HTTP response with a non-success status code.
-func NewHTTPStatusError(op string, code dberrors.ErrorCode, statusCode int, body string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewHTTPStatusError creates a QRDBError for an HTTP response with a non-success status code.
+func NewHTTPStatusError(op string, code dberrors.ErrorCode, statusCode int, body string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: code,
 		Op:   op,
 		Err:  &HTTPStatusError{StatusCode: statusCode, Body: body},
@@ -1967,9 +1967,9 @@ func (e *RemoteError) Error() string {
 	return e.Message
 }
 
-// NewRemoteError creates a DragonError for a remote service error message.
-func NewRemoteError(op string, code dberrors.ErrorCode, message string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewRemoteError creates a QRDBError for a remote service error message.
+func NewRemoteError(op string, code dberrors.ErrorCode, message string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: code,
 		Op:   op,
 		Err:  &RemoteError{Message: message},
@@ -1987,9 +1987,9 @@ func (e *MinimumValueError) Error() string {
 	return e.Field + " must be at least " + e.Minimum
 }
 
-// NewMinimumValueError creates a DragonError for a value below minimum.
-func NewMinimumValueError(op, field, minimum string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewMinimumValueError creates a QRDBError for a value below minimum.
+func NewMinimumValueError(op, field, minimum string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &MinimumValueError{Field: field, Minimum: minimum},

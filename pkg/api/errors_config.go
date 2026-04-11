@@ -1,9 +1,9 @@
 // Copyright (c) 2025 Jeremy Hahn
 // Copyright (c) 2025 Automate The Things, LLC
 //
-// This file is part of go-dragondb.
+// This file is part of go-qrdb.
 //
-// go-dragondb is dual-licensed:
+// go-qrdb is dual-licensed:
 //
 // 1. GNU Affero General Public License v3.0 (AGPL-3.0)
 //    See LICENSE file or visit https://www.gnu.org/licenses/agpl-3.0.html
@@ -40,9 +40,9 @@ func (e *ConfigSectionValidationError) Unwrap() error {
 	return e.Cause
 }
 
-// NewConfigSectionValidationError creates a DragonError for a config section validation failure.
-func NewConfigSectionValidationError(op, section string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewConfigSectionValidationError creates a QRDBError for a config section validation failure.
+func NewConfigSectionValidationError(op, section string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrValidation,
 		Op:   op,
 		Err:  &ConfigSectionValidationError{Section: section, Cause: cause},
@@ -59,9 +59,9 @@ func (e *PositiveValueRequiredError) Error() string {
 	return e.Field + " must be positive"
 }
 
-// NewPositiveValueRequiredError creates a DragonError for a non-positive required value.
-func NewPositiveValueRequiredError(op, field string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewPositiveValueRequiredError creates a QRDBError for a non-positive required value.
+func NewPositiveValueRequiredError(op, field string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrValidation,
 		Op:   op,
 		Err:  &PositiveValueRequiredError{Field: field},
@@ -78,9 +78,9 @@ func (e *NonNegativeValueRequiredError) Error() string {
 	return e.Field + " cannot be negative"
 }
 
-// NewNonNegativeValueRequiredError creates a DragonError for a negative value.
-func NewNonNegativeValueRequiredError(op, field string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewNonNegativeValueRequiredError creates a QRDBError for a negative value.
+func NewNonNegativeValueRequiredError(op, field string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrValidation,
 		Op:   op,
 		Err:  &NonNegativeValueRequiredError{Field: field},
@@ -99,9 +99,9 @@ func (e *FloatRangeError) Error() string {
 	return fmt.Sprintf("%s must be between %g and %g", e.Field, e.Min, e.Max)
 }
 
-// NewFloatRangeError creates a DragonError for a float value out of range.
-func NewFloatRangeError(op, field string, min, max float32) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewFloatRangeError creates a QRDBError for a float value out of range.
+func NewFloatRangeError(op, field string, min, max float32) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrValidation,
 		Op:   op,
 		Err:  &FloatRangeError{Field: field, Min: min, Max: max},
@@ -122,9 +122,9 @@ func (e *ValueExceedsLimitError) Error() string {
 		e.Field, e.Value, e.LimitOf, e.LimitVal)
 }
 
-// NewValueExceedsLimitError creates a DragonError for a value that exceeds a limit.
-func NewValueExceedsLimitError(op, field string, value int, limitOf string, limitVal int) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewValueExceedsLimitError creates a QRDBError for a value that exceeds a limit.
+func NewValueExceedsLimitError(op, field string, value int, limitOf string, limitVal int) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrValidation,
 		Op:   op,
 		Err:  &ValueExceedsLimitError{Field: field, Value: value, LimitOf: limitOf, LimitVal: limitVal},
@@ -142,9 +142,9 @@ func (e *EmptyWhenEnabledError) Error() string {
 	return fmt.Sprintf("%s cannot be empty when %s is enabled", e.Field, e.Feature)
 }
 
-// NewEmptyWhenEnabledError creates a DragonError for an empty required field when enabled.
-func NewEmptyWhenEnabledError(op, field, feature string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewEmptyWhenEnabledError creates a QRDBError for an empty required field when enabled.
+func NewEmptyWhenEnabledError(op, field, feature string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrValidation,
 		Op:   op,
 		Err:  &EmptyWhenEnabledError{Field: field, Feature: feature},
@@ -162,9 +162,9 @@ func (e *ProviderRequirementError) Error() string {
 	return fmt.Sprintf("%s provider requires %s", e.Provider, e.Requirement)
 }
 
-// NewProviderRequirementError creates a DragonError for a missing provider requirement.
-func NewProviderRequirementError(op, provider, requirement string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewProviderRequirementError creates a QRDBError for a missing provider requirement.
+func NewProviderRequirementError(op, provider, requirement string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrValidation,
 		Op:   op,
 		Err:  &ProviderRequirementError{Provider: provider, Requirement: requirement},
@@ -185,9 +185,9 @@ func (e *DimensionMismatchError) Error() string {
 		e.Source, e.SourceDim, e.Target, e.TargetDim)
 }
 
-// NewDimensionMismatchError creates a DragonError for a dimension mismatch.
-func NewDimensionMismatchError(op, source string, sourceDim int, target string, targetDim int) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewDimensionMismatchError creates a QRDBError for a dimension mismatch.
+func NewDimensionMismatchError(op, source string, sourceDim int, target string, targetDim int) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrValidation,
 		Op:   op,
 		Err:  &DimensionMismatchError{Source: source, SourceDim: sourceDim, Target: target, TargetDim: targetDim},
@@ -206,9 +206,9 @@ func (e *UnsupportedBackendError) Error() string {
 		e.Backend, strings.Join(e.Supported, ", "))
 }
 
-// NewUnsupportedBackendError creates a DragonError for an unsupported backend.
-func NewUnsupportedBackendError(op, backend string, supported []string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewUnsupportedBackendError creates a QRDBError for an unsupported backend.
+func NewUnsupportedBackendError(op, backend string, supported []string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrConfiguration,
 		Op:   op,
 		Err:  &UnsupportedBackendError{Backend: backend, Supported: supported},
@@ -225,9 +225,9 @@ func (e *StorageKeyNotFoundError) Error() string {
 	return "key not found: " + e.Key
 }
 
-// NewStorageKeyNotFoundError creates a DragonError for a missing storage key.
-func NewStorageKeyNotFoundError(op, key string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewStorageKeyNotFoundError creates a QRDBError for a missing storage key.
+func NewStorageKeyNotFoundError(op, key string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrNotFound,
 		Op:   op,
 		Err:  &StorageKeyNotFoundError{Key: key},
@@ -244,9 +244,9 @@ func (e *ArchiveNotSupportedError) Error() string {
 	return "archive not supported for " + e.Backend + " storage"
 }
 
-// NewArchiveNotSupportedError creates a DragonError for an unsupported archive operation.
-func NewArchiveNotSupportedError(op, backend string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewArchiveNotSupportedError creates a QRDBError for an unsupported archive operation.
+func NewArchiveNotSupportedError(op, backend string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrUnimplemented,
 		Op:   op,
 		Err:  &ArchiveNotSupportedError{Backend: backend},
@@ -261,9 +261,9 @@ func (e *BackupNotEnabledError) Error() string {
 	return "backup is not enabled"
 }
 
-// NewBackupNotEnabledError creates a DragonError for disabled backup.
-func NewBackupNotEnabledError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewBackupNotEnabledError creates a QRDBError for disabled backup.
+func NewBackupNotEnabledError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrPreconditionFailed,
 		Op:   op,
 		Err:  &BackupNotEnabledError{},
@@ -278,9 +278,9 @@ func (e *BackupBackendRequiredError) Error() string {
 	return "backup storage backend is required when backup is enabled"
 }
 
-// NewBackupBackendRequiredError creates a DragonError for a missing backup backend.
-func NewBackupBackendRequiredError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewBackupBackendRequiredError creates a QRDBError for a missing backup backend.
+func NewBackupBackendRequiredError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrConfiguration,
 		Op:   op,
 		Err:  &BackupBackendRequiredError{},
@@ -299,9 +299,9 @@ func (e *URLSchemeError) Error() string {
 		e.Field, strings.Join(e.AllowedSchemes, " or "))
 }
 
-// NewURLSchemeError creates a DragonError for an invalid URL scheme.
-func NewURLSchemeError(op, field string, allowedSchemes []string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewURLSchemeError creates a QRDBError for an invalid URL scheme.
+func NewURLSchemeError(op, field string, allowedSchemes []string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrValidation,
 		Op:   op,
 		Err:  &URLSchemeError{Field: field, AllowedSchemes: allowedSchemes},
@@ -318,9 +318,9 @@ func (e *URLMissingHostError) Error() string {
 	return e.Field + " must include a host"
 }
 
-// NewURLMissingHostError creates a DragonError for a URL missing a host.
-func NewURLMissingHostError(op, field string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewURLMissingHostError creates a QRDBError for a URL missing a host.
+func NewURLMissingHostError(op, field string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrValidation,
 		Op:   op,
 		Err:  &URLMissingHostError{Field: field},
@@ -341,9 +341,9 @@ func (e *IntRangeError) Error() string {
 		e.Field, e.Min, e.Max, e.Value)
 }
 
-// NewIntRangeError creates a DragonError for an integer value out of range.
-func NewIntRangeError(op, field string, value, min, max int) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewIntRangeError creates a QRDBError for an integer value out of range.
+func NewIntRangeError(op, field string, value, min, max int) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrValidation,
 		Op:   op,
 		Err:  &IntRangeError{Field: field, Value: value, Min: min, Max: max},
@@ -361,9 +361,9 @@ func (e *PositiveFloatRequiredError) Error() string {
 	return fmt.Sprintf("%s must be positive (got %f)", e.Field, e.Value)
 }
 
-// NewPositiveFloatRequiredError creates a DragonError for a non-positive float.
-func NewPositiveFloatRequiredError(op, field string, value float64) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewPositiveFloatRequiredError creates a QRDBError for a non-positive float.
+func NewPositiveFloatRequiredError(op, field string, value float64) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrValidation,
 		Op:   op,
 		Err:  &PositiveFloatRequiredError{Field: field, Value: value},
@@ -381,9 +381,9 @@ func (e *PositiveIntRequiredError) Error() string {
 	return fmt.Sprintf("%s must be positive (got %d)", e.Field, e.Value)
 }
 
-// NewPositiveIntRequiredError creates a DragonError for a non-positive integer with value.
-func NewPositiveIntRequiredError(op, field string, value int) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewPositiveIntRequiredError creates a QRDBError for a non-positive integer with value.
+func NewPositiveIntRequiredError(op, field string, value int) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrValidation,
 		Op:   op,
 		Err:  &PositiveIntRequiredError{Field: field, Value: value},
@@ -406,9 +406,9 @@ func (e *EntityConfigValidationError) Unwrap() error {
 	return e.Cause
 }
 
-// NewEntityConfigValidationError creates a DragonError for an entity config validation failure.
-func NewEntityConfigValidationError(op, entity string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewEntityConfigValidationError creates a QRDBError for an entity config validation failure.
+func NewEntityConfigValidationError(op, entity string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrValidation,
 		Op:   op,
 		Err:  &EntityConfigValidationError{Entity: entity, Cause: cause},
@@ -423,9 +423,9 @@ func (e *NilConfigError) Error() string {
 	return "configuration is nil"
 }
 
-// NewNilConfigError creates a DragonError for a nil configuration.
-func NewNilConfigError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewNilConfigError creates a QRDBError for a nil configuration.
+func NewNilConfigError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &NilConfigError{},
@@ -448,9 +448,9 @@ func (e *PathOperationError) Unwrap() error {
 	return e.Cause
 }
 
-// NewPathOperationError creates a DragonError for a path operation failure.
-func NewPathOperationError(op, action string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewPathOperationError creates a QRDBError for a path operation failure.
+func NewPathOperationError(op, action string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   op,
 		Err:  &PathOperationError{Action: action, Cause: cause},
@@ -465,9 +465,9 @@ func (e *NotADirectoryError) Error() string {
 	return "path exists but is not a directory"
 }
 
-// NewNotADirectoryError creates a DragonError for a non-directory path.
-func NewNotADirectoryError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewNotADirectoryError creates a QRDBError for a non-directory path.
+func NewNotADirectoryError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &NotADirectoryError{},
@@ -489,9 +489,9 @@ func (e *DirectoryNotWritableError) Unwrap() error {
 	return e.Cause
 }
 
-// NewDirectoryNotWritableError creates a DragonError for a non-writable directory.
-func NewDirectoryNotWritableError(op string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewDirectoryNotWritableError creates a QRDBError for a non-writable directory.
+func NewDirectoryNotWritableError(op string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   op,
 		Err:  &DirectoryNotWritableError{Cause: cause},
@@ -514,9 +514,9 @@ func (e *FlagBindError) Unwrap() error {
 	return e.Cause
 }
 
-// NewFlagBindError creates a DragonError for a flag binding failure.
-func NewFlagBindError(op, flag string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewFlagBindError creates a QRDBError for a flag binding failure.
+func NewFlagBindError(op, flag string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrConfiguration,
 		Op:   op,
 		Err:  &FlagBindError{Flag: flag, Cause: cause},
@@ -538,9 +538,9 @@ func (e *ConfigFileReadError) Unwrap() error {
 	return e.Cause
 }
 
-// NewConfigFileReadError creates a DragonError for a config file read failure.
-func NewConfigFileReadError(op string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewConfigFileReadError creates a QRDBError for a config file read failure.
+func NewConfigFileReadError(op string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrConfiguration,
 		Op:   op,
 		Err:  &ConfigFileReadError{Cause: cause},
@@ -562,9 +562,9 @@ func (e *ConfigUnmarshalError) Unwrap() error {
 	return e.Cause
 }
 
-// NewConfigUnmarshalError creates a DragonError for a config unmarshal failure.
-func NewConfigUnmarshalError(op string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewConfigUnmarshalError creates a QRDBError for a config unmarshal failure.
+func NewConfigUnmarshalError(op string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrConfiguration,
 		Op:   op,
 		Err:  &ConfigUnmarshalError{Cause: cause},
@@ -587,9 +587,9 @@ func (e *ConfigFileWriteError) Unwrap() error {
 	return e.Cause
 }
 
-// NewConfigFileWriteError creates a DragonError for a config file write failure.
-func NewConfigFileWriteError(op, path string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewConfigFileWriteError creates a QRDBError for a config file write failure.
+func NewConfigFileWriteError(op, path string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrConfiguration,
 		Op:   op,
 		Err:  &ConfigFileWriteError{Path: path, Cause: cause},
@@ -611,9 +611,9 @@ func (e *ConfigMarshalError) Unwrap() error {
 	return e.Cause
 }
 
-// NewConfigMarshalError creates a DragonError for a config marshal failure.
-func NewConfigMarshalError(op string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewConfigMarshalError creates a QRDBError for a config marshal failure.
+func NewConfigMarshalError(op string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrConfiguration,
 		Op:   op,
 		Err:  &ConfigMarshalError{Cause: cause},
@@ -636,9 +636,9 @@ func (e *InvalidURLError) Unwrap() error {
 	return e.Cause
 }
 
-// NewInvalidURLError creates a DragonError for an invalid URL.
-func NewInvalidURLError(op, field string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewInvalidURLError creates a QRDBError for an invalid URL.
+func NewInvalidURLError(op, field string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrValidation,
 		Op:   op,
 		Err:  &InvalidURLError{Field: field, Cause: cause},
@@ -656,9 +656,9 @@ func (e *RequiredWhenEnabledError) Error() string {
 	return fmt.Sprintf("%s cannot be empty when %s is true", e.Field, e.Condition)
 }
 
-// NewRequiredWhenEnabledError creates a DragonError for a missing required field.
-func NewRequiredWhenEnabledError(op, field, condition string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewRequiredWhenEnabledError creates a QRDBError for a missing required field.
+func NewRequiredWhenEnabledError(op, field, condition string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrValidation,
 		Op:   op,
 		Err:  &RequiredWhenEnabledError{Field: field, Condition: condition},

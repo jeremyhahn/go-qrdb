@@ -39,7 +39,7 @@ type iterItem struct {
 }
 
 // memStorage is a minimal in-memory storage.Storage for unit tests.
-// It returns DragonError{ErrNotFound} when a key does not exist, matching
+// It returns QRDBError{ErrNotFound} when a key does not exist, matching
 // the contract expected by RaftStorage/revisionManager code paths.
 type memStorage struct {
 	mu     sync.RWMutex

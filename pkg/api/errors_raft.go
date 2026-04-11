@@ -1,9 +1,9 @@
 // Copyright (c) 2025 Jeremy Hahn
 // Copyright (c) 2025 Automate The Things, LLC
 //
-// This file is part of go-dragondb.
+// This file is part of go-qrdb.
 //
-// go-dragondb is dual-licensed:
+// go-qrdb is dual-licensed:
 //
 // 1. GNU Affero General Public License v3.0 (AGPL-3.0)
 //    See LICENSE file or visit https://www.gnu.org/licenses/agpl-3.0.html
@@ -34,9 +34,9 @@ func (e *ResourceClosedError) Error() string {
 	return e.Resource + " is closed"
 }
 
-// NewResourceClosedError creates a DragonError for an operation on a closed resource.
-func NewResourceClosedError(op, resource string, code dberrors.ErrorCode) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewResourceClosedError creates a QRDBError for an operation on a closed resource.
+func NewResourceClosedError(op, resource string, code dberrors.ErrorCode) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: code,
 		Op:   op,
 		Err:  &ResourceClosedError{Resource: resource},
@@ -53,9 +53,9 @@ func (e *ChecksumError) Error() string {
 	return e.Subject + " checksum verification failed"
 }
 
-// NewChecksumError creates a DragonError for a checksum verification failure.
-func NewChecksumError(op, subject string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewChecksumError creates a QRDBError for a checksum verification failure.
+func NewChecksumError(op, subject string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrDataLoss,
 		Op:   op,
 		Err:  &ChecksumError{Subject: subject},
@@ -73,9 +73,9 @@ func (e *UnsupportedValueError) Error() string {
 	return "unsupported " + e.Field + ": " + e.Value
 }
 
-// NewUnsupportedValueError creates a DragonError for an unsupported value.
-func NewUnsupportedValueError(op, field, value string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewUnsupportedValueError creates a QRDBError for an unsupported value.
+func NewUnsupportedValueError(op, field, value string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &UnsupportedValueError{Field: field, Value: value},
@@ -96,9 +96,9 @@ func (e *InvalidOpcodeError) Error() string {
 	return fmt.Sprintf("invalid opcode: 0x%02x", e.Opcode)
 }
 
-// NewInvalidOpcodeError creates a DragonError for an invalid binary protocol opcode.
-func NewInvalidOpcodeError(op string, opcode byte, context string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewInvalidOpcodeError creates a QRDBError for an invalid binary protocol opcode.
+func NewInvalidOpcodeError(op string, opcode byte, context string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &InvalidOpcodeError{Opcode: opcode, Context: context},
@@ -115,9 +115,9 @@ func (e *IncompleteDataError) Error() string {
 	return "incomplete data: " + e.Subject
 }
 
-// NewIncompleteDataError creates a DragonError for incomplete binary data.
-func NewIncompleteDataError(op, subject string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewIncompleteDataError creates a QRDBError for incomplete binary data.
+func NewIncompleteDataError(op, subject string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &IncompleteDataError{Subject: subject},
@@ -144,9 +144,9 @@ func (e *ShardOperationError) Unwrap() error {
 	return e.Cause
 }
 
-// NewShardOperationError creates a DragonError for a shard-specific operation failure.
-func NewShardOperationError(op string, code dberrors.ErrorCode, shardID uint64, operation string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewShardOperationError creates a QRDBError for a shard-specific operation failure.
+func NewShardOperationError(op string, code dberrors.ErrorCode, shardID uint64, operation string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: code,
 		Op:   op,
 		Err:  &ShardOperationError{ShardID: shardID, Operation: operation, Cause: cause},
@@ -171,9 +171,9 @@ func (e *NodeOperationError) Unwrap() error {
 	return e.Cause
 }
 
-// NewNodeOperationError creates a DragonError for a node membership operation failure.
-func NewNodeOperationError(op string, nodeID, shardID uint64, operation string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewNodeOperationError creates a QRDBError for a node membership operation failure.
+func NewNodeOperationError(op string, nodeID, shardID uint64, operation string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrRaft,
 		Op:   op,
 		Err:  &NodeOperationError{NodeID: nodeID, ShardID: shardID, Operation: operation, Cause: cause},
@@ -188,9 +188,9 @@ func (e *DeadlineRequiredError) Error() string {
 	return "context must have deadline"
 }
 
-// NewDeadlineRequiredError creates a DragonError for a missing context deadline.
-func NewDeadlineRequiredError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewDeadlineRequiredError creates a QRDBError for a missing context deadline.
+func NewDeadlineRequiredError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &DeadlineRequiredError{},
@@ -205,9 +205,9 @@ func (e *DeadlineExceededError) Error() string {
 	return "context deadline already exceeded"
 }
 
-// NewDeadlineExceededError creates a DragonError for an exceeded context deadline.
-func NewDeadlineExceededError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewDeadlineExceededError creates a QRDBError for an exceeded context deadline.
+func NewDeadlineExceededError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrDeadlineExceeded,
 		Op:   op,
 		Err:  &DeadlineExceededError{},
@@ -227,9 +227,9 @@ func (e *LengthMismatchError) Error() string {
 	return fmt.Sprintf("%s and %s length mismatch: %d != %d", e.FieldA, e.FieldB, e.LenA, e.LenB)
 }
 
-// NewLengthMismatchError creates a DragonError for mismatched collection lengths.
-func NewLengthMismatchError(op, fieldA string, lenA int, fieldB string, lenB int) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewLengthMismatchError creates a QRDBError for mismatched collection lengths.
+func NewLengthMismatchError(op, fieldA string, lenA int, fieldB string, lenB int) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &LengthMismatchError{FieldA: fieldA, LenA: lenA, FieldB: fieldB, LenB: lenB},
@@ -255,9 +255,9 @@ func (e *SnapshotOperationError) Unwrap() error {
 	return e.Cause
 }
 
-// NewSnapshotOperationError creates a DragonError for a snapshot operation failure.
-func NewSnapshotOperationError(op, operation string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewSnapshotOperationError creates a QRDBError for a snapshot operation failure.
+func NewSnapshotOperationError(op, operation string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrSnapshot,
 		Op:   op,
 		Err:  &SnapshotOperationError{Operation: operation, Cause: cause},
@@ -274,9 +274,9 @@ func (e *UnknownOperationError) Error() string {
 	return "unknown operation: " + e.Operation
 }
 
-// NewUnknownOperationError creates a DragonError for an unknown operation.
-func NewUnknownOperationError(op, operation string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewUnknownOperationError creates a QRDBError for an unknown operation.
+func NewUnknownOperationError(op, operation string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &UnknownOperationError{Operation: operation},
@@ -293,9 +293,9 @@ func (e *InvalidContextTypeError) Error() string {
 	return "invalid context type, expected " + e.Expected
 }
 
-// NewInvalidContextTypeError creates a DragonError for an invalid context type.
-func NewInvalidContextTypeError(op, expected string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewInvalidContextTypeError creates a QRDBError for an invalid context type.
+func NewInvalidContextTypeError(op, expected string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   op,
 		Err:  &InvalidContextTypeError{Expected: expected},
@@ -312,9 +312,9 @@ func (e *CanceledError) Error() string {
 	return e.Operation + " canceled"
 }
 
-// NewCanceledError creates a DragonError for a canceled operation.
-func NewCanceledError(op, operation string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewCanceledError creates a QRDBError for a canceled operation.
+func NewCanceledError(op, operation string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrCanceled,
 		Op:   op,
 		Err:  &CanceledError{Operation: operation},
@@ -341,9 +341,9 @@ func (e *BatchOperationError) Unwrap() error {
 	return e.Cause
 }
 
-// NewBatchOperationError creates a DragonError for a batch operation failure.
-func NewBatchOperationError(op string, index int, operation string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewBatchOperationError creates a QRDBError for a batch operation failure.
+func NewBatchOperationError(op string, index int, operation string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   op,
 		Err:  &BatchOperationError{Index: index, Operation: operation, Cause: cause},
@@ -360,9 +360,9 @@ func (e *ComponentNotInitializedError) Error() string {
 	return e.Component + " not initialized"
 }
 
-// NewComponentNotInitializedError creates a DragonError for an uninitialized component.
-func NewComponentNotInitializedError(op, component string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewComponentNotInitializedError creates a QRDBError for an uninitialized component.
+func NewComponentNotInitializedError(op, component string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   op,
 		Err:  &ComponentNotInitializedError{Component: component},
@@ -377,9 +377,9 @@ func (e *WriterClosedError) Error() string {
 	return "writer is closed"
 }
 
-// NewWriterClosedError creates a DragonError for a write on a closed writer.
-func NewWriterClosedError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewWriterClosedError creates a QRDBError for a write on a closed writer.
+func NewWriterClosedError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrUnavailable,
 		Op:   op,
 		Err:  &WriterClosedError{},
@@ -404,9 +404,9 @@ func (e *InvalidQueryTypeError) Error() string {
 	return "invalid query type: expected " + e.Expected
 }
 
-// NewInvalidQueryTypeError creates a DragonError for an invalid query type.
-func NewInvalidQueryTypeError(op, expected, actual string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewInvalidQueryTypeError creates a QRDBError for an invalid query type.
+func NewInvalidQueryTypeError(op, expected, actual string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &InvalidQueryTypeError{Expected: expected, Actual: actual},
@@ -424,9 +424,9 @@ func (e *RequiredFieldOperationError) Error() string {
 	return e.Field + " is required for " + e.Operation + " operation"
 }
 
-// NewRequiredFieldOperationError creates a DragonError for a missing required field in an operation.
-func NewRequiredFieldOperationError(op, field, operation string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewRequiredFieldOperationError creates a QRDBError for a missing required field in an operation.
+func NewRequiredFieldOperationError(op, field, operation string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &RequiredFieldOperationError{Field: field, Operation: operation},
@@ -443,9 +443,9 @@ func (e *InvalidEntityKeyError) Error() string {
 	return "invalid entity key in " + e.Operation + " operation"
 }
 
-// NewInvalidEntityKeyError creates a DragonError for an invalid entity key.
-func NewInvalidEntityKeyError(op, operation string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewInvalidEntityKeyError creates a QRDBError for an invalid entity key.
+func NewInvalidEntityKeyError(op, operation string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &InvalidEntityKeyError{Operation: operation},
@@ -462,9 +462,9 @@ func (e *BatchFormatError) Error() string {
 	return "batch operations must be " + e.Message
 }
 
-// NewBatchFormatError creates a DragonError for an invalid batch format.
-func NewBatchFormatError(op, message string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewBatchFormatError creates a QRDBError for an invalid batch format.
+func NewBatchFormatError(op, message string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &BatchFormatError{Message: message},
@@ -482,9 +482,9 @@ func (e *InsufficientPeersError) Error() string {
 	return fmt.Sprintf("insufficient peers: need %d, have %d", e.Required, e.Have)
 }
 
-// NewInsufficientPeersError creates a DragonError for insufficient peers.
-func NewInsufficientPeersError(op string, code dberrors.ErrorCode, required, have int) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewInsufficientPeersError creates a QRDBError for insufficient peers.
+func NewInsufficientPeersError(op string, code dberrors.ErrorCode, required, have int) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: code,
 		Op:   op,
 		Err:  &InsufficientPeersError{Required: required, Have: have},
@@ -501,9 +501,9 @@ func (e *DuplicateNodeIDError) Error() string {
 	return fmt.Sprintf("duplicate node ID: %d", e.NodeID)
 }
 
-// NewDuplicateNodeIDError creates a DragonError for a duplicate node ID.
-func NewDuplicateNodeIDError(op string, nodeID uint64) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewDuplicateNodeIDError creates a QRDBError for a duplicate node ID.
+func NewDuplicateNodeIDError(op string, nodeID uint64) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &DuplicateNodeIDError{NodeID: nodeID},
@@ -520,9 +520,9 @@ func (e *EmptyPeerAddressError) Error() string {
 	return fmt.Sprintf("peer %d has empty address", e.NodeID)
 }
 
-// NewEmptyPeerAddressError creates a DragonError for a peer with an empty address.
-func NewEmptyPeerAddressError(op string, nodeID uint64) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewEmptyPeerAddressError creates a QRDBError for a peer with an empty address.
+func NewEmptyPeerAddressError(op string, nodeID uint64) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &EmptyPeerAddressError{NodeID: nodeID},
@@ -537,9 +537,9 @@ func (e *InvalidNodeIDZeroError) Error() string {
 	return "peer has invalid node_id=0"
 }
 
-// NewInvalidNodeIDZeroError creates a DragonError for a zero node ID.
-func NewInvalidNodeIDZeroError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewInvalidNodeIDZeroError creates a QRDBError for a zero node ID.
+func NewInvalidNodeIDZeroError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &InvalidNodeIDZeroError{},
@@ -556,9 +556,9 @@ func (e *NodeNotInMembersError) Error() string {
 	return fmt.Sprintf("node_id %d not found in initial_members", e.NodeID)
 }
 
-// NewNodeNotInMembersError creates a DragonError for a node not found in members.
-func NewNodeNotInMembersError(op string, nodeID uint64) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewNodeNotInMembersError creates a QRDBError for a node not found in members.
+func NewNodeNotInMembersError(op string, nodeID uint64) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &NodeNotInMembersError{NodeID: nodeID},
@@ -578,9 +578,9 @@ func (e *LeaderNotFoundInPeersError) Error() string {
 	return "leader peer not found in peers list"
 }
 
-// NewLeaderNotFoundInPeersError creates a DragonError for a leader not found in peers.
-func NewLeaderNotFoundInPeersError(op string, code dberrors.ErrorCode, leaderID uint64) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewLeaderNotFoundInPeersError creates a QRDBError for a leader not found in peers.
+func NewLeaderNotFoundInPeersError(op string, code dberrors.ErrorCode, leaderID uint64) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: code,
 		Op:   op,
 		Err:  &LeaderNotFoundInPeersError{LeaderID: leaderID},
@@ -598,9 +598,9 @@ func (e *LeaderMismatchError) Error() string {
 	return fmt.Sprintf("leader mismatch: expected %d, got %d", e.Expected, e.Observed)
 }
 
-// NewLeaderMismatchError creates a DragonError for a leader mismatch.
-func NewLeaderMismatchError(op string, expected, observed uint64) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewLeaderMismatchError creates a QRDBError for a leader mismatch.
+func NewLeaderMismatchError(op string, expected, observed uint64) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   op,
 		Err:  &LeaderMismatchError{Expected: expected, Observed: observed},
@@ -620,9 +620,9 @@ func (e *NoFollowersError) Error() string {
 	return "no followers found"
 }
 
-// NewNoFollowersError creates a DragonError for no followers found.
-func NewNoFollowersError(op, context string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewNoFollowersError creates a QRDBError for no followers found.
+func NewNoFollowersError(op, context string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &NoFollowersError{Context: context},
@@ -648,9 +648,9 @@ func (e *TimeoutWaitingError) Unwrap() error {
 	return e.Cause
 }
 
-// NewTimeoutWaitingError creates a DragonError for a timeout while waiting.
-func NewTimeoutWaitingError(op, subject string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewTimeoutWaitingError creates a QRDBError for a timeout while waiting.
+func NewTimeoutWaitingError(op, subject string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrTimeout,
 		Op:   op,
 		Err:  &TimeoutWaitingError{Subject: subject, Cause: cause},
@@ -667,9 +667,9 @@ func (e *ChannelNotRegisteredError) Error() string {
 	return fmt.Sprintf("no channel registered for node %d", e.NodeID)
 }
 
-// NewChannelNotRegisteredError creates a DragonError for a missing channel registration.
-func NewChannelNotRegisteredError(op string, nodeID uint64) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewChannelNotRegisteredError creates a QRDBError for a missing channel registration.
+func NewChannelNotRegisteredError(op string, nodeID uint64) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrNotFound,
 		Op:   op,
 		Err:  &ChannelNotRegisteredError{NodeID: nodeID},
@@ -695,9 +695,9 @@ func (e *ContextCancelledError) Unwrap() error {
 	return e.Cause
 }
 
-// NewContextCancelledError creates a DragonError for a cancelled context during an operation.
-func NewContextCancelledError(op, operation string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewContextCancelledError creates a QRDBError for a cancelled context during an operation.
+func NewContextCancelledError(op, operation string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrTimeout,
 		Op:   op,
 		Err:  &ContextCancelledError{Operation: operation, Cause: cause},
@@ -715,9 +715,9 @@ func (e *ProposalResultError) Error() string {
 	return e.Result + fmt.Sprintf(" for shard %d", e.ShardID)
 }
 
-// NewProposalResultError creates a DragonError for a proposal result error.
-func NewProposalResultError(op string, code dberrors.ErrorCode, shardID uint64, result string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewProposalResultError creates a QRDBError for a proposal result error.
+func NewProposalResultError(op string, code dberrors.ErrorCode, shardID uint64, result string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: code,
 		Op:   op,
 		Err:  &ProposalResultError{ShardID: shardID, Result: result},
@@ -732,9 +732,9 @@ func (e *AlreadyBootstrappedError) Error() string {
 	return "already bootstrapped"
 }
 
-// NewAlreadyBootstrappedError creates a DragonError for an already bootstrapped cluster.
-func NewAlreadyBootstrappedError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewAlreadyBootstrappedError creates a QRDBError for an already bootstrapped cluster.
+func NewAlreadyBootstrappedError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrAlreadyExists,
 		Op:   op,
 		Err:  &AlreadyBootstrappedError{},
@@ -751,9 +751,9 @@ func (e *RaftGroupExistsError) Error() string {
 	return fmt.Sprintf("raft group for shard %d already exists", e.ShardID)
 }
 
-// NewRaftGroupExistsError creates a DragonError for an already existing Raft group.
-func NewRaftGroupExistsError(op string, shardID uint64) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewRaftGroupExistsError creates a QRDBError for an already existing Raft group.
+func NewRaftGroupExistsError(op string, shardID uint64) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrAlreadyExists,
 		Op:   op,
 		Err:  &RaftGroupExistsError{ShardID: shardID},
@@ -770,9 +770,9 @@ func (e *RaftGroupNotFoundError) Error() string {
 	return fmt.Sprintf("raft group for shard %d not found", e.ShardID)
 }
 
-// NewRaftGroupNotFoundError creates a DragonError for a missing Raft group.
-func NewRaftGroupNotFoundError(op string, shardID uint64) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewRaftGroupNotFoundError creates a QRDBError for a missing Raft group.
+func NewRaftGroupNotFoundError(op string, shardID uint64) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrNotFound,
 		Op:   op,
 		Err:  &RaftGroupNotFoundError{ShardID: shardID},
@@ -789,9 +789,9 @@ func (e *ConfigMultiValidationError) Error() string {
 	return fmt.Sprintf("validation failed with %d error(s):\n  - %s", len(e.Errors), strings.Join(e.Errors, "\n  - "))
 }
 
-// NewConfigMultiValidationError creates a DragonError for multiple config validation errors.
-func NewConfigMultiValidationError(op string, errs []string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewConfigMultiValidationError creates a QRDBError for multiple config validation errors.
+func NewConfigMultiValidationError(op string, errs []string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrConfiguration,
 		Op:   op,
 		Err:  &ConfigMultiValidationError{Errors: errs},
@@ -817,9 +817,9 @@ func (e *InvalidWriteModeError) Unwrap() error {
 	return e.Cause
 }
 
-// NewInvalidWriteModeError creates a DragonError for an invalid write mode.
-func NewInvalidWriteModeError(op, mode string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewInvalidWriteModeError creates a QRDBError for an invalid write mode.
+func NewInvalidWriteModeError(op, mode string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &InvalidWriteModeError{Mode: mode, Cause: cause},
@@ -836,9 +836,9 @@ func (e *UnsupportedConsistencyLevelError) Error() string {
 	return "unsupported consistency level: " + e.Level
 }
 
-// NewUnsupportedConsistencyLevelError creates a DragonError for an unsupported consistency level.
-func NewUnsupportedConsistencyLevelError(op, level string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewUnsupportedConsistencyLevelError creates a QRDBError for an unsupported consistency level.
+func NewUnsupportedConsistencyLevelError(op, level string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &UnsupportedConsistencyLevelError{Level: level},
@@ -855,9 +855,9 @@ func (e *NoLeaderAvailableError) Error() string {
 	return fmt.Sprintf("no leader available for shard %d", e.ShardID)
 }
 
-// NewNoLeaderAvailableError creates a DragonError for no leader available.
-func NewNoLeaderAvailableError(op string, shardID uint64) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewNoLeaderAvailableError creates a QRDBError for no leader available.
+func NewNoLeaderAvailableError(op string, shardID uint64) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrLeaderNotAvailable,
 		Op:   op,
 		Err:  &NoLeaderAvailableError{ShardID: shardID},
@@ -874,9 +874,9 @@ func (e *PeerNotFoundError) Error() string {
 	return fmt.Sprintf("peer with node_id %d not found", e.NodeID)
 }
 
-// NewPeerNotFoundError creates a DragonError for a peer not found.
-func NewPeerNotFoundError(op string, nodeID uint64) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewPeerNotFoundError creates a QRDBError for a peer not found.
+func NewPeerNotFoundError(op string, nodeID uint64) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrNotFound,
 		Op:   op,
 		Err:  &PeerNotFoundError{NodeID: nodeID},
@@ -891,9 +891,9 @@ func (e *InvalidNodeIDMembersError) Error() string {
 	return "invalid node_id=0 in members"
 }
 
-// NewInvalidNodeIDMembersError creates a DragonError for invalid node_id=0 in members.
-func NewInvalidNodeIDMembersError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewInvalidNodeIDMembersError creates a QRDBError for invalid node_id=0 in members.
+func NewInvalidNodeIDMembersError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &InvalidNodeIDMembersError{},
@@ -910,9 +910,9 @@ func (e *EmptyNodeAddressError) Error() string {
 	return fmt.Sprintf("node_id %d has empty address", e.NodeID)
 }
 
-// NewEmptyNodeAddressError creates a DragonError for a node with an empty address.
-func NewEmptyNodeAddressError(op string, nodeID uint64) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewEmptyNodeAddressError creates a QRDBError for a node with an empty address.
+func NewEmptyNodeAddressError(op string, nodeID uint64) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &EmptyNodeAddressError{NodeID: nodeID},
@@ -930,9 +930,9 @@ func (e *FieldNotStringError) Error() string {
 	return e.Field + " field is not a string: got " + e.Actual
 }
 
-// NewFieldNotStringError creates a DragonError for a non-string field value.
-func NewFieldNotStringError(op, field, actual string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewFieldNotStringError creates a QRDBError for a non-string field value.
+func NewFieldNotStringError(op, field, actual string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &FieldNotStringError{Field: field, Actual: actual},
@@ -958,9 +958,9 @@ func (e *NodeHostCreationError) Unwrap() error {
 	return e.Cause
 }
 
-// NewNodeHostCreationError creates a DragonError for a NodeHost creation failure.
-func NewNodeHostCreationError(op string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewNodeHostCreationError creates a QRDBError for a NodeHost creation failure.
+func NewNodeHostCreationError(op string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrRaft,
 		Op:   op,
 		Err:  &NodeHostCreationError{Cause: cause},
@@ -975,9 +975,9 @@ func (e *MTLSConfigError) Error() string {
 	return "mTLS enabled but TLS certificate files not configured"
 }
 
-// NewMTLSConfigError creates a DragonError for missing mTLS configuration.
-func NewMTLSConfigError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewMTLSConfigError creates a QRDBError for missing mTLS configuration.
+func NewMTLSConfigError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrConfiguration,
 		Op:   op,
 		Err:  &MTLSConfigError{},
@@ -1000,9 +1000,9 @@ func (e *MTLSCertReadError) Unwrap() error {
 	return e.Cause
 }
 
-// NewMTLSCertReadError creates a DragonError for an mTLS certificate file read failure.
-func NewMTLSCertReadError(op, file string, err error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewMTLSCertReadError creates a QRDBError for an mTLS certificate file read failure.
+func NewMTLSCertReadError(op, file string, err error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrConfiguration,
 		Op:   op,
 		Err:  &MTLSCertReadError{File: file, Cause: err},
@@ -1024,9 +1024,9 @@ func (e *GroupConfigValidationError) Unwrap() error {
 	return e.Cause
 }
 
-// NewGroupConfigValidationError creates a DragonError for invalid group config.
-func NewGroupConfigValidationError(op string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewGroupConfigValidationError creates a QRDBError for invalid group config.
+func NewGroupConfigValidationError(op string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrValidation,
 		Op:   op,
 		Err:  &GroupConfigValidationError{Cause: cause},
@@ -1048,9 +1048,9 @@ func (e *RaftConfigCreationError) Unwrap() error {
 	return e.Cause
 }
 
-// NewRaftConfigCreationError creates a DragonError for a Raft config creation failure.
-func NewRaftConfigCreationError(op string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewRaftConfigCreationError creates a QRDBError for a Raft config creation failure.
+func NewRaftConfigCreationError(op string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrConfiguration,
 		Op:   op,
 		Err:  &RaftConfigCreationError{Cause: cause},
@@ -1072,9 +1072,9 @@ func (e *SessionError) Unwrap() error {
 	return e.Cause
 }
 
-// NewSessionError creates a DragonError for a session failure.
-func NewSessionError(op string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewSessionError creates a QRDBError for a session failure.
+func NewSessionError(op string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrRaft,
 		Op:   op,
 		Err:  &SessionError{Cause: cause},
@@ -1096,9 +1096,9 @@ func (e *ReadOptionsValidationError) Unwrap() error {
 	return e.Cause
 }
 
-// NewReadOptionsValidationError creates a DragonError for invalid read options.
-func NewReadOptionsValidationError(op string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewReadOptionsValidationError creates a QRDBError for invalid read options.
+func NewReadOptionsValidationError(op string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &ReadOptionsValidationError{Cause: cause},
@@ -1120,9 +1120,9 @@ func (e *DiscoveryError) Unwrap() error {
 	return e.Cause
 }
 
-// NewDiscoveryError creates a DragonError for a discovery failure.
-func NewDiscoveryError(op string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewDiscoveryError creates a QRDBError for a discovery failure.
+func NewDiscoveryError(op string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrUnavailable,
 		Op:   op,
 		Err:  &DiscoveryError{Cause: cause},
@@ -1144,9 +1144,9 @@ func (e *ClusterDetectionError) Unwrap() error {
 	return e.Cause
 }
 
-// NewClusterDetectionError creates a DragonError for a cluster detection failure.
-func NewClusterDetectionError(op string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewClusterDetectionError creates a QRDBError for a cluster detection failure.
+func NewClusterDetectionError(op string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   op,
 		Err:  &ClusterDetectionError{Cause: cause},
@@ -1168,9 +1168,9 @@ func (e *RaftGroupStartError) Unwrap() error {
 	return e.Cause
 }
 
-// NewRaftGroupStartError creates a DragonError for a Raft group start failure.
-func NewRaftGroupStartError(op string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewRaftGroupStartError creates a QRDBError for a Raft group start failure.
+func NewRaftGroupStartError(op string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrRaft,
 		Op:   op,
 		Err:  &RaftGroupStartError{Cause: cause},
@@ -1192,9 +1192,9 @@ func (e *LeaderElectionError) Unwrap() error {
 	return e.Cause
 }
 
-// NewLeaderElectionError creates a DragonError for a leader election failure.
-func NewLeaderElectionError(op string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewLeaderElectionError creates a QRDBError for a leader election failure.
+func NewLeaderElectionError(op string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrLeaderNotAvailable,
 		Op:   op,
 		Err:  &LeaderElectionError{Cause: cause},
@@ -1216,9 +1216,9 @@ func (e *ClusterJoinError) Unwrap() error {
 	return e.Cause
 }
 
-// NewClusterJoinError creates a DragonError for a cluster join failure.
-func NewClusterJoinError(op string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewClusterJoinError creates a QRDBError for a cluster join failure.
+func NewClusterJoinError(op string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrRaft,
 		Op:   op,
 		Err:  &ClusterJoinError{Cause: cause},
@@ -1240,9 +1240,9 @@ func (e *ClientContextCanceledError) Unwrap() error {
 	return e.Cause
 }
 
-// NewClientContextCanceledError creates a DragonError for a client context cancellation.
-func NewClientContextCanceledError(op string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewClientContextCanceledError creates a QRDBError for a client context cancellation.
+func NewClientContextCanceledError(op string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrCanceled,
 		Op:   op,
 		Err:  &ClientContextCanceledError{Cause: cause},

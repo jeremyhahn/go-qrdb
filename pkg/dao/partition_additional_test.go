@@ -3,9 +3,9 @@
 // Copyright (c) 2025 Jeremy Hahn
 // Copyright (c) 2025 Automate The Things, LLC
 //
-// This file is part of go-dragondb.
+// This file is part of go-qrdb.
 //
-// go-dragondb is dual-licensed:
+// go-qrdb is dual-licensed:
 //
 // 1. GNU Affero General Public License v3.0 (AGPL-3.0)
 //    See LICENSE file or visit https://www.gnu.org/licenses/agpl-3.0.html
@@ -54,13 +54,13 @@ func TestIsPartitionErrorVariants(t *testing.T) {
 		assert.True(t, IsPartitionError(wrappedErr))
 	})
 
-	t.Run("DragonErrorNotFound", func(t *testing.T) {
-		err := &dberrors.DragonError{Code: dberrors.ErrNotFound, Op: "partition.get"}
+	t.Run("QRDBErrorNotFound", func(t *testing.T) {
+		err := &dberrors.QRDBError{Code: dberrors.ErrNotFound, Op: "partition.get"}
 		assert.True(t, IsPartitionError(err))
 	})
 
-	t.Run("DragonErrorOther", func(t *testing.T) {
-		err := &dberrors.DragonError{Code: dberrors.ErrInternal, Op: "partition.get"}
+	t.Run("QRDBErrorOther", func(t *testing.T) {
+		err := &dberrors.QRDBError{Code: dberrors.ErrInternal, Op: "partition.get"}
 		assert.False(t, IsPartitionError(err))
 	})
 

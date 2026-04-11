@@ -1,9 +1,9 @@
 // Copyright (c) 2025 Jeremy Hahn
 // Copyright (c) 2025 Automate The Things, LLC
 //
-// This file is part of go-dragondb.
+// This file is part of go-qrdb.
 //
-// go-dragondb is dual-licensed:
+// go-qrdb is dual-licensed:
 //
 // 1. GNU Affero General Public License v3.0 (AGPL-3.0)
 //    See LICENSE file or visit https://www.gnu.org/licenses/agpl-3.0.html
@@ -11,7 +11,7 @@
 // 2. Commercial License
 //    Contact licensing@automatethethings.com for commercial licensing options.
 
-// Package api provides shared types for all DragonDB API transports.
+// Package api provides shared types for all QRDB API transports.
 // This file contains error types used by the service layer.
 package api
 
@@ -36,9 +36,9 @@ func (e *ServiceClosedError) Error() string {
 	return e.Service + " is closed"
 }
 
-// NewServiceClosedError creates a DragonError for a closed service.
-func NewServiceClosedError(op, service string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewServiceClosedError creates a QRDBError for a closed service.
+func NewServiceClosedError(op, service string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrUnavailable,
 		Op:   op,
 		Err:  &ServiceClosedError{Service: service},
@@ -53,9 +53,9 @@ func (e *CrossTenantAccessError) Error() string {
 	return "cross-tenant access denied"
 }
 
-// NewCrossTenantAccessError creates a DragonError for a cross-tenant access violation.
-func NewCrossTenantAccessError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewCrossTenantAccessError creates a QRDBError for a cross-tenant access violation.
+func NewCrossTenantAccessError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrForbidden,
 		Op:   op,
 		Err:  &CrossTenantAccessError{},
@@ -70,9 +70,9 @@ func (e *ChecksumMismatchError) Error() string {
 	return "client checksum does not match computed checksum"
 }
 
-// NewChecksumMismatchError creates a DragonError for a checksum mismatch.
-func NewChecksumMismatchError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewChecksumMismatchError creates a QRDBError for a checksum mismatch.
+func NewChecksumMismatchError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &ChecksumMismatchError{},
@@ -87,9 +87,9 @@ func (e *AlreadyArchivedError) Error() string {
 	return "object is already archived"
 }
 
-// NewAlreadyArchivedError creates a DragonError for an already-archived object.
-func NewAlreadyArchivedError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewAlreadyArchivedError creates a QRDBError for an already-archived object.
+func NewAlreadyArchivedError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &AlreadyArchivedError{},
@@ -104,9 +104,9 @@ func (e *NotArchivedError) Error() string {
 	return "object is not archived"
 }
 
-// NewNotArchivedError creates a DragonError for a non-archived object.
-func NewNotArchivedError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewNotArchivedError creates a QRDBError for a non-archived object.
+func NewNotArchivedError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &NotArchivedError{},
@@ -124,9 +124,9 @@ func (e *AEADLimitExceededError) Error() string {
 	return "AEAD safety limit exceeded for " + e.KeyType + " " + e.ID + ": key rotation required"
 }
 
-// NewAEADLimitExceededError creates a DragonError for an AEAD safety limit violation.
-func NewAEADLimitExceededError(op, keyType, id string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewAEADLimitExceededError creates a QRDBError for an AEAD safety limit violation.
+func NewAEADLimitExceededError(op, keyType, id string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrResourceExhausted,
 		Op:   op,
 		Err:  &AEADLimitExceededError{KeyType: keyType, ID: id},
@@ -143,9 +143,9 @@ func (e *ObjectNotAvailableError) Error() string {
 	return "object not available (status: " + e.Status + ")"
 }
 
-// NewObjectNotAvailableError creates a DragonError for an unavailable object.
-func NewObjectNotAvailableError(op, status string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewObjectNotAvailableError creates a QRDBError for an unavailable object.
+func NewObjectNotAvailableError(op, status string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrUnavailable,
 		Op:   op,
 		Err:  &ObjectNotAvailableError{Status: status},
@@ -167,9 +167,9 @@ func (e *BackendUnavailableError) Unwrap() error {
 	return e.Cause
 }
 
-// NewBackendUnavailableError creates a DragonError for an unavailable backend.
-func NewBackendUnavailableError(op string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewBackendUnavailableError creates a QRDBError for an unavailable backend.
+func NewBackendUnavailableError(op string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrUnavailable,
 		Op:   op,
 		Err:  &BackendUnavailableError{Cause: cause},
@@ -186,9 +186,9 @@ func (e *InvalidPathError) Error() string {
 	return e.Message
 }
 
-// NewInvalidPathError creates a DragonError for an invalid path.
-func NewInvalidPathError(op, message string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewInvalidPathError creates a QRDBError for an invalid path.
+func NewInvalidPathError(op, message string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &InvalidPathError{Message: message},
@@ -203,9 +203,9 @@ func (e *NilRequestError) Error() string {
 	return "request is nil"
 }
 
-// NewNilRequestError creates a DragonError for a nil request.
-func NewNilRequestError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewNilRequestError creates a QRDBError for a nil request.
+func NewNilRequestError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &NilRequestError{},
@@ -222,9 +222,9 @@ func (e *WhitespaceFieldError) Error() string {
 	return e.Field + " cannot be empty or whitespace"
 }
 
-// NewWhitespaceFieldError creates a DragonError for a whitespace-only field.
-func NewWhitespaceFieldError(op, field string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewWhitespaceFieldError creates a QRDBError for a whitespace-only field.
+func NewWhitespaceFieldError(op, field string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &WhitespaceFieldError{Field: field},
@@ -242,9 +242,9 @@ func (e *IndexedItemError) Error() string {
 	return fmt.Sprintf("%s at index %d cannot be empty", e.Message, e.Index)
 }
 
-// NewIndexedItemError creates a DragonError for an indexed item validation failure.
-func NewIndexedItemError(op, message string, index int) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewIndexedItemError creates a QRDBError for an indexed item validation failure.
+func NewIndexedItemError(op, message string, index int) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &IndexedItemError{Index: index, Message: message},
@@ -263,9 +263,9 @@ func (e *OverflowError) Error() string {
 	return fmt.Sprintf("%s %d exceeds maximum %s", e.Field, e.Value, e.Max)
 }
 
-// NewOverflowError creates a DragonError for a value overflow.
-func NewOverflowError(op, field string, value int, max string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewOverflowError creates a QRDBError for a value overflow.
+func NewOverflowError(op, field string, value int, max string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &OverflowError{Field: field, Value: value, Max: max},
@@ -283,9 +283,9 @@ func (e *MaximumValueError) Error() string {
 	return e.Field + " cannot exceed " + e.Maximum
 }
 
-// NewMaximumValueError creates a DragonError for a value above the maximum.
-func NewMaximumValueError(op, field, maximum string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewMaximumValueError creates a QRDBError for a value above the maximum.
+func NewMaximumValueError(op, field, maximum string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &MaximumValueError{Field: field, Maximum: maximum},
@@ -303,9 +303,9 @@ func (e *MinDurationValueError) Error() string {
 	return fmt.Sprintf("%s must be at least %v", e.Field, e.Minimum)
 }
 
-// NewMinDurationValueError creates a DragonError for a duration below the minimum.
-func NewMinDurationValueError(op, field string, minimum time.Duration) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewMinDurationValueError creates a QRDBError for a duration below the minimum.
+func NewMinDurationValueError(op, field string, minimum time.Duration) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &MinDurationValueError{Field: field, Minimum: minimum},
@@ -323,9 +323,9 @@ func (e *MaxDurationValueError) Error() string {
 	return fmt.Sprintf("%s cannot exceed %v", e.Field, e.Maximum)
 }
 
-// NewMaxDurationValueError creates a DragonError for a duration above the maximum.
-func NewMaxDurationValueError(op, field string, maximum time.Duration) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewMaxDurationValueError creates a QRDBError for a duration above the maximum.
+func NewMaxDurationValueError(op, field string, maximum time.Duration) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &MaxDurationValueError{Field: field, Maximum: maximum},
@@ -343,9 +343,9 @@ func (e *TTLExceedsMaxError) Error() string {
 	return fmt.Sprintf("requested TTL exceeds max TTL: %v > %v", e.Requested, e.Maximum)
 }
 
-// NewTTLExceedsMaxError creates a DragonError for a TTL that exceeds the maximum.
-func NewTTLExceedsMaxError(op string, requested, maximum time.Duration) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewTTLExceedsMaxError creates a QRDBError for a TTL that exceeds the maximum.
+func NewTTLExceedsMaxError(op string, requested, maximum time.Duration) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &TTLExceedsMaxError{Requested: requested, Maximum: maximum},
@@ -362,9 +362,9 @@ func (e *NotConfiguredError) Error() string {
 	return "no " + e.Resource + " configured"
 }
 
-// NewNotConfiguredError creates a DragonError for an unconfigured resource.
-func NewNotConfiguredError(op, resource string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewNotConfiguredError creates a QRDBError for an unconfigured resource.
+func NewNotConfiguredError(op, resource string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrConfiguration,
 		Op:   op,
 		Err:  &NotConfiguredError{Resource: resource},
@@ -382,9 +382,9 @@ func (e *KeyParseError) Error() string {
 	return e.Message + ": " + e.Key
 }
 
-// NewKeyParseError creates a DragonError for a key parsing failure.
-func NewKeyParseError(op, message, key string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewKeyParseError creates a QRDBError for a key parsing failure.
+func NewKeyParseError(op, message, key string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &KeyParseError{Message: message, Key: key},
@@ -402,9 +402,9 @@ func (e *ReservedEntityPrefixError) Error() string {
 	return "entity type cannot use reserved prefix '" + e.Prefix + "': " + e.EntityType
 }
 
-// NewReservedEntityPrefixError creates a DragonError for a reserved entity prefix.
-func NewReservedEntityPrefixError(op, prefix, entityType string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewReservedEntityPrefixError creates a QRDBError for a reserved entity prefix.
+func NewReservedEntityPrefixError(op, prefix, entityType string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &ReservedEntityPrefixError{Prefix: prefix, EntityType: entityType},
@@ -422,9 +422,9 @@ func (e *SeparatorPrefixError) Error() string {
 	return "entity type cannot start with separator '" + e.Separator + "': " + e.EntityType
 }
 
-// NewSeparatorPrefixError creates a DragonError for an entity type starting with a separator.
-func NewSeparatorPrefixError(op, separator, entityType string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewSeparatorPrefixError creates a QRDBError for an entity type starting with a separator.
+func NewSeparatorPrefixError(op, separator, entityType string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &SeparatorPrefixError{Separator: separator, EntityType: entityType},
@@ -442,9 +442,9 @@ func (e *ContainsObjectsError) Error() string {
 	return fmt.Sprintf("backend contains %d objects; %s", e.Count, e.Message)
 }
 
-// NewContainsObjectsError creates a DragonError for a backend that contains objects.
-func NewContainsObjectsError(op string, count int64, message string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewContainsObjectsError creates a QRDBError for a backend that contains objects.
+func NewContainsObjectsError(op string, count int64, message string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &ContainsObjectsError{Count: count, Message: message},
@@ -461,9 +461,9 @@ func (e *GCOperationNotFoundError) Error() string {
 	return "GC operation not found: " + e.OperationID
 }
 
-// NewGCOperationNotFoundError creates a DragonError for a missing GC operation.
-func NewGCOperationNotFoundError(op, operationID string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewGCOperationNotFoundError creates a QRDBError for a missing GC operation.
+func NewGCOperationNotFoundError(op, operationID string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrNotFound,
 		Op:   op,
 		Err:  &GCOperationNotFoundError{OperationID: operationID},
@@ -480,9 +480,9 @@ func (e *SourceLocationNotFoundError) Error() string {
 	return "source location not found in catalog: " + e.Location
 }
 
-// NewSourceLocationNotFoundError creates a DragonError for a missing source location.
-func NewSourceLocationNotFoundError(op, location string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewSourceLocationNotFoundError creates a QRDBError for a missing source location.
+func NewSourceLocationNotFoundError(op, location string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrNotFound,
 		Op:   op,
 		Err:  &SourceLocationNotFoundError{Location: location},
@@ -497,9 +497,9 @@ func (e *DestinationExistsError) Error() string {
 	return "destination key already exists"
 }
 
-// NewDestinationExistsError creates a DragonError for a duplicate destination key.
-func NewDestinationExistsError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewDestinationExistsError creates a QRDBError for a duplicate destination key.
+func NewDestinationExistsError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrAlreadyExists,
 		Op:   op,
 		Err:  &DestinationExistsError{},
@@ -516,9 +516,9 @@ func (e *NoTargetSpecifiedError) Error() string {
 	return "no " + e.Target + " specified"
 }
 
-// NewNoTargetSpecifiedError creates a DragonError for a missing target.
-func NewNoTargetSpecifiedError(op, target string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewNoTargetSpecifiedError creates a QRDBError for a missing target.
+func NewNoTargetSpecifiedError(op, target string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &NoTargetSpecifiedError{Target: target},
@@ -533,9 +533,9 @@ func (e *InvalidEmailFormatError) Error() string {
 	return "invalid email format"
 }
 
-// NewInvalidEmailFormatError creates a DragonError for an invalid email format.
-func NewInvalidEmailFormatError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewInvalidEmailFormatError creates a QRDBError for an invalid email format.
+func NewInvalidEmailFormatError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &InvalidEmailFormatError{},
@@ -557,9 +557,9 @@ func (e *GeneratorConfigError) Unwrap() error {
 	return e.Cause
 }
 
-// NewGeneratorConfigError creates a DragonError for an invalid generator configuration.
-func NewGeneratorConfigError(op string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewGeneratorConfigError creates a QRDBError for an invalid generator configuration.
+func NewGeneratorConfigError(op string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &GeneratorConfigError{Cause: cause},
@@ -574,9 +574,9 @@ func (e *EntityTypeEmptyError) Error() string {
 	return "entity type cannot be empty"
 }
 
-// NewEntityTypeEmptyError creates a DragonError for an empty entity type.
-func NewEntityTypeEmptyError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewEntityTypeEmptyError creates a QRDBError for an empty entity type.
+func NewEntityTypeEmptyError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &EntityTypeEmptyError{},
@@ -593,9 +593,9 @@ func (e *AlreadyClosedError) Error() string {
 	return e.Component + " already closed"
 }
 
-// NewAlreadyClosedError creates a DragonError for an already-closed component.
-func NewAlreadyClosedError(op, component string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewAlreadyClosedError creates a QRDBError for an already-closed component.
+func NewAlreadyClosedError(op, component string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrUnavailable,
 		Op:   op,
 		Err:  &AlreadyClosedError{Component: component},
@@ -618,9 +618,9 @@ func (e *NotFoundWithCauseError) Unwrap() error {
 	return e.Cause
 }
 
-// NewNotFoundWithCauseError creates a DragonError for a resource not found with a cause.
-func NewNotFoundWithCauseError(op, resource string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewNotFoundWithCauseError creates a QRDBError for a resource not found with a cause.
+func NewNotFoundWithCauseError(op, resource string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrNotFound,
 		Op:   op,
 		Err:  &NotFoundWithCauseError{Resource: resource, Cause: cause},
@@ -638,9 +638,9 @@ func (e *NotFoundByNameError) Error() string {
 	return e.Resource + " not found: " + e.Name
 }
 
-// NewNotFoundByNameError creates a DragonError for a named resource not found.
-func NewNotFoundByNameError(op, resource, name string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewNotFoundByNameError creates a QRDBError for a named resource not found.
+func NewNotFoundByNameError(op, resource, name string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrNotFound,
 		Op:   op,
 		Err:  &NotFoundByNameError{Resource: resource, Name: name},
@@ -662,9 +662,9 @@ func (e *NoAvailableBackendError) Unwrap() error {
 	return e.Cause
 }
 
-// NewNoAvailableBackendError creates a DragonError for no available backend.
-func NewNoAvailableBackendError(op string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewNoAvailableBackendError creates a QRDBError for no available backend.
+func NewNoAvailableBackendError(op string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrUnavailable,
 		Op:   op,
 		Err:  &NoAvailableBackendError{Cause: cause},
@@ -731,9 +731,9 @@ func (e *MigrationTargetNotFoundError) Error() string {
 	return "migration target not found: " + e.Target
 }
 
-// NewMigrationTargetNotFoundError creates a DragonError for a missing migration target.
-func NewMigrationTargetNotFoundError(op, target string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewMigrationTargetNotFoundError creates a QRDBError for a missing migration target.
+func NewMigrationTargetNotFoundError(op, target string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &MigrationTargetNotFoundError{Target: target},
@@ -748,9 +748,9 @@ func (e *DefaultTTLExceedsMaxError) Error() string {
 	return "default TTL cannot exceed max TTL"
 }
 
-// NewDefaultTTLExceedsMaxError creates a DragonError for a default TTL exceeding max TTL.
-func NewDefaultTTLExceedsMaxError(op string) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewDefaultTTLExceedsMaxError creates a QRDBError for a default TTL exceeding max TTL.
+func NewDefaultTTLExceedsMaxError(op string) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInvalidInput,
 		Op:   op,
 		Err:  &DefaultTTLExceedsMaxError{},
@@ -767,9 +767,9 @@ func (e *BackendCountOverflowError) Error() string {
 	return fmt.Sprintf("backend count %d exceeds maximum int32", e.Count)
 }
 
-// NewBackendCountOverflowError creates a DragonError for a backend count overflow.
-func NewBackendCountOverflowError(op string, count int) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewBackendCountOverflowError creates a QRDBError for a backend count overflow.
+func NewBackendCountOverflowError(op string, count int) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrInternal,
 		Op:   op,
 		Err:  &BackendCountOverflowError{Count: count},
@@ -791,9 +791,9 @@ func (e *SourceBackendUnavailableError) Unwrap() error {
 	return e.Cause
 }
 
-// NewSourceBackendUnavailableError creates a DragonError for an unavailable source backend.
-func NewSourceBackendUnavailableError(op string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewSourceBackendUnavailableError creates a QRDBError for an unavailable source backend.
+func NewSourceBackendUnavailableError(op string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrStorage,
 		Op:   op,
 		Err:  &SourceBackendUnavailableError{Cause: cause},
@@ -815,9 +815,9 @@ func (e *GeneratorNotFoundError) Unwrap() error {
 	return e.Cause
 }
 
-// NewGeneratorNotFoundError creates a DragonError for a missing credential generator.
-func NewGeneratorNotFoundError(op string, cause error) *dberrors.DragonError {
-	return &dberrors.DragonError{
+// NewGeneratorNotFoundError creates a QRDBError for a missing credential generator.
+func NewGeneratorNotFoundError(op string, cause error) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
 		Code: dberrors.ErrNotFound,
 		Op:   op,
 		Err:  &GeneratorNotFoundError{Cause: cause},

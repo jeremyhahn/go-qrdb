@@ -18,7 +18,7 @@ import "context"
 
 // RaftNode defines the minimal interface for Raft consensus operations
 // needed by service implementations. The concrete implementation is
-// provided by the application layer (e.g., dragondb's RaftNode).
+// provided by the application layer (e.g., qrdb's RaftNode).
 type RaftNode interface {
 	// SyncPropose proposes data to the specified Raft shard and waits
 	// for consensus. Returns the result and any error.

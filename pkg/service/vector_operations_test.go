@@ -23,7 +23,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	dragonErrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
+	qrdbErrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
@@ -218,9 +218,9 @@ func TestVecCreateNamespace_StorageCreateError(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrStorage, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrStorage, qrdbErr.Code)
 }
 
 // =============================================================================
@@ -410,9 +410,9 @@ func TestVecGetNamespaceInfo_NotFound(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrNotFound, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrNotFound, qrdbErr.Code)
 }
 
 func TestVecGetNamespaceInfo_ServiceClosed(t *testing.T) {
@@ -487,9 +487,9 @@ func TestVecUpsert_NamespaceNotFound(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrNotFound, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrNotFound, qrdbErr.Code)
 }
 
 func TestVecUpsert_DimensionMismatch(t *testing.T) {
@@ -503,9 +503,9 @@ func TestVecUpsert_DimensionMismatch(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrInvalidInput, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
 }
 
 func TestVecUpsert_StorageError(t *testing.T) {
@@ -523,9 +523,9 @@ func TestVecUpsert_StorageError(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrStorage, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrStorage, qrdbErr.Code)
 }
 
 func TestVecUpsert_ServiceClosed(t *testing.T) {
@@ -565,9 +565,9 @@ func TestVecUpsert_TenantForbidden(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrForbidden, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrForbidden, qrdbErr.Code)
 }
 
 // =============================================================================
@@ -651,9 +651,9 @@ func TestVecDeleteVector_StorageError(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrStorage, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrStorage, qrdbErr.Code)
 }
 
 func TestVecDeleteVector_ServiceClosed(t *testing.T) {
@@ -1412,9 +1412,9 @@ func TestVecTenantAccess_DefaultTenantDeniedCrossTenant(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var dragonErr *dragonErrors.DragonError
-	require.True(t, errors.As(err, &dragonErr))
-	assert.Equal(t, dragonErrors.ErrForbidden, dragonErr.Code)
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrForbidden, qrdbErr.Code)
 }
 
 func TestVecTenantAccess_MatchingTenant(t *testing.T) {

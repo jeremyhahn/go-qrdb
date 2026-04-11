@@ -1,9 +1,9 @@
 // Copyright (c) 2025 Jeremy Hahn
 // Copyright (c) 2025 Automate The Things, LLC
 //
-// This file is part of go-dragondb.
+// This file is part of go-qrdb.
 //
-// go-dragondb is dual-licensed:
+// go-qrdb is dual-licensed:
 //
 // 1. GNU Affero General Public License v3.0 (AGPL-3.0)
 //    See LICENSE file or visit https://www.gnu.org/licenses/agpl-3.0.html
@@ -31,7 +31,7 @@ type Pager[E any] interface {
 
 // GenericDAO provides type-safe CRUD operations for entities.
 // It abstracts the underlying storage mechanism (Raft, PebbleDB, Memory)
-// and provides consistent operations across all DragonDB modes.
+// and provides consistent operations across all QRDB modes.
 //
 // The DAO is parameterized by entity type E, which must implement Entity.
 // All operations are context-aware for cancellation and timeout support.

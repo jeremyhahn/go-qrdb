@@ -1,9 +1,9 @@
 // Copyright (c) 2025 Jeremy Hahn
 // Copyright (c) 2025 Automate The Things, LLC
 //
-// This file is part of go-dragondb.
+// This file is part of go-qrdb.
 //
-// go-dragondb is dual-licensed:
+// go-qrdb is dual-licensed:
 //
 // 1. GNU Affero General Public License v3.0 (AGPL-3.0)
 //    See LICENSE file or visit https://www.gnu.org/licenses/agpl-3.0.html
@@ -49,11 +49,11 @@ func TestIsResourceExhausted_WithDifferentCode(t *testing.T) {
 }
 
 // TestIsResourceExhausted_WithStandardError verifies that IsResourceExhausted
-// returns false for a non-DragonError.
+// returns false for a non-QRDBError.
 func TestIsResourceExhausted_WithStandardError(t *testing.T) {
 	err := stderrors.New("standard error")
 	if IsResourceExhausted(err) {
-		t.Error("expected IsResourceExhausted to return false for non-DragonError")
+		t.Error("expected IsResourceExhausted to return false for non-QRDBError")
 	}
 }
 
@@ -62,29 +62,29 @@ func TestIsResourceExhausted_WithStandardError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestIsNotFound_WithStandardError verifies that IsNotFound returns false for
-// a plain non-DragonError, exercising the errors.As fallthrough branch.
+// a plain non-QRDBError, exercising the errors.As fallthrough branch.
 func TestIsNotFound_WithStandardError(t *testing.T) {
 	err := stderrors.New("plain error")
 	if IsNotFound(err) {
-		t.Error("expected IsNotFound to return false for non-DragonError")
+		t.Error("expected IsNotFound to return false for non-QRDBError")
 	}
 }
 
 // TestIsCanceled_WithStandardError verifies that IsCanceled returns false for
-// a plain non-DragonError, exercising the errors.As fallthrough branch.
+// a plain non-QRDBError, exercising the errors.As fallthrough branch.
 func TestIsCanceled_WithStandardError(t *testing.T) {
 	err := stderrors.New("plain error")
 	if IsCanceled(err) {
-		t.Error("expected IsCanceled to return false for non-DragonError")
+		t.Error("expected IsCanceled to return false for non-QRDBError")
 	}
 }
 
 // TestIsInvalidInput_WithStandardError verifies that IsInvalidInput returns
-// false for a plain non-DragonError, exercising the errors.As fallthrough branch.
+// false for a plain non-QRDBError, exercising the errors.As fallthrough branch.
 func TestIsInvalidInput_WithStandardError(t *testing.T) {
 	err := stderrors.New("plain error")
 	if IsInvalidInput(err) {
-		t.Error("expected IsInvalidInput to return false for non-DragonError")
+		t.Error("expected IsInvalidInput to return false for non-QRDBError")
 	}
 }
 
@@ -137,16 +137,16 @@ func TestWrappedMessageError_Error(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestCircuitOpen_CreatesCircuitOpenError verifies that CircuitOpen returns a
-// DragonError with code ErrCircuitOpen.
+// QRDBError with code ErrCircuitOpen.
 func TestCircuitOpen_CreatesCircuitOpenError(t *testing.T) {
 	err := CircuitOpen("downstream.Call", "payment-service")
 	if err == nil {
 		t.Fatal("CircuitOpen returned nil")
 	}
 
-	var de *DragonError
+	var de *QRDBError
 	if !stderrors.As(err, &de) {
-		t.Fatalf("expected *DragonError, got %T", err)
+		t.Fatalf("expected *QRDBError, got %T", err)
 	}
 	if de.Code != ErrCircuitOpen {
 		t.Errorf("Code: got %v, want ErrCircuitOpen", de.Code)
@@ -182,11 +182,11 @@ func TestIsCircuitOpen_WithDifferentCode(t *testing.T) {
 }
 
 // TestIsCircuitOpen_WithStandardError verifies that IsCircuitOpen returns
-// false for a non-DragonError.
+// false for a non-QRDBError.
 func TestIsCircuitOpen_WithStandardError(t *testing.T) {
 	err := stderrors.New("plain error")
 	if IsCircuitOpen(err) {
-		t.Error("expected IsCircuitOpen to return false for non-DragonError")
+		t.Error("expected IsCircuitOpen to return false for non-QRDBError")
 	}
 }
 

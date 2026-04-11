@@ -429,40 +429,40 @@ func TestEmptyNodeAddressError(t *testing.T) {
 func TestRaftSimpleConstructors(t *testing.T) {
 	tests := []struct {
 		name     string
-		newFn    func() *dberrors.DragonError
+		newFn    func() *dberrors.QRDBError
 		wantCode dberrors.ErrorCode
 	}{
-		{"ResourceClosed", func() *dberrors.DragonError {
+		{"ResourceClosed", func() *dberrors.QRDBError {
 			return NewResourceClosedError("raft.op", "writer", dberrors.ErrUnavailable)
 		}, dberrors.ErrUnavailable},
-		{"Checksum", func() *dberrors.DragonError { return NewChecksumError("raft.verify", "backup") }, dberrors.ErrDataLoss},
-		{"UnsupportedValue", func() *dberrors.DragonError {
+		{"Checksum", func() *dberrors.QRDBError { return NewChecksumError("raft.verify", "backup") }, dberrors.ErrDataLoss},
+		{"UnsupportedValue", func() *dberrors.QRDBError {
 			return NewUnsupportedValueError("raft.config", "format", "xml")
 		}, dberrors.ErrInvalidInput},
-		{"InvalidOpcode", func() *dberrors.DragonError {
+		{"InvalidOpcode", func() *dberrors.QRDBError {
 			return NewInvalidOpcodeError("raft.decode", 0xAB, "batch")
 		}, dberrors.ErrInvalidInput},
-		{"IncompleteData", func() *dberrors.DragonError {
+		{"IncompleteData", func() *dberrors.QRDBError {
 			return NewIncompleteDataError("raft.decode", "header")
 		}, dberrors.ErrInvalidInput},
-		{"DeadlineRequired", func() *dberrors.DragonError { return NewDeadlineRequiredError("raft.propose") }, dberrors.ErrInvalidInput},
-		{"DeadlineExceeded", func() *dberrors.DragonError { return NewDeadlineExceededError("raft.propose") }, dberrors.ErrDeadlineExceeded},
-		{"UnknownOperation", func() *dberrors.DragonError {
+		{"DeadlineRequired", func() *dberrors.QRDBError { return NewDeadlineRequiredError("raft.propose") }, dberrors.ErrInvalidInput},
+		{"DeadlineExceeded", func() *dberrors.QRDBError { return NewDeadlineExceededError("raft.propose") }, dberrors.ErrDeadlineExceeded},
+		{"UnknownOperation", func() *dberrors.QRDBError {
 			return NewUnknownOperationError("raft.handle", "foobar")
 		}, dberrors.ErrInvalidInput},
-		{"InvalidContextType", func() *dberrors.DragonError {
+		{"InvalidContextType", func() *dberrors.QRDBError {
 			return NewInvalidContextTypeError("raft.update", "*raft.Context")
 		}, dberrors.ErrInternal},
-		{"Canceled", func() *dberrors.DragonError { return NewCanceledError("raft.op", "write") }, dberrors.ErrCanceled},
-		{"ComponentNotInitialized", func() *dberrors.DragonError {
+		{"Canceled", func() *dberrors.QRDBError { return NewCanceledError("raft.op", "write") }, dberrors.ErrCanceled},
+		{"ComponentNotInitialized", func() *dberrors.QRDBError {
 			return NewComponentNotInitializedError("raft.start", "raft")
 		}, dberrors.ErrInternal},
-		{"WriterClosed", func() *dberrors.DragonError { return NewWriterClosedError("raft.write") }, dberrors.ErrUnavailable},
-		{"AlreadyBootstrapped", func() *dberrors.DragonError { return NewAlreadyBootstrappedError("raft.bootstrap") }, dberrors.ErrAlreadyExists},
-		{"InvalidNodeIDZero", func() *dberrors.DragonError { return NewInvalidNodeIDZeroError("raft.validate") }, dberrors.ErrInvalidInput},
-		{"InvalidNodeIDMembers", func() *dberrors.DragonError { return NewInvalidNodeIDMembersError("raft.validate") }, dberrors.ErrInvalidInput},
-		{"MTLSConfig", func() *dberrors.DragonError { return NewMTLSConfigError("raft.tls") }, dberrors.ErrConfiguration},
-		{"UnsupportedConsistencyLevel", func() *dberrors.DragonError {
+		{"WriterClosed", func() *dberrors.QRDBError { return NewWriterClosedError("raft.write") }, dberrors.ErrUnavailable},
+		{"AlreadyBootstrapped", func() *dberrors.QRDBError { return NewAlreadyBootstrappedError("raft.bootstrap") }, dberrors.ErrAlreadyExists},
+		{"InvalidNodeIDZero", func() *dberrors.QRDBError { return NewInvalidNodeIDZeroError("raft.validate") }, dberrors.ErrInvalidInput},
+		{"InvalidNodeIDMembers", func() *dberrors.QRDBError { return NewInvalidNodeIDMembersError("raft.validate") }, dberrors.ErrInvalidInput},
+		{"MTLSConfig", func() *dberrors.QRDBError { return NewMTLSConfigError("raft.tls") }, dberrors.ErrConfiguration},
+		{"UnsupportedConsistencyLevel", func() *dberrors.QRDBError {
 			return NewUnsupportedConsistencyLevelError("raft.read", "eventual")
 		}, dberrors.ErrInvalidInput},
 	}
@@ -482,91 +482,91 @@ func TestRaftFieldConstructors(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		newFn    func() *dberrors.DragonError
+		newFn    func() *dberrors.QRDBError
 		wantCode dberrors.ErrorCode
 	}{
-		{"ShardOperation", func() *dberrors.DragonError {
+		{"ShardOperation", func() *dberrors.QRDBError {
 			return NewShardOperationError("raft.op", dberrors.ErrRaft, 1, "propose", cause)
 		}, dberrors.ErrRaft},
-		{"NodeOperation", func() *dberrors.DragonError {
+		{"NodeOperation", func() *dberrors.QRDBError {
 			return NewNodeOperationError("raft.membership", 3, 1, "add", cause)
 		}, dberrors.ErrRaft},
-		{"LengthMismatch", func() *dberrors.DragonError {
+		{"LengthMismatch", func() *dberrors.QRDBError {
 			return NewLengthMismatchError("raft.batch", "keys", 5, "values", 3)
 		}, dberrors.ErrInvalidInput},
-		{"SnapshotOperation", func() *dberrors.DragonError {
+		{"SnapshotOperation", func() *dberrors.QRDBError {
 			return NewSnapshotOperationError("raft.snapshot", "save", cause)
 		}, dberrors.ErrSnapshot},
-		{"BatchOperation", func() *dberrors.DragonError {
+		{"BatchOperation", func() *dberrors.QRDBError {
 			return NewBatchOperationError("raft.batch", 0, "put", cause)
 		}, dberrors.ErrInternal},
-		{"InvalidQueryType", func() *dberrors.DragonError {
+		{"InvalidQueryType", func() *dberrors.QRDBError {
 			return NewInvalidQueryTypeError("raft.query", "GetQuery", "PutQuery")
 		}, dberrors.ErrInvalidInput},
-		{"RequiredFieldOperation", func() *dberrors.DragonError {
+		{"RequiredFieldOperation", func() *dberrors.QRDBError {
 			return NewRequiredFieldOperationError("raft.put", "key", "put")
 		}, dberrors.ErrInvalidInput},
-		{"InvalidEntityKey", func() *dberrors.DragonError {
+		{"InvalidEntityKey", func() *dberrors.QRDBError {
 			return NewInvalidEntityKeyError("raft.get", "get")
 		}, dberrors.ErrInvalidInput},
-		{"BatchFormat", func() *dberrors.DragonError {
+		{"BatchFormat", func() *dberrors.QRDBError {
 			return NewBatchFormatError("raft.batch", "a list of operations")
 		}, dberrors.ErrInvalidInput},
-		{"InsufficientPeers", func() *dberrors.DragonError {
+		{"InsufficientPeers", func() *dberrors.QRDBError {
 			return NewInsufficientPeersError("raft.bootstrap", dberrors.ErrInvalidInput, 3, 1)
 		}, dberrors.ErrInvalidInput},
-		{"DuplicateNodeID", func() *dberrors.DragonError {
+		{"DuplicateNodeID", func() *dberrors.QRDBError {
 			return NewDuplicateNodeIDError("raft.validate", 5)
 		}, dberrors.ErrInvalidInput},
-		{"EmptyPeerAddress", func() *dberrors.DragonError {
+		{"EmptyPeerAddress", func() *dberrors.QRDBError {
 			return NewEmptyPeerAddressError("raft.validate", 2)
 		}, dberrors.ErrInvalidInput},
-		{"NodeNotInMembers", func() *dberrors.DragonError {
+		{"NodeNotInMembers", func() *dberrors.QRDBError {
 			return NewNodeNotInMembersError("raft.validate", 7)
 		}, dberrors.ErrInvalidInput},
-		{"LeaderNotFoundInPeers", func() *dberrors.DragonError {
+		{"LeaderNotFoundInPeers", func() *dberrors.QRDBError {
 			return NewLeaderNotFoundInPeersError("raft.forward", dberrors.ErrNotFound, 3)
 		}, dberrors.ErrNotFound},
-		{"LeaderMismatch", func() *dberrors.DragonError {
+		{"LeaderMismatch", func() *dberrors.QRDBError {
 			return NewLeaderMismatchError("raft.verify", 1, 2)
 		}, dberrors.ErrInternal},
-		{"NoFollowers", func() *dberrors.DragonError {
+		{"NoFollowers", func() *dberrors.QRDBError {
 			return NewNoFollowersError("raft.read", "in shard 1")
 		}, dberrors.ErrInvalidInput},
-		{"TimeoutWaiting", func() *dberrors.DragonError {
+		{"TimeoutWaiting", func() *dberrors.QRDBError {
 			return NewTimeoutWaitingError("raft.elect", "leader", cause)
 		}, dberrors.ErrTimeout},
-		{"ChannelNotRegistered", func() *dberrors.DragonError {
+		{"ChannelNotRegistered", func() *dberrors.QRDBError {
 			return NewChannelNotRegisteredError("raft.send", 42)
 		}, dberrors.ErrNotFound},
-		{"ContextCancelled", func() *dberrors.DragonError {
+		{"ContextCancelled", func() *dberrors.QRDBError {
 			return NewContextCancelledError("raft.propose", "propose", cause)
 		}, dberrors.ErrTimeout},
-		{"ProposalResult", func() *dberrors.DragonError {
+		{"ProposalResult", func() *dberrors.QRDBError {
 			return NewProposalResultError("raft.propose", dberrors.ErrInternal, 1, "rejected")
 		}, dberrors.ErrInternal},
-		{"RaftGroupExists", func() *dberrors.DragonError {
+		{"RaftGroupExists", func() *dberrors.QRDBError {
 			return NewRaftGroupExistsError("raft.create", 1)
 		}, dberrors.ErrAlreadyExists},
-		{"RaftGroupNotFound", func() *dberrors.DragonError {
+		{"RaftGroupNotFound", func() *dberrors.QRDBError {
 			return NewRaftGroupNotFoundError("raft.get", 2)
 		}, dberrors.ErrNotFound},
-		{"ConfigMultiValidation", func() *dberrors.DragonError {
+		{"ConfigMultiValidation", func() *dberrors.QRDBError {
 			return NewConfigMultiValidationError("raft.validate", []string{"err1", "err2"})
 		}, dberrors.ErrConfiguration},
-		{"InvalidWriteMode", func() *dberrors.DragonError {
+		{"InvalidWriteMode", func() *dberrors.QRDBError {
 			return NewInvalidWriteModeError("raft.write", "turbo", cause)
 		}, dberrors.ErrInvalidInput},
-		{"NoLeaderAvailable", func() *dberrors.DragonError {
+		{"NoLeaderAvailable", func() *dberrors.QRDBError {
 			return NewNoLeaderAvailableError("raft.forward", 5)
 		}, dberrors.ErrLeaderNotAvailable},
-		{"PeerNotFound", func() *dberrors.DragonError {
+		{"PeerNotFound", func() *dberrors.QRDBError {
 			return NewPeerNotFoundError("raft.get", 10)
 		}, dberrors.ErrNotFound},
-		{"EmptyNodeAddress", func() *dberrors.DragonError {
+		{"EmptyNodeAddress", func() *dberrors.QRDBError {
 			return NewEmptyNodeAddressError("raft.validate", 3)
 		}, dberrors.ErrInvalidInput},
-		{"FieldNotString", func() *dberrors.DragonError {
+		{"FieldNotString", func() *dberrors.QRDBError {
 			return NewFieldNotStringError("raft.parse", "name", "int")
 		}, dberrors.ErrInvalidInput},
 	}
@@ -586,21 +586,21 @@ func TestRaftCauseConstructors(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		newFn    func() *dberrors.DragonError
+		newFn    func() *dberrors.QRDBError
 		wantCode dberrors.ErrorCode
 	}{
-		{"NodeHostCreation", func() *dberrors.DragonError { return NewNodeHostCreationError("raft.init", cause) }, dberrors.ErrRaft},
-		{"MTLSCertRead", func() *dberrors.DragonError { return NewMTLSCertReadError("raft.tls", "cert.pem", cause) }, dberrors.ErrConfiguration},
-		{"GroupConfigValidation", func() *dberrors.DragonError { return NewGroupConfigValidationError("raft.config", cause) }, dberrors.ErrValidation},
-		{"RaftConfigCreation", func() *dberrors.DragonError { return NewRaftConfigCreationError("raft.config", cause) }, dberrors.ErrConfiguration},
-		{"Session", func() *dberrors.DragonError { return NewSessionError("raft.session", cause) }, dberrors.ErrRaft},
-		{"ReadOptionsValidation", func() *dberrors.DragonError { return NewReadOptionsValidationError("raft.read", cause) }, dberrors.ErrInvalidInput},
-		{"Discovery", func() *dberrors.DragonError { return NewDiscoveryError("raft.discover", cause) }, dberrors.ErrUnavailable},
-		{"ClusterDetection", func() *dberrors.DragonError { return NewClusterDetectionError("raft.detect", cause) }, dberrors.ErrInternal},
-		{"RaftGroupStart", func() *dberrors.DragonError { return NewRaftGroupStartError("raft.start", cause) }, dberrors.ErrRaft},
-		{"LeaderElection", func() *dberrors.DragonError { return NewLeaderElectionError("raft.elect", cause) }, dberrors.ErrLeaderNotAvailable},
-		{"ClusterJoin", func() *dberrors.DragonError { return NewClusterJoinError("raft.join", cause) }, dberrors.ErrRaft},
-		{"ClientContextCanceled", func() *dberrors.DragonError { return NewClientContextCanceledError("raft.client", cause) }, dberrors.ErrCanceled},
+		{"NodeHostCreation", func() *dberrors.QRDBError { return NewNodeHostCreationError("raft.init", cause) }, dberrors.ErrRaft},
+		{"MTLSCertRead", func() *dberrors.QRDBError { return NewMTLSCertReadError("raft.tls", "cert.pem", cause) }, dberrors.ErrConfiguration},
+		{"GroupConfigValidation", func() *dberrors.QRDBError { return NewGroupConfigValidationError("raft.config", cause) }, dberrors.ErrValidation},
+		{"RaftConfigCreation", func() *dberrors.QRDBError { return NewRaftConfigCreationError("raft.config", cause) }, dberrors.ErrConfiguration},
+		{"Session", func() *dberrors.QRDBError { return NewSessionError("raft.session", cause) }, dberrors.ErrRaft},
+		{"ReadOptionsValidation", func() *dberrors.QRDBError { return NewReadOptionsValidationError("raft.read", cause) }, dberrors.ErrInvalidInput},
+		{"Discovery", func() *dberrors.QRDBError { return NewDiscoveryError("raft.discover", cause) }, dberrors.ErrUnavailable},
+		{"ClusterDetection", func() *dberrors.QRDBError { return NewClusterDetectionError("raft.detect", cause) }, dberrors.ErrInternal},
+		{"RaftGroupStart", func() *dberrors.QRDBError { return NewRaftGroupStartError("raft.start", cause) }, dberrors.ErrRaft},
+		{"LeaderElection", func() *dberrors.QRDBError { return NewLeaderElectionError("raft.elect", cause) }, dberrors.ErrLeaderNotAvailable},
+		{"ClusterJoin", func() *dberrors.QRDBError { return NewClusterJoinError("raft.join", cause) }, dberrors.ErrRaft},
+		{"ClientContextCanceled", func() *dberrors.QRDBError { return NewClientContextCanceledError("raft.client", cause) }, dberrors.ErrCanceled},
 	}
 
 	for _, tt := range tests {

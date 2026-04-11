@@ -1,9 +1,9 @@
 // Copyright (c) 2025 Jeremy Hahn
 // Copyright (c) 2025 Automate The Things, LLC
 //
-// This file is part of go-dragondb.
+// This file is part of go-qrdb.
 //
-// go-dragondb is dual-licensed:
+// go-qrdb is dual-licensed:
 //
 // 1. GNU Affero General Public License v3.0 (AGPL-3.0)
 //    See LICENSE file or visit https://www.gnu.org/licenses/agpl-3.0.html
@@ -30,7 +30,7 @@ import (
 )
 
 // genericDAO implements GenericDAO using kvstore.KVStore.
-// It works transparently with all DragonDB storage backends.
+// It works transparently with all QRDB storage backends.
 // Every KVStore implementation provides index methods uniformly.
 type genericDAO[E Entity] struct {
 	store      kvstore.KVStore
@@ -742,8 +742,8 @@ func isNotFoundError(err error) bool {
 	if err == nil {
 		return false
 	}
-	// Check for DragonDB's error type using errors.As for wrapped errors
-	var dbErr *dberrors.DragonError
+	// Check for QRDB's error type using errors.As for wrapped errors
+	var dbErr *dberrors.QRDBError
 	if errors.As(err, &dbErr) {
 		return dbErr.Code == dberrors.ErrNotFound
 	}

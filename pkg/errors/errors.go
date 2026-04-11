@@ -1,9 +1,9 @@
 // Copyright (c) 2025 Jeremy Hahn
 // Copyright (c) 2025 Automate The Things, LLC
 //
-// This file is part of go-dragondb.
+// This file is part of go-qrdb.
 //
-// go-dragondb is dual-licensed:
+// go-qrdb is dual-licensed:
 //
 // 1. GNU Affero General Public License v3.0 (AGPL-3.0)
 //    See LICENSE file or visit https://www.gnu.org/licenses/agpl-3.0.html
@@ -18,8 +18,8 @@ import (
 	"fmt"
 )
 
-// DragonError represents a structured error in DragonDB with context and metadata.
-type DragonError struct {
+// QRDBError represents a structured error in QRDB with context and metadata.
+type QRDBError struct {
 	// Code is the error code identifying the type of error
 	Code ErrorCode
 
@@ -37,7 +37,7 @@ type DragonError struct {
 }
 
 // Error implements the error interface.
-func (e *DragonError) Error() string {
+func (e *QRDBError) Error() string {
 	if e.Err != nil {
 		if e.Op != "" {
 			return fmt.Sprintf("%s: %s: %v", e.Op, e.Code.String(), e.Err)
@@ -52,18 +52,18 @@ func (e *DragonError) Error() string {
 }
 
 // Unwrap returns the underlying error for errors.Is and errors.As support.
-func (e *DragonError) Unwrap() error {
+func (e *QRDBError) Unwrap() error {
 	return e.Err
 }
 
 // Is implements error comparison for errors.Is.
-func (e *DragonError) Is(target error) bool {
+func (e *QRDBError) Is(target error) bool {
 	if target == nil {
 		return false
 	}
 
-	// Check if target is a DragonError with the same code
-	var de *DragonError
+	// Check if target is a QRDBError with the same code
+	var de *QRDBError
 	if errors.As(target, &de) {
 		return e.Code == de.Code
 	}
@@ -77,7 +77,7 @@ func (e *DragonError) Is(target error) bool {
 }
 
 // WithContext adds context key-value pairs to the error.
-func (e *DragonError) WithContext(key string, value interface{}) *DragonError {
+func (e *QRDBError) WithContext(key string, value interface{}) *QRDBError {
 	if e.Context == nil {
 		e.Context = make(map[string]interface{})
 	}
@@ -86,13 +86,13 @@ func (e *DragonError) WithContext(key string, value interface{}) *DragonError {
 }
 
 // WithRetry sets the retry flag on the error.
-func (e *DragonError) WithRetry(retry bool) *DragonError {
+func (e *QRDBError) WithRetry(retry bool) *QRDBError {
 	e.Retry = retry
 	return e
 }
 
 // IsRetryable returns true if the error can be retried.
-func (e *DragonError) IsRetryable() bool {
+func (e *QRDBError) IsRetryable() bool {
 	if e.Retry {
 		return true
 	}
@@ -100,7 +100,7 @@ func (e *DragonError) IsRetryable() bool {
 }
 
 // GetContext retrieves a context value by key.
-func (e *DragonError) GetContext(key string) (interface{}, bool) {
+func (e *QRDBError) GetContext(key string) (interface{}, bool) {
 	if e.Context == nil {
 		return nil, false
 	}
@@ -113,7 +113,7 @@ func IsNotFound(err error) bool {
 	if err == nil {
 		return false
 	}
-	var de *DragonError
+	var de *QRDBError
 	if errors.As(err, &de) {
 		return de.Code == ErrNotFound
 	}
@@ -125,7 +125,7 @@ func IsCanceled(err error) bool {
 	if err == nil {
 		return false
 	}
-	var de *DragonError
+	var de *QRDBError
 	if errors.As(err, &de) {
 		return de.Code == ErrCanceled
 	}
@@ -137,7 +137,7 @@ func IsInvalidInput(err error) bool {
 	if err == nil {
 		return false
 	}
-	var de *DragonError
+	var de *QRDBError
 	if errors.As(err, &de) {
 		return de.Code == ErrInvalidInput
 	}
@@ -149,7 +149,7 @@ func IsResourceExhausted(err error) bool {
 	if err == nil {
 		return false
 	}
-	var de *DragonError
+	var de *QRDBError
 	if errors.As(err, &de) {
 		return de.Code == ErrResourceExhausted
 	}
@@ -188,8 +188,8 @@ func (e *QuotaExceededError) Error() string {
 }
 
 // NewQuotaExceededError creates a new QuotaExceededError.
-func NewQuotaExceededError(resource, namespace, tenantID string, limit, current, requested int64) *DragonError {
-	return &DragonError{
+func NewQuotaExceededError(resource, namespace, tenantID string, limit, current, requested int64) *QRDBError {
+	return &QRDBError{
 		Code: ErrResourceExhausted,
 		Op:   "quota.check",
 		Err: &QuotaExceededError{
@@ -220,7 +220,7 @@ func IsQuotaExceeded(err error) bool {
 	if errors.As(err, &qe) {
 		return true
 	}
-	var de *DragonError
+	var de *QRDBError
 	if errors.As(err, &de) {
 		return de.Code == ErrResourceExhausted
 	}
@@ -232,7 +232,7 @@ func IsSystemKeyspaceViolation(err error) bool {
 	if err == nil {
 		return false
 	}
-	var de *DragonError
+	var de *QRDBError
 	if errors.As(err, &de) {
 		return de.Code == ErrSystemKeyspaceViolation
 	}
@@ -244,7 +244,7 @@ func IsCrossTenantAccess(err error) bool {
 	if err == nil {
 		return false
 	}
-	var de *DragonError
+	var de *QRDBError
 	if errors.As(err, &de) {
 		return de.Code == ErrCrossTenantAccess
 	}
@@ -256,7 +256,7 @@ func IsMissingTenantContext(err error) bool {
 	if err == nil {
 		return false
 	}
-	var de *DragonError
+	var de *QRDBError
 	if errors.As(err, &de) {
 		return de.Code == ErrMissingTenantContext
 	}
@@ -264,8 +264,8 @@ func IsMissingTenantContext(err error) bool {
 }
 
 // NewSystemKeyspaceViolationError creates an error for system keyspace access attempts.
-func NewSystemKeyspaceViolationError(op, key string) *DragonError {
-	return &DragonError{
+func NewSystemKeyspaceViolationError(op, key string) *QRDBError {
+	return &QRDBError{
 		Code: ErrSystemKeyspaceViolation,
 		Op:   op,
 		Err:  &MessageError{Message: "access to system keyspace is not permitted: " + key},
@@ -276,8 +276,8 @@ func NewSystemKeyspaceViolationError(op, key string) *DragonError {
 }
 
 // NewCrossTenantAccessError creates an error for cross-tenant access attempts.
-func NewCrossTenantAccessError(op, requestingTenant, targetTenant string) *DragonError {
-	return &DragonError{
+func NewCrossTenantAccessError(op, requestingTenant, targetTenant string) *QRDBError {
+	return &QRDBError{
 		Code: ErrCrossTenantAccess,
 		Op:   op,
 		Err:  &MessageError{Message: "cross-tenant access denied: tenant " + requestingTenant + " cannot access tenant " + targetTenant + " data"},
@@ -289,8 +289,8 @@ func NewCrossTenantAccessError(op, requestingTenant, targetTenant string) *Drago
 }
 
 // NewMissingTenantContextError creates an error for missing tenant context.
-func NewMissingTenantContextError(op string) *DragonError {
-	return &DragonError{
+func NewMissingTenantContextError(op string) *QRDBError {
+	return &QRDBError{
 		Code: ErrMissingTenantContext,
 		Op:   op,
 		Err:  errors.New("tenant context is required but not present"),
@@ -302,7 +302,7 @@ func IsMissingJustification(err error) bool {
 	if err == nil {
 		return false
 	}
-	var de *DragonError
+	var de *QRDBError
 	if errors.As(err, &de) {
 		return de.Code == ErrMissingJustification
 	}
@@ -314,7 +314,7 @@ func IsMissingUserContext(err error) bool {
 	if err == nil {
 		return false
 	}
-	var de *DragonError
+	var de *QRDBError
 	if errors.As(err, &de) {
 		return de.Code == ErrMissingUserContext
 	}
@@ -322,8 +322,8 @@ func IsMissingUserContext(err error) bool {
 }
 
 // NewMissingJustificationError creates an error for missing justification.
-func NewMissingJustificationError(op string) *DragonError {
-	return &DragonError{
+func NewMissingJustificationError(op string) *QRDBError {
+	return &QRDBError{
 		Code: ErrMissingJustification,
 		Op:   op,
 		Err:  errors.New("justification is required for cross-tenant operations"),
@@ -331,8 +331,8 @@ func NewMissingJustificationError(op string) *DragonError {
 }
 
 // NewMissingUserContextError creates an error for missing user context.
-func NewMissingUserContextError(op string) *DragonError {
-	return &DragonError{
+func NewMissingUserContextError(op string) *QRDBError {
+	return &QRDBError{
 		Code: ErrMissingUserContext,
 		Op:   op,
 		Err:  errors.New("user context is required but not present"),

@@ -103,7 +103,7 @@ func IsDAONotFound(err error) bool {
 
 // DatabaseError is a structured database error with error code, operation
 // context, and optional retry semantics.
-type DatabaseError = dberrors.DragonError
+type DatabaseError = dberrors.QRDBError
 
 // DatabaseErrorCode represents a database error classification.
 type DatabaseErrorCode = dberrors.ErrorCode

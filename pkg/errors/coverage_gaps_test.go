@@ -1,9 +1,9 @@
 // Copyright (c) 2025 Jeremy Hahn
 // Copyright (c) 2025 Automate The Things, LLC
 //
-// This file is part of go-dragondb.
+// This file is part of go-qrdb.
 //
-// go-dragondb is dual-licensed:
+// go-qrdb is dual-licensed:
 //
 // 1. GNU Affero General Public License v3.0 (AGPL-3.0)
 //    See LICENSE file or visit https://www.gnu.org/licenses/agpl-3.0.html
@@ -101,13 +101,13 @@ func TestIsSystemKeyspaceViolation(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "dragon error with correct code",
-			err:  &DragonError{Code: ErrSystemKeyspaceViolation},
+			name: "qrdb error with correct code",
+			err:  &QRDBError{Code: ErrSystemKeyspaceViolation},
 			want: true,
 		},
 		{
 			name: "different error code",
-			err:  &DragonError{Code: ErrNotFound},
+			err:  &QRDBError{Code: ErrNotFound},
 			want: false,
 		},
 		{
@@ -141,13 +141,13 @@ func TestIsCrossTenantAccess(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "dragon error with correct code",
-			err:  &DragonError{Code: ErrCrossTenantAccess},
+			name: "qrdb error with correct code",
+			err:  &QRDBError{Code: ErrCrossTenantAccess},
 			want: true,
 		},
 		{
 			name: "different error code",
-			err:  &DragonError{Code: ErrNotFound},
+			err:  &QRDBError{Code: ErrNotFound},
 			want: false,
 		},
 		{
@@ -181,13 +181,13 @@ func TestIsMissingTenantContext(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "dragon error with correct code",
-			err:  &DragonError{Code: ErrMissingTenantContext},
+			name: "qrdb error with correct code",
+			err:  &QRDBError{Code: ErrMissingTenantContext},
 			want: true,
 		},
 		{
 			name: "different error code",
-			err:  &DragonError{Code: ErrNotFound},
+			err:  &QRDBError{Code: ErrNotFound},
 			want: false,
 		},
 		{
@@ -209,7 +209,7 @@ func TestNotImplementedHelper(t *testing.T) {
 		err := NotImplemented("feature.X", "not yet available")
 		require.Error(t, err)
 
-		var de *DragonError
+		var de *QRDBError
 		require.ErrorAs(t, err, &de)
 		assert.Equal(t, ErrNotImplemented, de.Code)
 		assert.Equal(t, "feature.X", de.Op)
