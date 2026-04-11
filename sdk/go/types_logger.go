@@ -23,6 +23,13 @@ import (
 // LogConfig holds configuration for the structured logger.
 type LogConfig = logger.LogConfig
 
+// ConcreteLogger is the concrete structured logger implementation.
+// Use this when a concrete type (not the Logger interface) is required.
+type ConcreteLogger = logger.Logger
+
+// InvalidLogLevelError is returned when an unsupported log level is specified.
+type InvalidLogLevelError = logger.InvalidLogLevelError
+
 // NewLogger creates a new Logger with the given configuration.
 var NewLogger = logger.New
 

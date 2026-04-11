@@ -14,7 +14,10 @@
 
 package sdk
 
-import "github.com/jeremyhahn/go-qrdb/pkg/seal"
+import (
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	quicraftseal "github.com/jeremyhahn/go-quicraft/pkg/seal"
+)
 
 // ---------------------------------------------------------------------------
 // Seal sentinel errors
@@ -149,6 +152,10 @@ var (
 
 	// ErrInvalidPassphrase is returned when an empty passphrase is provided.
 	ErrInvalidPassphrase = seal.ErrInvalidPassphrase
+
+	// ErrDecryptionFailed is returned when a decryption operation fails,
+	// typically indicating an incorrect passphrase or tampered ciphertext.
+	ErrDecryptionFailed = quicraftseal.ErrDecryptionFailed
 
 	// ErrSealStoreSecretNotFound is returned when a seal store secret is missing.
 	ErrSealStoreSecretNotFound = seal.ErrSealStoreSecretNotFound
