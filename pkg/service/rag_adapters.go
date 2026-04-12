@@ -24,6 +24,11 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/rag"
 )
 
+// KVServicer satisfies rag.KVStore directly because its Put, Get, Delete, and
+// Scan method signatures are identical to those of rag.KVStore. No adapter is
+// required; pass a KVServicer value wherever a rag.KVStore is needed.
+var _ rag.KVStore = (KVServicer)(nil)
+
 // ---------------------------------------------------------------------------
 // EmbedProviderAdapter
 // ---------------------------------------------------------------------------
@@ -120,41 +125,4 @@ func (a *VectorStoreAdapter) SearchSimilar(ctx context.Context, req *rag.SearchV
 		}
 	}
 	return &rag.SearchVecResponse{Results: results}, nil
-}
-
-// ---------------------------------------------------------------------------
-// KVStoreAdapter
-// ---------------------------------------------------------------------------
-
-// KVStoreAdapter wraps KVServicer so it satisfies rag.KVStore.
-type KVStoreAdapter struct {
-	svc KVServicer
-}
-
-// NewKVStoreAdapter wraps svc as a rag.KVStore.
-func NewKVStoreAdapter(svc KVServicer) *KVStoreAdapter {
-	return &KVStoreAdapter{svc: svc}
-}
-
-// Compile-time assertion.
-var _ rag.KVStore = (*KVStoreAdapter)(nil)
-
-// Put implements rag.KVStore.
-func (a *KVStoreAdapter) Put(ctx context.Context, key string, value []byte) error {
-	return a.svc.Put(ctx, key, value)
-}
-
-// Get implements rag.KVStore.
-func (a *KVStoreAdapter) Get(ctx context.Context, key string) ([]byte, error) {
-	return a.svc.Get(ctx, key)
-}
-
-// Delete implements rag.KVStore.
-func (a *KVStoreAdapter) Delete(ctx context.Context, key string) error {
-	return a.svc.Delete(ctx, key)
-}
-
-// Scan implements rag.KVStore.
-func (a *KVStoreAdapter) Scan(ctx context.Context, prefix string) (map[string][]byte, error) {
-	return a.svc.Scan(ctx, prefix)
 }
