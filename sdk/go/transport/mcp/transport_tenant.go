@@ -60,3 +60,10 @@ func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.Tenant
 func (t *Transport) TenantBarrierUnseal(ctx context.Context, req *transport.TenantBarrierUnsealRequest) error {
 	return &transport.NotImplementedError{Method: "TenantBarrierUnseal"}
 }
+
+// UpdateTenant applies a partial update to an existing tenant. This method is
+// not yet implemented for the MCP transport and requires corresponding MCP
+// tool definitions.
+func (t *Transport) UpdateTenant(ctx context.Context, req *transport.UpdateTenantRequest) (*transport.UpdateTenantResponse, error) {
+	return nil, &transport.NotImplementedError{Method: "UpdateTenant"}
+}

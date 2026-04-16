@@ -231,7 +231,16 @@ func run() error {
 		return err
 	}
 
+	// baseDir (go-quicraft root) is optional: empty when QUICRAFT_ROOT is not
+	// set and go-quicraft is not on the CWD path. Runners that do not use
+	// go-quicraft ignore it; runners that do (future consensus benchmarks)
+	// must validate it themselves.
 	baseDir, err := findBaseDir()
+	if err != nil {
+		return err
+	}
+
+	qrdbRoot, err := findQRDBRoot()
 	if err != nil {
 		return err
 	}
@@ -239,7 +248,10 @@ func run() error {
 	fmt.Fprintf(os.Stderr, "=== KV Benchmark Comparison ===\n")
 	fmt.Fprintf(os.Stderr, "Systems: %s\n", strings.Join(systems, ", "))
 	fmt.Fprintf(os.Stderr, "Benchtime: %s\n", *benchtime)
-	fmt.Fprintf(os.Stderr, "Base dir: %s\n\n", baseDir)
+	if baseDir != "" {
+		fmt.Fprintf(os.Stderr, "Base dir: %s\n", baseDir)
+	}
+	fmt.Fprintf(os.Stderr, "QRDB root: %s\n\n", qrdbRoot)
 
 	suites := make(map[string]*perfresult.BenchmarkSuite)
 	var failedSystems []string
@@ -250,7 +262,7 @@ func run() error {
 			return &ErrInvalidSystem{System: name}
 		}
 
-		runner := factory(baseDir)
+		runner := factory(baseDir, qrdbRoot)
 		fmt.Fprintf(os.Stderr, "--- Running %s benchmarks ---\n", name)
 
 		suite, runErr := runner.Run(*benchtime, *timeout, *noBuild)
@@ -330,8 +342,14 @@ func isKnownSystem(system string) bool {
 }
 
 // findBaseDir locates the go-quicraft repository root by looking for go.mod
-// with the root module declaration, traversing up from CWD. Falls back to
+// with the root module declaration, traversing up from CWD. Falls back to the
 // QUICRAFT_ROOT environment variable.
+//
+// Returns an empty string (no error) when go-quicraft cannot be located; this
+// is intentional — runners that do not need go-quicraft (QRDB, TiKV) pass
+// baseDir as the ignored first argument, so the missing value causes no harm.
+// Runners that genuinely require go-quicraft must check for an empty baseDir
+// before use.
 func findBaseDir() (string, error) {
 	if root := os.Getenv("QUICRAFT_ROOT"); root != "" {
 		return root, nil
@@ -360,7 +378,43 @@ func findBaseDir() (string, error) {
 		dir = parent
 	}
 
-	return "", &ErrBaseDirNotFound{Detail: "could not locate go-quicraft repository root; set QUICRAFT_ROOT"}
+	// Not found — return empty string rather than an error so that runs that
+	// do not involve go-quicraft (QRDB, TiKV) can proceed without QUICRAFT_ROOT.
+	return "", nil
+}
+
+// findQRDBRoot locates the go-qrdb repository root by looking for go.mod with
+// the go-qrdb module declaration, traversing up from CWD. Falls back to the
+// QRDB_ROOT environment variable.
+func findQRDBRoot() (string, error) {
+	if root := os.Getenv("QRDB_ROOT"); root != "" {
+		return root, nil
+	}
+
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", &ErrBaseDirNotFound{Detail: err.Error()}
+	}
+
+	const rootModule = "module github.com/jeremyhahn/go-qrdb\n"
+
+	for {
+		modPath := filepath.Join(dir, "go.mod")
+		if _, statErr := os.Stat(modPath); statErr == nil {
+			data, readErr := os.ReadFile(modPath)
+			if readErr == nil && strings.Contains(string(data), rootModule) {
+				return dir, nil
+			}
+		}
+
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+
+	return "", &ErrBaseDirNotFound{Detail: "could not locate go-qrdb repository root; set QRDB_ROOT"}
 }
 
 // printResults outputs a formatted comparison table to stdout, then generates

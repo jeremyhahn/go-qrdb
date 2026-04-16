@@ -30,7 +30,7 @@ func TestTenantService_CreateTenant_RegistryDuplicateError(t *testing.T) {
 	ctx := context.Background()
 
 	// Create once successfully so the registry has it.
-	_, err := svc.CreateTenant(ctx, "reg-dup", "Reg Dup")
+	_, err := svc.CreateTenant(ctx, "reg-dup", "Reg Dup", "")
 	if err != nil {
 		t.Fatalf("first CreateTenant: %v", err)
 	}
@@ -43,7 +43,7 @@ func TestTenantService_CreateTenant_RegistryDuplicateError(t *testing.T) {
 
 	// The registry.RegisterTenantDefault should return ErrTenantAlreadyExists,
 	// which the service maps to our typed error.
-	_, err = svc.CreateTenant(ctx, "reg-dup", "Reg Dup Again")
+	_, err = svc.CreateTenant(ctx, "reg-dup", "Reg Dup Again", "")
 	if !errors.Is(err, ErrTenantAlreadyExists) {
 		t.Errorf("expected ErrTenantAlreadyExists from registry duplicate, got %v", err)
 	}
@@ -57,7 +57,7 @@ func TestTenantService_ListTenants_GetErrorAfterList(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a real tenant so the inner store has metadata.
-	_, err := svc.CreateTenant(ctx, "list-get-err", "List Get Err")
+	_, err := svc.CreateTenant(ctx, "list-get-err", "List Get Err", "")
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestTenantService_ListTenants_SkipsDisappearedKey(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a valid tenant so the inner store has real metadata.
-	_, err := svc.CreateTenant(ctx, "visible", "Visible")
+	_, err := svc.CreateTenant(ctx, "visible", "Visible", "")
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}

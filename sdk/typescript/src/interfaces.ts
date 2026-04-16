@@ -164,6 +164,8 @@ import type {
     CreateTenantResponse,
     GetTenantResponse,
     ListTenantsResponse,
+    UpdateTenantRequest,
+    UpdateTenantResponse,
     TenantBarrierInitRequest,
     TenantBarrierUnsealRequest,
     UpdateTenantQuotasRequest,
@@ -1462,6 +1464,16 @@ export interface TenantClient {
      * @param tenantId - Tenant identifier to delete.
      */
     delete(tenantId: string): Promise<void>;
+
+    /**
+     * Applies a partial update to an existing tenant. Changing the isolation
+     * type returns 409 Conflict if the tenant already has stored data.
+     *
+     * @param tenantId - Tenant identifier.
+     * @param req      - Fields to update (undefined fields are left unchanged).
+     * @returns The updated tenant.
+     */
+    update(tenantId: string, req: UpdateTenantRequest): Promise<UpdateTenantResponse>;
 
     /**
      * Initializes the encryption barrier for a tenant using Shamir secret

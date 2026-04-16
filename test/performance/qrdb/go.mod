@@ -1,4 +1,4 @@
-module github.com/jeremyhahn/go-quicraft/contrib/qrdb/test/performance/qrdb
+module github.com/jeremyhahn/go-qrdb/test/performance/qrdb
 
 go 1.26.1
 

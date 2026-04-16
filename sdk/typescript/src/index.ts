@@ -293,11 +293,14 @@ export type {
     UnsealProgress,
 
     // Tenant management
+    TenantIsolationType,
     TenantInfo,
     CreateTenantRequest,
     CreateTenantResponse,
     GetTenantResponse,
     ListTenantsResponse,
+    UpdateTenantRequest,
+    UpdateTenantResponse,
     TenantBarrierInitRequest,
     TenantBarrierUnsealRequest,
     TenantQuotas,

@@ -175,7 +175,7 @@ func TestTenantService_CreateGet(t *testing.T) {
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 
-	info, err := svc.CreateTenant(ctx, "acme", "Acme Corp")
+	info, err := svc.CreateTenant(ctx, "acme", "Acme Corp", "")
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
@@ -206,12 +206,12 @@ func TestTenantService_CreateDuplicate(t *testing.T) {
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 
-	_, err := svc.CreateTenant(ctx, "dup", "First")
+	_, err := svc.CreateTenant(ctx, "dup", "First", "")
 	if err != nil {
 		t.Fatalf("first CreateTenant: %v", err)
 	}
 
-	_, err = svc.CreateTenant(ctx, "dup", "Second")
+	_, err = svc.CreateTenant(ctx, "dup", "Second", "")
 	if !errors.Is(err, ErrTenantAlreadyExists) {
 		t.Errorf("expected ErrTenantAlreadyExists, got %v", err)
 	}
@@ -221,7 +221,7 @@ func TestTenantService_CreateEmptyID(t *testing.T) {
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 
-	_, err := svc.CreateTenant(ctx, "", "NoID")
+	_, err := svc.CreateTenant(ctx, "", "NoID", "")
 	if !errors.Is(err, ErrEmptyTenantID) {
 		t.Errorf("expected ErrEmptyTenantID, got %v", err)
 	}
@@ -231,7 +231,7 @@ func TestTenantService_CreateEmptyName(t *testing.T) {
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 
-	_, err := svc.CreateTenant(ctx, "valid-id", "")
+	_, err := svc.CreateTenant(ctx, "valid-id", "", "")
 	if !errors.Is(err, ErrEmptyTenantName) {
 		t.Errorf("expected ErrEmptyTenantName, got %v", err)
 	}
@@ -242,7 +242,7 @@ func TestTenantService_CreateStoreGetFault(t *testing.T) {
 	svc, _ := newTestServiceWithStore(t, fb)
 	ctx := context.Background()
 
-	_, err := svc.CreateTenant(ctx, "test", "Test")
+	_, err := svc.CreateTenant(ctx, "test", "Test", "")
 	var se *StoreError
 	if !errors.As(err, &se) {
 		t.Errorf("expected StoreError, got %v", err)
@@ -254,7 +254,7 @@ func TestTenantService_CreateStorePutFault(t *testing.T) {
 	svc, _ := newTestServiceWithStore(t, fb)
 	ctx := context.Background()
 
-	_, err := svc.CreateTenant(ctx, "test", "Test")
+	_, err := svc.CreateTenant(ctx, "test", "Test", "")
 	var se *StoreError
 	if !errors.As(err, &se) {
 		t.Errorf("expected StoreError, got %v", err)
@@ -331,7 +331,7 @@ func TestTenantService_List(t *testing.T) {
 
 	// Create multiple tenants.
 	for _, id := range []string{"alpha", "beta", "gamma"} {
-		_, err := svc.CreateTenant(ctx, id, "Tenant "+id)
+		_, err := svc.CreateTenant(ctx, id, "Tenant "+id, "")
 		if err != nil {
 			t.Fatalf("CreateTenant(%s): %v", id, err)
 		}
@@ -379,7 +379,7 @@ func TestTenantService_ListSkipsCorruptEntries(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a valid tenant.
-	_, err = svc.CreateTenant(ctx, "valid", "Valid Tenant")
+	_, err = svc.CreateTenant(ctx, "valid", "Valid Tenant", "")
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
@@ -407,7 +407,7 @@ func TestTenantService_Delete(t *testing.T) {
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 
-	_, err := svc.CreateTenant(ctx, "to-delete", "Delete Me")
+	_, err := svc.CreateTenant(ctx, "to-delete", "Delete Me", "")
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
@@ -471,7 +471,7 @@ func TestTenantService_DeleteStoreDelFault(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a tenant so metadata exists.
-	_, err = svc.CreateTenant(ctx, "del-fault", "Fault")
+	_, err = svc.CreateTenant(ctx, "del-fault", "Fault", "")
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
@@ -493,7 +493,7 @@ func TestTenantService_BarrierInit(t *testing.T) {
 	svc, reg := newTestService(t)
 	ctx := context.Background()
 
-	_, err := svc.CreateTenant(ctx, "init-test", "Init Test")
+	_, err := svc.CreateTenant(ctx, "init-test", "Init Test", "")
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
@@ -546,7 +546,7 @@ func TestTenantService_BarrierInitAlreadyInitialized(t *testing.T) {
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 
-	_, err := svc.CreateTenant(ctx, "double-init", "Double Init")
+	_, err := svc.CreateTenant(ctx, "double-init", "Double Init", "")
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
@@ -569,7 +569,7 @@ func TestTenantService_BarrierUnseal(t *testing.T) {
 	svc, reg := newTestService(t)
 	ctx := context.Background()
 
-	_, err := svc.CreateTenant(ctx, "unseal-test", "Unseal Test")
+	_, err := svc.CreateTenant(ctx, "unseal-test", "Unseal Test", "")
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
@@ -612,7 +612,7 @@ func TestTenantService_BarrierUnsealWithExplicitKey(t *testing.T) {
 	svc, reg := newTestService(t)
 	ctx := context.Background()
 
-	_, err := svc.CreateTenant(ctx, "unseal-key", "Unseal Key")
+	_, err := svc.CreateTenant(ctx, "unseal-key", "Unseal Key", "")
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
@@ -666,7 +666,7 @@ func TestTenantService_BarrierUnsealNotInitialized(t *testing.T) {
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 
-	_, err := svc.CreateTenant(ctx, "no-init", "Not Initialized")
+	_, err := svc.CreateTenant(ctx, "no-init", "Not Initialized", "")
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
@@ -705,7 +705,7 @@ func TestTenantService_UpdateQuotas(t *testing.T) {
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 
-	_, err := svc.CreateTenant(ctx, "quota-test", "Quota Test")
+	_, err := svc.CreateTenant(ctx, "quota-test", "Quota Test", "")
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
@@ -784,7 +784,7 @@ func TestTenantService_UpdateQuotasStorePutFault(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	_, err = svc.CreateTenant(ctx, "put-fault", "Put Fault")
+	_, err = svc.CreateTenant(ctx, "put-fault", "Put Fault", "")
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
@@ -806,7 +806,7 @@ func TestTenantService_QuotasWithConfigured(t *testing.T) {
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 
-	_, err := svc.CreateTenant(ctx, "qp-test", "QP Test")
+	_, err := svc.CreateTenant(ctx, "qp-test", "QP Test", "")
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
@@ -833,7 +833,7 @@ func TestTenantService_QuotasWithNilReturnsZero(t *testing.T) {
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 
-	_, err := svc.CreateTenant(ctx, "no-quota", "No Quota")
+	_, err := svc.CreateTenant(ctx, "no-quota", "No Quota", "")
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
@@ -866,7 +866,7 @@ func TestTenantInfo_QuotasRoundTrip(t *testing.T) {
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 
-	_, err := svc.CreateTenant(ctx, "rt-test", "Round Trip")
+	_, err := svc.CreateTenant(ctx, "rt-test", "Round Trip", "")
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}

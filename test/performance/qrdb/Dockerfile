@@ -13,28 +13,34 @@
 # limitations under the License.
 
 # Build stage: compile both the QRDB binary and the benchmark test binary.
+#
+# Build context: go-qrdb root directory.
+#
+# NOTE: this Dockerfile requires go-quicraft source for both the go-quicraft
+# module dependency (used by go-qrdb) and the perfresult module dependency
+# (used by the benchmark sub-module). Supply it via a named BuildKit context:
+#   docker build --build-context go-quicraft=/path/to/go-quicraft ...
 FROM golang:1.26.1-bookworm AS builder
 
 WORKDIR /src
 COPY . .
 
 # Build the QRDB server binary used by SetupQRDBCluster.
-# The go.mod replace directive points to ../go-quicraft which resolves to
-# /src/contrib/go-quicraft. Rewrite it to point to /src (the quicraft root).
-WORKDIR /src/contrib/qrdb
-RUN go mod edit -replace github.com/jeremyhahn/go-quicraft=/src && \
+# Rewrite the replace directive: ../go-quicraft (host) -> /go-quicraft (Docker).
+WORKDIR /src
+RUN go mod edit -replace github.com/jeremyhahn/go-quicraft=/go-quicraft && \
     go mod tidy && go build -o /usr/local/bin/qrdb ./cmd/qrdbd
 
 # Build the benchmark test binary.
 # Rewrite replace directives to absolute Docker paths:
-#   go-qrdb                        -> /src/contrib/qrdb  (QRDB module root)
-#   go-quicraft                    -> /src                (quicraft root)
-#   go-quicraft/test/performance   -> /src/test/performance
-WORKDIR /src/contrib/qrdb/test/performance/qrdb
+#   go-qrdb                        -> /src                (QRDB module root)
+#   go-quicraft                    -> /go-quicraft         (quicraft root)
+#   go-quicraft/test/performance   -> /go-quicraft/test/performance
+WORKDIR /src/test/performance/qrdb
 RUN go mod edit \
-        -replace github.com/jeremyhahn/go-qrdb=/src/contrib/qrdb \
-        -replace github.com/jeremyhahn/go-quicraft=/src \
-        -replace "github.com/jeremyhahn/go-quicraft/test/performance=/src/test/performance" && \
+        -replace github.com/jeremyhahn/go-qrdb=/src \
+        -replace github.com/jeremyhahn/go-quicraft=/go-quicraft \
+        -replace "github.com/jeremyhahn/go-quicraft/test/performance=/go-quicraft/test/performance" && \
     go mod tidy && go test -c -tags=benchmark -o /qrdb-bench .
 
 # Run stage: minimal image with both binaries.

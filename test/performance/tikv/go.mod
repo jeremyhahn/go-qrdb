@@ -1,4 +1,4 @@
-module github.com/jeremyhahn/go-quicraft/contrib/qrdb/test/performance/tikv
+module github.com/jeremyhahn/go-qrdb/test/performance/tikv
 
 go 1.26.1
 

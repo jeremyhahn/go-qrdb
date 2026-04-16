@@ -990,13 +990,32 @@ func runStart(f *startFlags) error {
 	// in the configured storage codec (e.g. msgpack).
 	authKVSvc := service.NewKVService(adapter, shard.ShardKV)
 
-	// Bootstrap authentication infrastructure (user/role stores, RBAC,
-	// audit logger, auth middleware). Uses bootKVSvc (StaleRead) for
-	// initial bootstrap operations and authKVSvc (SyncRead, no codec) for
-	// the runtime auth middleware, ensuring followers see committed state.
+	// Always bootstrap user and role stores. These are organizational
+	// primitives that operators may need regardless of whether auth
+	// enforcement is enabled (e.g. pre-provisioning identities before
+	// enabling auth, managing users in dev/test with auth disabled).
+	//
+	// Two KV services are used:
+	//   - bootKVSvc (StaleRead) for initial bootstrap operations when
+	//     ReadIndex is not yet warmed up.
+	//   - authKVSvc (SyncRead, no codec) for runtime store operations,
+	//     ensuring linearizable reads for user/role CRUD.
+	mgmtResult, err := bootstrapUserRoleStores(sigCtx, bootKVSvc, authKVSvc, host, shard.ShardKV)
+	if err != nil {
+		_ = shutdownNode(host)
+		if sigCtx.Err() != nil {
+			slog.Info("user/role store bootstrap canceled by shutdown signal")
+			return nil
+		}
+		return err
+	}
+
+	// Bootstrap authentication enforcement (RBAC, audit logger, auth
+	// middleware). Only enabled when --auth-enabled=true. The user and
+	// role stores are already initialized above and reused here.
 	var authResult *authBootstrapResult
 	if f.authEnabled {
-		authResult, err = bootstrapAuth(sigCtx, bootKVSvc, authKVSvc, f.dataDir, host, shard.ShardKV)
+		authResult, err = bootstrapAuthEnforcement(sigCtx, mgmtResult, authKVSvc, f.dataDir, host)
 		if err != nil {
 			_ = shutdownNode(host)
 			// Context cancellation from signal is a clean shutdown, not an error.
@@ -1075,10 +1094,14 @@ func runStart(f *startFlags) error {
 		server.WithDatabaseService(dbSvc),
 		server.WithDatabaseManager(dbManager),
 	}
+	// User and role management services are always wired — they are
+	// organizational primitives independent of auth enforcement.
+	serverOpts = append(serverOpts,
+		server.WithUserService(mgmtResult.userSvc),
+		server.WithRoleService(mgmtResult.roleSvc),
+	)
 	if authResult != nil {
 		serverOpts = append(serverOpts,
-			server.WithUserService(authResult.userSvc),
-			server.WithRoleService(authResult.roleSvc),
 			server.WithAuthMiddleware(authResult.authMW),
 		)
 	}
@@ -1102,6 +1125,14 @@ func runStart(f *startFlags) error {
 	}
 	if tenantSvcInst != nil {
 		serverOpts = append(serverOpts, server.WithTenantService(tenantSvcInst))
+		// Ensure the default tenant exists with IsolationType=barrier.
+		// This is idempotent: if the tenant already exists the error is ignored.
+		if _, err := tenantSvcInst.CreateTenant(sigCtx, tenant.DefaultTenantID, "Default", tenant.IsolationBarrier); err != nil {
+			if !errors.Is(err, tenant.ErrTenantAlreadyExists) {
+				_ = shutdownNode(host)
+				return err
+			}
+		}
 	}
 	if bootServers != nil {
 		serverOpts = append(serverOpts, server.WithCABootstrap(bundle.CACertPEM, bundle.CAKeyPEM))
@@ -1552,27 +1583,31 @@ func isSingleNode(f *startFlags) bool {
 // Auth bootstrap
 // ---------------------------------------------------------------------------
 
-// authBootstrapResult holds the services and middleware created during
-// authentication infrastructure bootstrap.
-type authBootstrapResult struct {
+// mgmtBootstrapResult holds the user and role stores created unconditionally
+// during startup, independent of whether auth enforcement is enabled.
+type mgmtBootstrapResult struct {
 	userSvc     user.UserServicer
 	roleSvc     role.RoleServicer
+	bootUserSvc user.UserServicer // StaleRead-backed fallback for auth middleware
+}
+
+// authBootstrapResult holds the auth enforcement middleware and audit logger
+// created only when --auth-enabled=true.
+type authBootstrapResult struct {
 	auditLogger audit.Logger
 	authMW      *middleware.AuthMiddleware
 }
 
-// bootstrapAuth initializes the authentication and authorization
-// infrastructure: user store, role store, audit logger, RBAC authorizer,
-// and auth middleware. It bootstraps built-in roles and the admin user
-// on first run. All operations are idempotent.
+// bootstrapUserRoleStores initializes the user and role stores unconditionally.
+// These are organizational primitives available regardless of auth enforcement
+// state, allowing operators to pre-provision identities before enabling auth.
 //
-// Two KV services are required:
-//   - bootKVSvc uses StaleRead for bootstrap operations when the Raft
-//     ReadIndex pipeline is not yet warmed up.
-//   - runtimeKVSvc uses SyncRead (linearizable) for the auth middleware
-//     so that follower nodes always see the latest committed state when
-//     resolving user identities and permissions at request time.
-func bootstrapAuth(ctx context.Context, bootKVSvc, runtimeKVSvc service.KVServicer, dataDir string, node raftNode, shardID uint64) (*authBootstrapResult, error) {
+// Two KV services are used:
+//   - bootKVSvc (StaleRead) for initial bootstrap operations when ReadIndex
+//     is not yet warmed up.
+//   - runtimeKVSvc (SyncRead, no codec) for runtime store operations,
+//     ensuring linearizable reads for user/role CRUD.
+func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc service.KVServicer, node raftNode, shardID uint64) (*mgmtBootstrapResult, error) {
 	// Create bootstrap stores backed by StaleRead for initial setup.
 	bootStore := newKVServiceAdapter(bootKVSvc, nil, nil)
 	bootUserSvc, err := user.NewStore(bootStore)
@@ -1591,9 +1626,8 @@ func bootstrapAuth(ctx context.Context, bootKVSvc, runtimeKVSvc service.KVServic
 		return nil, err
 	}
 
-	// Create runtime stores backed by linearizable SyncRead for the
-	// auth middleware. This ensures follower nodes always resolve user
-	// identities against the latest committed Raft state.
+	// Create runtime stores backed by linearizable SyncRead for management
+	// operations. This ensures CRUD handlers see the latest committed state.
 	runtimeStore := newKVServiceAdapter(runtimeKVSvc, nil, nil)
 
 	userSvc, err := user.NewStore(runtimeStore)
@@ -1605,6 +1639,24 @@ func bootstrapAuth(ctx context.Context, bootKVSvc, runtimeKVSvc service.KVServic
 		return nil, &AuthBootstrapError{Step: "role store", Err: err}
 	}
 
+	return &mgmtBootstrapResult{
+		userSvc:     userSvc,
+		roleSvc:     roleSvc,
+		bootUserSvc: bootUserSvc,
+	}, nil
+}
+
+// bootstrapAuthEnforcement initializes the auth enforcement layer: RBAC
+// authorizer, audit logger, and auth middleware. It reuses the already-
+// initialized user and role stores from mgmtResult. Called only when
+// --auth-enabled=true.
+func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, runtimeKVSvc service.KVServicer, dataDir string, node raftNode) (*authBootstrapResult, error) {
+	_ = ctx
+	_ = node
+
+	// Create a runtime KV adapter for the audit logger store.
+	runtimeStore := newKVServiceAdapter(runtimeKVSvc, nil, nil)
+
 	// Create audit logger with default config. The file backend writes
 	// to the data directory so audit entries survive restarts.
 	auditCfg := audit.DefaultConfig()
@@ -1615,7 +1667,7 @@ func bootstrapAuth(ctx context.Context, bootKVSvc, runtimeKVSvc service.KVServic
 	}
 
 	// Create RBAC authorizer backed by the runtime role store.
-	rbacAuth := rbac.New(roleSvc)
+	rbacAuth := rbac.New(mgmt.roleSvc)
 
 	// Create auth middleware with mTLS authenticator, user-store
 	// enrichment, and audit logging. The fallback user service uses
@@ -1625,14 +1677,12 @@ func bootstrapAuth(ctx context.Context, bootKVSvc, runtimeKVSvc service.KVServic
 	// not yet operational.
 	authMW := middleware.New(rbacAuth,
 		middleware.WithAuthenticator(auth.NewMTLSAuthenticator()),
-		middleware.WithUserService(userSvc),
-		middleware.WithUserServiceFallback(bootUserSvc),
+		middleware.WithUserService(mgmt.userSvc),
+		middleware.WithUserServiceFallback(mgmt.bootUserSvc),
 		middleware.WithAuditLogger(auditLogger),
 	)
 
 	return &authBootstrapResult{
-		userSvc:     userSvc,
-		roleSvc:     roleSvc,
 		auditLogger: auditLogger,
 		authMW:      authMW,
 	}, nil

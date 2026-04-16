@@ -288,3 +288,37 @@ func (e *SQLQueryError) Error() string {
 func (e *SQLQueryError) Unwrap() error {
 	return e.Err
 }
+
+// TenantNotFoundError is returned when the tenant ID from X-QRDB-Tenant does
+// not match any provisioned tenant. Maps to HTTP 404.
+type TenantNotFoundError struct {
+	TenantID string
+}
+
+// Error returns a human-readable description.
+func (e *TenantNotFoundError) Error() string {
+	return "rest: tenant not found: " + e.TenantID
+}
+
+// DatabaseNotFoundError is returned when the database name from
+// X-QRDB-Database does not exist within the resolved tenant. Maps to HTTP 404.
+type DatabaseNotFoundError struct {
+	TenantID string
+	Database string
+}
+
+// Error returns a human-readable description.
+func (e *DatabaseNotFoundError) Error() string {
+	return "rest: database not found: " + e.Database + " (tenant: " + e.TenantID + ")"
+}
+
+// BarrierSealedError is returned when the tenant's active barrier is sealed,
+// preventing data-plane access. Maps to HTTP 503.
+type BarrierSealedError struct {
+	TenantID string
+}
+
+// Error returns a human-readable description.
+func (e *BarrierSealedError) Error() string {
+	return "rest: barrier sealed for tenant: " + e.TenantID
+}

@@ -312,6 +312,22 @@ func newDefaultRegistry() *Registry {
 		},
 	})
 
+	// "highperf" is a high-performance in-memory concurrent SM with
+	// configurable shard count (default 256). No disk persistence.
+	// Designed for data-plane state (conntrack, NAT sessions).
+	r.RegisterWithDescriptor("highperf", func() sm.CreateFunc {
+		return NewKVHighPerfCreateFunc(nil)
+	}, Descriptor{
+		Description: "High-performance in-memory concurrent state machine with configurable sharding",
+		Persistence: PersistenceMemory,
+		Kind:        SMKindConcurrent,
+		Capabilities: []Capability{
+			CapabilityKV, CapabilityBatch, CapabilityMVCC,
+			CapabilityTransaction, CapabilityLease,
+			CapabilityIndex, CapabilityTimeSeries,
+		},
+	})
+
 	// ---------------------------------------------------------------
 	// Legacy state machines (retained for backward compatibility)
 	// ---------------------------------------------------------------

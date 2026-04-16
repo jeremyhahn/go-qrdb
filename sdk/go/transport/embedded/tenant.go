@@ -25,10 +25,11 @@ import (
 // mapTenantInfo converts a tenant.TenantInfo to a transport.TenantInfo.
 func mapTenantInfo(info *tenant.TenantInfo) transport.TenantInfo {
 	ti := transport.TenantInfo{
-		ID:        info.ID,
-		Name:      info.Name,
-		CreatedAt: info.CreatedAt,
-		UpdatedAt: info.UpdatedAt,
+		ID:            info.ID,
+		Name:          info.Name,
+		IsolationType: transport.TenantIsolationType(info.EffectiveIsolationType()),
+		CreatedAt:     info.CreatedAt,
+		UpdatedAt:     info.UpdatedAt,
 	}
 	if info.Quotas != nil {
 		ti.Quotas = mapQuotas(info.Quotas)
@@ -69,7 +70,7 @@ func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenan
 		return nil, &NilServiceError{Service: "TenantServicer"}
 	}
 
-	info, err := t.tenantSvc.CreateTenant(ctx, req.ID, req.Name)
+	info, err := t.tenantSvc.CreateTenant(ctx, req.ID, req.Name, tenant.IsolationType(req.IsolationType))
 	if err != nil {
 		return nil, err
 	}
@@ -119,6 +120,30 @@ func (t *Transport) ListTenants(ctx context.Context) (*transport.ListTenantsResp
 
 	return &transport.ListTenantsResponse{
 		Tenants: result,
+	}, nil
+}
+
+// UpdateTenant applies a partial update to an existing tenant by delegating
+// to the TenantServicer. Non-empty patch fields replace the stored value.
+func (t *Transport) UpdateTenant(ctx context.Context, req *transport.UpdateTenantRequest) (*transport.UpdateTenantResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.tenantSvc == nil {
+		return nil, &NilServiceError{Service: "TenantServicer"}
+	}
+
+	patch := tenant.TenantPatch{
+		Name:          req.Name,
+		IsolationType: tenant.IsolationType(req.IsolationType),
+	}
+	info, err := t.tenantSvc.UpdateTenant(ctx, req.TenantID, patch)
+	if err != nil {
+		return nil, err
+	}
+
+	return &transport.UpdateTenantResponse{
+		Tenant: mapTenantInfo(info),
 	}, nil
 }
 

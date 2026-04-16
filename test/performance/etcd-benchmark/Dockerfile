@@ -13,20 +13,27 @@
 # limitations under the License.
 
 # Build stage: compile the QRDB binary (with etcd) and the benchmark test binary.
+#
+# Build context: go-qrdb root directory.
+#
+# NOTE: this Dockerfile requires go-quicraft source for the perfresult module
+# dependency. Supply it via a named BuildKit context:
+#   docker build --build-context go-quicraft=/path/to/go-quicraft ...
 FROM golang:1.26.1-bookworm AS builder
 
 WORKDIR /src
 COPY . .
 
 # Build the QRDB server binary with etcd support.
-# Rewrite the replace directive: host layout (../go-quicraft) -> Docker layout (../..)
-WORKDIR /src/contrib/qrdb
-RUN sed -i 's|=> ../go-quicraft|=> ../..|' go.mod && \
+# The go.mod replace directive for go-quicraft must be rewritten to the Docker
+# path where go-quicraft source is available (supplied via --build-context).
+WORKDIR /src
+RUN sed -i 's|=> ../go-quicraft|=> /go-quicraft|' go.mod && \
     go mod tidy && \
     go build -tags="codec_json raft qrdb_etcd" -o /usr/local/bin/qrdb ./cmd/qrdbd
 
 # Build the benchmark test binary.
-WORKDIR /src/contrib/qrdb/test/performance/etcd-benchmark
+WORKDIR /src/test/performance/etcd-benchmark
 RUN go mod tidy && go test -c -tags=benchmark -o /etcd-bench .
 
 # Run stage: minimal image with both binaries.

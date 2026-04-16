@@ -271,19 +271,13 @@ func fileExists(path string) bool {
 	return err == nil && !info.IsDir()
 }
 
-// qrdbRoot returns the contrib/qrdb module root by walking up from
-// the current working directory to find the admin.go file that lives
-// at the module root.
+// qrdbRoot returns the go-qrdb module root by walking up from the current
+// working directory to find admin.go, which lives at the module root.
 func qrdbRoot() string {
 	dir, _ := os.Getwd()
 	for {
 		if _, err := os.Stat(filepath.Join(dir, "admin.go")); err == nil {
 			return dir
-		}
-		// Check for contrib/qrdb relative to a potential repo root.
-		candidate := filepath.Join(dir, "contrib", "qrdb")
-		if _, err := os.Stat(filepath.Join(candidate, "admin.go")); err == nil {
-			return candidate
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {

@@ -26,19 +26,22 @@ import (
 
 // SystemRunner holds configuration for running a benchmark system via Docker.
 type SystemRunner struct {
-	System        string
-	Image         string
-	Dockerfile    string
-	BuildCtx      string
-	DockerRunArgs []string // Extra docker run args (before image name).
-	BenchPattern  string   // Benchmark filter pattern (default ".").
-	PreRun        func() error
-	PostRun       func()
+	System          string
+	Image           string
+	Dockerfile      string
+	BuildCtx        string
+	ExtraBuildArgs  []string // Extra args passed to docker build (e.g. --build-context).
+	DockerRunArgs   []string // Extra docker run args (before image name).
+	BenchPattern    string   // Benchmark filter pattern (default ".").
+	PreRun          func() error
+	PostRun         func()
 }
 
-// RunnerFactory creates a SystemRunner with the correct paths for a given
-// base directory (repository root).
-type RunnerFactory func(baseDir string) *SystemRunner
+// RunnerFactory creates a SystemRunner with the correct paths for the given
+// repository roots. baseDir is the go-quicraft root (for etcd consensus
+// benchmarks); qrdbRoot is the go-qrdb root (for QRDB, TiKV, and etcd-API
+// benchmarks whose Dockerfiles and compose files live in go-qrdb).
+type RunnerFactory func(baseDir, qrdbRoot string) *SystemRunner
 
 // runners is the map-based dispatch table for KV benchmark system factories.
 var runners = map[string]RunnerFactory{
@@ -142,12 +145,13 @@ func (sr *SystemRunner) Run(benchtime, timeout string, noBuild bool) (*perfresul
 
 // dockerBuild executes `docker build` for the system's Dockerfile.
 func (sr *SystemRunner) dockerBuild() error {
-	args := []string{
-		"build",
+	args := []string{"build"}
+	args = append(args, sr.ExtraBuildArgs...)
+	args = append(args,
 		"-t", sr.Image,
 		"-f", sr.Dockerfile,
 		sr.BuildCtx,
-	}
+	)
 
 	fmt.Fprintf(os.Stderr, "  Building image %s ...\n", sr.Image)
 
@@ -205,13 +209,24 @@ func (sr *SystemRunner) dockerRun(benchtime, timeout string) ([]byte, error) {
 	return stdout.Bytes(), nil
 }
 
+// quicraftBuildContext returns the --build-context flag for go-quicraft when
+// baseDir is non-empty. The Dockerfiles mount go-quicraft source at the named
+// context "go-quicraft" (accessible as /go-quicraft inside the build).
+func quicraftBuildContext(baseDir string) []string {
+	if baseDir == "" {
+		return nil
+	}
+	return []string{"--build-context", "go-quicraft=" + baseDir}
+}
+
 // newQRDBPebbleH2Runner creates a SystemRunner for QRDB with PebbleDB+HTTP/2.
-func newQRDBPebbleH2Runner(baseDir string) *SystemRunner {
+func newQRDBPebbleH2Runner(baseDir, qrdbRoot string) *SystemRunner {
 	return &SystemRunner{
-		System:     "qrdb-pebble-h2",
-		Image:      "qrdb-kvbench-qrdb",
-		Dockerfile: filepath.Join(baseDir, "contrib/qrdb/test/performance/qrdb/Dockerfile"),
-		BuildCtx:   baseDir,
+		System:         "qrdb-pebble-h2",
+		Image:          "qrdb-kvbench-qrdb",
+		Dockerfile:     filepath.Join(qrdbRoot, "test/performance/qrdb/Dockerfile"),
+		BuildCtx:       qrdbRoot,
+		ExtraBuildArgs: quicraftBuildContext(baseDir),
 		DockerRunArgs: []string{
 			"--env", "QRDB_BENCH_SM=pebble",
 			"--env", "QRDB_BENCH_PROTOCOL=h2",
@@ -220,12 +235,13 @@ func newQRDBPebbleH2Runner(baseDir string) *SystemRunner {
 }
 
 // newQRDBPebbleH3Runner creates a SystemRunner for QRDB with PebbleDB+HTTP/3.
-func newQRDBPebbleH3Runner(baseDir string) *SystemRunner {
+func newQRDBPebbleH3Runner(baseDir, qrdbRoot string) *SystemRunner {
 	return &SystemRunner{
-		System:     "qrdb-pebble-h3",
-		Image:      "qrdb-kvbench-qrdb",
-		Dockerfile: filepath.Join(baseDir, "contrib/qrdb/test/performance/qrdb/Dockerfile"),
-		BuildCtx:   baseDir,
+		System:         "qrdb-pebble-h3",
+		Image:          "qrdb-kvbench-qrdb",
+		Dockerfile:     filepath.Join(qrdbRoot, "test/performance/qrdb/Dockerfile"),
+		BuildCtx:       qrdbRoot,
+		ExtraBuildArgs: quicraftBuildContext(baseDir),
 		DockerRunArgs: []string{
 			"--env", "QRDB_BENCH_SM=pebble",
 			"--env", "QRDB_BENCH_PROTOCOL=h3",
@@ -234,12 +250,13 @@ func newQRDBPebbleH3Runner(baseDir string) *SystemRunner {
 }
 
 // newQRDBMemoryH2Runner creates a SystemRunner for QRDB with in-memory SM+HTTP/2.
-func newQRDBMemoryH2Runner(baseDir string) *SystemRunner {
+func newQRDBMemoryH2Runner(baseDir, qrdbRoot string) *SystemRunner {
 	return &SystemRunner{
-		System:     "qrdb-memory-h2",
-		Image:      "qrdb-kvbench-qrdb",
-		Dockerfile: filepath.Join(baseDir, "contrib/qrdb/test/performance/qrdb/Dockerfile"),
-		BuildCtx:   baseDir,
+		System:         "qrdb-memory-h2",
+		Image:          "qrdb-kvbench-qrdb",
+		Dockerfile:     filepath.Join(qrdbRoot, "test/performance/qrdb/Dockerfile"),
+		BuildCtx:       qrdbRoot,
+		ExtraBuildArgs: quicraftBuildContext(baseDir),
 		DockerRunArgs: []string{
 			"--env", "QRDB_BENCH_SM=memory",
 			"--env", "QRDB_BENCH_PROTOCOL=h2",
@@ -250,13 +267,14 @@ func newQRDBMemoryH2Runner(baseDir string) *SystemRunner {
 // newQRDBGRPCRunner creates a SystemRunner for QRDB using the gRPC/protobuf
 // protocol with PebbleDB storage. Only the GRPC-prefixed benchmarks are run
 // to isolate gRPC protocol overhead from the HTTP-based benchmarks.
-func newQRDBGRPCRunner(baseDir string) *SystemRunner {
+func newQRDBGRPCRunner(baseDir, qrdbRoot string) *SystemRunner {
 	return &SystemRunner{
-		System:       "qrdb-grpc",
-		Image:        "qrdb-kvbench-qrdb",
-		Dockerfile:   filepath.Join(baseDir, "contrib/qrdb/test/performance/qrdb/Dockerfile"),
-		BuildCtx:     baseDir,
-		BenchPattern: "BenchmarkQRDB_GRPC",
+		System:         "qrdb-grpc",
+		Image:          "qrdb-kvbench-qrdb",
+		Dockerfile:     filepath.Join(qrdbRoot, "test/performance/qrdb/Dockerfile"),
+		BuildCtx:       qrdbRoot,
+		ExtraBuildArgs: quicraftBuildContext(baseDir),
+		BenchPattern:   "BenchmarkQRDB_GRPC",
 		DockerRunArgs: []string{
 			"--env", "QRDB_BENCH_SM=pebble",
 			"--env", "QRDB_BENCH_PROTOCOL=grpc",
@@ -267,13 +285,14 @@ func newQRDBGRPCRunner(baseDir string) *SystemRunner {
 // newQRDBQUICRunner creates a SystemRunner for QRDB using the native QUIC
 // wire protocol with PebbleDB storage. Only the QUIC-prefixed benchmarks are
 // run to isolate native QUIC protocol characteristics.
-func newQRDBQUICRunner(baseDir string) *SystemRunner {
+func newQRDBQUICRunner(baseDir, qrdbRoot string) *SystemRunner {
 	return &SystemRunner{
-		System:       "qrdb-quic",
-		Image:        "qrdb-kvbench-qrdb",
-		Dockerfile:   filepath.Join(baseDir, "contrib/qrdb/test/performance/qrdb/Dockerfile"),
-		BuildCtx:     baseDir,
-		BenchPattern: "BenchmarkQRDB_QUIC",
+		System:         "qrdb-quic",
+		Image:          "qrdb-kvbench-qrdb",
+		Dockerfile:     filepath.Join(qrdbRoot, "test/performance/qrdb/Dockerfile"),
+		BuildCtx:       qrdbRoot,
+		ExtraBuildArgs: quicraftBuildContext(baseDir),
+		BenchPattern:   "BenchmarkQRDB_QUIC",
 		DockerRunArgs: []string{
 			"--env", "QRDB_BENCH_SM=pebble",
 			"--env", "QRDB_BENCH_PROTOCOL=quic",
@@ -283,14 +302,15 @@ func newQRDBQUICRunner(baseDir string) *SystemRunner {
 
 // newTiKVRunner creates a SystemRunner for TiKV KV benchmarks.
 // PreRun starts TiKV via docker compose; PostRun tears it down.
-func newTiKVRunner(baseDir string) *SystemRunner {
-	composeFile := filepath.Join(baseDir, "contrib/qrdb/test/performance/tikv/docker-compose.yml")
+func newTiKVRunner(baseDir, qrdbRoot string) *SystemRunner {
+	composeFile := filepath.Join(qrdbRoot, "test/performance/tikv/docker-compose.yml")
 
 	return &SystemRunner{
-		System:     "tikv",
-		Image:      "qrdb-kvbench-tikv",
-		Dockerfile: filepath.Join(baseDir, "contrib/qrdb/test/performance/tikv/Dockerfile"),
-		BuildCtx:   baseDir,
+		System:         "tikv",
+		Image:          "qrdb-kvbench-tikv",
+		Dockerfile:     filepath.Join(qrdbRoot, "test/performance/tikv/Dockerfile"),
+		BuildCtx:       qrdbRoot,
+		ExtraBuildArgs: quicraftBuildContext(baseDir),
 		DockerRunArgs: []string{
 			"--network=host",
 			"-v", "/var/run/docker.sock:/var/run/docker.sock",
@@ -313,12 +333,13 @@ func newTiKVRunner(baseDir string) *SystemRunner {
 
 // newQRDBEtcdRunner creates a SystemRunner for QRDB accessed via the etcd API.
 // The benchmark binary starts QRDB internally (ETCD_BENCH_MODE=qrdb).
-func newQRDBEtcdRunner(baseDir string) *SystemRunner {
+func newQRDBEtcdRunner(baseDir, qrdbRoot string) *SystemRunner {
 	return &SystemRunner{
-		System:     "qrdb-etcd",
-		Image:      "qrdb-kvbench-etcd",
-		Dockerfile: filepath.Join(baseDir, "contrib/qrdb/test/performance/etcd-benchmark/Dockerfile"),
-		BuildCtx:   baseDir,
+		System:         "qrdb-etcd",
+		Image:          "qrdb-kvbench-etcd",
+		Dockerfile:     filepath.Join(qrdbRoot, "test/performance/etcd-benchmark/Dockerfile"),
+		BuildCtx:       qrdbRoot,
+		ExtraBuildArgs: quicraftBuildContext(baseDir),
 		DockerRunArgs: []string{
 			"--env", "ETCD_BENCH_SYSTEM=qrdb-etcd",
 			"--env", "ETCD_BENCH_MODE=qrdb",
@@ -328,8 +349,8 @@ func newQRDBEtcdRunner(baseDir string) *SystemRunner {
 
 // newEtcdRunner creates a SystemRunner for a standalone etcd server.
 // PreRun starts etcd via docker compose; PostRun tears it down.
-func newEtcdRunner(baseDir string) *SystemRunner {
-	composeFile := filepath.Join(baseDir, "contrib/qrdb/test/performance/etcd-benchmark/docker-compose-etcd.yml")
+func newEtcdRunner(baseDir, qrdbRoot string) *SystemRunner {
+	composeFile := filepath.Join(qrdbRoot, "test/performance/etcd-benchmark/docker-compose-etcd.yml")
 
 	// The docker compose project name defaults to the compose file's parent
 	// directory name ("etcd-benchmark"), which prefixes all named volumes.
@@ -337,10 +358,11 @@ func newEtcdRunner(baseDir string) *SystemRunner {
 	const composeVolume = "etcd-benchmark_etcd_bench_certs"
 
 	return &SystemRunner{
-		System:     "etcd",
-		Image:      "qrdb-kvbench-etcd",
-		Dockerfile: filepath.Join(baseDir, "contrib/qrdb/test/performance/etcd-benchmark/Dockerfile"),
-		BuildCtx:   baseDir,
+		System:         "etcd",
+		Image:          "qrdb-kvbench-etcd",
+		Dockerfile:     filepath.Join(qrdbRoot, "test/performance/etcd-benchmark/Dockerfile"),
+		BuildCtx:       qrdbRoot,
+		ExtraBuildArgs: quicraftBuildContext(baseDir),
 		DockerRunArgs: []string{
 			"--network=host",
 			"-v", composeVolume + ":/certs:ro",
@@ -374,14 +396,15 @@ func newEtcdRunner(baseDir string) *SystemRunner {
 // 3-store cluster. Only Put and Get scenarios are run to match QRDB's 3N set.
 // Uses a separate compose project name ("tikv3n") to avoid volume conflicts
 // with the 1N runner.
-func newTiKV3NRunner(baseDir string) *SystemRunner {
-	composeFile := filepath.Join(baseDir, "contrib/qrdb/test/performance/tikv/docker-compose-3n.yml")
+func newTiKV3NRunner(baseDir, qrdbRoot string) *SystemRunner {
+	composeFile := filepath.Join(qrdbRoot, "test/performance/tikv/docker-compose-3n.yml")
 
 	return &SystemRunner{
-		System:       "tikv-3n",
-		Image:        "qrdb-kvbench-tikv",
-		Dockerfile:   filepath.Join(baseDir, "contrib/qrdb/test/performance/tikv/Dockerfile"),
-		BuildCtx:     baseDir,
+		System:         "tikv-3n",
+		Image:          "qrdb-kvbench-tikv",
+		Dockerfile:     filepath.Join(qrdbRoot, "test/performance/tikv/Dockerfile"),
+		BuildCtx:       qrdbRoot,
+		ExtraBuildArgs: quicraftBuildContext(baseDir),
 		BenchPattern: "BenchmarkTiKV_KV(Put|Get)",
 		DockerRunArgs: []string{
 			"--network=host",

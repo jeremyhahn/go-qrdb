@@ -44,8 +44,12 @@ type batchResponse struct {
 // All operations in the batch succeed or fail together within a single MVCC
 // revision.
 func (s *Server) handleBatch(w http.ResponseWriter, r *http.Request) {
-	if s.batchSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "batch"})
+	ctx := r.Context()
+	batchSvc := s.batchSvcFor(w, ctx)
+	if batchSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "batch"})
+		}
 		return
 	}
 
@@ -57,7 +61,7 @@ func (s *Server) handleBatch(w http.ResponseWriter, r *http.Request) {
 
 	ops := jsonToOps(req.Ops)
 
-	results, err := s.batchSvc.Execute(r.Context(), ops)
+	results, err := batchSvc.Execute(ctx, ops)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
@@ -104,8 +108,12 @@ const maxImportFileSize = 100 << 20
 // handleBatchImport handles POST /batch/import -- imports CSV, JSON, or
 // archive files containing key-value data.
 func (s *Server) handleBatchImport(w http.ResponseWriter, r *http.Request) {
-	if s.batchSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "batch"})
+	ctx := r.Context()
+	batchSvc := s.batchSvcFor(w, ctx)
+	if batchSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "batch"})
+		}
 		return
 	}
 
@@ -197,7 +205,7 @@ func (s *Server) handleBatchImport(w http.ResponseWriter, r *http.Request) {
 		Transactional: transactional,
 	}
 
-	result, err := s.batchSvc.Import(r.Context(), file, opts)
+	result, err := batchSvc.Import(ctx, file, opts)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return

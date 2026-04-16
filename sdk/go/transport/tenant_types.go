@@ -32,19 +32,47 @@ type TenantQuotas struct {
 	MaxTSMetrics    int64 `json:"max_ts_metrics"`
 }
 
+// TenantIsolationType controls the data isolation strategy for a tenant.
+type TenantIsolationType string
+
+const (
+	// TenantIsolationBarrier applies namespace prefixing plus an optional
+	// per-tenant cryptographic barrier. Default for all new tenants.
+	TenantIsolationBarrier TenantIsolationType = "barrier"
+
+	// TenantIsolationPrefix applies only namespace prefixing. No crypto
+	// barrier is added.
+	TenantIsolationPrefix TenantIsolationType = "prefix"
+)
+
 // TenantInfo contains information about a tenant.
 type TenantInfo struct {
-	ID        string        `json:"id"`
-	Name      string        `json:"name"`
-	Quotas    *TenantQuotas `json:"quotas,omitempty"`
-	CreatedAt time.Time     `json:"created_at"`
-	UpdatedAt time.Time     `json:"updated_at"`
+	ID            string              `json:"id"`
+	Name          string              `json:"name"`
+	IsolationType TenantIsolationType `json:"isolation_type,omitempty"`
+	Quotas        *TenantQuotas       `json:"quotas,omitempty"`
+	CreatedAt     time.Time           `json:"created_at"`
+	UpdatedAt     time.Time           `json:"updated_at"`
 }
 
 // CreateTenantRequest contains parameters for creating a tenant.
 type CreateTenantRequest struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID            string              `json:"id"`
+	Name          string              `json:"name"`
+	IsolationType TenantIsolationType `json:"isolation_type,omitempty"`
+}
+
+// UpdateTenantRequest contains the mutable fields for updating a tenant.
+// Zero-value fields are ignored.
+type UpdateTenantRequest struct {
+	TenantID      string              `json:"tenant_id"`
+	Name          string              `json:"name,omitempty"`
+	IsolationType TenantIsolationType `json:"isolation_type,omitempty"`
+}
+
+// UpdateTenantResponse contains the updated tenant.
+type UpdateTenantResponse struct {
+	Tenant TenantInfo `json:"tenant"`
 }
 
 // CreateTenantResponse contains the created tenant.

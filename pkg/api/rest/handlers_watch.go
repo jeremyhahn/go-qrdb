@@ -59,8 +59,12 @@ type eventJSON struct {
 //   - start-revision: replay events from this revision
 //   - prev-kv: when "true", include previous key-value in events
 func (s *Server) handleWatch(w http.ResponseWriter, r *http.Request) {
-	if s.watchSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "watch"})
+	ctx := r.Context()
+	watchSvc := s.watchSvcFor(w, ctx)
+	if watchSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "watch"})
+		}
 		return
 	}
 
@@ -89,14 +93,12 @@ func (s *Server) handleWatch(w http.ResponseWriter, r *http.Request) {
 		opts = append(opts, watch.WithPrevKV())
 	}
 
-	ctx := r.Context()
-
 	var watcher watch.Watcher
 	var err error
 	if isPrefix {
-		watcher, err = s.watchSvc.WatchPrefix(ctx, key, opts...)
+		watcher, err = watchSvc.WatchPrefix(ctx, key, opts...)
 	} else {
-		watcher, err = s.watchSvc.Watch(ctx, key, opts...)
+		watcher, err = watchSvc.Watch(ctx, key, opts...)
 	}
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)

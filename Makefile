@@ -532,20 +532,10 @@ _bench-qrdb-kv-fair:
 bench-qrdb-kv-quic: _kvcompare-build
 	cd test/performance && QUICRAFT_ROOT="$(QUICRAFT_ROOT)" ./kvcompare --benchtime=$(KV_BENCHTIME) quic
 
-# Stage go-qrdb as contrib/qrdb inside go-quicraft (required for Docker build context
-# and kvcompare replace directives). Uses rsync because Docker COPY ignores symlinks.
-.PHONY: _stage-contrib
-_stage-contrib:
-	@test -d "$(QUICRAFT_ROOT)" || (echo "QUICRAFT_ROOT=$(QUICRAFT_ROOT) not found; set QUICRAFT_ROOT" && exit 1)
-	@rm -rf "$(QUICRAFT_ROOT)/contrib/qrdb"
-	@rsync -a --exclude='.git' --exclude='coverage/' --exclude='*.log' \
-		--exclude='.claude/' --exclude='.cursor/' --exclude='.codex/' \
-		"$(CURDIR)/" "$(QUICRAFT_ROOT)/contrib/qrdb/"
-
-# Build the kvcompare orchestrator from go-quicraft context.
+# Build the kvcompare orchestrator from go-qrdb's own source tree.
 .PHONY: _kvcompare-build
-_kvcompare-build: _stage-contrib
-	cd "$(QUICRAFT_ROOT)/contrib/qrdb/test/performance/cmd/kvcompare" && $(GO) build -a -o "$(CURDIR)/test/performance/kvcompare" .
+_kvcompare-build:
+	cd "$(CURDIR)/test/performance/cmd/kvcompare" && $(GO) build -a -o "$(CURDIR)/test/performance/kvcompare" .
 
 # Run QRDB etcd API vs real etcd comparison via kvcompare orchestrator.
 .PHONY: bench-etcd-compare

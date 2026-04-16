@@ -38,6 +38,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -93,6 +94,7 @@ type Server struct {
 	ceremonyCA      ceremony.CeremonyCA
 	userSvc         user.UserServicer
 	roleSvc         role.RoleServicer
+	tenantSvc       tenant.TenantServicer
 	certProv        cert.CertProvider
 	authMW          *authmw.AuthMiddleware
 	corsConfig      *CORSConfig
@@ -111,6 +113,11 @@ type Server struct {
 	caBootstrapKey  []byte // PEM-encoded CA private key for bootstrap endpoint
 	onEtcdUpdated   func(dbName string, cfg *database.EtcdConfig) error
 	webUI           http.Handler // optional embedded web UI file server
+
+	// serviceRegistry provides per-(tenant, database) service resolution.
+	// When nil, all handlers fall back to the singleton service fields above,
+	// preserving backward compatibility for single-DB/single-tenant deployments.
+	serviceRegistry ServiceRegistry
 }
 
 // ServerOption configures optional Server dependencies.
@@ -301,6 +308,12 @@ func WithRoleService(svc role.RoleServicer) ServerOption {
 	return func(s *Server) { s.roleSvc = svc }
 }
 
+// WithTenantService attaches a TenantServicer for tenant lifecycle management
+// operations including create, get, list, delete, and quota updates.
+func WithTenantService(svc tenant.TenantServicer) ServerOption {
+	return func(s *Server) { s.tenantSvc = svc }
+}
+
 // WithCertProvider attaches a CertProvider for certificate management
 // operations.
 func WithCertProvider(svc cert.CertProvider) ServerOption {
@@ -350,6 +363,14 @@ func WithAdminService(svc service.AdminServicer) ServerOption {
 // to this handler. The handler should serve index.html for SPA fallback.
 func WithWebUI(h http.Handler) ServerOption {
 	return func(s *Server) { s.webUI = h }
+}
+
+// WithServiceRegistry attaches a ServiceRegistry for per-(tenant, database)
+// request scoping. When set, every data-plane handler resolves its service
+// via the registry rather than the singleton service fields. Backward compat:
+// when nil, handlers use the singleton fields (single-DB/single-tenant mode).
+func WithServiceRegistry(reg ServiceRegistry) ServerOption {
+	return func(s *Server) { s.serviceRegistry = reg }
 }
 
 // NewServer creates a new REST server that listens on the given address
@@ -529,6 +550,12 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 		s.routes["/permissions"] = route{method: http.MethodGet, handler: s.handleListPermissions}
 	}
 
+	// Tenant management routes. Registered unconditionally so the router
+	// always returns a meaningful status (201/200/501) rather than 404.
+	// Handlers return 501 when tenantSvc is nil (seal barrier not configured).
+	s.routes["/v1/tenants"] = route{method: http.MethodPost, handler: s.handleCreateTenant}
+	s.routes["/v1/tenants/list"] = route{method: http.MethodGet, handler: s.handleListTenants}
+
 	// Certificate management routes.
 	if s.certProv != nil {
 		s.routes["/certs/generate"] = route{method: http.MethodPost, handler: s.handleGenerateCert}
@@ -579,10 +606,17 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.dispatch)
 
+	// Build the middleware chain from innermost to outermost:
+	//   mux → auth → scope → CORS
+	// scopeMiddleware runs before auth so that auth middleware can read the
+	// tenant/database from context if it needs to (future-proof). CORS is the
+	// outermost layer so that preflight OPTIONS requests are handled before any
+	// other processing.
 	var handler http.Handler = mux
 	if s.authMW != nil {
 		handler = s.authMW.RESTMiddleware(mux)
 	}
+	handler = scopeMiddleware(handler)
 	if s.corsConfig != nil {
 		handler = corsMiddleware(*s.corsConfig, handler)
 	}
@@ -733,6 +767,13 @@ func (s *Server) dispatch(w http.ResponseWriter, r *http.Request) {
 		// (GET/DELETE /v1/barrier/shamir/shares, DELETE /v1/barrier/shamir/shares/{index}).
 		if len(r.URL.Path) >= 25 && r.URL.Path[:25] == "/v1/barrier/shamir/shares" {
 			s.handleBarrierShamirSharesByPath(w, r)
+			return
+		}
+		// Tenant routes with path params
+		// (GET /v1/tenants/{id}, DELETE /v1/tenants/{id},
+		// POST /v1/tenants/{id}/quotas).
+		if len(r.URL.Path) >= 12 && r.URL.Path[:12] == "/v1/tenants/" {
+			s.handleTenantByID(w, r)
 			return
 		}
 		// Credential delete route: DELETE /v1/credentials/{name}.

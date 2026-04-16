@@ -1,4 +1,4 @@
-module github.com/jeremyhahn/go-quicraft/contrib/qrdb/test/performance/etcd-benchmark
+module github.com/jeremyhahn/go-qrdb/test/performance/etcd-benchmark
 
 go 1.26.1
 

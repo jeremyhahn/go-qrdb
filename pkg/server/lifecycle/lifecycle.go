@@ -233,6 +233,15 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		if err := n.buildSealServices(ctx, infra, log); err != nil {
 			return nil, err
 		}
+	} else {
+		// When the seal subsystem is disabled, wire a KV-backed tenant service
+		// so tenant CRUD operates through Raft consensus. Barrier operations
+		// on this implementation return ErrBarrierNotEnabled.
+		kvTenantSvc, err := tenant.NewKVTenantService(newKVStoreAdapter(n.KV), log)
+		if err != nil {
+			return nil, &TenantServiceError{Err: err}
+		}
+		n.Tenant = kvTenantSvc
 	}
 
 	return n, nil

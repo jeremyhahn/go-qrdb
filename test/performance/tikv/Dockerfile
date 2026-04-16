@@ -1,24 +1,31 @@
 # Build stage: compile the TiKV benchmark binary
+#
+# Build context: go-qrdb root directory.
+#
+# NOTE: this Dockerfile requires go-quicraft source for the perfresult module
+# dependency (github.com/jeremyhahn/go-quicraft/test/performance). Supply it
+# via a named BuildKit context:
+#   docker build --build-context go-quicraft=/path/to/go-quicraft ...
 FROM golang:1.26.1-bookworm AS builder
 
 WORKDIR /src
 
 # Copy go.mod files first for layer caching.
 COPY go.mod go.sum ./
-COPY test/performance/go.mod test/performance/
-COPY contrib/qrdb/test/performance/tikv/go.mod contrib/qrdb/test/performance/tikv/go.sum contrib/qrdb/test/performance/tikv/
+COPY test/performance/tikv/go.mod test/performance/tikv/go.sum test/performance/tikv/
 
-# Download dependencies.
-WORKDIR /src/contrib/qrdb/test/performance/tikv
-RUN go mod download
+# Rewrite the perfresult replace directive to the Docker path.
+WORKDIR /src/test/performance/tikv
+RUN go mod edit \
+        -replace "github.com/jeremyhahn/go-quicraft/test/performance=/go-quicraft/test/performance" && \
+    go mod download
 
 # Copy source code.
 WORKDIR /src
-COPY test/performance/perfresult/ test/performance/perfresult/
-COPY contrib/qrdb/test/performance/tikv/*.go contrib/qrdb/test/performance/tikv/
+COPY test/performance/tikv/*.go test/performance/tikv/
 
 # Build benchmark binary.
-WORKDIR /src/contrib/qrdb/test/performance/tikv
+WORKDIR /src/test/performance/tikv
 RUN CGO_ENABLED=0 go test -c -tags=benchmark -o /tikv-bench .
 
 # Run stage
@@ -29,8 +36,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /tikv-bench /tikv-bench
-COPY contrib/qrdb/test/performance/tikv/docker-compose.yml /tikv/docker-compose.yml
-COPY contrib/qrdb/test/performance/tikv/scripts/ /tikv/scripts/
+COPY test/performance/tikv/docker-compose.yml /tikv/docker-compose.yml
+COPY test/performance/tikv/scripts/ /tikv/scripts/
 
 WORKDIR /tikv
 ENTRYPOINT ["/tikv-bench"]

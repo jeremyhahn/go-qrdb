@@ -86,9 +86,16 @@ func loadCACertPool(caFile string) *x509.CertPool {
 }
 
 // loadClientTLSConfig returns a tls.Config with the CA cert pool and, when
-// available, a client certificate for mTLS authentication.
+// available, a client certificate for mTLS authentication. When the CA cert
+// cannot be loaded (e.g. the default /data/raft/ca.pem doesn't exist in local
+// dev), InsecureSkipVerify is set as a fallback so tests can still reach a
+// server that uses a self-signed certificate not in the system pool.
 func loadClientTLSConfig(cfg *TestConfig) *tls.Config {
-	tlsCfg := &tls.Config{RootCAs: loadCACertPool(cfg.TLSCACert)}
+	caPool := loadCACertPool(cfg.TLSCACert)
+	tlsCfg := &tls.Config{RootCAs: caPool}
+	if caPool == nil {
+		tlsCfg.InsecureSkipVerify = true //nolint:gosec // dev/test fallback only
+	}
 	if cfg.TLSCert != "" && cfg.TLSKey != "" {
 		cert, err := tls.LoadX509KeyPair(cfg.TLSCert, cfg.TLSKey)
 		if err == nil {
@@ -117,15 +124,22 @@ func requireCLI(t *testing.T, cfg *TestConfig) {
 }
 
 // isServerAvailable checks if the REST server is available.
-// The health endpoint is public (no client cert needed), so only the CA
-// pool is required to verify the server certificate.
+// The health endpoint is public (no client cert needed). When a CA cert is
+// configured and successfully loaded, its pool is used to verify the server
+// certificate. If the CA cert is missing or unreadable (common in local dev
+// where the server uses a self-signed cert not in the system pool), we fall
+// back to InsecureSkipVerify so the availability probe still works. TLS is
+// still used — only certificate chain verification is skipped.
 func isServerAvailable(t *testing.T, cfg *TestConfig) bool {
 	t.Helper()
+	caPool := loadCACertPool(cfg.TLSCACert)
+	tlsCfg := &tls.Config{RootCAs: caPool}
+	if caPool == nil {
+		tlsCfg.InsecureSkipVerify = true //nolint:gosec // availability probe only
+	}
 	client := &http.Client{
 		Timeout: 2 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{RootCAs: loadCACertPool(cfg.TLSCACert)},
-		},
+		Transport: &http.Transport{TLSClientConfig: tlsCfg},
 	}
 	resp, err := client.Get(cfg.RESTBaseURL + "/health")
 	if err != nil {

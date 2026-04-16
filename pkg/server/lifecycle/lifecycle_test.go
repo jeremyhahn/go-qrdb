@@ -127,6 +127,9 @@ func TestBuildServices_CoreServicesNonNil(t *testing.T) {
 		{"Vector", node.Vector},
 		{"User", node.User},
 		{"Role", node.Role},
+		// Tenant is always non-nil: KV-backed when seal is disabled,
+		// barrier-backed when seal is enabled.
+		{"Tenant", node.Tenant},
 	}
 	for _, tc := range tests {
 		tc := tc

@@ -1,4 +1,4 @@
-module github.com/jeremyhahn/go-quicraft/contrib/qrdb/test/performance/cmd/kvcompare
+module github.com/jeremyhahn/go-qrdb/test/performance/cmd/kvcompare
 
 go 1.26.1
 

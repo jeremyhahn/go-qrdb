@@ -21,6 +21,11 @@ var (
 	// in the metadata store.
 	ErrTenantNotFound = errors.New("tenant: not found")
 
+	// ErrTenantHasData is returned when an isolation type change is requested
+	// on a tenant that already has stored data. Migrate or delete the data
+	// before changing the isolation type.
+	ErrTenantHasData = errors.New("tenant: has data, isolation type cannot be changed")
+
 	// ErrTenantAlreadyExists is returned when attempting to create a tenant
 	// that already has metadata stored.
 	ErrTenantAlreadyExists = errors.New("tenant: already exists")

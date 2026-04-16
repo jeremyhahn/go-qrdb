@@ -625,6 +625,9 @@ func (s *Server) startREST() error {
 	if s.opts.collectionSvc != nil {
 		restOpts = append(restOpts, rest.WithCollectionService(s.opts.collectionSvc))
 	}
+	if s.opts.tenantSvc != nil {
+		restOpts = append(restOpts, rest.WithTenantService(s.opts.tenantSvc))
+	}
 	if len(s.opts.caBootstrapCert) > 0 {
 		restOpts = append(restOpts, rest.WithCABootstrap(s.opts.caBootstrapCert, s.opts.caBootstrapKey))
 	}
@@ -633,6 +636,15 @@ func (s *Server) startREST() error {
 	}))
 	if s.opts.webUI != nil {
 		restOpts = append(restOpts, rest.WithWebUI(s.opts.webUI))
+	}
+	if s.opts.dbRegistry != nil {
+		regOpts := []RESTRegistryOption{}
+		if s.opts.tenantSvc != nil {
+			regOpts = append(regOpts, WithTenantServicer(s.opts.tenantSvc))
+		}
+		restOpts = append(restOpts, rest.WithServiceRegistry(
+			NewRESTServiceRegistry(s.opts.dbRegistry, s.opts.barrierRegistry, "default", regOpts...),
+		))
 	}
 
 	s.restSrv = rest.NewServer(s.kvSvc, s.adminSvc, addr, restOpts...)

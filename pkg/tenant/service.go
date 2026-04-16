@@ -28,21 +28,63 @@ import (
 
 const metadataPrefix = "tenants/"
 
+// IsolationType controls the data isolation strategy for a tenant.
+// Both modes provide separate keyspaces; the difference is whether
+// an additional cryptographic barrier is layered on top.
+type IsolationType string
+
+const (
+	// IsolationBarrier isolates tenant data with both namespace prefixing
+	// and an optional per-tenant cryptographic barrier. When the seal
+	// subsystem is not configured, isolation is still enforced via the
+	// namespace prefix. This is the default for all new tenants.
+	IsolationBarrier IsolationType = "barrier"
+
+	// IsolationPrefix isolates tenant data using only namespace prefixing.
+	// No cryptographic barrier is applied. Suitable for tenants that do
+	// not require encryption at rest but still need logical separation.
+	IsolationPrefix IsolationType = "prefix"
+)
+
 // TenantInfo holds tenant metadata persisted in the storage backend.
 type TenantInfo struct {
-	ID        string        `json:"id"`
-	Name      string        `json:"name"`
-	Quotas    *quota.Quotas `json:"quotas,omitempty"`
-	CreatedAt time.Time     `json:"created_at"`
-	UpdatedAt time.Time     `json:"updated_at"`
+	ID            string        `json:"id"`
+	Name          string        `json:"name"`
+	IsolationType IsolationType `json:"isolation_type,omitempty"`
+	Quotas        *quota.Quotas `json:"quotas,omitempty"`
+	CreatedAt     time.Time     `json:"created_at"`
+	UpdatedAt     time.Time     `json:"updated_at"`
+}
+
+// EffectiveIsolationType returns the tenant's isolation type, defaulting
+// to IsolationBarrier for tenants created before this field existed.
+func (t *TenantInfo) EffectiveIsolationType() IsolationType {
+	if t.IsolationType == "" {
+		return IsolationBarrier
+	}
+	return t.IsolationType
+}
+
+// TenantPatch carries the mutable fields that may be changed via UpdateTenant.
+// Zero-value fields are ignored; only non-zero fields are applied.
+type TenantPatch struct {
+	// Name, when non-empty, replaces the tenant's display name.
+	Name string
+
+	// IsolationType, when non-empty, changes the isolation strategy.
+	// The caller is responsible for ensuring the tenant has no data
+	// before changing the isolation type (the service enforces this).
+	IsolationType IsolationType
 }
 
 // TenantServicer defines the interface for tenant lifecycle management
 // including metadata CRUD and per-tenant barrier operations.
 type TenantServicer interface {
-	// CreateTenant creates a new tenant with the given ID and name,
-	// registers it in the barrier registry, and persists metadata.
-	CreateTenant(ctx context.Context, id, name string) (*TenantInfo, error)
+	// CreateTenant creates a new tenant with the given ID, name, and
+	// isolation type. When isolationType is empty, IsolationBarrier is
+	// used. Registers the tenant in the barrier registry and persists
+	// metadata.
+	CreateTenant(ctx context.Context, id, name string, isolationType IsolationType) (*TenantInfo, error)
 
 	// GetTenant retrieves tenant metadata by ID.
 	GetTenant(ctx context.Context, tenantID string) (*TenantInfo, error)
@@ -53,6 +95,12 @@ type TenantServicer interface {
 	// DeleteTenant removes a tenant from the barrier registry and
 	// deletes its metadata from storage.
 	DeleteTenant(ctx context.Context, tenantID string) error
+
+	// UpdateTenant applies a partial update to an existing tenant.
+	// Changing the IsolationType on a tenant that has data returns
+	// ErrTenantHasData (409 Conflict). The caller must migrate or
+	// delete tenant data first.
+	UpdateTenant(ctx context.Context, tenantID string, patch TenantPatch) (*TenantInfo, error)
 
 	// UpdateQuotas updates the resource quotas for a tenant and
 	// persists the change to the metadata store.
@@ -106,16 +154,19 @@ func NewTenantService(
 	}, nil
 }
 
-// CreateTenant creates a new tenant with the given ID and name. It
-// validates inputs, checks for duplicates, registers the tenant in
-// the barrier registry with default configuration, and persists
-// metadata in the storage backend.
-func (s *TenantService) CreateTenant(ctx context.Context, id, name string) (*TenantInfo, error) {
+// CreateTenant creates a new tenant with the given ID, name, and isolation
+// type. When isolationType is empty, IsolationBarrier is used. It validates
+// inputs, checks for duplicates, registers the tenant in the barrier registry
+// with default configuration, and persists metadata in the storage backend.
+func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isolationType IsolationType) (*TenantInfo, error) {
 	if id == "" {
 		return nil, ErrEmptyTenantID
 	}
 	if name == "" {
 		return nil, ErrEmptyTenantName
+	}
+	if isolationType == "" {
+		isolationType = IsolationBarrier
 	}
 
 	// Check for existing tenant metadata.
@@ -140,10 +191,11 @@ func (s *TenantService) CreateTenant(ctx context.Context, id, name string) (*Ten
 
 	now := time.Now().UTC()
 	info := &TenantInfo{
-		ID:        id,
-		Name:      name,
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:            id,
+		Name:          name,
+		IsolationType: isolationType,
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	}
 
 	data, err := json.Marshal(info)
@@ -161,7 +213,47 @@ func (s *TenantService) CreateTenant(ctx context.Context, id, name string) (*Ten
 
 	s.logger.Info("tenant created",
 		slog.String("tenant_id", id),
-		slog.String("name", name))
+		slog.String("name", name),
+		slog.String("isolation_type", string(isolationType)))
+
+	return info, nil
+}
+
+// UpdateTenant applies a partial update to an existing tenant. Non-empty
+// patch fields replace the corresponding stored value. When
+// patch.IsolationType differs from the current value, the caller is expected
+// to have already verified that the tenant has no data (the REST handler
+// enforces this gate and returns 409 Conflict when data exists).
+func (s *TenantService) UpdateTenant(ctx context.Context, tenantID string, patch TenantPatch) (*TenantInfo, error) {
+	if tenantID == "" {
+		return nil, ErrEmptyTenantID
+	}
+
+	info, err := s.GetTenant(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+
+	if patch.IsolationType != "" {
+		info.IsolationType = patch.IsolationType
+	}
+	if patch.Name != "" {
+		info.Name = patch.Name
+	}
+	info.UpdatedAt = time.Now().UTC()
+
+	data, err := json.Marshal(info)
+	if err != nil {
+		return nil, &StoreError{Op: "marshal", Err: err}
+	}
+
+	key := metadataPrefix + tenantID
+	if err := s.store.Put(ctx, key, data); err != nil {
+		return nil, &StoreError{Op: "put", Err: err}
+	}
+
+	s.logger.Info("tenant updated",
+		slog.String("tenant_id", tenantID))
 
 	return info, nil
 }

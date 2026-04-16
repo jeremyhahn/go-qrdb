@@ -74,8 +74,12 @@ type opResponseJSON struct {
 // transaction. The request body contains compares (preconditions), success
 // operations, and failure operations.
 func (s *Server) handleTransaction(w http.ResponseWriter, r *http.Request) {
-	if s.txSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "transaction"})
+	ctx := r.Context()
+	txSvc := s.txSvcFor(w, ctx)
+	if txSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "transaction"})
+		}
 		return
 	}
 
@@ -101,7 +105,7 @@ func (s *Server) handleTransaction(w http.ResponseWriter, r *http.Request) {
 	successOps := jsonToOps(req.SuccessOps)
 	failureOps := jsonToOps(req.FailureOps)
 
-	resp, err := s.txSvc.Execute(r.Context(), compares, successOps, failureOps)
+	resp, err := txSvc.Execute(ctx, compares, successOps, failureOps)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return

@@ -58,8 +58,12 @@ type compactRequest struct {
 //   - sort-order: none, ascend, descend
 //   - sort-target: key, version, create_revision, mod_revision, value
 func (s *Server) handleRange(w http.ResponseWriter, r *http.Request) {
-	if s.mvccSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "mvcc"})
+	ctx := r.Context()
+	mvccSvc := s.mvccSvcFor(w, ctx)
+	if mvccSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "mvcc"})
+		}
 		return
 	}
 
@@ -111,7 +115,7 @@ func (s *Server) handleRange(w http.ResponseWriter, r *http.Request) {
 		opts = append(opts, service.WithSort(sortOrder, sortTarget))
 	}
 
-	kvs, count, err := s.mvccSvc.Range(r.Context(), start, end, opts...)
+	kvs, count, err := mvccSvc.Range(ctx, start, end, opts...)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
@@ -129,8 +133,12 @@ func (s *Server) handleRange(w http.ResponseWriter, r *http.Request) {
 
 // handleCompact handles POST /kv/compact -- compacts MVCC revisions.
 func (s *Server) handleCompact(w http.ResponseWriter, r *http.Request) {
-	if s.mvccSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "mvcc"})
+	ctx := r.Context()
+	mvccSvc := s.mvccSvcFor(w, ctx)
+	if mvccSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "mvcc"})
+		}
 		return
 	}
 
@@ -140,7 +148,7 @@ func (s *Server) handleCompact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.mvccSvc.Compact(r.Context(), req.Revision); err != nil {
+	if err := mvccSvc.Compact(ctx, req.Revision); err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
@@ -155,12 +163,16 @@ func (s *Server) handleCompact(w http.ResponseWriter, r *http.Request) {
 // handleCurrentRevision handles GET /kv/revision -- returns the current
 // MVCC revision.
 func (s *Server) handleCurrentRevision(w http.ResponseWriter, r *http.Request) {
-	if s.mvccSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "mvcc"})
+	ctx := r.Context()
+	mvccSvc := s.mvccSvcFor(w, ctx)
+	if mvccSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "mvcc"})
+		}
 		return
 	}
 
-	rev, err := s.mvccSvc.CurrentRevision(r.Context())
+	rev, err := mvccSvc.CurrentRevision(ctx)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return

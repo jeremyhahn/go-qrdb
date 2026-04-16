@@ -47,8 +47,12 @@ var _ dek.TenantDEKManager = (*mockTenantDEKManager)(nil)
 // mockTenantServicer is a minimal TenantServicer for option tests.
 type mockTenantServicer struct{}
 
-func (m *mockTenantServicer) CreateTenant(_ context.Context, _, _ string) (*tenant.TenantInfo, error) {
-	return &tenant.TenantInfo{ID: "test", Name: "test", CreatedAt: time.Now(), UpdatedAt: time.Now()}, nil
+func (m *mockTenantServicer) CreateTenant(_ context.Context, _, _ string, _ tenant.IsolationType) (*tenant.TenantInfo, error) {
+	return &tenant.TenantInfo{ID: "test", Name: "test", IsolationType: tenant.IsolationBarrier, CreatedAt: time.Now(), UpdatedAt: time.Now()}, nil
+}
+
+func (m *mockTenantServicer) UpdateTenant(_ context.Context, _ string, _ tenant.TenantPatch) (*tenant.TenantInfo, error) {
+	return nil, nil
 }
 func (m *mockTenantServicer) GetTenant(_ context.Context, _ string) (*tenant.TenantInfo, error) {
 	return nil, nil

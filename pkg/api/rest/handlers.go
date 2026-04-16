@@ -307,8 +307,12 @@ func (s *Server) handleKVPut(w http.ResponseWriter, r *http.Request, key string)
 
 	// Check for lease-id query parameter for PutWithLease.
 	if leaseIDStr := r.URL.Query().Get("lease-id"); leaseIDStr != "" {
-		if s.mvccSvc == nil {
-			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "mvcc"})
+		mvccSvc := s.mvccSvcFor(w, ctx)
+		if mvccSvc == nil {
+			// mvccSvcFor already wrote the response (error or 501).
+			if s.serviceRegistry == nil {
+				writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "mvcc"})
+			}
 			return
 		}
 		leaseID, parseErr := strconv.ParseInt(leaseIDStr, 10, 64)
@@ -316,7 +320,7 @@ func (s *Server) handleKVPut(w http.ResponseWriter, r *http.Request, key string)
 			writeErrorJSON(w, http.StatusBadRequest, &InvalidParameterError{Param: "lease-id", Err: parseErr})
 			return
 		}
-		kv, putErr := s.mvccSvc.PutWithLease(ctx, key, body, leaseID)
+		kv, putErr := mvccSvc.PutWithLease(ctx, key, body, leaseID)
 		if putErr != nil {
 			if s.tryForwardWrite(w, r, key, body, putErr) {
 				return
@@ -328,7 +332,12 @@ func (s *Server) handleKVPut(w http.ResponseWriter, r *http.Request, key string)
 		return
 	}
 
-	if err := s.kvSvc.Put(ctx, key, body); err != nil {
+	kvSvc := s.kvSvcFor(w, ctx)
+	if kvSvc == nil {
+		return
+	}
+
+	if err := kvSvc.Put(ctx, key, body); err != nil {
 		if s.tryForwardWrite(w, r, key, body, err) {
 			return
 		}
@@ -349,8 +358,11 @@ func (s *Server) handleKVGet(w http.ResponseWriter, r *http.Request, key string)
 
 	// GET /kv/{key}?at-revision=N -- historical revision read.
 	if atRevStr := q.Get("at-revision"); atRevStr != "" {
-		if s.mvccSvc == nil {
-			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "mvcc"})
+		mvccSvc := s.mvccSvcFor(w, ctx)
+		if mvccSvc == nil {
+			if s.serviceRegistry == nil {
+				writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "mvcc"})
+			}
 			return
 		}
 		rev, parseErr := strconv.ParseInt(atRevStr, 10, 64)
@@ -358,7 +370,7 @@ func (s *Server) handleKVGet(w http.ResponseWriter, r *http.Request, key string)
 			writeErrorJSON(w, http.StatusBadRequest, &InvalidParameterError{Param: "at-revision", Err: parseErr})
 			return
 		}
-		kv, getErr := s.mvccSvc.GetAtRevision(ctx, key, rev)
+		kv, getErr := mvccSvc.GetAtRevision(ctx, key, rev)
 		if getErr != nil {
 			writeErrorJSON(w, mapHTTPError(getErr), getErr)
 			return
@@ -369,11 +381,14 @@ func (s *Server) handleKVGet(w http.ResponseWriter, r *http.Request, key string)
 
 	// GET /kv/{key}?revision=true -- full KeyValue with MVCC metadata.
 	if q.Get("revision") == "true" {
-		if s.mvccSvc == nil {
-			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "mvcc"})
+		mvccSvc := s.mvccSvcFor(w, ctx)
+		if mvccSvc == nil {
+			if s.serviceRegistry == nil {
+				writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "mvcc"})
+			}
 			return
 		}
-		kv, getErr := s.mvccSvc.GetRevision(ctx, key)
+		kv, getErr := mvccSvc.GetRevision(ctx, key)
 		if getErr != nil {
 			writeErrorJSON(w, mapHTTPError(getErr), getErr)
 			return
@@ -385,12 +400,17 @@ func (s *Server) handleKVGet(w http.ResponseWriter, r *http.Request, key string)
 	// Default: simple byte value retrieval. When ?stale=true, reads from
 	// the local state machine without Raft coordination for sub-millisecond
 	// latency (may return stale data).
+	kvSvc := s.kvSvcFor(w, ctx)
+	if kvSvc == nil {
+		return
+	}
+
 	var data []byte
 	var err error
 	if q.Get("stale") == "true" {
-		data, err = s.kvSvc.GetStale(ctx, key)
+		data, err = kvSvc.GetStale(ctx, key)
 	} else {
-		data, err = s.kvSvc.Get(ctx, key)
+		data, err = kvSvc.Get(ctx, key)
 	}
 	if err != nil {
 		var knf *service.KeyNotFoundError
@@ -412,7 +432,11 @@ func (s *Server) handleKVGet(w http.ResponseWriter, r *http.Request, key string)
 // request is transparently proxied to the leader.
 func (s *Server) handleKVDelete(w http.ResponseWriter, r *http.Request, key string) {
 	ctx := r.Context()
-	if err := s.kvSvc.Delete(ctx, key); err != nil {
+	kvSvc := s.kvSvcFor(w, ctx)
+	if kvSvc == nil {
+		return
+	}
+	if err := kvSvc.Delete(ctx, key); err != nil {
 		if s.tryForwardWrite(w, r, key, nil, err) {
 			return
 		}
@@ -431,12 +455,17 @@ func (s *Server) handleKVList(w http.ResponseWriter, r *http.Request) {
 	prefix := q.Get("prefix")
 
 	ctx := r.Context()
+	kvSvc := s.kvSvcFor(w, ctx)
+	if kvSvc == nil {
+		return
+	}
+
 	var keys []string
 	var err error
 	if q.Get("stale") == "true" {
-		keys, err = s.kvSvc.ListStale(ctx, prefix)
+		keys, err = kvSvc.ListStale(ctx, prefix)
 	} else {
-		keys, err = s.kvSvc.List(ctx, prefix)
+		keys, err = kvSvc.List(ctx, prefix)
 	}
 	if err != nil {
 		writeErrorJSON(w, http.StatusInternalServerError, &ReadError{Err: err})
@@ -452,7 +481,12 @@ func (s *Server) handleKVScan(w http.ResponseWriter, r *http.Request) {
 	prefix := r.URL.Query().Get("prefix")
 
 	ctx := r.Context()
-	pairs, err := s.kvSvc.Scan(ctx, prefix)
+	kvSvc := s.kvSvcFor(w, ctx)
+	if kvSvc == nil {
+		return
+	}
+
+	pairs, err := kvSvc.Scan(ctx, prefix)
 	if err != nil {
 		writeErrorJSON(w, http.StatusInternalServerError, &ReadError{Err: err})
 		return
@@ -690,6 +724,9 @@ func mapHTTPError(err error) int {
 	var lnfe *lock.LockNotFoundError
 	var ragdnf *service.RAGDocumentNotFoundError
 	var ragclosed *service.RAGServiceClosedError
+	var tnf *TenantNotFoundError
+	var dnf *DatabaseNotFoundError
+	var bse *BarrierSealedError
 
 	switch {
 	case errors.As(err, &knf):
@@ -783,6 +820,12 @@ func mapHTTPError(err error) int {
 	case errors.As(err, &ragdnf):
 		return http.StatusNotFound
 	case errors.As(err, &ragclosed):
+		return http.StatusServiceUnavailable
+	case errors.As(err, &tnf):
+		return http.StatusNotFound
+	case errors.As(err, &dnf):
+		return http.StatusNotFound
+	case errors.As(err, &bse):
 		return http.StatusServiceUnavailable
 	default:
 		// Allow build-tagged packages to extend the error mapping.

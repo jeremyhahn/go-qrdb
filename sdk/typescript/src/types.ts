@@ -1831,12 +1831,25 @@ export interface TenantQuotas {
     readonly maxTSMetrics: number;
 }
 
+/**
+ * Physical isolation strategy for a tenant.
+ *
+ * - `"barrier"` — namespace key prefix plus optional per-tenant encryption barrier.
+ * - `"prefix"`  — namespace key prefix only (no additional crypto layer).
+ */
+export type TenantIsolationType = 'barrier' | 'prefix';
+
 /** Information about a tenant. */
 export interface TenantInfo {
     /** Unique tenant identifier. */
     readonly id: string;
     /** Human-readable tenant name. */
     readonly name: string;
+    /**
+     * Physical isolation strategy. Defaults to `"barrier"` when not
+     * explicitly set (back-compat with pre-isolation-type records).
+     */
+    readonly isolationType?: TenantIsolationType;
     /** Resource quotas for this tenant, if configured. */
     readonly quotas?: TenantQuotas;
     /** ISO 8601 creation timestamp. */
@@ -1851,6 +1864,27 @@ export interface CreateTenantRequest {
     readonly id: string;
     /** Human-readable name for the new tenant. */
     readonly name: string;
+    /**
+     * Physical isolation strategy. Defaults to `"barrier"` when omitted.
+     */
+    readonly isolationType?: TenantIsolationType;
+}
+
+/** Request to apply a partial update to an existing tenant. */
+export interface UpdateTenantRequest {
+    /** New human-readable name (leave undefined to keep current value). */
+    readonly name?: string;
+    /**
+     * New isolation strategy. Returns 409 Conflict if the tenant already has
+     * data stored under the current strategy.
+     */
+    readonly isolationType?: TenantIsolationType;
+}
+
+/** Response from updating a tenant. */
+export interface UpdateTenantResponse {
+    /** The updated tenant. */
+    readonly tenant: TenantInfo;
 }
 
 /** Response from creating a tenant. */

@@ -164,6 +164,8 @@ import type {
     CreateTenantResponse,
     GetTenantResponse,
     ListTenantsResponse,
+    UpdateTenantRequest,
+    UpdateTenantResponse,
     TenantBarrierInitRequest,
     TenantBarrierUnsealRequest,
     UpdateTenantQuotasRequest,
@@ -563,9 +565,9 @@ export class RestClient implements Client {
                 return fetchJSON<TransactionResponse>(this.baseUrl, '/tx', {
                     method: 'POST',
                     ...jsonBody({
-                        compares: req.compares,
-                        successOps: req.successOps,
-                        failureOps: req.failureOps,
+                        compares: req.compares.map(serializeCompare),
+                        success_ops: req.successOps.map(serializeOp),
+                        failure_ops: req.failureOps.map(serializeOp),
                     }),
                 });
             },
@@ -620,7 +622,8 @@ export class RestClient implements Client {
                 this.ensureConnected();
                 return this.createSSEWatchHandle(
                     buildQuery({
-                        prefix,
+                        key: prefix,
+                        prefix: 'true',
                         'start-revision': opts.startRevision,
                         'prev-kv': opts.prevKV ? 'true' : undefined,
                         'progress-notify': opts.progressNotify ? 'true' : undefined,
@@ -742,6 +745,7 @@ export class RestClient implements Client {
                             const json = line.slice(6);
                             try {
                                 const event = JSON.parse(json) as WatchResponse;
+                                normalizeWatchEventTypes(event);
                                 callback(event);
                             } catch {
                                 // Skip malformed JSON frames.
@@ -894,7 +898,7 @@ export class RestClient implements Client {
                 this.ensureConnected();
                 return fetchJSON<IndexQueryResponse>(
                     this.baseUrl,
-                    `/index/query${buildQuery({ indexName, value })}`,
+                    `/index/query${buildQuery({ index_name: indexName, value })}`,
                 );
             },
             scan: async (
@@ -905,7 +909,7 @@ export class RestClient implements Client {
                 this.ensureConnected();
                 return fetchJSON<IndexScanResponse>(
                     this.baseUrl,
-                    `/index/scan${buildQuery({ indexName, start, end })}`,
+                    `/index/scan${buildQuery({ index_name: indexName, start, end })}`,
                 );
             },
             list: async (): Promise<IndexListResponse> => {
@@ -1471,11 +1475,14 @@ export class RestClient implements Client {
                 this.ensureConnected();
                 return fetchJSON<DatabaseInfo>(
                     this.baseUrl,
-                    `/databases/${encodeURIComponent(name)}/sql`,
+                    `/v1/databases/${encodeURIComponent(name)}/protocol`,
                     {
                         method: 'PATCH',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(sql),
+                        body: JSON.stringify({
+                            mysql: sql.mysql ?? false,
+                            postgresql: sql.postgresql ?? false,
+                        }),
                     },
                 );
             },
@@ -1785,7 +1792,7 @@ export class RestClient implements Client {
             },
             list: async (): Promise<ListTenantsResponse> => {
                 this.ensureConnected();
-                return fetchJSON<ListTenantsResponse>(this.baseUrl, '/v1/tenants');
+                return fetchJSON<ListTenantsResponse>(this.baseUrl, '/v1/tenants/list');
             },
             delete: async (tenantId: string): Promise<void> => {
                 this.ensureConnected();
@@ -1793,6 +1800,14 @@ export class RestClient implements Client {
                     this.baseUrl,
                     `/v1/tenants/${encodeURIComponent(tenantId)}`,
                     { method: 'DELETE' },
+                );
+            },
+            update: async (tenantId: string, req: UpdateTenantRequest): Promise<UpdateTenantResponse> => {
+                this.ensureConnected();
+                return fetchJSON<UpdateTenantResponse>(
+                    this.baseUrl,
+                    `/v1/tenants/${encodeURIComponent(tenantId)}`,
+                    { method: 'PUT', ...jsonBody(req) },
                 );
             },
             barrierInit: async (req: TenantBarrierInitRequest): Promise<void> => {
@@ -2043,4 +2058,117 @@ function tagsArrayToMap(
         result[tag.key] = tag.value;
     }
     return result;
+}
+
+// ---------------------------------------------------------------------------
+// Transaction wire-format serializers
+// ---------------------------------------------------------------------------
+
+/**
+ * Normalizes watch event types from the REST SSE stream. The server emits
+ * `type: "PUT"` / `type: "DELETE"` as strings, but the SDK's EventType is
+ * numeric (0 = put, 1 = delete). Mutates the response in place so downstream
+ * consumers see a consistent numeric type matching the declared EventType.
+ */
+function normalizeWatchEventTypes(resp: WatchResponse): void {
+    if (!resp.events) return;
+    for (const evt of resp.events) {
+        const t = evt.type as unknown;
+        if (typeof t === 'string') {
+            (evt as { type: number }).type = t === 'DELETE' ? 1 : 0;
+        }
+    }
+}
+
+/**
+ * Maps numeric CompareTarget enum values to the string names the REST API
+ * expects. Server: handlers_transaction.go compareTargetMap.
+ */
+const COMPARE_TARGET_STRINGS: Record<number, string> = {
+    0: 'version',
+    1: 'create_revision',
+    2: 'mod_revision',
+    3: 'value',
+};
+
+/**
+ * Maps numeric CompareResult enum values to the string names the REST API
+ * expects. Server: handlers_transaction.go compareResultMap.
+ */
+const COMPARE_RESULT_STRINGS: Record<number, string> = {
+    0: 'equal',
+    1: 'greater',
+    2: 'less',
+    3: 'not_equal',
+};
+
+/**
+ * Maps numeric OpType enum values to the string names the REST API expects.
+ * Server: handlers_transaction.go restOpTypeMap.
+ */
+const OP_TYPE_STRINGS: Record<number, string> = {
+    0: 'put',
+    1: 'get',
+    2: 'delete',
+    3: 'range',
+};
+
+/** Wire representation of a compare precondition sent to POST /tx. */
+interface WireCompare {
+    key: string;
+    target: string;
+    result: string;
+    value?: string;
+    version?: number;
+    create_revision?: number;
+    mod_revision?: number;
+}
+
+/** Wire representation of a transaction/batch operation sent to POST /tx or POST /batch. */
+interface WireOp {
+    type: string;
+    key: string;
+    value?: string;
+    range_end?: string;
+    lease_id?: number;
+}
+
+/** Converts a {@link Compare} to its REST wire format. */
+function serializeCompare(c: import('./types.js').Compare): WireCompare {
+    const wire: WireCompare = {
+        key: c.key,
+        target: COMPARE_TARGET_STRINGS[c.target] ?? 'version',
+        result: COMPARE_RESULT_STRINGS[c.result] ?? 'equal',
+    };
+    if (c.value !== undefined) {
+        wire.value = c.value;
+    }
+    if (c.version !== undefined) {
+        wire.version = c.version;
+    }
+    if (c.createRevision !== undefined) {
+        wire.create_revision = c.createRevision;
+    }
+    if (c.modRevision !== undefined) {
+        wire.mod_revision = c.modRevision;
+    }
+    return wire;
+}
+
+/** Converts an {@link Op} to its REST wire format. */
+function serializeOp(op: import('./types.js').Op): WireOp {
+    const wire: WireOp = {
+        type: OP_TYPE_STRINGS[op.type] ?? 'put',
+        key: op.key,
+    };
+    if (op.value !== undefined) {
+        wire.value = op.value;
+    }
+    if (op.rangeEnd !== undefined) {
+        wire.range_end = op.rangeEnd;
+    }
+    if (op.leaseId !== undefined) {
+        wire.lease_id = op.leaseId;
+    }
+    return wire;
 }

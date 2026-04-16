@@ -60,8 +60,12 @@ type indexListResponse struct {
 // handleIndexCreate handles POST /index/create -- creates a new secondary
 // index with the specified configuration.
 func (s *Server) handleIndexCreate(w http.ResponseWriter, r *http.Request) {
-	if s.indexSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "index"})
+	ctx := r.Context()
+	indexSvc := s.indexSvcFor(w, ctx)
+	if indexSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "index"})
+		}
 		return
 	}
 
@@ -76,7 +80,7 @@ func (s *Server) handleIndexCreate(w http.ResponseWriter, r *http.Request) {
 		Sparse: req.Sparse,
 	}
 
-	if err := s.indexSvc.CreateIndex(r.Context(), req.Name, req.FieldName, config); err != nil {
+	if err := indexSvc.CreateIndex(ctx, req.Name, req.FieldName, config); err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
@@ -87,8 +91,12 @@ func (s *Server) handleIndexCreate(w http.ResponseWriter, r *http.Request) {
 // handleIndexDrop handles POST /index/drop -- removes a secondary index
 // by name.
 func (s *Server) handleIndexDrop(w http.ResponseWriter, r *http.Request) {
-	if s.indexSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "index"})
+	ctx := r.Context()
+	indexSvc := s.indexSvcFor(w, ctx)
+	if indexSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "index"})
+		}
 		return
 	}
 
@@ -98,7 +106,7 @@ func (s *Server) handleIndexDrop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.indexSvc.DropIndex(r.Context(), req.Name); err != nil {
+	if err := indexSvc.DropIndex(ctx, req.Name); err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
@@ -110,8 +118,12 @@ func (s *Server) handleIndexDrop(w http.ResponseWriter, r *http.Request) {
 // an exact value in the specified index.
 // Query parameters: index_name (required), value (required).
 func (s *Server) handleIndexQuery(w http.ResponseWriter, r *http.Request) {
-	if s.indexSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "index"})
+	ctx := r.Context()
+	indexSvc := s.indexSvcFor(w, ctx)
+	if indexSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "index"})
+		}
 		return
 	}
 
@@ -129,7 +141,7 @@ func (s *Server) handleIndexQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	keys, err := s.indexSvc.Query(r.Context(), indexName, []byte(value))
+	keys, err := indexSvc.Query(ctx, indexName, []byte(value))
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
@@ -147,8 +159,12 @@ func (s *Server) handleIndexQuery(w http.ResponseWriter, r *http.Request) {
 // index within the value range [start, end).
 // Query parameters: index_name (required), start (required), end (required).
 func (s *Server) handleIndexScan(w http.ResponseWriter, r *http.Request) {
-	if s.indexSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "index"})
+	ctx := r.Context()
+	indexSvc := s.indexSvcFor(w, ctx)
+	if indexSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "index"})
+		}
 		return
 	}
 
@@ -172,7 +188,7 @@ func (s *Server) handleIndexScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	entries, err := s.indexSvc.Scan(r.Context(), indexName, []byte(start), []byte(end))
+	entries, err := indexSvc.Scan(ctx, indexName, []byte(start), []byte(end))
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
@@ -193,12 +209,16 @@ func (s *Server) handleIndexScan(w http.ResponseWriter, r *http.Request) {
 // handleIndexList handles GET /index/list -- returns the names of all
 // registered secondary indexes.
 func (s *Server) handleIndexList(w http.ResponseWriter, r *http.Request) {
-	if s.indexSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "index"})
+	ctx := r.Context()
+	indexSvc := s.indexSvcFor(w, ctx)
+	if indexSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "index"})
+		}
 		return
 	}
 
-	names, err := s.indexSvc.ListIndexes(r.Context())
+	names, err := indexSvc.ListIndexes(ctx)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return

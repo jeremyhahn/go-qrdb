@@ -108,8 +108,12 @@ type tsListMetricsResponse struct {
 // handleTSWrite handles POST /ts/write -- stores a single time-series data
 // point through Raft consensus.
 func (s *Server) handleTSWrite(w http.ResponseWriter, r *http.Request) {
-	if s.tsSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "timeseries"})
+	ctx := r.Context()
+	tsSvc := s.tsSvcFor(w, ctx)
+	if tsSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "timeseries"})
+		}
 		return
 	}
 
@@ -121,7 +125,7 @@ func (s *Server) handleTSWrite(w http.ResponseWriter, r *http.Request) {
 
 	timestamp := time.Unix(0, req.Timestamp)
 
-	if err := s.tsSvc.Write(r.Context(), req.Metric, req.Value, timestamp, req.Tags); err != nil {
+	if err := tsSvc.Write(ctx, req.Metric, req.Value, timestamp, req.Tags); err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
@@ -132,8 +136,12 @@ func (s *Server) handleTSWrite(w http.ResponseWriter, r *http.Request) {
 // handleTSWriteBatch handles POST /ts/write-batch -- stores multiple
 // time-series data points atomically through Raft consensus.
 func (s *Server) handleTSWriteBatch(w http.ResponseWriter, r *http.Request) {
-	if s.tsSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "timeseries"})
+	ctx := r.Context()
+	tsSvc := s.tsSvcFor(w, ctx)
+	if tsSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "timeseries"})
+		}
 		return
 	}
 
@@ -153,7 +161,7 @@ func (s *Server) handleTSWriteBatch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := s.tsSvc.WriteBatch(r.Context(), points); err != nil {
+	if err := tsSvc.WriteBatch(ctx, points); err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
@@ -171,8 +179,12 @@ func (s *Server) handleTSWriteBatch(w http.ResponseWriter, r *http.Request) {
 //   - limit: maximum number of data points (optional)
 //   - descending: reverse chronological order when "true" (optional)
 func (s *Server) handleTSQuery(w http.ResponseWriter, r *http.Request) {
-	if s.tsSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "timeseries"})
+	ctx := r.Context()
+	tsSvc := s.tsSvcFor(w, ctx)
+	if tsSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "timeseries"})
+		}
 		return
 	}
 
@@ -221,7 +233,7 @@ func (s *Server) handleTSQuery(w http.ResponseWriter, r *http.Request) {
 		opts = append(opts, timeseries.WithDescending())
 	}
 
-	points, queryErr := s.tsSvc.Query(r.Context(), metric, start, end, opts...)
+	points, queryErr := tsSvc.Query(ctx, metric, start, end, opts...)
 	if queryErr != nil {
 		writeErrorJSON(w, mapHTTPError(queryErr), queryErr)
 		return
@@ -249,8 +261,12 @@ func (s *Server) handleTSQuery(w http.ResponseWriter, r *http.Request) {
 //   - function: aggregation function name (required: avg, sum, min, max, count)
 //   - interval_ns: aggregation interval in nanoseconds (required)
 func (s *Server) handleTSAggregate(w http.ResponseWriter, r *http.Request) {
-	if s.tsSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "timeseries"})
+	ctx := r.Context()
+	tsSvc := s.tsSvcFor(w, ctx)
+	if tsSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "timeseries"})
+		}
 		return
 	}
 
@@ -302,7 +318,7 @@ func (s *Server) handleTSAggregate(w http.ResponseWriter, r *http.Request) {
 	end := time.Unix(0, endNs)
 	interval := time.Duration(intervalNs)
 
-	results, aggErr := s.tsSvc.Aggregate(r.Context(), metric, start, end, fn, interval)
+	results, aggErr := tsSvc.Aggregate(ctx, metric, start, end, fn, interval)
 	if aggErr != nil {
 		writeErrorJSON(w, mapHTTPError(aggErr), aggErr)
 		return
@@ -333,8 +349,12 @@ func (s *Server) handleTSAggregate(w http.ResponseWriter, r *http.Request) {
 //   - GET    /ts/series/{metric}/retention  -- get retention policy
 //   - PUT    /ts/series/{metric}/retention  -- set retention policy
 func (s *Server) handleTSSeries(w http.ResponseWriter, r *http.Request) {
-	if s.tsSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "timeseries"})
+	ctx := r.Context()
+	tsSvc := s.tsSvcFor(w, ctx)
+	if tsSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "timeseries"})
+		}
 		return
 	}
 
@@ -377,6 +397,15 @@ func (s *Server) handleTSSeries(w http.ResponseWriter, r *http.Request) {
 //   - end_ns: end time in nanoseconds since epoch (optional)
 //   - tags: comma-separated key=value pairs for filtering (optional)
 func (s *Server) handleTSDeleteSeries(w http.ResponseWriter, r *http.Request, metric string) {
+	ctx := r.Context()
+	tsSvc := s.tsSvcFor(w, ctx)
+	if tsSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "timeseries"})
+		}
+		return
+	}
+
 	q := r.URL.Query()
 
 	req := &timeseries.DeleteRequest{
@@ -405,7 +434,7 @@ func (s *Server) handleTSDeleteSeries(w http.ResponseWriter, r *http.Request, me
 		req.EndTime = time.Unix(0, endNs)
 	}
 
-	if err := s.tsSvc.DeleteSeries(r.Context(), req); err != nil {
+	if err := tsSvc.DeleteSeries(ctx, req); err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
@@ -416,7 +445,16 @@ func (s *Server) handleTSDeleteSeries(w http.ResponseWriter, r *http.Request, me
 // handleTSGetRetention handles GET /ts/series/{metric}/retention --
 // retrieves the retention policy for the given metric.
 func (s *Server) handleTSGetRetention(w http.ResponseWriter, r *http.Request, metric string) {
-	policy, err := s.tsSvc.GetRetentionPolicy(metric)
+	ctx := r.Context()
+	tsSvc := s.tsSvcFor(w, ctx)
+	if tsSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "timeseries"})
+		}
+		return
+	}
+
+	policy, err := tsSvc.GetRetentionPolicy(metric)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
@@ -440,6 +478,15 @@ func (s *Server) handleTSGetRetention(w http.ResponseWriter, r *http.Request, me
 // handleTSSetRetention handles PUT /ts/series/{metric}/retention --
 // sets the retention policy for the given metric.
 func (s *Server) handleTSSetRetention(w http.ResponseWriter, r *http.Request, metric string) {
+	ctx := r.Context()
+	tsSvc := s.tsSvcFor(w, ctx)
+	if tsSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "timeseries"})
+		}
+		return
+	}
+
 	var req tsSetRetentionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
@@ -473,7 +520,7 @@ func (s *Server) handleTSSetRetention(w http.ResponseWriter, r *http.Request, me
 		Aggregation: agg,
 	}
 
-	if err := s.tsSvc.SetRetentionPolicy(metric, policy); err != nil {
+	if err := tsSvc.SetRetentionPolicy(metric, policy); err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
@@ -487,8 +534,12 @@ func (s *Server) handleTSSetRetention(w http.ResponseWriter, r *http.Request, me
 //   - prefix: metric name prefix filter (optional)
 //   - limit: maximum number of metrics to return (optional, default 100)
 func (s *Server) handleTSListMetrics(w http.ResponseWriter, r *http.Request) {
-	if s.tsSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "timeseries"})
+	ctx := r.Context()
+	tsSvc := s.tsSvcFor(w, ctx)
+	if tsSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "timeseries"})
+		}
 		return
 	}
 
@@ -507,7 +558,7 @@ func (s *Server) handleTSListMetrics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	metrics, err := s.tsSvc.ListMetrics(prefix, limit)
+	metrics, err := tsSvc.ListMetrics(prefix, limit)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
@@ -565,8 +616,12 @@ type tsGroupedResultJSON struct {
 // validated data point through Raft consensus using the WritePoint service
 // method.
 func (s *Server) handleTSWritePoint(w http.ResponseWriter, r *http.Request) {
-	if s.tsSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "timeseries"})
+	ctx := r.Context()
+	tsSvc := s.tsSvcFor(w, ctx)
+	if tsSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "timeseries"})
+		}
 		return
 	}
 
@@ -583,7 +638,7 @@ func (s *Server) handleTSWritePoint(w http.ResponseWriter, r *http.Request) {
 		Tags:      req.Tags,
 	}
 
-	if err := s.tsSvc.WritePoint(r.Context(), point); err != nil {
+	if err := tsSvc.WritePoint(ctx, point); err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
@@ -595,8 +650,12 @@ func (s *Server) handleTSWritePoint(w http.ResponseWriter, r *http.Request) {
 // with filtering, aggregation, downsampling, and grouping through the
 // service layer.
 func (s *Server) handleTSRichQuery(w http.ResponseWriter, r *http.Request) {
-	if s.tsSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "timeseries"})
+	ctx := r.Context()
+	tsSvc := s.tsSvcFor(w, ctx)
+	if tsSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "timeseries"})
+		}
 		return
 	}
 
@@ -634,7 +693,7 @@ func (s *Server) handleTSRichQuery(w http.ResponseWriter, r *http.Request) {
 		qr.Aggregation = agg
 	}
 
-	result, err := s.tsSvc.QueryRich(r.Context(), qr)
+	result, err := tsSvc.QueryRich(ctx, qr)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return

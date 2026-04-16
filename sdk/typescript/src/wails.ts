@@ -159,6 +159,8 @@ import type {
     CreateTenantResponse,
     GetTenantResponse,
     ListTenantsResponse,
+    UpdateTenantRequest,
+    UpdateTenantResponse,
     TenantBarrierInitRequest,
     TenantBarrierUnsealRequest,
     UpdateTenantQuotasRequest,
@@ -1066,6 +1068,9 @@ export class WailsClient implements Client {
             },
             delete: async (tenantId: string): Promise<void> => {
                 await b.Delete(tenantId);
+            },
+            update: async (tenantId: string, req: UpdateTenantRequest): Promise<UpdateTenantResponse> => {
+                return b.Update(tenantId, toSnake(req)) as Promise<UpdateTenantResponse>;
             },
             barrierInit: async (req: TenantBarrierInitRequest): Promise<void> => {
                 await b.BarrierInit(toSnake(req));

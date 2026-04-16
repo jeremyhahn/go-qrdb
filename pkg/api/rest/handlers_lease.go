@@ -58,8 +58,12 @@ type leasesResponse struct {
 // handleLeaseGrant handles POST /lease/grant -- creates a new lease with
 // the specified TTL in seconds.
 func (s *Server) handleLeaseGrant(w http.ResponseWriter, r *http.Request) {
-	if s.leaseSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "lease"})
+	ctx := r.Context()
+	leaseSvc := s.leaseSvcFor(w, ctx)
+	if leaseSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "lease"})
+		}
 		return
 	}
 
@@ -69,7 +73,7 @@ func (s *Server) handleLeaseGrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	l, err := s.leaseSvc.Grant(r.Context(), req.TTL)
+	l, err := leaseSvc.Grant(ctx, req.TTL)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
@@ -81,8 +85,12 @@ func (s *Server) handleLeaseGrant(w http.ResponseWriter, r *http.Request) {
 // handleLeaseRevoke handles POST /lease/revoke -- immediately expires a
 // lease and deletes all attached keys.
 func (s *Server) handleLeaseRevoke(w http.ResponseWriter, r *http.Request) {
-	if s.leaseSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "lease"})
+	ctx := r.Context()
+	leaseSvc := s.leaseSvcFor(w, ctx)
+	if leaseSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "lease"})
+		}
 		return
 	}
 
@@ -92,7 +100,7 @@ func (s *Server) handleLeaseRevoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.leaseSvc.Revoke(r.Context(), req.LeaseID); err != nil {
+	if err := leaseSvc.Revoke(ctx, req.LeaseID); err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
@@ -103,8 +111,12 @@ func (s *Server) handleLeaseRevoke(w http.ResponseWriter, r *http.Request) {
 // handleLeaseKeepAlive handles POST /lease/keepalive -- resets the TTL on
 // an existing lease, preventing it from expiring.
 func (s *Server) handleLeaseKeepAlive(w http.ResponseWriter, r *http.Request) {
-	if s.leaseSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "lease"})
+	ctx := r.Context()
+	leaseSvc := s.leaseSvcFor(w, ctx)
+	if leaseSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "lease"})
+		}
 		return
 	}
 
@@ -114,7 +126,7 @@ func (s *Server) handleLeaseKeepAlive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	l, err := s.leaseSvc.KeepAlive(r.Context(), req.LeaseID)
+	l, err := leaseSvc.KeepAlive(ctx, req.LeaseID)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
@@ -127,8 +139,12 @@ func (s *Server) handleLeaseKeepAlive(w http.ResponseWriter, r *http.Request) {
 // of a lease including its remaining TTL and attached keys.
 // Query parameter: lease_id (required).
 func (s *Server) handleLeaseTimeToLive(w http.ResponseWriter, r *http.Request) {
-	if s.leaseSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "lease"})
+	ctx := r.Context()
+	leaseSvc := s.leaseSvcFor(w, ctx)
+	if leaseSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "lease"})
+		}
 		return
 	}
 
@@ -144,7 +160,7 @@ func (s *Server) handleLeaseTimeToLive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	l, ttlErr := s.leaseSvc.TimeToLive(r.Context(), leaseID)
+	l, ttlErr := leaseSvc.TimeToLive(ctx, leaseID)
 	if ttlErr != nil {
 		writeErrorJSON(w, mapHTTPError(ttlErr), ttlErr)
 		return
@@ -155,12 +171,16 @@ func (s *Server) handleLeaseTimeToLive(w http.ResponseWriter, r *http.Request) {
 
 // handleLeaseList handles GET /lease/list -- returns all active leases.
 func (s *Server) handleLeaseList(w http.ResponseWriter, r *http.Request) {
-	if s.leaseSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "lease"})
+	ctx := r.Context()
+	leaseSvc := s.leaseSvcFor(w, ctx)
+	if leaseSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "lease"})
+		}
 		return
 	}
 
-	leases, err := s.leaseSvc.Leases(r.Context())
+	leases, err := leaseSvc.Leases(ctx)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return

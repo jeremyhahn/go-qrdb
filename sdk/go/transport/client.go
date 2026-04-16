@@ -685,6 +685,9 @@ type TenantClient interface {
 	// DeleteTenant deletes a tenant.
 	DeleteTenant(ctx context.Context, tenantID string) error
 
+	// UpdateTenant applies a partial update to a tenant.
+	UpdateTenant(ctx context.Context, req *UpdateTenantRequest) (*UpdateTenantResponse, error)
+
 	// TenantBarrierInit initializes a per-tenant barrier.
 	TenantBarrierInit(ctx context.Context, req *TenantBarrierInitRequest) error
 

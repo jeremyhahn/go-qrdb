@@ -387,8 +387,12 @@ type vectorCompactionProgressResponse struct {
 // new vector namespace with the specified dimensionality, distance metric,
 // and index configuration.
 func (s *Server) handleVectorCreateNamespace(w http.ResponseWriter, r *http.Request) {
-	if s.vectorSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "vector"})
+	ctx := r.Context()
+	vectorSvc := s.vectorSvcFor(w, ctx)
+	if vectorSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "vector"})
+		}
 		return
 	}
 
@@ -398,7 +402,7 @@ func (s *Server) handleVectorCreateNamespace(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	resp, err := s.vectorSvc.CreateNamespace(r.Context(), &service.CreateNamespaceRequest{
+	resp, err := vectorSvc.CreateNamespace(ctx, &service.CreateNamespaceRequest{
 		Namespace:      req.Namespace,
 		Dimension:      req.Dimension,
 		DistanceMetric: req.DistanceMetric,
@@ -422,8 +426,12 @@ func (s *Server) handleVectorCreateNamespace(w http.ResponseWriter, r *http.Requ
 // handleVectorDeleteNamespace handles DELETE /vector/namespace -- removes
 // a namespace and all its vectors.
 func (s *Server) handleVectorDeleteNamespace(w http.ResponseWriter, r *http.Request) {
-	if s.vectorSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "vector"})
+	ctx := r.Context()
+	vectorSvc := s.vectorSvcFor(w, ctx)
+	if vectorSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "vector"})
+		}
 		return
 	}
 
@@ -433,7 +441,7 @@ func (s *Server) handleVectorDeleteNamespace(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	resp, err := s.vectorSvc.DeleteNamespace(r.Context(), &service.DeleteNamespaceRequest{
+	resp, err := vectorSvc.DeleteNamespace(ctx, &service.DeleteNamespaceRequest{
 		Namespace: req.Namespace,
 		ShardID:   req.ShardID,
 	})
@@ -454,8 +462,12 @@ func (s *Server) handleVectorDeleteNamespace(w http.ResponseWriter, r *http.Requ
 // Query parameters:
 //   - shard_id: target shard (optional)
 func (s *Server) handleVectorListNamespaces(w http.ResponseWriter, r *http.Request) {
-	if s.vectorSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "vector"})
+	ctx := r.Context()
+	vectorSvc := s.vectorSvcFor(w, ctx)
+	if vectorSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "vector"})
+		}
 		return
 	}
 
@@ -471,7 +483,7 @@ func (s *Server) handleVectorListNamespaces(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
-	resp, err := s.vectorSvc.ListNamespaces(r.Context(), &service.ListNamespacesRequest{
+	resp, err := vectorSvc.ListNamespaces(ctx, &service.ListNamespacesRequest{
 		ShardID: shardID,
 	})
 	if err != nil {
@@ -493,8 +505,12 @@ func (s *Server) handleVectorListNamespaces(w http.ResponseWriter, r *http.Reque
 //   - namespace: namespace name (required)
 //   - shard_id: target shard (optional)
 func (s *Server) handleVectorGetNamespaceInfo(w http.ResponseWriter, r *http.Request) {
-	if s.vectorSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "vector"})
+	ctx := r.Context()
+	vectorSvc := s.vectorSvcFor(w, ctx)
+	if vectorSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "vector"})
+		}
 		return
 	}
 
@@ -516,7 +532,7 @@ func (s *Server) handleVectorGetNamespaceInfo(w http.ResponseWriter, r *http.Req
 		}
 	}
 
-	info, err := s.vectorSvc.GetNamespaceInfo(r.Context(), &service.GetNamespaceInfoRequest{
+	info, err := vectorSvc.GetNamespaceInfo(ctx, &service.GetNamespaceInfoRequest{
 		Namespace: namespace,
 		ShardID:   shardID,
 	})
@@ -545,8 +561,12 @@ func (s *Server) handleVectorGetNamespaceInfo(w http.ResponseWriter, r *http.Req
 // handleVectorUpsert handles POST /vector/upsert -- inserts or updates a
 // vector in the specified namespace.
 func (s *Server) handleVectorUpsert(w http.ResponseWriter, r *http.Request) {
-	if s.vectorSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "vector"})
+	ctx := r.Context()
+	vectorSvc := s.vectorSvcFor(w, ctx)
+	if vectorSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "vector"})
+		}
 		return
 	}
 
@@ -556,7 +576,7 @@ func (s *Server) handleVectorUpsert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := s.vectorSvc.UpsertVector(r.Context(), &service.UpsertVectorRequest{
+	resp, err := vectorSvc.UpsertVector(ctx, &service.UpsertVectorRequest{
 		Namespace: req.Namespace,
 		ID:        req.ID,
 		Vector:    req.Vector,
@@ -584,8 +604,12 @@ func (s *Server) handleVectorUpsert(w http.ResponseWriter, r *http.Request) {
 //   - consistency: read consistency level (optional, default 0 = strong)
 //   - shard_id: target shard (optional)
 func (s *Server) handleVectorGet(w http.ResponseWriter, r *http.Request) {
-	if s.vectorSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "vector"})
+	ctx := r.Context()
+	vectorSvc := s.vectorSvcFor(w, ctx)
+	if vectorSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "vector"})
+		}
 		return
 	}
 
@@ -628,7 +652,7 @@ func (s *Server) handleVectorGet(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	resp, err := s.vectorSvc.GetVector(r.Context(), &service.GetVectorRequest{
+	resp, err := vectorSvc.GetVector(ctx, &service.GetVectorRequest{
 		Namespace:       namespace,
 		ID:              id,
 		IncludeVector:   q.Get("include_vector") != "false",
@@ -655,8 +679,12 @@ func (s *Server) handleVectorGet(w http.ResponseWriter, r *http.Request) {
 // handleVectorDelete handles POST /vector/delete -- removes a single vector
 // by ID from the specified namespace.
 func (s *Server) handleVectorDelete(w http.ResponseWriter, r *http.Request) {
-	if s.vectorSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "vector"})
+	ctx := r.Context()
+	vectorSvc := s.vectorSvcFor(w, ctx)
+	if vectorSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "vector"})
+		}
 		return
 	}
 
@@ -666,7 +694,7 @@ func (s *Server) handleVectorDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := s.vectorSvc.DeleteVector(r.Context(), &service.DeleteVectorRequest{
+	resp, err := vectorSvc.DeleteVector(ctx, &service.DeleteVectorRequest{
 		Namespace: req.Namespace,
 		ID:        req.ID,
 		ShardID:   req.ShardID,
@@ -685,8 +713,12 @@ func (s *Server) handleVectorDelete(w http.ResponseWriter, r *http.Request) {
 // handleVectorBatchUpsert handles POST /vector/batch/upsert -- inserts or
 // updates multiple vectors in a single operation.
 func (s *Server) handleVectorBatchUpsert(w http.ResponseWriter, r *http.Request) {
-	if s.vectorSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "vector"})
+	ctx := r.Context()
+	vectorSvc := s.vectorSvcFor(w, ctx)
+	if vectorSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "vector"})
+		}
 		return
 	}
 
@@ -708,7 +740,7 @@ func (s *Server) handleVectorBatchUpsert(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	resp, err := s.vectorSvc.BatchUpsert(r.Context(), &service.BatchUpsertRequest{
+	resp, err := vectorSvc.BatchUpsert(ctx, &service.BatchUpsertRequest{
 		Namespace: req.Namespace,
 		Vectors:   vectors,
 		ShardID:   req.ShardID,
@@ -730,8 +762,12 @@ func (s *Server) handleVectorBatchUpsert(w http.ResponseWriter, r *http.Request)
 // handleVectorBatchDeleteVectors handles POST /vector/batch/delete --
 // removes multiple vectors by ID in a single operation.
 func (s *Server) handleVectorBatchDeleteVectors(w http.ResponseWriter, r *http.Request) {
-	if s.vectorSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "vector"})
+	ctx := r.Context()
+	vectorSvc := s.vectorSvcFor(w, ctx)
+	if vectorSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "vector"})
+		}
 		return
 	}
 
@@ -741,7 +777,7 @@ func (s *Server) handleVectorBatchDeleteVectors(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	resp, err := s.vectorSvc.BatchDeleteVectors(r.Context(), &service.BatchDeleteVectorsRequest{
+	resp, err := vectorSvc.BatchDeleteVectors(ctx, &service.BatchDeleteVectorsRequest{
 		Namespace: req.Namespace,
 		IDs:       req.IDs,
 		ShardID:   req.ShardID,
@@ -767,8 +803,12 @@ func (s *Server) handleVectorBatchDeleteVectors(w http.ResponseWriter, r *http.R
 //   - cursor: opaque pagination cursor (optional)
 //   - shard_id: target shard (optional)
 func (s *Server) handleVectorListVectors(w http.ResponseWriter, r *http.Request) {
-	if s.vectorSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "vector"})
+	ctx := r.Context()
+	vectorSvc := s.vectorSvcFor(w, ctx)
+	if vectorSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "vector"})
+		}
 		return
 	}
 
@@ -802,7 +842,7 @@ func (s *Server) handleVectorListVectors(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	resp, err := s.vectorSvc.ListVectors(r.Context(), &service.ListVectorsRequest{
+	resp, err := vectorSvc.ListVectors(ctx, &service.ListVectorsRequest{
 		Namespace: namespace,
 		Limit:     limit,
 		Cursor:    cursor,
@@ -824,8 +864,12 @@ func (s *Server) handleVectorListVectors(w http.ResponseWriter, r *http.Request)
 // handleVectorUpdateMetadata handles POST /vector/metadata -- updates the
 // metadata for an existing vector without modifying the vector data itself.
 func (s *Server) handleVectorUpdateMetadata(w http.ResponseWriter, r *http.Request) {
-	if s.vectorSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "vector"})
+	ctx := r.Context()
+	vectorSvc := s.vectorSvcFor(w, ctx)
+	if vectorSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "vector"})
+		}
 		return
 	}
 
@@ -835,7 +879,7 @@ func (s *Server) handleVectorUpdateMetadata(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	resp, err := s.vectorSvc.UpdateMetadata(r.Context(), &service.UpdateVectorMetadataRequest{
+	resp, err := vectorSvc.UpdateMetadata(ctx, &service.UpdateVectorMetadataRequest{
 		Namespace: req.Namespace,
 		ID:        req.ID,
 		Metadata:  req.Metadata,
@@ -861,8 +905,12 @@ func (s *Server) handleVectorUpdateMetadata(w http.ResponseWriter, r *http.Reque
 // handleVectorSearchSimilar handles POST /vector/search/similar -- performs
 // a k-nearest-neighbor search using a query vector.
 func (s *Server) handleVectorSearchSimilar(w http.ResponseWriter, r *http.Request) {
-	if s.vectorSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "vector"})
+	ctx := r.Context()
+	vectorSvc := s.vectorSvcFor(w, ctx)
+	if vectorSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "vector"})
+		}
 		return
 	}
 
@@ -872,7 +920,7 @@ func (s *Server) handleVectorSearchSimilar(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	resp, err := s.vectorSvc.SearchSimilar(r.Context(), &service.SearchSimilarRequest{
+	resp, err := vectorSvc.SearchSimilar(ctx, &service.SearchSimilarRequest{
 		Namespace:   req.Namespace,
 		QueryVector: req.QueryVector,
 		K:           req.K,
@@ -896,8 +944,12 @@ func (s *Server) handleVectorSearchSimilar(w http.ResponseWriter, r *http.Reques
 // handleVectorSearchByMetadata handles POST /vector/search/metadata --
 // returns vectors matching the given metadata filters.
 func (s *Server) handleVectorSearchByMetadata(w http.ResponseWriter, r *http.Request) {
-	if s.vectorSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "vector"})
+	ctx := r.Context()
+	vectorSvc := s.vectorSvcFor(w, ctx)
+	if vectorSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "vector"})
+		}
 		return
 	}
 
@@ -907,7 +959,7 @@ func (s *Server) handleVectorSearchByMetadata(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	resp, err := s.vectorSvc.SearchByMetadata(r.Context(), &service.SearchByMetadataRequest{
+	resp, err := vectorSvc.SearchByMetadata(ctx, &service.SearchByMetadataRequest{
 		Namespace:   req.Namespace,
 		Filters:     req.Filters,
 		Limit:       req.Limit,
@@ -931,8 +983,12 @@ func (s *Server) handleVectorSearchByMetadata(w http.ResponseWriter, r *http.Req
 // vector similarity and metadata filtering with configurable weights for
 // each scoring component.
 func (s *Server) handleVectorHybridSearch(w http.ResponseWriter, r *http.Request) {
-	if s.vectorSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "vector"})
+	ctx := r.Context()
+	vectorSvc := s.vectorSvcFor(w, ctx)
+	if vectorSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "vector"})
+		}
 		return
 	}
 
@@ -942,7 +998,7 @@ func (s *Server) handleVectorHybridSearch(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	resp, err := s.vectorSvc.HybridSearch(r.Context(), &service.HybridSearchRequest{
+	resp, err := vectorSvc.HybridSearch(ctx, &service.HybridSearchRequest{
 		Namespace:      req.Namespace,
 		QueryVector:    req.QueryVector,
 		K:              req.K,
@@ -970,8 +1026,12 @@ func (s *Server) handleVectorHybridSearch(w http.ResponseWriter, r *http.Request
 // k-nearest-neighbor search using an existing vector's ID as the query,
 // returning its most similar neighbors.
 func (s *Server) handleVectorSearchByID(w http.ResponseWriter, r *http.Request) {
-	if s.vectorSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "vector"})
+	ctx := r.Context()
+	vectorSvc := s.vectorSvcFor(w, ctx)
+	if vectorSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "vector"})
+		}
 		return
 	}
 
@@ -981,7 +1041,7 @@ func (s *Server) handleVectorSearchByID(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	resp, err := s.vectorSvc.SearchByID(r.Context(), &service.SearchByIDRequest{
+	resp, err := vectorSvc.SearchByID(ctx, &service.SearchByIDRequest{
 		Namespace:   req.Namespace,
 		ID:          req.ID,
 		K:           req.K,
@@ -1007,8 +1067,12 @@ func (s *Server) handleVectorSearchByID(w http.ResponseWriter, r *http.Request) 
 // handleVectorRebuildIndex handles POST /vector/index/rebuild -- triggers
 // an asynchronous index rebuild for a namespace.
 func (s *Server) handleVectorRebuildIndex(w http.ResponseWriter, r *http.Request) {
-	if s.vectorSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "vector"})
+	ctx := r.Context()
+	vectorSvc := s.vectorSvcFor(w, ctx)
+	if vectorSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "vector"})
+		}
 		return
 	}
 
@@ -1018,7 +1082,7 @@ func (s *Server) handleVectorRebuildIndex(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	resp, err := s.vectorSvc.RebuildIndex(r.Context(), &service.RebuildIndexRequest{
+	resp, err := vectorSvc.RebuildIndex(ctx, &service.RebuildIndexRequest{
 		Namespace: req.Namespace,
 		ShardID:   req.ShardID,
 	})
@@ -1046,8 +1110,12 @@ func (s *Server) handleVectorRebuildIndex(w http.ResponseWriter, r *http.Request
 //   - job_id: rebuild job identifier (required)
 //   - shard_id: target shard (optional)
 func (s *Server) handleVectorGetRebuildProgress(w http.ResponseWriter, r *http.Request) {
-	if s.vectorSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "vector"})
+	ctx := r.Context()
+	vectorSvc := s.vectorSvcFor(w, ctx)
+	if vectorSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "vector"})
+		}
 		return
 	}
 
@@ -1065,7 +1133,7 @@ func (s *Server) handleVectorGetRebuildProgress(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	progress, err := s.vectorSvc.GetRebuildProgress(r.Context(), &service.GetRebuildProgressRequest{
+	progress, err := vectorSvc.GetRebuildProgress(ctx, &service.GetRebuildProgressRequest{
 		Namespace: namespace,
 		JobID:     jobID,
 	})
@@ -1096,8 +1164,12 @@ func (s *Server) handleVectorGetRebuildProgress(w http.ResponseWriter, r *http.R
 //   - namespace: namespace name (required)
 //   - shard_id: target shard (optional)
 func (s *Server) handleVectorGetIndexStats(w http.ResponseWriter, r *http.Request) {
-	if s.vectorSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "vector"})
+	ctx := r.Context()
+	vectorSvc := s.vectorSvcFor(w, ctx)
+	if vectorSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "vector"})
+		}
 		return
 	}
 
@@ -1119,7 +1191,7 @@ func (s *Server) handleVectorGetIndexStats(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	stats, err := s.vectorSvc.GetIndexStats(r.Context(), &service.GetIndexStatsRequest{
+	stats, err := vectorSvc.GetIndexStats(ctx, &service.GetIndexStatsRequest{
 		Namespace: namespace,
 		ShardID:   shardID,
 	})
@@ -1148,8 +1220,12 @@ func (s *Server) handleVectorGetIndexStats(w http.ResponseWriter, r *http.Reques
 // asynchronous compaction of a namespace's storage to reclaim space from
 // deleted vectors.
 func (s *Server) handleVectorCompactNamespace(w http.ResponseWriter, r *http.Request) {
-	if s.vectorSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "vector"})
+	ctx := r.Context()
+	vectorSvc := s.vectorSvcFor(w, ctx)
+	if vectorSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "vector"})
+		}
 		return
 	}
 
@@ -1159,7 +1235,7 @@ func (s *Server) handleVectorCompactNamespace(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	resp, err := s.vectorSvc.CompactNamespace(r.Context(), &service.CompactNamespaceRequest{
+	resp, err := vectorSvc.CompactNamespace(ctx, &service.CompactNamespaceRequest{
 		Namespace: req.Namespace,
 		ShardID:   req.ShardID,
 	})
@@ -1184,8 +1260,12 @@ func (s *Server) handleVectorCompactNamespace(w http.ResponseWriter, r *http.Req
 //   - job_id: compaction job identifier (required)
 //   - shard_id: target shard (optional)
 func (s *Server) handleVectorGetCompactionProgress(w http.ResponseWriter, r *http.Request) {
-	if s.vectorSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "vector"})
+	ctx := r.Context()
+	vectorSvc := s.vectorSvcFor(w, ctx)
+	if vectorSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "vector"})
+		}
 		return
 	}
 
@@ -1213,7 +1293,7 @@ func (s *Server) handleVectorGetCompactionProgress(w http.ResponseWriter, r *htt
 		}
 	}
 
-	progress, err := s.vectorSvc.GetCompactionProgress(r.Context(), &service.GetCompactionProgressRequest{
+	progress, err := vectorSvc.GetCompactionProgress(ctx, &service.GetCompactionProgressRequest{
 		Namespace:   namespace,
 		OperationID: jobID,
 		ShardID:     shardID,
