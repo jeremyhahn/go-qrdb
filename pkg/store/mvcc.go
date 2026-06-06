@@ -58,6 +58,11 @@ type MVCCStateMachine struct {
 	hub              *watch.Hub
 	lessor           *lease.Lessor
 	enableTimeSeries bool
+
+	// noSync disables fsync on PebbleDB writes. When true, batch.Commit()
+	// does not wait for the OS to flush data to disk. This trades durability
+	// for performance and is appropriate only for testing environments.
+	noSync bool
 }
 
 // NewMVCCStateMachine creates a new MVCCStateMachine with the given PebbleDB
@@ -146,7 +151,10 @@ func (s *MVCCStateMachine) Open(_ context.Context, initialDir string, _ <-chan s
 	s.dir = initialDir
 
 	// Wrap the pebble.DB in a storage.Storage interface for the MVCC store.
-	s.storage = pebbleStorage.NewFromDB(db, true) // syncWrites=true for durability
+	// syncWrites=true for durability by default; noSync=true disables fsync
+	// (suitable for testing where fsync latency causes proposal timeouts).
+	syncWrites := !s.noSync
+	s.storage = pebbleStorage.NewFromDB(db, syncWrites)
 
 	// Build engine options from pre-Open configuration.
 	var engineOpts []engine.MVCCOption

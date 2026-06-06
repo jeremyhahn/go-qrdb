@@ -15,6 +15,7 @@
 package rest
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -47,7 +48,7 @@ type updateRoleRequest struct {
 // assignRoleRequest is the JSON payload for POST /roles/assign and
 // POST /roles/unassign.
 type assignRoleRequest struct {
-	UserID string `json:"userID"`
+	UserID uint64 `json:"userID"`
 	RoleID string `json:"roleID"`
 }
 
@@ -82,6 +83,18 @@ type listPermissionsResponse struct {
 	Categories []*permissionCategoryResponse `json:"categories"`
 }
 
+// resolvePermissionsRequest is the JSON payload for
+// POST /roles/resolve-permissions.
+type resolvePermissionsRequest struct {
+	RoleIDs []string `json:"role_ids"`
+}
+
+// resolvePermissionsResponse is the JSON payload returned by
+// POST /roles/resolve-permissions.
+type resolvePermissionsResponse struct {
+	Permissions []string `json:"permissions"`
+}
+
 // ---------------------------------------------------------------------------
 // Role handlers
 // ---------------------------------------------------------------------------
@@ -102,7 +115,10 @@ func (s *Server) handleCreateRole(w http.ResponseWriter, r *http.Request) {
 
 	perms := stringsToPermissions(req.Permissions)
 
-	rl, err := s.roleSvc.CreateRole(r.Context(), &role.CreateRoleRequest{
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
+	rl, err := s.roleSvc.CreateRole(ctx, &role.CreateRoleRequest{
 		Name:        req.Name,
 		TenantID:    req.TenantID,
 		Permissions: perms,
@@ -149,7 +165,10 @@ func (s *Server) handleListRoles(w http.ResponseWriter, r *http.Request) {
 		listReq.PageSize = pageSize
 	}
 
-	resp, err := s.roleSvc.ListRoles(r.Context(), listReq)
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
+	resp, err := s.roleSvc.ListRoles(ctx, listReq)
 	if err != nil {
 		writeErrorJSON(w, mapRoleError(err), err)
 		return
@@ -209,7 +228,10 @@ var roleMethodHandlers = map[string]roleMethodHandler{
 
 // handleGetRole handles GET /roles/{id} -- retrieves a role by ID.
 func (s *Server) handleGetRole(w http.ResponseWriter, r *http.Request, id string) {
-	rl, err := s.roleSvc.GetRole(r.Context(), id)
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
+	rl, err := s.roleSvc.GetRole(ctx, id)
 	if err != nil {
 		writeErrorJSON(w, mapRoleError(err), err)
 		return
@@ -228,7 +250,10 @@ func (s *Server) handleUpdateRole(w http.ResponseWriter, r *http.Request, id str
 
 	perms := stringsToPermissions(req.Permissions)
 
-	rl, err := s.roleSvc.UpdateRole(r.Context(), &role.UpdateRoleRequest{
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
+	rl, err := s.roleSvc.UpdateRole(ctx, &role.UpdateRoleRequest{
 		ID:          id,
 		Name:        req.Name,
 		Permissions: perms,
@@ -243,7 +268,10 @@ func (s *Server) handleUpdateRole(w http.ResponseWriter, r *http.Request, id str
 
 // handleDeleteRole handles DELETE /roles/{id} -- removes a non-system role.
 func (s *Server) handleDeleteRole(w http.ResponseWriter, r *http.Request, id string) {
-	if err := s.roleSvc.DeleteRole(r.Context(), id); err != nil {
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
+	if err := s.roleSvc.DeleteRole(ctx, id); err != nil {
 		writeErrorJSON(w, mapRoleError(err), err)
 		return
 	}
@@ -269,14 +297,17 @@ func (s *Server) handleAssignRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
 	// Validate that the role exists.
-	if _, err := s.roleSvc.GetRole(r.Context(), req.RoleID); err != nil {
+	if _, err := s.roleSvc.GetRole(ctx, req.RoleID); err != nil {
 		writeErrorJSON(w, mapRoleError(err), err)
 		return
 	}
 
 	// Get the user and add the role.
-	u, err := s.userSvc.GetUser(r.Context(), req.UserID)
+	u, err := s.userSvc.GetUser(ctx, req.UserID)
 	if err != nil {
 		writeErrorJSON(w, mapUserError(err), err)
 		return
@@ -291,7 +322,7 @@ func (s *Server) handleAssignRole(w http.ResponseWriter, r *http.Request) {
 	}
 
 	roleIDs := append(u.RoleIDs, req.RoleID)
-	updated, err := s.userSvc.UpdateUser(r.Context(), &user.UpdateUserRequest{
+	updated, err := s.userSvc.UpdateUser(ctx, &user.UpdateUserRequest{
 		ID:      req.UserID,
 		RoleIDs: roleIDs,
 	})
@@ -321,8 +352,11 @@ func (s *Server) handleUnassignRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
 	// Get the user and remove the role.
-	u, err := s.userSvc.GetUser(r.Context(), req.UserID)
+	u, err := s.userSvc.GetUser(ctx, req.UserID)
 	if err != nil {
 		writeErrorJSON(w, mapUserError(err), err)
 		return
@@ -335,7 +369,7 @@ func (s *Server) handleUnassignRole(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	updated, err := s.userSvc.UpdateUser(r.Context(), &user.UpdateUserRequest{
+	updated, err := s.userSvc.UpdateUser(ctx, &user.UpdateUserRequest{
 		ID:      req.UserID,
 		RoleIDs: roleIDs,
 	})
@@ -366,6 +400,54 @@ func (s *Server) handleListPermissions(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	writeJSON(w, listPermissionsResponse{Categories: resp})
+}
+
+// handleGetRoleByName handles GET /roles/by-name?tenant_id=&name= --
+// retrieves a role by its tenant-scoped name.
+func (s *Server) handleGetRoleByName(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	name := q.Get("name")
+	if name == "" {
+		writeErrorJSON(w, http.StatusBadRequest, &MissingParameterError{Param: "name"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
+	rl, err := s.roleSvc.GetRoleByName(ctx, q.Get("tenant_id"), name)
+	if err != nil {
+		writeErrorJSON(w, mapRoleError(err), err)
+		return
+	}
+
+	writeJSON(w, roleToResponse(rl))
+}
+
+// handleResolvePermissions handles POST /roles/resolve-permissions --
+// resolves the union of effective permissions for the given role IDs.
+func (s *Server) handleResolvePermissions(w http.ResponseWriter, r *http.Request) {
+	var req resolvePermissionsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
+	perms, err := s.roleSvc.ResolvePermissions(ctx, req.RoleIDs)
+	if err != nil {
+		writeErrorJSON(w, mapRoleError(err), err)
+		return
+	}
+
+	out := make([]string, len(perms))
+	for i, p := range perms {
+		out[i] = p.String()
+	}
+
+	writeJSON(w, resolvePermissionsResponse{Permissions: out})
 }
 
 // ---------------------------------------------------------------------------

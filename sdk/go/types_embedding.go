@@ -164,14 +164,14 @@ const (
 
 // Embedding configuration validation sentinel errors.
 var (
-	ErrEmbeddingProviderRequired    = embedding.ErrProviderRequired
-	ErrEmbeddingProviderInvalid     = embedding.ErrProviderInvalid
-	ErrEmbeddingAPIURLRequired      = embedding.ErrAPIURLRequired
-	ErrEmbeddingAPIKeyRequired      = embedding.ErrAPIKeyRequired
-	ErrEmbeddingModelRequired       = embedding.ErrModelRequired
-	ErrEmbeddingDimensionsPositive  = embedding.ErrDimensionsPositive
+	ErrEmbeddingProviderRequired     = embedding.ErrProviderRequired
+	ErrEmbeddingProviderInvalid      = embedding.ErrProviderInvalid
+	ErrEmbeddingAPIURLRequired       = embedding.ErrAPIURLRequired
+	ErrEmbeddingAPIKeyRequired       = embedding.ErrAPIKeyRequired
+	ErrEmbeddingModelRequired        = embedding.ErrModelRequired
+	ErrEmbeddingDimensionsPositive   = embedding.ErrDimensionsPositive
 	ErrEmbeddingMaxBatchSizePositive = embedding.ErrMaxBatchSizePositive
-	ErrEmbeddingTimeoutPositive     = embedding.ErrTimeoutPositive
+	ErrEmbeddingTimeoutPositive      = embedding.ErrTimeoutPositive
 )
 
 // ---------------------------------------------------------------------------

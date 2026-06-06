@@ -17,6 +17,7 @@ package unix
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -321,11 +322,20 @@ var (
 // Test helpers
 // ---------------------------------------------------------------------------
 
-// tempSocketPath returns a unique socket path in the test's temp directory.
+// tempSocketPath returns a unique socket path under a short temp directory.
+// It deliberately avoids t.TempDir(), which embeds the (often long) test
+// name in the path: a Unix domain socket path must fit within the ~108-byte
+// sun_path limit, and a long TMPDIR plus a long test name overflows it
+// ("bind: invalid argument"). A short MkdirTemp prefix keeps the socket path
+// well under the limit regardless of the test name.
 func tempSocketPath(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-	return filepath.Join(dir, "qrdb-test.sock")
+	dir, err := os.MkdirTemp("", "q")
+	if err != nil {
+		t.Fatalf("create socket dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return filepath.Join(dir, "s.sock")
 }
 
 // startUnixTestServer starts a real Unix gRPC server on a temp socket path

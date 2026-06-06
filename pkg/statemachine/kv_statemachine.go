@@ -16,6 +16,7 @@ package statemachine
 
 import (
 	"encoding/binary"
+	"errors"
 	"log/slog"
 	"sync/atomic"
 
@@ -98,6 +99,18 @@ func NewKVStateMachine(backend Backend, opts ...KVOption) *KVStateMachine {
 
 // Update applies committed log entries to the state machine by
 // dispatching each entry through the handler map.
+//
+// Raft correctness contract: Update must never return an error for
+// application-level conditions (e.g. a subsystem not being wired into
+// this SM instance). Returning a non-nil error prevents the RSM layer
+// from advancing lastApplied, causing all subsequent linearizable reads
+// to block indefinitely. Only unrecoverable infrastructure errors (disk
+// full, corrupt storage) may be returned.
+//
+// When a handler returns ServiceNotConfiguredError, the entry is encoded
+// as a result with a non-nil Data field carrying the error message, and
+// processing continues. The proposer receives this result and may inspect
+// result.Data to surface the error to the caller without poisoning Raft.
 func (k *KVStateMachine) Update(entries []sm.Entry, results []sm.Result) error {
 	for i := range entries {
 		cmd := entries[i].Cmd
@@ -115,6 +128,18 @@ func (k *KVStateMachine) Update(entries []sm.Entry, results []sm.Result) error {
 		revision := k.revision.Add(1)
 		result, err := handler(cmd[1:], revision)
 		if err != nil {
+			var sncErr *ServiceNotConfiguredError
+			if errors.As(err, &sncErr) {
+				// Application-level error: the subsystem is not configured on
+				// this SM instance. Encode the error in Data so the proposer
+				// can surface it, but do NOT return the error to Raft — that
+				// would prevent lastApplied from advancing and stall all reads.
+				k.logger.Error("statemachine: subsystem not configured, encoding as result",
+					slog.String("service", sncErr.Service),
+					slog.Uint64("entry_index", entries[i].Index))
+				results[i] = sm.Result{Data: []byte(err.Error())}
+				continue
+			}
 			return err
 		}
 		results[i] = result

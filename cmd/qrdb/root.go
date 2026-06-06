@@ -15,6 +15,7 @@
 package main
 
 import (
+	"strings"
 	"time"
 
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
@@ -30,6 +31,36 @@ var validLogLevels = map[string]struct{}{
 	"error": {},
 }
 
+// validTransports is the canonical set of root-level --transport values
+// shared by every CLI binary in the stack (qrdb / xkmsctl /
+// quicbaasctl / platformctl). O(1) lookup; the values match the keys
+// of transportBuilders in config.go plus the "embedded" sentinel which
+// requires the desktop/GUI build.
+var validTransports = map[string]struct{}{
+	transportREST:     {},
+	transportGRPC:     {},
+	transportQUIC:     {},
+	transportMCP:      {},
+	transportUnix:     {},
+	transportEmbedded: {},
+}
+
+// schemePrefixes lists the URL prefixes that, when present on --server,
+// override the default --transport value. This lets operators say
+// `--server https://host` without having to also supply
+// `--transport rest`. Listed longest-first to ensure correct prefix
+// matching by the resolver.
+var schemePrefixes = []string{
+	"https://",
+	"grpcs://",
+	"quics://",
+	"unix://",
+	"http://",
+	"grpc://",
+	"quic://",
+	"mcp://",
+}
+
 // Package-level state shared across all subcommands. These are set
 // during PersistentPreRunE from resolved flags.
 var (
@@ -41,6 +72,18 @@ var (
 
 // newRootCmd creates the root cobra.Command for the qrdb client CLI.
 // It registers global flags and all subcommands.
+//
+// The canonical persistent flag set documented here is the gold-standard
+// surface mirrored by xkmsctl, quicbaasctl, and platformctl. In
+// particular:
+//
+//   - --transport defaults to "unix" (most secure local).
+//   - Supported values: rest | grpc | quic | mcp | unix | embedded.
+//   - A scheme on --server (e.g. https://, grpcs://, mcp://) overrides
+//     the --transport default so URL-style addresses "just work" without
+//     forcing operators to also pass --transport.
+//   - --output is the persistent output-format flag honored by every
+//     read-only subcommand.
 func newRootCmd() *cobra.Command {
 	var (
 		serverFlag    string
@@ -54,7 +97,20 @@ func newRootCmd() *cobra.Command {
 	rootCmd := &cobra.Command{
 		Use:   "qrdb",
 		Short: "QRDB client -- interact with a qrdbd server",
-		Long:  "QRDB client CLI communicates with a qrdbd server using REST, gRPC, Unix socket, or MCP transports.",
+		Long: `QRDB client CLI.
+
+The client talks to a qrdbd server over one of six transports. Operators
+select the transport with --transport (default: unix). A URL scheme on
+--server overrides the default so https://, grpcs://, mcp://, unix://
+addresses work without an explicit --transport.
+
+Supported transports:
+  rest      HTTP/JSON REST API (default port 63002)
+  grpc      gRPC (default port 63003)
+  quic      QUIC (default port 63004)
+  mcp       Model Context Protocol over HTTPS
+  unix      Unix domain socket (default: /var/run/qrdbd/qrdbd.sock) [DEFAULT]
+  embedded  In-process server (desktop/GUI build only)`,
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 			// Skip client construction for commands that do not need it.
 			if cmd.Name() == "version" || cmd.Name() == "help" {
@@ -68,8 +124,23 @@ func newRootCmd() *cobra.Command {
 			}
 			outputFormat = format
 
-			// Resolve transport type and address.
-			transportType, address := resolveTransport(serverFlag, transportFlag)
+			// Validate transport name against the canonical set.
+			if err := validateTransport(transportFlag); err != nil {
+				return err
+			}
+
+			// Apply the "scheme overrides default --transport" rule:
+			// when --transport is still at its default value AND
+			// --server carries a recognized URL scheme, clear the
+			// transport so resolveTransport auto-detects from the
+			// scheme. An explicitly-supplied --transport always wins.
+			effectiveTransport := transportFlag
+			if !cmd.Root().PersistentFlags().Changed("transport") &&
+				serverHasScheme(serverFlag) {
+				effectiveTransport = ""
+			}
+
+			transportType, address := resolveTransport(serverFlag, effectiveTransport)
 
 			// Build and connect the SDK client.
 			c, err := buildClient(cmd.Context(), transportType, address, caFile, certFile, keyFile, timeout)
@@ -86,14 +157,16 @@ func newRootCmd() *cobra.Command {
 
 	// Global persistent flags.
 	pflags := rootCmd.PersistentFlags()
-	pflags.StringVar(&serverFlag, "server", "", "Server address (default: auto-detect)")
-	pflags.StringVar(&transportFlag, "transport", "", "Transport type: rest, grpc, unix, mcp (default: auto)")
+	pflags.StringVar(&serverFlag, "server", "",
+		"Server address (default: auto-detect; a URL scheme overrides --transport)")
+	pflags.StringVar(&transportFlag, "transport", transportUnix,
+		"Transport type: rest | grpc | quic | mcp | unix | embedded")
 	pflags.StringVar(&caFile, "ca-file", "", "TLS CA certificate file")
 	pflags.StringVar(&certFile, "cert-file", "", "TLS client certificate file")
 	pflags.StringVar(&keyFile, "key-file", "", "TLS client key file")
-	pflags.StringVar(&outputFormat, "output", "table", "Output format: table, json, yaml")
+	pflags.StringVar(&outputFormat, "output", "table", "Output format: table | json | yaml")
 	pflags.DurationVar(&timeout, "timeout", 10*time.Second, "Request timeout")
-	pflags.StringVar(&logLevel, "log-level", "info", "Log level: trace, debug, info, warn, error")
+	pflags.StringVar(&logLevel, "log-level", "info", "Log level: trace | debug | info | warn | error")
 	pflags.StringVar(&logFile, "log-file", "", "Log file path (default: stdout)")
 
 	// Subcommand groups.
@@ -116,11 +189,20 @@ func newRootCmd() *cobra.Command {
 	rootCmd.AddCommand(newUsersCmd())
 	rootCmd.AddCommand(newRolesCmd())
 	rootCmd.AddCommand(newTenantCmd())
-	rootCmd.AddCommand(newCertsCmd())
+	rootCmd.AddCommand(newInitCmd())
+	rootCmd.AddCommand(newAuthCmd())
+	rootCmd.AddCommand(newBootstrapCmd())
+	rootCmd.AddCommand(newCACmd())
+	rootCmd.AddCommand(newCertsRedirectCmd())
+	rootCmd.AddCommand(newCredentialCmd())
 	rootCmd.AddCommand(newBarrierCmd())
 	rootCmd.AddCommand(newCeremonyCmd())
 	rootCmd.AddCommand(newBackupCmd())
 	rootCmd.AddCommand(newRebalanceCmd())
+	rootCmd.AddCommand(newEmbeddingCmd())
+	if cmd := newRAGCmd(); cmd != nil {
+		rootCmd.AddCommand(cmd)
+	}
 	rootCmd.AddCommand(newVersionCmd())
 
 	// Top-level aliases for common KV operations.
@@ -144,6 +226,35 @@ func validateOutputFormat(format string) error {
 		return &OutputFormatError{Format: format}
 	}
 	return nil
+}
+
+// validateTransport checks that the supplied --transport value names
+// one of the canonical transports. An empty value is accepted as
+// "auto" (preserved for backward compatibility with tooling that
+// already explicitly clears the flag); the resolver then falls back to
+// the auto-detect path.
+func validateTransport(name string) error {
+	if name == "" {
+		return nil
+	}
+	if _, ok := validTransports[name]; !ok {
+		return &InvalidArgError{
+			Arg:    "--transport",
+			Reason: "must be one of rest, grpc, quic, mcp, unix, embedded",
+		}
+	}
+	return nil
+}
+
+// serverHasScheme reports whether the --server value carries a URL
+// scheme that the resolver should honor over the default --transport.
+func serverHasScheme(server string) bool {
+	for _, p := range schemePrefixes {
+		if strings.HasPrefix(server, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // newPutAliasCmd creates a top-level "put" command that delegates to "kv put".

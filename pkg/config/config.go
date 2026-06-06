@@ -12,18 +12,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package config provides YAML-based configuration loading and validation
-// for the QRDB distributed key-value database.
+// Package config provides Viper-based configuration loading and validation
+// for the QRDB distributed key-value database. Configuration is sourced —
+// in increasing order of precedence — from production defaults, a YAML
+// config file, and QRDB_-prefixed environment variables.
 package config
 
 import (
 	"crypto/tls"
-	"os"
 	"strings"
 	"time"
 
+	mapstructure "github.com/go-viper/mapstructure/v2"
+	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
 )
+
+// envPrefix is the environment-variable prefix for config overrides. Nested
+// keys map to upper-cased, underscore-joined names, e.g. the YAML key
+// seal.shamir_total is overridable via QRDB_SEAL_SHAMIR_TOTAL.
+const envPrefix = "QRDB"
 
 // parseDuration parses a Go duration string and returns the duration.
 func parseDuration(s string) (time.Duration, error) {
@@ -38,6 +46,7 @@ type Config struct {
 	Raft       RaftConfig       `yaml:"raft"`
 	Storage    StorageConfig    `yaml:"storage"`
 	TLS        TLSConfig        `yaml:"tls"`
+	MTLS       MTLSConfig       `yaml:"mtls"`
 	Unix       UnixConfig       `yaml:"unix"`
 	MCP        MCPConfig        `yaml:"mcp"`
 	Logging    LoggingConfig    `yaml:"logging"`
@@ -58,6 +67,18 @@ type Config struct {
 	Databases  []DatabaseConfig `yaml:"databases,omitempty" json:"databases,omitempty"`
 	Embedding  EmbeddingConfig  `yaml:"embedding"`
 	RAG        RAGConfig        `yaml:"rag"`
+	Tenant     TenantConfig     `yaml:"tenant"`
+}
+
+// TenantConfig configures tenant isolation behaviour.
+type TenantConfig struct {
+	// StrictIsolation rejects vector namespace operations when no tenant ID
+	// is present in the request context. When false (default) the system
+	// tenant is used as the implicit owner for un-tenanted requests, which
+	// is appropriate for single-tenant deployments. Set to true in
+	// multi-tenant production environments; it is automatically enabled
+	// when the process runs in FIPS-140 mode.
+	StrictIsolation bool `yaml:"strict_isolation"`
 }
 
 // CodecConfig configures the dual-codec system for storage and wire encoding.
@@ -221,6 +242,51 @@ type StorageConfig struct {
 	// MaxOpenFiles limits the number of open files for PebbleDB.
 	// 0 uses the PebbleDB default.
 	MaxOpenFiles int `yaml:"max_open_files"`
+
+	// VolumePools defines named multi-path placement pools that
+	// barrier-mode tenants draw from when assigning their per-tenant
+	// Pebble. Each path becomes a local-filesystem objstore Backend
+	// wrapped in pool.LocalOnly. An empty list disables the pooled
+	// barrier-mode flow — keyspace-mode tenants are unaffected.
+	VolumePools []VolumePoolConfig `yaml:"volume_pools,omitempty"`
+
+	// Objstore configures the object-storage key-value backend, used when
+	// Backend (or a database's backend) is "objstore".
+	Objstore ObjstoreConfig `yaml:"objstore,omitempty"`
+}
+
+// ObjstoreConfig configures the object-storage key-value backend. The backend
+// wraps a go-objstore Storage so any go-objstore provider can serve as a flat
+// KV store (suited to blob/backup workloads, not hot consensus paths).
+type ObjstoreConfig struct {
+	// Provider selects the go-objstore backend: "local", "memory", "s3",
+	// "gcs", "azure", or "minio". Empty defaults to "local", rooted under the
+	// node data directory.
+	Provider string `yaml:"provider,omitempty"`
+
+	// Settings carries provider-specific configuration passed verbatim to the
+	// go-objstore factory (for example "bucket", "region", "endpoint",
+	// "path"). For the local provider an empty "path" defaults to the node
+	// data directory.
+	Settings map[string]string `yaml:"settings,omitempty"`
+}
+
+// VolumePoolConfig defines one named volume pool.
+type VolumePoolConfig struct {
+	// Name is the pool's unique identifier within a daemon. The
+	// pool referenced by self-service registration is "default".
+	Name string `yaml:"name"`
+
+	// Paths is the ordered list of local-filesystem roots eligible
+	// for placement. Each path must already exist (or be creatable)
+	// and be writable by the daemon process.
+	Paths []string `yaml:"paths"`
+
+	// Strategy selects the placement strategy: "round_robin"
+	// (default) or "least_utilization" (interface only; concrete
+	// impl is post-MVP and currently returns
+	// pool.ErrStrategyNotImplemented).
+	Strategy string `yaml:"strategy,omitempty"`
 }
 
 // TLSConfig configures TLS for all server protocols.
@@ -245,6 +311,23 @@ type TLSConfig struct {
 	// MinVersion specifies the minimum TLS version. Default is "TLS1.3".
 	// Only "TLS1.2" and "TLS1.3" are valid values.
 	MinVersion string `yaml:"min_version"`
+
+	// AdditionalCAs is the list of additional CA PEM file paths layered
+	// onto the server-side ClientCAs pool. The union is deduplicated by
+	// canonical filename so the same CA referenced from multiple paths
+	// is loaded once.
+	AdditionalCAs []string `yaml:"additional_cas"`
+}
+
+// MTLSConfig configures dedicated mTLS trust material that is distinct
+// from the primary server CA. ClientCAFiles are merged into the server
+// listener's ClientCAs pool for verifying client certificates without
+// affecting the trust chain used to authenticate the server itself.
+type MTLSConfig struct {
+	// ClientCAFiles is the list of additional CA PEM file paths used
+	// solely for client certificate verification. The union is
+	// deduplicated by canonical filename.
+	ClientCAFiles []string `yaml:"client_ca_files"`
 }
 
 // CryptoTLSClientAuth converts the ClientAuth string to tls.ClientAuthType.
@@ -319,17 +402,59 @@ type LoggingConfig struct {
 	Format string `yaml:"format"`
 }
 
-// DiscoveryConfig configures peer discovery.
+// DiscoveryConfig configures peer discovery. Initial static members are
+// taken from raft.peers; the fields here tune the multicast, DNS SRV, and
+// token discovery methods. The discovery engine and bootstrap orchestration
+// live in pkg/discovery and pkg/cluster.
 type DiscoveryConfig struct {
-	// Method selects the discovery mechanism: "static", "multicast", or "dns".
+	// Method selects the discovery mechanism: "static", "multicast",
+	// "dns", or "token".
 	Method string `yaml:"method"`
 
 	// MulticastSecret is the shared secret for multicast discovery
 	// authentication.
 	MulticastSecret string `yaml:"multicast_secret"`
 
-	// DNSDomain is the DNS domain used for DNS-based peer discovery.
+	// MulticastGroup overrides the multicast address (host:port). Optional;
+	// the discovery default applies when empty.
+	MulticastGroup string `yaml:"multicast_group"`
+
+	// DNSDomain is the DNS domain used for DNS SRV peer discovery.
 	DNSDomain string `yaml:"dns_domain"`
+
+	// DNSService is the SRV service label for DNS discovery (default "_raft").
+	DNSService string `yaml:"dns_service"`
+
+	// DNSProto is the SRV protocol label for DNS discovery (default "_udp").
+	DNSProto string `yaml:"dns_proto"`
+
+	// TokenEndpoint is the URL of the token discovery service. Required for
+	// the "token" method.
+	TokenEndpoint string `yaml:"token_endpoint"`
+
+	// Token is the shared bootstrap token sent as a bearer credential to the
+	// token discovery service. Required for the "token" method.
+	Token string `yaml:"token"`
+
+	// TokenClusterSize is the expected number of nodes token discovery waits
+	// for before returning. Zero falls back to MinPeers.
+	TokenClusterSize int `yaml:"token_cluster_size"`
+
+	// AllowInsecureTokenHTTP permits http:// token endpoints for development
+	// and testing. Production endpoints must use https://.
+	AllowInsecureTokenHTTP bool `yaml:"allow_insecure_token_http"`
+
+	// MinPeers is the minimum cluster size used for quorum during bootstrap.
+	// Zero uses the cluster package default (3). It also serves as the quorum
+	// floor for the dynamic membership manager's auto-removal guard.
+	MinPeers int `yaml:"min_peers"`
+
+	// DynamicMembership enables the opt-in lease/watch dynamic Raft membership
+	// manager. OFF by default. When true, the daemon registers itself in the
+	// membership registry and, on the leader, reconciles the Raft group as
+	// nodes join and leave (auto-removal is guarded by MinPeers so a transient
+	// blip cannot drop the group below quorum).
+	DynamicMembership bool `yaml:"dynamic_membership"`
 }
 
 // MVCCConfig configures the MVCC versioned key-value engine.
@@ -429,8 +554,8 @@ type AuthConfig struct {
 	// Default: "admin".
 	AdminUsername string `yaml:"admin_username"`
 
-	// DefaultTenant is the certificate OU for the default tenant.
-	// Default: "default".
+	// DefaultTenant is the certificate OU for the bootstrap admin's tenant.
+	// Default: "system" (the structurally privileged platform tenant).
 	DefaultTenant string `yaml:"default_tenant"`
 
 	// CertTTL is the default validity duration for generated client
@@ -442,6 +567,33 @@ type AuthConfig struct {
 	// Cached permission sets are evicted after this duration.
 	// Default: 30.
 	PermCacheTTL int `yaml:"perm_cache_ttl"`
+
+	// SeparationOfDuties selects the RBAC posture. When false (default,
+	// "standard"), the bootstrap admin is granted a full operational
+	// owner capability so a single identity can run the entire database
+	// — the convenient posture for commercial deployments that do not
+	// require regulatory separation of duties. When true ("strict"), the
+	// canonical FIPS 140-3 / PCI-DSS least-privilege role model is
+	// enforced: admin is control-plane only, data-plane requires the
+	// operator role, governance requires the SO role, and the SO->crypto
+	// deny-list applies.
+	//
+	// This setting only RAISES strictness. A binary built with FIPS 140-3
+	// mode (GOFIPS140) — i.e. crypto/fips140.Enabled() — is always strict
+	// regardless of this flag, so a FIPS deployment cannot be relaxed into
+	// the convenience posture.
+	//
+	// Default: false.
+	SeparationOfDuties bool `yaml:"separation_of_duties"`
+
+	// SPIFFETrustDomain is the operator-configured SPIFFE trust domain. When
+	// set, the mTLS authenticator derives the tenant from a peer certificate's
+	// tenant-scoped SPIFFE URI SAN
+	// (spiffe://<trust-domain>/tenant/<tenantID>/<kind>/<name>) and PINS this
+	// trust domain: a SPIFFE SAN under a different trust domain is rejected
+	// (fail-closed). When empty, only the legacy OU-based tenant derivation is
+	// used. Default: "".
+	SPIFFETrustDomain string `yaml:"spiffe_trust_domain"`
 }
 
 // AuditConfig configures the dual-backend audit logging system.
@@ -538,8 +690,8 @@ type SealConfig struct {
 	// When false (default), data is stored unencrypted.
 	Enabled bool `yaml:"enabled"`
 
-	// Strategy selects the sealing strategy: "software" or "shamir".
-	// Default: "software".
+	// Strategy selects the sealing strategy: "passphrase" or "shamir".
+	// Default: "passphrase".
 	Strategy string `yaml:"strategy"`
 
 	// RootKeyPath is the storage key under which the sealed root key
@@ -553,15 +705,58 @@ type SealConfig struct {
 	// ShamirTotal is the total number of Shamir shares to generate.
 	ShamirTotal int `yaml:"shamir_total"`
 
+	// ShareTTL is how long a Shamir unseal-share quorum session stays open
+	// before submitted shares expire and must be resubmitted. Accepts a Go
+	// duration string (e.g. "15m", "30s"). Default: "15m". Overridable via
+	// QRDB_SEAL_SHARE_TTL.
+	ShareTTL string `yaml:"share_ttl"`
+
 	// CredentialStrategy selects the credential storage strategy:
 	// "manual" or "barrier". Default: "barrier".
 	CredentialStrategy string `yaml:"credential_strategy"`
 }
 
+// DefaultShareTTLString is the default seal.share_ttl when unset.
+const DefaultShareTTLString = "15m"
+
+// ShareTTLDuration returns the parsed ShareTTL, or the default 15m when unset.
+func (c SealConfig) ShareTTLDuration() (time.Duration, error) {
+	s := strings.TrimSpace(c.ShareTTL)
+	if s == "" {
+		s = DefaultShareTTLString
+	}
+	return parseDuration(s)
+}
+
 // validSealStrategies contains the accepted seal strategy strings.
+// "passphrase" is the canonical name for the passphrase-protected software
+// seal strategy. "software" is accepted as a deprecated alias for
+// "passphrase": rejecting it would hard-break existing configs that the
+// validation message itself documents as a supported deprecated alias.
 var validSealStrategies = map[string]struct{}{
-	"software": {},
-	"shamir":   {},
+	"passphrase": {},
+	"shamir":     {},
+	"software":   {},
+}
+
+// sealStrategyAliases maps deprecated seal strategy spellings to their
+// canonical equivalent. Canonicalization happens once (Config.Validate and
+// SealConfig.CanonicalStrategy) so no downstream consumer ever has to special-
+// case an alias — every consumer reads the canonical strategy ID.
+var sealStrategyAliases = map[string]string{
+	"software": "passphrase",
+}
+
+// CanonicalStrategy returns the seal strategy with deprecated aliases resolved
+// to their canonical name (e.g. "software" -> "passphrase"). An empty Strategy
+// is returned unchanged so callers can apply their own default. This is the
+// single source of truth for alias resolution and must be used by every
+// consumer that branches on the strategy ID.
+func (c SealConfig) CanonicalStrategy() string {
+	if canonical, ok := sealStrategyAliases[c.Strategy]; ok {
+		return canonical
+	}
+	return c.Strategy
 }
 
 // validCredentialStrategies contains the accepted credential strategy strings.
@@ -614,8 +809,12 @@ func DefaultConfig() *Config {
 			Format: "text",
 		},
 		Discovery: DiscoveryConfig{
-			Method:          "multicast",
-			MulticastSecret: "quicraft",
+			// Single-node by default: no network auto-join, no shared secret.
+			// Multicast is an explicit opt-in that requires an operator-chosen
+			// PSK (the protocol is authenticated-only); there is deliberately
+			// no well-known default secret.
+			Method:          "static",
+			MulticastSecret: "",
 		},
 		MVCC: MVCCConfig{
 			CompactionRetention: 1000,
@@ -639,7 +838,7 @@ func DefaultConfig() *Config {
 		Auth: AuthConfig{
 			Enabled:       true,
 			AdminUsername: "admin",
-			DefaultTenant: "default",
+			DefaultTenant: "system",
 			CertTTL:       "8760h",
 			PermCacheTTL:  30,
 		},
@@ -665,8 +864,9 @@ func DefaultConfig() *Config {
 		},
 		Seal: SealConfig{
 			Enabled:            false,
-			Strategy:           "software",
+			Strategy:           "passphrase",
 			RootKeyPath:        "__sys:seal/root_key",
+			ShareTTL:           DefaultShareTTLString,
 			CredentialStrategy: "barrier",
 		},
 		Bootstrap: BootstrapConfig{
@@ -685,16 +885,23 @@ func DefaultConfig() *Config {
 	}
 }
 
-// Load reads and parses a YAML configuration file from the given path.
-// The file must contain valid YAML that maps to the Config struct.
+// Load builds the configuration from (lowest to highest precedence):
+// production defaults, the YAML file at path, and QRDB_-prefixed environment
+// variables. The file is read by Viper; environment variables can override
+// any key (e.g. QRDB_SEAL_SHAMIR_TOTAL for seal.shamir_total).
 func Load(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
+	v, err := newConfigViper(path)
 	if err != nil {
-		return nil, &LoadError{Path: path, Err: err}
+		return nil, err
 	}
 
+	// Start from defaults so any field absent from every source retains its
+	// production default, then overlay Viper's merged file + env values using
+	// the struct's existing yaml tags.
 	cfg := DefaultConfig()
-	if err := yaml.Unmarshal(data, cfg); err != nil {
+	if err := v.Unmarshal(cfg, func(dc *mapstructure.DecoderConfig) {
+		dc.TagName = "yaml"
+	}); err != nil {
 		return nil, &LoadError{Path: path, Err: err}
 	}
 
@@ -716,6 +923,53 @@ func Load(path string) (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// newConfigViper constructs a Viper bound to the QRDB config sources: the
+// production defaults (registered as known keys so AutomaticEnv can override
+// any field even when the file omits it), the YAML file at path, and
+// QRDB_-prefixed environment variables.
+func newConfigViper(path string) (*viper.Viper, error) {
+	v := viper.New()
+	v.SetConfigType("yaml")
+
+	// Register every default-bearing key so environment overrides flow
+	// through Unmarshal regardless of whether the file mentions the key.
+	defaults, err := configToMap(DefaultConfig())
+	if err != nil {
+		return nil, &LoadError{Path: path, Err: err}
+	}
+	if err := v.MergeConfigMap(defaults); err != nil {
+		return nil, &LoadError{Path: path, Err: err}
+	}
+
+	// Overlay the YAML file (replaces matching default keys).
+	v.SetConfigFile(path)
+	if err := v.MergeInConfig(); err != nil {
+		return nil, &LoadError{Path: path, Err: err}
+	}
+
+	// Highest precedence: QRDB_-prefixed env vars, with nested keys joined
+	// by underscores (seal.shamir_total -> QRDB_SEAL_SHAMIR_TOTAL).
+	v.SetEnvPrefix(envPrefix)
+	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	v.AutomaticEnv()
+
+	return v, nil
+}
+
+// configToMap renders a Config to a generic map keyed by its yaml tags, used
+// to seed Viper's defaults so every key is known for env-var resolution.
+func configToMap(cfg *Config) (map[string]any, error) {
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return nil, err
+	}
+	var m map[string]any
+	if err := yaml.Unmarshal(data, &m); err != nil {
+		return nil, err
+	}
+	return m, nil
 }
 
 // validLogLevels contains the accepted logging level strings.
@@ -758,8 +1012,93 @@ var validSMBackends = map[string]struct{}{
 
 // validBackends contains the accepted storage backend strings.
 var validBackends = map[string]struct{}{
-	"pebble": {},
-	"memory": {},
+	"pebble":   {},
+	"memory":   {},
+	"file":     {},
+	"objstore": {},
+}
+
+// validVolumePoolStrategies contains the accepted volume-pool
+// strategy strings. round_robin is implemented; least_utilization is
+// declared so YAML configs can reference it, but the strategy itself
+// returns pool.ErrStrategyNotImplemented at Pick time until the
+// concrete impl ships post-MVP.
+var validVolumePoolStrategies = map[string]struct{}{
+	"":                  {}, // empty defaults to round_robin
+	"round_robin":       {},
+	"least_utilization": {},
+}
+
+// validateVolumePools verifies pool names are unique, non-empty, and
+// every pool has at least one path. Strategy values are validated
+// against validVolumePoolStrategies.
+func validateVolumePools(pools []VolumePoolConfig) error {
+	if len(pools) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(pools))
+	for i, p := range pools {
+		if p.Name == "" {
+			return &ValidationError{
+				Field:  "storage.volume_pools[].name",
+				Reason: "must not be empty",
+			}
+		}
+		if _, dup := seen[p.Name]; dup {
+			return &ValidationError{
+				Field:  "storage.volume_pools[" + p.Name + "]",
+				Reason: "duplicate pool name",
+			}
+		}
+		seen[p.Name] = struct{}{}
+		if len(p.Paths) == 0 {
+			return &ValidationError{
+				Field:  "storage.volume_pools[" + p.Name + "].paths",
+				Reason: "must contain at least one path",
+			}
+		}
+		for j, path := range p.Paths {
+			if path == "" {
+				return &ValidationError{
+					Field:  "storage.volume_pools[" + p.Name + "].paths[" + itoa(j) + "]",
+					Reason: "must not be empty",
+				}
+			}
+		}
+		if _, ok := validVolumePoolStrategies[p.Strategy]; !ok {
+			return &ValidationError{
+				Field:  "storage.volume_pools[" + p.Name + "].strategy",
+				Reason: "must be one of: round_robin, least_utilization (or empty for round_robin default)",
+			}
+		}
+		_ = i
+	}
+	return nil
+}
+
+// itoa returns the decimal representation of n. Local helper so the
+// validation builder doesn't pull strconv into the file's import set
+// solely for one call.
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	var buf [20]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	if neg {
+		i--
+		buf[i] = '-'
+	}
+	return string(buf[i:])
 }
 
 // validWriteModes contains the accepted write mode strings.
@@ -774,6 +1113,7 @@ var validDiscoveryMethods = map[string]struct{}{
 	"static":    {},
 	"multicast": {},
 	"dns":       {},
+	"token":     {},
 }
 
 // validDatabaseEngines contains the accepted database engine strings.
@@ -793,10 +1133,11 @@ var validCodecTypes = map[string]struct{}{
 
 // validDatabaseBackends contains the accepted database backend strings.
 var validDatabaseBackends = map[string]struct{}{
-	"memory": {},
-	"file":   {},
-	"pebble": {},
-	"raft":   {},
+	"memory":   {},
+	"file":     {},
+	"pebble":   {},
+	"raft":     {},
+	"objstore": {},
 }
 
 // Validate checks the configuration for required fields and valid values.
@@ -853,7 +1194,7 @@ func (c *Config) Validate() error {
 
 	if c.Storage.Backend != "" {
 		if _, ok := validBackends[c.Storage.Backend]; !ok {
-			return &ValidationError{Field: "storage.backend", Reason: "must be one of: pebble, memory"}
+			return &ValidationError{Field: "storage.backend", Reason: "must be one of: pebble, memory, file, objstore"}
 		}
 	}
 	if c.Storage.CacheSize < 0 {
@@ -861,6 +1202,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Storage.MaxOpenFiles < 0 {
 		return &ValidationError{Field: "storage.max_open_files", Reason: "must not be negative"}
+	}
+	if err := validateVolumePools(c.Storage.VolumePools); err != nil {
+		return err
 	}
 
 	// TLS validation: cert/key files are not required because the daemon
@@ -905,7 +1249,7 @@ func (c *Config) Validate() error {
 
 	if c.Discovery.Method != "" {
 		if _, ok := validDiscoveryMethods[c.Discovery.Method]; !ok {
-			return &ValidationError{Field: "discovery.method", Reason: "must be one of: static, multicast, dns"}
+			return &ValidationError{Field: "discovery.method", Reason: "must be one of: static, multicast, dns, token"}
 		}
 	}
 
@@ -1044,8 +1388,12 @@ func (c *Config) Validate() error {
 	if c.Seal.Enabled {
 		if c.Seal.Strategy != "" {
 			if _, ok := validSealStrategies[c.Seal.Strategy]; !ok {
-				return &ValidationError{Field: "seal.strategy", Reason: "must be one of: software, shamir"}
+				return &ValidationError{Field: "seal.strategy", Reason: "must be one of: passphrase, shamir (software is a deprecated alias for passphrase)"}
 			}
+			// Canonicalize deprecated aliases once, here, so every downstream
+			// consumer reads the canonical strategy ID and never has to special-
+			// case "software".
+			c.Seal.Strategy = c.Seal.CanonicalStrategy()
 		}
 		if c.Seal.Strategy == "shamir" {
 			if c.Seal.ShamirThreshold < 2 {
@@ -1060,6 +1408,15 @@ func (c *Config) Validate() error {
 				return &ValidationError{Field: "seal.credential_strategy", Reason: "must be one of: manual, barrier"}
 			}
 		}
+		if strings.TrimSpace(c.Seal.ShareTTL) != "" {
+			d, err := parseDuration(c.Seal.ShareTTL)
+			if err != nil {
+				return &ValidationError{Field: "seal.share_ttl", Reason: "must be a valid Go duration (e.g. 15m)"}
+			}
+			if d <= 0 {
+				return &ValidationError{Field: "seal.share_ttl", Reason: "must be greater than zero"}
+			}
+		}
 	}
 
 	// Database validation.
@@ -1072,7 +1429,7 @@ func (c *Config) Validate() error {
 			return &DatabaseConfigError{Name: db.Name, Message: "engine must be one of: kv, timeseries, vector"}
 		}
 		if _, ok := validDatabaseBackends[db.Backend]; !ok {
-			return &DatabaseConfigError{Name: db.Name, Message: "backend must be one of: memory, file, pebble, raft"}
+			return &DatabaseConfigError{Name: db.Name, Message: "backend must be one of: memory, file, pebble, raft, objstore"}
 		}
 		if _, dup := seen[db.Name]; dup {
 			return &DatabaseConfigError{Name: db.Name, Message: "duplicate database name"}

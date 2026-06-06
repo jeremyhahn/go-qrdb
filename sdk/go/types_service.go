@@ -14,7 +14,10 @@
 
 package sdk
 
-import "github.com/jeremyhahn/go-qrdb/pkg/service"
+import (
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	tenantpkg "github.com/jeremyhahn/go-qrdb/pkg/tenant"
+)
 
 // ---------------------------------------------------------------------------
 // Service interfaces
@@ -122,6 +125,18 @@ type CeremonyClaimCertResult = service.CeremonyClaimCertResult
 // operation during the ceremony.
 type CeremonySignCSRResult = service.CeremonySignCSRResult
 
+// CeremonyEnrollExternalOfficerRequest carries the inputs for
+// CeremonyServicer.CeremonyEnrollExternalOfficer. Either CertPEM
+// (validated against the configured CA pools) or PubKeyPEM
+// (admin-asserted trust) MUST be supplied, but not both.
+type CeremonyEnrollExternalOfficerRequest = service.CeremonyEnrollExternalOfficerRequest
+
+// CeremonyEnrollExternalOfficerResponse carries the result of a
+// successful CeremonyEnrollExternalOfficer call. SealedShare is the
+// base64-encoded share envelope when ShareBytes was supplied; empty
+// when only the trust record was persisted.
+type CeremonyEnrollExternalOfficerResponse = service.CeremonyEnrollExternalOfficerResponse
+
 // CeremonyStatusInfo describes the current state of the initialization
 // ceremony.
 type CeremonyStatusInfo = service.CeremonyStatusInfo
@@ -146,3 +161,25 @@ type CredentialService = service.CredentialService
 
 // NewCredentialService creates a new service-layer CredentialServicer.
 var NewCredentialService = service.NewCredentialService
+
+// ---------------------------------------------------------------------------
+// Tenant service types (multi-tenant lifecycle including per-tenant barrier)
+// ---------------------------------------------------------------------------
+
+// ServiceTenantServicer provides multi-tenant lifecycle operations:
+// CRUD on tenant metadata, quota management, and per-tenant barrier
+// init/unseal/seal/status. SDK consumers use this alias instead of importing
+// the internal pkg/tenant package.
+type ServiceTenantServicer = tenantpkg.TenantServicer
+
+// ServiceTenantInfo is the tenant metadata record returned by GetTenant /
+// CreateTenant / UpdateTenant. Mirrors pkg/tenant.TenantInfo.
+type ServiceTenantInfo = tenantpkg.TenantInfo
+
+// ServiceTenantBarrierStatus reports the current state of a per-tenant
+// barrier as returned by ServiceTenantServicer.TenantBarrierStatus.
+type ServiceTenantBarrierStatus = tenantpkg.TenantBarrierStatus
+
+// NewServiceTenantService creates a new service-layer TenantServicer
+// backed by a metadata store and a BarrierRegistry.
+var NewServiceTenantService = tenantpkg.NewTenantService

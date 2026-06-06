@@ -47,7 +47,7 @@ func TestHandleCreateUser_Success(t *testing.T) {
 				t.Fatalf("expected tenant 'tenant-1', got %q", req.TenantID)
 			}
 			return &user.User{
-				ID:        "user-001",
+				ID:        1001,
 				Username:  req.Username,
 				TenantID:  req.TenantID,
 				RoleIDs:   req.RoleIDs,
@@ -74,8 +74,8 @@ func TestHandleCreateUser_Success(t *testing.T) {
 	if err := json.Unmarshal(resp, &out); err != nil {
 		t.Fatalf("unmarshal response: %v", err)
 	}
-	if out.ID != "user-001" {
-		t.Fatalf("expected ID 'user-001', got %q", out.ID)
+	if out.ID != 1001 {
+		t.Fatalf("expected ID 1001, got %d", out.ID)
 	}
 	if out.Username != "alice" {
 		t.Fatalf("expected username 'alice', got %q", out.Username)
@@ -134,18 +134,18 @@ func TestHandleCreateUser_InvalidJSON(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleGetUser_Success(t *testing.T) {
-	u := testUser("user-002", "bob", "tenant-1")
+	u := testUser(1002, "bob", "tenant-1")
 	mock := &mockUserService{
-		getUserFn: func(_ context.Context, id string) (*user.User, error) {
-			if id != "user-002" {
-				t.Fatalf("expected ID 'user-002', got %q", id)
+		getUserFn: func(_ context.Context, id uint64) (*user.User, error) {
+			if id != 1002 {
+				t.Fatalf("expected ID 1002, got %d", id)
 			}
 			return u, nil
 		},
 	}
 
 	srv := newUserServer(mock)
-	payload, _ := json.Marshal(getUserWireRequest{ID: "user-002"})
+	payload, _ := json.Marshal(getUserWireRequest{ID: 1002})
 
 	resp, err := srv.handleGetUser(context.Background(), payload)
 	if err != nil {
@@ -156,23 +156,54 @@ func TestHandleGetUser_Success(t *testing.T) {
 	if err := json.Unmarshal(resp, &out); err != nil {
 		t.Fatalf("unmarshal response: %v", err)
 	}
-	if out.ID != "user-002" {
-		t.Fatalf("expected ID 'user-002', got %q", out.ID)
+	if out.ID != 1002 {
+		t.Fatalf("expected ID 1002, got %d", out.ID)
 	}
 	if out.Username != "bob" {
 		t.Fatalf("expected username 'bob', got %q", out.Username)
 	}
 }
 
+// TestHandleGetUser_Uint64IDRoundTrip proves a large uint64 user id survives
+// the QUIC JSON-over-frame wire on both request and response, exercising the
+// numeric (non-string) encoding of the id field.
+func TestHandleGetUser_Uint64IDRoundTrip(t *testing.T) {
+	const wantID uint64 = 1<<63 + 424242
+	var got uint64
+	mock := &mockUserService{
+		getUserFn: func(_ context.Context, id uint64) (*user.User, error) {
+			got = id
+			return testUser(id, "snowflake", "tenant-1"), nil
+		},
+	}
+	srv := newUserServer(mock)
+	payload, _ := json.Marshal(getUserWireRequest{ID: wantID})
+
+	resp, err := srv.handleGetUser(context.Background(), payload)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != wantID {
+		t.Fatalf("request id lost on wire: got %d, want %d", got, wantID)
+	}
+	var out userWireResponse
+	if err := json.Unmarshal(resp, &out); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if out.ID != wantID {
+		t.Fatalf("response id lost on wire: got %d, want %d", out.ID, wantID)
+	}
+}
+
 func TestHandleGetUser_ServiceError(t *testing.T) {
 	mock := &mockUserService{
-		getUserFn: func(_ context.Context, _ string) (*user.User, error) {
+		getUserFn: func(_ context.Context, _ uint64) (*user.User, error) {
 			return nil, errMockUser
 		},
 	}
 
 	srv := newUserServer(mock)
-	payload, _ := json.Marshal(getUserWireRequest{ID: "missing"})
+	payload, _ := json.Marshal(getUserWireRequest{ID: 9999})
 
 	_, err := srv.handleGetUser(context.Background(), payload)
 	if !errors.Is(err, errMockUser) {
@@ -182,7 +213,7 @@ func TestHandleGetUser_ServiceError(t *testing.T) {
 
 func TestHandleGetUser_NilService(t *testing.T) {
 	srv := NewServer(nil, nil, "localhost:0")
-	payload, _ := json.Marshal(getUserWireRequest{ID: "x"})
+	payload, _ := json.Marshal(getUserWireRequest{ID: 1})
 
 	_, err := srv.handleGetUser(context.Background(), payload)
 	var snc *ServiceNotConfiguredError
@@ -199,8 +230,8 @@ func TestHandleUpdateUser_Success(t *testing.T) {
 	now := time.Date(2026, 2, 1, 12, 0, 0, 0, time.UTC)
 	mock := &mockUserService{
 		updateUserFn: func(_ context.Context, req *user.UpdateUserRequest) (*user.User, error) {
-			if req.ID != "user-003" {
-				t.Fatalf("expected ID 'user-003', got %q", req.ID)
+			if req.ID != 1003 {
+				t.Fatalf("expected ID 1003, got %d", req.ID)
 			}
 			if req.Username != "carol-updated" {
 				t.Fatalf("expected username 'carol-updated', got %q", req.Username)
@@ -219,7 +250,7 @@ func TestHandleUpdateUser_Success(t *testing.T) {
 
 	srv := newUserServer(mock)
 	payload, _ := json.Marshal(updateUserWireRequest{
-		ID:       "user-003",
+		ID:       1003,
 		Username: "carol-updated",
 		RoleIDs:  []string{"role-b", "role-c"},
 	})
@@ -249,7 +280,7 @@ func TestHandleUpdateUser_ServiceError(t *testing.T) {
 	}
 
 	srv := newUserServer(mock)
-	payload, _ := json.Marshal(updateUserWireRequest{ID: "user-003"})
+	payload, _ := json.Marshal(updateUserWireRequest{ID: 1003})
 
 	_, err := srv.handleUpdateUser(context.Background(), payload)
 	if !errors.Is(err, errMockUser) {
@@ -259,7 +290,7 @@ func TestHandleUpdateUser_ServiceError(t *testing.T) {
 
 func TestHandleUpdateUser_NilService(t *testing.T) {
 	srv := NewServer(nil, nil, "localhost:0")
-	payload, _ := json.Marshal(updateUserWireRequest{ID: "x"})
+	payload, _ := json.Marshal(updateUserWireRequest{ID: 1})
 
 	_, err := srv.handleUpdateUser(context.Background(), payload)
 	var snc *ServiceNotConfiguredError
@@ -274,16 +305,16 @@ func TestHandleUpdateUser_NilService(t *testing.T) {
 
 func TestHandleDeleteUser_Success(t *testing.T) {
 	mock := &mockUserService{
-		deleteUserFn: func(_ context.Context, id string) error {
-			if id != "user-004" {
-				t.Fatalf("expected ID 'user-004', got %q", id)
+		deleteUserFn: func(_ context.Context, id uint64) error {
+			if id != 1004 {
+				t.Fatalf("expected ID 1004, got %d", id)
 			}
 			return nil
 		},
 	}
 
 	srv := newUserServer(mock)
-	payload, _ := json.Marshal(deleteUserWireRequest{ID: "user-004"})
+	payload, _ := json.Marshal(deleteUserWireRequest{ID: 1004})
 
 	resp, err := srv.handleDeleteUser(context.Background(), payload)
 	if err != nil {
@@ -301,13 +332,13 @@ func TestHandleDeleteUser_Success(t *testing.T) {
 
 func TestHandleDeleteUser_ServiceError(t *testing.T) {
 	mock := &mockUserService{
-		deleteUserFn: func(_ context.Context, _ string) error {
+		deleteUserFn: func(_ context.Context, _ uint64) error {
 			return errMockUser
 		},
 	}
 
 	srv := newUserServer(mock)
-	payload, _ := json.Marshal(deleteUserWireRequest{ID: "user-004"})
+	payload, _ := json.Marshal(deleteUserWireRequest{ID: 1004})
 
 	_, err := srv.handleDeleteUser(context.Background(), payload)
 	if !errors.Is(err, errMockUser) {
@@ -317,7 +348,7 @@ func TestHandleDeleteUser_ServiceError(t *testing.T) {
 
 func TestHandleDeleteUser_NilService(t *testing.T) {
 	srv := NewServer(nil, nil, "localhost:0")
-	payload, _ := json.Marshal(deleteUserWireRequest{ID: "x"})
+	payload, _ := json.Marshal(deleteUserWireRequest{ID: 1})
 
 	_, err := srv.handleDeleteUser(context.Background(), payload)
 	var snc *ServiceNotConfiguredError
@@ -342,8 +373,8 @@ func TestHandleListUsers_Success(t *testing.T) {
 			}
 			return &user.ListUsersResponse{
 				Users: []*user.User{
-					{ID: "u1", Username: "alice", TenantID: "tenant-1", RoleIDs: []string{}, Enabled: true, CreatedAt: now, UpdatedAt: now},
-					{ID: "u2", Username: "bob", TenantID: "tenant-1", RoleIDs: []string{}, Enabled: true, CreatedAt: now, UpdatedAt: now},
+					{ID: 1, Username: "alice", TenantID: "tenant-1", RoleIDs: []string{}, Enabled: true, CreatedAt: now, UpdatedAt: now},
+					{ID: 2, Username: "bob", TenantID: "tenant-1", RoleIDs: []string{}, Enabled: true, CreatedAt: now, UpdatedAt: now},
 				},
 				Total:   2,
 				HasMore: false,
@@ -411,16 +442,16 @@ func TestHandleListUsers_NilService(t *testing.T) {
 
 func TestHandleEnableUser_Success(t *testing.T) {
 	mock := &mockUserService{
-		enableUserFn: func(_ context.Context, id string) error {
-			if id != "user-005" {
-				t.Fatalf("expected ID 'user-005', got %q", id)
+		enableUserFn: func(_ context.Context, id uint64) error {
+			if id != 1005 {
+				t.Fatalf("expected ID 1005, got %d", id)
 			}
 			return nil
 		},
 	}
 
 	srv := newUserServer(mock)
-	payload, _ := json.Marshal(enableUserWireRequest{ID: "user-005"})
+	payload, _ := json.Marshal(enableUserWireRequest{ID: 1005})
 
 	resp, err := srv.handleEnableUser(context.Background(), payload)
 	if err != nil {
@@ -438,13 +469,13 @@ func TestHandleEnableUser_Success(t *testing.T) {
 
 func TestHandleEnableUser_ServiceError(t *testing.T) {
 	mock := &mockUserService{
-		enableUserFn: func(_ context.Context, _ string) error {
+		enableUserFn: func(_ context.Context, _ uint64) error {
 			return errMockUser
 		},
 	}
 
 	srv := newUserServer(mock)
-	payload, _ := json.Marshal(enableUserWireRequest{ID: "user-005"})
+	payload, _ := json.Marshal(enableUserWireRequest{ID: 1005})
 
 	_, err := srv.handleEnableUser(context.Background(), payload)
 	if !errors.Is(err, errMockUser) {
@@ -454,7 +485,7 @@ func TestHandleEnableUser_ServiceError(t *testing.T) {
 
 func TestHandleEnableUser_NilService(t *testing.T) {
 	srv := NewServer(nil, nil, "localhost:0")
-	payload, _ := json.Marshal(enableUserWireRequest{ID: "x"})
+	payload, _ := json.Marshal(enableUserWireRequest{ID: 1})
 
 	_, err := srv.handleEnableUser(context.Background(), payload)
 	var snc *ServiceNotConfiguredError
@@ -469,16 +500,16 @@ func TestHandleEnableUser_NilService(t *testing.T) {
 
 func TestHandleDisableUser_Success(t *testing.T) {
 	mock := &mockUserService{
-		disableUserFn: func(_ context.Context, id string) error {
-			if id != "user-006" {
-				t.Fatalf("expected ID 'user-006', got %q", id)
+		disableUserFn: func(_ context.Context, id uint64) error {
+			if id != 1006 {
+				t.Fatalf("expected ID 1006, got %d", id)
 			}
 			return nil
 		},
 	}
 
 	srv := newUserServer(mock)
-	payload, _ := json.Marshal(disableUserWireRequest{ID: "user-006"})
+	payload, _ := json.Marshal(disableUserWireRequest{ID: 1006})
 
 	resp, err := srv.handleDisableUser(context.Background(), payload)
 	if err != nil {
@@ -496,13 +527,13 @@ func TestHandleDisableUser_Success(t *testing.T) {
 
 func TestHandleDisableUser_ServiceError(t *testing.T) {
 	mock := &mockUserService{
-		disableUserFn: func(_ context.Context, _ string) error {
+		disableUserFn: func(_ context.Context, _ uint64) error {
 			return errMockUser
 		},
 	}
 
 	srv := newUserServer(mock)
-	payload, _ := json.Marshal(disableUserWireRequest{ID: "user-006"})
+	payload, _ := json.Marshal(disableUserWireRequest{ID: 1006})
 
 	_, err := srv.handleDisableUser(context.Background(), payload)
 	if !errors.Is(err, errMockUser) {
@@ -512,7 +543,7 @@ func TestHandleDisableUser_ServiceError(t *testing.T) {
 
 func TestHandleDisableUser_NilService(t *testing.T) {
 	srv := NewServer(nil, nil, "localhost:0")
-	payload, _ := json.Marshal(disableUserWireRequest{ID: "x"})
+	payload, _ := json.Marshal(disableUserWireRequest{ID: 1})
 
 	_, err := srv.handleDisableUser(context.Background(), payload)
 	var snc *ServiceNotConfiguredError
@@ -535,7 +566,7 @@ func TestUserToWireResponse_NilInput(t *testing.T) {
 func TestUserToWireResponse_NilRoleIDs(t *testing.T) {
 	now := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
 	u := &user.User{
-		ID:        "user-1",
+		ID:        1,
 		Username:  "alice",
 		TenantID:  "tenant-1",
 		RoleIDs:   nil,
@@ -562,7 +593,7 @@ func TestUserToWireResponse_NilRoleIDs(t *testing.T) {
 func TestUserToWireResponse_WithRoleIDs(t *testing.T) {
 	now := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
 	u := &user.User{
-		ID:        "user-2",
+		ID:        2,
 		Username:  "bob",
 		TenantID:  "tenant-2",
 		RoleIDs:   []string{"role-a", "role-b"},
@@ -596,7 +627,7 @@ func TestUserToWireResponse_WithRoleIDs(t *testing.T) {
 
 func TestHandleGetUser_InvalidJSON(t *testing.T) {
 	srv := newUserServer(&mockUserService{
-		getUserFn: func(_ context.Context, _ string) (*user.User, error) { return nil, nil },
+		getUserFn: func(_ context.Context, _ uint64) (*user.User, error) { return nil, nil },
 	})
 	_, err := srv.handleGetUser(context.Background(), []byte("{bad"))
 	var ue *UnmarshalError
@@ -618,7 +649,7 @@ func TestHandleUpdateUser_InvalidJSON(t *testing.T) {
 
 func TestHandleDeleteUser_InvalidJSON(t *testing.T) {
 	srv := newUserServer(&mockUserService{
-		deleteUserFn: func(_ context.Context, _ string) error { return nil },
+		deleteUserFn: func(_ context.Context, _ uint64) error { return nil },
 	})
 	_, err := srv.handleDeleteUser(context.Background(), []byte("{bad"))
 	var ue *UnmarshalError
@@ -642,7 +673,7 @@ func TestHandleListUsers_InvalidJSON(t *testing.T) {
 
 func TestHandleEnableUser_InvalidJSON(t *testing.T) {
 	srv := newUserServer(&mockUserService{
-		enableUserFn: func(_ context.Context, _ string) error { return nil },
+		enableUserFn: func(_ context.Context, _ uint64) error { return nil },
 	})
 	_, err := srv.handleEnableUser(context.Background(), []byte("{bad"))
 	var ue *UnmarshalError
@@ -653,7 +684,7 @@ func TestHandleEnableUser_InvalidJSON(t *testing.T) {
 
 func TestHandleDisableUser_InvalidJSON(t *testing.T) {
 	srv := newUserServer(&mockUserService{
-		disableUserFn: func(_ context.Context, _ string) error { return nil },
+		disableUserFn: func(_ context.Context, _ uint64) error { return nil },
 	})
 	_, err := srv.handleDisableUser(context.Background(), []byte("{bad"))
 	var ue *UnmarshalError

@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	quicraftseal "github.com/jeremyhahn/go-quicraft/pkg/seal"
 )
@@ -25,6 +26,64 @@ const (
 	stateSealed   int32 = 0
 	stateUnsealed int32 = 1
 )
+
+// metadataPathSuffix is appended to the configured RootKeyPath to form the
+// storage key under which non-secret barrier metadata (e.g. the
+// initialization timestamp) is persisted. It must be a SIBLING of the root key
+// (a "." suffix), never a child ("/meta"): a child key nests metadata under the
+// root key's own value path, which a filesystem-backed KV cannot represent
+// (the same path would be both a file holding the root key and a directory
+// holding the metadata). The metadata blob is stored in plaintext alongside the
+// sealed root key envelope; it carries no key material.
+const metadataPathSuffix = ".meta"
+
+// barrierMetadata is the non-secret, persisted barrier metadata. It is
+// serialised as plaintext JSON to the metadata path so that warm-boot
+// callers can recover state (notably InitializedAt) that is not embedded in
+// the sealed root key envelope.
+type barrierMetadata struct {
+	// InitializedAt is the UTC timestamp at which the barrier was first
+	// initialized. Zero means never initialized.
+	InitializedAt time.Time `json:"initialized_at"`
+}
+
+// metadataPath returns the storage key for the barrier's persisted metadata.
+func (b *StorageBarrier) metadataPath() string {
+	return b.config.RootKeyPath + metadataPathSuffix
+}
+
+// persistMetadata writes the barrier metadata blob to the underlying backend
+// in plaintext. The metadata contains no secret material.
+func (b *StorageBarrier) persistMetadata(ctx context.Context, meta barrierMetadata) error {
+	blob, err := json.Marshal(meta)
+	if err != nil {
+		return err
+	}
+	return b.base.Put(ctx, b.metadataPath(), blob)
+}
+
+// loadInitializedAt reads the persisted initialization timestamp from the
+// metadata blob, returning the zero time when no metadata is present. A
+// missing metadata blob (ErrSecretNotFound or a nil value from backends that
+// signal "missing" that way) is not an error: pre-metadata barriers simply
+// have no persisted timestamp.
+func (b *StorageBarrier) loadInitializedAt(ctx context.Context) (time.Time, error) {
+	blob, err := b.base.Get(ctx, b.metadataPath())
+	if err != nil {
+		if err == ErrSecretNotFound {
+			return time.Time{}, nil
+		}
+		return time.Time{}, err
+	}
+	if blob == nil {
+		return time.Time{}, nil
+	}
+	var meta barrierMetadata
+	if jsonErr := json.Unmarshal(blob, &meta); jsonErr != nil {
+		return time.Time{}, jsonErr
+	}
+	return meta.InitializedAt, nil
+}
 
 // Compile-time interface check.
 var _ StorageBackend = (*StorageBarrier)(nil)
@@ -66,6 +125,18 @@ type StorageBarrier struct {
 
 	// accumulator holds the Shamir share accumulator for quorum-based unsealing.
 	accumulator atomic.Value
+
+	// accumulatorMu serializes load-or-create of the accumulator so concurrent
+	// first shares cannot each construct a separate accumulator (which would
+	// lose quorum progress), and so an expired accumulator is wiped before it
+	// is replaced.
+	accumulatorMu sync.Mutex
+
+	// initializedAt records when the barrier was first initialized. Used by
+	// callers (notably the GUI's connection manager) to distinguish a never-
+	// initialized barrier from a sealed-but-initialized one. atomic.Value
+	// stores time.Time. Zero value means "never initialized".
+	initializedAt atomic.Value
 }
 
 // NewStorageBarrier creates a new StorageBarrier that encrypts all values
@@ -88,10 +159,9 @@ func NewStorageBarrier(
 		stratMap[s.ID()] = s
 	}
 
+	// Strategy selection is explicit: the caller's PreferenceOrder is the
+	// ordered candidate list. There is no implicit default preference order.
 	prefOrder := config.PreferenceOrder
-	if len(prefOrder) == 0 {
-		prefOrder = DefaultPreferenceOrder
-	}
 
 	epochConfig := quicraftseal.DefaultBarrierConfig(config.DeploymentID)
 	if config.InvocationLimit != 0 {
@@ -166,6 +236,17 @@ func (b *StorageBarrier) Initialize(ctx context.Context, creds Credentials) erro
 	// Transition to unsealed.
 	b.activeStrategy.Store(strategy.ID())
 	b.state.Store(stateUnsealed)
+	initAt := time.Now().UTC()
+	b.initializedAt.Store(initAt)
+
+	// Persist the initialization timestamp so that a warm-booted barrier
+	// (a fresh StorageBarrier constructed over the same store) reports a
+	// non-zero InitializedAt without having to unseal first.
+	if err := b.persistMetadata(ctx, barrierMetadata{InitializedAt: initAt}); err != nil {
+		emitAudit(b.config.AuditLogger, "initialize", "barrier", b.config.RootKeyPath,
+			"deny", map[string]string{"error": err.Error(), "strategy": string(strategy.ID())})
+		return err
+	}
 
 	emitAudit(b.config.AuditLogger, "initialize", "barrier", b.config.RootKeyPath,
 		"allow", map[string]string{"strategy": string(strategy.ID())})
@@ -219,6 +300,13 @@ func (b *StorageBarrier) Unseal(ctx context.Context, creds Credentials) error {
 
 	b.activeStrategy.Store(sealed.Strategy)
 	b.state.Store(stateUnsealed)
+	// Recover the initialization timestamp. The original timestamp is
+	// persisted in the barrier metadata (not in the sealed root key blob),
+	// so a warm-booted barrier reports the real InitializedAt. If no
+	// metadata is present (a pre-metadata barrier) we fall back to the
+	// unseal time as a non-zero sentinel so callers can still distinguish
+	// initialized from never-initialized.
+	b.restoreInitializedAt(ctx)
 
 	// Seed the invocation counter with the number of encrypted entries
 	// in the current epoch. Each stored key represents one encrypt invocation.
@@ -254,43 +342,56 @@ func (b *StorageBarrier) unsealDirect(rootKey []byte) error {
 		return ErrShamirNotConfigured
 	}
 
-	// Initialize the EpochBarrier with the reconstructed root key.
-	if err := b.barrier.Initialize(context.Background(), shamirStrat, Credentials{}); err != nil {
-		// If already initialized, try unseal instead.
-		if err == quicraftseal.ErrBarrierAlreadyInit {
-			// Load the sealed data so the barrier has the epoch/salt state.
-			blob, getErr := b.base.Get(context.Background(), b.config.RootKeyPath)
-			if getErr != nil {
-				return getErr
-			}
-			var sealed SealedRootKey
-			if jsonErr := json.Unmarshal(blob, &sealed); jsonErr != nil {
-				return ErrCorruptRootKey
-			}
-			if setErr := b.barrier.SetSealedRootKey(&sealed); setErr != nil {
-				return setErr
-			}
-			if unsealErr := b.barrier.Unseal(context.Background(), shamirStrat, Credentials{}); unsealErr != nil {
-				return unsealErr
-			}
-		} else {
-			return err
-		}
-	} else {
-		// Persist the sealed root key blob from the new initialization.
-		sealed := b.barrier.SealedRootKeyData()
-		sealedBlob, marshalErr := json.Marshal(sealed)
-		if marshalErr != nil {
-			return marshalErr
-		}
-		if putErr := b.base.Put(context.Background(), b.config.RootKeyPath, sealedBlob); putErr != nil {
-			return putErr
-		}
+	// The SOs have reconstructed the root key in memory (rootKey). The real
+	// ShamirStrategy can no longer reconstruct it (shares are never persisted),
+	// so we unseal via a recovery strategy that simply hands the EpochBarrier
+	// the in-hand root key. The persisted (key-material-free) envelope supplies
+	// the epoch/salt state needed to re-derive DEKs. This mirrors RecoverWithKeys
+	// and works whether the EpochBarrier is freshly opened or sealed in-process.
+	blob, getErr := b.base.Get(context.Background(), b.config.RootKeyPath)
+	if getErr != nil {
+		return getErr
+	}
+	var sealed SealedRootKey
+	if jsonErr := json.Unmarshal(blob, &sealed); jsonErr != nil {
+		return ErrCorruptRootKey
+	}
+	if setErr := b.barrier.SetSealedRootKey(&sealed); setErr != nil {
+		return setErr
+	}
+	recStrat := newRecoveryStrategy(rootKey, shamirStrat)
+	defer func() { _ = recStrat.Close() }()
+	if unsealErr := b.barrier.Unseal(context.Background(), recStrat, Credentials{}); unsealErr != nil {
+		return unsealErr
 	}
 
 	b.activeStrategy.Store(StrategyShamir)
 	b.state.Store(stateUnsealed)
+	b.restoreInitializedAt(context.Background())
 	return nil
+}
+
+// restoreInitializedAt populates the in-memory initialization timestamp on an
+// unseal. It prefers the persisted metadata timestamp (the real
+// initialization time) and falls back to the current time as a non-zero
+// sentinel when no metadata is present, preserving the prior "signal
+// initialized" semantics for pre-metadata barriers.
+func (b *StorageBarrier) restoreInitializedAt(ctx context.Context) {
+	if v := b.initializedAt.Load(); v != nil {
+		if t, ok := v.(time.Time); ok && !t.IsZero() {
+			return
+		}
+	}
+	persisted, err := b.loadInitializedAt(ctx)
+	if err != nil {
+		b.logger.Warn("failed to load persisted barrier metadata on unseal",
+			slog.String("error", err.Error()))
+		persisted = time.Time{}
+	}
+	if persisted.IsZero() {
+		persisted = time.Now().UTC()
+	}
+	b.initializedAt.Store(persisted)
 }
 
 // ShamirStrategy returns the registered ShamirStrategy or nil if not
@@ -357,6 +458,12 @@ func (b *StorageBarrier) IsSealed() bool {
 }
 
 // Status returns the current barrier status.
+//
+// InitializedAt is reported from the in-memory timestamp when available and
+// otherwise recovered from the persisted barrier metadata. This means a
+// warm-booted barrier (a fresh StorageBarrier constructed over the same
+// store) reports the original initialization timestamp even while still
+// sealed, without requiring an unseal first.
 func (b *StorageBarrier) Status() *BarrierStatus {
 	status := &BarrierStatus{
 		Sealed: b.IsSealed(),
@@ -369,7 +476,33 @@ func (b *StorageBarrier) Status() *BarrierStatus {
 			}
 		}
 	}
+	if t := b.initializedAtOrPersisted(); !t.IsZero() {
+		status.InitializedAt = t
+	}
 	return status
+}
+
+// initializedAtOrPersisted returns the in-memory initialization timestamp
+// when set, falling back to the persisted metadata on a warm boot. On the
+// fallback path it caches the recovered value in memory so subsequent calls
+// avoid the backend read. A backend read error or absent metadata yields the
+// zero time (the barrier is treated as never initialized).
+func (b *StorageBarrier) initializedAtOrPersisted() time.Time {
+	if v := b.initializedAt.Load(); v != nil {
+		if t, ok := v.(time.Time); ok && !t.IsZero() {
+			return t
+		}
+	}
+	persisted, err := b.loadInitializedAt(context.Background())
+	if err != nil {
+		b.logger.Warn("failed to load persisted barrier metadata",
+			slog.String("error", err.Error()))
+		return time.Time{}
+	}
+	if !persisted.IsZero() {
+		b.initializedAt.Store(persisted)
+	}
+	return persisted
 }
 
 // SetShamirConfig sets or replaces the Shamir configuration on the barrier.
@@ -428,7 +561,12 @@ func (b *StorageBarrier) Logger() *slog.Logger {
 	return b.logger
 }
 
-// Get retrieves and decrypts the value for the given key.
+// Get retrieves and decrypts the value for the given key. Returns
+// ErrSecretNotFound when the underlying backend has no record for the key.
+// This normalises across backends that signal "missing" differently:
+// MemoryBackend returns ErrSecretNotFound directly, but PebbleStorage (via
+// StorageAdapter) returns (nil, nil) which would otherwise propagate into
+// Decrypt and surface as a spurious "decryption failed".
 func (b *StorageBarrier) Get(ctx context.Context, key string) ([]byte, error) {
 	if b.state.Load() != stateUnsealed {
 		return nil, ErrSealed
@@ -436,6 +574,9 @@ func (b *StorageBarrier) Get(ctx context.Context, key string) ([]byte, error) {
 	ciphertext, err := b.base.Get(ctx, key)
 	if err != nil {
 		return nil, err
+	}
+	if ciphertext == nil {
+		return nil, ErrSecretNotFound
 	}
 	plaintext, err := b.barrier.Decrypt(nil, ciphertext)
 	if err != nil {
@@ -519,14 +660,33 @@ func (b *StorageBarrier) Decrypt(ciphertext []byte) ([]byte, error) {
 	return b.barrier.Decrypt(nil, ciphertext)
 }
 
-// bestStrategy returns the first available strategy in preference order.
+// bestStrategy selects the sealing strategy. There is NO implicit multi-strategy
+// ranking (the former DefaultPreferenceOrder is gone). Selection rules:
+//   - If an explicit PreferenceOrder is configured, use the first available
+//     strategy in that order.
+//   - Otherwise, if exactly ONE strategy is registered, use it — the operator
+//     explicitly configured a single strategy at setup, so the choice is
+//     unambiguous (not a hidden default).
+//   - If multiple strategies are registered with no PreferenceOrder, refuse to
+//     guess: return ErrNoStrategySpecified. The caller must specify the order.
 func (b *StorageBarrier) bestStrategy() (SealingStrategy, error) {
-	for _, id := range b.prefOrder {
-		if s, ok := b.strategies[id]; ok && s.Available() {
-			return s, nil
+	if len(b.prefOrder) > 0 {
+		for _, id := range b.prefOrder {
+			if s, ok := b.strategies[id]; ok && s.Available() {
+				return s, nil
+			}
+		}
+		return nil, ErrNoAvailableStrategy
+	}
+	if len(b.strategies) == 1 {
+		for _, s := range b.strategies {
+			if s.Available() {
+				return s, nil
+			}
+			return nil, ErrNoAvailableStrategy
 		}
 	}
-	return nil, ErrNoAvailableStrategy
+	return nil, ErrNoStrategySpecified
 }
 
 // countCurrentEntries counts the number of entries in the base backend by

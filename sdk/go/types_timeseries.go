@@ -14,7 +14,11 @@
 
 package sdk
 
-import "github.com/jeremyhahn/go-qrdb/pkg/timeseries"
+import (
+	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
+)
 
 // ---------------------------------------------------------------------------
 // Time series storage types
@@ -23,11 +27,38 @@ import "github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 // TimeSeriesStorage is a PebbleDB-backed time series storage engine.
 type TimeSeriesStorage = timeseries.Storage
 
+// TimeSeriesStorageOption configures a PebbleDB-backed time series storage instance.
+type TimeSeriesStorageOption = timeseries.StorageOption
+
 // NewTimeSeriesStorage creates a new time series storage from an existing PebbleDB.
 var NewTimeSeriesStorage = timeseries.New
 
 // NewTimeSeriesStorageWithDir creates a new time series storage at the given directory.
+// Optional TimeSeriesStorageOption values configure the underlying PebbleDB instance.
 var NewTimeSeriesStorageWithDir = timeseries.NewWithDir
+
+// NewTimeSeriesStorageWithBarrier wraps the time series Pebble FS with the
+// given StorageBarrier so all on-disk files are encrypted at rest. The barrier
+// must be unsealed before calling this constructor.
+func NewTimeSeriesStorageWithBarrier(dataDir string, barrier *seal.StorageBarrier) (*timeseries.Storage, error) {
+	return timeseries.NewWithDir(dataDir, timeseries.WithBarrier(barrier))
+}
+
+// NewTimeSeriesStorageWithEncryptor opens a time series store at dataDir
+// with at-rest encryption driven by enc. A nil enc or a no-op enc opens
+// the store in plaintext mode, preserving backward compatibility.
+func NewTimeSeriesStorageWithEncryptor(dataDir string, enc *atrest.Encryptor) (*timeseries.Storage, error) {
+	return timeseries.NewWithDir(dataDir, timeseries.WithEncryptor(enc))
+}
+
+// TimeSeriesWithBarrier returns a TimeSeriesStorageOption that wraps the
+// Pebble vfs.FS with seal/encfs. A nil barrier is a no-op.
+var TimeSeriesWithBarrier = timeseries.WithBarrier
+
+// TimeSeriesWithEncryptor returns a TimeSeriesStorageOption that wraps the
+// Pebble vfs.FS using the shared atrest.Encryptor. A nil or no-op Encryptor
+// leaves the FS untouched.
+var TimeSeriesWithEncryptor = timeseries.WithEncryptor
 
 // TimeSeriesDataPoint holds a single time series data point.
 type TimeSeriesDataPoint = timeseries.DataPoint

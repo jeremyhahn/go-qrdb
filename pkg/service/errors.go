@@ -14,7 +14,42 @@
 
 package service
 
-import "strconv"
+import (
+	"strconv"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
+	"github.com/jeremyhahn/go-quicraft/pkg/sm"
+)
+
+// SMNotConfiguredError is returned when a proposal succeeds at the Raft level
+// but the state machine encodes an application error into result.Data instead
+// of returning a fatal Update error (which would halt lastApplied and stall
+// every read and write on the group). The encoded outcome is a deterministic,
+// non-fatal consequence of valid client input — a target subsystem that is not
+// configured on this SM (lease, timeseries), an invalid lease TTL, or a
+// unique-index violation. This surfaces that outcome to the API layer as a
+// typed error.
+type SMNotConfiguredError struct {
+	// Message is the error string the SM encoded into result.Data.
+	Message string
+}
+
+// Error returns a human-readable description.
+func (e *SMNotConfiguredError) Error() string {
+	return "service: " + e.Message
+}
+
+// checkResultError inspects result.Data for a state-machine-encoded application
+// error (see protocol.EncodeAppError). The discriminated prefix is required so
+// ordinary result payloads — notably the one-byte transaction success flag —
+// are never misread as errors. Returns a non-nil SMNotConfiguredError only when
+// the payload carries the application-error prefix.
+func checkResultError(result sm.Result) error {
+	if msg, ok := protocol.DecodeAppError(result.Data); ok {
+		return &SMNotConfiguredError{Message: msg}
+	}
+	return nil
+}
 
 // KeyNotFoundError is returned when a KV lookup finds no matching key.
 type KeyNotFoundError struct {

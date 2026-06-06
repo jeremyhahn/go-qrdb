@@ -109,8 +109,15 @@ func (t *Transport) Connect(ctx context.Context) error {
 		Timeout:   timeout,
 	}
 
-	// Verify connectivity with a health check.
-	if !t.Healthy(ctx) {
+	// Verify connectivity with a reachability probe. We accept the server as
+	// connectable when /health returns 200 (healthy) OR 503 (sealed /
+	// not-ready). A sealed barrier returns 503, yet the server is up and the
+	// allowlisted barrier/seal endpoints (status, unseal, shamir/*) MUST be
+	// reachable so an operator can drive unseal over REST — gating Connect on
+	// 200 alone would make the CLI unable to talk to a sealed node at all.
+	// Other statuses (e.g. 500) and transport errors are treated as
+	// unreachable.
+	if !t.reachable(ctx) {
 		return &transport.ConnectionError{
 			Address: t.config.Address,
 			Err:     &healthCheckError{},
@@ -118,6 +125,28 @@ func (t *Transport) Connect(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// reachable reports whether the server is connectable: /health answers with
+// 200 (healthy) or 503 (sealed / not-ready). It is intentionally more
+// permissive than Healthy so the client can attach to a sealed server and
+// run the allowlisted barrier/seal commands. Transport errors and other
+// status codes return false.
+func (t *Transport) reachable(ctx context.Context) bool {
+	if t.closed.Load() || t.client == nil {
+		return false
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, t.baseURL+"/health", nil)
+	if err != nil {
+		return false
+	}
+	resp, err := t.client.Do(req)
+	if err != nil {
+		return false
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	return resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusServiceUnavailable
 }
 
 // Close shuts down the REST transport and releases idle connections.
@@ -201,7 +230,8 @@ func (t *Transport) Request(ctx context.Context, method string, req, resp any) e
 // ---------------------------------------------------------------------------
 
 // Put stores a key-value pair. Maps to PUT /kv/{key} with the raw value
-// as the request body.
+// as the request body. An optional ?write_mode= query parameter is appended
+// when a write mode was explicitly set.
 func (t *Transport) Put(ctx context.Context, key string, value []byte, opts ...transport.WriteOption) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
@@ -213,10 +243,7 @@ func (t *Transport) Put(ctx context.Context, key string, value []byte, opts ...t
 		return &transport.RequestError{Method: "Put", Err: err}
 	}
 
-	wo := transport.ResolveWriteOptions(opts...)
-	if wo.ModeSet {
-		req.Header.Set("X-QRDB-Write-Mode", wo.Mode.String())
-	}
+	applyWriteModeQueryParam(req, opts...)
 
 	resp, err := t.client.Do(req)
 	if err != nil {
@@ -235,7 +262,8 @@ func (t *Transport) Put(ctx context.Context, key string, value []byte, opts ...t
 }
 
 // Get retrieves a value by key. Maps to GET /kv/{key}. Returns
-// KeyNotFoundError when the server responds with 404.
+// KeyNotFoundError when the server responds with 404. An optional
+// ?consistency= query parameter is appended when a consistency level was set.
 func (t *Transport) Get(ctx context.Context, key string, opts ...transport.ReadOption) ([]byte, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
@@ -247,7 +275,7 @@ func (t *Transport) Get(ctx context.Context, key string, opts ...transport.ReadO
 		return nil, &transport.RequestError{Method: "Get", Err: err}
 	}
 
-	applyReadHeaders(req, opts...)
+	applyReadQueryParams(req, opts...)
 
 	resp, err := t.client.Do(req)
 	if err != nil {
@@ -271,7 +299,8 @@ func (t *Transport) Get(ctx context.Context, key string, opts ...transport.ReadO
 	return data, nil
 }
 
-// Delete removes a key. Maps to DELETE /kv/{key}.
+// Delete removes a key. Maps to DELETE /kv/{key}. An optional ?write_mode=
+// query parameter is appended when a write mode was explicitly set.
 func (t *Transport) Delete(ctx context.Context, key string, opts ...transport.WriteOption) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
@@ -283,10 +312,7 @@ func (t *Transport) Delete(ctx context.Context, key string, opts ...transport.Wr
 		return &transport.RequestError{Method: "Delete", Err: err}
 	}
 
-	wo := transport.ResolveWriteOptions(opts...)
-	if wo.ModeSet {
-		req.Header.Set("X-QRDB-Write-Mode", wo.Mode.String())
-	}
+	applyWriteModeQueryParam(req, opts...)
 
 	resp, err := t.client.Do(req)
 	if err != nil {
@@ -304,16 +330,21 @@ func (t *Transport) Delete(ctx context.Context, key string, opts ...transport.Wr
 	return t.decodeErrorResponse("Delete", resp)
 }
 
-// List returns sorted keys matching the given prefix. Maps to
-// GET /kv?prefix=X.
+// List returns sorted keys matching the given prefix. Maps to GET /kv?prefix=X.
+// An optional ?consistency= query parameter is appended when a consistency
+// level was set.
 func (t *Transport) List(ctx context.Context, prefix string, opts ...transport.ReadOption) ([]string, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
 
-	reqURL := t.baseURL + "/kv"
+	params := url.Values{}
 	if prefix != "" {
-		reqURL += "?prefix=" + url.QueryEscape(prefix)
+		params.Set("prefix", prefix)
+	}
+	reqURL := t.baseURL + "/kv"
+	if len(params) > 0 {
+		reqURL += "?" + params.Encode()
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
@@ -321,7 +352,7 @@ func (t *Transport) List(ctx context.Context, prefix string, opts ...transport.R
 		return nil, &transport.RequestError{Method: "List", Err: err}
 	}
 
-	applyReadHeaders(req, opts...)
+	applyReadQueryParams(req, opts...)
 
 	resp, err := t.client.Do(req)
 	if err != nil {
@@ -342,15 +373,20 @@ func (t *Transport) List(ctx context.Context, prefix string, opts ...transport.R
 }
 
 // Scan returns all key-value pairs matching the given prefix. Maps to
-// GET /kv/scan?prefix=X.
+// GET /kv/scan?prefix=X. An optional ?consistency= query parameter is appended
+// when a consistency level was set.
 func (t *Transport) Scan(ctx context.Context, prefix string, opts ...transport.ReadOption) (map[string][]byte, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
 
-	reqURL := t.baseURL + "/kv/scan"
+	params := url.Values{}
 	if prefix != "" {
-		reqURL += "?prefix=" + url.QueryEscape(prefix)
+		params.Set("prefix", prefix)
+	}
+	reqURL := t.baseURL + "/kv/scan"
+	if len(params) > 0 {
+		reqURL += "?" + params.Encode()
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
@@ -358,7 +394,7 @@ func (t *Transport) Scan(ctx context.Context, prefix string, opts ...transport.R
 		return nil, &transport.RequestError{Method: "Scan", Err: err}
 	}
 
-	applyReadHeaders(req, opts...)
+	applyReadQueryParams(req, opts...)
 
 	resp, err := t.client.Do(req)
 	if err != nil {
@@ -785,17 +821,38 @@ func (t *Transport) decodeErrorResponse(method string, resp *http.Response) erro
 	}
 }
 
-// applyReadHeaders resolves read options and sets the corresponding
-// HTTP headers on the request.
-func applyReadHeaders(req *http.Request, opts ...transport.ReadOption) {
+// applyReadQueryParams resolves read options and appends the corresponding
+// query parameters to req.URL. It is a no-op when no read options are set.
+//
+// Mapping:
+//   - ConsistencySet  → ?consistency=<level>
+//   - AllowStale only → ?consistency=eventual (legacy back-compat)
+//
+// The TimeoutMs field is not wired as a query parameter because the server
+// enforces its own request timeout; it is kept for future extension.
+func applyReadQueryParams(req *http.Request, opts ...transport.ReadOption) {
 	ro := transport.ResolveReadOptions(opts...)
+	if !ro.ConsistencySet && !ro.AllowStale {
+		return
+	}
+
+	q := req.URL.Query()
 	if ro.ConsistencySet {
-		req.Header.Set("X-QRDB-Consistency", ro.Consistency.String())
+		q.Set("consistency", ro.Consistency.String())
+	} else if ro.AllowStale {
+		q.Set("consistency", "eventual")
 	}
-	if ro.TimeoutMs > 0 {
-		req.Header.Set("X-QRDB-Read-Timeout", strconv.FormatInt(ro.TimeoutMs, 10))
+	req.URL.RawQuery = q.Encode()
+}
+
+// applyWriteModeQueryParam appends the ?write_mode= query parameter to req.URL
+// when a non-default write mode was explicitly set via WriteOption.
+func applyWriteModeQueryParam(req *http.Request, opts ...transport.WriteOption) {
+	wo := transport.ResolveWriteOptions(opts...)
+	if !wo.ModeSet {
+		return
 	}
-	if ro.AllowStale {
-		req.Header.Set("X-QRDB-Allow-Stale", "true")
-	}
+	q := req.URL.Query()
+	q.Set("write_mode", wo.Mode.String())
+	req.URL.RawQuery = q.Encode()
 }

@@ -21,8 +21,14 @@ import (
 	"log/slog"
 	"testing"
 
+	"github.com/jeremyhahn/go-objstore/pkg/common"
+	"github.com/jeremyhahn/go-objstore/pkg/local"
+	objpool "github.com/jeremyhahn/go-objstore/pkg/pool"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
+	qrdbpool "github.com/jeremyhahn/go-qrdb/pkg/storage/pool"
 )
 
 // errStoreFault is a sentinel error used by failingBackend.
@@ -86,7 +92,11 @@ func testSoftwareStrategy(t *testing.T) *seal.SoftwareStrategy {
 }
 
 // newTestBarrierRegistry creates a BarrierRegistry with a system barrier
-// for tenant service tests.
+// and a pool-driven per-tenant Pebble flow for tenant service tests.
+// Barrier-isolated tenants registered through RegisterTenantPooled get a
+// durable, independent per-tenant Pebble at a t-scoped temp directory, so
+// crypto/physical isolation can be exercised against a real seal backend
+// without modifying the host system.
 func newTestBarrierRegistry(t *testing.T) *seal.BarrierRegistry {
 	t.Helper()
 	store := seal.NewMemoryBackend()
@@ -96,7 +106,35 @@ func newTestBarrierRegistry(t *testing.T) *seal.BarrierRegistry {
 	if err != nil {
 		t.Fatalf("NewBarrier (system): %v", err)
 	}
-	reg, err := seal.NewBarrierRegistry(testLogger(), system)
+
+	// Single-path local volume pool backed by a t-scoped temp dir.
+	localStore := local.New()
+	if cfgErr := localStore.Configure(map[string]string{"path": t.TempDir()}); cfgErr != nil {
+		t.Fatalf("Configure local backend: %v", cfgErr)
+	}
+	mgr := objpool.NewManager()
+
+	stateStorage, err := pebblestore.New(&pebblestore.Config{DataDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("open state-store Pebble: %v", err)
+	}
+	t.Cleanup(func() { _ = stateStorage.Close() })
+	state, err := qrdbpool.NewPebbleStateStore(stateStorage)
+	if err != nil {
+		t.Fatalf("NewPebbleStateStore: %v", err)
+	}
+	rr := &objpool.RoundRobinStrategy{State: state}
+	if regErr := mgr.Register("default", []common.Storage{localStore}, rr); regErr != nil {
+		t.Fatalf("pool Register: %v", regErr)
+	}
+
+	perTenantReg := pebblestore.NewPerTenantRegistry()
+	t.Cleanup(func() { _ = perTenantReg.CloseAll(context.Background()) })
+
+	reg, err := seal.NewBarrierRegistry(testLogger(), system,
+		seal.WithVolumePool(mgr, state, "default"),
+		seal.WithPerTenantRegistry(perTenantReg),
+	)
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry: %v", err)
 	}
@@ -302,8 +340,8 @@ func TestTenantService_GetCorruptData(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	// Write invalid JSON directly.
-	if err := store.Put(ctx, "tenants/corrupt", []byte("not-json")); err != nil {
+	// Write invalid JSON directly under the canonical metadata prefix.
+	if err := store.Put(ctx, metadataPrefix+"corrupt", []byte("not-json")); err != nil {
 		t.Fatalf("store.Put: %v", err)
 	}
 
@@ -493,27 +531,31 @@ func TestTenantService_BarrierInit(t *testing.T) {
 	svc, reg := newTestService(t)
 	ctx := context.Background()
 
+	// A prefix tenant (the default) does not pre-register a barrier; the
+	// barrier is registered-and-initialized on demand by TenantBarrierInit
+	// via the register-shell path.
 	_, err := svc.CreateTenant(ctx, "init-test", "Init Test", "")
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
 
-	// Verify barrier is sealed before init.
-	status, err := reg.TenantStatus("init-test")
+	// No barrier registered yet: TenantBarrierStatus reports uninitialized.
+	preStatus, err := svc.TenantBarrierStatus(ctx, "init-test")
 	if err != nil {
-		t.Fatalf("TenantStatus before init: %v", err)
+		t.Fatalf("TenantBarrierStatus before init: %v", err)
 	}
-	if !status.Sealed {
-		t.Error("expected sealed before init")
+	if preStatus.Initialized {
+		t.Error("expected uninitialized before init")
 	}
 
-	// Initialize the barrier.
-	if err := svc.TenantBarrierInit(ctx, "init-test", 0, 0); err != nil {
+	// Initialize the barrier with a caller-supplied passphrase. This
+	// register-shell-initializes the tenant barrier and leaves it unsealed.
+	if err := svc.TenantBarrierInit(ctx, "init-test", "init-test-passphrase", 0, 0); err != nil {
 		t.Fatalf("TenantBarrierInit: %v", err)
 	}
 
 	// Verify barrier is unsealed after init.
-	status, err = reg.TenantStatus("init-test")
+	status, err := reg.TenantStatus("init-test")
 	if err != nil {
 		t.Fatalf("TenantStatus after init: %v", err)
 	}
@@ -526,7 +568,7 @@ func TestTenantService_BarrierInitNotFound(t *testing.T) {
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 
-	err := svc.TenantBarrierInit(ctx, "nonexistent", 0, 0)
+	err := svc.TenantBarrierInit(ctx, "nonexistent", "pw", 0, 0)
 	if !errors.Is(err, ErrTenantNotFound) {
 		t.Errorf("expected ErrTenantNotFound, got %v", err)
 	}
@@ -536,7 +578,7 @@ func TestTenantService_BarrierInitEmptyID(t *testing.T) {
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 
-	err := svc.TenantBarrierInit(ctx, "", 0, 0)
+	err := svc.TenantBarrierInit(ctx, "", "pw", 0, 0)
 	if !errors.Is(err, ErrEmptyTenantID) {
 		t.Errorf("expected ErrEmptyTenantID, got %v", err)
 	}
@@ -551,15 +593,365 @@ func TestTenantService_BarrierInitAlreadyInitialized(t *testing.T) {
 		t.Fatalf("CreateTenant: %v", err)
 	}
 
-	if err := svc.TenantBarrierInit(ctx, "double-init", 0, 0); err != nil {
+	if err := svc.TenantBarrierInit(ctx, "double-init", "double-init-pw", 0, 0); err != nil {
 		t.Fatalf("first TenantBarrierInit: %v", err)
 	}
 
 	// Second init should fail with BarrierError wrapping ErrTenantAlreadyInitialized.
-	err = svc.TenantBarrierInit(ctx, "double-init", 0, 0)
+	err = svc.TenantBarrierInit(ctx, "double-init", "double-init-pw", 0, 0)
 	var be *BarrierError
 	if !errors.As(err, &be) {
 		t.Errorf("expected BarrierError, got %v", err)
+	}
+}
+
+// TestTenantService_BarrierInitEmptyPassphraseRejected proves that the
+// passphrase strategy rejects an empty passphrase with ErrEmptyPassphrase and
+// does NOT fall back to any derived "tenant-init-<id>" credential.
+func TestTenantService_BarrierInitEmptyPassphraseRejected(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctx := context.Background()
+
+	if _, err := svc.CreateTenant(ctx, "empty-pw", "Empty PW", ""); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+
+	err := svc.TenantBarrierInit(ctx, "empty-pw", "", 0, 0)
+	if !errors.Is(err, ErrEmptyPassphrase) {
+		t.Fatalf("expected ErrEmptyPassphrase, got %v", err)
+	}
+}
+
+// TestTenantService_BarrierInitSuppliedPassphraseGoverns proves that when the
+// tenant barrier is initialized through the register-shell path (no barrier
+// pre-registered), the caller-supplied passphrase — not any derived value —
+// governs unseal: the same passphrase unseals, a wrong passphrase fails, and
+// the old derived "tenant-init-<id>" value does NOT unseal.
+func TestTenantService_BarrierInitSuppliedPassphraseGoverns(t *testing.T) {
+	svc, reg := newTestService(t)
+	ctx := context.Background()
+
+	const tenantID = "supplied-pw"
+	const passphrase = "correct-horse-battery-staple"
+
+	if _, err := svc.CreateTenant(ctx, tenantID, "Supplied PW", ""); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+
+	// Remove the default (fixed-password software) barrier that CreateTenant
+	// pre-registers so that TenantBarrierInit takes the register-shell path
+	// and registers a deferred-software strategy that binds the supplied
+	// passphrase at init time.
+	// Prefix tenants (the new default) do not pre-register a barrier, so
+	// UnregisterTenant is a tolerated no-op here; the subsequent
+	// TenantBarrierInit takes the register-shell path either way.
+	if err := reg.UnregisterTenant(tenantID); err != nil && !errors.Is(err, seal.ErrTenantNotFound) {
+		t.Fatalf("UnregisterTenant: %v", err)
+	}
+
+	if err := svc.TenantBarrierInit(ctx, tenantID, passphrase, 0, 0); err != nil {
+		t.Fatalf("TenantBarrierInit: %v", err)
+	}
+
+	// The deferred-software strategy is active for the tenant barrier.
+	st, err := reg.TenantStatus(tenantID)
+	if err != nil {
+		t.Fatalf("TenantStatus: %v", err)
+	}
+	if st.Strategy != seal.StrategyPassphrase {
+		t.Fatalf("strategy = %q, want %q", st.Strategy, seal.StrategyPassphrase)
+	}
+
+	// Seal, then prove only the supplied passphrase unseals.
+	if err := reg.SealTenant(tenantID); err != nil {
+		t.Fatalf("SealTenant: %v", err)
+	}
+
+	// Wrong passphrase must fail.
+	if err := svc.TenantBarrierUnseal(ctx, tenantID, []byte("wrong-passphrase")); err == nil {
+		t.Fatal("unseal with wrong passphrase succeeded, want failure")
+	}
+
+	// The previously derived credential must NOT unseal.
+	if err := svc.TenantBarrierUnseal(ctx, tenantID, []byte("tenant-init-"+tenantID)); err == nil {
+		t.Fatal("unseal with derived credential succeeded, want failure (no derived fallback)")
+	}
+
+	// The supplied passphrase must unseal.
+	if err := svc.TenantBarrierUnseal(ctx, tenantID, []byte(passphrase)); err != nil {
+		t.Fatalf("unseal with supplied passphrase: %v", err)
+	}
+
+	st, err = reg.TenantStatus(tenantID)
+	if err != nil {
+		t.Fatalf("TenantStatus after unseal: %v", err)
+	}
+	if st.Sealed {
+		t.Fatal("expected unsealed after unseal with supplied passphrase")
+	}
+}
+
+// ---------- TenantBarrierInitWithStrategy ----------
+
+// TestTenantService_BarrierInitWithStrategy_DefaultPassphrase proves that
+// calling TenantBarrierInitWithStrategy with an empty strategy ID falls back
+// to seal.StrategyPassphrase — identical behaviour to TenantBarrierInit.
+func TestTenantService_BarrierInitWithStrategy_DefaultPassphrase(t *testing.T) {
+	svc, reg := newTestService(t)
+	ctx := context.Background()
+
+	const tenantID = "strategy-default"
+	const passphrase = "default-strategy-passphrase"
+
+	if _, err := svc.CreateTenant(ctx, tenantID, "Strategy Default", ""); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	// Prefix tenants (the new default) do not pre-register a barrier, so
+	// UnregisterTenant is a tolerated no-op here; the subsequent
+	// TenantBarrierInit takes the register-shell path either way.
+	if err := reg.UnregisterTenant(tenantID); err != nil && !errors.Is(err, seal.ErrTenantNotFound) {
+		t.Fatalf("UnregisterTenant: %v", err)
+	}
+
+	// Empty strategyID should resolve to passphrase.
+	if err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, passphrase, 0, 0, ""); err != nil {
+		t.Fatalf("TenantBarrierInitWithStrategy(empty): %v", err)
+	}
+
+	st, err := reg.TenantStatus(tenantID)
+	if err != nil {
+		t.Fatalf("TenantStatus: %v", err)
+	}
+	if st.Strategy != seal.StrategyPassphrase {
+		t.Fatalf("strategy = %q, want %q", st.Strategy, seal.StrategyPassphrase)
+	}
+	if st.Sealed {
+		t.Fatal("expected barrier to be unsealed after init")
+	}
+}
+
+// TestTenantService_BarrierInitWithStrategy_ExplicitPassphrase proves that
+// explicitly requesting seal.StrategyPassphrase has the same semantics as
+// the zero-value default.
+func TestTenantService_BarrierInitWithStrategy_ExplicitPassphrase(t *testing.T) {
+	svc, reg := newTestService(t)
+	ctx := context.Background()
+
+	const tenantID = "strategy-explicit"
+	const passphrase = "explicit-strategy-pw"
+
+	if _, err := svc.CreateTenant(ctx, tenantID, "Strategy Explicit", ""); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	// Prefix tenants (the new default) do not pre-register a barrier, so
+	// UnregisterTenant is a tolerated no-op here; the subsequent
+	// TenantBarrierInit takes the register-shell path either way.
+	if err := reg.UnregisterTenant(tenantID); err != nil && !errors.Is(err, seal.ErrTenantNotFound) {
+		t.Fatalf("UnregisterTenant: %v", err)
+	}
+
+	if err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, passphrase, 0, 0, seal.StrategyPassphrase); err != nil {
+		t.Fatalf("TenantBarrierInitWithStrategy(passphrase): %v", err)
+	}
+
+	// Seal then confirm only the supplied passphrase can unseal.
+	if err := reg.SealTenant(tenantID); err != nil {
+		t.Fatalf("SealTenant: %v", err)
+	}
+	if err := svc.TenantBarrierUnseal(ctx, tenantID, []byte(passphrase)); err != nil {
+		t.Fatalf("unseal with supplied passphrase: %v", err)
+	}
+}
+
+// TestTenantService_BarrierInitWithStrategy_NoneStrategy proves that the
+// "none" strategy (no encryption) can be selected and that the barrier
+// initializes and unseals correctly without a passphrase.
+func TestTenantService_BarrierInitWithStrategy_NoneStrategy(t *testing.T) {
+	svc, reg := newTestService(t)
+	ctx := context.Background()
+
+	const tenantID = "strategy-none"
+
+	if _, err := svc.CreateTenant(ctx, tenantID, "Strategy None", ""); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	// Prefix tenants (the new default) do not pre-register a barrier, so
+	// UnregisterTenant is a tolerated no-op here; the subsequent
+	// TenantBarrierInit takes the register-shell path either way.
+	if err := reg.UnregisterTenant(tenantID); err != nil && !errors.Is(err, seal.ErrTenantNotFound) {
+		t.Fatalf("UnregisterTenant: %v", err)
+	}
+
+	// The "none" strategy requires no passphrase.
+	if err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, "", 0, 0, seal.StrategyNone); err != nil {
+		t.Fatalf("TenantBarrierInitWithStrategy(none): %v", err)
+	}
+
+	st, err := reg.TenantStatus(tenantID)
+	if err != nil {
+		t.Fatalf("TenantStatus: %v", err)
+	}
+	if st.Sealed {
+		t.Fatal("expected barrier unsealed after init with none strategy")
+	}
+}
+
+// TestTenantService_BarrierInitWithStrategy_RegistryInjection proves that
+// when a StrategyRegistry is injected via WithStrategyRegistry, the service
+// resolves the strategy from the registry. Requesting the "none" strategy
+// via the registry succeeds; requesting an unregistered name returns
+// InvalidStrategyError.
+func TestTenantService_BarrierInitWithStrategy_RegistryInjection(t *testing.T) {
+	store := seal.NewMemoryBackend()
+	reg := newTestBarrierRegistry(t)
+	stratReg := seal.NewDefaultStrategyRegistry()
+	svc, err := NewTenantService(store, reg, testLogger(), WithStrategyRegistry(stratReg))
+	if err != nil {
+		t.Fatalf("NewTenantService: %v", err)
+	}
+
+	ctx := context.Background()
+	const tenantID = "registry-injection"
+
+	if _, err := svc.CreateTenant(ctx, tenantID, "Registry Injection", ""); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	// Prefix tenants (the new default) do not pre-register a barrier, so
+	// UnregisterTenant is a tolerated no-op here; the subsequent
+	// TenantBarrierInit takes the register-shell path either way.
+	if err := reg.UnregisterTenant(tenantID); err != nil && !errors.Is(err, seal.ErrTenantNotFound) {
+		t.Fatalf("UnregisterTenant: %v", err)
+	}
+
+	// "none" is pre-registered in the default registry.
+	if err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, "", 0, 0, seal.StrategyNone); err != nil {
+		t.Fatalf("TenantBarrierInitWithStrategy via registry: %v", err)
+	}
+
+	st, err := reg.TenantStatus(tenantID)
+	if err != nil {
+		t.Fatalf("TenantStatus: %v", err)
+	}
+	if st.Sealed {
+		t.Fatal("expected barrier unsealed after init")
+	}
+}
+
+// TestTenantService_BarrierInitWithStrategy_UnknownStrategy proves that
+// requesting an unregistered strategy name returns InvalidStrategyError.
+func TestTenantService_BarrierInitWithStrategy_UnknownStrategy(t *testing.T) {
+	store := seal.NewMemoryBackend()
+	reg := newTestBarrierRegistry(t)
+	stratReg := seal.NewDefaultStrategyRegistry()
+	svc, err := NewTenantService(store, reg, testLogger(), WithStrategyRegistry(stratReg))
+	if err != nil {
+		t.Fatalf("NewTenantService: %v", err)
+	}
+
+	ctx := context.Background()
+	const tenantID = "unknown-strategy"
+
+	if _, err := svc.CreateTenant(ctx, tenantID, "Unknown Strategy", ""); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+
+	err = svc.TenantBarrierInitWithStrategy(ctx, tenantID, "irrelevant", 0, 0, "tpm2")
+	var invErr *InvalidStrategyError
+	if !errors.As(err, &invErr) {
+		t.Fatalf("expected InvalidStrategyError, got %v", err)
+	}
+	if invErr.Strategy != "tpm2" {
+		t.Errorf("Strategy = %q, want %q", invErr.Strategy, "tpm2")
+	}
+}
+
+// TestTenantService_BarrierInitWithStrategy_NoRegistryUnknown proves that
+// when no StrategyRegistry is injected, requesting a hardware/cloud strategy
+// returns InvalidStrategyError (no registry fallback).
+func TestTenantService_BarrierInitWithStrategy_NoRegistryUnknown(t *testing.T) {
+	svc, _ := newTestService(t) // no WithStrategyRegistry
+	ctx := context.Background()
+
+	const tenantID = "no-registry-hw"
+	if _, err := svc.CreateTenant(ctx, tenantID, "No Registry HW", ""); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+
+	err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, "", 0, 0, "tpm2")
+	var invErr *InvalidStrategyError
+	if !errors.As(err, &invErr) {
+		t.Fatalf("expected InvalidStrategyError, got %v", err)
+	}
+}
+
+// TestTenantService_BarrierInitWithStrategy_EmptyPassphraseForPassphrase
+// proves that the passphrase strategy requires a non-empty passphrase even
+// when called via TenantBarrierInitWithStrategy.
+func TestTenantService_BarrierInitWithStrategy_EmptyPassphraseForPassphrase(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctx := context.Background()
+
+	const tenantID = "empty-pass-strategy"
+	if _, err := svc.CreateTenant(ctx, tenantID, "Empty Pass Strategy", ""); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+
+	err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, "", 0, 0, seal.StrategyPassphrase)
+	if !errors.Is(err, ErrEmptyPassphrase) {
+		t.Fatalf("expected ErrEmptyPassphrase, got %v", err)
+	}
+}
+
+// TestTenantService_BarrierInitWithStrategy_BackCompat proves that
+// TenantBarrierInit (unchanged signature) still works identically to calling
+// TenantBarrierInitWithStrategy(seal.StrategyPassphrase).
+func TestTenantService_BarrierInitWithStrategy_BackCompat(t *testing.T) {
+	svc, reg := newTestService(t)
+	ctx := context.Background()
+
+	const tenantID = "backcompat"
+	const passphrase = "backcompat-pw"
+
+	if _, err := svc.CreateTenant(ctx, tenantID, "BackCompat", ""); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	// Prefix tenants (the new default) do not pre-register a barrier, so
+	// UnregisterTenant is a tolerated no-op here; the subsequent
+	// TenantBarrierInit takes the register-shell path either way.
+	if err := reg.UnregisterTenant(tenantID); err != nil && !errors.Is(err, seal.ErrTenantNotFound) {
+		t.Fatalf("UnregisterTenant: %v", err)
+	}
+
+	// Old signature must still work unchanged.
+	if err := svc.TenantBarrierInit(ctx, tenantID, passphrase, 0, 0); err != nil {
+		t.Fatalf("TenantBarrierInit (old signature): %v", err)
+	}
+
+	st, err := reg.TenantStatus(tenantID)
+	if err != nil {
+		t.Fatalf("TenantStatus: %v", err)
+	}
+	if st.Sealed {
+		t.Fatal("expected barrier unsealed after init")
+	}
+	if st.Strategy != seal.StrategyPassphrase {
+		t.Fatalf("strategy = %q, want %q", st.Strategy, seal.StrategyPassphrase)
+	}
+}
+
+// TestTenantService_BarrierUnsealEmptyKeyRejected proves the unseal path
+// rejects empty key material rather than deriving a fallback credential.
+func TestTenantService_BarrierUnsealEmptyKeyRejected(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctx := context.Background()
+
+	if _, err := svc.CreateTenant(ctx, "unseal-empty", "Unseal Empty", ""); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+
+	err := svc.TenantBarrierUnseal(ctx, "unseal-empty", nil)
+	if !errors.Is(err, ErrEmptyPassphrase) {
+		t.Fatalf("expected ErrEmptyPassphrase, got %v", err)
 	}
 }
 
@@ -575,7 +967,7 @@ func TestTenantService_BarrierUnseal(t *testing.T) {
 	}
 
 	// Initialize first.
-	if err := svc.TenantBarrierInit(ctx, "unseal-test", 0, 0); err != nil {
+	if err := svc.TenantBarrierInit(ctx, "unseal-test", "unseal-test-pw", 0, 0); err != nil {
 		t.Fatalf("TenantBarrierInit: %v", err)
 	}
 
@@ -593,8 +985,11 @@ func TestTenantService_BarrierUnseal(t *testing.T) {
 		t.Error("expected sealed after SealTenant")
 	}
 
-	// Unseal via service (nil key falls back to default credential).
-	if err := svc.TenantBarrierUnseal(ctx, "unseal-test", nil); err != nil {
+	// Unseal via service with the caller-supplied key material. (The
+	// pre-registered default barrier uses a fixed software-strategy master
+	// password, so the supplied key is accepted as Credentials.Secret; the
+	// derived "tenant-init-" fallback has been removed.)
+	if err := svc.TenantBarrierUnseal(ctx, "unseal-test", []byte("unseal-test-pw")); err != nil {
 		t.Fatalf("TenantBarrierUnseal: %v", err)
 	}
 
@@ -617,18 +1012,18 @@ func TestTenantService_BarrierUnsealWithExplicitKey(t *testing.T) {
 		t.Fatalf("CreateTenant: %v", err)
 	}
 
-	// Initialize the barrier (uses default credential).
-	if err := svc.TenantBarrierInit(ctx, "unseal-key", 0, 0); err != nil {
+	// Initialize the barrier with a caller-supplied passphrase.
+	if err := svc.TenantBarrierInit(ctx, "unseal-key", "unseal-key-pw", 0, 0); err != nil {
 		t.Fatalf("TenantBarrierInit: %v", err)
 	}
 
-	// Seal and try to unseal with explicit key (which differs from init secret).
+	// Seal and try to unseal with explicit key material.
 	if err := reg.SealTenant("unseal-key"); err != nil {
 		t.Fatalf("SealTenant: %v", err)
 	}
 
-	// Unseal with the same deterministic key that init used.
-	err = svc.TenantBarrierUnseal(ctx, "unseal-key", []byte("tenant-init-unseal-key"))
+	// Unseal with explicit caller-supplied key material.
+	err = svc.TenantBarrierUnseal(ctx, "unseal-key", []byte("unseal-key-pw"))
 	if err != nil {
 		t.Fatalf("TenantBarrierUnseal with explicit key: %v", err)
 	}
@@ -646,7 +1041,7 @@ func TestTenantService_BarrierUnsealNotFound(t *testing.T) {
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 
-	err := svc.TenantBarrierUnseal(ctx, "nonexistent", nil)
+	err := svc.TenantBarrierUnseal(ctx, "nonexistent", []byte("pw"))
 	if !errors.Is(err, ErrTenantNotFound) {
 		t.Errorf("expected ErrTenantNotFound, got %v", err)
 	}
@@ -672,7 +1067,7 @@ func TestTenantService_BarrierUnsealNotInitialized(t *testing.T) {
 	}
 
 	// Unseal without initializing should fail with BarrierError.
-	err = svc.TenantBarrierUnseal(ctx, "no-init", nil)
+	err = svc.TenantBarrierUnseal(ctx, "no-init", []byte("pw"))
 	var be *BarrierError
 	if !errors.As(err, &be) {
 		t.Errorf("expected BarrierError, got %v", err)
@@ -686,8 +1081,9 @@ func TestTenantIDFromKey(t *testing.T) {
 		key  string
 		want string
 	}{
-		{key: "tenants/acme", want: "acme"},
-		{key: "tenants/", want: ""},
+		{key: metadataPrefix + "acme", want: "acme"},
+		{key: metadataPrefix, want: ""},
+		{key: "tenants/acme", want: ""}, // legacy prefix — not matched after Bug 2 fix
 		{key: "other/acme", want: ""},
 		{key: "", want: ""},
 	}
@@ -915,5 +1311,57 @@ func TestBarrierError(t *testing.T) {
 	}
 	if !errors.Is(err, ErrNilRegistry) {
 		t.Error("expected Unwrap to return ErrNilRegistry")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Reserved tenant id rejection (full TenantService path)
+// ---------------------------------------------------------------------------
+
+func TestTenantService_CreateRejectsSystemID(t *testing.T) {
+	svc, _ := newTestService(t)
+	_, err := svc.CreateTenant(context.Background(), SystemTenantID, "System", "")
+	var rerr *ReservedTenantIDError
+	if !errors.As(err, &rerr) {
+		t.Fatalf("expected *ReservedTenantIDError, got %T: %v", err, err)
+	}
+}
+
+func TestTenantService_CreateRejectsLegacyDefaultID(t *testing.T) {
+	svc, _ := newTestService(t)
+	_, err := svc.CreateTenant(context.Background(), "default", "Default", "")
+	var rerr *ReservedTenantIDError
+	if !errors.As(err, &rerr) {
+		t.Fatalf("expected *ReservedTenantIDError, got %T: %v", err, err)
+	}
+}
+
+func TestTenantService_CreateRejectsUnderscorePrefix(t *testing.T) {
+	svc, _ := newTestService(t)
+	_, err := svc.CreateTenant(context.Background(), "_secret", "Secret", "")
+	var rerr *ReservedTenantIDError
+	if !errors.As(err, &rerr) {
+		t.Fatalf("expected *ReservedTenantIDError, got %T: %v", err, err)
+	}
+}
+
+func TestTenantService_CreateRejectsColonInfix(t *testing.T) {
+	svc, _ := newTestService(t)
+	_, err := svc.CreateTenant(context.Background(), "scope:value", "Scoped", "")
+	var rerr *ReservedTenantIDError
+	if !errors.As(err, &rerr) {
+		t.Fatalf("expected *ReservedTenantIDError, got %T: %v", err, err)
+	}
+}
+
+func TestTenantService_CreateInternalCallAllowsSystemID(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctx := WithInternalCall(context.Background())
+	info, err := svc.CreateTenant(ctx, SystemTenantID, "System", "")
+	if err != nil {
+		t.Fatalf("internal-call CreateTenant(system): %v", err)
+	}
+	if info.ID != SystemTenantID {
+		t.Errorf("ID = %q, want %q", info.ID, SystemTenantID)
 	}
 }

@@ -36,6 +36,9 @@ const (
 	// defaultGRPCAddress is the default gRPC server address.
 	defaultGRPCAddress = "localhost:63003"
 
+	// defaultQUICAddress is the default QUIC server address.
+	defaultQUICAddress = "localhost:63004"
+
 	// transportREST identifies the REST transport type.
 	transportREST = "rest"
 
@@ -51,17 +54,27 @@ const (
 	// transportQUIC identifies the QUIC transport type.
 	transportQUIC = "quic"
 
-	// defaultQUICAddress is the default QUIC server address.
-	defaultQUICAddress = "localhost:63004"
+	// transportEmbedded names the in-process transport that links the
+	// server side directly. It is only available in the desktop/GUI
+	// build; the CLI returns EmbeddedTransportUnavailableError when an
+	// operator selects it.
+	transportEmbedded = "embedded"
 )
 
 // resolveTransport determines the transport type and server address from
-// the provided flags. The auto-detection logic:
-//  1. If --transport is explicitly set, use it.
-//  2. If --server starts with "unix://", use unix transport.
-//  3. If --server starts with "http://" or "https://", use rest transport.
-//  4. If the default Unix socket exists, use unix transport.
-//  5. Default: gRPC transport to localhost:63003.
+// the provided flags. The precedence intentionally honors an explicit
+// --transport before any URL scheme on --server; PersistentPreRunE in
+// root.go is responsible for clearing the transport argument when the
+// flag is still at its default value so URL-style --server addresses
+// continue to auto-detect.
+//
+// Precedence:
+//
+//  1. If --transport is non-empty, honor it. When --server is empty,
+//     fill in a sensible per-transport default address.
+//  2. Otherwise auto-detect from any URL scheme on --server.
+//  3. Otherwise fall back to the default Unix socket if it exists; the
+//     final fallback is gRPC to localhost.
 func resolveTransport(serverFlag, transportFlag string) (transportType string, address string) {
 	// Explicit transport flag takes priority.
 	if transportFlag != "" {
@@ -77,6 +90,8 @@ func resolveTransport(serverFlag, transportFlag string) (transportType string, a
 				address = defaultGRPCAddress
 			case transportQUIC:
 				address = defaultQUICAddress
+			case transportEmbedded:
+				address = ""
 			default:
 				address = defaultGRPCAddress
 			}
@@ -86,31 +101,11 @@ func resolveTransport(serverFlag, transportFlag string) (transportType string, a
 
 	// Auto-detect from --server scheme.
 	if serverFlag != "" {
-		if strings.HasPrefix(serverFlag, "unix://") {
-			return transportUnix, strings.TrimPrefix(serverFlag, "unix://")
+		if serverHasScheme(serverFlag) {
+			return resolveSchemeTransport(serverFlag)
 		}
-		if strings.HasPrefix(serverFlag, "http://") || strings.HasPrefix(serverFlag, "https://") {
-			return transportREST, serverFlag
-		}
-		if strings.HasPrefix(serverFlag, "quic://") {
-			return transportQUIC, strings.TrimPrefix(serverFlag, "quic://")
-		}
-		if strings.HasPrefix(serverFlag, "quics://") {
-			return transportQUIC, strings.TrimPrefix(serverFlag, "quics://")
-		}
-		if strings.HasPrefix(serverFlag, "grpcs://") {
-			return transportGRPC, strings.TrimPrefix(serverFlag, "grpcs://")
-		}
-		if strings.HasPrefix(serverFlag, "grpc://") {
-			return transportGRPC, strings.TrimPrefix(serverFlag, "grpc://")
-		}
-		if strings.HasPrefix(serverFlag, "mcp://") {
-			// MCP transport expects a full HTTP URL. Convert mcp://host:port
-			// to https://host:port/mcp for the MCP HTTP client.
-			host := strings.TrimPrefix(serverFlag, "mcp://")
-			return transportMCP, "https://" + host + "/mcp"
-		}
-		// No scheme: default to gRPC.
+		// No scheme: default to gRPC for legacy compatibility with
+		// operators that supply host:port directly.
 		return transportGRPC, serverFlag
 	}
 
@@ -123,10 +118,40 @@ func resolveTransport(serverFlag, transportFlag string) (transportType string, a
 	return transportGRPC, defaultGRPCAddress
 }
 
+// resolveSchemeTransport maps a URL-scheme-prefixed server value to the
+// transport type and stripped/translated address. The caller has
+// already verified the value carries one of the known scheme prefixes.
+func resolveSchemeTransport(serverFlag string) (transportType string, address string) {
+	switch {
+	case strings.HasPrefix(serverFlag, "unix://"):
+		return transportUnix, strings.TrimPrefix(serverFlag, "unix://")
+	case strings.HasPrefix(serverFlag, "https://"), strings.HasPrefix(serverFlag, "http://"):
+		return transportREST, serverFlag
+	case strings.HasPrefix(serverFlag, "quics://"):
+		return transportQUIC, strings.TrimPrefix(serverFlag, "quics://")
+	case strings.HasPrefix(serverFlag, "quic://"):
+		return transportQUIC, strings.TrimPrefix(serverFlag, "quic://")
+	case strings.HasPrefix(serverFlag, "grpcs://"):
+		return transportGRPC, strings.TrimPrefix(serverFlag, "grpcs://")
+	case strings.HasPrefix(serverFlag, "grpc://"):
+		return transportGRPC, strings.TrimPrefix(serverFlag, "grpc://")
+	case strings.HasPrefix(serverFlag, "mcp://"):
+		// MCP expects a full HTTPS URL with the /mcp endpoint suffix.
+		host := strings.TrimPrefix(serverFlag, "mcp://")
+		return transportMCP, "https://" + host + "/mcp"
+	}
+	// Unreachable: caller only invokes this when serverHasScheme is true.
+	return transportGRPC, serverFlag
+}
+
 // buildClient constructs an SDK client using the resolved transport type
 // and address. TLS options are applied when the corresponding flags are
 // provided.
 func buildClient(ctx context.Context, transportType, address, caFile, certFile, keyFile string, timeout time.Duration) (*sdk.Client, error) {
+	if transportType == transportEmbedded {
+		return nil, &EmbeddedTransportUnavailableError{}
+	}
+
 	var opts []transport.Option
 
 	opts = append(opts, transport.WithAddress(address))
@@ -170,7 +195,9 @@ func newTransport(transportType string, opts ...transport.Option) (transport.Tra
 type transportBuilder func(opts ...transport.Option) (transport.Transport, error)
 
 // transportBuilders maps transport type names to their builder functions
-// for O(1) dispatch.
+// for O(1) dispatch. The "embedded" transport is intentionally absent;
+// buildClient short-circuits it with EmbeddedTransportUnavailableError
+// because the CLI build does not link the server in-process.
 var transportBuilders = map[string]transportBuilder{
 	transportREST: func(opts ...transport.Option) (transport.Transport, error) {
 		return resttransport.New(opts...)

@@ -408,7 +408,7 @@ func TestHandleListRoles_NilService(t *testing.T) {
 func TestHandleAssignRole_Success(t *testing.T) {
 	now := time.Date(2026, 1, 15, 10, 30, 0, 0, time.UTC)
 	existingUser := &user.User{
-		ID:        "user-010",
+		ID:        1010,
 		Username:  "alice",
 		TenantID:  "tenant-1",
 		RoleIDs:   []string{"role-a"},
@@ -427,9 +427,9 @@ func TestHandleAssignRole_Success(t *testing.T) {
 	}
 
 	mockUser := &mockUserService{
-		getUserFn: func(_ context.Context, id string) (*user.User, error) {
-			if id != "user-010" {
-				t.Fatalf("expected user ID 'user-010', got %q", id)
+		getUserFn: func(_ context.Context, id uint64) (*user.User, error) {
+			if id != 1010 {
+				t.Fatalf("expected user ID 1010, got %d", id)
 			}
 			return existingUser, nil
 		},
@@ -438,7 +438,7 @@ func TestHandleAssignRole_Success(t *testing.T) {
 				t.Fatalf("expected 2 roles after assign, got %d", len(req.RoleIDs))
 			}
 			return &user.User{
-				ID:        "user-010",
+				ID:        1010,
 				Username:  "alice",
 				TenantID:  "tenant-1",
 				RoleIDs:   req.RoleIDs,
@@ -451,7 +451,7 @@ func TestHandleAssignRole_Success(t *testing.T) {
 
 	srv := newRoleServer(mockRole, mockUser)
 	payload, _ := json.Marshal(assignRoleWireRequest{
-		UserID: "user-010",
+		UserID: 1010,
 		RoleID: "role-b",
 	})
 
@@ -472,7 +472,7 @@ func TestHandleAssignRole_Success(t *testing.T) {
 func TestHandleAssignRole_AlreadyAssigned(t *testing.T) {
 	now := time.Date(2026, 1, 15, 10, 30, 0, 0, time.UTC)
 	existingUser := &user.User{
-		ID:        "user-011",
+		ID:        1011,
 		Username:  "bob",
 		TenantID:  "tenant-1",
 		RoleIDs:   []string{"role-a"},
@@ -488,14 +488,14 @@ func TestHandleAssignRole_AlreadyAssigned(t *testing.T) {
 	}
 
 	mockUser := &mockUserService{
-		getUserFn: func(_ context.Context, _ string) (*user.User, error) {
+		getUserFn: func(_ context.Context, _ uint64) (*user.User, error) {
 			return existingUser, nil
 		},
 	}
 
 	srv := newRoleServer(mockRole, mockUser)
 	payload, _ := json.Marshal(assignRoleWireRequest{
-		UserID: "user-011",
+		UserID: 1011,
 		RoleID: "role-a",
 	})
 
@@ -523,7 +523,7 @@ func TestHandleAssignRole_RoleNotFound(t *testing.T) {
 
 	mockUser := &mockUserService{}
 	srv := newRoleServer(mockRole, mockUser)
-	payload, _ := json.Marshal(assignRoleWireRequest{UserID: "u", RoleID: "bad"})
+	payload, _ := json.Marshal(assignRoleWireRequest{UserID: 1, RoleID: "bad"})
 
 	_, err := srv.handleAssignRole(context.Background(), payload)
 	if !errors.Is(err, errMockRole) {
@@ -533,7 +533,7 @@ func TestHandleAssignRole_RoleNotFound(t *testing.T) {
 
 func TestHandleAssignRole_NilRoleService(t *testing.T) {
 	srv := NewServer(nil, nil, "localhost:0", WithUserService(&mockUserService{}))
-	payload, _ := json.Marshal(assignRoleWireRequest{UserID: "u", RoleID: "r"})
+	payload, _ := json.Marshal(assignRoleWireRequest{UserID: 1, RoleID: "r"})
 
 	_, err := srv.handleAssignRole(context.Background(), payload)
 	var snc *ServiceNotConfiguredError
@@ -549,7 +549,7 @@ func TestHandleAssignRole_NilUserService(t *testing.T) {
 		},
 	}
 	srv := newRoleServer(mockRole, nil)
-	payload, _ := json.Marshal(assignRoleWireRequest{UserID: "u", RoleID: "r"})
+	payload, _ := json.Marshal(assignRoleWireRequest{UserID: 1, RoleID: "r"})
 
 	_, err := srv.handleAssignRole(context.Background(), payload)
 	var snc *ServiceNotConfiguredError
@@ -565,7 +565,7 @@ func TestHandleAssignRole_NilUserService(t *testing.T) {
 func TestHandleUnassignRole_Success(t *testing.T) {
 	now := time.Date(2026, 1, 15, 10, 30, 0, 0, time.UTC)
 	existingUser := &user.User{
-		ID:        "user-012",
+		ID:        1012,
 		Username:  "carol",
 		TenantID:  "tenant-1",
 		RoleIDs:   []string{"role-a", "role-b"},
@@ -576,9 +576,9 @@ func TestHandleUnassignRole_Success(t *testing.T) {
 
 	mockRole := &mockRoleService{}
 	mockUser := &mockUserService{
-		getUserFn: func(_ context.Context, id string) (*user.User, error) {
-			if id != "user-012" {
-				t.Fatalf("expected user ID 'user-012', got %q", id)
+		getUserFn: func(_ context.Context, id uint64) (*user.User, error) {
+			if id != 1012 {
+				t.Fatalf("expected user ID 1012, got %d", id)
 			}
 			return existingUser, nil
 		},
@@ -590,7 +590,7 @@ func TestHandleUnassignRole_Success(t *testing.T) {
 				t.Fatalf("expected remaining role 'role-a', got %q", req.RoleIDs[0])
 			}
 			return &user.User{
-				ID:        "user-012",
+				ID:        1012,
 				Username:  "carol",
 				TenantID:  "tenant-1",
 				RoleIDs:   req.RoleIDs,
@@ -603,7 +603,7 @@ func TestHandleUnassignRole_Success(t *testing.T) {
 
 	srv := newRoleServer(mockRole, mockUser)
 	payload, _ := json.Marshal(assignRoleWireRequest{
-		UserID: "user-012",
+		UserID: 1012,
 		RoleID: "role-b",
 	})
 
@@ -624,13 +624,13 @@ func TestHandleUnassignRole_Success(t *testing.T) {
 func TestHandleUnassignRole_UserNotFound(t *testing.T) {
 	mockRole := &mockRoleService{}
 	mockUser := &mockUserService{
-		getUserFn: func(_ context.Context, _ string) (*user.User, error) {
+		getUserFn: func(_ context.Context, _ uint64) (*user.User, error) {
 			return nil, errMockUser
 		},
 	}
 
 	srv := newRoleServer(mockRole, mockUser)
-	payload, _ := json.Marshal(assignRoleWireRequest{UserID: "bad", RoleID: "r"})
+	payload, _ := json.Marshal(assignRoleWireRequest{UserID: 9999, RoleID: "r"})
 
 	_, err := srv.handleUnassignRole(context.Background(), payload)
 	if !errors.Is(err, errMockUser) {
@@ -640,7 +640,7 @@ func TestHandleUnassignRole_UserNotFound(t *testing.T) {
 
 func TestHandleUnassignRole_NilRoleService(t *testing.T) {
 	srv := NewServer(nil, nil, "localhost:0", WithUserService(&mockUserService{}))
-	payload, _ := json.Marshal(assignRoleWireRequest{UserID: "u", RoleID: "r"})
+	payload, _ := json.Marshal(assignRoleWireRequest{UserID: 1, RoleID: "r"})
 
 	_, err := srv.handleUnassignRole(context.Background(), payload)
 	var snc *ServiceNotConfiguredError
@@ -652,7 +652,7 @@ func TestHandleUnassignRole_NilRoleService(t *testing.T) {
 func TestHandleUnassignRole_NilUserService(t *testing.T) {
 	mockRole := &mockRoleService{}
 	srv := newRoleServer(mockRole, nil)
-	payload, _ := json.Marshal(assignRoleWireRequest{UserID: "u", RoleID: "r"})
+	payload, _ := json.Marshal(assignRoleWireRequest{UserID: 1, RoleID: "r"})
 
 	_, err := srv.handleUnassignRole(context.Background(), payload)
 	var snc *ServiceNotConfiguredError
@@ -868,7 +868,7 @@ func TestHandleAssignRole_InvalidJSON(t *testing.T) {
 			getRoleFn: func(_ context.Context, _ string) (*role.Role, error) { return nil, nil },
 		}),
 		WithUserService(&mockUserService{
-			getUserFn: func(_ context.Context, _ string) (*user.User, error) { return nil, nil },
+			getUserFn: func(_ context.Context, _ uint64) (*user.User, error) { return nil, nil },
 			updateUserFn: func(_ context.Context, _ *user.UpdateUserRequest) (*user.User, error) {
 				return nil, nil
 			},
@@ -887,13 +887,212 @@ func TestHandleUnassignRole_InvalidJSON(t *testing.T) {
 			getRoleFn: func(_ context.Context, _ string) (*role.Role, error) { return nil, nil },
 		}),
 		WithUserService(&mockUserService{
-			getUserFn: func(_ context.Context, _ string) (*user.User, error) { return nil, nil },
+			getUserFn: func(_ context.Context, _ uint64) (*user.User, error) { return nil, nil },
 			updateUserFn: func(_ context.Context, _ *user.UpdateUserRequest) (*user.User, error) {
 				return nil, nil
 			},
 		}),
 	)
 	_, err := srv.handleUnassignRole(context.Background(), []byte("{bad"))
+	var ue *UnmarshalError
+	if !errors.As(err, &ue) {
+		t.Fatalf("expected UnmarshalError, got %T: %v", err, err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handleGetRoleByName
+// ---------------------------------------------------------------------------
+
+func TestHandleGetRoleByName_Success(t *testing.T) {
+	rl := testRole("role-byname", "auditor", "tenant-1")
+	mock := &mockRoleService{
+		getRoleByNameFn: func(_ context.Context, tenantID, name string) (*role.Role, error) {
+			if tenantID != "tenant-1" {
+				t.Fatalf("expected tenantID 'tenant-1', got %q", tenantID)
+			}
+			if name != "auditor" {
+				t.Fatalf("expected name 'auditor', got %q", name)
+			}
+			return rl, nil
+		},
+	}
+
+	srv := newRoleServer(mock, nil)
+	payload, _ := json.Marshal(getRoleByNameWireRequest{
+		TenantID: "tenant-1",
+		Name:     "auditor",
+	})
+
+	resp, err := srv.handleGetRoleByName(context.Background(), payload)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var out roleWireResponse
+	if err := json.Unmarshal(resp, &out); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if out.ID != "role-byname" {
+		t.Fatalf("expected ID 'role-byname', got %q", out.ID)
+	}
+	if out.Name != "auditor" {
+		t.Fatalf("expected name 'auditor', got %q", out.Name)
+	}
+	if out.TenantID != "tenant-1" {
+		t.Fatalf("expected tenantID 'tenant-1', got %q", out.TenantID)
+	}
+}
+
+func TestHandleGetRoleByName_ServiceError(t *testing.T) {
+	mock := &mockRoleService{
+		getRoleByNameFn: func(_ context.Context, _, _ string) (*role.Role, error) {
+			return nil, errMockRole
+		},
+	}
+
+	srv := newRoleServer(mock, nil)
+	payload, _ := json.Marshal(getRoleByNameWireRequest{
+		TenantID: "tenant-1",
+		Name:     "missing",
+	})
+
+	_, err := srv.handleGetRoleByName(context.Background(), payload)
+	if !errors.Is(err, errMockRole) {
+		t.Fatalf("expected errMockRole, got %v", err)
+	}
+}
+
+func TestHandleGetRoleByName_NilService(t *testing.T) {
+	srv := NewServer(nil, nil, "localhost:0")
+	payload, _ := json.Marshal(getRoleByNameWireRequest{TenantID: "t", Name: "x"})
+
+	_, err := srv.handleGetRoleByName(context.Background(), payload)
+	var snc *ServiceNotConfiguredError
+	if !errors.As(err, &snc) {
+		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
+	}
+}
+
+func TestHandleGetRoleByName_InvalidJSON(t *testing.T) {
+	mock := &mockRoleService{
+		getRoleByNameFn: func(_ context.Context, _, _ string) (*role.Role, error) { return nil, nil },
+	}
+	srv := newRoleServer(mock, nil)
+
+	_, err := srv.handleGetRoleByName(context.Background(), []byte("{bad"))
+	var ue *UnmarshalError
+	if !errors.As(err, &ue) {
+		t.Fatalf("expected UnmarshalError, got %T: %v", err, err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handleResolvePermissions
+// ---------------------------------------------------------------------------
+
+func TestHandleResolvePermissions_Success(t *testing.T) {
+	mock := &mockRoleService{
+		resolvePermissionsFn: func(_ context.Context, roleIDs []string) ([]permission.Permission, error) {
+			if len(roleIDs) != 2 {
+				t.Fatalf("expected 2 roleIDs, got %d", len(roleIDs))
+			}
+			return []permission.Permission{"kv:put", "kv:get", "admin:health"}, nil
+		},
+	}
+
+	srv := newRoleServer(mock, nil)
+	payload, _ := json.Marshal(resolvePermissionsWireRequest{
+		RoleIDs: []string{"role-a", "role-b"},
+	})
+
+	resp, err := srv.handleResolvePermissions(context.Background(), payload)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var out resolvePermissionsWireResponse
+	if err := json.Unmarshal(resp, &out); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(out.Permissions) != 3 {
+		t.Fatalf("expected 3 permissions, got %d", len(out.Permissions))
+	}
+	found := false
+	for _, p := range out.Permissions {
+		if p == "kv:put" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected 'kv:put' in permissions, got %v", out.Permissions)
+	}
+}
+
+func TestHandleResolvePermissions_ServiceError(t *testing.T) {
+	mock := &mockRoleService{
+		resolvePermissionsFn: func(_ context.Context, _ []string) ([]permission.Permission, error) {
+			return nil, errMockRole
+		},
+	}
+
+	srv := newRoleServer(mock, nil)
+	payload, _ := json.Marshal(resolvePermissionsWireRequest{RoleIDs: []string{"r-x"}})
+
+	_, err := srv.handleResolvePermissions(context.Background(), payload)
+	if !errors.Is(err, errMockRole) {
+		t.Fatalf("expected errMockRole, got %v", err)
+	}
+}
+
+func TestHandleResolvePermissions_NilService(t *testing.T) {
+	srv := NewServer(nil, nil, "localhost:0")
+	payload, _ := json.Marshal(resolvePermissionsWireRequest{RoleIDs: []string{"r-1"}})
+
+	_, err := srv.handleResolvePermissions(context.Background(), payload)
+	var snc *ServiceNotConfiguredError
+	if !errors.As(err, &snc) {
+		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
+	}
+}
+
+func TestHandleResolvePermissions_EmptyRoleIDs(t *testing.T) {
+	mock := &mockRoleService{
+		resolvePermissionsFn: func(_ context.Context, roleIDs []string) ([]permission.Permission, error) {
+			if len(roleIDs) != 0 {
+				t.Fatalf("expected empty roleIDs, got %d", len(roleIDs))
+			}
+			return []permission.Permission{}, nil
+		},
+	}
+
+	srv := newRoleServer(mock, nil)
+	payload, _ := json.Marshal(resolvePermissionsWireRequest{RoleIDs: []string{}})
+
+	resp, err := srv.handleResolvePermissions(context.Background(), payload)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var out resolvePermissionsWireResponse
+	if err := json.Unmarshal(resp, &out); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(out.Permissions) != 0 {
+		t.Fatalf("expected 0 permissions, got %d", len(out.Permissions))
+	}
+}
+
+func TestHandleResolvePermissions_InvalidJSON(t *testing.T) {
+	mock := &mockRoleService{
+		resolvePermissionsFn: func(_ context.Context, _ []string) ([]permission.Permission, error) {
+			return nil, nil
+		},
+	}
+	srv := newRoleServer(mock, nil)
+
+	_, err := srv.handleResolvePermissions(context.Background(), []byte("{bad"))
 	var ue *UnmarshalError
 	if !errors.As(err, &ue) {
 		t.Fatalf("expected UnmarshalError, got %T: %v", err, err)

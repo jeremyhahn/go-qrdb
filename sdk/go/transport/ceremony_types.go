@@ -103,3 +103,24 @@ type SignCSRInitRequest struct {
 type SignCSRInitResponse struct {
 	CertPEM string `json:"cert_pem"`
 }
+
+// EnrollExternalOfficerRequest carries the inputs for
+// CeremonyEnrollExternalOfficer. Exactly one of CertPEM and PubKeyPEM
+// must be supplied. AuthFactor must be one of "mtls", "webauthn", or "piv".
+type EnrollExternalOfficerRequest struct {
+	Username   string `json:"username"`
+	CertPEM    string `json:"cert_pem,omitempty"`
+	PubKeyPEM  string `json:"pubkey_pem,omitempty"`
+	ShareIndex int    `json:"share_index"`
+	AuthFactor string `json:"auth_factor"`
+	// ShareBytes is the optional plaintext Shamir share to seal to the
+	// officer's public key. Empty when only the public-key trust record
+	// is being persisted.
+	ShareBytes []byte `json:"share_bytes,omitempty"`
+}
+
+// EnrollExternalOfficerResponse returns the sealed share envelope (when
+// ShareBytes was supplied).
+type EnrollExternalOfficerResponse struct {
+	SealedShare string `json:"sealed_share,omitempty"`
+}

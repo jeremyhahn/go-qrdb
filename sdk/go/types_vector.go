@@ -15,6 +15,7 @@
 package sdk
 
 import (
+	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 )
 
@@ -27,6 +28,16 @@ type PebbleVectorStorage = vector.PebbleVectorStorage
 
 // NewPebbleVectorStorage creates a new PebbleDB-backed vector storage.
 var NewPebbleVectorStorage = vector.NewPebbleVectorStorage
+
+// VectorStorageOption configures a PebbleVectorStorage instance.
+type VectorStorageOption = vector.StorageOption
+
+// VectorStorageWithEncryptor returns a VectorStorageOption that wraps the
+// Pebble vfs.FS with barrier-driven AES-256-GCM encryption. A nil enc or
+// an enc whose barrier is nil is a no-op, preserving plaintext operation.
+func VectorStorageWithEncryptor(enc *atrest.Encryptor) VectorStorageOption {
+	return vector.WithEncryptor(enc)
+}
 
 // VectorStorageConfig configures PebbleDB vector storage.
 type VectorStorageConfig = vector.Config

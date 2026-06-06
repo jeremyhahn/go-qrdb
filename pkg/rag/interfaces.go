@@ -126,6 +126,12 @@ type VectorStore interface {
 	UpsertVector(ctx context.Context, req *UpsertVecRequest) (*UpsertVecResponse, error)
 	// SearchSimilar finds vectors nearest to the query vector.
 	SearchSimilar(ctx context.Context, req *SearchVecRequest) (*SearchVecResponse, error)
+	// EnsureNamespace creates the namespace if it does not already exist.
+	// It is idempotent: if the namespace already exists the call succeeds
+	// without error. dimension is the vector dimensionality; metric is the
+	// distance metric (e.g. "cosine", "L2"). This must be called before the
+	// first UpsertVector on a new namespace.
+	EnsureNamespace(ctx context.Context, name string, dimension int, metric string) error
 }
 
 // ---------------------------------------------------------------------------

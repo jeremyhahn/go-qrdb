@@ -148,6 +148,10 @@ type mockAdminService struct {
 	requestSnapshotFn func(ctx context.Context, shardID uint64) error
 	drainFn           func(ctx context.Context) error
 	capabilitiesFn    func(ctx context.Context) (*capabilities.Capabilities, error)
+	startShardFn      func(ctx context.Context, req *service.StartShardRequest) error
+	stopShardFn       func(ctx context.Context, shardID uint64) error
+	getShardStateFn   func(ctx context.Context, shardID uint64) (*service.ShardStateResponse, error)
+	getTopologyFn     func(ctx context.Context) (*service.TopologyResponse, error)
 }
 
 func (m *mockAdminService) Health(ctx context.Context) (*service.HealthStatus, error) {
@@ -230,19 +234,31 @@ func (m *mockAdminService) Capabilities(ctx context.Context) (*capabilities.Capa
 	}, nil
 }
 
-func (m *mockAdminService) StartShard(_ context.Context, _ *service.StartShardRequest) error {
+func (m *mockAdminService) StartShard(ctx context.Context, req *service.StartShardRequest) error {
+	if m.startShardFn != nil {
+		return m.startShardFn(ctx, req)
+	}
 	return nil
 }
 
-func (m *mockAdminService) StopShard(_ context.Context, _ uint64) error {
+func (m *mockAdminService) StopShard(ctx context.Context, shardID uint64) error {
+	if m.stopShardFn != nil {
+		return m.stopShardFn(ctx, shardID)
+	}
 	return nil
 }
 
-func (m *mockAdminService) GetShardState(_ context.Context, shardID uint64) (*service.ShardStateResponse, error) {
+func (m *mockAdminService) GetShardState(ctx context.Context, shardID uint64) (*service.ShardStateResponse, error) {
+	if m.getShardStateFn != nil {
+		return m.getShardStateFn(ctx, shardID)
+	}
 	return &service.ShardStateResponse{ShardID: shardID}, nil
 }
 
-func (m *mockAdminService) GetTopology(_ context.Context) (*service.TopologyResponse, error) {
+func (m *mockAdminService) GetTopology(ctx context.Context) (*service.TopologyResponse, error) {
+	if m.getTopologyFn != nil {
+		return m.getTopologyFn(ctx)
+	}
 	return &service.TopologyResponse{}, nil
 }
 

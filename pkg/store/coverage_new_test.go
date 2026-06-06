@@ -280,13 +280,11 @@ func TestPebbleStateMachine_TSWrite_NoTS(t *testing.T) {
 	cmd := protocol.EncodeTSWrite("metric", now, 1.0, nil)
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for TS write without TS storage")
+	if err := s.Update(context.Background(), entries, results); err != nil {
+		t.Fatalf("Update must not return a fatal error without TS storage: %v", err)
 	}
-	var ne *NotOpenError
-	if !errors.As(err, &ne) {
-		t.Fatalf("expected *NotOpenError, got %T: %v", err, err)
+	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
+		t.Fatal("expected app-error payload for TS write without TS storage")
 	}
 }
 
@@ -300,13 +298,11 @@ func TestPebbleStateMachine_TSWriteBatch_NoTS(t *testing.T) {
 	cmd := protocol.EncodeTSWriteBatch(points)
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for TSWriteBatch without TS storage")
+	if err := s.Update(context.Background(), entries, results); err != nil {
+		t.Fatalf("Update must not return a fatal error without TS storage: %v", err)
 	}
-	var ne *NotOpenError
-	if !errors.As(err, &ne) {
-		t.Fatalf("expected *NotOpenError, got %T: %v", err, err)
+	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
+		t.Fatal("expected app-error payload for TSWriteBatch without TS storage")
 	}
 }
 
@@ -317,13 +313,11 @@ func TestPebbleStateMachine_TSWritePoint_NoTS(t *testing.T) {
 	cmd := protocol.EncodeTSWritePoint("m1", now, 2.0, nil)
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for TSWritePoint without TS storage")
+	if err := s.Update(context.Background(), entries, results); err != nil {
+		t.Fatalf("Update must not return a fatal error without TS storage: %v", err)
 	}
-	var ne *NotOpenError
-	if !errors.As(err, &ne) {
-		t.Fatalf("expected *NotOpenError, got %T: %v", err, err)
+	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
+		t.Fatal("expected app-error payload for TSWritePoint without TS storage")
 	}
 }
 
@@ -334,13 +328,11 @@ func TestPebbleStateMachine_TSDeleteSeries_NoTS(t *testing.T) {
 	cmd := protocol.EncodeTSDeleteSeries("metric", now-1000, now+1000, nil)
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for TSDeleteSeries without TS storage")
+	if err := s.Update(context.Background(), entries, results); err != nil {
+		t.Fatalf("Update must not return a fatal error without TS storage: %v", err)
 	}
-	var ne *NotOpenError
-	if !errors.As(err, &ne) {
-		t.Fatalf("expected *NotOpenError, got %T: %v", err, err)
+	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
+		t.Fatal("expected app-error payload for TSDeleteSeries without TS storage")
 	}
 }
 
@@ -350,13 +342,11 @@ func TestPebbleStateMachine_TSSetRetention_NoTS(t *testing.T) {
 	cmd := protocol.EncodeTSSetRetention("metric", int64(24*time.Hour), int64(time.Minute), 1)
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for TSSetRetention without TS storage")
+	if err := s.Update(context.Background(), entries, results); err != nil {
+		t.Fatalf("Update must not return a fatal error without TS storage: %v", err)
 	}
-	var ne *NotOpenError
-	if !errors.As(err, &ne) {
-		t.Fatalf("expected *NotOpenError, got %T: %v", err, err)
+	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
+		t.Fatal("expected app-error payload for TSSetRetention without TS storage")
 	}
 }
 

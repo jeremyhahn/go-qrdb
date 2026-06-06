@@ -16,7 +16,11 @@ limitations under the License.
 
 # Embedding Service
 
-QRDB includes an embedding service for generating vector embeddings from text. The service is OpenAI-compatible, supporting multiple providers: Ollama, OpenAI, vLLM, Azure OpenAI, and any other OpenAI API-compatible endpoint. The feature is gated behind the `qrdb_vector` build tag.
+QRDB includes an embedding service **provider-proxy** for generating vector embeddings from
+text using OpenAI-compatible endpoints. It abstracts over multiple providers (Ollama, OpenAI,
+vLLM, Azure OpenAI, LMStudio, Voyage, and any OpenAI API-compatible service) with optional
+LRU caching to reduce token usage. The embedding service is the single source of truth
+re-exported via the SDK. The feature is gated behind the `qrdb_vector` build tag.
 
 ## Service Interface
 
@@ -45,6 +49,30 @@ type EmbeddingServicer interface {
     Close() error
 }
 ```
+
+## Daemon Configuration & Wiring
+
+The `qrdbd` daemon reads embedding configuration from the YAML config file and automatically
+registers providers at startup. The embedding service is then wired via `server.WithEmbedding()`
+into all protocol servers (REST, gRPC, MCP). Configuration is read from the `embedding` and
+`rag` sections of the YAML.
+
+```go
+// cmd/qrdbd/main.go pseudo-code:
+cfg := loadConfig()  // reads embedding: and rag: sections
+
+embeddingService := buildEmbeddingService(cfg.Embedding)  // registers providers
+ragService := buildRAGService(embeddingService, cfg.RAG)
+
+server := qrdb.NewServer(
+    qrdb.WithEmbedding(embeddingService),
+    qrdb.WithRAG(ragService),
+)
+```
+
+All REST, gRPC, and MCP API layers access the embedding service through the service
+interfaces, enabling conditional feature availability based on whether providers are
+configured.
 
 ## Provider Configuration
 
@@ -177,17 +205,25 @@ embeddings := resp.Embeddings  // len = 1000
 
 Default batch size is 256 when not specified. This is safe for most providers.
 
-## API Endpoints
+## Transport Exposure & Authorization
 
-### REST API
+The embedding service is exposed on **every** API transport. Each operation is
+guarded by a permission under the default-deny posture (an unmapped
+route/method/tool is rejected). The Unix-domain-socket transport inherits the
+full gRPC surface (gRPC over UDS).
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/v1/embedding/embed` | POST | Generate embeddings for a list of texts |
-| `/api/v1/embedding/batch-embed` | POST | Batch embed with automatic sub-batching |
-| `/api/v1/embedding/models` | GET | List available models from a provider |
+| Operation | Permission | gRPC RPC (`qrdb.v1.QRDBService/`) | REST | QUIC method | MCP tool |
+|-----------|-----------|-----------------------------------|------|-------------|----------|
+| Embed | `embedding:embed` | `Embed` | `POST /v1/embeddings` | `embedding.Embed` | `qrdb_embed_text` |
+| Batch embed | `embedding:embed` | `BatchEmbed` | `POST /v1/embeddings/batch` | `embedding.BatchEmbed` | `qrdb_batch_embed` |
+| List models | `embedding:list_models` | `ListEmbeddingModels` | `GET /v1/embedding/models?provider=` | `embedding.ListModels` | `qrdb_list_embedding_models` |
 
-Request body for `/api/v1/embedding/embed`:
+Embedding RPCs are methods on the unified `QRDBService` (not a separate
+service). Sources: `pkg/api/grpc/service_embedding.go`,
+`pkg/api/rest/handlers_embedding.go`, `pkg/api/quic/handlers_embedding.go`,
+`pkg/api/mcp/tools_embedding.go`.
+
+Request body for `POST /v1/embeddings`:
 
 ```json
 {
@@ -202,35 +238,28 @@ Response:
 ```json
 {
   "embeddings": [
-    [0.1, 0.2, 0.3, ...],
-    [0.4, 0.5, 0.6, ...]
+    [0.1, 0.2, 0.3],
+    [0.4, 0.5, 0.6]
   ],
   "model": "mxbai-embed-large",
-  "usage": {
-    "prompt_tokens": 15,
-    "total_tokens": 15
-  },
+  "usage": { "prompt_tokens": 15, "total_tokens": 15 },
   "cached": false
 }
 ```
 
-### gRPC API
+### SDK access
 
-```protobuf
-service EmbeddingService {
-    rpc Embed(EmbedRequest) returns (EmbedResponse);
-    rpc BatchEmbed(BatchEmbedRequest) returns (BatchEmbedResponse);
-    rpc ListModels(ListEmbeddingModelsRequest) returns (ListEmbeddingModelsResponse);
-}
+The Go SDK exposes the embedding service uniformly across every transport via
+`client.Embedding()`, which returns a `transport.EmbeddingClient`:
+
+```go
+resp, err := client.Embedding().Embed(ctx, &transport.EmbedRequest{
+    Texts:    []string{"hello world"},
+    Provider: "ollama",
+})
 ```
 
-Source: `pkg/api/grpc/service_embedding.go`
-
-### MCP (Model Context Protocol)
-
-Tools are registered as "embedding_embed", "embedding_batch_embed", and "embedding_list_models".
-
-Source: `pkg/api/mcp/tools_embedding.go`
+The `qrdb embedding embed|batch-embed|models` CLI commands wrap the same client.
 
 ## Model Selection
 

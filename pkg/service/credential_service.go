@@ -21,7 +21,8 @@ import (
 )
 
 // CredentialServicer provides credential management operations including
-// storage, retrieval, submission, and deletion of named credentials.
+// storage, retrieval, submission, deletion, enumeration, and versioned
+// rotation of named credentials.
 type CredentialServicer interface {
 	// CredentialStore persists a credential under the given name.
 	CredentialStore(ctx context.Context, name string, value []byte) error
@@ -36,11 +37,37 @@ type CredentialServicer interface {
 	// delegates to CredentialStore.
 	CredentialSubmit(ctx context.Context, name string, value []byte) error
 
-	// CredentialDelete removes the credential with the given name.
+	// CredentialDelete removes the credential with the given name and
+	// all of its non-current historical versions.
 	CredentialDelete(ctx context.Context, name string) error
 
 	// CredentialStrategy returns the active credential strategy name.
 	CredentialStrategy() string
+
+	// CredentialList returns the names of every stored credential.
+	// Values are never returned by enumeration. Returns
+	// credentials.ErrEnumerationNotSupported when the active strategy
+	// cannot enumerate (reserved for future HSM-only backends).
+	CredentialList(ctx context.Context) ([]string, error)
+
+	// CredentialRotate atomically replaces the current value of name
+	// with opts.NewValue, returning the previous + new version numbers
+	// and the grace expiry for the previous version. Pass GracePeriod
+	// == 0 to wipe the previous value immediately.
+	CredentialRotate(ctx context.Context, name string, opts credentials.RotateOptions) (*credentials.RotateResult, error)
+
+	// CredentialRetrieveVersion returns the stored credential value for
+	// a specific version. Use version == 0 to mean "current version".
+	CredentialRetrieveVersion(ctx context.Context, name string, version uint64) ([]byte, error)
+
+	// CredentialListVersions returns the version history (current + all
+	// non-expired grace versions) for name. Each entry's Value field is
+	// nil — use CredentialRetrieveVersion to read a specific value.
+	CredentialListVersions(ctx context.Context, name string) ([]credentials.CredentialVersion, error)
+
+	// CredentialGCExpired reaps any historical versions of name whose
+	// grace period has elapsed. Returns the count reaped.
+	CredentialGCExpired(ctx context.Context, name string) (int, error)
 }
 
 // CredentialService implements CredentialServicer by delegating to a
@@ -86,4 +113,33 @@ func (s *CredentialService) CredentialDelete(ctx context.Context, name string) e
 // delegating to the underlying CredentialService's Strategy method.
 func (s *CredentialService) CredentialStrategy() string {
 	return s.creds.Strategy()
+}
+
+// CredentialList returns the names of every stored credential.
+func (s *CredentialService) CredentialList(ctx context.Context) ([]string, error) {
+	return s.creds.ListCredentials(ctx)
+}
+
+// CredentialRotate atomically replaces the current value of name with
+// opts.NewValue, returning version metadata + grace expiry.
+func (s *CredentialService) CredentialRotate(ctx context.Context, name string, opts credentials.RotateOptions) (*credentials.RotateResult, error) {
+	return s.creds.RotateCredential(ctx, name, opts)
+}
+
+// CredentialRetrieveVersion returns the stored credential value for a
+// specific version (or the current version when version == 0).
+func (s *CredentialService) CredentialRetrieveVersion(ctx context.Context, name string, version uint64) ([]byte, error) {
+	return s.creds.RetrieveCredentialVersion(ctx, name, version)
+}
+
+// CredentialListVersions returns the version history (current + grace)
+// for name. Each entry's Value field is nil.
+func (s *CredentialService) CredentialListVersions(ctx context.Context, name string) ([]credentials.CredentialVersion, error) {
+	return s.creds.ListCredentialVersions(ctx, name)
+}
+
+// CredentialGCExpired reaps historical versions whose grace period has
+// elapsed. Returns the count reaped.
+func (s *CredentialService) CredentialGCExpired(ctx context.Context, name string) (int, error) {
+	return s.creds.GCExpiredVersions(ctx, name)
 }

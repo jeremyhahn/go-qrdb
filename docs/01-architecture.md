@@ -132,13 +132,18 @@ selects which Raft state machine wrapper to use for distributed mode.
 github.com/jeremyhahn/go-qrdb/
   cmd/qrdbd/                   Server daemon (cobra commands: start, status, peers, tls)
   pkg/
-    protocol/                  Extended wire protocol (MVCC, txn, lease, batch, index, TS op codes)
+    protocol/                  Extended wire protocol (MVCC, txn, lease, batch, index, TS, vector op codes)
+    discovery/                 Peer discovery engine (static, multicast, dns, token methods + manager)
+    cluster/                   Cluster bootstrap orchestration + opt-in dynamic membership manager
     mvcc/                      MVCC engine (revision tracking, key encoding, compaction)
     watch/                     Real-time change notifications (event fan-out, prefix matching)
     consistency/               Consistency level routing (strong, linearizable, eventual)
     lease/                     Distributed lease management (TTL, expiry, keep-alive)
     index/                     Secondary indexing (unique, sparse, PebbleDB + memory backends)
     timeseries/                Time-series storage (composite keys, aggregation, retention)
+    embedding/                 Embedding service provider-proxy (OpenAI-compatible, LRU cache)
+    vector/                    Vector database (HNSW indexes, k-NN search, tenant-scoped namespaces)
+    rag/                        RAG ingest primitive (chunking, embedding, vector storage)
     service/                   Service layer interfaces + implementations
       service.go                 KVService, AdminService, Host interfaces
       mvcc_service.go            MVCCKVService interface
@@ -148,6 +153,9 @@ github.com/jeremyhahn/go-qrdb/
       batch_service.go           BatchService interface
       index_service.go           IndexService interface
       timeseries_service.go      TimeSeriesService interface
+      vector_service.go          VectorService interface (namespace CRUD, k-NN search, metadata filtering)
+      embedding_service.go       EmbeddingService interface (provider-proxy, batch processing, caching)
+      rag_service.go             RAGService interface (document ingest, query, deletion)
       types.go                   Shared types (KeyValue, Event, Lease, Compare, Op, etc.)
       errors.go                  Typed service errors
     storage/                   Storage backend implementations
@@ -476,6 +484,24 @@ Package dependency summary:
   operations leak into the API layer.
 
   Source: `pkg/service/service.go` -- `kvService`, `adminService`
+
+- **Vector storage and embedding as tenant-safe barrier-encrypted primitives.**
+  QRDB provides a thin, tenant-scoped RAG ingest/retrieve primitive
+  (`pkg/rag/`) backed by a tenant-partitioned vector database
+  (`pkg/vector/`, `pkg/statemachine/vector_statemachine.go`), and an
+  embedding provider-proxy (`pkg/embedding/`) for generating vectors from
+  text. Vector namespaces are TENANT-PARTITIONED—the namespace name is
+  qualified by the request-context tenant, preventing collision between
+  tenants with the same namespace name. Vector data is BARRIER-ENCRYPTED
+  AT REST via the StorageBarrier (the same seal barrier that encrypts KV
+  data). In STRICT mode (FIPS build or `config.tenant.strict_isolation: true`),
+  tenant-less namespace creation is rejected. RAG ORCHESTRATION
+  (chunking strategies, BM25/hybrid/RRF ranking, query rewriting, context
+  assembly, LLM text generation) lives at L4 (go-quicbaas); qrdb provides
+  only the primitives.
+
+  Source: `pkg/vector/`, `pkg/embedding/`, `pkg/rag/`
+  Source: `pkg/statemachine/vector_statemachine.go` -- tenant validation, multi-tenant namespace isolation
 
 - **Functional options pattern for server configuration.** The REST
   server, gRPC server, multi-protocol orchestrator, and store

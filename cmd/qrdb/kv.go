@@ -23,6 +23,35 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// readConsistencyOpts converts a --consistency flag string into SDK read
+// options. An empty string yields no option, letting the server apply its
+// default (linearizable). Accepted values: strong, linearizable, eventual
+// (alias: stale).
+func readConsistencyOpts(level string) ([]transport.ReadOption, error) {
+	if level == "" {
+		return nil, nil
+	}
+	lvl, err := transport.ParseConsistencyLevel(level)
+	if err != nil {
+		return nil, err
+	}
+	return []transport.ReadOption{transport.WithConsistency(lvl)}, nil
+}
+
+// writeModeOpts converts a --write-mode flag string into SDK write options.
+// An empty string yields no option, letting the server apply its default
+// (sync). Accepted values: sync, wal_durable, batched.
+func writeModeOpts(mode string) ([]transport.WriteOption, error) {
+	if mode == "" {
+		return nil, nil
+	}
+	m, err := transport.ParseWriteMode(mode)
+	if err != nil {
+		return nil, err
+	}
+	return []transport.WriteOption{transport.WithWriteMode(m)}, nil
+}
+
 // newKVCmd creates the "kv" command group with all KV subcommands.
 func newKVCmd() *cobra.Command {
 	kvCmd := &cobra.Command{
@@ -45,7 +74,10 @@ func newKVCmd() *cobra.Command {
 
 // newKVPutCmd creates the "kv put" subcommand.
 func newKVPutCmd() *cobra.Command {
-	var leaseID int64
+	var (
+		leaseID   int64
+		writeMode string
+	)
 
 	cmd := &cobra.Command{
 		Use:   "put <key> <value>",
@@ -54,8 +86,13 @@ func newKVPutCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			key, value := args[0], args[1]
 
+			wopts, err := writeModeOpts(writeMode)
+			if err != nil {
+				return err
+			}
+
 			if leaseID != 0 {
-				kv, err := client.MVCC().PutWithLease(cmd.Context(), key, []byte(value), leaseID)
+				kv, err := client.MVCC().PutWithLease(cmd.Context(), key, []byte(value), leaseID, wopts...)
 				if err != nil {
 					return err
 				}
@@ -70,7 +107,7 @@ func newKVPutCmd() *cobra.Command {
 				}
 			}
 
-			if err := client.KV().Put(cmd.Context(), key, []byte(value)); err != nil {
+			if err := client.KV().Put(cmd.Context(), key, []byte(value), wopts...); err != nil {
 				return err
 			}
 			printOK()
@@ -79,6 +116,7 @@ func newKVPutCmd() *cobra.Command {
 	}
 
 	cmd.Flags().Int64Var(&leaseID, "lease-id", 0, "Attach a lease to the key")
+	cmd.Flags().StringVar(&writeMode, "write-mode", "", "Write durability: sync, wal_durable, or batched")
 
 	return cmd
 }
@@ -88,6 +126,7 @@ func newKVGetCmd() *cobra.Command {
 	var (
 		showRevision bool
 		atRevision   int64
+		consistency  string
 	)
 
 	cmd := &cobra.Command{
@@ -97,9 +136,14 @@ func newKVGetCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			key := args[0]
 
+			ropts, err := readConsistencyOpts(consistency)
+			if err != nil {
+				return err
+			}
+
 			// Get at a specific historical revision.
 			if atRevision != 0 {
-				kv, err := client.MVCC().GetAtRevision(cmd.Context(), key, atRevision)
+				kv, err := client.MVCC().GetAtRevision(cmd.Context(), key, atRevision, ropts...)
 				if err != nil {
 					return err
 				}
@@ -108,7 +152,7 @@ func newKVGetCmd() *cobra.Command {
 
 			// Get with full revision metadata.
 			if showRevision {
-				kv, err := client.MVCC().GetRevision(cmd.Context(), key)
+				kv, err := client.MVCC().GetRevision(cmd.Context(), key, ropts...)
 				if err != nil {
 					return err
 				}
@@ -116,7 +160,7 @@ func newKVGetCmd() *cobra.Command {
 			}
 
 			// Simple KV get.
-			data, err := client.KV().Get(cmd.Context(), key)
+			data, err := client.KV().Get(cmd.Context(), key, ropts...)
 			if err != nil {
 				return err
 			}
@@ -135,30 +179,43 @@ func newKVGetCmd() *cobra.Command {
 
 	cmd.Flags().BoolVar(&showRevision, "revision", false, "Include MVCC revision metadata")
 	cmd.Flags().Int64Var(&atRevision, "at-revision", 0, "Retrieve key at a specific historical revision")
+	cmd.Flags().StringVar(&consistency, "consistency", "", "Read consistency: strong, linearizable, or eventual")
 
 	return cmd
 }
 
 // newKVDelCmd creates the "kv del" subcommand.
 func newKVDelCmd() *cobra.Command {
-	return &cobra.Command{
+	var writeMode string
+
+	cmd := &cobra.Command{
 		Use:   "del <key>",
 		Short: "Delete a key",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			key := args[0]
-			if err := client.KV().Delete(cmd.Context(), key); err != nil {
+			wopts, err := writeModeOpts(writeMode)
+			if err != nil {
+				return err
+			}
+			if err := client.KV().Delete(cmd.Context(), key, wopts...); err != nil {
 				return err
 			}
 			printOK()
 			return nil
 		},
 	}
+
+	cmd.Flags().StringVar(&writeMode, "write-mode", "", "Write durability: sync, wal_durable, or batched")
+
+	return cmd
 }
 
 // newKVListCmd creates the "kv list" subcommand.
 func newKVListCmd() *cobra.Command {
-	return &cobra.Command{
+	var consistency string
+
+	cmd := &cobra.Command{
 		Use:   "list [prefix]",
 		Short: "List keys, optionally filtered by prefix",
 		Args:  cobra.RangeArgs(0, 1),
@@ -168,7 +225,12 @@ func newKVListCmd() *cobra.Command {
 				prefix = args[0]
 			}
 
-			keys, err := client.KV().List(cmd.Context(), prefix)
+			ropts, err := readConsistencyOpts(consistency)
+			if err != nil {
+				return err
+			}
+
+			keys, err := client.KV().List(cmd.Context(), prefix, ropts...)
 			if err != nil {
 				return err
 			}
@@ -176,17 +238,27 @@ func newKVListCmd() *cobra.Command {
 			return printList(keys, outputFormat)
 		},
 	}
+
+	cmd.Flags().StringVar(&consistency, "consistency", "", "Read consistency: strong, linearizable, or eventual")
+
+	return cmd
 }
 
 // newKVExistsCmd creates the "kv exists" subcommand.
 func newKVExistsCmd() *cobra.Command {
-	return &cobra.Command{
+	var consistency string
+
+	cmd := &cobra.Command{
 		Use:   "exists <key>",
 		Short: "Check if a key exists",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			key := args[0]
-			_, err := client.KV().Get(cmd.Context(), key)
+			ropts, err := readConsistencyOpts(consistency)
+			if err != nil {
+				return err
+			}
+			_, err = client.KV().Get(cmd.Context(), key, ropts...)
 			if err != nil {
 				var knf *transport.KeyNotFoundError
 				if errors.As(err, &knf) {
@@ -199,17 +271,22 @@ func newKVExistsCmd() *cobra.Command {
 			return nil
 		},
 	}
+
+	cmd.Flags().StringVar(&consistency, "consistency", "", "Read consistency: strong, linearizable, or eventual")
+
+	return cmd
 }
 
 // newKVRangeCmd creates the "kv range" subcommand for MVCC range queries.
 func newKVRangeCmd() *cobra.Command {
 	var (
-		limit     int64
-		revision  int64
-		countOnly bool
-		keysOnly  bool
-		sortOrder string
-		sortBy    string
+		limit       int64
+		revision    int64
+		countOnly   bool
+		keysOnly    bool
+		sortOrder   string
+		sortBy      string
+		consistency string
 	)
 
 	cmd := &cobra.Command{
@@ -246,7 +323,12 @@ func newKVRangeCmd() *cobra.Command {
 			}
 			opts.SortTarget = st
 
-			resp, err := client.MVCC().Range(cmd.Context(), start, end, opts)
+			ropts, err := readConsistencyOpts(consistency)
+			if err != nil {
+				return err
+			}
+
+			resp, err := client.MVCC().Range(cmd.Context(), start, end, opts, ropts...)
 			if err != nil {
 				return err
 			}
@@ -285,6 +367,7 @@ func newKVRangeCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&keysOnly, "keys-only", false, "Return only keys without values")
 	cmd.Flags().StringVar(&sortOrder, "sort-order", "", "Sort order: asc, desc")
 	cmd.Flags().StringVar(&sortBy, "sort-by", "", "Sort target: key, value, version, create, mod")
+	cmd.Flags().StringVar(&consistency, "consistency", "", "Read consistency: strong, linearizable, or eventual")
 
 	return cmd
 }

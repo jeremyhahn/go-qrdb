@@ -15,8 +15,17 @@ package remote
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
+	"math/big"
+	"os"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc"
 
@@ -26,14 +35,14 @@ import (
 
 // stubClient is a test double for proto.VectorIndexServiceClient.
 type stubClient struct {
-	insertErr    error
-	deleteErr    error
-	searchResp   *proto.SearchResponse
-	searchErr    error
-	countResp    *proto.CountResponse
-	countErr     error
-	statsResp    *proto.StatsResponse
-	statsErr     error
+	insertErr  error
+	deleteErr  error
+	searchResp *proto.SearchResponse
+	searchErr  error
+	countResp  *proto.CountResponse
+	countErr   error
+	statsResp  *proto.StatsResponse
+	statsErr   error
 }
 
 func (s *stubClient) Insert(_ context.Context, _ *proto.InsertRequest, _ ...grpc.CallOption) (*proto.InsertResponse, error) {
@@ -254,4 +263,142 @@ func TestBuildDialOptions_MissingClientCert(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing client cert files")
 	}
+}
+
+// ---------------------------------------------------------------------------
+// buildDialOptions — CA cert with invalid PEM content (no valid certs)
+// ---------------------------------------------------------------------------
+
+func TestBuildDialOptions_InvalidCAPEMContent(t *testing.T) {
+	// Write a file that is valid PEM but contains no certificate data,
+	// so AppendCertsFromPEM returns false.
+	tmp := t.TempDir()
+	caPath := tmp + "/ca.pem"
+	// Write a PEM block that is syntactically valid but not a CERTIFICATE.
+	caData := "-----BEGIN PRIVATE KEY-----\nYWJj\n-----END PRIVATE KEY-----\n"
+	if err := os.WriteFile(caPath, []byte(caData), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := buildDialOptions(&Config{
+		Endpoint: "host:9090",
+		TLSCA:    caPath,
+	})
+	if err == nil {
+		t.Fatal("expected error for CA PEM with no valid certificates")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// buildDialOptions — valid self-signed cert + CA (mTLS path)
+// ---------------------------------------------------------------------------
+
+func TestBuildDialOptions_ValidMTLS(t *testing.T) {
+	// Generate a self-signed cert/key pair to exercise the mTLS path.
+	certPEM, keyPEM := generateSelfSignedCert(t)
+
+	tmp := t.TempDir()
+	certPath := tmp + "/client.crt"
+	keyPath := tmp + "/client.key"
+	caPath := tmp + "/ca.crt"
+
+	mustWriteFile(t, certPath, certPEM)
+	mustWriteFile(t, keyPath, keyPEM)
+	// Use the same cert as CA so it parses.
+	mustWriteFile(t, caPath, certPEM)
+
+	opts, err := buildDialOptions(&Config{
+		Endpoint: "host:9090",
+		TLSCert:  certPath,
+		TLSKey:   keyPath,
+		TLSCA:    caPath,
+	})
+	if err != nil {
+		t.Fatalf("expected no error for valid mTLS config, got: %v", err)
+	}
+	if len(opts) == 0 {
+		t.Error("expected at least one dial option for mTLS")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// buildDialOptions — CA only (no client cert)
+// ---------------------------------------------------------------------------
+
+func TestBuildDialOptions_CAOnly(t *testing.T) {
+	certPEM, _ := generateSelfSignedCert(t)
+	tmp := t.TempDir()
+	caPath := tmp + "/ca.crt"
+	mustWriteFile(t, caPath, certPEM)
+
+	opts, err := buildDialOptions(&Config{Endpoint: "host:9090", TLSCA: caPath})
+	if err != nil {
+		t.Fatalf("expected no error for CA-only TLS, got: %v", err)
+	}
+	if len(opts) == 0 {
+		t.Error("expected at least one dial option")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// NewRemoteGPUIndex — success path (lazy dial, insecure)
+// ---------------------------------------------------------------------------
+
+func TestNewRemoteGPUIndex_Success_InsecureDial(t *testing.T) {
+	// grpc.NewClient is lazy: it does not actually connect, so any address works.
+	idx, err := NewRemoteGPUIndex(&Config{Endpoint: "localhost:19999", TimeoutMs: 100})
+	if err != nil {
+		t.Fatalf("expected no dial error (lazy connect), got: %v", err)
+	}
+	if idx == nil {
+		t.Fatal("expected non-nil index")
+	}
+	if err := idx.Close(); err != nil {
+		t.Fatalf("expected no error from Close, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// helpers
+// ---------------------------------------------------------------------------
+
+func mustWriteFile(t *testing.T, path string, data []byte) {
+	t.Helper()
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write file %s: %v", path, err)
+	}
+}
+
+// generateSelfSignedCert returns a PEM-encoded self-signed certificate and
+// its matching private key, suitable for use as both a client cert and CA.
+func generateSelfSignedCert(t *testing.T) (certPEM []byte, keyPEM []byte) {
+	t.Helper()
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+
+	template := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "test"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+
+	certDER, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create cert: %v", err)
+	}
+
+	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatalf("marshal key: %v", err)
+	}
+	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	return certPEM, keyPEM
 }

@@ -92,6 +92,10 @@ func (v *benchVecStore) SearchSimilar(_ context.Context, req *SearchVecRequest) 
 	return &SearchVecResponse{Results: v.results[:k]}, nil
 }
 
+func (v *benchVecStore) EnsureNamespace(_ context.Context, _ string, _ int, _ string) error {
+	return nil
+}
+
 // benchKVStore is an in-memory KVStore backed by a pre-populated map.
 // It is not safe for concurrent writes, but benchmarks only read from it.
 type benchKVStore struct {

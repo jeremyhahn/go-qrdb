@@ -42,16 +42,19 @@ func AvailableCodecs() []string {
 
 // Config holds codec configuration for storage and wire encoding.
 type Config struct {
-	StorageCodec string `yaml:"storage_codec"` // default: "msgpack"
+	StorageCodec string `yaml:"storage_codec"` // default: "json"
 	WireCodec    string `yaml:"wire_codec"`    // default: "json"
 	UseOptimized bool   `yaml:"use_optimized"` // default: true
 }
 
-// DefaultConfig returns a Config with production defaults:
-// msgpack for storage, json for wire, optimized buffer pooling enabled.
+// DefaultConfig returns a Config that is valid for every build configuration.
+// Both storage and wire codecs default to JSON, which is always compiled in
+// regardless of which codec build tags are active. Operators who compile with
+// the codec_msgpack build tag should override StorageCodec to TypeMsgPack in
+// their application configuration for better storage efficiency.
 func DefaultConfig() *Config {
 	return &Config{
-		StorageCodec: TypeMsgPack,
+		StorageCodec: TypeJSON,
 		WireCodec:    TypeJSON,
 		UseOptimized: true,
 	}

@@ -31,7 +31,7 @@ func validSQLConfig() *Config {
 	cfg.TLS.KeyFile = "/etc/tls/key.pem"
 	cfg.Auth.Enabled = true
 	cfg.Auth.AdminUsername = "admin"
-	cfg.Auth.DefaultTenant = "default"
+	cfg.Auth.DefaultTenant = "system"
 	cfg.SQL.DefaultDatabase = "qrdb"
 	cfg.SQL.MaxConnections = 100
 	cfg.SQL.QueryTimeout = "30s"

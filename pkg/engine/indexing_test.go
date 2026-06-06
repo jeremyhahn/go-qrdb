@@ -1071,6 +1071,458 @@ func TestEntityIndex_FieldDefinition(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// UpdateCompoundIndexesBatch
+// ---------------------------------------------------------------------------
+
+func TestUpdateCompoundIndexesBatch_EmptyMap_NoOp(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+	batch := stg.Batch()
+	defer func() { _ = batch.Close() }()
+
+	err := UpdateCompoundIndexesBatch(batch, nil, nil, []byte("k"), []byte(`{"a":"1"}`), nil)
+	if err != nil {
+		t.Fatalf("expected nil error for empty compound indexes, got %v", err)
+	}
+}
+
+func TestUpdateCompoundIndexesBatch_NonJSONValue_Skipped(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+
+	log := indexTestLogger(t)
+	idx, err := index.NewCompoundIndex(stg, index.IndexConfig{
+		Name:       "entities.A_B",
+		FieldNames: []string{"A", "B"},
+	}, log)
+	if err != nil {
+		t.Fatalf("NewCompoundIndex: %v", err)
+	}
+
+	batch := stg.Batch()
+	defer func() { _ = batch.Close() }()
+
+	compoundIndexes := map[string]*index.CompoundIndex{"entities.A_B": idx}
+	compoundFields := map[string][]string{"entities.A_B": {"a", "b"}}
+
+	// Non-JSON value: should be silently skipped, not error.
+	err = UpdateCompoundIndexesBatch(batch, compoundIndexes, compoundFields, []byte("entities/1"), []byte("not-json"), nil)
+	if err != nil {
+		t.Fatalf("expected nil error for non-JSON value, got %v", err)
+	}
+}
+
+func TestUpdateCompoundIndexesBatch_HappyPath(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+
+	log := indexTestLogger(t)
+	idx, err := index.NewCompoundIndex(stg, index.IndexConfig{
+		Name:       "docs.Author_Year",
+		FieldNames: []string{"Author", "Year"},
+	}, log)
+	if err != nil {
+		t.Fatalf("NewCompoundIndex: %v", err)
+	}
+
+	batch := stg.Batch()
+	compoundIndexes := map[string]*index.CompoundIndex{"docs.Author_Year": idx}
+	compoundFields := map[string][]string{"docs.Author_Year": {"author", "year"}}
+	key := []byte("docs/1")
+	value := []byte(`{"author":"alice","year":"2024"}`)
+
+	if err := UpdateCompoundIndexesBatch(batch, compoundIndexes, compoundFields, key, value, nil); err != nil {
+		t.Fatalf("UpdateCompoundIndexesBatch: %v", err)
+	}
+	if err := batch.Commit(); err != nil {
+		t.Fatalf("batch.Commit: %v", err)
+	}
+
+	results, err := idx.GetCompound([][]byte{[]byte("alice"), []byte("2024")})
+	if err != nil {
+		t.Fatalf("GetCompound: %v", err)
+	}
+	if len(results) != 1 || string(results[0]) != "docs/1" {
+		t.Errorf("expected [docs/1], got %v", results)
+	}
+}
+
+func TestUpdateCompoundIndexesBatch_UpdateRemovesOldEntry(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+
+	log := indexTestLogger(t)
+	idx, err := index.NewCompoundIndex(stg, index.IndexConfig{
+		Name:       "items.Cat_Tag",
+		FieldNames: []string{"Cat", "Tag"},
+	}, log)
+	if err != nil {
+		t.Fatalf("NewCompoundIndex: %v", err)
+	}
+
+	compoundIndexes := map[string]*index.CompoundIndex{"items.Cat_Tag": idx}
+	compoundFields := map[string][]string{"items.Cat_Tag": {"cat", "tag"}}
+	key := []byte("items/1")
+	oldValue := []byte(`{"cat":"electronics","tag":"phone"}`)
+	newValue := []byte(`{"cat":"electronics","tag":"laptop"}`)
+
+	// Insert old entry.
+	b1 := stg.Batch()
+	if err := UpdateCompoundIndexesBatch(b1, compoundIndexes, compoundFields, key, oldValue, nil); err != nil {
+		t.Fatalf("first UpdateCompoundIndexesBatch: %v", err)
+	}
+	_ = b1.Commit()
+
+	// Update — provide prevKv so old entry is removed.
+	prevKv := &qkv.KeyValue{Key: key, Value: oldValue}
+	b2 := stg.Batch()
+	if err := UpdateCompoundIndexesBatch(b2, compoundIndexes, compoundFields, key, newValue, prevKv); err != nil {
+		t.Fatalf("second UpdateCompoundIndexesBatch: %v", err)
+	}
+	_ = b2.Commit()
+
+	// Old entry should be gone.
+	old, err := idx.GetCompound([][]byte{[]byte("electronics"), []byte("phone")})
+	if err != nil {
+		t.Fatalf("GetCompound (old): %v", err)
+	}
+	if len(old) != 0 {
+		t.Errorf("expected old entry removed, but got %v", old)
+	}
+
+	// New entry should be present.
+	newRes, err := idx.GetCompound([][]byte{[]byte("electronics"), []byte("laptop")})
+	if err != nil {
+		t.Fatalf("GetCompound (new): %v", err)
+	}
+	if len(newRes) != 1 || string(newRes[0]) != "items/1" {
+		t.Errorf("expected [items/1], got %v", newRes)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RemoveCompoundIndexesBatch
+// ---------------------------------------------------------------------------
+
+func TestRemoveCompoundIndexesBatch_EmptyMap_NoOp(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+	batch := stg.Batch()
+	defer func() { _ = batch.Close() }()
+
+	err := RemoveCompoundIndexesBatch(batch, nil, nil, []byte("k"), nil)
+	if err != nil {
+		t.Fatalf("expected nil for empty map, got %v", err)
+	}
+}
+
+func TestRemoveCompoundIndexesBatch_NilPrevKv_NoOp(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+
+	log := indexTestLogger(t)
+	idx, err := index.NewCompoundIndex(stg, index.IndexConfig{
+		Name:       "things.X_Y",
+		FieldNames: []string{"X", "Y"},
+	}, log)
+	if err != nil {
+		t.Fatalf("NewCompoundIndex: %v", err)
+	}
+
+	batch := stg.Batch()
+	defer func() { _ = batch.Close() }()
+
+	compoundIndexes := map[string]*index.CompoundIndex{"things.X_Y": idx}
+	compoundFields := map[string][]string{"things.X_Y": {"x", "y"}}
+
+	// prevKv is nil — should be a no-op.
+	err = RemoveCompoundIndexesBatch(batch, compoundIndexes, compoundFields, []byte("things/1"), nil)
+	if err != nil {
+		t.Fatalf("expected nil for nil prevKv, got %v", err)
+	}
+}
+
+func TestRemoveCompoundIndexesBatch_HappyPath(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+
+	log := indexTestLogger(t)
+	idx, err := index.NewCompoundIndex(stg, index.IndexConfig{
+		Name:       "nodes.Zone_Role",
+		FieldNames: []string{"Zone", "Role"},
+	}, log)
+	if err != nil {
+		t.Fatalf("NewCompoundIndex: %v", err)
+	}
+
+	key := []byte("nodes/1")
+	value := []byte(`{"zone":"us-east-1","role":"leader"}`)
+	compoundIndexes := map[string]*index.CompoundIndex{"nodes.Zone_Role": idx}
+	compoundFields := map[string][]string{"nodes.Zone_Role": {"zone", "role"}}
+
+	// Insert entry.
+	b1 := stg.Batch()
+	if err := UpdateCompoundIndexesBatch(b1, compoundIndexes, compoundFields, key, value, nil); err != nil {
+		t.Fatalf("UpdateCompoundIndexesBatch: %v", err)
+	}
+	_ = b1.Commit()
+
+	// Remove entry.
+	prevKv := &qkv.KeyValue{Key: key, Value: value}
+	b2 := stg.Batch()
+	if err := RemoveCompoundIndexesBatch(b2, compoundIndexes, compoundFields, key, prevKv); err != nil {
+		t.Fatalf("RemoveCompoundIndexesBatch: %v", err)
+	}
+	_ = b2.Commit()
+
+	results, err := idx.GetCompound([][]byte{[]byte("us-east-1"), []byte("leader")})
+	if err != nil {
+		t.Fatalf("GetCompound: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected no results after removal, got %v", results)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// BackfillCompoundIndexWithPrefix
+// ---------------------------------------------------------------------------
+
+func TestBackfillCompoundIndexWithPrefix_PopulatesIndex(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+
+	// Write data directly to storage (bypassing index).
+	for i, body := range []string{
+		`{"author":"alice","year":"2023"}`,
+		`{"author":"bob","year":"2024"}`,
+	} {
+		if err := stg.Set([]byte("books/"+string(rune('1'+i))), []byte(body)); err != nil {
+			t.Fatalf("Set: %v", err)
+		}
+	}
+
+	log := indexTestLogger(t)
+	idx, err := index.NewCompoundIndex(stg, index.IndexConfig{
+		Name:       "books.Author_Year",
+		FieldNames: []string{"Author", "Year"},
+	}, log)
+	if err != nil {
+		t.Fatalf("NewCompoundIndex: %v", err)
+	}
+
+	if err := BackfillCompoundIndexWithPrefix(stg, idx, []string{"author", "year"}, []byte("books/")); err != nil {
+		t.Fatalf("BackfillCompoundIndexWithPrefix: %v", err)
+	}
+
+	res, err := idx.GetCompound([][]byte{[]byte("alice"), []byte("2023")})
+	if err != nil {
+		t.Fatalf("GetCompound alice/2023: %v", err)
+	}
+	if len(res) != 1 {
+		t.Errorf("expected 1 key for alice/2023, got %d", len(res))
+	}
+}
+
+func TestBackfillCompoundIndexWithPrefix_EmptyValueSkipped(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+
+	// One entry with empty value; should be silently skipped.
+	if err := stg.Set([]byte("parts/1"), []byte{}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	log := indexTestLogger(t)
+	idx, err := index.NewCompoundIndex(stg, index.IndexConfig{
+		Name:       "parts.X_Y",
+		FieldNames: []string{"X", "Y"},
+	}, log)
+	if err != nil {
+		t.Fatalf("NewCompoundIndex: %v", err)
+	}
+
+	if err := BackfillCompoundIndexWithPrefix(stg, idx, []string{"x", "y"}, []byte("parts/")); err != nil {
+		t.Fatalf("BackfillCompoundIndexWithPrefix with empty value: %v", err)
+	}
+}
+
+func TestBackfillCompoundIndexWithPrefix_NonJSONSkipped(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+
+	// One non-JSON entry; should not fail, and index should remain empty.
+	if err := stg.Set([]byte("items/1"), []byte("not-json")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	log := indexTestLogger(t)
+	idx, err := index.NewCompoundIndex(stg, index.IndexConfig{
+		Name:       "items.A_B",
+		FieldNames: []string{"A", "B"},
+	}, log)
+	if err != nil {
+		t.Fatalf("NewCompoundIndex: %v", err)
+	}
+
+	if err := BackfillCompoundIndexWithPrefix(stg, idx, []string{"a", "b"}, []byte("items/")); err != nil {
+		t.Fatalf("BackfillCompoundIndexWithPrefix: %v", err)
+	}
+
+	res, err := idx.GetCompound([][]byte{[]byte("x"), []byte("y")})
+	if err != nil {
+		t.Fatalf("GetCompound: %v", err)
+	}
+	if len(res) != 0 {
+		t.Errorf("expected empty index for non-JSON data, got %v", res)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// extractCompoundFieldValues
+// ---------------------------------------------------------------------------
+
+func TestExtractCompoundFieldValues_AllPresent(t *testing.T) {
+	t.Parallel()
+	data := map[string]json.RawMessage{
+		"name": json.RawMessage(`"alice"`),
+		"age":  json.RawMessage(`30`),
+	}
+	result := extractCompoundFieldValues(data, []string{"name", "age"})
+	if result == nil {
+		t.Fatal("expected non-nil result for all-present fields")
+	}
+	if len(result) != 2 {
+		t.Fatalf("expected 2 values, got %d", len(result))
+	}
+	if string(result[0]) != "alice" {
+		t.Errorf("result[0] = %q, want %q", result[0], "alice")
+	}
+	if string(result[1]) != "30" {
+		t.Errorf("result[1] = %q, want %q", result[1], "30")
+	}
+}
+
+func TestExtractCompoundFieldValues_MissingField_ReturnsNil(t *testing.T) {
+	t.Parallel()
+	data := map[string]json.RawMessage{
+		"name": json.RawMessage(`"alice"`),
+	}
+	// "age" is not in the map — sparse behavior: return nil.
+	result := extractCompoundFieldValues(data, []string{"name", "age"})
+	if result != nil {
+		t.Errorf("expected nil for missing field, got %v", result)
+	}
+}
+
+func TestExtractCompoundFieldValues_EmptyFieldNames_EmptySlice(t *testing.T) {
+	t.Parallel()
+	data := map[string]json.RawMessage{
+		"x": json.RawMessage(`"y"`),
+	}
+	result := extractCompoundFieldValues(data, []string{})
+	// Zero-length fieldNames → zero-length values slice, not nil.
+	if result == nil {
+		t.Fatal("expected non-nil empty slice for zero field names")
+	}
+	if len(result) != 0 {
+		t.Errorf("expected empty slice, got %v", result)
+	}
+}
+
+// TestRemoveCompoundIndexesBatch_NonJSONPrevKv verifies that a non-JSON
+// prevKv.Value is silently skipped (unmarshal fails → return nil, not error).
+func TestRemoveCompoundIndexesBatch_NonJSONPrevKv(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+
+	log := indexTestLogger(t)
+	idx, err := index.NewCompoundIndex(stg, index.IndexConfig{
+		Name:       "x.A_B",
+		FieldNames: []string{"A", "B"},
+	}, log)
+	if err != nil {
+		t.Fatalf("NewCompoundIndex: %v", err)
+	}
+
+	batch := stg.Batch()
+	defer func() { _ = batch.Close() }()
+
+	compoundIndexes := map[string]*index.CompoundIndex{"x.A_B": idx}
+	compoundFields := map[string][]string{"x.A_B": {"a", "b"}}
+	key := []byte("x/1")
+	prevKv := &qkv.KeyValue{Key: key, Value: []byte("not-json")}
+
+	// Non-JSON prevKv.Value: JSON unmarshal fails → function returns nil silently.
+	err = RemoveCompoundIndexesBatch(batch, compoundIndexes, compoundFields, key, prevKv)
+	if err != nil {
+		t.Fatalf("expected nil for non-JSON prevKv.Value, got %v", err)
+	}
+}
+
+// TestRemoveCompoundIndexesBatch_MissingFieldsKey verifies that when the
+// compound index exists but no field names are registered for it, the index
+// loop skips the entry without error.
+func TestRemoveCompoundIndexesBatch_MissingFieldsKey(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+
+	log := indexTestLogger(t)
+	idx, err := index.NewCompoundIndex(stg, index.IndexConfig{
+		Name:       "y.C_D",
+		FieldNames: []string{"C", "D"},
+	}, log)
+	if err != nil {
+		t.Fatalf("NewCompoundIndex: %v", err)
+	}
+
+	batch := stg.Batch()
+	defer func() { _ = batch.Close() }()
+
+	compoundIndexes := map[string]*index.CompoundIndex{"y.C_D": idx}
+	// Intentionally empty compoundFields: lookup for "y.C_D" will return !ok.
+	compoundFields := map[string][]string{}
+	key := []byte("y/1")
+	prevKv := &qkv.KeyValue{Key: key, Value: []byte(`{"c":"v1","d":"v2"}`)}
+
+	err = RemoveCompoundIndexesBatch(batch, compoundIndexes, compoundFields, key, prevKv)
+	if err != nil {
+		t.Fatalf("expected nil when field names missing, got %v", err)
+	}
+}
+
+// TestUpdateCompoundIndexesBatch_MissingFieldsKey verifies that when the
+// compound index exists but no field names are registered for it, the index
+// loop skips the entry without error.
+func TestUpdateCompoundIndexesBatch_MissingFieldsKey(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+
+	log := indexTestLogger(t)
+	idx, err := index.NewCompoundIndex(stg, index.IndexConfig{
+		Name:       "z.E_F",
+		FieldNames: []string{"E", "F"},
+	}, log)
+	if err != nil {
+		t.Fatalf("NewCompoundIndex: %v", err)
+	}
+
+	batch := stg.Batch()
+	defer func() { _ = batch.Close() }()
+
+	compoundIndexes := map[string]*index.CompoundIndex{"z.E_F": idx}
+	// Empty compoundFields: lookup for "z.E_F" will return !ok.
+	compoundFields := map[string][]string{}
+	key := []byte("z/1")
+	value := []byte(`{"e":"v1","f":"v2"}`)
+
+	err = UpdateCompoundIndexesBatch(batch, compoundIndexes, compoundFields, key, value, nil)
+	if err != nil {
+		t.Fatalf("expected nil when field names missing, got %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Test helper
 // ---------------------------------------------------------------------------
 

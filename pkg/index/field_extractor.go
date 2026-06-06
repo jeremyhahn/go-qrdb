@@ -42,7 +42,7 @@ func NewFieldExtractor(structType reflect.Type, fieldName string) (FieldExtracto
 	}
 
 	// Dereference pointer type if needed.
-	if structType.Kind() == reflect.Ptr {
+	if structType.Kind() == reflect.Pointer {
 		structType = structType.Elem()
 	}
 
@@ -82,7 +82,7 @@ func NewFieldExtractor(structType reflect.Type, fieldName string) (FieldExtracto
 		val := reflect.ValueOf(entity)
 
 		// Dereference pointer if needed.
-		if val.Kind() == reflect.Ptr {
+		if val.Kind() == reflect.Pointer {
 			if val.IsNil() {
 				return nil, errors.Newf(
 					errors.ErrInvalidInput,

@@ -36,7 +36,9 @@ func (t *Transport) BarrierInitialize(ctx context.Context, req *transport.Barrie
 		return &transport.ClosedError{}
 	}
 	payload, err := proto.Marshal(&pb.BarrierInitializeRequest{
-		Secret: req.Secret,
+		Secret:  req.Secret,
+		SoPin:   req.SOPin,
+		UserPin: req.UserPin,
 	})
 	if err != nil {
 		return &marshalError{Err: err}
@@ -101,6 +103,8 @@ func (t *Transport) BarrierInitializeShamir(ctx context.Context, req *transport.
 		Secret:      req.Secret,
 		Threshold:   int32(req.Threshold),
 		TotalShares: int32(req.TotalShares),
+		SoPin:       req.SOPin,
+		UserPin:     req.UserPin,
 	})
 	if err != nil {
 		return nil, &marshalError{Err: err}
@@ -163,59 +167,6 @@ func (t *Transport) BarrierUnsealWithShares(ctx context.Context, req *transport.
 	return err
 }
 
-// BarrierShamirListShares returns metadata about stored Shamir shares.
-func (t *Transport) BarrierShamirListShares(ctx context.Context) (*transport.BarrierShamirSharesResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	respBytes, err := t.call(ctx, "barrier.ShamirListShares", nil)
-	if err != nil {
-		return nil, err
-	}
-	var resp pb.BarrierShamirSharesResponse
-	if err := proto.Unmarshal(respBytes, &resp); err != nil {
-		return nil, &unmarshalError{Err: err}
-	}
-	return &transport.BarrierShamirSharesResponse{
-		Count:     int(resp.GetCount()),
-		Threshold: int(resp.GetThreshold()),
-		Total:     int(resp.GetTotal()),
-	}, nil
-}
-
-// BarrierShamirDeleteShare deletes a single Shamir share by index.
-func (t *Transport) BarrierShamirDeleteShare(ctx context.Context, req *transport.BarrierShamirDeleteShareRequest) error {
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
-	payload, err := proto.Marshal(&pb.BarrierShamirDeleteShareRequest{
-		Index: int32(req.Index),
-	})
-	if err != nil {
-		return &marshalError{Err: err}
-	}
-	_, err = t.call(ctx, "barrier.ShamirDeleteShare", payload)
-	return err
-}
-
-// BarrierShamirDeleteAllShares deletes all stored Shamir shares.
-func (t *Transport) BarrierShamirDeleteAllShares(ctx context.Context) error {
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
-	_, err := t.call(ctx, "barrier.ShamirDeleteAllShares", nil)
-	return err
-}
-
-// BarrierShamirVerify verifies the integrity of stored Shamir shares.
-func (t *Transport) BarrierShamirVerify(ctx context.Context) error {
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
-	_, err := t.call(ctx, "barrier.ShamirVerify", nil)
-	return err
-}
-
 // BarrierRekey generates new Shamir shares with the specified threshold and
 // total count, replacing the existing shares.
 func (t *Transport) BarrierRekey(ctx context.Context, req *transport.BarrierRekeyRequest) (*transport.BarrierRekeyResponse, error) {
@@ -225,6 +176,7 @@ func (t *Transport) BarrierRekey(ctx context.Context, req *transport.BarrierReke
 	payload, err := proto.Marshal(&pb.BarrierRekeyRequest{
 		Threshold: int32(req.Threshold),
 		Total:     int32(req.Total),
+		SoPin:     req.SOPin,
 	})
 	if err != nil {
 		return nil, &marshalError{Err: err}
@@ -253,6 +205,7 @@ func (t *Transport) BarrierGenerateRecoveryKeys(ctx context.Context, req *transp
 	payload, err := proto.Marshal(&pb.BarrierRecoveryGenerateRequest{
 		Threshold: int32(req.Threshold),
 		Total:     int32(req.Total),
+		SoPin:     req.SOPin,
 	})
 	if err != nil {
 		return nil, &marshalError{Err: err}

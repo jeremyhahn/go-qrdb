@@ -15,7 +15,9 @@
 package rest
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -24,6 +26,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -41,8 +44,10 @@ type mockTenantService struct {
 	deleteTenantFn        func(ctx context.Context, tenantID string) error
 	updateTenantFn        func(ctx context.Context, tenantID string, patch tenant.TenantPatch) (*tenant.TenantInfo, error)
 	updateQuotasFn        func(ctx context.Context, tenantID string, quotas *quota.Quotas) (*tenant.TenantInfo, error)
-	tenantBarrierInitFn   func(ctx context.Context, tenantID string, threshold, shares int) error
+	tenantBarrierInitFn   func(ctx context.Context, tenantID, passphrase string, threshold, shares int) error
 	tenantBarrierUnsealFn func(ctx context.Context, tenantID string, key []byte) error
+	tenantBarrierSealFn   func(ctx context.Context, tenantID string) error
+	tenantBarrierStatusFn func(ctx context.Context, tenantID string) (*tenant.TenantBarrierStatus, error)
 }
 
 func (m *mockTenantService) CreateTenant(ctx context.Context, id, name string, isolationType tenant.IsolationType) (*tenant.TenantInfo, error) {
@@ -87,11 +92,15 @@ func (m *mockTenantService) UpdateQuotas(ctx context.Context, tenantID string, q
 	return nil, nil
 }
 
-func (m *mockTenantService) TenantBarrierInit(ctx context.Context, tenantID string, threshold, shares int) error {
+func (m *mockTenantService) TenantBarrierInit(ctx context.Context, tenantID, passphrase string, threshold, shares int) error {
 	if m.tenantBarrierInitFn != nil {
-		return m.tenantBarrierInitFn(ctx, tenantID, threshold, shares)
+		return m.tenantBarrierInitFn(ctx, tenantID, passphrase, threshold, shares)
 	}
 	return nil
+}
+
+func (m *mockTenantService) TenantBarrierInitWithStrategy(ctx context.Context, tenantID, passphrase string, threshold, shares int, _ seal.StrategyID) error {
+	return m.TenantBarrierInit(ctx, tenantID, passphrase, threshold, shares)
 }
 
 func (m *mockTenantService) TenantBarrierUnseal(ctx context.Context, tenantID string, key []byte) error {
@@ -99,6 +108,29 @@ func (m *mockTenantService) TenantBarrierUnseal(ctx context.Context, tenantID st
 		return m.tenantBarrierUnsealFn(ctx, tenantID, key)
 	}
 	return nil
+}
+
+func (m *mockTenantService) TenantBarrierSeal(ctx context.Context, tenantID string) error {
+	if m.tenantBarrierSealFn != nil {
+		return m.tenantBarrierSealFn(ctx, tenantID)
+	}
+	return nil
+}
+
+func (m *mockTenantService) TenantBarrierStatus(ctx context.Context, tenantID string) (*tenant.TenantBarrierStatus, error) {
+	if m.tenantBarrierStatusFn != nil {
+		return m.tenantBarrierStatusFn(ctx, tenantID)
+	}
+	return nil, nil
+}
+func (m *mockTenantService) IncrementQuotaUsage(_ context.Context, _ string, _ quota.Resource, _ int64) (*tenant.TenantInfo, error) {
+	return nil, nil
+}
+func (m *mockTenantService) DecrementQuotaUsage(_ context.Context, _ string, _ quota.Resource, _ int64) (*tenant.TenantInfo, error) {
+	return nil, nil
+}
+func (m *mockTenantService) GetQuotaUsage(_ context.Context, _ string, _ quota.Resource) (int64, error) {
+	return 0, nil
 }
 
 // Compile-time interface check.
@@ -757,4 +789,379 @@ func TestHandleCreateTenant_DefaultIsolationType(t *testing.T) {
 	srv.dispatch(rec, req)
 
 	assertStatus(t, rec, http.StatusCreated)
+}
+
+// ---------------------------------------------------------------------------
+// POST /v1/tenants/{id}/barrier/init (TenantBarrierInit)
+// ---------------------------------------------------------------------------
+
+func TestHandleTenantBarrierInit_Success(t *testing.T) {
+	var sawTenant, sawPassphrase string
+	var sawThreshold, sawShares int
+	svc := &mockTenantService{
+		tenantBarrierInitFn: func(_ context.Context, tenantID, passphrase string, threshold, shares int) error {
+			sawTenant = tenantID
+			sawPassphrase = passphrase
+			sawThreshold = threshold
+			sawShares = shares
+			return nil
+		},
+	}
+	srv := newTenantServer(svc)
+
+	body := `{"passphrase":"super-secret","threshold":3,"shares":5}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/barrier/init", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusNoContent)
+	if sawTenant != "acme" {
+		t.Fatalf("tenantID = %q, want %q", sawTenant, "acme")
+	}
+	if sawThreshold != 3 {
+		t.Fatalf("threshold = %d, want 3", sawThreshold)
+	}
+	if sawShares != 5 {
+		t.Fatalf("shares = %d, want 5", sawShares)
+	}
+	if sawPassphrase != "super-secret" {
+		t.Fatalf("passphrase = %q, want %q", sawPassphrase, "super-secret")
+	}
+}
+
+func TestHandleTenantBarrierInit_EmptyBodyDefaults(t *testing.T) {
+	var sawThreshold, sawShares int
+	svc := &mockTenantService{
+		tenantBarrierInitFn: func(_ context.Context, _, _ string, threshold, shares int) error {
+			sawThreshold = threshold
+			sawShares = shares
+			return nil
+		},
+	}
+	srv := newTenantServer(svc)
+
+	// Empty body — both threshold/shares must default to zero.
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/barrier/init", nil)
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusNoContent)
+	if sawThreshold != 0 || sawShares != 0 {
+		t.Fatalf("defaults = (%d,%d), want (0,0)", sawThreshold, sawShares)
+	}
+}
+
+func TestHandleTenantBarrierInit_InvalidBody(t *testing.T) {
+	srv := newTenantServer(&mockTenantService{})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/barrier/init", strings.NewReader("not-json"))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusBadRequest)
+}
+
+func TestHandleTenantBarrierInit_NotFound(t *testing.T) {
+	svc := &mockTenantService{
+		tenantBarrierInitFn: func(_ context.Context, _, _ string, _, _ int) error {
+			return tenant.ErrTenantNotFound
+		},
+	}
+	srv := newTenantServer(svc)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/ghost/barrier/init", strings.NewReader(`{}`))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusNotFound)
+}
+
+func TestHandleTenantBarrierInit_EmptyID(t *testing.T) {
+	svc := &mockTenantService{
+		tenantBarrierInitFn: func(_ context.Context, _, _ string, _, _ int) error {
+			return tenant.ErrEmptyTenantID
+		},
+	}
+	srv := newTenantServer(svc)
+
+	// "/v1/tenants//barrier/init" → CutSuffix yields id="" which is rejected
+	// by the dispatcher's empty-id guard before reaching the handler. We
+	// exercise the handler-level error instead by providing a valid id but
+	// having the service return ErrEmptyTenantID.
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/barrier/init", strings.NewReader(`{}`))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusBadRequest)
+}
+
+func TestHandleTenantBarrierInit_ServiceNil(t *testing.T) {
+	srv := newTenantServer(nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/barrier/init", strings.NewReader(`{}`))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusNotImplemented)
+}
+
+func TestHandleTenantBarrierInit_BarrierError(t *testing.T) {
+	svc := &mockTenantService{
+		tenantBarrierInitFn: func(_ context.Context, tenantID, _ string, _, _ int) error {
+			return &tenant.BarrierError{TenantID: tenantID, Op: "initialize", Err: errSentinel}
+		},
+	}
+	srv := newTenantServer(svc)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/barrier/init", strings.NewReader(`{}`))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusInternalServerError)
+}
+
+// ---------------------------------------------------------------------------
+// POST /v1/tenants/{id}/barrier/unseal (TenantBarrierUnseal)
+// ---------------------------------------------------------------------------
+
+func TestHandleTenantBarrierUnseal_Success(t *testing.T) {
+	want := []byte("super-secret-key")
+	var sawKey []byte
+	svc := &mockTenantService{
+		tenantBarrierUnsealFn: func(_ context.Context, _ string, key []byte) error {
+			sawKey = key
+			return nil
+		},
+	}
+	srv := newTenantServer(svc)
+
+	// encoding/json base64-encodes []byte by default.
+	payload := tenantBarrierUnsealRequest{Key: want}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/barrier/unseal", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusNoContent)
+	if !bytes.Equal(sawKey, want) {
+		t.Fatalf("key = %q, want %q", sawKey, want)
+	}
+}
+
+func TestHandleTenantBarrierUnseal_EmptyBodyFallback(t *testing.T) {
+	var sawKey []byte
+	svc := &mockTenantService{
+		tenantBarrierUnsealFn: func(_ context.Context, _ string, key []byte) error {
+			sawKey = key
+			return nil
+		},
+	}
+	srv := newTenantServer(svc)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/barrier/unseal", nil)
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusNoContent)
+	if len(sawKey) != 0 {
+		t.Fatalf("key should be empty for fallback, got %q", sawKey)
+	}
+}
+
+func TestHandleTenantBarrierUnseal_InvalidBody(t *testing.T) {
+	srv := newTenantServer(&mockTenantService{})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/barrier/unseal", strings.NewReader("not-json"))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusBadRequest)
+}
+
+func TestHandleTenantBarrierUnseal_NotFound(t *testing.T) {
+	svc := &mockTenantService{
+		tenantBarrierUnsealFn: func(_ context.Context, _ string, _ []byte) error {
+			return tenant.ErrTenantNotFound
+		},
+	}
+	srv := newTenantServer(svc)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/ghost/barrier/unseal", strings.NewReader(`{}`))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusNotFound)
+}
+
+func TestHandleTenantBarrierUnseal_ServiceNil(t *testing.T) {
+	srv := newTenantServer(nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/barrier/unseal", strings.NewReader(`{}`))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusNotImplemented)
+}
+
+func TestHandleTenantBarrierUnseal_BarrierError(t *testing.T) {
+	svc := &mockTenantService{
+		tenantBarrierUnsealFn: func(_ context.Context, tenantID string, _ []byte) error {
+			return &tenant.BarrierError{TenantID: tenantID, Op: "unseal", Err: errSentinel}
+		},
+	}
+	srv := newTenantServer(svc)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/barrier/unseal", strings.NewReader(`{}`))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusInternalServerError)
+}
+
+// ---------------------------------------------------------------------------
+// POST /v1/tenants/{id}/barrier/seal (TenantBarrierSeal)
+// ---------------------------------------------------------------------------
+
+func TestHandleTenantBarrierSeal_Success(t *testing.T) {
+	var sawTenant string
+	svc := &mockTenantService{
+		tenantBarrierSealFn: func(_ context.Context, tenantID string) error {
+			sawTenant = tenantID
+			return nil
+		},
+	}
+	srv := newTenantServer(svc)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/barrier/seal", nil)
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusNoContent)
+	if sawTenant != "acme" {
+		t.Fatalf("tenantID = %q, want %q", sawTenant, "acme")
+	}
+}
+
+func TestHandleTenantBarrierSeal_NotFound(t *testing.T) {
+	svc := &mockTenantService{
+		tenantBarrierSealFn: func(_ context.Context, _ string) error {
+			return tenant.ErrTenantNotFound
+		},
+	}
+	srv := newTenantServer(svc)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/ghost/barrier/seal", nil)
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusNotFound)
+}
+
+func TestHandleTenantBarrierSeal_ServiceNil(t *testing.T) {
+	srv := newTenantServer(nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/barrier/seal", nil)
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusNotImplemented)
+}
+
+func TestHandleTenantBarrierSeal_BarrierError(t *testing.T) {
+	svc := &mockTenantService{
+		tenantBarrierSealFn: func(_ context.Context, tenantID string) error {
+			return &tenant.BarrierError{TenantID: tenantID, Op: "seal", Err: errSentinel}
+		},
+	}
+	srv := newTenantServer(svc)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/barrier/seal", nil)
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusInternalServerError)
+}
+
+// ---------------------------------------------------------------------------
+// GET /v1/tenants/{id}/barrier/status (TenantBarrierStatus)
+// ---------------------------------------------------------------------------
+
+func TestHandleTenantBarrierStatus_Success(t *testing.T) {
+	svc := &mockTenantService{
+		tenantBarrierStatusFn: func(_ context.Context, tenantID string) (*tenant.TenantBarrierStatus, error) {
+			if tenantID != "acme" {
+				t.Fatalf("unexpected tenantID: %q", tenantID)
+			}
+			return &tenant.TenantBarrierStatus{
+				TenantID:       tenantID,
+				Sealed:         false,
+				Initialized:    true,
+				Strategy:       "passphrase",
+				HardwareBacked: false,
+			}, nil
+		},
+	}
+	srv := newTenantServer(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/tenants/acme/barrier/status", nil)
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusOK)
+	assertContentType(t, rec, "application/json")
+
+	var resp tenant.TenantBarrierStatus
+	decodeJSON(t, rec, &resp)
+	if resp.TenantID != "acme" {
+		t.Fatalf("tenant_id = %q, want %q", resp.TenantID, "acme")
+	}
+	if resp.Sealed {
+		t.Fatal("sealed = true, want false")
+	}
+	if !resp.Initialized {
+		t.Fatal("initialized = false, want true")
+	}
+	if resp.Strategy != "passphrase" {
+		t.Fatalf("strategy = %q, want %q", resp.Strategy, "passphrase")
+	}
+}
+
+func TestHandleTenantBarrierStatus_NotFound(t *testing.T) {
+	svc := &mockTenantService{
+		tenantBarrierStatusFn: func(_ context.Context, _ string) (*tenant.TenantBarrierStatus, error) {
+			return nil, tenant.ErrTenantNotFound
+		},
+	}
+	srv := newTenantServer(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/tenants/ghost/barrier/status", nil)
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusNotFound)
+}
+
+func TestHandleTenantBarrierStatus_ServiceNil(t *testing.T) {
+	srv := newTenantServer(nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/tenants/acme/barrier/status", nil)
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusNotImplemented)
+}
+
+func TestHandleTenantBarrierStatus_BarrierError(t *testing.T) {
+	svc := &mockTenantService{
+		tenantBarrierStatusFn: func(_ context.Context, tenantID string) (*tenant.TenantBarrierStatus, error) {
+			return nil, &tenant.BarrierError{TenantID: tenantID, Op: "status", Err: errSentinel}
+		},
+	}
+	srv := newTenantServer(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/tenants/acme/barrier/status", nil)
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusInternalServerError)
 }

@@ -33,18 +33,18 @@ const (
 // openaiModelDimensions maps well-known OpenAI model names to their
 // vector dimensionality.
 var openaiModelDimensions = map[string]int{
-	"text-embedding-3-small":                  1536,
-	"text-embedding-3-large":                  3072,
-	"text-embedding-ada-002":                  1536,
-	"nomic-embed-text":                        768,
-	"mxbai-embed-large":                       1024,
-	"all-minilm":                              384,
-	"all-minilm-l6-v2":                        384,
-	"all-minilm-l12-v2":                       384,
-	"bge-small-en-v1.5":                       384,
-	"bge-base-en-v1.5":                        768,
-	"bge-large-en-v1.5":                       1024,
-	"nomic-ai/nomic-embed-text-v1.5-GGUF":     768,
+	"text-embedding-3-small":              1536,
+	"text-embedding-3-large":              3072,
+	"text-embedding-ada-002":              1536,
+	"nomic-embed-text":                    768,
+	"mxbai-embed-large":                   1024,
+	"all-minilm":                          384,
+	"all-minilm-l6-v2":                    384,
+	"all-minilm-l12-v2":                   384,
+	"bge-small-en-v1.5":                   384,
+	"bge-base-en-v1.5":                    768,
+	"bge-large-en-v1.5":                   1024,
+	"nomic-ai/nomic-embed-text-v1.5-GGUF": 768,
 }
 
 // OpenAIProvider implements Provider for OpenAI-compatible embedding APIs.

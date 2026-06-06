@@ -21,10 +21,13 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
+	"github.com/jeremyhahn/go-qrdb/pkg/custodian"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -45,7 +48,7 @@ func newMockCeremonyService() *mockCeremonyService {
 	return &mockCeremonyService{}
 }
 
-func (m *mockCeremonyService) CeremonyInitialize(ctx context.Context, ca ceremony.CeremonyCA) (*service.CeremonyInitResult, error) {
+func (m *mockCeremonyService) CeremonyInitialize(ctx context.Context, ca ceremony.CeremonyCA, _ *service.CeremonyInitializeOptions) (*service.CeremonyInitResult, error) {
 	if m.initializeFn != nil {
 		return m.initializeFn(ctx, ca)
 	}
@@ -102,6 +105,28 @@ func (m *mockCeremonyService) CeremonyStatus(ctx context.Context) (*service.Cere
 	}, nil
 }
 
+// CeremonyClaimShareBegin is a stub satisfying the Phase 4 custodian-ceremony
+// extension of service.CeremonyServicer. The MCP credential tests do not
+// exercise factor-based claim flows.
+func (m *mockCeremonyService) CeremonyClaimShareBegin(_ context.Context, _ string) (*service.CeremonyCustodianChallenge, error) {
+	return nil, fmt.Errorf("not implemented in mock")
+}
+
+// CeremonyClaimShareComplete is a stub for the custodian claim-complete flow.
+func (m *mockCeremonyService) CeremonyClaimShareComplete(_ context.Context, _, _ string, _ []byte) (*custodian.Custodian, error) {
+	return nil, fmt.Errorf("not implemented in mock")
+}
+
+// CeremonySubmitUnsealShare is a stub for custodian unseal-share submission.
+func (m *mockCeremonyService) CeremonySubmitUnsealShare(_ context.Context, _, _ string, _, _ []byte) (*service.CeremonyUnsealShareResult, error) {
+	return nil, fmt.Errorf("not implemented in mock")
+}
+
+// CeremonyEnrollExternalOfficer is a stub for external-officer enrollment.
+func (m *mockCeremonyService) CeremonyEnrollExternalOfficer(_ context.Context, _ *service.CeremonyEnrollExternalOfficerRequest) (*service.CeremonyEnrollExternalOfficerResponse, error) {
+	return nil, fmt.Errorf("not implemented in mock")
+}
+
 // ---------------------------------------------------------------------------
 // Mock: CeremonyCA
 // ---------------------------------------------------------------------------
@@ -132,11 +157,16 @@ func (m *mockCeremonyCA) IssueCertificate(_ *ceremony.IssueCertRequest) (*ceremo
 // ---------------------------------------------------------------------------
 
 type mockCredentialService struct {
-	submitFn   func(ctx context.Context, name string, value []byte) error
-	strategyFn func() string
-	deleteFn   func(ctx context.Context, name string) error
-	storeFn    func(ctx context.Context, name string, value []byte) error
-	retrieveFn func(ctx context.Context, name string) ([]byte, error)
+	submitFn          func(ctx context.Context, name string, value []byte) error
+	strategyFn        func() string
+	deleteFn          func(ctx context.Context, name string) error
+	storeFn           func(ctx context.Context, name string, value []byte) error
+	retrieveFn        func(ctx context.Context, name string) ([]byte, error)
+	listFn            func(ctx context.Context) ([]string, error)
+	rotateFn          func(ctx context.Context, name string, opts credentials.RotateOptions) (*credentials.RotateResult, error)
+	retrieveVersionFn func(ctx context.Context, name string, version uint64) ([]byte, error)
+	listVersionsFn    func(ctx context.Context, name string) ([]credentials.CredentialVersion, error)
+	gcExpiredFn       func(ctx context.Context, name string) (int, error)
 }
 
 func newMockCredentialService() *mockCredentialService {
@@ -178,6 +208,56 @@ func (m *mockCredentialService) CredentialStrategy() string {
 	return "manual"
 }
 
+func (m *mockCredentialService) CredentialList(ctx context.Context) ([]string, error) {
+	if m.listFn != nil {
+		return m.listFn(ctx)
+	}
+	return []string{"alpha", "beta"}, nil
+}
+
+func (m *mockCredentialService) CredentialRotate(ctx context.Context, name string, opts credentials.RotateOptions) (*credentials.RotateResult, error) {
+	if m.rotateFn != nil {
+		return m.rotateFn(ctx, name, opts)
+	}
+	res := &credentials.RotateResult{
+		Name:            name,
+		PreviousVersion: 1,
+		NewVersion:      2,
+	}
+	if opts.GracePeriod > 0 {
+		res.GraceUntil = time.Unix(1_700_000_000, 0).Add(opts.GracePeriod)
+	}
+	return res, nil
+}
+
+func (m *mockCredentialService) CredentialRetrieveVersion(ctx context.Context, name string, version uint64) ([]byte, error) {
+	if m.retrieveVersionFn != nil {
+		return m.retrieveVersionFn(ctx, name, version)
+	}
+	return []byte("version-value"), nil
+}
+
+func (m *mockCredentialService) CredentialListVersions(ctx context.Context, name string) ([]credentials.CredentialVersion, error) {
+	if m.listVersionsFn != nil {
+		return m.listVersionsFn(ctx, name)
+	}
+	return []credentials.CredentialVersion{
+		{Name: name, Version: 2, IsCurrent: true, CreatedAt: time.Unix(1_700_000_100, 0)},
+		{Name: name, Version: 1, IsCurrent: false, CreatedAt: time.Unix(1_700_000_000, 0), GraceUntil: time.Unix(1_700_003_600, 0)},
+	}, nil
+}
+
+func (m *mockCredentialService) CredentialGCExpired(ctx context.Context, name string) (int, error) {
+	if m.gcExpiredFn != nil {
+		return m.gcExpiredFn(ctx, name)
+	}
+	return 0, nil
+}
+
+// Compile-time assertion that the mock satisfies the full CredentialServicer
+// interface, including the versioned-rotation surface.
+var _ service.CredentialServicer = (*mockCredentialService)(nil)
+
 // ---------------------------------------------------------------------------
 // ceremonyTools registration
 // ---------------------------------------------------------------------------
@@ -194,6 +274,9 @@ func TestCeremonyTools_Registration(t *testing.T) {
 		"qrdb_ceremony_claim_cert_complete",
 		"qrdb_ceremony_claim_share",
 		"qrdb_ceremony_sign_csr",
+		"qrdb_ceremony_claim_share_begin",
+		"qrdb_ceremony_claim_share_complete",
+		"qrdb_ceremony_submit_unseal_share",
 	}
 
 	if len(tools) != len(expectedNames) {
@@ -758,6 +841,13 @@ func TestCredentialTools_Registration(t *testing.T) {
 		"qrdb_credential_submit",
 		"qrdb_credential_strategy",
 		"qrdb_credential_delete",
+		"qrdb_credential_list",
+		"qrdb_credential_rotate",
+		"qrdb_credential_retrieve_version",
+		"qrdb_credential_list_versions",
+		"qrdb_credential_gc_expired",
+		"qrdb_credential_store",
+		"qrdb_credential_retrieve",
 	}
 
 	if len(tools) != len(expectedNames) {
@@ -783,11 +873,21 @@ func TestServer_WithCredentialService(t *testing.T) {
 	}
 
 	registeredTools := s.MCPServer().ListTools()
-	if _, ok := registeredTools["qrdb_credential_submit"]; !ok {
-		t.Error("qrdb_credential_submit not registered")
-	}
-	if _, ok := registeredTools["qrdb_credential_strategy"]; !ok {
-		t.Error("qrdb_credential_strategy not registered")
+	for _, name := range []string{
+		"qrdb_credential_submit",
+		"qrdb_credential_strategy",
+		"qrdb_credential_delete",
+		"qrdb_credential_list",
+		"qrdb_credential_rotate",
+		"qrdb_credential_retrieve_version",
+		"qrdb_credential_list_versions",
+		"qrdb_credential_gc_expired",
+		"qrdb_credential_store",
+		"qrdb_credential_retrieve",
+	} {
+		if _, ok := registeredTools[name]; !ok {
+			t.Errorf("%s not registered", name)
+		}
 	}
 }
 
@@ -987,4 +1087,510 @@ func TestHandleCredentialDelete_ServiceError(t *testing.T) {
 	if toolErr.Tool != "qrdb_credential_delete" {
 		t.Errorf("tool: got %q, want %q", toolErr.Tool, "qrdb_credential_delete")
 	}
+}
+
+// ---------------------------------------------------------------------------
+// handleCredentialList
+// ---------------------------------------------------------------------------
+
+func TestHandleCredentialList_Success(t *testing.T) {
+	svc := newMockCredentialService()
+	handler := handleCredentialList(svc)
+
+	req := buildCallToolRequest(t, "qrdb_credential_list", map[string]any{})
+
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleCredentialList: %v", err)
+	}
+
+	text := resultText(t, result)
+	var resp struct {
+		Names []string `json:"names"`
+	}
+	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
+		t.Fatalf("unmarshal: %v", jsonErr)
+	}
+	if len(resp.Names) != 2 || resp.Names[0] != "alpha" || resp.Names[1] != "beta" {
+		t.Errorf("names: got %v, want [alpha beta]", resp.Names)
+	}
+}
+
+func TestHandleCredentialList_Empty(t *testing.T) {
+	svc := newMockCredentialService()
+	svc.listFn = func(_ context.Context) ([]string, error) {
+		return nil, nil
+	}
+	handler := handleCredentialList(svc)
+
+	req := buildCallToolRequest(t, "qrdb_credential_list", map[string]any{})
+
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleCredentialList: %v", err)
+	}
+
+	text := resultText(t, result)
+	var resp struct {
+		Names []string `json:"names"`
+	}
+	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
+		t.Fatalf("unmarshal: %v", jsonErr)
+	}
+	if resp.Names == nil {
+		t.Error("expected non-nil names slice (even if empty)")
+	}
+	if len(resp.Names) != 0 {
+		t.Errorf("names: got %d entries, want 0", len(resp.Names))
+	}
+}
+
+func TestHandleCredentialList_ServiceError(t *testing.T) {
+	svc := newMockCredentialService()
+	svc.listFn = func(_ context.Context) ([]string, error) {
+		return nil, errors.New("enumeration unavailable")
+	}
+	handler := handleCredentialList(svc)
+
+	req := buildCallToolRequest(t, "qrdb_credential_list", map[string]any{})
+
+	_, err := handler(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected error from service")
+	}
+
+	var toolErr *ToolError
+	if !errors.As(err, &toolErr) {
+		t.Errorf("expected *ToolError, got %T", err)
+	}
+	if toolErr.Tool != "qrdb_credential_list" {
+		t.Errorf("tool: got %q, want %q", toolErr.Tool, "qrdb_credential_list")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handleCredentialRotate
+// ---------------------------------------------------------------------------
+
+func TestHandleCredentialRotate_SuccessNoGrace(t *testing.T) {
+	svc := newMockCredentialService()
+	handler := handleCredentialRotate(svc)
+
+	req := buildCallToolRequest(t, "qrdb_credential_rotate", map[string]any{
+		"name":      "db-password",
+		"new_value": "new-secret",
+	})
+
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleCredentialRotate: %v", err)
+	}
+
+	text := resultText(t, result)
+	var resp struct {
+		Name            string `json:"name"`
+		PreviousVersion uint64 `json:"previous_version"`
+		NewVersion      uint64 `json:"new_version"`
+		GraceUntilUnix  int64  `json:"grace_until_unix,omitempty"`
+	}
+	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
+		t.Fatalf("unmarshal: %v", jsonErr)
+	}
+	if resp.Name != "db-password" {
+		t.Errorf("name: got %q, want %q", resp.Name, "db-password")
+	}
+	if resp.PreviousVersion != 1 {
+		t.Errorf("previous_version: got %d, want 1", resp.PreviousVersion)
+	}
+	if resp.NewVersion != 2 {
+		t.Errorf("new_version: got %d, want 2", resp.NewVersion)
+	}
+	if resp.GraceUntilUnix != 0 {
+		t.Errorf("grace_until_unix: got %d, want 0", resp.GraceUntilUnix)
+	}
+}
+
+func TestHandleCredentialRotate_SuccessWithGrace(t *testing.T) {
+	svc := newMockCredentialService()
+	handler := handleCredentialRotate(svc)
+
+	req := buildCallToolRequest(t, "qrdb_credential_rotate", map[string]any{
+		"name":                 "db-password",
+		"new_value":            "new-secret",
+		"grace_period_seconds": float64(3600),
+	})
+
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleCredentialRotate: %v", err)
+	}
+
+	text := resultText(t, result)
+	var resp struct {
+		Name            string `json:"name"`
+		PreviousVersion uint64 `json:"previous_version"`
+		NewVersion      uint64 `json:"new_version"`
+		GraceUntilUnix  int64  `json:"grace_until_unix,omitempty"`
+	}
+	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
+		t.Fatalf("unmarshal: %v", jsonErr)
+	}
+	if resp.GraceUntilUnix == 0 {
+		t.Error("expected non-zero grace_until_unix for non-zero grace period")
+	}
+}
+
+func TestHandleCredentialRotate_MissingName(t *testing.T) {
+	svc := newMockCredentialService()
+	handler := handleCredentialRotate(svc)
+
+	req := buildCallToolRequest(t, "qrdb_credential_rotate", map[string]any{
+		"new_value": "v",
+	})
+
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected error result for missing name")
+	}
+}
+
+func TestHandleCredentialRotate_MissingNewValue(t *testing.T) {
+	svc := newMockCredentialService()
+	handler := handleCredentialRotate(svc)
+
+	req := buildCallToolRequest(t, "qrdb_credential_rotate", map[string]any{
+		"name": "db-password",
+	})
+
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected error result for missing new_value")
+	}
+}
+
+func TestHandleCredentialRotate_NegativeGrace(t *testing.T) {
+	svc := newMockCredentialService()
+	handler := handleCredentialRotate(svc)
+
+	req := buildCallToolRequest(t, "qrdb_credential_rotate", map[string]any{
+		"name":                 "db-password",
+		"new_value":            "new-secret",
+		"grace_period_seconds": float64(-5),
+	})
+
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected error result for negative grace_period_seconds")
+	}
+}
+
+func TestHandleCredentialRotate_ServiceError(t *testing.T) {
+	svc := newMockCredentialService()
+	svc.rotateFn = func(_ context.Context, _ string, _ credentials.RotateOptions) (*credentials.RotateResult, error) {
+		return nil, errors.New("rotation refused")
+	}
+	handler := handleCredentialRotate(svc)
+
+	req := buildCallToolRequest(t, "qrdb_credential_rotate", map[string]any{
+		"name":      "db-password",
+		"new_value": "new-secret",
+	})
+
+	_, err := handler(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected error from service")
+	}
+	var toolErr *ToolError
+	if !errors.As(err, &toolErr) {
+		t.Errorf("expected *ToolError, got %T", err)
+	}
+	if toolErr.Tool != "qrdb_credential_rotate" {
+		t.Errorf("tool: got %q, want %q", toolErr.Tool, "qrdb_credential_rotate")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handleCredentialRetrieveVersion
+// ---------------------------------------------------------------------------
+
+func TestHandleCredentialRetrieveVersion_Success(t *testing.T) {
+	svc := newMockCredentialService()
+	svc.retrieveVersionFn = func(_ context.Context, name string, version uint64) ([]byte, error) {
+		if name != "db-password" {
+			t.Errorf("name: got %q, want db-password", name)
+		}
+		if version != 2 {
+			t.Errorf("version: got %d, want 2", version)
+		}
+		return []byte("secret-v2"), nil
+	}
+	handler := handleCredentialRetrieveVersion(svc)
+
+	req := buildCallToolRequest(t, "qrdb_credential_retrieve_version", map[string]any{
+		"name":    "db-password",
+		"version": float64(2),
+	})
+
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleCredentialRetrieveVersion: %v", err)
+	}
+
+	text := resultText(t, result)
+	var resp struct {
+		Value string `json:"value"`
+	}
+	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
+		t.Fatalf("unmarshal: %v", jsonErr)
+	}
+	if resp.Value != "secret-v2" {
+		t.Errorf("value: got %q, want %q", resp.Value, "secret-v2")
+	}
+}
+
+func TestHandleCredentialRetrieveVersion_ZeroAliasesCurrent(t *testing.T) {
+	svc := newMockCredentialService()
+	svc.retrieveVersionFn = func(_ context.Context, _ string, version uint64) ([]byte, error) {
+		if version != 0 {
+			t.Errorf("version: got %d, want 0", version)
+		}
+		return []byte("current"), nil
+	}
+	handler := handleCredentialRetrieveVersion(svc)
+
+	req := buildCallToolRequest(t, "qrdb_credential_retrieve_version", map[string]any{
+		"name": "db-password",
+	})
+
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleCredentialRetrieveVersion: %v", err)
+	}
+	text := resultText(t, result)
+	if !contains(text, `"value":"current"`) {
+		t.Errorf("expected current value in response, got %q", text)
+	}
+}
+
+func TestHandleCredentialRetrieveVersion_MissingName(t *testing.T) {
+	svc := newMockCredentialService()
+	handler := handleCredentialRetrieveVersion(svc)
+
+	req := buildCallToolRequest(t, "qrdb_credential_retrieve_version", map[string]any{
+		"version": float64(1),
+	})
+
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected error result for missing name")
+	}
+}
+
+func TestHandleCredentialRetrieveVersion_ServiceError(t *testing.T) {
+	svc := newMockCredentialService()
+	svc.retrieveVersionFn = func(_ context.Context, _ string, _ uint64) ([]byte, error) {
+		return nil, errors.New("version expired")
+	}
+	handler := handleCredentialRetrieveVersion(svc)
+
+	req := buildCallToolRequest(t, "qrdb_credential_retrieve_version", map[string]any{
+		"name":    "db-password",
+		"version": float64(1),
+	})
+
+	_, err := handler(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected error from service")
+	}
+	var toolErr *ToolError
+	if !errors.As(err, &toolErr) {
+		t.Errorf("expected *ToolError, got %T", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handleCredentialListVersions
+// ---------------------------------------------------------------------------
+
+func TestHandleCredentialListVersions_Success(t *testing.T) {
+	svc := newMockCredentialService()
+	handler := handleCredentialListVersions(svc)
+
+	req := buildCallToolRequest(t, "qrdb_credential_list_versions", map[string]any{
+		"name": "db-password",
+	})
+
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleCredentialListVersions: %v", err)
+	}
+
+	text := resultText(t, result)
+	var resp struct {
+		Name     string `json:"name"`
+		Versions []struct {
+			Version        uint64 `json:"version"`
+			IsCurrent      bool   `json:"is_current"`
+			CreatedAtUnix  int64  `json:"created_at_unix,omitempty"`
+			GraceUntilUnix int64  `json:"grace_until_unix,omitempty"`
+		} `json:"versions"`
+	}
+	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
+		t.Fatalf("unmarshal: %v", jsonErr)
+	}
+	if resp.Name != "db-password" {
+		t.Errorf("name: got %q, want %q", resp.Name, "db-password")
+	}
+	if len(resp.Versions) != 2 {
+		t.Fatalf("versions: got %d entries, want 2", len(resp.Versions))
+	}
+	if !resp.Versions[0].IsCurrent {
+		t.Error("expected versions[0] to be current")
+	}
+	if resp.Versions[1].IsCurrent {
+		t.Error("expected versions[1] not to be current")
+	}
+	if resp.Versions[1].GraceUntilUnix == 0 {
+		t.Error("expected versions[1] to carry grace_until_unix")
+	}
+}
+
+func TestHandleCredentialListVersions_MissingName(t *testing.T) {
+	svc := newMockCredentialService()
+	handler := handleCredentialListVersions(svc)
+
+	req := buildCallToolRequest(t, "qrdb_credential_list_versions", map[string]any{})
+
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected error result for missing name")
+	}
+}
+
+func TestHandleCredentialListVersions_ServiceError(t *testing.T) {
+	svc := newMockCredentialService()
+	svc.listVersionsFn = func(_ context.Context, _ string) ([]credentials.CredentialVersion, error) {
+		return nil, errors.New("not found")
+	}
+	handler := handleCredentialListVersions(svc)
+
+	req := buildCallToolRequest(t, "qrdb_credential_list_versions", map[string]any{
+		"name": "missing",
+	})
+
+	_, err := handler(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected error from service")
+	}
+	var toolErr *ToolError
+	if !errors.As(err, &toolErr) {
+		t.Errorf("expected *ToolError, got %T", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handleCredentialGCExpired
+// ---------------------------------------------------------------------------
+
+func TestHandleCredentialGCExpired_Success(t *testing.T) {
+	svc := newMockCredentialService()
+	svc.gcExpiredFn = func(_ context.Context, name string) (int, error) {
+		if name != "db-password" {
+			t.Errorf("name: got %q, want %q", name, "db-password")
+		}
+		return 3, nil
+	}
+	handler := handleCredentialGCExpired(svc)
+
+	req := buildCallToolRequest(t, "qrdb_credential_gc_expired", map[string]any{
+		"name": "db-password",
+	})
+
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleCredentialGCExpired: %v", err)
+	}
+
+	text := resultText(t, result)
+	var resp struct {
+		Reaped int `json:"reaped"`
+	}
+	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
+		t.Fatalf("unmarshal: %v", jsonErr)
+	}
+	if resp.Reaped != 3 {
+		t.Errorf("reaped: got %d, want 3", resp.Reaped)
+	}
+}
+
+func TestHandleCredentialGCExpired_MissingName(t *testing.T) {
+	svc := newMockCredentialService()
+	handler := handleCredentialGCExpired(svc)
+
+	req := buildCallToolRequest(t, "qrdb_credential_gc_expired", map[string]any{})
+
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected error result for missing name")
+	}
+}
+
+func TestHandleCredentialGCExpired_ServiceError(t *testing.T) {
+	svc := newMockCredentialService()
+	svc.gcExpiredFn = func(_ context.Context, _ string) (int, error) {
+		return 0, errors.New("gc failed")
+	}
+	handler := handleCredentialGCExpired(svc)
+
+	req := buildCallToolRequest(t, "qrdb_credential_gc_expired", map[string]any{
+		"name": "db-password",
+	})
+
+	_, err := handler(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected error from service")
+	}
+	var toolErr *ToolError
+	if !errors.As(err, &toolErr) {
+		t.Errorf("expected *ToolError, got %T", err)
+	}
+	if toolErr.Tool != "qrdb_credential_gc_expired" {
+		t.Errorf("tool: got %q, want %q", toolErr.Tool, "qrdb_credential_gc_expired")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Local helpers
+// ---------------------------------------------------------------------------
+
+// contains is a small helper for substring assertions, avoiding a strings
+// import collision with other test files in this package.
+func contains(haystack, needle string) bool {
+	if len(needle) == 0 {
+		return true
+	}
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		if haystack[i:i+len(needle)] == needle {
+			return true
+		}
+	}
+	return false
 }

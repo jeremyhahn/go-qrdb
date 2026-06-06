@@ -13,9 +13,11 @@ import (
 )
 
 // watchSupportedProtocols returns protocols that support the watch streaming API.
-// MCP does not support streaming; QUIC watch service is not configured.
+// QUIC now implements true server-streaming watch (handleWatchStream), so it is
+// validated alongside Unix/REST/gRPC. MCP exposes watch only as a bounded-poll
+// snapshot (request/response transport) and is covered by its own test.
 func watchSupportedProtocols() []ProtocolType {
-	return []ProtocolType{ProtocolUnix, ProtocolREST, ProtocolGRPC}
+	return []ProtocolType{ProtocolUnix, ProtocolREST, ProtocolGRPC, ProtocolQUIC}
 }
 
 // TestCLIMultiProtocolWatchKey tests watching a single key for put events

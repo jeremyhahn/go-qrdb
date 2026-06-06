@@ -30,6 +30,26 @@ func (e *NilWatchHubError) Error() string {
 	return "lifecycle: infra.WatchHub must not be nil"
 }
 
+// NilSealBarrierError is returned when Infra.SealBarrier is required but
+// nil. Used by BuildSealServicesOnly which cannot construct a barrier
+// service without one.
+type NilSealBarrierError struct{}
+
+// Error implements the error interface.
+func (e *NilSealBarrierError) Error() string {
+	return "lifecycle: infra.SealBarrier must not be nil"
+}
+
+// NilCredentialCoreError is returned when Infra.CredentialCoreSvc is
+// required but nil. Used by BuildSealServicesOnly because the ceremony
+// service cannot be constructed without a credential service.
+type NilCredentialCoreError struct{}
+
+// Error implements the error interface.
+func (e *NilCredentialCoreError) Error() string {
+	return "lifecycle: infra.CredentialCoreSvc must not be nil"
+}
+
 // LockServiceError is returned when the distributed lock service fails
 // to initialize.
 type LockServiceError struct {
@@ -169,5 +189,39 @@ func (e *RoleServiceError) Error() string {
 
 // Unwrap returns the underlying error.
 func (e *RoleServiceError) Unwrap() error {
+	return e.Err
+}
+
+// EmbeddingCacheError is returned when the embedding LRU cache fails to
+// initialize.
+type EmbeddingCacheError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *EmbeddingCacheError) Error() string {
+	return "lifecycle: embedding cache initialization failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *EmbeddingCacheError) Unwrap() error {
+	return e.Err
+}
+
+// EmbeddingProviderError is returned when an embedding provider fails to
+// initialize or register.
+type EmbeddingProviderError struct {
+	// Name is the provider name from the configuration.
+	Name string
+	Err  error
+}
+
+// Error returns a human-readable description.
+func (e *EmbeddingProviderError) Error() string {
+	return "lifecycle: embedding provider " + e.Name + " initialization failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *EmbeddingProviderError) Unwrap() error {
 	return e.Err
 }

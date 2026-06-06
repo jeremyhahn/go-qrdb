@@ -403,10 +403,19 @@ func newTestRootCmd(kvSvc service.KVServicer, adminSvc service.AdminServicer) *c
 
 // executeCommand runs a cobra command with the given args and captures
 // the output to a buffer. Returns the captured output and any error.
+// It saves and restores package-level state (outputWriter, outputFormat, client)
+// so tests do not leak state into subsequent tests.
 func executeCommand(root *cobra.Command, args ...string) (string, error) {
 	var buf bytes.Buffer
+	savedWriter := outputWriter
+	savedFormat := outputFormat
+	savedClient := client
 	outputWriter = &buf
-	defer func() { outputWriter = &buf }()
+	defer func() {
+		outputWriter = savedWriter
+		outputFormat = savedFormat
+		client = savedClient
+	}()
 
 	root.SetArgs(args)
 	root.SetOut(&buf)

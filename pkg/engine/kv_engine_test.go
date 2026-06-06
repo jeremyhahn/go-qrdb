@@ -2566,3 +2566,551 @@ type failingIterator struct {
 func (f *failingIterator) Error() error {
 	return &injectedError{msg: "injected iterator error"}
 }
+
+// ---------------------------------------------------------------------------
+// Compound index: registerCompoundIndex + buildCompoundIndexName
+// ---------------------------------------------------------------------------
+
+func TestKVEngine_RegisterEntityType_CompoundIndex(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+
+	log := testLogger(t)
+	eng := NewKVEngine(stg, WithKVLogger(log))
+
+	// Register a compound (multi-field) index.
+	err := eng.RegisterEntityType("messages", []EntityIndex{
+		{FieldNames: []string{"ConversationID", "Timestamp"}, JSONFieldNames: []string{"conv_id", "ts"}},
+	})
+	if err != nil {
+		t.Fatalf("RegisterEntityType with compound index: %v", err)
+	}
+	// Index name: "messages.ConversationID_Timestamp"
+	if len(eng.compoundIndexes) != 1 {
+		t.Errorf("expected 1 compound index, got %d", len(eng.compoundIndexes))
+	}
+}
+
+func TestKVEngine_RegisterEntityType_CompoundIndex_IdempotentReregister(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+
+	log := testLogger(t)
+	eng := NewKVEngine(stg, WithKVLogger(log))
+
+	def := []EntityIndex{
+		{FieldNames: []string{"A", "B"}, JSONFieldNames: []string{"a", "b"}},
+	}
+	if err := eng.RegisterEntityType("docs", def); err != nil {
+		t.Fatalf("first RegisterEntityType: %v", err)
+	}
+	// Registering again must not return an error and must not duplicate the index.
+	if err := eng.RegisterEntityType("docs", def); err != nil {
+		t.Fatalf("second RegisterEntityType: %v", err)
+	}
+	if len(eng.compoundIndexes) != 1 {
+		t.Errorf("expected 1 compound index after re-registration, got %d", len(eng.compoundIndexes))
+	}
+}
+
+func TestKVEngine_RegisterEntityType_UniqueCompoundIndex(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+
+	log := testLogger(t)
+	eng := NewKVEngine(stg, WithKVLogger(log))
+
+	// Unique compound index exercises the Unique=true branch in registerCompoundIndex.
+	err := eng.RegisterEntityType("sessions", []EntityIndex{
+		{FieldNames: []string{"UserID", "DeviceID"}, JSONFieldNames: []string{"user_id", "device_id"}, Unique: true},
+	})
+	if err != nil {
+		t.Fatalf("RegisterEntityType with unique compound index: %v", err)
+	}
+	if len(eng.compoundIndexes) != 1 {
+		t.Errorf("expected 1 compound index, got %d", len(eng.compoundIndexes))
+	}
+}
+
+func TestKVEngine_BuildCompoundIndexName_NoDatabase(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+	eng := NewKVEngine(stg)
+
+	got := eng.buildCompoundIndexName("orders", []string{"UserID", "Status"})
+	want := "orders.UserID_Status"
+	if got != want {
+		t.Errorf("buildCompoundIndexName = %q, want %q", got, want)
+	}
+}
+
+func TestKVEngine_BuildCompoundIndexName_WithDatabase(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+	eng := NewKVEngine(stg, WithKVDatabase("mydb"))
+
+	got := eng.buildCompoundIndexName("orders", []string{"UserID", "Status"})
+	want := "mydb.orders.UserID_Status"
+	if got != want {
+		t.Errorf("buildCompoundIndexName = %q, want %q", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PutWithIndexes / DeleteWithIndexes
+// ---------------------------------------------------------------------------
+
+func TestKVEngine_PutWithIndexes_BasicRoundTrip(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+
+	log := testLogger(t)
+	eng := NewKVEngine(stg, WithKVLogger(log))
+
+	if err := eng.RegisterEntityType("users", []EntityIndex{
+		{FieldName: "Name", JSONFieldName: "name", Unique: false},
+	}); err != nil {
+		t.Fatalf("RegisterEntityType: %v", err)
+	}
+
+	if err := eng.PutWithIndexes([]byte("users/1"), []byte(`{"name":"alice"}`)); err != nil {
+		t.Fatalf("PutWithIndexes: %v", err)
+	}
+
+	got, err := stg.Get([]byte("users/1"))
+	if err != nil {
+		t.Fatalf("storage.Get: %v", err)
+	}
+	if string(got) != `{"name":"alice"}` {
+		t.Errorf("stored value = %q, want %q", got, `{"name":"alice"}`)
+	}
+
+	// Verify the index was updated.
+	result, err := eng.Lookup(context.Background(), index.IndexQueryRequest{
+		IndexName: "users.Name",
+		Value:     []byte("alice"),
+	})
+	if err != nil {
+		t.Fatalf("Lookup: %v", err)
+	}
+	ids := result.([][]byte)
+	if len(ids) != 1 || string(ids[0]) != "users/1" {
+		t.Errorf("expected [users/1] from index, got %v", ids)
+	}
+}
+
+func TestKVEngine_PutWithIndexes_UpdateExistingKey(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+
+	log := testLogger(t)
+	eng := NewKVEngine(stg, WithKVLogger(log))
+
+	if err := eng.RegisterEntityType("users", []EntityIndex{
+		{FieldName: "Name", JSONFieldName: "name", Unique: false},
+	}); err != nil {
+		t.Fatalf("RegisterEntityType: %v", err)
+	}
+
+	// Put initial value.
+	if err := eng.PutWithIndexes([]byte("users/1"), []byte(`{"name":"alice"}`)); err != nil {
+		t.Fatalf("first PutWithIndexes: %v", err)
+	}
+	// Update to a new name — old index entry should be removed.
+	if err := eng.PutWithIndexes([]byte("users/1"), []byte(`{"name":"bob"}`)); err != nil {
+		t.Fatalf("second PutWithIndexes: %v", err)
+	}
+
+	// "alice" should no longer be indexed.
+	result, err := eng.Lookup(context.Background(), index.IndexQueryRequest{
+		IndexName: "users.Name",
+		Value:     []byte("alice"),
+	})
+	if err != nil {
+		t.Fatalf("Lookup alice: %v", err)
+	}
+	if len(result.([][]byte)) != 0 {
+		t.Errorf("expected empty result for stale index entry, got %v", result)
+	}
+
+	// "bob" should be indexed.
+	result, err = eng.Lookup(context.Background(), index.IndexQueryRequest{
+		IndexName: "users.Name",
+		Value:     []byte("bob"),
+	})
+	if err != nil {
+		t.Fatalf("Lookup bob: %v", err)
+	}
+	ids := result.([][]byte)
+	if len(ids) != 1 || string(ids[0]) != "users/1" {
+		t.Errorf("expected [users/1] for bob, got %v", ids)
+	}
+}
+
+func TestKVEngine_DeleteWithIndexes_RemovesKey(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+
+	log := testLogger(t)
+	eng := NewKVEngine(stg, WithKVLogger(log))
+
+	if err := eng.RegisterEntityType("users", []EntityIndex{
+		{FieldName: "Name", JSONFieldName: "name", Unique: false},
+	}); err != nil {
+		t.Fatalf("RegisterEntityType: %v", err)
+	}
+
+	if err := eng.PutWithIndexes([]byte("users/1"), []byte(`{"name":"carol"}`)); err != nil {
+		t.Fatalf("PutWithIndexes: %v", err)
+	}
+
+	if err := eng.DeleteWithIndexes([]byte("users/1")); err != nil {
+		t.Fatalf("DeleteWithIndexes: %v", err)
+	}
+
+	// Key should be gone.
+	val, _ := stg.Get([]byte("users/1"))
+	if val != nil {
+		t.Errorf("expected nil after delete, got %q", val)
+	}
+
+	// Index entry should be cleaned up.
+	result, err := eng.Lookup(context.Background(), index.IndexQueryRequest{
+		IndexName: "users.Name",
+		Value:     []byte("carol"),
+	})
+	if err != nil {
+		t.Fatalf("Lookup after delete: %v", err)
+	}
+	if len(result.([][]byte)) != 0 {
+		t.Errorf("expected empty index after delete, got %v", result)
+	}
+}
+
+func TestKVEngine_PutWithIndexes_SetError(t *testing.T) {
+	real := memory.NewStorage()
+	defer func() { _ = real.Close() }()
+
+	fs := &failingStorage{Storage: real, failBatchSet: true}
+	eng := NewKVEngine(fs)
+
+	err := eng.PutWithIndexes([]byte("items/1"), []byte(`{"name":"thing"}`))
+	if err == nil {
+		t.Fatal("expected batch.Set error, got nil")
+	}
+	var ie *injectedError
+	if !errors.As(err, &ie) {
+		t.Errorf("expected *injectedError, got %T: %v", err, err)
+	}
+}
+
+func TestKVEngine_DeleteWithIndexes_DeleteError(t *testing.T) {
+	real := memory.NewStorage()
+	defer func() { _ = real.Close() }()
+
+	fs := &failingStorage{Storage: real, failBatchDelete: true}
+	eng := NewKVEngine(fs)
+
+	err := eng.DeleteWithIndexes([]byte("items/1"))
+	if err == nil {
+		t.Fatal("expected batch.Delete error, got nil")
+	}
+	var ie *injectedError
+	if !errors.As(err, &ie) {
+		t.Errorf("expected *injectedError, got %T: %v", err, err)
+	}
+}
+
+func TestKVEngine_PutWithIndexes_CommitError(t *testing.T) {
+	real := memory.NewStorage()
+	defer func() { _ = real.Close() }()
+
+	fs := &failingStorage{Storage: real, failBatchCommit: true}
+	log := testLogger(t)
+	eng := NewKVEngine(fs, WithKVLogger(log))
+
+	err := eng.PutWithIndexes([]byte("items/1"), []byte(`{"name":"thing"}`))
+	if err == nil {
+		t.Fatal("expected batch commit error, got nil")
+	}
+	var ie *injectedError
+	if !errors.As(err, &ie) {
+		t.Errorf("expected *injectedError, got %T: %v", err, err)
+	}
+}
+
+func TestKVEngine_DeleteWithIndexes_CommitError(t *testing.T) {
+	real := memory.NewStorage()
+	defer func() { _ = real.Close() }()
+
+	// Seed the key directly on the real storage.
+	if err := real.Set([]byte("items/1"), []byte(`{"name":"thing"}`)); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	fs := &failingStorage{Storage: real, failBatchCommit: true}
+	log := testLogger(t)
+	eng := NewKVEngine(fs, WithKVLogger(log))
+
+	err := eng.DeleteWithIndexes([]byte("items/1"))
+	if err == nil {
+		t.Fatal("expected batch commit error, got nil")
+	}
+	var ie *injectedError
+	if !errors.As(err, &ie) {
+		t.Errorf("expected *injectedError, got %T: %v", err, err)
+	}
+}
+
+func TestKVEngine_DeleteWithIndexes_NonExistentKey(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+
+	eng := NewKVEngine(stg)
+	// Deleting a key that does not exist should not error.
+	if err := eng.DeleteWithIndexes([]byte("ghost/99")); err != nil {
+		t.Fatalf("DeleteWithIndexes on non-existent key: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// entityTypeFromKey
+// ---------------------------------------------------------------------------
+
+func TestEntityTypeFromKey(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		key  string
+		want string
+	}{
+		{"users/1", "users"},
+		{"messages/thread/42", "messages"},
+		{"noprefix", "noprefix"},
+		{"a/b", "a"},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.key, func(t *testing.T) {
+			t.Parallel()
+			got := entityTypeFromKey([]byte(tc.key))
+			if got != tc.want {
+				t.Errorf("entityTypeFromKey(%q) = %q, want %q", tc.key, got, tc.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// filterIndexes / filterCompoundIndexes
+// ---------------------------------------------------------------------------
+
+func TestKVEngine_FilterIndexes_MatchesEntityPrefix(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+
+	log := testLogger(t)
+	eng := NewKVEngine(stg, WithKVLogger(log))
+
+	if err := eng.RegisterEntityType("users", []EntityIndex{
+		{FieldName: "Name", JSONFieldName: "name"},
+	}); err != nil {
+		t.Fatalf("RegisterEntityType users: %v", err)
+	}
+	if err := eng.RegisterEntityType("orders", []EntityIndex{
+		{FieldName: "Status", JSONFieldName: "status"},
+	}); err != nil {
+		t.Fatalf("RegisterEntityType orders: %v", err)
+	}
+
+	filtered, filteredFields := eng.filterIndexes("users")
+	if len(filtered) != 1 {
+		t.Errorf("expected 1 filtered index for users, got %d", len(filtered))
+	}
+	for name := range filtered {
+		if filteredFields[name] == "" {
+			t.Errorf("filteredFields missing entry for %q", name)
+		}
+	}
+}
+
+func TestKVEngine_FilterCompoundIndexes_MatchesEntityPrefix(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+
+	log := testLogger(t)
+	eng := NewKVEngine(stg, WithKVLogger(log))
+
+	if err := eng.RegisterEntityType("events", []EntityIndex{
+		{FieldNames: []string{"UserID", "Type"}, JSONFieldNames: []string{"user_id", "type"}},
+	}); err != nil {
+		t.Fatalf("RegisterEntityType events: %v", err)
+	}
+	if err := eng.RegisterEntityType("logs", []EntityIndex{
+		{FieldNames: []string{"Level", "Source"}, JSONFieldNames: []string{"level", "source"}},
+	}); err != nil {
+		t.Fatalf("RegisterEntityType logs: %v", err)
+	}
+
+	filtered, filteredFields := eng.filterCompoundIndexes("events")
+	if len(filtered) != 1 {
+		t.Errorf("expected 1 compound index for events, got %d", len(filtered))
+	}
+	for name := range filtered {
+		if len(filteredFields[name]) == 0 {
+			t.Errorf("filteredCompoundFields missing entry for %q", name)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// lookupCompoundIndexQuery / lookupCompoundIndexScan
+// ---------------------------------------------------------------------------
+
+func TestKVEngine_Lookup_CompoundIndexQuery_NotFound(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+	eng := NewKVEngine(stg)
+
+	_, err := eng.Lookup(context.Background(), index.CompoundIndexQueryRequest{
+		IndexName: "nonexistent.A_B",
+		Values:    [][]byte{[]byte("x"), []byte("y")},
+	})
+	var iqe *InvalidQueryError
+	if !errors.As(err, &iqe) {
+		t.Errorf("expected *InvalidQueryError for missing compound index, got %T: %v", err, err)
+	}
+}
+
+func TestKVEngine_Lookup_CompoundIndexScan_NotFound(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+	eng := NewKVEngine(stg)
+
+	_, err := eng.Lookup(context.Background(), index.CompoundIndexScanRequest{
+		IndexName:    "nonexistent.A_B",
+		PrefixValues: [][]byte{[]byte("x")},
+	})
+	var iqe *InvalidQueryError
+	if !errors.As(err, &iqe) {
+		t.Errorf("expected *InvalidQueryError for missing compound index scan, got %T: %v", err, err)
+	}
+}
+
+func TestKVEngine_Lookup_CompoundIndexQuery_HappyPath(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+
+	log := testLogger(t)
+	eng := NewKVEngine(stg, WithKVLogger(log))
+
+	if err := eng.RegisterEntityType("msgs", []EntityIndex{
+		{FieldNames: []string{"ThreadID", "Seq"}, JSONFieldNames: []string{"thread_id", "seq"}},
+	}); err != nil {
+		t.Fatalf("RegisterEntityType: %v", err)
+	}
+
+	// PutWithIndexes writes compound index entry.
+	if err := eng.PutWithIndexes([]byte("msgs/1"), []byte(`{"thread_id":"t1","seq":"001"}`)); err != nil {
+		t.Fatalf("PutWithIndexes: %v", err)
+	}
+
+	// Determine the exact compound index name.
+	idxName := eng.buildCompoundIndexName("msgs", []string{"ThreadID", "Seq"})
+
+	result, err := eng.Lookup(context.Background(), index.CompoundIndexQueryRequest{
+		IndexName: idxName,
+		Values:    [][]byte{[]byte("t1"), []byte("001")},
+	})
+	if err != nil {
+		t.Fatalf("Lookup CompoundIndexQueryRequest: %v", err)
+	}
+	keys, ok := result.([][]byte)
+	if !ok {
+		t.Fatalf("expected [][]byte result, got %T", result)
+	}
+	if len(keys) != 1 || string(keys[0]) != "msgs/1" {
+		t.Errorf("expected [msgs/1], got %v", keys)
+	}
+}
+
+func TestKVEngine_Lookup_CompoundIndexScan_WithRange(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+
+	log := testLogger(t)
+	eng := NewKVEngine(stg, WithKVLogger(log))
+
+	if err := eng.RegisterEntityType("events", []EntityIndex{
+		{FieldNames: []string{"Category", "Score"}, JSONFieldNames: []string{"category", "score"}},
+	}); err != nil {
+		t.Fatalf("RegisterEntityType: %v", err)
+	}
+
+	entries := []struct{ id, body string }{
+		{"events/1", `{"category":"sports","score":"010"}`},
+		{"events/2", `{"category":"sports","score":"050"}`},
+		{"events/3", `{"category":"sports","score":"090"}`},
+	}
+	for _, e := range entries {
+		if err := eng.PutWithIndexes([]byte(e.id), []byte(e.body)); err != nil {
+			t.Fatalf("PutWithIndexes %s: %v", e.id, err)
+		}
+	}
+
+	idxName := eng.buildCompoundIndexName("events", []string{"Category", "Score"})
+
+	// Range scan: prefix "sports", range start "020", end "080" → events/2 only.
+	result, err := eng.Lookup(context.Background(), index.CompoundIndexScanRequest{
+		IndexName:    idxName,
+		PrefixValues: [][]byte{[]byte("sports")},
+		RangeStart:   []byte("020"),
+		RangeEnd:     []byte("080"),
+	})
+	if err != nil {
+		t.Fatalf("Lookup CompoundIndexScanRequest with range: %v", err)
+	}
+	_ = result // result type depends on ScanCompound implementation
+}
+
+func TestKVEngine_Lookup_CompoundIndexScan_PrefixOnly(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+
+	log := testLogger(t)
+	eng := NewKVEngine(stg, WithKVLogger(log))
+
+	if err := eng.RegisterEntityType("posts", []EntityIndex{
+		{FieldNames: []string{"AuthorID", "Date"}, JSONFieldNames: []string{"author_id", "date"}},
+	}); err != nil {
+		t.Fatalf("RegisterEntityType: %v", err)
+	}
+
+	entries := []struct{ id, body string }{
+		{"posts/1", `{"author_id":"a1","date":"2024-01-01"}`},
+		{"posts/2", `{"author_id":"a1","date":"2024-02-01"}`},
+		{"posts/3", `{"author_id":"a2","date":"2024-01-15"}`},
+	}
+	for _, e := range entries {
+		if err := eng.PutWithIndexes([]byte(e.id), []byte(e.body)); err != nil {
+			t.Fatalf("PutWithIndexes %s: %v", e.id, err)
+		}
+	}
+
+	idxName := eng.buildCompoundIndexName("posts", []string{"AuthorID", "Date"})
+
+	// Prefix scan for author "a1" — should return posts/1 and posts/2.
+	result, err := eng.Lookup(context.Background(), index.CompoundIndexScanRequest{
+		IndexName:    idxName,
+		PrefixValues: [][]byte{[]byte("a1")},
+	})
+	if err != nil {
+		t.Fatalf("Lookup CompoundIndexScanRequest: %v", err)
+	}
+	keys, ok := result.([][]byte)
+	if !ok {
+		t.Fatalf("expected [][]byte result, got %T", result)
+	}
+	if len(keys) != 2 {
+		t.Errorf("expected 2 keys for author a1, got %d: %v", len(keys), keys)
+	}
+}

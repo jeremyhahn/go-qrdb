@@ -416,8 +416,8 @@ func TestCreateRole_DefaultTenant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateRole: %v", err)
 	}
-	if r.TenantID != tenant.DefaultTenantID {
-		t.Errorf("TenantID: got %q, want %q", r.TenantID, tenant.DefaultTenantID)
+	if r.TenantID != tenant.SystemTenantID {
+		t.Errorf("TenantID: got %q, want %q", r.TenantID, tenant.SystemTenantID)
 	}
 }
 
@@ -515,6 +515,46 @@ func TestGetRole_NotFound(t *testing.T) {
 	var target *RoleNotFoundError
 	if !errors.As(err, &target) {
 		t.Fatalf("expected *RoleNotFoundError, got %T: %v", err, err)
+	}
+}
+
+func TestGetRole_TenantScoping(t *testing.T) {
+	svc := newTestStore(t)
+	created := createTestRole(t, svc, "editor", "tenant-a")
+
+	// A caller scoped to a different tenant must not be able to read the role
+	// (returns NotFound, not the record — no existence leak).
+	otherCtx := tenant.WithTenantID(context.Background(), "tenant-b")
+	if _, err := svc.GetRole(otherCtx, created.ID); err == nil {
+		t.Fatal("expected RoleNotFoundError for cross-tenant GetRole")
+	} else {
+		var nf *RoleNotFoundError
+		if !errors.As(err, &nf) {
+			t.Fatalf("expected *RoleNotFoundError, got %T: %v", err, err)
+		}
+	}
+
+	// The owning tenant can read its own role.
+	ownCtx := tenant.WithTenantID(context.Background(), "tenant-a")
+	if r, err := svc.GetRole(ownCtx, created.ID); err != nil {
+		t.Fatalf("owning-tenant GetRole: %v", err)
+	} else if r.ID != created.ID {
+		t.Errorf("ID: got %q, want %q", r.ID, created.ID)
+	}
+
+	// The system tenant (admin / internal RBAC resolution) reads any role.
+	if _, err := svc.GetRole(context.Background(), created.ID); err != nil {
+		t.Fatalf("system GetRole: %v", err)
+	}
+
+	// ResolvePermissions funnels through GetRole, so it is scoped too.
+	if _, err := svc.ResolvePermissions(otherCtx, []string{created.ID}); err == nil {
+		t.Fatal("expected error for cross-tenant ResolvePermissions")
+	}
+	if perms, err := svc.ResolvePermissions(ownCtx, []string{created.ID}); err != nil {
+		t.Fatalf("owning-tenant ResolvePermissions: %v", err)
+	} else if len(perms) == 0 {
+		t.Error("expected resolved permissions for owning tenant")
 	}
 }
 
@@ -1191,14 +1231,22 @@ func TestResolvePermissions_RoleNotFound(t *testing.T) {
 
 func TestBuiltInRoles_Count(t *testing.T) {
 	roles := BuiltInRoles("acme")
-	if len(roles) != 5 {
-		t.Fatalf("BuiltInRoles: got %d roles, want 5", len(roles))
+	// Canonical six-role FIPS 140-3 model: SO, Admin, Operator, User,
+	// Auditor, Custodian. (No platform-admin role; that authority comes
+	// the canonical platform-admin pattern is Admin@system, gated by the
+	// system-tenant rule in pkg/auth/rbac.
+	if len(roles) != 6 {
+		t.Fatalf("BuiltInRoles: got %d roles, want 6", len(roles))
 	}
 }
 
 func TestBuiltInRoles_Names(t *testing.T) {
 	roles := BuiltInRoles("acme")
-	expected := []string{"superadmin", "admin", "operator", "readwrite", "readonly"}
+	// Canonical six-role FIPS 140-3 model.
+	expected := []string{
+		RoleNameSO, RoleNameAdmin, RoleNameOperator,
+		RoleNameUser, RoleNameAuditor, RoleNameCustodian,
+	}
 	for i, name := range expected {
 		if roles[i].Name != name {
 			t.Errorf("role[%d].Name: got %q, want %q", i, roles[i].Name, name)
@@ -1225,8 +1273,8 @@ func TestBuiltInRoles_TenantID(t *testing.T) {
 func TestBuiltInRoles_DefaultTenant(t *testing.T) {
 	roles := BuiltInRoles("")
 	for _, r := range roles {
-		if r.TenantID != tenant.DefaultTenantID {
-			t.Errorf("role %q: TenantID: got %q, want %q", r.Name, r.TenantID, tenant.DefaultTenantID)
+		if r.TenantID != tenant.SystemTenantID {
+			t.Errorf("role %q: TenantID: got %q, want %q", r.Name, r.TenantID, tenant.SystemTenantID)
 		}
 	}
 }
@@ -1252,30 +1300,58 @@ func TestBuiltInRoles_DifferentTenantsDifferentIDs(t *testing.T) {
 	}
 }
 
-func TestBuiltInRoles_SuperadminHasAllPermissions(t *testing.T) {
-	roles := BuiltInRoles("acme")
-	superadmin := roles[0]
+// roleByName is a test helper that locates a role by name in the slice.
+func roleByName(roles []*Role, name string) *Role {
+	for _, r := range roles {
+		if r.Name == name {
+			return r
+		}
+	}
+	return nil
+}
 
-	allPerms := permission.All()
-	if len(superadmin.Permissions) != len(allPerms) {
-		t.Errorf("superadmin: got %d permissions, want %d",
-			len(superadmin.Permissions), len(allPerms))
+func TestBuiltInRoles_AdminHasCrossScopePermissions(t *testing.T) {
+	roles := BuiltInRoles("acme")
+	admin := roleByName(roles, RoleNameAdmin)
+	if admin == nil {
+		t.Fatal("admin role not found in BuiltInRoles")
 	}
 
-	permSet := make(map[permission.Permission]struct{}, len(superadmin.Permissions))
-	for _, p := range superadmin.Permissions {
+	// The Admin role carries the cross-scope permissions added in Phase 0d:
+	// they confer cross-tenant authority only when the role is held in the
+	// system tenant (Admin@system); for tenant-local Admins they are
+	// filtered out by the system-tenant rule in pkg/auth/rbac.
+	wantCross := []permission.Permission{
+		permission.TenantsListCross,
+		permission.TenantsCreateCross,
+		permission.TenantsApprove,
+		permission.VolumePoolCreate,
+		permission.VolumePoolList,
+		permission.VolumePoolRead,
+		permission.VolumePoolUpdate,
+		permission.VolumePoolDelete,
+		permission.RegistrationConfigRead,
+		permission.RegistrationConfigUpdate,
+		permission.AuditReadCross,
+	}
+
+	permSet := make(map[permission.Permission]struct{}, len(admin.Permissions))
+	for _, p := range admin.Permissions {
 		permSet[p] = struct{}{}
 	}
-	for _, p := range allPerms {
+	for _, p := range wantCross {
 		if _, ok := permSet[p]; !ok {
-			t.Errorf("superadmin missing permission: %q", p)
+			t.Errorf("Admin role missing cross-scope permission: %q", p)
 		}
 	}
 }
 
 func TestBuiltInRoles_AdminHasNoDataPermissions(t *testing.T) {
 	roles := BuiltInRoles("acme")
-	admin := roles[1]
+	admin := roleByName(roles, RoleNameAdmin)
+	if admin == nil {
+		t.Fatal("admin role not found")
+	}
 
 	// Admin should not have KV data permissions.
 	dataPerms := map[permission.Permission]struct{}{
@@ -1292,7 +1368,10 @@ func TestBuiltInRoles_AdminHasNoDataPermissions(t *testing.T) {
 
 func TestBuiltInRoles_OperatorHasHealthAndStatus(t *testing.T) {
 	roles := BuiltInRoles("acme")
-	operator := roles[2]
+	operator := roleByName(roles, RoleNameOperator)
+	if operator == nil {
+		t.Fatal("operator role not found")
+	}
 
 	permSet := make(map[permission.Permission]struct{}, len(operator.Permissions))
 	for _, p := range operator.Permissions {
@@ -1307,19 +1386,167 @@ func TestBuiltInRoles_OperatorHasHealthAndStatus(t *testing.T) {
 	}
 }
 
-func TestBuiltInRoles_ReadonlySubsetOfReadwrite(t *testing.T) {
+// TestBuiltInRoles_SOHasNoCryptoPerms verifies that the SO role does not
+// include any of the five explicitly denied cryptographic operations.
+// Even if these were somehow added, the RBAC deny-list would block them;
+// but the permission set itself must not contain them.
+func TestBuiltInRoles_SOHasNoCryptoPerms(t *testing.T) {
 	roles := BuiltInRoles("acme")
-	readwrite := roles[3]
-	readonly := roles[4]
-
-	rwSet := make(map[permission.Permission]struct{}, len(readwrite.Permissions))
-	for _, p := range readwrite.Permissions {
-		rwSet[p] = struct{}{}
+	so := roleByName(roles, RoleNameSO)
+	if so == nil {
+		t.Fatal("SO role not found")
 	}
 
-	for _, p := range readonly.Permissions {
-		if _, ok := rwSet[p]; !ok {
-			t.Errorf("readonly permission %q is not in readwrite set", p)
+	deniedCryptoPerms := []permission.Permission{
+		permission.KeysSign,
+		permission.KeysEncrypt,
+		permission.KeysDecrypt,
+		permission.KeysVerify,
+		permission.KeysWrap,
+		permission.KeysUnwrap,
+	}
+	permSet := make(map[permission.Permission]struct{}, len(so.Permissions))
+	for _, p := range so.Permissions {
+		permSet[p] = struct{}{}
+	}
+	for _, p := range deniedCryptoPerms {
+		if _, found := permSet[p]; found {
+			t.Errorf("SO role must not have crypto permission: %q (FIPS 140-3 AS10.03)", p)
+		}
+	}
+}
+
+// TestBuiltInRoles_CustodianOnlyHasUnsealShare verifies that the Custodian
+// role's permission list contains exactly one entry: barrier:unseal-share.
+func TestBuiltInRoles_CustodianOnlyHasUnsealShare(t *testing.T) {
+	roles := BuiltInRoles("acme")
+	custodian := roleByName(roles, RoleNameCustodian)
+	if custodian == nil {
+		t.Fatal("custodian role not found")
+	}
+	if len(custodian.Permissions) != 1 {
+		t.Fatalf("custodian: expected exactly 1 permission, got %d: %v",
+			len(custodian.Permissions), custodian.Permissions)
+	}
+	if custodian.Permissions[0] != permission.BarrierUnsealShare {
+		t.Errorf("custodian: expected %q, got %q",
+			permission.BarrierUnsealShare, custodian.Permissions[0])
+	}
+}
+
+// TestBuiltInRoles_AuditorReadOnly verifies that the Auditor role has only
+// read, list, query, and stream permissions — no write or delete permissions.
+func TestBuiltInRoles_AuditorReadOnly(t *testing.T) {
+	roles := BuiltInRoles("acme")
+	auditor := roleByName(roles, RoleNameAuditor)
+	if auditor == nil {
+		t.Fatal("auditor role not found")
+	}
+	if len(auditor.Permissions) == 0 {
+		t.Fatal("auditor: expected non-empty permission set")
+	}
+
+	// Permissions that must not appear on the Auditor role.
+	writePerms := map[permission.Permission]struct{}{
+		permission.KVPut: {}, permission.KVDelete: {},
+		permission.UsersCreate: {}, permission.UsersUpdate: {}, permission.UsersDelete: {},
+		permission.RolesCreate: {}, permission.RolesUpdate: {}, permission.RolesDelete: {},
+		permission.TenantsCreate: {}, permission.TenantsUpdate: {}, permission.TenantsDelete: {},
+		permission.KeysCreate: {}, permission.KeysDelete: {}, permission.KeysRotate: {},
+		permission.KeysSign: {}, permission.KeysEncrypt: {}, permission.KeysDecrypt: {},
+		permission.SealBootstrap: {}, permission.SealSeal: {}, permission.SealUnseal: {},
+		permission.CeremonyInitialize: {}, permission.CeremonyEnrollCustodian: {},
+		permission.CeremonySignCSR: {}, permission.BarrierUnsealShare: {},
+	}
+	for _, p := range auditor.Permissions {
+		if _, found := writePerms[p]; found {
+			t.Errorf("auditor must not have write/delete permission: %q", p)
+		}
+	}
+
+	// Must have audit:read.
+	hasAuditRead := false
+	for _, p := range auditor.Permissions {
+		if p == permission.AuditRead {
+			hasAuditRead = true
+			break
+		}
+	}
+	if !hasAuditRead {
+		t.Error("auditor must have audit:read permission")
+	}
+}
+
+// TestSystemRoleID_Deterministic verifies that SystemRoleID produces stable,
+// unique UUIDs for all six canonical roles across multiple calls.
+func TestSystemRoleID_Deterministic(t *testing.T) {
+	tenant := "test-tenant"
+	roleNames := []string{
+		RoleNameSO, RoleNameAdmin, RoleNameOperator,
+		RoleNameUser, RoleNameAuditor, RoleNameCustodian,
+	}
+
+	// Verify determinism: same output on repeated calls.
+	for _, name := range roleNames {
+		id1 := SystemRoleID(tenant, name)
+		id2 := SystemRoleID(tenant, name)
+		if id1 != id2 {
+			t.Errorf("SystemRoleID(%q, %q) not deterministic: %q vs %q", tenant, name, id1, id2)
+		}
+	}
+
+	// Verify uniqueness: all six IDs are distinct.
+	ids := make(map[string]string, len(roleNames))
+	for _, name := range roleNames {
+		id := SystemRoleID(tenant, name)
+		for existingName, existingID := range ids {
+			if existingID == id {
+				t.Errorf("SystemRoleID collision: %q and %q both produce %q", name, existingName, id)
+			}
+		}
+		ids[name] = id
+	}
+}
+
+// TestBuiltInRoles_OperatorHasCryptoPerms verifies the Operator can sign,
+// encrypt, and decrypt (unlike SO which is explicitly denied these).
+func TestBuiltInRoles_OperatorHasCryptoPerms(t *testing.T) {
+	roles := BuiltInRoles("acme")
+	operator := roleByName(roles, RoleNameOperator)
+	if operator == nil {
+		t.Fatal("operator role not found")
+	}
+	permSet := make(map[permission.Permission]struct{}, len(operator.Permissions))
+	for _, p := range operator.Permissions {
+		permSet[p] = struct{}{}
+	}
+	for _, p := range []permission.Permission{
+		permission.KeysSign, permission.KeysEncrypt, permission.KeysDecrypt,
+	} {
+		if _, ok := permSet[p]; !ok {
+			t.Errorf("operator missing expected crypto permission: %q", p)
+		}
+	}
+}
+
+// TestBuiltInRoles_UserHasCryptoPerms verifies the User can sign, verify,
+// encrypt, and decrypt.
+func TestBuiltInRoles_UserHasCryptoPerms(t *testing.T) {
+	roles := BuiltInRoles("acme")
+	user := roleByName(roles, RoleNameUser)
+	if user == nil {
+		t.Fatal("user role not found")
+	}
+	permSet := make(map[permission.Permission]struct{}, len(user.Permissions))
+	for _, p := range user.Permissions {
+		permSet[p] = struct{}{}
+	}
+	for _, p := range []permission.Permission{
+		permission.KeysSign, permission.KeysVerify,
+		permission.KeysEncrypt, permission.KeysDecrypt,
+	} {
+		if _, ok := permSet[p]; !ok {
+			t.Errorf("user missing expected crypto permission: %q", p)
 		}
 	}
 }
@@ -1946,7 +2173,7 @@ func TestKVRoleStore_CreateRole_QuotaPasses(t *testing.T) {
 }
 
 func TestKVRoleStore_WithQuotaChecker_DefaultTenant(t *testing.T) {
-	// When TenantID is empty the store falls back to DefaultTenantID.
+	// When TenantID is empty the store falls back to SystemTenantID.
 	var checkedTenantID string
 	checker := &mockRoleQuotaChecker{
 		checkFn: func(_ context.Context, tenantID string, _ quota.Resource) error {
@@ -1965,7 +2192,7 @@ func TestKVRoleStore_WithQuotaChecker_DefaultTenant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateRole() returned unexpected error: %v", err)
 	}
-	if checkedTenantID != tenant.DefaultTenantID {
-		t.Errorf("quota.Check() tenantID = %q, want %q", checkedTenantID, tenant.DefaultTenantID)
+	if checkedTenantID != tenant.SystemTenantID {
+		t.Errorf("quota.Check() tenantID = %q, want %q", checkedTenantID, tenant.SystemTenantID)
 	}
 }

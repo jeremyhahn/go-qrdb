@@ -23,12 +23,20 @@ type PermissionDeniedError struct {
 	Resource string
 	Action   string
 	Subject  string
+	// Reason provides additional context for the denial (e.g., SO deny-list).
+	// Empty when the denial is a plain permission miss.
+	Reason string
 }
 
 // Error returns a human-readable description of the denied permission.
+// When Reason is non-empty it is appended after the standard message.
 func (e *PermissionDeniedError) Error() string {
-	return "qrdb/auth/rbac: permission denied: " +
+	msg := "qrdb/auth/rbac: permission denied: " +
 		e.Subject + " cannot " + e.Action + " on " + e.Resource
+	if e.Reason != "" {
+		msg += ": " + e.Reason
+	}
+	return msg
 }
 
 // Unwrap returns auth.ErrUnauthorized so errors.Is works with the sentinel.

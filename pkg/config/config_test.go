@@ -249,11 +249,13 @@ func TestDefaultConfig_LoggingDefaults(t *testing.T) {
 
 func TestDefaultConfig_DiscoveryDefaults(t *testing.T) {
 	cfg := DefaultConfig()
-	if cfg.Discovery.Method != "multicast" {
-		t.Errorf("Method: got %q, want %q", cfg.Discovery.Method, "multicast")
+	// Secure defaults: single-node static discovery, and no well-known
+	// multicast PSK (multicast is an explicit, PSK-required opt-in).
+	if cfg.Discovery.Method != "static" {
+		t.Errorf("Method: got %q, want %q", cfg.Discovery.Method, "static")
 	}
-	if cfg.Discovery.MulticastSecret != "quicraft" {
-		t.Errorf("MulticastSecret: got %q, want %q", cfg.Discovery.MulticastSecret, "quicraft")
+	if cfg.Discovery.MulticastSecret != "" {
+		t.Errorf("MulticastSecret: got %q, want empty (no well-known default)", cfg.Discovery.MulticastSecret)
 	}
 	if cfg.Discovery.DNSDomain != "" {
 		t.Errorf("DNSDomain: got %q, want empty", cfg.Discovery.DNSDomain)
@@ -2184,8 +2186,8 @@ func TestDefaultConfig_AuthDefaults(t *testing.T) {
 	if cfg.Auth.AdminUsername != "admin" {
 		t.Errorf("Auth.AdminUsername: got %q, want %q", cfg.Auth.AdminUsername, "admin")
 	}
-	if cfg.Auth.DefaultTenant != "default" {
-		t.Errorf("Auth.DefaultTenant: got %q, want %q", cfg.Auth.DefaultTenant, "default")
+	if cfg.Auth.DefaultTenant != "system" {
+		t.Errorf("Auth.DefaultTenant: got %q, want %q", cfg.Auth.DefaultTenant, "system")
 	}
 	if cfg.Auth.CertTTL != "8760h" {
 		t.Errorf("Auth.CertTTL: got %q, want %q", cfg.Auth.CertTTL, "8760h")
@@ -2199,7 +2201,7 @@ func TestValidate_Auth_EmptyAdminUsername(t *testing.T) {
 	cfg := validConfig()
 	cfg.Auth.Enabled = true
 	cfg.Auth.AdminUsername = ""
-	cfg.Auth.DefaultTenant = "default"
+	cfg.Auth.DefaultTenant = "system"
 	err := cfg.Validate()
 	if err == nil {
 		t.Fatal("expected validation error for empty admin_username")
@@ -2235,7 +2237,7 @@ func TestValidate_Auth_InvalidCertTTL(t *testing.T) {
 	cfg := validConfig()
 	cfg.Auth.Enabled = true
 	cfg.Auth.AdminUsername = "admin"
-	cfg.Auth.DefaultTenant = "default"
+	cfg.Auth.DefaultTenant = "system"
 	cfg.Auth.CertTTL = "not-a-duration"
 	err := cfg.Validate()
 	if err == nil {
@@ -2254,7 +2256,7 @@ func TestValidate_Auth_ValidCertTTL(t *testing.T) {
 	cfg := validConfig()
 	cfg.Auth.Enabled = true
 	cfg.Auth.AdminUsername = "admin"
-	cfg.Auth.DefaultTenant = "default"
+	cfg.Auth.DefaultTenant = "system"
 	cfg.Auth.CertTTL = "720h"
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("expected valid, got %v", err)

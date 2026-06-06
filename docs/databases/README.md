@@ -207,36 +207,50 @@ that upgrading QRDB does not break existing deployments.
 
 ## Database Management API
 
-QRDB provides 9 database management operations available across all transport
-protocols.
+QRDB exposes database management operations across every transport protocol
+(REST, gRPC, QUIC, MCP, and Unix). The lifecycle/config operations plus three
+encryption-barrier operations are available on each.
 
 ### Operations
 
-| Operation | Description |
-|-----------|-------------|
-| CreateDatabase | Create a new database with engine, backend, and optional protocol/barrier config |
-| GetDatabase | Retrieve metadata for a specific database |
-| ListDatabases | List all databases (optionally filtered by tenant) |
-| DropDatabase | Close and permanently delete a database and its data |
-| UpdateDatabaseProtocol | Update MySQL/PostgreSQL protocol settings |
-| UpdateDatabaseEtcd | Enable/disable etcd protocol and update listen/advertise config |
-| UpdateDatabaseRaft | Update Raft consensus configuration |
-| UpdateDatabaseBarrier | Update barrier encryption settings |
-| UpdateDatabaseConnection | Update connection pool and timeout settings |
+| Operation | Permission | Description |
+|-----------|-----------|-------------|
+| CreateDatabase | `databases:create` | Create a new database with engine, backend, and optional protocol/barrier config |
+| GetDatabase | `databases:read` | Retrieve metadata for a specific database |
+| ListDatabases | `databases:list` | List databases (scoped to the caller's tenant; see below) |
+| DropDatabase | `databases:delete` | Close and permanently delete a database and its data |
+| UpdateDatabaseProtocol | `databases:update` | Update MySQL/PostgreSQL protocol settings |
+| UpdateDatabaseEtcd | `databases:update` | Enable/disable etcd protocol and update listen/advertise config |
+| UpdateDatabaseRaft | `databases:update` | Update Raft consensus configuration |
+| UpdateDatabaseBarrier | `databases:update` | Update barrier encryption settings |
+| UpdateDatabaseConnection | `databases:update` | Update connection pool and timeout settings |
+| SealDatabase | `databases:seal` | Seal the database's at-rest encryption barrier |
+| UnsealDatabase | `databases:unseal` | Unseal the database's encryption barrier with a secret |
+| DatabaseBarrierStatus | `databases:barrier_status` | Report sealed state and active strategy |
 
-### Tenant-Aware Operations
+REST seal/unseal/status map to `POST /v1/databases/{name}/seal`,
+`POST /v1/databases/{name}/unseal`, and `GET /v1/databases/{name}/barrier/status`.
+gRPC RPCs are `DatabaseSeal`/`DatabaseUnseal`/`DatabaseBarrierStatus`; QUIC
+methods are `db.Seal`/`db.Unseal`/`db.BarrierStatus`; MCP tools are
+`qrdb_database_seal`/`qrdb_database_unseal`/`qrdb_database_barrier_status`.
 
-The Manager provides tenant-aware variants of all operations:
+### Automatic tenant scoping
 
-| Method | Description |
-|--------|-------------|
-| `CreateForTenant` | Create a database scoped to a tenant |
-| `GetForTenant` | Get database info within a tenant's scope |
-| `ListForTenant` | List only databases belonging to a tenant |
-| `DropForTenant` | Drop a tenant's database |
+Database operations are **tenant-scope-aware**: the transport handlers pass the
+authenticated caller's context (the auth middleware stamps the caller's tenant
+on every request) to the service, which routes each call based on that tenant:
 
-Tenant-aware operations verify ownership before executing and use the
-naming convention `{tenantID}_{dbName}` for database names.
+- **System/admin caller** (the reserved `system` tenant) → the cross-tenant
+  admin path, with no ownership restriction.
+- **Tenant principal** → the ownership-enforced path: create injects the
+  caller's tenant, and get/list/drop/update verify the database belongs to that
+  tenant (cross-tenant access is denied). `ListDatabases` returns only the
+  caller's own databases.
+
+This routing is centralized in `DatabaseService` (one place), so there is a
+single database API surface — there are no separate "ForTenant" wire endpoints.
+The Go SDK exposes the same operations via `client.Database()`, and a
+`transport.WithTenantDatabase` decorator can pin client-side calls to a tenant.
 
 ---
 
@@ -357,6 +371,14 @@ Update connection pool and timeout configuration:
 qrdb database update-connection <name> --max-connections 100 --idle-timeout 30s
 ```
 
+### Seal / unseal the encryption barrier
+
+```bash
+qrdb database seal <name>
+qrdb database unseal <name> --secret "<unseal-secret>"
+qrdb database barrier-status <name>
+```
+
 ---
 
 ## API Endpoints
@@ -374,6 +396,9 @@ qrdb database update-connection <name> --max-connections 100 --idle-timeout 30s
 | `PATCH`  | `/v1/databases/{name}/raft`               | Update Raft configuration          |
 | `PATCH`  | `/v1/databases/{name}/barrier`            | Update barrier encryption settings |
 | `PATCH`  | `/v1/databases/{name}/connection`         | Update connection settings         |
+| `POST`   | `/v1/databases/{name}/seal`               | Seal the encryption barrier        |
+| `POST`   | `/v1/databases/{name}/unseal`             | Unseal the encryption barrier      |
+| `GET`    | `/v1/databases/{name}/barrier/status`     | Encryption-barrier status          |
 
 ### gRPC RPCs
 
@@ -388,6 +413,9 @@ qrdb database update-connection <name> --max-connections 100 --idle-timeout 30s
 | `DatabaseUpdateRaft` | Update Raft configuration |
 | `DatabaseUpdateBarrier` | Update barrier encryption |
 | `DatabaseUpdateConnection` | Update connection settings |
+| `DatabaseSeal` | Seal the encryption barrier |
+| `DatabaseUnseal` | Unseal the encryption barrier |
+| `DatabaseBarrierStatus` | Encryption-barrier status |
 
 ### QUIC Methods
 
@@ -402,6 +430,9 @@ qrdb database update-connection <name> --max-connections 100 --idle-timeout 30s
 | `db.UpdateRaft` | Update Raft configuration |
 | `db.UpdateBarrier` | Update barrier encryption |
 | `db.UpdateConnection` | Update connection settings |
+| `db.Seal` | Seal the encryption barrier |
+| `db.Unseal` | Unseal the encryption barrier |
+| `db.BarrierStatus` | Encryption-barrier status |
 
 ### MCP Tools
 
@@ -416,6 +447,9 @@ qrdb database update-connection <name> --max-connections 100 --idle-timeout 30s
 | `qrdb_database_update_raft`             | Update Raft configuration            |
 | `qrdb_database_update_barrier`          | Update barrier encryption settings   |
 | `qrdb_database_update_connection`       | Update connection settings           |
+| `qrdb_database_seal`                    | Seal the encryption barrier          |
+| `qrdb_database_unseal`                  | Unseal the encryption barrier        |
+| `qrdb_database_barrier_status`          | Encryption-barrier status            |
 
 ### SQL
 

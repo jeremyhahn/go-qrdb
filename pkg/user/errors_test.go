@@ -25,21 +25,29 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestUserNotFoundError_Message(t *testing.T) {
-	err := &UserNotFoundError{ID: "abc-123"}
-	want := "user: not found: abc-123"
+	err := &UserNotFoundError{ID: 12345}
+	want := "user: not found: 12345"
+	if err.Error() != want {
+		t.Fatalf("Error(): got %q, want %q", err.Error(), want)
+	}
+}
+
+func TestUserNotFoundError_LookupMessage(t *testing.T) {
+	err := &UserNotFoundError{Lookup: "acme/alice"}
+	want := "user: not found: acme/alice"
 	if err.Error() != want {
 		t.Fatalf("Error(): got %q, want %q", err.Error(), want)
 	}
 }
 
 func TestUserNotFoundError_As(t *testing.T) {
-	var err error = &UserNotFoundError{ID: "xyz"}
+	var err error = &UserNotFoundError{ID: 42}
 	var target *UserNotFoundError
 	if !errors.As(err, &target) {
 		t.Fatal("errors.As should match *UserNotFoundError")
 	}
-	if target.ID != "xyz" {
-		t.Fatalf("ID: got %q, want %q", target.ID, "xyz")
+	if target.ID != 42 {
+		t.Fatalf("ID: got %d, want %d", target.ID, 42)
 	}
 }
 
@@ -56,7 +64,7 @@ func TestUsernameExistsError_Message(t *testing.T) {
 }
 
 func TestUsernameExistsError_As(t *testing.T) {
-	var err error = &UsernameExistsError{Username: "bob", TenantID: "default"}
+	var err error = &UsernameExistsError{Username: "bob", TenantID: "system"}
 	var target *UsernameExistsError
 	if !errors.As(err, &target) {
 		t.Fatal("errors.As should match *UsernameExistsError")
@@ -71,21 +79,21 @@ func TestUsernameExistsError_As(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestUserDisabledError_Message(t *testing.T) {
-	err := &UserDisabledError{ID: "user-1"}
-	want := "user: disabled: user-1"
+	err := &UserDisabledError{ID: 1}
+	want := "user: disabled: 1"
 	if err.Error() != want {
 		t.Fatalf("Error(): got %q, want %q", err.Error(), want)
 	}
 }
 
 func TestUserDisabledError_As(t *testing.T) {
-	var err error = &UserDisabledError{ID: "user-2"}
+	var err error = &UserDisabledError{ID: 2}
 	var target *UserDisabledError
 	if !errors.As(err, &target) {
 		t.Fatal("errors.As should match *UserDisabledError")
 	}
-	if target.ID != "user-2" {
-		t.Fatalf("ID: got %q, want %q", target.ID, "user-2")
+	if target.ID != 2 {
+		t.Fatalf("ID: got %d, want %d", target.ID, 2)
 	}
 }
 
@@ -94,21 +102,21 @@ func TestUserDisabledError_As(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSystemUserImmutableError_Message(t *testing.T) {
-	err := &SystemUserImmutableError{ID: "root"}
-	want := "user: system user cannot be deleted: root"
+	err := &SystemUserImmutableError{ID: 7}
+	want := "user: system user cannot be deleted: 7"
 	if err.Error() != want {
 		t.Fatalf("Error(): got %q, want %q", err.Error(), want)
 	}
 }
 
 func TestSystemUserImmutableError_As(t *testing.T) {
-	var err error = &SystemUserImmutableError{ID: "admin"}
+	var err error = &SystemUserImmutableError{ID: 8}
 	var target *SystemUserImmutableError
 	if !errors.As(err, &target) {
 		t.Fatal("errors.As should match *SystemUserImmutableError")
 	}
-	if target.ID != "admin" {
-		t.Fatalf("ID: got %q, want %q", target.ID, "admin")
+	if target.ID != 8 {
+		t.Fatalf("ID: got %d, want %d", target.ID, 8)
 	}
 }
 

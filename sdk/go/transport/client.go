@@ -376,22 +376,40 @@ type UserClient interface {
 	CreateUser(ctx context.Context, req *CreateUserRequest) (*User, error)
 
 	// GetUser retrieves a user by its globally unique ID.
-	GetUser(ctx context.Context, id string) (*User, error)
+	GetUser(ctx context.Context, id uint64) (*User, error)
+
+	// GetUserByUsername retrieves a user by tenant-scoped username. The
+	// tenantID may be empty to use the default tenant. Returns ErrNotFound
+	// when no user with the given username exists in the tenant.
+	GetUserByUsername(ctx context.Context, tenantID, username string) (*User, error)
+
+	// GetUserByCertThumbprint resolves a user by an mTLS certificate's SPKI
+	// thumbprint via the server-side secondary index. This is the mTLS-auth
+	// hot path: callers compute ComputeSPKIThumbprint(peerCert) and resolve
+	// the bound user synchronously. Returns ErrNotFound when no user is
+	// bound to the thumbprint.
+	GetUserByCertThumbprint(ctx context.Context, thumbprint string) (*User, error)
+
+	// AddCertBinding binds an mTLS certificate's SPKI thumbprint to the user
+	// server-side so GetUserByCertThumbprint resolves it. A notAfterUnix > 0
+	// sets the binding's expiry; otherwise the binding never expires. This is
+	// the enrollment seam used to bind an admin's certificate to a user.
+	AddCertBinding(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*User, error)
 
 	// UpdateUser applies partial updates to an existing user.
 	UpdateUser(ctx context.Context, req *UpdateUserRequest) (*User, error)
 
 	// DeleteUser removes a non-system user by ID.
-	DeleteUser(ctx context.Context, id string) error
+	DeleteUser(ctx context.Context, id uint64) error
 
 	// ListUsers returns a paginated list of users for the given tenant.
 	ListUsers(ctx context.Context, req *ListUsersRequest) (*ListUsersResponse, error)
 
 	// EnableUser activates a user account.
-	EnableUser(ctx context.Context, id string) error
+	EnableUser(ctx context.Context, id uint64) error
 
 	// DisableUser deactivates a user account.
-	DisableUser(ctx context.Context, id string) error
+	DisableUser(ctx context.Context, id uint64) error
 }
 
 // ---------------------------------------------------------------------------
@@ -407,6 +425,9 @@ type RoleClient interface {
 	// GetRole retrieves a role by its globally unique ID.
 	GetRole(ctx context.Context, id string) (*Role, error)
 
+	// GetRoleByName retrieves a role by its tenant-scoped name.
+	GetRoleByName(ctx context.Context, req *GetRoleByNameRequest) (*Role, error)
+
 	// UpdateRole applies partial updates to an existing role.
 	UpdateRole(ctx context.Context, req *UpdateRoleRequest) (*Role, error)
 
@@ -417,14 +438,18 @@ type RoleClient interface {
 	ListRoles(ctx context.Context, req *ListRolesRequest) (*ListRolesResponse, error)
 
 	// AssignRole assigns a role to a user.
-	AssignRole(ctx context.Context, userID, roleID string) error
+	AssignRole(ctx context.Context, userID uint64, roleID string) error
 
 	// UnassignRole removes a role assignment from a user.
-	UnassignRole(ctx context.Context, userID, roleID string) error
+	UnassignRole(ctx context.Context, userID uint64, roleID string) error
 
 	// ListPermissions returns all available permission categories for
 	// UI rendering.
 	ListPermissions(ctx context.Context) (*ListPermissionsResponse, error)
+
+	// ResolvePermissions returns the union of effective permissions for the
+	// given role IDs (sorted, deduplicated).
+	ResolvePermissions(ctx context.Context, req *ResolvePermissionsRequest) (*ResolvePermissionsResponse, error)
 }
 
 // ---------------------------------------------------------------------------
@@ -515,18 +540,6 @@ type BarrierClient interface {
 	// the barrier in a single request.
 	BarrierUnsealWithShares(ctx context.Context, req *BarrierUnsealSharesRequest) error
 
-	// BarrierShamirListShares returns metadata about stored Shamir shares.
-	BarrierShamirListShares(ctx context.Context) (*BarrierShamirSharesResponse, error)
-
-	// BarrierShamirDeleteShare deletes a single Shamir share by index.
-	BarrierShamirDeleteShare(ctx context.Context, req *BarrierShamirDeleteShareRequest) error
-
-	// BarrierShamirDeleteAllShares deletes all stored Shamir shares.
-	BarrierShamirDeleteAllShares(ctx context.Context) error
-
-	// BarrierShamirVerify verifies the integrity of stored Shamir shares.
-	BarrierShamirVerify(ctx context.Context) error
-
 	// BarrierRekey generates new Shamir shares with the specified
 	// threshold and total count, replacing the existing shares.
 	BarrierRekey(ctx context.Context, req *BarrierRekeyRequest) (*BarrierRekeyResponse, error)
@@ -579,6 +592,24 @@ type CeremonyClient interface {
 	// CeremonySignCSR submits a CSR for signing during or after the
 	// ceremony.
 	CeremonySignCSR(ctx context.Context, req *SignCSRInitRequest) (*SignCSRInitResponse, error)
+
+	// CeremonyClaimShareBegin issues a factor challenge for an enrolled
+	// custodian to claim their Shamir share.
+	CeremonyClaimShareBegin(ctx context.Context, req *CeremonyClaimShareBeginRequest) (*CeremonyClaimShareBeginResponse, error)
+
+	// CeremonyClaimShareComplete verifies the custodian's factor response and
+	// returns the custodian metadata confirming share delivery.
+	CeremonyClaimShareComplete(ctx context.Context, req *CeremonyClaimShareCompleteRequest) (*CeremonyCustodianInfo, error)
+
+	// CeremonySubmitUnsealShare submits a custodian's plaintext Shamir share
+	// (with factor proof) toward the unseal quorum.
+	CeremonySubmitUnsealShare(ctx context.Context, req *CeremonySubmitUnsealShareRequest) (*CeremonySubmitUnsealShareResponse, error)
+
+	// CeremonyEnrollExternalOfficer enrols an officer whose key material
+	// lives outside go-qrdb. Either CertPEM (validated against the
+	// configured CA pools) or PubKeyPEM (admin-asserted trust) MUST be
+	// supplied, but not both.
+	CeremonyEnrollExternalOfficer(ctx context.Context, req *EnrollExternalOfficerRequest) (*EnrollExternalOfficerResponse, error)
 }
 
 // ---------------------------------------------------------------------------
@@ -586,7 +617,11 @@ type CeremonyClient interface {
 // ---------------------------------------------------------------------------
 
 // CredentialClient manages named credentials using the configured
-// sealing strategy.
+// sealing strategy. The interface surfaces both non-versioned
+// (Submit/Strategy/Delete) and versioned (List/Rotate/RetrieveVersion/
+// ListVersions/GCExpired) operations. All transports MUST provide
+// real-wire implementations of every method — NotImplementedError
+// returns are forbidden per platform CLAUDE.md "no stubs" policy.
 type CredentialClient interface {
 	// CredentialSubmit submits a named credential value.
 	CredentialSubmit(ctx context.Context, req *CredentialSubmitRequest) error
@@ -594,8 +629,38 @@ type CredentialClient interface {
 	// CredentialStrategy returns the active credential management strategy.
 	CredentialStrategy(ctx context.Context) (*CredentialStrategyResponse, error)
 
-	// CredentialDelete removes a named credential.
+	// CredentialDelete removes a named credential and all of its
+	// non-current historical versions.
 	CredentialDelete(ctx context.Context, name string) error
+
+	// CredentialList returns the names of every stored credential.
+	// Values are never returned by enumeration.
+	CredentialList(ctx context.Context, req *CredentialListRequest) (*CredentialListResponse, error)
+
+	// CredentialRotate atomically replaces the current value of a
+	// credential, optionally keeping the previous version retrievable
+	// for a grace period.
+	CredentialRotate(ctx context.Context, req *CredentialRotateRequest) (*CredentialRotateResponse, error)
+
+	// CredentialRetrieveVersion returns the stored credential value
+	// for a specific version. Use version == 0 for the current version.
+	CredentialRetrieveVersion(ctx context.Context, req *CredentialRetrieveVersionRequest) (*CredentialRetrieveVersionResponse, error)
+
+	// CredentialListVersions returns the version history (current +
+	// non-expired grace) for a credential. Values are never returned.
+	CredentialListVersions(ctx context.Context, req *CredentialListVersionsRequest) (*CredentialListVersionsResponse, error)
+
+	// CredentialGCExpired reaps historical versions whose grace
+	// period has elapsed. Returns the count reaped.
+	CredentialGCExpired(ctx context.Context, req *CredentialGCRequest) (*CredentialGCResponse, error)
+
+	// CredentialStore persists a credential value under the given name.
+	CredentialStore(ctx context.Context, name string, value []byte) error
+
+	// CredentialRetrieve returns the credential value for the given name.
+	// For the manual strategy this blocks until the credential is submitted
+	// or the context is cancelled.
+	CredentialRetrieve(ctx context.Context, name string) ([]byte, error)
 }
 
 // ---------------------------------------------------------------------------
@@ -688,11 +753,22 @@ type TenantClient interface {
 	// UpdateTenant applies a partial update to a tenant.
 	UpdateTenant(ctx context.Context, req *UpdateTenantRequest) (*UpdateTenantResponse, error)
 
+	// UpdateTenantQuotas sets the resource quotas for a tenant.
+	UpdateTenantQuotas(ctx context.Context, req *UpdateTenantQuotasRequest) (*UpdateTenantQuotasResponse, error)
+
 	// TenantBarrierInit initializes a per-tenant barrier.
 	TenantBarrierInit(ctx context.Context, req *TenantBarrierInitRequest) error
 
 	// TenantBarrierUnseal unseals a per-tenant barrier.
 	TenantBarrierUnseal(ctx context.Context, req *TenantBarrierUnsealRequest) error
+
+	// TenantBarrierSeal seals a per-tenant barrier, returning it to the
+	// sealed state and refusing further reads/writes until unsealed again.
+	TenantBarrierSeal(ctx context.Context, req *TenantBarrierSealRequest) error
+
+	// TenantBarrierStatus returns the current sealed/initialized state and
+	// active strategy metadata for a per-tenant barrier.
+	TenantBarrierStatus(ctx context.Context, req *TenantBarrierStatusRequest) (*TenantBarrierStatusResponse, error)
 }
 
 // ---------------------------------------------------------------------------

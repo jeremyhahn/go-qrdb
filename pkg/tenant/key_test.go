@@ -27,9 +27,9 @@ func TestPrefixKeyNormal(t *testing.T) {
 	}
 }
 
-func TestPrefixKeyWithDefaultTenant(t *testing.T) {
-	got := PrefixKey(DefaultTenantID, "some-key")
-	want := "default/some-key"
+func TestPrefixKeyWithSystemTenant(t *testing.T) {
+	got := PrefixKey(SystemTenantID, "some-key")
+	want := "system/some-key"
 	if got != want {
 		t.Errorf("PrefixKey() = %q, want %q", got, want)
 	}
@@ -59,9 +59,9 @@ func TestPrefixKeyBytesEmptyKey(t *testing.T) {
 	}
 }
 
-func TestPrefixKeyBytesWithDefaultTenant(t *testing.T) {
-	got := PrefixKeyBytes(DefaultTenantID, []byte("data"))
-	want := []byte("default/data")
+func TestPrefixKeyBytesWithSystemTenant(t *testing.T) {
+	got := PrefixKeyBytes(SystemTenantID, []byte("data"))
+	want := []byte("system/data")
 	if !bytes.Equal(got, want) {
 		t.Errorf("PrefixKeyBytes() = %q, want %q", got, want)
 	}
@@ -139,9 +139,9 @@ func TestTenantPrefix(t *testing.T) {
 	}
 }
 
-func TestTenantPrefixDefaultTenant(t *testing.T) {
-	got := TenantPrefix(DefaultTenantID)
-	want := "default/"
+func TestTenantPrefixSystemTenant(t *testing.T) {
+	got := TenantPrefix(SystemTenantID)
+	want := "system/"
 	if got != want {
 		t.Errorf("TenantPrefix() = %q, want %q", got, want)
 	}

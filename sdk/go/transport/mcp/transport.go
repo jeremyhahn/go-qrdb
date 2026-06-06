@@ -799,8 +799,14 @@ func isNotFoundError(err error) bool {
 // argument map.
 func applyReadArgs(args map[string]any, opts ...transport.ReadOption) {
 	ro := transport.ResolveReadOptions(opts...)
-	if ro.ConsistencySet {
+	switch {
+	case ro.ConsistencySet:
 		args["consistency"] = ro.Consistency.String()
+	case ro.AllowStale:
+		// WithAllowStale() on its own (no explicit level) is an eventual read.
+		// Express it as the consistency level the server actually parses, since
+		// the server-side tool handlers read "consistency", not "allow_stale".
+		args["consistency"] = transport.ConsistencyEventual.String()
 	}
 	if ro.TimeoutMs > 0 {
 		args["read_timeout_ms"] = ro.TimeoutMs

@@ -63,6 +63,30 @@ WITH_CODEC_BSON     ?= 1
 WITH_CODEC_AVRO     ?= 1
 WITH_CODEC_PROTOBUF ?= 1
 
+# Object-storage (go-objstore) cloud backends, used by the objstore storage
+# backend and the backup/restore targets. Default on (server posture); tag names
+# match go-objstore exactly. The provider umbrellas enable the whole family.
+WITH_AWS_S3        ?= 1
+WITH_MINIO         ?= 1
+WITH_GCP_STORAGE   ?= 1
+WITH_AZURE_BLOB    ?= 1
+WITH_GLACIER       ?= 1
+WITH_AZURE_ARCHIVE ?= 1
+WITH_AWS   ?= 0
+WITH_GCP   ?= 0
+WITH_AZURE ?= 0
+ifeq ($(WITH_AWS),1)
+  WITH_AWS_S3 := 1
+  WITH_GLACIER := 1
+endif
+ifeq ($(WITH_GCP),1)
+  WITH_GCP_STORAGE := 1
+endif
+ifeq ($(WITH_AZURE),1)
+  WITH_AZURE_BLOB := 1
+  WITH_AZURE_ARCHIVE := 1
+endif
+
 # Compute build tags from feature flags
 BUILD_TAGS := codec_json raft
 ifeq ($(WITH_QRDB_TS),1)
@@ -104,6 +128,25 @@ endif
 ifeq ($(WITH_CODEC_PROTOBUF),1)
   BUILD_TAGS += codec_protobuf
 endif
+# Object-storage (go-objstore) cloud backends.
+ifeq ($(WITH_AWS_S3),1)
+  BUILD_TAGS += awss3
+endif
+ifeq ($(WITH_MINIO),1)
+  BUILD_TAGS += minio
+endif
+ifeq ($(WITH_GCP_STORAGE),1)
+  BUILD_TAGS += gcpstorage
+endif
+ifeq ($(WITH_AZURE_BLOB),1)
+  BUILD_TAGS += azureblob
+endif
+ifeq ($(WITH_GLACIER),1)
+  BUILD_TAGS += glacier
+endif
+ifeq ($(WITH_AZURE_ARCHIVE),1)
+  BUILD_TAGS += azurearchive
+endif
 DESKTOP_TAGS := desktop production webkit2_41 $(BUILD_TAGS)
 
 # Build tag flags for go commands
@@ -133,6 +176,7 @@ PKG_CRYPTO_MEM     := ./pkg/crypto/mem/...
 PKG_CRYPTO_SHAMIR  := ./pkg/crypto/shamir/...
 PKG_STATEMACHINE   := ./pkg/statemachine/...
 PKG_SEAL           := ./pkg/seal/...
+PKG_SEAL_KDF       := ./pkg/seal/kdf/...
 PKG_CEREMONY       := ./pkg/ceremony/...
 PKG_CREDENTIALS    := ./pkg/credentials/...
 PKG_TENANT         := ./pkg/tenant/...
@@ -176,7 +220,7 @@ build: build-server build-client
 
 .PHONY: build-server
 build-server:
-	$(GOBUILD) -o bin/$(SERVER_BINARY) ./cmd/qrdbd
+	$(GOBUILD) $(TAG_FLAG) -o bin/$(SERVER_BINARY) ./cmd/qrdbd
 
 # Build server with embedded web UI. Requires frontend to be built first.
 .PHONY: build-server-webui
@@ -333,9 +377,21 @@ test-statemachine:
 test-seal:
 	$(GOTEST) $(TAG_FLAG) $(PKG_SEAL)
 
+.PHONY: test-seal-kdf
+test-seal-kdf:
+	$(GOTEST) $(TAG_FLAG) $(PKG_SEAL_KDF)
+
 .PHONY: test-ceremony
 test-ceremony:
 	$(GOTEST) $(TAG_FLAG) $(PKG_CEREMONY)
+
+.PHONY: test-custodian
+test-custodian:
+	$(GOTEST) $(TAG_FLAG) ./pkg/custodian/...
+
+.PHONY: test-auth
+test-auth:
+	$(GOTEST) $(TAG_FLAG) ./pkg/auth/...
 
 .PHONY: test-credentials
 test-credentials:
@@ -466,19 +522,45 @@ test-playwright: test-e2e
 # This is the single entry point for all integration tests.
 INT_COMPOSE := test/integration/api/docker-compose.yml
 
+# integration-test runs BOTH suites in isolated stages so the standalone
+# (multi-protocol CLI vs the single-node docker servers) and cluster
+# (self-spawned single-node + 3-node clusters) tests never run concurrently
+# and never contend for host CPU. Each stage builds, runs, and tears down its
+# own stack. Fail-fast: a failing standalone stage stops before cluster.
 .PHONY: integration-test
-integration-test:
-	@echo "==> Running ALL integration tests (qrdbd + all protocols)..."
+integration-test: integration-test-standalone integration-test-cluster
+	@echo "==> All integration stages passed (standalone + cluster)."
+
+# Standalone stage: the multi-protocol CLI suites in ./test/integration/api
+# exercised against the single-node software + Shamir docker servers.
+.PHONY: integration-test-standalone
+integration-test-standalone:
+	@echo "==> Running STANDALONE integration tests (multi-protocol CLI vs single-node servers)..."
 	@cd test/integration/api && docker compose down -v 2>/dev/null; true
 	@cd test/integration/api && \
+		INTEGRATION_TEST_PKGS='./test/integration/api/...' \
 		docker compose up --build --abort-on-container-exit integration-tests; \
 		rc=$$?; \
 		docker compose down -v; \
 		exit $$rc
 
-# Backward-compatible alias for integration-test-api.
+# Cluster stage: the self-spawning tests in ./test/integration (single-node +
+# real 3-node Raft clusters, leader election, restart/durability, snapshots).
+# These start their own qrdbd nodes and do not use the docker servers.
+.PHONY: integration-test-cluster
+integration-test-cluster:
+	@echo "==> Running CLUSTER integration tests (self-spawned single-node + 3-node clusters)..."
+	@cd test/integration/api && docker compose down -v 2>/dev/null; true
+	@cd test/integration/api && \
+		INTEGRATION_TEST_PKGS='./test/integration/' \
+		docker compose up --build --abort-on-container-exit integration-tests; \
+		rc=$$?; \
+		docker compose down -v; \
+		exit $$rc
+
+# Backward-compatible alias: the standalone multi-protocol suite.
 .PHONY: integration-test-api
-integration-test-api: integration-test
+integration-test-api: integration-test-standalone
 
 # GPU-accelerated integration tests.
 # Auto-detects GPU: uses GPU compose overlay when nvidia-smi is present,
@@ -1016,29 +1098,38 @@ coverage-rag-chunker: | _cover-dir ## Generate RAG chunker coverage
 # ============================================================================
 # Integration test targets for embedding, RAG, and GPU
 # ============================================================================
+#
+# Embedding/RAG e2e tests require the resource-heavy Ollama sidecar, which the
+# docker-compose.embedding.yml overlay layers onto the base stack. These are
+# kept OUT of `make integration-test` so the standalone and cluster suites run
+# fast and light; run them explicitly when verifying embedding behaviour.
+# INTEGRATION_RUN scopes `go test -run` to the embedding/RAG suites.
+
+# Stacked compose files for the opt-in Ollama embedding overlay.
+EMBEDDING_COMPOSE := -f docker-compose.yml -f docker-compose.embedding.yml
 
 .PHONY: integration-test-embedding
-integration-test-embedding: ## Run embedding integration tests inside docker compose stack
-	@echo "==> Running embedding integration tests..."
-	@cd test/integration/api && docker compose down -v 2>/dev/null; true
+integration-test-embedding: ## Run embedding e2e tests (opt-in Ollama overlay)
+	@echo "==> Running embedding integration tests (Ollama overlay)..."
+	@cd test/integration/api && docker compose $(EMBEDDING_COMPOSE) down -v 2>/dev/null; true
 	@cd test/integration/api && \
-		docker compose up --build --abort-on-container-exit \
-			--exit-code-from integration-tests integration-tests \
-			-e INTEGRATION_FILTER=TestEmbedding; \
+		INTEGRATION_TEST_PKGS='./test/integration/api/...' \
+		INTEGRATION_RUN='Embedding' \
+		docker compose $(EMBEDDING_COMPOSE) up --build --abort-on-container-exit integration-tests; \
 		rc=$$?; \
-		docker compose down -v; \
+		docker compose $(EMBEDDING_COMPOSE) down -v; \
 		exit $$rc
 
 .PHONY: integration-test-rag
-integration-test-rag: ## Run RAG integration tests inside docker compose stack
-	@echo "==> Running RAG integration tests..."
-	@cd test/integration/api && docker compose down -v 2>/dev/null; true
+integration-test-rag: ## Run RAG e2e tests (opt-in Ollama overlay)
+	@echo "==> Running RAG integration tests (Ollama overlay)..."
+	@cd test/integration/api && docker compose $(EMBEDDING_COMPOSE) down -v 2>/dev/null; true
 	@cd test/integration/api && \
-		docker compose up --build --abort-on-container-exit \
-			--exit-code-from integration-tests integration-tests \
-			-e INTEGRATION_FILTER=TestRAG; \
+		INTEGRATION_TEST_PKGS='./test/integration/api/...' \
+		INTEGRATION_RUN='RAG' \
+		docker compose $(EMBEDDING_COMPOSE) up --build --abort-on-container-exit integration-tests; \
 		rc=$$?; \
-		docker compose down -v; \
+		docker compose $(EMBEDDING_COMPOSE) down -v; \
 		exit $$rc
 
 # ============================================================================

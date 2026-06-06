@@ -15,6 +15,7 @@
 package statemachine
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"sync"
@@ -122,16 +123,14 @@ func TestIndexCreate_NilIndexManager(t *testing.T) {
 	results := make([]sm.Result, 1)
 
 	err := fsm.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected ServiceNotConfiguredError when indexManager is nil")
+	if err != nil {
+		t.Fatalf("expected nil error (SNC encoded in result.Data), got %v", err)
 	}
-
-	var svcErr *ServiceNotConfiguredError
-	if !errors.As(err, &svcErr) {
-		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
+	if len(results[0].Data) == 0 {
+		t.Fatal("expected ServiceNotConfiguredError encoded in result.Data")
 	}
-	if svcErr.Service != "index" {
-		t.Fatalf("expected service 'index', got %q", svcErr.Service)
+	if !bytes.Contains(results[0].Data, []byte("index")) {
+		t.Fatalf("expected Data to mention %q, got %q", "index", results[0].Data)
 	}
 }
 
@@ -248,16 +247,14 @@ func TestIndexDrop_NilIndexManager(t *testing.T) {
 	results := make([]sm.Result, 1)
 
 	err := fsm.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected ServiceNotConfiguredError when indexManager is nil")
+	if err != nil {
+		t.Fatalf("expected nil error (SNC encoded in result.Data), got %v", err)
 	}
-
-	var svcErr *ServiceNotConfiguredError
-	if !errors.As(err, &svcErr) {
-		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
+	if len(results[0].Data) == 0 {
+		t.Fatal("expected ServiceNotConfiguredError encoded in result.Data")
 	}
-	if svcErr.Service != "index" {
-		t.Fatalf("expected service 'index', got %q", svcErr.Service)
+	if !bytes.Contains(results[0].Data, []byte("index")) {
+		t.Fatalf("expected Data to mention %q, got %q", "index", results[0].Data)
 	}
 }
 

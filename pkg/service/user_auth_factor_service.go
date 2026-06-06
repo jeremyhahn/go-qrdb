@@ -1,0 +1,476 @@
+// Copyright 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package service
+
+import (
+	"context"
+	"encoding/json"
+	"strconv"
+	"sync"
+	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+)
+
+// ---------------------------------------------------------------------------
+// Storage layout
+// ---------------------------------------------------------------------------
+//
+// The user auth-factor service persists three coordinated records per
+// factor in the platform-wide KV namespace:
+//
+//	__sys:auth/factors/{factorID}                         -> AuthFactor JSON
+//	__sys:auth/users/{userID}/factors/{factorID}          -> factorID (bytes)
+//	__sys:auth/lookup/{type}/{credKeyHex}                 -> factorID (bytes)
+//
+// The first record is the canonical AuthFactor. The second is a per-user
+// secondary index used by List. The third is a (type, credential lookup
+// key) index used by login resolution to map an incoming auth event to a
+// user.
+
+const (
+	userFactorPrimaryPrefix = "__sys:auth/factors/"
+	userFactorByUserPrefix  = "__sys:auth/users/"
+	userFactorByUserSuffix  = "/factors/"
+	userFactorLookupPrefix  = "__sys:auth/lookup/"
+)
+
+// UserAuthFactorServicer is the M14 user-side auth-factor service. It is
+// distinct from AuthFactorServicer (which handles ceremony enrollment with
+// challenge / verify nonces). The user service models a 1-to-many
+// relationship between users and credentials and exposes the operations
+// needed for login resolution.
+type UserAuthFactorServicer interface {
+	// Add persists a new factor for the given user. The factor's ID is
+	// generated when empty and RegisteredAt is set when zero.
+	Add(ctx context.Context, userID uint64, factor *auth.AuthFactor) error
+
+	// List returns every factor (active AND revoked) belonging to the user
+	// in registration order.
+	List(ctx context.Context, userID uint64) ([]*auth.AuthFactor, error)
+
+	// Get returns the factor identified by factorID or an
+	// auth.FactorNotFoundError.
+	Get(ctx context.Context, factorID string) (*auth.AuthFactor, error)
+
+	// LookupByCredentialKey returns the active factor whose (Type, key)
+	// tuple matches. Used by login resolution. Returns
+	// auth.FactorRevokedError when the matching factor has been revoked.
+	LookupByCredentialKey(ctx context.Context, t auth.AuthFactorType, key []byte) (*auth.AuthFactor, error)
+
+	// Remove soft-deletes the factor by setting RevokedAt to now. When
+	// force is false the call returns auth.LastFactorError if it would
+	// remove the user's last active factor. When force is true the user's
+	// last active factor may be removed (admin override).
+	Remove(ctx context.Context, factorID string, force bool) error
+
+	// Rotate atomically adds the new factor and revokes the old factor in
+	// the same logical operation. The new factor inherits UserID from the
+	// old factor when its UserID is zero.
+	Rotate(ctx context.Context, oldID string, newFactor *auth.AuthFactor) error
+
+	// Relabel updates the human-readable label of the factor.
+	Relabel(ctx context.Context, factorID string, label string) error
+
+	// MarkUsed updates LastUsedAt for the factor. Implementations may run
+	// this asynchronously; callers should ignore errors.
+	MarkUsed(ctx context.Context, factorID string, ts time.Time) error
+}
+
+// UserStateUpdater optionally receives a callback whenever a user's last
+// active factor is force-removed, so the embedding system can mark the
+// user inactive. The interface is satisfied by any user store that
+// supports DisableUser(ctx, id string) error semantics.
+type UserStateUpdater interface {
+	// SetUserActive flips the user's active flag. Implementations MUST be
+	// idempotent.
+	SetUserActive(ctx context.Context, userID uint64, active bool) error
+}
+
+// UserAuthFactorServiceConfig holds the dependencies for the service.
+type UserAuthFactorServiceConfig struct {
+	// KV is the durable kv-service used to persist factor records.
+	KV KVServicer
+
+	// UserStateUpdater is invoked when force=true Remove revokes the last
+	// active factor. May be nil to skip the user-state hook.
+	UserStateUpdater UserStateUpdater
+}
+
+// userAuthFactorService is the default implementation. It serialises
+// mutations through a process-local mutex so multi-record updates (Add,
+// Rotate, Remove) are atomic with respect to other mutators sharing the
+// same process. Cross-process atomicity is provided by the underlying
+// KVServicer (Raft-replicated puts).
+type userAuthFactorService struct {
+	kv      KVServicer
+	users   UserStateUpdater
+	idGen   func() string
+	nowFunc func() time.Time
+	mu      sync.Mutex
+}
+
+// Compile-time assertion that the service implements the public interface
+// AND auth.FactorStore (so it can be passed to LoginResolver directly).
+var (
+	_ UserAuthFactorServicer = (*userAuthFactorService)(nil)
+	_ auth.FactorStore       = (*userAuthFactorService)(nil)
+)
+
+// NewUserAuthFactorService constructs the M14 user auth-factor service.
+// KV must be non-nil.
+func NewUserAuthFactorService(cfg UserAuthFactorServiceConfig) (UserAuthFactorServicer, error) {
+	if cfg.KV == nil {
+		return nil, &auth.InvalidFactorError{Reason: "kv servicer is required"}
+	}
+	return &userAuthFactorService{
+		kv:      cfg.KV,
+		users:   cfg.UserStateUpdater,
+		idGen:   uuid.NewString,
+		nowFunc: func() time.Time { return time.Now().UTC() },
+	}, nil
+}
+
+// Add persists the factor along with its secondary indexes.
+func (s *userAuthFactorService) Add(ctx context.Context, userID uint64, factor *auth.AuthFactor) error {
+	if factor == nil {
+		return &auth.InvalidFactorError{Reason: "factor is nil"}
+	}
+	if userID == 0 {
+		return &auth.InvalidFactorError{Reason: "userID must be non-zero"}
+	}
+	if !factor.Type.IsValid() {
+		return &auth.FactorTypeUnsupportedError{Type: string(factor.Type)}
+	}
+	if len(factor.Credential) == 0 {
+		return &auth.InvalidFactorError{Reason: "credential blob is empty"}
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Normalise.
+	factor.UserID = userID
+	if factor.ID == "" {
+		factor.ID = s.idGen()
+	}
+	if factor.RegisteredAt.IsZero() {
+		factor.RegisteredAt = s.nowFunc()
+	}
+
+	lookupKey := lookupKeyFor(factor.Type, factor.Credential)
+	if existingID, err := s.lookupFactorID(ctx, factor.Type, factor.Credential); err == nil && existingID != "" {
+		return &auth.FactorAlreadyExistsError{Type: factor.Type, FactorID: existingID}
+	}
+
+	data, err := json.Marshal(factor)
+	if err != nil {
+		return &auth.InvalidFactorError{Reason: "marshal: " + err.Error()}
+	}
+
+	// Primary record.
+	if err := s.kv.Put(ctx, primaryKey(factor.ID), data); err != nil {
+		return err
+	}
+	// Secondary index by user.
+	if err := s.kv.Put(ctx, userIndexKey(userID, factor.ID), []byte(factor.ID)); err != nil {
+		return err
+	}
+	// Lookup index by (type, credential).
+	if err := s.kv.Put(ctx, lookupKey, []byte(factor.ID)); err != nil {
+		return err
+	}
+	return nil
+}
+
+// List returns the user's factors sorted by registration time.
+func (s *userAuthFactorService) List(ctx context.Context, userID uint64) ([]*auth.AuthFactor, error) {
+	if userID == 0 {
+		return nil, &auth.InvalidFactorError{Reason: "userID must be non-zero"}
+	}
+	keys, err := s.kv.List(ctx, userIndexPrefix(userID))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*auth.AuthFactor, 0, len(keys))
+	for _, k := range keys {
+		raw, err := s.kv.Get(ctx, k)
+		if err != nil || len(raw) == 0 {
+			continue
+		}
+		factorID := string(raw)
+		f, err := s.Get(ctx, factorID)
+		if err != nil {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out, nil
+}
+
+// Get loads the canonical factor by ID.
+func (s *userAuthFactorService) Get(ctx context.Context, factorID string) (*auth.AuthFactor, error) {
+	if factorID == "" {
+		return nil, &auth.InvalidFactorError{Reason: "factorID is empty"}
+	}
+	raw, err := s.kv.Get(ctx, primaryKey(factorID))
+	if err != nil || len(raw) == 0 {
+		return nil, &auth.FactorNotFoundError{FactorID: factorID}
+	}
+	var f auth.AuthFactor
+	if err := json.Unmarshal(raw, &f); err != nil {
+		return nil, &auth.InvalidFactorError{Reason: "unmarshal: " + err.Error()}
+	}
+	return &f, nil
+}
+
+// LookupByCredentialKey resolves an active factor by its (type, key) tuple.
+func (s *userAuthFactorService) LookupByCredentialKey(ctx context.Context, t auth.AuthFactorType, key []byte) (*auth.AuthFactor, error) {
+	if !t.IsValid() {
+		return nil, &auth.FactorTypeUnsupportedError{Type: string(t)}
+	}
+	if len(key) == 0 {
+		return nil, &auth.InvalidFactorError{Reason: "lookup key is empty"}
+	}
+	id, err := s.lookupFactorID(ctx, t, key)
+	if err != nil {
+		return nil, err
+	}
+	if id == "" {
+		return nil, &auth.FactorNotFoundError{}
+	}
+	f, err := s.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if f.RevokedAt != nil {
+		return nil, &auth.FactorRevokedError{FactorID: f.ID}
+	}
+	return f, nil
+}
+
+// Remove soft-deletes the factor. When force=false and the factor is the
+// last active factor of the user, returns auth.LastFactorError.
+func (s *userAuthFactorService) Remove(ctx context.Context, factorID string, force bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	factor, err := s.Get(ctx, factorID)
+	if err != nil {
+		return err
+	}
+	if factor.RevokedAt != nil {
+		return &auth.FactorRevokedError{FactorID: factor.ID}
+	}
+
+	// Count active factors for this user.
+	active, err := s.countActive(ctx, factor.UserID)
+	if err != nil {
+		return err
+	}
+	if active <= 1 && !force {
+		return &auth.LastFactorError{UserID: factor.UserID, FactorID: factor.ID}
+	}
+
+	now := s.nowFunc()
+	factor.RevokedAt = &now
+	data, err := json.Marshal(factor)
+	if err != nil {
+		return &auth.InvalidFactorError{Reason: "marshal: " + err.Error()}
+	}
+	if err := s.kv.Put(ctx, primaryKey(factor.ID), data); err != nil {
+		return err
+	}
+
+	// If we just removed the last active factor under force, mark user inactive.
+	if active <= 1 && force && s.users != nil {
+		if err := s.users.SetUserActive(ctx, factor.UserID, false); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Rotate atomically adds newFactor and revokes the old factor.
+func (s *userAuthFactorService) Rotate(ctx context.Context, oldID string, newFactor *auth.AuthFactor) error {
+	if newFactor == nil {
+		return &auth.InvalidFactorError{Reason: "newFactor is nil"}
+	}
+	if oldID == "" {
+		return &auth.InvalidFactorError{Reason: "oldID is empty"}
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	old, err := s.Get(ctx, oldID)
+	if err != nil {
+		return err
+	}
+	if old.RevokedAt != nil {
+		return &auth.FactorRevokedError{FactorID: oldID}
+	}
+
+	if newFactor.UserID == 0 {
+		newFactor.UserID = old.UserID
+	}
+	if newFactor.UserID != old.UserID {
+		return &auth.InvalidFactorError{Reason: "rotated factor must belong to same user"}
+	}
+	if !newFactor.Type.IsValid() {
+		return &auth.FactorTypeUnsupportedError{Type: string(newFactor.Type)}
+	}
+	if len(newFactor.Credential) == 0 {
+		return &auth.InvalidFactorError{Reason: "credential blob is empty"}
+	}
+	if newFactor.ID == "" {
+		newFactor.ID = s.idGen()
+	}
+	if newFactor.RegisteredAt.IsZero() {
+		newFactor.RegisteredAt = s.nowFunc()
+	}
+
+	// Reject collision against the new credential.
+	if existingID, err := s.lookupFactorID(ctx, newFactor.Type, newFactor.Credential); err == nil && existingID != "" && existingID != oldID {
+		return &auth.FactorAlreadyExistsError{Type: newFactor.Type, FactorID: existingID}
+	}
+
+	now := s.nowFunc()
+
+	// Persist new factor first so a partial failure leaves the user with
+	// at least one active factor (graceful degradation).
+	newData, err := json.Marshal(newFactor)
+	if err != nil {
+		return &auth.InvalidFactorError{Reason: "marshal new: " + err.Error()}
+	}
+	if err := s.kv.Put(ctx, primaryKey(newFactor.ID), newData); err != nil {
+		return err
+	}
+	if err := s.kv.Put(ctx, userIndexKey(newFactor.UserID, newFactor.ID), []byte(newFactor.ID)); err != nil {
+		return err
+	}
+	if err := s.kv.Put(ctx, lookupKeyFor(newFactor.Type, newFactor.Credential), []byte(newFactor.ID)); err != nil {
+		return err
+	}
+
+	// Revoke the old factor.
+	old.RevokedAt = &now
+	oldData, err := json.Marshal(old)
+	if err != nil {
+		return &auth.InvalidFactorError{Reason: "marshal old: " + err.Error()}
+	}
+	if err := s.kv.Put(ctx, primaryKey(old.ID), oldData); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// Relabel updates the factor's human-readable label.
+func (s *userAuthFactorService) Relabel(ctx context.Context, factorID string, label string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	factor, err := s.Get(ctx, factorID)
+	if err != nil {
+		return err
+	}
+	if factor.RevokedAt != nil {
+		return &auth.FactorRevokedError{FactorID: factor.ID}
+	}
+	factor.Label = label
+	data, err := json.Marshal(factor)
+	if err != nil {
+		return &auth.InvalidFactorError{Reason: "marshal: " + err.Error()}
+	}
+	return s.kv.Put(ctx, primaryKey(factor.ID), data)
+}
+
+// MarkUsed updates LastUsedAt without holding the global mutex. The
+// last-write-wins semantics are acceptable because LastUsedAt is
+// best-effort metadata.
+func (s *userAuthFactorService) MarkUsed(ctx context.Context, factorID string, ts time.Time) error {
+	if factorID == "" {
+		return &auth.InvalidFactorError{Reason: "factorID is empty"}
+	}
+	factor, err := s.Get(ctx, factorID)
+	if err != nil {
+		return err
+	}
+	factor.LastUsedAt = &ts
+	data, err := json.Marshal(factor)
+	if err != nil {
+		return &auth.InvalidFactorError{Reason: "marshal: " + err.Error()}
+	}
+	return s.kv.Put(ctx, primaryKey(factor.ID), data)
+}
+
+// countActive returns how many of the user's factors are still active.
+// Caller must hold s.mu.
+func (s *userAuthFactorService) countActive(ctx context.Context, userID uint64) (int, error) {
+	factors, err := s.List(ctx, userID)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, f := range factors {
+		if f.IsActive() {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// lookupFactorID returns the factor ID stored under the (type, credential)
+// lookup index, or empty string when not present. A missing key is NOT an
+// error.
+func (s *userAuthFactorService) lookupFactorID(ctx context.Context, t auth.AuthFactorType, cred []byte) (string, error) {
+	raw, err := s.kv.Get(ctx, lookupKeyFor(t, cred))
+	if err != nil || len(raw) == 0 {
+		return "", nil
+	}
+	return string(raw), nil
+}
+
+// ---------------------------------------------------------------------------
+// Key helpers
+// ---------------------------------------------------------------------------
+
+// primaryKey returns the canonical key for the AuthFactor record.
+func primaryKey(factorID string) string {
+	return userFactorPrimaryPrefix + factorID
+}
+
+// userIndexPrefix returns the per-user index prefix. Trailing slash makes
+// the prefix a clean range query.
+func userIndexPrefix(userID uint64) string {
+	return userFactorByUserPrefix + strconv.FormatUint(userID, 10) + userFactorByUserSuffix
+}
+
+// userIndexKey returns the per-user index key for a single factor.
+func userIndexKey(userID uint64, factorID string) string {
+	return userIndexPrefix(userID) + factorID
+}
+
+// lookupKeyFor returns the storage key for the (type, credential lookup
+// key) index. The lookup key is the SHA-256 hex of the credential blob for
+// mtls / piv, or the credential blob itself (already a credentialID) for
+// fido2. Both forms are hex-encoded inside the storage key to keep the
+// path printable.
+func lookupKeyFor(t auth.AuthFactorType, cred []byte) string {
+	return userFactorLookupPrefix + string(t) + "/" + auth.CredentialKeyHex(cred)
+}

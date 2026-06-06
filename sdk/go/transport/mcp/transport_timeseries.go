@@ -207,7 +207,8 @@ func (t *Transport) TSWriteBatch(ctx context.Context, points []transport.TSDataP
 
 // TSQuery retrieves data points for a metric within a time range.
 // Calls the qrdb_ts_query MCP tool and parses the JSON array of
-// data points from the server response.
+// data points from the server response. When req.Consistency is set,
+// it is forwarded as the "consistency" tool argument.
 func (t *Transport) TSQuery(ctx context.Context, req *transport.TSQueryRequest) (*transport.TSQueryResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
@@ -233,6 +234,9 @@ func (t *Transport) TSQuery(ctx context.Context, req *transport.TSQueryRequest) 
 	if req.Descending {
 		args["descending"] = true
 	}
+	if req.Consistency != "" {
+		args["consistency"] = req.Consistency
+	}
 
 	text, callErr := t.callTool(ctx, "qrdb_ts_query", args)
 	if callErr != nil {
@@ -254,7 +258,8 @@ func (t *Transport) TSQuery(ctx context.Context, req *transport.TSQueryRequest) 
 
 // TSAggregate computes an aggregation function over time-series data
 // points within a time range, grouped by a specified interval. Calls
-// the qrdb_ts_aggregate MCP tool.
+// the qrdb_ts_aggregate MCP tool. When req.Consistency is set, it is
+// forwarded as the "consistency" tool argument.
 func (t *Transport) TSAggregate(ctx context.Context, req *transport.TSAggregateRequest) (*transport.TSAggregateResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
@@ -274,6 +279,9 @@ func (t *Transport) TSAggregate(ctx context.Context, req *transport.TSAggregateR
 		"end":         req.EndNs,
 		"func":        funcName,
 		"interval_ns": req.IntervalNs,
+	}
+	if req.Consistency != "" {
+		args["consistency"] = req.Consistency
 	}
 
 	text, callErr := t.callTool(ctx, "qrdb_ts_aggregate", args)
@@ -327,7 +335,8 @@ func (t *Transport) TSWritePoint(ctx context.Context, point *transport.TSDataPoi
 // TSRichQuery performs a rich query with aggregation, downsampling,
 // and grouping. Calls the qrdb_ts_rich_query MCP tool and parses the
 // JSON response containing points, aggregated values, and grouped
-// results.
+// results. When req.Consistency is set, it is forwarded as the
+// "consistency" tool argument.
 func (t *Transport) TSRichQuery(ctx context.Context, req *transport.TSRichQueryRequest) (*transport.TSRichQueryResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
@@ -377,6 +386,10 @@ func (t *Transport) TSRichQuery(ctx context.Context, req *transport.TSRichQueryR
 
 	if req.Percentile > 0 {
 		args["percentile"] = req.Percentile
+	}
+
+	if req.Consistency != "" {
+		args["consistency"] = req.Consistency
 	}
 
 	text, callErr := t.callTool(ctx, "qrdb_ts_rich_query", args)
@@ -514,6 +527,8 @@ func (t *Transport) TSSetRetention(ctx context.Context, req *transport.TSSetRete
 
 // TSListMetrics lists metric names matching a prefix. Calls the
 // qrdb_ts_list_metrics MCP tool and parses the JSON array response.
+// When req.Consistency is set, it is forwarded as the "consistency"
+// tool argument.
 func (t *Transport) TSListMetrics(ctx context.Context, req *transport.TSListMetricsRequest) (*transport.TSListMetricsResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
@@ -526,6 +541,9 @@ func (t *Transport) TSListMetrics(ctx context.Context, req *transport.TSListMetr
 	}
 	if req.Limit > 0 {
 		args["limit"] = int64(req.Limit)
+	}
+	if req.Consistency != "" {
+		args["consistency"] = req.Consistency
 	}
 
 	text, callErr := t.callTool(ctx, "qrdb_ts_list_metrics", args)

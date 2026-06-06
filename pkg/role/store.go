@@ -88,7 +88,7 @@ func (s *kvRoleStore) CreateRole(ctx context.Context, req *CreateRoleRequest) (*
 
 	tenantID := req.TenantID
 	if tenantID == "" {
-		tenantID = tenant.DefaultTenantID
+		tenantID = tenant.SystemTenantID
 	}
 
 	if s.quotaChecker != nil {
@@ -173,6 +173,16 @@ func (s *kvRoleStore) GetRole(ctx context.Context, id string) (*Role, error) {
 	if err := json.Unmarshal(data, &r); err != nil {
 		return nil, &StoreError{Op: "get", Detail: "unmarshal", Err: err}
 	}
+	// Tenant ownership: a non-system caller may only read roles in its own
+	// tenant. The system tenant (admin and internal RBAC permission
+	// resolution, which runs under the identity's own tenant) reads any role.
+	// This closes a cross-tenant role-metadata read in the shared
+	// (prefix-isolation) store; barrier-isolated tenants are already
+	// physically isolated by the routing layer. GetRoleByName and
+	// ResolvePermissions both funnel through here, so they inherit the check.
+	if ctxTenant := tenant.FromContext(ctx); ctxTenant != tenant.SystemTenantID && r.TenantID != ctxTenant {
+		return nil, &RoleNotFoundError{ID: id}
+	}
 	return &r, nil
 }
 
@@ -183,7 +193,7 @@ func (s *kvRoleStore) GetRoleByName(ctx context.Context, tenantID, name string) 
 		return nil, &ValidationError{Field: "name", Reason: "must not be empty"}
 	}
 	if tenantID == "" {
-		tenantID = tenant.DefaultTenantID
+		tenantID = tenant.SystemTenantID
 	}
 
 	idBytes, err := s.store.Get(ctx, nameIndexKey(tenantID, name))
@@ -303,7 +313,7 @@ func (s *kvRoleStore) ListRoles(ctx context.Context, req *ListRolesRequest) (*Li
 
 	tenantID := req.TenantID
 	if tenantID == "" {
-		tenantID = tenant.DefaultTenantID
+		tenantID = tenant.SystemTenantID
 	}
 
 	page := req.Page
@@ -387,26 +397,37 @@ func (s *kvRoleStore) ResolvePermissions(ctx context.Context, roleIDs []string) 
 
 // BuiltInRoles returns the predefined system roles for the given tenant.
 // Each role uses a deterministic UUID derived from its name and tenant ID.
+//
+// Roles are ordered as follows:
+//  1. SO (Security Officer) — governance only, no crypto (FIPS 140-3 AS10.03)
+//  2. Admin — key lifecycle and tenant management. Grants cross-tenant
+//     authority only when the role is held in the system tenant
+//     (Admin@system); the system-tenant rule in pkg/auth/rbac filters
+//     cross-scope permissions to system-tenant identities.
+//  3. Operator — routine crypto and maintenance
+//  4. User — end-user cryptographic operations
+//  5. Auditor — read-only audit and state visibility
+//  6. Custodian — Shamir share holder; single permission only
 func BuiltInRoles(tenantID string) []*Role {
 	if tenantID == "" {
-		tenantID = tenant.DefaultTenantID
+		tenantID = tenant.SystemTenantID
 	}
 
 	now := time.Now().UTC()
 
 	return []*Role{
 		{
-			ID:          deterministicUUID(tenantID, "superadmin"),
-			Name:        "superadmin",
+			ID:          SystemRoleID(tenantID, RoleNameSO),
+			Name:        RoleNameSO,
 			TenantID:    tenantID,
-			Permissions: permission.All(),
+			Permissions: soPermissions(),
 			System:      true,
 			CreatedAt:   now,
 			UpdatedAt:   now,
 		},
 		{
-			ID:          deterministicUUID(tenantID, "admin"),
-			Name:        "admin",
+			ID:          SystemRoleID(tenantID, RoleNameAdmin),
+			Name:        RoleNameAdmin,
 			TenantID:    tenantID,
 			Permissions: adminPermissions(),
 			System:      true,
@@ -414,8 +435,8 @@ func BuiltInRoles(tenantID string) []*Role {
 			UpdatedAt:   now,
 		},
 		{
-			ID:          deterministicUUID(tenantID, "operator"),
-			Name:        "operator",
+			ID:          SystemRoleID(tenantID, RoleNameOperator),
+			Name:        RoleNameOperator,
 			TenantID:    tenantID,
 			Permissions: operatorPermissions(),
 			System:      true,
@@ -423,19 +444,28 @@ func BuiltInRoles(tenantID string) []*Role {
 			UpdatedAt:   now,
 		},
 		{
-			ID:          deterministicUUID(tenantID, "readwrite"),
-			Name:        "readwrite",
+			ID:          SystemRoleID(tenantID, RoleNameUser),
+			Name:        RoleNameUser,
 			TenantID:    tenantID,
-			Permissions: readwritePermissions(),
+			Permissions: userPermissions(),
 			System:      true,
 			CreatedAt:   now,
 			UpdatedAt:   now,
 		},
 		{
-			ID:          deterministicUUID(tenantID, "readonly"),
-			Name:        "readonly",
+			ID:          SystemRoleID(tenantID, RoleNameAuditor),
+			Name:        RoleNameAuditor,
 			TenantID:    tenantID,
-			Permissions: readonlyPermissions(),
+			Permissions: auditorPermissions(),
+			System:      true,
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		},
+		{
+			ID:          SystemRoleID(tenantID, RoleNameCustodian),
+			Name:        RoleNameCustodian,
+			TenantID:    tenantID,
+			Permissions: custodianPermissions(),
 			System:      true,
 			CreatedAt:   now,
 			UpdatedAt:   now,
@@ -443,15 +473,51 @@ func BuiltInRoles(tenantID string) []*Role {
 	}
 }
 
-// SuperadminRoleID returns the deterministic UUID for the superadmin
-// built-in role in the given tenant. This is used by the RBAC authorizer
-// to perform a fast bypass check without resolving permissions. An empty
-// tenantID defaults to DefaultTenantID to match BuiltInRoles behavior.
-func SuperadminRoleID(tenantID string) string {
+// OwnerRole returns the standard-posture Owner role for the given tenant.
+// Owner holds the full operational permission set (permission.All()) and is
+// the convenience superuser used when separation of duties is NOT enforced.
+//
+// It is deliberately NOT part of BuiltInRoles: it is seeded and assigned to
+// the bootstrap admin only under the standard (non-strict) posture by
+// pkg/firstboot, and the RBAC authorizer voids any Owner grant when strict
+// separation of duties is active (FIPS 140-3 mode or
+// auth.separation_of_duties=true). An empty tenantID defaults to
+// SystemTenantID to match BuiltInRoles behavior.
+func OwnerRole(tenantID string) *Role {
 	if tenantID == "" {
-		tenantID = tenant.DefaultTenantID
+		tenantID = tenant.SystemTenantID
 	}
-	return deterministicUUID(tenantID, "superadmin")
+	now := time.Now().UTC()
+	return &Role{
+		ID:          SystemRoleID(tenantID, RoleNameOwner),
+		Name:        RoleNameOwner,
+		TenantID:    tenantID,
+		Permissions: ownerPermissions(),
+		System:      true,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+}
+
+// ownerPermissions returns the permission set for the Owner role: every
+// registered permission. This breadth is acceptable ONLY because the Owner
+// role is confined to the standard (non-compliance) RBAC posture — see
+// OwnerRole and RoleNameOwner.
+func ownerPermissions() []permission.Permission {
+	return permission.All()
+}
+
+// SystemRoleID returns the deterministic UUID for any named system role in
+// the given tenant. It is used by the RBAC authorizer for fast identity
+// checks (e.g., the SO deny-list match by deterministic role ID) and by
+// the bootstrap flow to grant the canonical Admin@system role with a
+// stable cluster-wide identifier. An empty tenantID defaults to
+// SystemTenantID to match BuiltInRoles behavior.
+func SystemRoleID(tenantID, roleName string) string {
+	if tenantID == "" {
+		tenantID = tenant.SystemTenantID
+	}
+	return deterministicUUID(tenantID, roleName)
 }
 
 // deterministicUUID generates a deterministic UUID v5 from a namespace
@@ -464,38 +530,129 @@ func deterministicUUID(tenantID, name string) string {
 	return uuid.NewSHA1(ns, []byte(tenantID+"/"+name)).String()
 }
 
-// adminPermissions returns the permission set for the admin built-in role.
-func adminPermissions() []permission.Permission {
+// soPermissions returns the permission set for the Security Officer role.
+// The SO manages module lifecycle and governance. Cryptographic operations
+// (keys:sign, keys:encrypt, keys:decrypt, keys:verify, keys:wrap, keys:unwrap)
+// are NOT included here and are also enforced via the RBAC deny-list even if
+// erroneously added (FIPS 140-3 AS10.03 defense-in-depth).
+func soPermissions() []permission.Permission {
 	perms := []permission.Permission{
-		// Admin service
-		permission.AdminHealth, permission.AdminStatus, permission.AdminPeers,
-		permission.AdminAddMember, permission.AdminRemoveMember,
-		permission.AdminSnapshot, permission.AdminDrain, permission.AdminCapabilities,
+		// Seal management (SO-exclusive)
+		permission.SealBootstrap, permission.SealUnseal, permission.SealSeal,
+		permission.SealStatus, permission.SealRotateRootKey, permission.SealRekey,
+		permission.SealGenerateRecovery, permission.SealRecoverWithKeys,
+		permission.SealInitializeShamir,
+		// Ceremony (SO-exclusive)
+		permission.CeremonyInitialize, permission.CeremonyEnrollCustodian,
+		permission.CeremonyRevokeCustodian, permission.CeremonyClaimCert,
+		permission.CeremonySignCSR, permission.CeremonyStatus,
+		// Certificate management
+		permission.CertsGenerate, permission.CertsExport, permission.CertsRevoke,
+		permission.CertsList,
+		// Role management (SO-exclusive)
+		permission.RolesCreate, permission.RolesRead, permission.RolesUpdate,
+		permission.RolesDelete, permission.RolesList, permission.RolesAssign,
+		permission.RolesUnassign, permission.PermissionsList,
 		// User management
 		permission.UsersCreate, permission.UsersRead, permission.UsersUpdate,
 		permission.UsersDelete, permission.UsersList, permission.UsersEnable,
 		permission.UsersDisable,
-		// Role management
-		permission.RolesCreate, permission.RolesRead, permission.RolesUpdate,
-		permission.RolesDelete, permission.RolesList, permission.RolesAssign,
-		permission.RolesUnassign, permission.PermissionsList,
-		// Certificate management
-		permission.CertsGenerate, permission.CertsExport, permission.CertsRevoke,
-		permission.CertsList,
-		// Seal management
-		permission.SealBootstrap, permission.SealUnseal, permission.SealSeal,
-		permission.SealStatus,
 		// Tenant management
 		permission.TenantsCreate, permission.TenantsRead, permission.TenantsUpdate,
 		permission.TenantsDelete, permission.TenantsList,
+		// Key lifecycle (infrastructure keys — delete any key; create infra keys)
+		permission.KeysCreate, permission.KeysDelete, permission.KeysList, permission.KeysGet,
+		// Audit (operational oversight)
+		permission.AuditRead, permission.AuditQuery,
+		// Admin
+		permission.AdminHealth, permission.AdminStatus, permission.AdminPeers,
+		permission.AdminAddMember, permission.AdminRemoveMember,
+		permission.AdminSnapshot, permission.AdminDrain, permission.AdminCapabilities,
+		// Auth factor management
+		permission.AuthFactorEnroll, permission.AuthFactorList, permission.AuthFactorRevoke,
 	}
 	sort.Slice(perms, func(i, j int) bool { return perms[i] < perms[j] })
 	return perms
 }
 
-// operatorPermissions returns the permission set for the operator built-in role.
+// adminPermissions returns the permission set for the Admin built-in role.
+// Admins manage operational key lifecycle and tenant configuration. They cannot
+// initialize the module, reset SO PINs, or perform barrier bootstrapping.
+//
+// The cross-scope permissions at the bottom of this list (TenantsListCross,
+// TenantsCreateCross, TenantsApprove, VolumePool*, RegistrationConfig*,
+// AuditReadCross) confer cross-tenant authority only when held by an
+// identity in the system tenant (the system-tenant rule in
+// pkg/auth/rbac filters them out for tenant-local identities). A
+// tenant-local Admin can carry these grants without exercising them
+// outside their own tenant.
+func adminPermissions() []permission.Permission {
+	perms := []permission.Permission{
+		// Key lifecycle (operational keys — cannot delete infrastructure keys)
+		permission.KeysCreate, permission.KeysRotate, permission.KeysDelete,
+		permission.KeysList, permission.KeysGet,
+		// Wrap/unwrap for key transport
+		permission.KeysWrap, permission.KeysUnwrap,
+		// Certificate management
+		permission.CertsGenerate, permission.CertsExport, permission.CertsRevoke,
+		permission.CertsList,
+		// Seal management (operational subset: no bootstrap, rotate, rekey)
+		permission.SealUnseal, permission.SealSeal, permission.SealStatus,
+		permission.SealRecoverWithKeys,
+		// Ceremony (status only)
+		permission.CeremonyStatus,
+		// Tenant management (self-scope: act on own tenant)
+		permission.TenantsCreate, permission.TenantsRead, permission.TenantsUpdate,
+		permission.TenantsDelete, permission.TenantsList,
+		// Per-tenant barrier management (tenant-only scope: a tenant admin
+		// may init/unseal/seal their OWN tenant's barrier; the system tenant
+		// is structurally denied these by the ScopeTenantOnly rule even
+		// though the perm is present in the role).
+		permission.TenantBarrierInit, permission.TenantBarrierUnseal,
+		permission.TenantBarrierSeal,
+		// User management
+		permission.UsersCreate, permission.UsersRead, permission.UsersUpdate,
+		permission.UsersDelete, permission.UsersList, permission.UsersEnable,
+		permission.UsersDisable,
+		// Role management (read/assign — cannot create/delete system roles)
+		permission.RolesRead, permission.RolesList, permission.RolesAssign,
+		permission.RolesUnassign, permission.PermissionsList,
+		// Admin service
+		permission.AdminHealth, permission.AdminStatus, permission.AdminPeers,
+		permission.AdminAddMember, permission.AdminRemoveMember,
+		permission.AdminSnapshot, permission.AdminDrain, permission.AdminCapabilities,
+		// Audit (self-scope)
+		permission.AuditRead, permission.AuditQuery,
+		// Cross-scope tenant management — only effective for system-tenant Admin.
+		permission.TenantsListCross, permission.TenantsCreateCross, permission.TenantsApprove,
+		// Cross-scope volume pool management — only effective for system-tenant Admin.
+		permission.VolumePoolCreate, permission.VolumePoolList, permission.VolumePoolRead,
+		permission.VolumePoolUpdate, permission.VolumePoolDelete,
+		// Cross-scope registration policy — only effective for system-tenant Admin.
+		permission.RegistrationConfigRead, permission.RegistrationConfigUpdate,
+		// Cross-scope audit — only effective for system-tenant Admin.
+		permission.AuditReadCross,
+	}
+	sort.Slice(perms, func(i, j int) bool { return perms[i] < perms[j] })
+	return perms
+}
+
+// operatorPermissions returns the permission set for the Operator built-in role.
+// Operators perform routine crypto operations and maintenance. They can sign,
+// encrypt, and decrypt using existing keys, and seal/unseal the barrier, but
+// cannot create/delete keys or manage tenants.
 func operatorPermissions() []permission.Permission {
 	perms := []permission.Permission{
+		// Cryptographic operations
+		permission.KeysSign, permission.KeysVerify,
+		permission.KeysEncrypt, permission.KeysDecrypt,
+		permission.KeysList, permission.KeysGet,
+		// Key rotation (not creation/deletion)
+		permission.KeysRotate,
+		// Barrier (operational: not bootstrap or SO-exclusive ops)
+		permission.SealUnseal, permission.SealSeal, permission.SealStatus,
+		// Ceremony (status only)
+		permission.CeremonyStatus,
 		// KV
 		permission.KVPut, permission.KVGet, permission.KVDelete,
 		permission.KVList, permission.KVExists, permission.KVRange,
@@ -530,48 +687,62 @@ func operatorPermissions() []permission.Permission {
 		permission.VectorCompact, permission.VectorGetCompactProg,
 		// Admin (limited)
 		permission.AdminHealth, permission.AdminStatus,
+		// Audit (read)
+		permission.AuditRead,
 	}
 	sort.Slice(perms, func(i, j int) bool { return perms[i] < perms[j] })
 	return perms
 }
 
-// readwritePermissions returns the permission set for the readwrite built-in role.
-func readwritePermissions() []permission.Permission {
+// userPermissions returns the permission set for the User built-in role.
+// Users perform cryptographic operations (sign, verify, encrypt, decrypt) using
+// existing keys. They cannot create, delete, or modify keys or configurations.
+func userPermissions() []permission.Permission {
 	perms := []permission.Permission{
-		// KV
-		permission.KVPut, permission.KVGet, permission.KVDelete,
-		permission.KVList, permission.KVExists, permission.KVRange,
-		// MVCC
-		permission.MVCCPutWithLease, permission.MVCCGetRevision,
-		permission.MVCCGetAtRevision, permission.MVCCRange,
-		permission.MVCCCurrentRevision,
-		// Transaction
-		permission.TransactionExecute,
-		// Batch
-		permission.BatchExecute,
-		// Watch
-		permission.WatchWatch, permission.WatchWatchPrefix,
-		// Lease
-		permission.LeaseGrant, permission.LeaseKeepAlive,
-		permission.LeaseTTL, permission.LeaseList,
+		// Cryptographic operations (read-only key access)
+		permission.KeysSign, permission.KeysVerify,
+		permission.KeysEncrypt, permission.KeysDecrypt,
+		// Key metadata (public fields only)
+		permission.KeysGet, permission.KeysList,
+		// System health (all roles can check health)
+		permission.AdminHealth, permission.AdminStatus,
 	}
 	sort.Slice(perms, func(i, j int) bool { return perms[i] < perms[j] })
 	return perms
 }
 
-// readonlyPermissions returns the permission set for the readonly built-in role.
-func readonlyPermissions() []permission.Permission {
+// auditorPermissions returns the permission set for the Auditor built-in role.
+// Auditors have read-only access to audit logs and system state. They cannot
+// modify any state (FIPS 140-3 AS10.10).
+func auditorPermissions() []permission.Permission {
 	perms := []permission.Permission{
-		// KV (read-only)
-		permission.KVGet, permission.KVList, permission.KVExists, permission.KVRange,
-		// MVCC (read-only)
-		permission.MVCCGetRevision, permission.MVCCGetAtRevision,
-		permission.MVCCRange, permission.MVCCCurrentRevision,
-		// Lease (read-only)
-		permission.LeaseTTL, permission.LeaseList,
+		// Audit visibility (the core auditor capability)
+		permission.AuditRead, permission.AuditQuery, permission.AuditStream,
+		// System state (read-only)
+		permission.AdminHealth, permission.AdminStatus, permission.AdminPeers,
+		// User, role, cert, tenant listing (metadata only — no writes)
+		permission.UsersList, permission.UsersRead,
+		permission.RolesList, permission.RolesRead, permission.PermissionsList,
+		permission.CertsList,
+		permission.TenantsList, permission.TenantsRead,
+		// Key metadata (public fields only — no cryptographic operations)
+		permission.KeysList, permission.KeysGet,
+		// Ceremony status
+		permission.CeremonyStatus,
+		// Auth factor listing
+		permission.AuthFactorList,
 	}
 	sort.Slice(perms, func(i, j int) bool { return perms[i] < perms[j] })
 	return perms
+}
+
+// custodianPermissions returns the permission set for the Custodian built-in role.
+// Custodians hold a single Shamir share and can ONLY submit that share during
+// barrier unseal. All other operations are denied (FIPS 140-3 AS10.06).
+func custodianPermissions() []permission.Permission {
+	return []permission.Permission{
+		permission.BarrierUnsealShare,
+	}
 }
 
 // validatePermissions checks that every permission in the slice is

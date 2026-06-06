@@ -35,18 +35,23 @@ import (
 // ---------------------------------------------------------------------------
 
 type mockKVService struct {
-	putFn          func(ctx context.Context, key string, value []byte) error
-	getFn          func(ctx context.Context, key string) ([]byte, error)
-	deleteFn       func(ctx context.Context, key string) error
-	listFn         func(ctx context.Context, prefix string) ([]string, error)
-	scanFn         func(ctx context.Context, prefix string) (map[string][]byte, error)
-	getStaleFn     func(ctx context.Context, key string) ([]byte, error)
-	listStaleFn    func(ctx context.Context, prefix string) ([]string, error)
-	scanStaleFn    func(ctx context.Context, prefix string) (map[string][]byte, error)
-	putEntityFn    func(ctx context.Context, req *service.PutEntityRequest) (*service.PutEntityResponse, error)
-	getEntityFn    func(ctx context.Context, req *service.GetEntityRequest) (*service.GetEntityResponse, error)
-	deleteEntityFn func(ctx context.Context, req *service.DeleteEntityRequest) (*service.DeleteEntityResponse, error)
-	listEntitiesFn func(ctx context.Context, req *service.ListEntitiesRequest) (*service.ListEntitiesResponse, error)
+	putFn                 func(ctx context.Context, key string, value []byte) error
+	getFn                 func(ctx context.Context, key string) ([]byte, error)
+	deleteFn              func(ctx context.Context, key string) error
+	listFn                func(ctx context.Context, prefix string) ([]string, error)
+	scanFn                func(ctx context.Context, prefix string) (map[string][]byte, error)
+	getStaleFn            func(ctx context.Context, key string) ([]byte, error)
+	listStaleFn           func(ctx context.Context, prefix string) ([]string, error)
+	scanStaleFn           func(ctx context.Context, prefix string) (map[string][]byte, error)
+	putEntityFn           func(ctx context.Context, req *service.PutEntityRequest) (*service.PutEntityResponse, error)
+	getEntityFn           func(ctx context.Context, req *service.GetEntityRequest) (*service.GetEntityResponse, error)
+	deleteEntityFn        func(ctx context.Context, req *service.DeleteEntityRequest) (*service.DeleteEntityResponse, error)
+	listEntitiesFn        func(ctx context.Context, req *service.ListEntitiesRequest) (*service.ListEntitiesResponse, error)
+	putWithModeFn         func(ctx context.Context, key string, value []byte, mode writemode.Mode) error
+	deleteWithModeFn      func(ctx context.Context, key string, mode writemode.Mode) error
+	getWithConsistencyFn  func(ctx context.Context, key string, opts consistency.ReadOptions) ([]byte, error)
+	listWithConsistencyFn func(ctx context.Context, prefix string, opts consistency.ReadOptions) ([]string, error)
+	scanWithConsistencyFn func(ctx context.Context, prefix string, opts consistency.ReadOptions) (map[string][]byte, error)
 }
 
 func (m *mockKVService) Put(ctx context.Context, key string, value []byte) error {
@@ -70,23 +75,38 @@ func (m *mockKVService) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
-func (m *mockKVService) DeleteWithMode(_ context.Context, _ string, _ writemode.Mode) error {
+func (m *mockKVService) DeleteWithMode(ctx context.Context, key string, mode writemode.Mode) error {
+	if m.deleteWithModeFn != nil {
+		return m.deleteWithModeFn(ctx, key, mode)
+	}
 	return nil
 }
 
-func (m *mockKVService) PutWithMode(_ context.Context, _ string, _ []byte, _ writemode.Mode) error {
+func (m *mockKVService) PutWithMode(ctx context.Context, key string, value []byte, mode writemode.Mode) error {
+	if m.putWithModeFn != nil {
+		return m.putWithModeFn(ctx, key, value, mode)
+	}
 	return nil
 }
 
-func (m *mockKVService) GetWithConsistency(_ context.Context, _ string, _ consistency.ReadOptions) ([]byte, error) {
+func (m *mockKVService) GetWithConsistency(ctx context.Context, key string, opts consistency.ReadOptions) ([]byte, error) {
+	if m.getWithConsistencyFn != nil {
+		return m.getWithConsistencyFn(ctx, key, opts)
+	}
 	return nil, nil
 }
 
-func (m *mockKVService) ListWithConsistency(_ context.Context, _ string, _ consistency.ReadOptions) ([]string, error) {
+func (m *mockKVService) ListWithConsistency(ctx context.Context, prefix string, opts consistency.ReadOptions) ([]string, error) {
+	if m.listWithConsistencyFn != nil {
+		return m.listWithConsistencyFn(ctx, prefix, opts)
+	}
 	return nil, nil
 }
 
-func (m *mockKVService) ScanWithConsistency(_ context.Context, _ string, _ consistency.ReadOptions) (map[string][]byte, error) {
+func (m *mockKVService) ScanWithConsistency(ctx context.Context, prefix string, opts consistency.ReadOptions) (map[string][]byte, error) {
+	if m.scanWithConsistencyFn != nil {
+		return m.scanWithConsistencyFn(ctx, prefix, opts)
+	}
 	return nil, nil
 }
 
@@ -266,12 +286,16 @@ func (m *mockAdminService) StopShard(ctx context.Context, shardID uint64) error 
 
 type mockMVCCKVService struct {
 	mockKVService
-	putWithLeaseFn    func(ctx context.Context, key string, value []byte, leaseID int64) (*kv.KeyValue, error)
-	getRevisionFn     func(ctx context.Context, key string) (*kv.KeyValue, error)
-	getAtRevisionFn   func(ctx context.Context, key string, revision int64) (*kv.KeyValue, error)
-	rangeFn           func(ctx context.Context, start, end []byte, opts ...service.RangeOption) ([]*kv.KeyValue, int64, error)
-	compactFn         func(ctx context.Context, revision int64) error
-	currentRevisionFn func(ctx context.Context) (int64, error)
+	putWithLeaseFn                 func(ctx context.Context, key string, value []byte, leaseID int64) (*kv.KeyValue, error)
+	getRevisionFn                  func(ctx context.Context, key string) (*kv.KeyValue, error)
+	getAtRevisionFn                func(ctx context.Context, key string, revision int64) (*kv.KeyValue, error)
+	rangeFn                        func(ctx context.Context, start, end []byte, opts ...service.RangeOption) ([]*kv.KeyValue, int64, error)
+	compactFn                      func(ctx context.Context, revision int64) error
+	currentRevisionFn              func(ctx context.Context) (int64, error)
+	putWithLeaseAndModeFn          func(ctx context.Context, key string, value []byte, leaseID int64, mode writemode.Mode) (*kv.KeyValue, error)
+	getRevisionWithConsistencyFn   func(ctx context.Context, key string, opts consistency.ReadOptions) (*kv.KeyValue, error)
+	getAtRevisionWithConsistencyFn func(ctx context.Context, key string, revision int64, opts consistency.ReadOptions) (*kv.KeyValue, error)
+	rangeWithConsistencyFn         func(ctx context.Context, start, end []byte, opts consistency.ReadOptions, rangeOpts ...service.RangeOption) ([]*kv.KeyValue, int64, error)
 }
 
 func (m *mockMVCCKVService) PutWithLease(ctx context.Context, key string, value []byte, leaseID int64) (*kv.KeyValue, error) {
@@ -316,19 +340,31 @@ func (m *mockMVCCKVService) CurrentRevision(ctx context.Context) (int64, error) 
 	return 0, nil
 }
 
-func (m *mockMVCCKVService) PutWithLeaseAndMode(_ context.Context, _ string, _ []byte, _ int64, _ writemode.Mode) (*kv.KeyValue, error) {
+func (m *mockMVCCKVService) PutWithLeaseAndMode(ctx context.Context, key string, value []byte, leaseID int64, mode writemode.Mode) (*kv.KeyValue, error) {
+	if m.putWithLeaseAndModeFn != nil {
+		return m.putWithLeaseAndModeFn(ctx, key, value, leaseID, mode)
+	}
 	return &kv.KeyValue{}, nil
 }
 
-func (m *mockMVCCKVService) GetRevisionWithConsistency(_ context.Context, _ string, _ consistency.ReadOptions) (*kv.KeyValue, error) {
+func (m *mockMVCCKVService) GetRevisionWithConsistency(ctx context.Context, key string, opts consistency.ReadOptions) (*kv.KeyValue, error) {
+	if m.getRevisionWithConsistencyFn != nil {
+		return m.getRevisionWithConsistencyFn(ctx, key, opts)
+	}
 	return &kv.KeyValue{}, nil
 }
 
-func (m *mockMVCCKVService) GetAtRevisionWithConsistency(_ context.Context, _ string, _ int64, _ consistency.ReadOptions) (*kv.KeyValue, error) {
+func (m *mockMVCCKVService) GetAtRevisionWithConsistency(ctx context.Context, key string, revision int64, opts consistency.ReadOptions) (*kv.KeyValue, error) {
+	if m.getAtRevisionWithConsistencyFn != nil {
+		return m.getAtRevisionWithConsistencyFn(ctx, key, revision, opts)
+	}
 	return &kv.KeyValue{}, nil
 }
 
-func (m *mockMVCCKVService) RangeWithConsistency(_ context.Context, _, _ []byte, _ consistency.ReadOptions, _ ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
+func (m *mockMVCCKVService) RangeWithConsistency(ctx context.Context, start, end []byte, opts consistency.ReadOptions, rangeOpts ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
+	if m.rangeWithConsistencyFn != nil {
+		return m.rangeWithConsistencyFn(ctx, start, end, opts, rangeOpts...)
+	}
 	return nil, 0, nil
 }
 
@@ -528,16 +564,20 @@ func (m *mockIndexService) ListIndexes(ctx context.Context) ([]string, error) {
 // ---------------------------------------------------------------------------
 
 type mockTimeSeriesService struct {
-	writeFn        func(ctx context.Context, metric string, value float64, timestamp time.Time, tags map[string]string) error
-	writeBatchFn   func(ctx context.Context, points []timeseries.DataPoint) error
-	queryFn        func(ctx context.Context, metric string, start, end time.Time, opts ...timeseries.TSQueryOption) ([]timeseries.DataPoint, error)
-	aggregateFn    func(ctx context.Context, metric string, start, end time.Time, fn timeseries.AggFunc, interval time.Duration) ([]timeseries.AggResult, error)
-	writePointFn   func(ctx context.Context, point *timeseries.DataPoint) error
-	queryRichFn    func(ctx context.Context, req *timeseries.QueryRequest) (*timeseries.QueryResult, error)
-	deleteSeriesFn func(ctx context.Context, req *timeseries.DeleteRequest) error
-	getRetentionFn func(metric string) (*timeseries.RetentionPolicy, error)
-	setRetentionFn func(metric string, policy *timeseries.RetentionPolicy) error
-	listMetricsFn  func(prefix string, limit int) ([]string, error)
+	writeFn                      func(ctx context.Context, metric string, value float64, timestamp time.Time, tags map[string]string) error
+	writeBatchFn                 func(ctx context.Context, points []timeseries.DataPoint) error
+	queryFn                      func(ctx context.Context, metric string, start, end time.Time, opts ...timeseries.TSQueryOption) ([]timeseries.DataPoint, error)
+	queryWithConsistencyFn       func(ctx context.Context, metric string, start, end time.Time, ropts consistency.ReadOptions, opts ...timeseries.TSQueryOption) ([]timeseries.DataPoint, error)
+	aggregateFn                  func(ctx context.Context, metric string, start, end time.Time, fn timeseries.AggFunc, interval time.Duration) ([]timeseries.AggResult, error)
+	aggregateWithConsistencyFn   func(ctx context.Context, metric string, start, end time.Time, fn timeseries.AggFunc, interval time.Duration, ropts consistency.ReadOptions) ([]timeseries.AggResult, error)
+	writePointFn                 func(ctx context.Context, point *timeseries.DataPoint) error
+	queryRichFn                  func(ctx context.Context, req *timeseries.QueryRequest) (*timeseries.QueryResult, error)
+	queryRichWithConsistencyFn   func(ctx context.Context, req *timeseries.QueryRequest, ropts consistency.ReadOptions) (*timeseries.QueryResult, error)
+	deleteSeriesFn               func(ctx context.Context, req *timeseries.DeleteRequest) error
+	getRetentionFn               func(metric string) (*timeseries.RetentionPolicy, error)
+	setRetentionFn               func(metric string, policy *timeseries.RetentionPolicy) error
+	listMetricsFn                func(prefix string, limit int) ([]string, error)
+	listMetricsWithConsistencyFn func(ctx context.Context, prefix string, limit int, ropts consistency.ReadOptions) ([]string, error)
 }
 
 func (m *mockTimeSeriesService) Write(ctx context.Context, metric string, value float64, timestamp time.Time, tags map[string]string) error {
@@ -561,11 +601,25 @@ func (m *mockTimeSeriesService) Query(ctx context.Context, metric string, start,
 	return nil, nil
 }
 
+func (m *mockTimeSeriesService) QueryWithConsistency(ctx context.Context, metric string, start, end time.Time, ropts consistency.ReadOptions, opts ...timeseries.TSQueryOption) ([]timeseries.DataPoint, error) {
+	if m.queryWithConsistencyFn != nil {
+		return m.queryWithConsistencyFn(ctx, metric, start, end, ropts, opts...)
+	}
+	return m.Query(ctx, metric, start, end, opts...)
+}
+
 func (m *mockTimeSeriesService) Aggregate(ctx context.Context, metric string, start, end time.Time, fn timeseries.AggFunc, interval time.Duration) ([]timeseries.AggResult, error) {
 	if m.aggregateFn != nil {
 		return m.aggregateFn(ctx, metric, start, end, fn, interval)
 	}
 	return nil, nil
+}
+
+func (m *mockTimeSeriesService) AggregateWithConsistency(ctx context.Context, metric string, start, end time.Time, fn timeseries.AggFunc, interval time.Duration, ropts consistency.ReadOptions) ([]timeseries.AggResult, error) {
+	if m.aggregateWithConsistencyFn != nil {
+		return m.aggregateWithConsistencyFn(ctx, metric, start, end, fn, interval, ropts)
+	}
+	return m.Aggregate(ctx, metric, start, end, fn, interval)
 }
 
 func (m *mockTimeSeriesService) WritePoint(ctx context.Context, point *timeseries.DataPoint) error {
@@ -580,6 +634,13 @@ func (m *mockTimeSeriesService) QueryRich(ctx context.Context, req *timeseries.Q
 		return m.queryRichFn(ctx, req)
 	}
 	return nil, nil
+}
+
+func (m *mockTimeSeriesService) QueryRichWithConsistency(ctx context.Context, req *timeseries.QueryRequest, ropts consistency.ReadOptions) (*timeseries.QueryResult, error) {
+	if m.queryRichWithConsistencyFn != nil {
+		return m.queryRichWithConsistencyFn(ctx, req, ropts)
+	}
+	return m.QueryRich(ctx, req)
 }
 
 func (m *mockTimeSeriesService) DeleteSeries(ctx context.Context, req *timeseries.DeleteRequest) error {
@@ -608,6 +669,13 @@ func (m *mockTimeSeriesService) ListMetrics(prefix string, limit int) ([]string,
 		return m.listMetricsFn(prefix, limit)
 	}
 	return nil, nil
+}
+
+func (m *mockTimeSeriesService) ListMetricsWithConsistency(ctx context.Context, prefix string, limit int, ropts consistency.ReadOptions) ([]string, error) {
+	if m.listMetricsWithConsistencyFn != nil {
+		return m.listMetricsWithConsistencyFn(ctx, prefix, limit, ropts)
+	}
+	return m.ListMetrics(prefix, limit)
 }
 
 // ---------------------------------------------------------------------------

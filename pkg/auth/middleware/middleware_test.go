@@ -29,6 +29,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -85,7 +86,7 @@ func (m *mockUserServicer) CreateUser(_ context.Context, _ *user.CreateUserReque
 	return nil, nil
 }
 
-func (m *mockUserServicer) GetUser(_ context.Context, _ string) (*user.User, error) {
+func (m *mockUserServicer) GetUser(_ context.Context, _ uint64) (*user.User, error) {
 	return nil, nil
 }
 
@@ -93,7 +94,7 @@ func (m *mockUserServicer) UpdateUser(_ context.Context, _ *user.UpdateUserReque
 	return nil, nil
 }
 
-func (m *mockUserServicer) DeleteUser(_ context.Context, _ string) error {
+func (m *mockUserServicer) DeleteUser(_ context.Context, _ uint64) error {
 	return nil
 }
 
@@ -101,12 +102,20 @@ func (m *mockUserServicer) ListUsers(_ context.Context, _ *user.ListUsersRequest
 	return nil, nil
 }
 
-func (m *mockUserServicer) EnableUser(_ context.Context, _ string) error {
+func (m *mockUserServicer) EnableUser(_ context.Context, _ uint64) error {
 	return nil
 }
 
-func (m *mockUserServicer) DisableUser(_ context.Context, _ string) error {
+func (m *mockUserServicer) DisableUser(_ context.Context, _ uint64) error {
 	return nil
+}
+
+func (m *mockUserServicer) UserByCertThumbprint(_ context.Context, _ string) (*user.User, error) {
+	return nil, nil
+}
+
+func (m *mockUserServicer) AddCertBinding(_ context.Context, _ uint64, _ string, _ int64) (*user.User, error) {
+	return nil, nil
 }
 
 type mockAuditLogger struct {
@@ -304,7 +313,7 @@ func TestAuthenticate_UserEnrichment(t *testing.T) {
 	authz := &mockAuthorizer{}
 	users := &mockUserServicer{
 		user: &user.User{
-			ID:       "u-1",
+			ID:       1,
 			Username: "charlie",
 			TenantID: "t1",
 			RoleIDs:  []string{"admin", "operator"},
@@ -368,7 +377,7 @@ func TestAuthenticate_UserNotFound(t *testing.T) {
 	authn := &mockAuthenticator{name: "mtls", identity: id}
 	authz := &mockAuthorizer{}
 	users := &mockUserServicer{
-		err: &user.UserNotFoundError{ID: "unknown"},
+		err: &user.UserNotFoundError{Lookup: "unknown"},
 	}
 
 	m := New(authz, WithAuthenticator(authn), WithUserService(users))
@@ -397,6 +406,53 @@ func TestAuthenticate_NoUserService(t *testing.T) {
 	}
 	if len(identity.Roles) != 1 || identity.Roles[0] != "dev" {
 		t.Errorf("expected roles [dev], got %v", identity.Roles)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// tenant.FromContext binding tests
+// ---------------------------------------------------------------------------
+
+// TestAuthenticate_BindsTenantIDFromIdentity verifies that after authenticate
+// succeeds, tenant.FromContext returns the identity's TenantID. This is the
+// canonical proof that the auth middleware is the sole source of tenant binding
+// for all downstream services on all transports.
+func TestAuthenticate_BindsTenantIDFromIdentity(t *testing.T) {
+	id := &auth.Identity{Subject: "alice", TenantID: "acme-corp"}
+	authn := &mockAuthenticator{name: "mtls", identity: id}
+	authz := &mockAuthorizer{}
+
+	m := New(authz, WithAuthenticator(authn))
+
+	ctx, _, err := m.authenticate(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := tenant.FromContext(ctx)
+	if got != "acme-corp" {
+		t.Errorf("tenant.FromContext: got %q, want %q", got, "acme-corp")
+	}
+}
+
+// TestAuthenticate_EmptyTenantIDFallsBackToSystem verifies that when an
+// identity carries an empty TenantID, the context is bound to SystemTenantID
+// so tenant.FromContext never returns an empty string.
+func TestAuthenticate_EmptyTenantIDFallsBackToSystem(t *testing.T) {
+	id := &auth.Identity{Subject: "daemon", TenantID: ""}
+	authn := &mockAuthenticator{name: "mtls", identity: id}
+	authz := &mockAuthorizer{}
+
+	m := New(authz, WithAuthenticator(authn))
+
+	ctx, _, err := m.authenticate(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := tenant.FromContext(ctx)
+	if got != tenant.SystemTenantID {
+		t.Errorf("tenant.FromContext: got %q, want SystemTenantID %q", got, tenant.SystemTenantID)
 	}
 }
 
@@ -596,17 +652,21 @@ func TestUnaryInterceptor_NoMapping(t *testing.T) {
 		return "passed", nil
 	}
 
+	// DEFAULT-DENY: an unmapped application method is rejected before the
+	// handler runs.
 	resp, err := interceptor(context.Background(), nil, info, handler)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected unmapped method to be denied, got nil")
 	}
-	if !handlerCalled {
-		t.Error("expected handler to be called")
+	if status.Code(err) != codes.PermissionDenied {
+		t.Errorf("expected PermissionDenied, got %v", status.Code(err))
 	}
-	if resp != "passed" {
-		t.Errorf("expected 'passed', got %v", resp)
+	if handlerCalled {
+		t.Error("handler must NOT be called for an unmapped (denied) method")
 	}
-	// Authorizer should NOT have been called.
+	if resp != nil {
+		t.Errorf("expected nil response, got %v", resp)
+	}
 	if authz.calls.Load() != 0 {
 		t.Errorf("expected 0 authorize calls, got %d", authz.calls.Load())
 	}
@@ -729,21 +789,20 @@ func TestStreamInterceptor_NoMapping(t *testing.T) {
 	ss := &mockServerStream{ctx: context.Background()}
 
 	handlerCalled := false
-	err := interceptor(nil, ss, info, func(_ any, stream grpc.ServerStream) error {
+	err := interceptor(nil, ss, info, func(_ any, _ grpc.ServerStream) error {
 		handlerCalled = true
-		// Identity should still be in context even without mapping.
-		ctxID := auth.IdentityFromContext(stream.Context())
-		if ctxID == nil {
-			t.Error("expected identity in stream context")
-		}
 		return nil
 	})
 
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	// DEFAULT-DENY: an unmapped stream method is rejected before the handler.
+	if err == nil {
+		t.Fatal("expected unmapped stream method to be denied, got nil")
 	}
-	if !handlerCalled {
-		t.Error("expected handler to be called")
+	if status.Code(err) != codes.PermissionDenied {
+		t.Errorf("expected PermissionDenied, got %v", status.Code(err))
+	}
+	if handlerCalled {
+		t.Error("handler must NOT be called for an unmapped (denied) stream method")
 	}
 	if authz.calls.Load() != 0 {
 		t.Errorf("expected 0 authorize calls, got %d", authz.calls.Load())

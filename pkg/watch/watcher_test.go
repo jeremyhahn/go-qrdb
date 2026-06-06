@@ -16,6 +16,7 @@ package watch
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -321,5 +322,46 @@ func TestNewWatcher_DefaultOptions(t *testing.T) {
 	}
 	if len(w.filters) != 0 {
 		t.Fatalf("expected no filters by default, got %d", len(w.filters))
+	}
+}
+
+// TestWatcher_SendOverflowEvictsWithoutBlocking verifies that send() never
+// blocks when the event buffer is full — it evicts the watcher (cancel +
+// ErrWatcherOverflow) instead. This is the property that keeps a slow or
+// abandoned watcher from stalling the state-machine apply loop.
+func TestWatcher_SendOverflowEvictsWithoutBlocking(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	w := &watcher{
+		id:     1,
+		events: make(chan WatchResponse, 1),
+		ctx:    ctx,
+		cancel: cancel,
+	}
+
+	// Fill the single-slot buffer.
+	w.send(WatchResponse{WatchID: 1})
+
+	// The buffer is now full; this send must return promptly (not block) and
+	// evict the watcher.
+	done := make(chan struct{})
+	go func() {
+		w.send(WatchResponse{WatchID: 1})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("send blocked on a full buffer; it must be non-blocking")
+	}
+
+	// Eviction: context cancelled and overflow error recorded.
+	select {
+	case <-w.ctx.Done():
+	default:
+		t.Error("overflow did not cancel (evict) the watcher")
+	}
+	if ep := w.err.Load(); ep == nil || !errors.Is(*ep, ErrWatcherOverflow) {
+		t.Errorf("expected ErrWatcherOverflow recorded, got %v", ep)
 	}
 }

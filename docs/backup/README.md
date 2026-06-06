@@ -222,6 +222,33 @@ info, err := client.Backup().CreateBackup(ctx, &transport.BackupRequest{
 err := client.Backup().DeleteBackup(ctx, backupID)
 ```
 
+## Transport Exposure & Authorization
+
+The Backup Service is exposed on **every** API transport. Each operation is
+guarded by a dedicated permission (default-deny: an unmapped route/method/tool
+is rejected). The `Owner` role holds all permissions and therefore all backup
+operations.
+
+| Operation | Permission | gRPC RPC (`qrdb.v1.QRDBService/`) | REST | QUIC method | MCP tool |
+|-----------|-----------|-----------------------------------|------|-------------|----------|
+| Create | `backup:create` | `BackupCreate` | `POST /v1/backups` | `backup.Create` | `qrdb_backup_create` |
+| List | `backup:list` | `BackupList` | `GET /v1/backups/list` | `backup.List` | `qrdb_backup_list` |
+| Get | `backup:read` | `BackupGet` | `GET /v1/backups/{id}` | `backup.Get` | `qrdb_backup_get` |
+| Delete | `backup:delete` | `BackupDelete` | `DELETE /v1/backups/{id}` | `backup.Delete` | `qrdb_backup_delete` |
+| Restore | `backup:restore` | `BackupRestore` | `POST /v1/backups/restore` | `backup.Restore` | `qrdb_backup_restore` |
+| Verify | `backup:verify` | `BackupVerify` | `POST /v1/backups/{id}/verify` | `backup.Verify` | `qrdb_backup_verify` |
+
+The Unix-domain-socket transport inherits the full gRPC surface (gRPC over UDS).
+On the REST and MCP transports, `encryption_key`/`decryption_key` are carried as
+base64-encoded strings.
+
+> **Snapshot provider requirement.** Backup/restore capture per-shard snapshots
+> through the host's `ExportSnapshot`/`ImportSnapshot`, so they require a
+> **clustered (Raft) host**. The daemon wires the production
+> `NewHostShardSnapshotProvider` automatically when a snapshot-capable host is
+> present. On the single-node `LocalBackend` (no Raft log to snapshot), backup
+> and restore return `BackupUnsupportedError`.
+
 ## Architecture
 
 ```

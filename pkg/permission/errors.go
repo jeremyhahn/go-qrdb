@@ -14,6 +14,12 @@
 
 package permission
 
+import "errors"
+
+// ErrNilStoreResolver is returned by NewTenantScopeStore when the supplied
+// StoreResolver is nil.
+var ErrNilStoreResolver = errors.New("permission: nil store resolver")
+
 // InvalidPermissionError is returned when a permission string does not
 // conform to the required "resource:action" format.
 type InvalidPermissionError struct {
@@ -34,4 +40,44 @@ type UnregisteredPermissionError struct {
 // Error returns a human-readable description of the unregistered permission.
 func (e *UnregisteredPermissionError) Error() string {
 	return "permission: not registered: " + string(e.Permission)
+}
+
+// InvalidScopeError is returned by ParseScope when a stored scope label is
+// not one of the recognized scope constants. It signals a corrupt or
+// forward-incompatible persisted value; callers fail closed to ScopeSelf.
+type InvalidScopeError struct {
+	Value string
+}
+
+// Error returns a human-readable description of the invalid scope label.
+func (e *InvalidScopeError) Error() string {
+	return "permission: invalid scope label: " + e.Value
+}
+
+// EmptyPermissionError is returned by TenantScopeStore operations when an
+// empty permission name is supplied. A per-tenant scope definition must
+// name a non-empty permission.
+type EmptyPermissionError struct{}
+
+// Error returns a human-readable description of the empty-permission error.
+func (e *EmptyPermissionError) Error() string {
+	return "permission: empty permission name"
+}
+
+// ScopeDecodeError wraps a failure to decode a persisted per-tenant scope
+// definition. It carries the offending permission and the underlying
+// cause. Resolution fails closed when this occurs.
+type ScopeDecodeError struct {
+	Permission Permission
+	Err        error
+}
+
+// Error returns a human-readable description of the decode failure.
+func (e *ScopeDecodeError) Error() string {
+	return "permission: decode scope for " + string(e.Permission) + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying cause for errors.Is / errors.As.
+func (e *ScopeDecodeError) Unwrap() error {
+	return e.Err
 }

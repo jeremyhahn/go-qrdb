@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import { deepSnakeToCamel, deepCamelToSnake } from './transform.js';
 import type {
     AdminClient,
     BackupClient,
@@ -205,6 +206,8 @@ const SDK_VERSION = '0.1.0';
 
 /**
  * Issues a fetch request and parses the JSON response body.
+ * All object keys in the response are transformed from snake_case to camelCase
+ * so that SDK consumers see the camelCase field names declared in types.ts.
  * Throws {@link TransportError} on non-OK status codes.
  */
 async function fetchJSON<T>(baseUrl: string, path: string, init?: RequestInit): Promise<T> {
@@ -228,7 +231,8 @@ async function fetchJSON<T>(baseUrl: string, path: string, init?: RequestInit): 
             new Error(body),
         );
     }
-    return resp.json() as Promise<T>;
+    const raw = await resp.json();
+    return deepSnakeToCamel(raw) as T;
 }
 
 /**
@@ -298,11 +302,21 @@ function buildQuery(params: Record<string, string | number | boolean | undefined
     return parts.length > 0 ? `?${parts.join('&')}` : '';
 }
 
-/** Encodes an object as a JSON request body with the appropriate content type header. */
+/**
+ * Encodes an object as a JSON request body with the appropriate content type
+ * header. All object keys are recursively converted from camelCase to
+ * snake_case before serialization so that the Go server's `json:"snake_case"`
+ * struct tags are matched correctly.
+ *
+ * Keys that are already snake_case (e.g. hand-written membership payloads like
+ * `{ shard_id, replica_id, address }`) round-trip safely because
+ * `camelToSnakeKey` only transforms uppercase characters and leaves lowercase
+ * underscore sequences unchanged.
+ */
 function jsonBody(data: unknown): RequestInit {
     return {
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
+        body: JSON.stringify(deepCamelToSnake(data)),
     };
 }
 
@@ -452,21 +466,21 @@ export class RestClient implements Client {
                 this.ensureConnected();
                 await fetchVoid(this.baseUrl, '/membership/add', {
                     method: 'POST',
-                    ...jsonBody({ shardId, replicaId, address: raftAddr }),
+                    ...jsonBody({ shard_id: shardId, replica_id: replicaId, address: raftAddr }),
                 });
             },
             removeMember: async (shardId: number, replicaId: number): Promise<void> => {
                 this.ensureConnected();
                 await fetchVoid(this.baseUrl, '/membership/remove', {
                     method: 'POST',
-                    ...jsonBody({ shardId, replicaId }),
+                    ...jsonBody({ shard_id: shardId, replica_id: replicaId }),
                 });
             },
             requestSnapshot: async (shardId: number): Promise<void> => {
                 this.ensureConnected();
                 await fetchVoid(this.baseUrl, '/snapshot', {
                     method: 'POST',
-                    ...jsonBody({ shardId }),
+                    ...jsonBody({ shard_id: shardId }),
                 });
             },
             drain: async (): Promise<void> => {
@@ -744,7 +758,9 @@ export class RestClient implements Client {
                         if (line.startsWith('data: ')) {
                             const json = line.slice(6);
                             try {
-                                const event = JSON.parse(json) as WatchResponse;
+                                const event = deepSnakeToCamel(
+                                    JSON.parse(json) as unknown,
+                                ) as WatchResponse;
                                 normalizeWatchEventTypes(event);
                                 callback(event);
                             } catch {
@@ -960,7 +976,7 @@ export class RestClient implements Client {
                 interface RawTSPoint {
                     metric: string;
                     value: number;
-                    timestamp: number;
+                    timestampNs: number;
                     tags?: Record<string, string>;
                 }
                 const raw = await fetchJSON<{ points: RawTSPoint[] }>(
@@ -977,7 +993,7 @@ export class RestClient implements Client {
                 return {
                     points: (raw.points ?? []).map((p) => ({
                         metric: p.metric,
-                        timestampNs: p.timestamp,
+                        timestampNs: p.timestampNs,
                         value: p.value,
                         tags: p.tags
                             ? Object.entries(p.tags).map(([key, value]) => ({ key, value }))
@@ -1318,6 +1334,25 @@ export class RestClient implements Client {
                     this.baseUrl,
                     `/users/${encodeURIComponent(id)}/disable`,
                     { method: 'POST' },
+                );
+            },
+            getUserByCertThumbprint: async (thumbprint: string): Promise<User> => {
+                this.ensureConnected();
+                return fetchJSON<User>(
+                    this.baseUrl,
+                    `/users/by-cert-thumbprint/${encodeURIComponent(thumbprint)}`,
+                );
+            },
+            addCertBinding: async (
+                userId: string,
+                thumbprint: string,
+                notAfterUnix?: number,
+            ): Promise<User> => {
+                this.ensureConnected();
+                return fetchJSON<User>(
+                    this.baseUrl,
+                    `/users/${encodeURIComponent(userId)}/cert-bindings`,
+                    { method: 'POST', ...jsonBody({ thumbprint, notAfterUnix }) },
                 );
             },
         };
@@ -1684,8 +1719,8 @@ export class RestClient implements Client {
                 interface BarrierStatusResponse {
                     readonly sealed: boolean;
                     readonly strategy: string;
-                    readonly hardware_backed: boolean;
-                    readonly initialized_at?: string;
+                    readonly hardwareBacked: boolean;
+                    readonly initializedAt?: string;
                 }
                 try {
                     const resp = await fetchJSON<BarrierStatusResponse>(
@@ -1694,7 +1729,7 @@ export class RestClient implements Client {
                     );
                     return {
                         sealed: resp.sealed,
-                        initialized: resp.initialized_at !== undefined && resp.initialized_at !== '',
+                        initialized: resp.initializedAt !== undefined && resp.initializedAt !== '',
                         sharesRequired: 0,
                         sharesProvided: 0,
                         sharesTotal: 0,

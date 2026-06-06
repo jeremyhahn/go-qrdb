@@ -15,9 +15,11 @@
 package server
 
 import (
+	"context"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // ---------------------------------------------------------------------------
@@ -55,7 +57,7 @@ func newFilledServices(name string) *DatabaseServices {
 // ---------------------------------------------------------------------------
 
 func TestNewRESTServiceRegistry_ReturnsNonNil(t *testing.T) {
-	reg := NewRESTServiceRegistry(NewDatabaseServiceRegistry("default"), nil, "default")
+	reg := NewRESTServiceRegistry(NewDatabaseServiceRegistry("default"), nil, "system")
 	if reg == nil {
 		t.Fatal("expected non-nil ServiceRegistry")
 	}
@@ -66,9 +68,9 @@ func TestNewRESTServiceRegistry_ReturnsNonNil(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRESTServiceRegistry_KnownDatabase_ReturnsService(t *testing.T) {
-	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "default")
+	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "system")
 
-	svc, err := r.KVService("default", "default")
+	svc, err := r.KVService("system", "default")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -78,9 +80,9 @@ func TestRESTServiceRegistry_KnownDatabase_ReturnsService(t *testing.T) {
 }
 
 func TestRESTServiceRegistry_UnknownDatabase_ReturnsDatabaseNotFoundError(t *testing.T) {
-	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "default")
+	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "system")
 
-	_, err := r.KVService("default", "nonexistent")
+	_, err := r.KVService("system", "nonexistent")
 	if err == nil {
 		t.Fatal("expected DatabaseNotFoundError, got nil")
 	}
@@ -126,8 +128,8 @@ func isError(err error, target interface{}) bool {
 // ---------------------------------------------------------------------------
 
 func TestRESTServiceRegistry_MVCCService_KnownDB(t *testing.T) {
-	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "default")
-	svc, err := r.MVCCService("default", "default")
+	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "system")
+	svc, err := r.MVCCService("system", "default")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -137,8 +139,8 @@ func TestRESTServiceRegistry_MVCCService_KnownDB(t *testing.T) {
 }
 
 func TestRESTServiceRegistry_WatchService_KnownDB(t *testing.T) {
-	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "default")
-	svc, err := r.WatchService("default", "default")
+	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "system")
+	svc, err := r.WatchService("system", "default")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -148,8 +150,8 @@ func TestRESTServiceRegistry_WatchService_KnownDB(t *testing.T) {
 }
 
 func TestRESTServiceRegistry_LeaseService_KnownDB(t *testing.T) {
-	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "default")
-	svc, err := r.LeaseService("default", "default")
+	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "system")
+	svc, err := r.LeaseService("system", "default")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -159,8 +161,8 @@ func TestRESTServiceRegistry_LeaseService_KnownDB(t *testing.T) {
 }
 
 func TestRESTServiceRegistry_IndexService_KnownDB(t *testing.T) {
-	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "default")
-	svc, err := r.IndexService("default", "default")
+	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "system")
+	svc, err := r.IndexService("system", "default")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -170,8 +172,8 @@ func TestRESTServiceRegistry_IndexService_KnownDB(t *testing.T) {
 }
 
 func TestRESTServiceRegistry_TimeSeriesService_KnownDB(t *testing.T) {
-	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "default")
-	svc, err := r.TimeSeriesService("default", "default")
+	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "system")
+	svc, err := r.TimeSeriesService("system", "default")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -181,8 +183,8 @@ func TestRESTServiceRegistry_TimeSeriesService_KnownDB(t *testing.T) {
 }
 
 func TestRESTServiceRegistry_TransactionService_KnownDB(t *testing.T) {
-	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "default")
-	svc, err := r.TransactionService("default", "default")
+	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "system")
+	svc, err := r.TransactionService("system", "default")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -192,8 +194,8 @@ func TestRESTServiceRegistry_TransactionService_KnownDB(t *testing.T) {
 }
 
 func TestRESTServiceRegistry_BatchService_KnownDB(t *testing.T) {
-	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "default")
-	svc, err := r.BatchService("default", "default")
+	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "system")
+	svc, err := r.BatchService("system", "default")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -203,8 +205,8 @@ func TestRESTServiceRegistry_BatchService_KnownDB(t *testing.T) {
 }
 
 func TestRESTServiceRegistry_VectorService_ReturnsNotImplemented(t *testing.T) {
-	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "default")
-	_, err := r.VectorService("default", "default")
+	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "system")
+	_, err := r.VectorService("system", "default")
 	if err == nil {
 		t.Fatal("expected ServiceNotImplementedError, got nil")
 	}
@@ -222,9 +224,9 @@ func TestRESTServiceRegistry_NilService_ReturnsServiceNotImplementedError(t *tes
 	reg := NewDatabaseServiceRegistry("default")
 	// Register a database with all nil services.
 	reg.Register("default", &DatabaseServices{Name: "default"})
-	r := NewRESTServiceRegistry(reg, nil, "default")
+	r := NewRESTServiceRegistry(reg, nil, "system")
 
-	_, err := r.KVService("default", "default")
+	_, err := r.KVService("system", "default")
 	if err == nil {
 		t.Fatal("expected ServiceNotImplementedError, got nil")
 	}
@@ -242,7 +244,7 @@ func TestRESTServiceRegistry_NilService_ReturnsServiceNotImplementedError(t *tes
 // ---------------------------------------------------------------------------
 
 func TestRESTServiceRegistry_NoBarrierRegistry_SkipsTenantCheck(t *testing.T) {
-	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "default")
+	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "system")
 	// Any tenant name should succeed when no barrier registry is configured.
 	svc, err := r.KVService("any-tenant", "default")
 	if err != nil {
@@ -253,11 +255,11 @@ func TestRESTServiceRegistry_NoBarrierRegistry_SkipsTenantCheck(t *testing.T) {
 	}
 }
 
-func TestRESTServiceRegistry_DefaultTenant_SkipsBarrierCheck(t *testing.T) {
-	// Even with a barrier registry, the "default" tenant must bypass the check
+func TestRESTServiceRegistry_SystemTenant_SkipsBarrierCheck(t *testing.T) {
+	// Even with a barrier registry, the system tenant must bypass the check
 	// to preserve backward compatibility.
-	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "default")
-	svc, err := r.KVService("default", "default")
+	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "system")
+	svc, err := r.KVService("system", "default")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -271,8 +273,8 @@ func TestRESTServiceRegistry_DefaultTenant_SkipsBarrierCheck(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRESTServiceRegistry_NonDefaultDatabase_ReturnsCorrectServices(t *testing.T) {
-	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "default")
-	svc, err := r.KVService("default", "mydb")
+	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "system")
+	svc, err := r.KVService("system", "mydb")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -281,21 +283,160 @@ func TestRESTServiceRegistry_NonDefaultDatabase_ReturnsCorrectServices(t *testin
 	}
 }
 
+// ---------------------------------------------------------------------------
+// resolveTenant with tenantSvc set
+// ---------------------------------------------------------------------------
+
+// TestRESTServiceRegistry_WithTenantSvc_KnownTenant verifies that when a
+// tenant service is configured and GetTenant succeeds, the request is routed
+// correctly using the effective isolation type.
+func TestRESTServiceRegistry_WithTenantSvc_KnownTenant(t *testing.T) {
+	r := NewRESTServiceRegistry(
+		newFilledRegistry(),
+		nil,
+		"system",
+		WithTenantServicer(&knownTenantServicer{}),
+	)
+	svc, err := r.KVService("sometenant", "default")
+	if err != nil {
+		t.Fatalf("KVService for known tenant: %v", err)
+	}
+	if svc == nil {
+		t.Fatal("expected non-nil KVServicer")
+	}
+}
+
+// knownTenantServicer returns a valid TenantInfo from GetTenant.
+type knownTenantServicer struct{ mockTenantServicer }
+
+func (k *knownTenantServicer) GetTenant(_ context.Context, tenantID string) (*tenant.TenantInfo, error) {
+	return &tenant.TenantInfo{
+		ID:            tenantID,
+		Name:          tenantID,
+		IsolationType: tenant.IsolationPrefix,
+	}, nil
+}
+
+// TestRESTServiceRegistry_WithTenantSvc_SystemTenantLookupFail verifies that
+// when tenantSvc is set and GetTenant returns an error for the system tenant,
+// the registry falls back to the barrier check (which succeeds with no barrier).
+func TestRESTServiceRegistry_WithTenantSvc_SystemTenantFallback(t *testing.T) {
+	// errTenantSvc always returns an error from GetTenant.
+	r := NewRESTServiceRegistry(
+		newFilledRegistry(),
+		nil,
+		"system",
+		WithTenantServicer(&errTenantServicer{}),
+	)
+	// system tenant error → falls back to checkTenantBarrier(nil) → no error.
+	svc, err := r.KVService("system", "default")
+	if err != nil {
+		t.Fatalf("system tenant fallback should succeed: %v", err)
+	}
+	if svc == nil {
+		t.Fatal("expected non-nil KVServicer")
+	}
+}
+
+// errTenantServicer always returns an error from GetTenant.
+type errTenantServicer struct{ mockTenantServicer }
+
+func (e *errTenantServicer) GetTenant(_ context.Context, _ string) (*tenant.TenantInfo, error) {
+	return nil, tenant.ErrTenantNotFound
+}
+
+// TestRESTServiceRegistry_VectorService_WithVectorField verifies that
+// VectorService returns ServiceNotImplemented when Vector field is nil
+// (default in newFilledServices) and succeeds when set.
+func TestRESTServiceRegistry_VectorService_NilVector_NotImplemented(t *testing.T) {
+	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "system")
+	_, err := r.VectorService("system", "default")
+	if err == nil {
+		t.Fatal("expected ServiceNotImplementedError when Vector is nil, got nil")
+	}
+	var nie *rest.ServiceNotImplementedError
+	if !isError(err, &nie) {
+		t.Errorf("expected ServiceNotImplementedError, got %T: %v", err, err)
+	}
+	if nie.Service != "vector" {
+		t.Errorf("Service field = %q, want %q", nie.Service, "vector")
+	}
+}
+
+// TestRESTServiceRegistry_VectorService_WithVector verifies that VectorService
+// returns a non-nil VectorServicer when the Vector field is populated.
+func TestRESTServiceRegistry_VectorService_Set(t *testing.T) {
+	reg := NewDatabaseServiceRegistry("default")
+	svcs := newFilledServices("default")
+	svcs.Vector = &stubVectorService{}
+	reg.Register("default", svcs)
+
+	r := NewRESTServiceRegistry(reg, nil, "system")
+	svc, err := r.VectorService("system", "default")
+	if err != nil {
+		t.Fatalf("VectorService: unexpected error: %v", err)
+	}
+	if svc == nil {
+		t.Fatal("expected non-nil VectorServicer")
+	}
+}
+
+// TestRESTServiceRegistry_ApplyNamespace_NonSystemTenant verifies that a
+// non-system tenant gets a namespace-prefixed KV service.
+func TestRESTServiceRegistry_ApplyNamespace_NonSystemTenant(t *testing.T) {
+	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "system")
+
+	// Requesting "othertenant"/"default" without a barrierReg or tenantSvc:
+	// checkTenantBarrier returns nil (no barrier configured), so resolve
+	// should succeed and return a namespacedKVService.
+	svc, err := r.KVService("othertenant", "default")
+	if err != nil {
+		t.Fatalf("KVService for non-system tenant: %v", err)
+	}
+	if svc == nil {
+		t.Fatal("expected non-nil KVServicer for non-system tenant")
+	}
+	// It should be a namespacedKVService (not the raw mock).
+	if _, ok := svc.(*namespacedKVService); !ok {
+		t.Errorf("expected *namespacedKVService, got %T", svc)
+	}
+}
+
+// TestRESTServiceRegistry_ApplyNamespace_NilKV verifies applyNamespace
+// returns the original DatabaseServices unchanged when KV is nil.
+func TestRESTServiceRegistry_ApplyNamespace_NilKV(t *testing.T) {
+	reg := NewDatabaseServiceRegistry("default")
+	svcs := &DatabaseServices{Name: "default", MVCC: &stubMVCCService{}}
+	reg.Register("default", svcs)
+
+	r := NewRESTServiceRegistry(reg, nil, "system")
+
+	// Non-system tenant should not panic even with nil KV.
+	_, err := r.KVService("othertenant", "default")
+	if err == nil {
+		t.Fatal("expected ServiceNotImplementedError when KV is nil, got nil")
+	}
+	var nie *rest.ServiceNotImplementedError
+	if !isError(err, &nie) {
+		t.Errorf("expected ServiceNotImplementedError, got %T: %v", err, err)
+	}
+}
+
 func TestRESTServiceRegistry_UnknownDatabase_AllServicesReturnError(t *testing.T) {
-	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "default")
+	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "system")
 
 	tests := []struct {
 		name string
 		fn   func() error
 	}{
-		{"kv", func() error { _, err := r.KVService("default", "gone"); return err }},
-		{"mvcc", func() error { _, err := r.MVCCService("default", "gone"); return err }},
-		{"watch", func() error { _, err := r.WatchService("default", "gone"); return err }},
-		{"lease", func() error { _, err := r.LeaseService("default", "gone"); return err }},
-		{"index", func() error { _, err := r.IndexService("default", "gone"); return err }},
-		{"ts", func() error { _, err := r.TimeSeriesService("default", "gone"); return err }},
-		{"tx", func() error { _, err := r.TransactionService("default", "gone"); return err }},
-		{"batch", func() error { _, err := r.BatchService("default", "gone"); return err }},
+		{"kv", func() error { _, err := r.KVService("system", "gone"); return err }},
+		{"mvcc", func() error { _, err := r.MVCCService("system", "gone"); return err }},
+		{"watch", func() error { _, err := r.WatchService("system", "gone"); return err }},
+		{"lease", func() error { _, err := r.LeaseService("system", "gone"); return err }},
+		{"index", func() error { _, err := r.IndexService("system", "gone"); return err }},
+		{"ts", func() error { _, err := r.TimeSeriesService("system", "gone"); return err }},
+		{"tx", func() error { _, err := r.TransactionService("system", "gone"); return err }},
+		{"batch", func() error { _, err := r.BatchService("system", "gone"); return err }},
 	}
 
 	for _, tc := range tests {

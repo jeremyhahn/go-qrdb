@@ -23,8 +23,10 @@ import "time"
 // Authentication is exclusively via mTLS X.509 certificates.
 // Certificate CN is implicitly set to Username, OU to TenantID.
 type User struct {
-	// ID is the globally unique UUID for this user.
-	ID string `json:"id"`
+	// ID is the globally unique Snowflake identifier for this user. It is
+	// assigned by the store at creation time (server-side) and is never zero
+	// for a persisted user; zero is the invalid/sentinel value.
+	ID uint64 `json:"id"`
 
 	// Username is the human-readable login name, unique within a tenant.
 	Username string `json:"username"`
@@ -41,6 +43,24 @@ type User struct {
 	// System marks built-in users that cannot be deleted.
 	System bool `json:"system"`
 
+	// RoleBindings grants roles within a tenant scope (tenant-scoped RBAC). A
+	// control-plane user may hold, e.g., a tenant-admin binding for another
+	// tenant. Additive alongside RoleIDs (system-scoped roles).
+	RoleBindings []RoleBinding `json:"roleBindings,omitempty"`
+
+	// Attributes carries attribute-based access-control (ABAC) key/value pairs
+	// evaluated by policy.
+	Attributes map[string]string `json:"attributes,omitempty"`
+
+	// CertBindings binds mTLS client certificates to this user by SPKI
+	// thumbprint — qrdb-owned mTLS identity. See cert_binding.go.
+	CertBindings []CertBinding `json:"certBindings,omitempty"`
+
+	// Factors holds extensible auth-factor enrollments (webauthn/fido2/piv),
+	// registered via pkg/authfactors. qrdb stores them opaquely; the registered
+	// factor interprets Data.
+	Factors []FactorEnrollment `json:"factors,omitempty"`
+
 	// CreatedAt records when the user was created (UTC).
 	CreatedAt time.Time `json:"createdAt"`
 
@@ -53,7 +73,7 @@ type CreateUserRequest struct {
 	// Username is the desired login name. Must not be empty.
 	Username string
 
-	// TenantID identifies the tenant. Defaults to DefaultTenantID when empty.
+	// TenantID identifies the tenant. Defaults to SystemTenantID when empty.
 	TenantID string
 
 	// RoleIDs are the initial roles to assign.
@@ -62,19 +82,32 @@ type CreateUserRequest struct {
 
 // UpdateUserRequest holds parameters for updating a user.
 type UpdateUserRequest struct {
-	// ID is the user UUID to update. Required.
-	ID string
+	// ID is the user ID to update. Required (must be non-zero).
+	ID uint64
 
 	// Username replaces the current username when non-empty.
 	Username string
 
 	// RoleIDs replaces the current role set when non-nil.
 	RoleIDs []string
+
+	// RoleBindings replaces the tenant-scoped role bindings when non-nil.
+	RoleBindings []RoleBinding
+
+	// Attributes replaces the ABAC attributes when non-nil.
+	Attributes map[string]string
+
+	// CertBindings replaces the mTLS cert bindings when non-nil; the store
+	// maintains the SPKI-thumbprint secondary index accordingly.
+	CertBindings []CertBinding
+
+	// Factors replaces the auth-factor enrollments when non-nil.
+	Factors []FactorEnrollment
 }
 
 // ListUsersRequest holds parameters for listing users.
 type ListUsersRequest struct {
-	// TenantID filters users by tenant. Defaults to DefaultTenantID when empty.
+	// TenantID filters users by tenant. Defaults to SystemTenantID when empty.
 	TenantID string
 
 	// Page is the 1-based page number. Zero or negative defaults to 1.

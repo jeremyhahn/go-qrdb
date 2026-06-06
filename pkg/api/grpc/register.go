@@ -21,8 +21,10 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
@@ -97,6 +99,11 @@ func WithRegisterEmbedding(svc service.EmbeddingServicer) RegisterOption {
 	return func(s *qrdbServiceServer) { s.embeddingSvc = svc }
 }
 
+// WithRegisterRAGService attaches a RAG service for the registered gRPC service.
+func WithRegisterRAGService(svc service.RAGServicer) RegisterOption {
+	return func(s *qrdbServiceServer) { s.ragSvc = svc }
+}
+
 // WithRegisterDatabaseService attaches a database management service for the registered gRPC service.
 func WithRegisterDatabaseService(svc service.DatabaseServicer) RegisterOption {
 	return func(s *qrdbServiceServer) { s.databaseSvc = svc }
@@ -105,6 +112,13 @@ func WithRegisterDatabaseService(svc service.DatabaseServicer) RegisterOption {
 // WithRegisterBarrierService attaches a barrier management service for the registered gRPC service.
 func WithRegisterBarrierService(svc service.BarrierServicer) RegisterOption {
 	return func(s *qrdbServiceServer) { s.barrierSvc = svc }
+}
+
+// WithRegisterPINBackend attaches the canonical pin.PINBackend used for
+// the SO PIN / User PIN compliance-gating layer on barrier administrative
+// operations.
+func WithRegisterPINBackend(backend pin.PINBackend) RegisterOption {
+	return func(s *qrdbServiceServer) { s.pinBackend = backend }
 }
 
 // WithRegisterCeremonyService attaches a ceremony management service for the registered gRPC service.
@@ -130,6 +144,21 @@ func WithRegisterCollectionService(svc service.CollectionServicer) RegisterOptio
 // WithRegisterLockService attaches a distributed lock service for the registered gRPC service.
 func WithRegisterLockService(svc service.LockServicer) RegisterOption {
 	return func(s *qrdbServiceServer) { s.lockSvc = svc }
+}
+
+// WithRegisterTenantService attaches a tenant management service for the registered gRPC service.
+func WithRegisterTenantService(svc tenant.TenantServicer) RegisterOption {
+	return func(s *qrdbServiceServer) { s.tenantSvc = svc }
+}
+
+// WithRegisterBackupService attaches a backup management service for the registered gRPC service.
+func WithRegisterBackupService(svc service.BackupServicer) RegisterOption {
+	return func(s *qrdbServiceServer) { s.backupSvc = svc }
+}
+
+// WithRegisterRebalanceService attaches a cluster rebalance service for the registered gRPC service.
+func WithRegisterRebalanceService(svc service.RebalanceServicer) RegisterOption {
+	return func(s *qrdbServiceServer) { s.rebalanceSvc = svc }
 }
 
 // RegisterService registers the QRDBServiceServer on the given gRPC server

@@ -496,7 +496,7 @@ func (s *Server) handleVectorGet(ctx context.Context, payload []byte) ([]byte, e
 		ID:              id,
 		IncludeVector:   true,
 		IncludeMetadata: true,
-		Consistency:     service.ConsistencyLevel(req.GetConsistency()),
+		Consistency:     vectorConsistencyFromWire(req.GetConsistency()),
 		ShardID:         req.GetShardId(),
 	})
 	if err != nil {
@@ -724,7 +724,7 @@ func (s *Server) handleVectorSearchSimilar(ctx context.Context, payload []byte) 
 		K:           int(req.GetK()),
 		EfSearch:    int(req.GetEfSearch()),
 		MinScore:    float32(req.GetMinScore()),
-		Consistency: service.ConsistencyLevel(req.GetConsistency()),
+		Consistency: vectorConsistencyFromWire(req.GetConsistency()),
 		ShardID:     req.GetShardId(),
 	})
 	if err != nil {
@@ -768,7 +768,7 @@ func (s *Server) handleVectorSearchByMetadata(ctx context.Context, payload []byt
 		Filters:     filters,
 		Limit:       int(req.GetLimit()),
 		Offset:      int(req.GetOffset()),
-		Consistency: service.ConsistencyLevel(req.GetConsistency()),
+		Consistency: vectorConsistencyFromWire(req.GetConsistency()),
 		ShardID:     req.GetShardId(),
 	})
 	if err != nil {
@@ -816,7 +816,7 @@ func (s *Server) handleVectorHybridSearch(ctx context.Context, payload []byte) (
 		QueryVector:    req.GetVector(),
 		MetadataFilter: metadataFilter,
 		K:              int(req.GetK()),
-		Consistency:    service.ConsistencyLevel(req.GetConsistency()),
+		Consistency:    vectorConsistencyFromWire(req.GetConsistency()),
 		ShardID:        req.GetShardId(),
 	})
 	if err != nil {
@@ -859,7 +859,7 @@ func (s *Server) handleVectorSearchByID(ctx context.Context, payload []byte) ([]
 		Namespace:   req.GetNamespace(),
 		ID:          id,
 		K:           int(req.GetK()),
-		Consistency: service.ConsistencyLevel(req.GetConsistency()),
+		Consistency: vectorConsistencyFromWire(req.GetConsistency()),
 		ShardID:     req.GetShardId(),
 	})
 	if err != nil {

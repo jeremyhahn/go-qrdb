@@ -194,16 +194,18 @@ func TestVectorCRUD_DeleteNamespace_RaftSuccess(t *testing.T) {
 	storage := newVecMockStorage()
 	logger := newVecTestLogger()
 
+	scoped := scopedNamespace(tenant.SystemTenantID, "to-delete")
+
 	storage.listNamespacesFn = func(ctx context.Context) ([]vector.NamespaceInfo, error) {
 		return []vector.NamespaceInfo{
-			{Name: "to-delete", Dimension: 64, VectorCount: 10},
+			{Name: scoped, Dimension: 64, VectorCount: 10},
 		}, nil
 	}
 
 	storage.getNamespaceInfoFn = func(ctx context.Context, namespace string) (*vector.NamespaceInfo, error) {
-		if namespace == "to-delete" {
+		if namespace == scoped {
 			return &vector.NamespaceInfo{
-				Name:        "to-delete",
+				Name:        scoped,
 				Dimension:   64,
 				VectorCount: 10,
 			}, nil
@@ -311,15 +313,17 @@ func TestVectorCRUD_UpsertVector_RaftSuccess(t *testing.T) {
 	storage := newVecMockStorage()
 	logger := newVecTestLogger()
 
+	scopedUpsert := scopedNamespace(tenant.SystemTenantID, "upsert-ns")
+
 	storage.listNamespacesFn = func(ctx context.Context) ([]vector.NamespaceInfo, error) {
 		return []vector.NamespaceInfo{
-			{Name: "upsert-ns", Dimension: 3, DistanceMetric: "L2", IndexType: "HNSW"},
+			{Name: scopedUpsert, Dimension: 3, DistanceMetric: "L2", IndexType: "HNSW"},
 		}, nil
 	}
 
 	storage.getNamespaceInfoFn = func(ctx context.Context, namespace string) (*vector.NamespaceInfo, error) {
-		if namespace == "upsert-ns" {
-			return &vector.NamespaceInfo{Name: "upsert-ns", Dimension: 3}, nil
+		if namespace == scopedUpsert {
+			return &vector.NamespaceInfo{Name: scopedUpsert, Dimension: 3}, nil
 		}
 		return nil, errors.New("namespace not found")
 	}

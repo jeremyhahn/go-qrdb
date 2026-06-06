@@ -27,6 +27,9 @@ import (
 	"time"
 
 	"github.com/cockroachdb/pebble/v2"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
 const (
@@ -60,15 +63,48 @@ func New(db *pebble.DB) (*Storage, error) {
 	return &Storage{db: db}, nil
 }
 
+// StorageOption configures a new Storage instance created by NewWithDir or
+// NewWithBarrier. Options are applied to the pebble.Options before the
+// database is opened.
+type StorageOption func(*pebble.Options)
+
+// WithBarrier wraps the Pebble vfs.FS with seal/encfs so that every file
+// the time-series store writes is transparently encrypted under the supplied
+// StorageBarrier. The barrier must already be unsealed when the storage is
+// opened. A nil barrier is a no-op — the store opens in plaintext mode,
+// which is the default and is appropriate for tests and non-encrypted
+// deployments.
+//
+// Deprecated: prefer WithEncryptor(atrest.New(barrier)) which routes
+// through the single atrest.Encryptor authority. WithBarrier is kept for
+// backward compatibility.
+func WithBarrier(barrier *seal.StorageBarrier) StorageOption {
+	return WithEncryptor(atrest.New(barrier))
+}
+
+// WithEncryptor applies enc to the Pebble options, wrapping the vfs.FS
+// with barrier-driven AES-256-GCM encryption. A nil enc or an enc whose
+// barrier is nil is a no-op, so plaintext deployments and tests are
+// unaffected.
+func WithEncryptor(enc *atrest.Encryptor) StorageOption {
+	return func(o *pebble.Options) {
+		enc.Apply(o)
+	}
+}
+
 // NewWithDir creates a new time-series Storage that owns its own PebbleDB
-// instance rooted at dataDir. The caller must call Close to release all
-// resources including the underlying PebbleDB.
-func NewWithDir(dataDir string) (*Storage, error) {
+// instance rooted at dataDir. Optional StorageOption values configure the
+// underlying PebbleDB instance before it is opened. The caller must call
+// Close to release all resources including the underlying PebbleDB.
+func NewWithDir(dataDir string, opts ...StorageOption) (*Storage, error) {
 	if dataDir == "" {
 		return nil, &EmptyDirError{}
 	}
-	opts := &pebble.Options{}
-	db, err := pebble.Open(dataDir, opts)
+	pOpts := &pebble.Options{}
+	for _, opt := range opts {
+		opt(pOpts)
+	}
+	db, err := pebble.Open(dataDir, pOpts)
 	if err != nil {
 		return nil, &OpenDirError{Dir: dataDir, Err: err}
 	}

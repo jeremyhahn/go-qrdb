@@ -37,6 +37,18 @@ func userTools(svc user.UserServicer) []mcpserver.ServerTool {
 			Handler: handleUserGet(svc),
 		},
 		{
+			Tool:    toolUserGetByUsername(),
+			Handler: handleUserGetByUsername(svc),
+		},
+		{
+			Tool:    toolUserGetByCertThumbprint(),
+			Handler: handleUserGetByCertThumbprint(svc),
+		},
+		{
+			Tool:    toolUserAddCertBinding(),
+			Handler: handleUserAddCertBinding(svc),
+		},
+		{
 			Tool:    toolUserUpdate(),
 			Handler: handleUserUpdate(svc),
 		},
@@ -119,9 +131,13 @@ func toolUserGet() mcp.Tool {
 // handleUserGet returns a tool handler that delegates to svc.GetUser.
 func handleUserGet(svc user.UserServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		id := mcp.ParseString(req, "id", "")
-		if id == "" {
+		idStr := mcp.ParseString(req, "id", "")
+		if idStr == "" {
 			return mcp.NewToolResultError("id is required"), nil
+		}
+		id, parseErr := parseUint64(idStr)
+		if parseErr != nil {
+			return mcp.NewToolResultError("id must be a uint64: " + parseErr.Error()), nil
 		}
 
 		u, err := svc.GetUser(ctx, id)
@@ -132,6 +148,132 @@ func handleUserGet(svc user.UserServicer) mcpserver.ToolHandlerFunc {
 		data, jsonErr := json.Marshal(u)
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_user_get", Err: jsonErr}
+		}
+
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// toolUserGetByUsername defines the qrdb_user_get_by_username tool schema.
+func toolUserGetByUsername() mcp.Tool {
+	return mcp.NewTool("qrdb_user_get_by_username",
+		mcp.WithDescription("Retrieve a user by tenant-scoped username."),
+		mcp.WithString("tenant_id",
+			mcp.Description("Tenant ID. Empty selects the default tenant."),
+		),
+		mcp.WithString("username",
+			mcp.Required(),
+			mcp.Description("The username to resolve."),
+		),
+	)
+}
+
+// handleUserGetByUsername returns a tool handler that delegates to
+// svc.GetUserByUsername.
+func handleUserGetByUsername(svc user.UserServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		tenantID := mcp.ParseString(req, "tenant_id", "")
+		username := mcp.ParseString(req, "username", "")
+		if username == "" {
+			return mcp.NewToolResultError("username is required"), nil
+		}
+
+		u, err := svc.GetUserByUsername(ctx, tenantID, username)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_user_get_by_username", Err: err}
+		}
+
+		data, jsonErr := json.Marshal(u)
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_user_get_by_username", Err: jsonErr}
+		}
+
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// toolUserGetByCertThumbprint defines the qrdb_user_get_by_cert_thumbprint
+// tool schema.
+func toolUserGetByCertThumbprint() mcp.Tool {
+	return mcp.NewTool("qrdb_user_get_by_cert_thumbprint",
+		mcp.WithDescription("Resolve a user by an mTLS certificate's SPKI thumbprint."),
+		mcp.WithString("thumbprint",
+			mcp.Required(),
+			mcp.Description("The base64url SPKI SHA-256 thumbprint to resolve."),
+		),
+	)
+}
+
+// handleUserGetByCertThumbprint returns a tool handler that delegates to
+// svc.UserByCertThumbprint.
+func handleUserGetByCertThumbprint(svc user.UserServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		thumbprint := mcp.ParseString(req, "thumbprint", "")
+		if thumbprint == "" {
+			return mcp.NewToolResultError("thumbprint is required"), nil
+		}
+
+		u, err := svc.UserByCertThumbprint(ctx, thumbprint)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_user_get_by_cert_thumbprint", Err: err}
+		}
+
+		data, jsonErr := json.Marshal(u)
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_user_get_by_cert_thumbprint", Err: jsonErr}
+		}
+
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// toolUserAddCertBinding defines the qrdb_user_add_cert_binding tool schema.
+func toolUserAddCertBinding() mcp.Tool {
+	return mcp.NewTool("qrdb_user_add_cert_binding",
+		mcp.WithDescription("Bind an mTLS certificate's SPKI thumbprint to a user so it resolves via the secondary index (the enrollment seam)."),
+		mcp.WithString("user_id",
+			mcp.Required(),
+			mcp.Description("The ID of the user to bind the certificate to."),
+		),
+		mcp.WithString("thumbprint",
+			mcp.Required(),
+			mcp.Description("The base64url SPKI SHA-256 thumbprint to bind."),
+		),
+		mcp.WithNumber("not_after_unix",
+			mcp.Description("Optional binding expiry as a Unix timestamp. Zero means the binding never expires."),
+		),
+	)
+}
+
+// handleUserAddCertBinding returns a tool handler that delegates to
+// svc.AddCertBinding.
+func handleUserAddCertBinding(svc user.UserServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		userIDStr := mcp.ParseString(req, "user_id", "")
+		if userIDStr == "" {
+			return mcp.NewToolResultError("user_id is required"), nil
+		}
+
+		thumbprint := mcp.ParseString(req, "thumbprint", "")
+		if thumbprint == "" {
+			return mcp.NewToolResultError("thumbprint is required"), nil
+		}
+
+		notAfterUnix := mcp.ParseInt64(req, "not_after_unix", 0)
+
+		userID, parseErr := parseUint64(userIDStr)
+		if parseErr != nil {
+			return mcp.NewToolResultError("user_id must be a uint64: " + parseErr.Error()), nil
+		}
+
+		u, err := svc.AddCertBinding(ctx, userID, thumbprint, notAfterUnix)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_user_add_cert_binding", Err: err}
+		}
+
+		data, jsonErr := json.Marshal(u)
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_user_add_cert_binding", Err: jsonErr}
 		}
 
 		return mcp.NewToolResultText(string(data)), nil
@@ -158,9 +300,13 @@ func toolUserUpdate() mcp.Tool {
 // handleUserUpdate returns a tool handler that delegates to svc.UpdateUser.
 func handleUserUpdate(svc user.UserServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		id := mcp.ParseString(req, "id", "")
-		if id == "" {
+		idStr := mcp.ParseString(req, "id", "")
+		if idStr == "" {
 			return mcp.NewToolResultError("id is required"), nil
+		}
+		id, parseErr := parseUint64(idStr)
+		if parseErr != nil {
+			return mcp.NewToolResultError("id must be a uint64: " + parseErr.Error()), nil
 		}
 
 		updateReq := &user.UpdateUserRequest{
@@ -201,9 +347,13 @@ func toolUserDelete() mcp.Tool {
 // handleUserDelete returns a tool handler that delegates to svc.DeleteUser.
 func handleUserDelete(svc user.UserServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		id := mcp.ParseString(req, "id", "")
-		if id == "" {
+		idStr := mcp.ParseString(req, "id", "")
+		if idStr == "" {
 			return mcp.NewToolResultError("id is required"), nil
+		}
+		id, parseErr := parseUint64(idStr)
+		if parseErr != nil {
+			return mcp.NewToolResultError("id must be a uint64: " + parseErr.Error()), nil
 		}
 
 		if err := svc.DeleteUser(ctx, id); err != nil {
@@ -265,9 +415,13 @@ func toolUserEnable() mcp.Tool {
 // handleUserEnable returns a tool handler that delegates to svc.EnableUser.
 func handleUserEnable(svc user.UserServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		id := mcp.ParseString(req, "id", "")
-		if id == "" {
+		idStr := mcp.ParseString(req, "id", "")
+		if idStr == "" {
 			return mcp.NewToolResultError("id is required"), nil
+		}
+		id, parseErr := parseUint64(idStr)
+		if parseErr != nil {
+			return mcp.NewToolResultError("id must be a uint64: " + parseErr.Error()), nil
 		}
 
 		if err := svc.EnableUser(ctx, id); err != nil {
@@ -292,9 +446,13 @@ func toolUserDisable() mcp.Tool {
 // handleUserDisable returns a tool handler that delegates to svc.DisableUser.
 func handleUserDisable(svc user.UserServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		id := mcp.ParseString(req, "id", "")
-		if id == "" {
+		idStr := mcp.ParseString(req, "id", "")
+		if idStr == "" {
 			return mcp.NewToolResultError("id is required"), nil
+		}
+		id, parseErr := parseUint64(idStr)
+		if parseErr != nil {
+			return mcp.NewToolResultError("id must be a uint64: " + parseErr.Error()), nil
 		}
 
 		if err := svc.DisableUser(ctx, id); err != nil {

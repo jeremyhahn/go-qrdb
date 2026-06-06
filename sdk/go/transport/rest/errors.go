@@ -134,3 +134,30 @@ func (e *drainFailedError) Error() string {
 	}
 	return msg
 }
+
+// nilRequestError is returned when a typed request pointer required by an
+// SDK method is nil. It signals a programming error in the caller.
+type nilRequestError struct{}
+
+// Error returns a human-readable description.
+func (e *nilRequestError) Error() string {
+	return "request must not be nil"
+}
+
+// emptyTenantIDError is returned when an SDK method requires a tenant ID
+// but the caller provided an empty string.
+type emptyTenantIDError struct{}
+
+// Error returns a human-readable description.
+func (e *emptyTenantIDError) Error() string {
+	return "tenant id must not be empty"
+}
+
+// emptyCredentialNameError is returned when a credential SDK method
+// requires a credential name but the caller provided an empty string.
+type emptyCredentialNameError struct{}
+
+// Error returns a human-readable description.
+func (e *emptyCredentialNameError) Error() string {
+	return "credential name must not be empty"
+}

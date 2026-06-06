@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -32,6 +33,8 @@ import (
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
+	"github.com/jeremyhahn/go-qrdb/pkg/custodian"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -53,11 +56,6 @@ type mockBarrierService struct {
 	unsealShareResult  *service.UnsealShareProgress
 	unsealShareErr     error
 	unsealSharesErr    error
-	listSharesResult   *service.ShamirSharesInfo
-	listSharesErr      error
-	deleteShareErr     error
-	deleteAllSharesErr error
-	verifyErr          error
 	rekeyResult        *service.ShamirInitInfo
 	rekeyErr           error
 	recoveryGenResult  *service.RecoveryKeysInfo
@@ -80,7 +78,6 @@ func newMockBarrierService() *mockBarrierService {
 		},
 		shamirInitResult:  &service.ShamirInitInfo{Shares: []string{"share1", "share2"}, Threshold: 2, TotalShares: 3},
 		unsealShareResult: &service.UnsealShareProgress{Required: 2, Submitted: 1, Complete: false},
-		listSharesResult:  &service.ShamirSharesInfo{Count: 3, Threshold: 2, Total: 3},
 		rekeyResult:       &service.ShamirInitInfo{Shares: []string{"new1", "new2"}, Threshold: 2, TotalShares: 3},
 		recoveryGenResult: &service.RecoveryKeysInfo{Keys: []string{"key1"}, Threshold: 1, Total: 1},
 		rootTokenResult:   &service.RootTokenInfo{Token: "root-token-hex", CreatedAt: time.Now()},
@@ -117,21 +114,7 @@ func (m *mockBarrierService) BarrierUnsealWithShare(_ context.Context, _ string)
 func (m *mockBarrierService) BarrierUnsealWithShares(_ context.Context, _ []string) error {
 	return m.unsealSharesErr
 }
-func (m *mockBarrierService) BarrierShamirListShares(_ context.Context) (*service.ShamirSharesInfo, error) {
-	if m.listSharesErr != nil {
-		return nil, m.listSharesErr
-	}
-	return m.listSharesResult, nil
-}
-func (m *mockBarrierService) BarrierShamirDeleteShare(_ context.Context, _ int) error {
-	return m.deleteShareErr
-}
-func (m *mockBarrierService) BarrierShamirDeleteAllShares(_ context.Context) error {
-	return m.deleteAllSharesErr
-}
-func (m *mockBarrierService) BarrierShamirVerify(_ context.Context) error {
-	return m.verifyErr
-}
+
 func (m *mockBarrierService) BarrierRekey(_ context.Context, _, _ int) (*service.ShamirInitInfo, error) {
 	if m.rekeyErr != nil {
 		return nil, m.rekeyErr
@@ -204,7 +187,7 @@ func newMockCeremonyService() *mockCeremonyService {
 	}
 }
 
-func (m *mockCeremonyService) CeremonyInitialize(_ context.Context, _ ceremony.CeremonyCA) (*service.CeremonyInitResult, error) {
+func (m *mockCeremonyService) CeremonyInitialize(_ context.Context, _ ceremony.CeremonyCA, _ *service.CeremonyInitializeOptions) (*service.CeremonyInitResult, error) {
 	if m.initErr != nil {
 		return nil, m.initErr
 	}
@@ -239,6 +222,28 @@ func (m *mockCeremonyService) CeremonyStatus(_ context.Context) (*service.Ceremo
 		return nil, m.statusErr
 	}
 	return m.statusResult, nil
+}
+
+// CeremonyClaimShareBegin is a stub satisfying the Phase 4 custodian-ceremony
+// extension of service.CeremonyServicer. The gRPC coverage tests do not
+// exercise factor-based claim flows.
+func (m *mockCeremonyService) CeremonyClaimShareBegin(_ context.Context, _ string) (*service.CeremonyCustodianChallenge, error) {
+	return nil, fmt.Errorf("not implemented in mock")
+}
+
+// CeremonyClaimShareComplete is a stub for the custodian claim-complete flow.
+func (m *mockCeremonyService) CeremonyClaimShareComplete(_ context.Context, _, _ string, _ []byte) (*custodian.Custodian, error) {
+	return nil, fmt.Errorf("not implemented in mock")
+}
+
+// CeremonySubmitUnsealShare is a stub for custodian unseal-share submission.
+func (m *mockCeremonyService) CeremonySubmitUnsealShare(_ context.Context, _, _ string, _, _ []byte) (*service.CeremonyUnsealShareResult, error) {
+	return nil, fmt.Errorf("not implemented in mock")
+}
+
+// CeremonyEnrollExternalOfficer is a stub for external-officer enrollment.
+func (m *mockCeremonyService) CeremonyEnrollExternalOfficer(_ context.Context, _ *service.CeremonyEnrollExternalOfficerRequest) (*service.CeremonyEnrollExternalOfficerResponse, error) {
+	return nil, fmt.Errorf("not implemented in mock")
 }
 
 // ---------------------------------------------------------------------------
@@ -1265,109 +1270,6 @@ func TestGRPC_BarrierShamirUnsealShares_NilService(t *testing.T) {
 	defer cleanup()
 
 	_, err := client.BarrierShamirUnsealShares(context.Background(), &pb.BarrierShamirUnsealSharesRequest{})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.Unimplemented {
-		t.Fatalf("expected Unimplemented, got %s", st.Code())
-	}
-}
-
-func TestGRPC_BarrierShamirListShares_Success(t *testing.T) {
-	barrierSvc := newMockBarrierService()
-	client, cleanup := startTestServerFull(t, WithBarrierService(barrierSvc))
-	defer cleanup()
-
-	resp, err := client.BarrierShamirListShares(context.Background(), &emptypb.Empty{})
-	if err != nil {
-		t.Fatalf("BarrierShamirListShares failed: %v", err)
-	}
-	if resp.GetCount() != 3 {
-		t.Fatalf("expected count=3, got %d", resp.GetCount())
-	}
-}
-
-func TestGRPC_BarrierShamirListShares_NilService(t *testing.T) {
-	client, cleanup := startTestServerFull(t)
-	defer cleanup()
-
-	_, err := client.BarrierShamirListShares(context.Background(), &emptypb.Empty{})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.Unimplemented {
-		t.Fatalf("expected Unimplemented, got %s", st.Code())
-	}
-}
-
-func TestGRPC_BarrierShamirDeleteShare_Success(t *testing.T) {
-	barrierSvc := newMockBarrierService()
-	client, cleanup := startTestServerFull(t, WithBarrierService(barrierSvc))
-	defer cleanup()
-
-	_, err := client.BarrierShamirDeleteShare(context.Background(), &pb.BarrierShamirDeleteShareRequest{Index: 1})
-	if err != nil {
-		t.Fatalf("BarrierShamirDeleteShare failed: %v", err)
-	}
-}
-
-func TestGRPC_BarrierShamirDeleteShare_NilService(t *testing.T) {
-	client, cleanup := startTestServerFull(t)
-	defer cleanup()
-
-	_, err := client.BarrierShamirDeleteShare(context.Background(), &pb.BarrierShamirDeleteShareRequest{Index: 1})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.Unimplemented {
-		t.Fatalf("expected Unimplemented, got %s", st.Code())
-	}
-}
-
-func TestGRPC_BarrierShamirDeleteAllShares_Success(t *testing.T) {
-	barrierSvc := newMockBarrierService()
-	client, cleanup := startTestServerFull(t, WithBarrierService(barrierSvc))
-	defer cleanup()
-
-	_, err := client.BarrierShamirDeleteAllShares(context.Background(), &emptypb.Empty{})
-	if err != nil {
-		t.Fatalf("BarrierShamirDeleteAllShares failed: %v", err)
-	}
-}
-
-func TestGRPC_BarrierShamirDeleteAllShares_NilService(t *testing.T) {
-	client, cleanup := startTestServerFull(t)
-	defer cleanup()
-
-	_, err := client.BarrierShamirDeleteAllShares(context.Background(), &emptypb.Empty{})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.Unimplemented {
-		t.Fatalf("expected Unimplemented, got %s", st.Code())
-	}
-}
-
-func TestGRPC_BarrierShamirVerify_Success(t *testing.T) {
-	barrierSvc := newMockBarrierService()
-	client, cleanup := startTestServerFull(t, WithBarrierService(barrierSvc))
-	defer cleanup()
-
-	_, err := client.BarrierShamirVerify(context.Background(), &emptypb.Empty{})
-	if err != nil {
-		t.Fatalf("BarrierShamirVerify failed: %v", err)
-	}
-}
-
-func TestGRPC_BarrierShamirVerify_NilService(t *testing.T) {
-	client, cleanup := startTestServerFull(t)
-	defer cleanup()
-
-	_, err := client.BarrierShamirVerify(context.Background(), &emptypb.Empty{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -2733,5 +2635,21 @@ func (e *errorTSService) ListMetrics(prefix string, limit int) ([]string, error)
 	if e.listMetErr != nil {
 		return nil, e.listMetErr
 	}
+	return e.inner.ListMetrics(prefix, limit)
+}
+
+func (e *errorTSService) QueryWithConsistency(ctx context.Context, metric string, start, end time.Time, _ consistency.ReadOptions, opts ...timeseries.TSQueryOption) ([]timeseries.DataPoint, error) {
+	return e.inner.Query(ctx, metric, start, end, opts...)
+}
+
+func (e *errorTSService) AggregateWithConsistency(ctx context.Context, metric string, start, end time.Time, fn timeseries.AggFunc, interval time.Duration, _ consistency.ReadOptions) ([]timeseries.AggResult, error) {
+	return e.inner.Aggregate(ctx, metric, start, end, fn, interval)
+}
+
+func (e *errorTSService) QueryRichWithConsistency(ctx context.Context, req *timeseries.QueryRequest, _ consistency.ReadOptions) (*timeseries.QueryResult, error) {
+	return e.inner.QueryRich(ctx, req)
+}
+
+func (e *errorTSService) ListMetricsWithConsistency(_ context.Context, prefix string, limit int, _ consistency.ReadOptions) ([]string, error) {
 	return e.inner.ListMetrics(prefix, limit)
 }

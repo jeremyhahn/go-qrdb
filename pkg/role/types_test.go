@@ -70,7 +70,7 @@ func TestRole_JSONEmptyPermissions(t *testing.T) {
 	original := &Role{
 		ID:          "test-uuid",
 		Name:        "empty",
-		TenantID:    "default",
+		TenantID:    "system",
 		Permissions: []permission.Permission{},
 		System:      false,
 	}

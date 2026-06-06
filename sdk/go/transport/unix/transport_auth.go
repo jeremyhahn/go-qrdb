@@ -53,7 +53,7 @@ func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserReq
 }
 
 // GetUser retrieves a user by ID.
-func (t *Transport) GetUser(ctx context.Context, id string) (*transport.User, error) {
+func (t *Transport) GetUser(ctx context.Context, id uint64) (*transport.User, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -61,6 +61,59 @@ func (t *Transport) GetUser(ctx context.Context, id string) (*transport.User, er
 	resp, err := t.client.GetUser(ctx, &pb.GetUserRequest{Id: id})
 	if err != nil {
 		return nil, mapGRPCError("GetUser", err)
+	}
+
+	return protoToUser(resp), nil
+}
+
+// GetUserByUsername retrieves a user by tenant-scoped username.
+func (t *Transport) GetUserByUsername(ctx context.Context, tenantID, username string) (*transport.User, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	resp, err := t.client.GetUserByUsername(ctx, &pb.GetUserByUsernameRequest{
+		TenantId: tenantID,
+		Username: username,
+	})
+	if err != nil {
+		return nil, mapGRPCError("GetUserByUsername", err)
+	}
+
+	return protoToUser(resp), nil
+}
+
+// GetUserByCertThumbprint resolves a user by mTLS SPKI thumbprint via the
+// qrdb GetUserByCertThumbprint RPC over the unix socket.
+func (t *Transport) GetUserByCertThumbprint(ctx context.Context, thumbprint string) (*transport.User, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	resp, err := t.client.GetUserByCertThumbprint(ctx, &pb.GetUserByCertThumbprintRequest{
+		Thumbprint: thumbprint,
+	})
+	if err != nil {
+		return nil, mapGRPCError("GetUserByCertThumbprint", err)
+	}
+
+	return protoToUser(resp), nil
+}
+
+// AddCertBinding binds an mTLS SPKI thumbprint to a user via the qrdb
+// AddCertBinding RPC over the unix socket.
+func (t *Transport) AddCertBinding(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*transport.User, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	resp, err := t.client.AddCertBinding(ctx, &pb.AddCertBindingRequest{
+		UserId:       userID,
+		Thumbprint:   thumbprint,
+		NotAfterUnix: notAfterUnix,
+	})
+	if err != nil {
+		return nil, mapGRPCError("AddCertBinding", err)
 	}
 
 	return protoToUser(resp), nil
@@ -85,7 +138,7 @@ func (t *Transport) UpdateUser(ctx context.Context, req *transport.UpdateUserReq
 }
 
 // DeleteUser removes a non-system user by ID.
-func (t *Transport) DeleteUser(ctx context.Context, id string) error {
+func (t *Transport) DeleteUser(ctx context.Context, id uint64) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -126,7 +179,7 @@ func (t *Transport) ListUsers(ctx context.Context, req *transport.ListUsersReque
 }
 
 // EnableUser activates a user account.
-func (t *Transport) EnableUser(ctx context.Context, id string) error {
+func (t *Transport) EnableUser(ctx context.Context, id uint64) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -140,7 +193,7 @@ func (t *Transport) EnableUser(ctx context.Context, id string) error {
 }
 
 // DisableUser deactivates a user account.
-func (t *Transport) DisableUser(ctx context.Context, id string) error {
+func (t *Transport) DisableUser(ctx context.Context, id uint64) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -249,7 +302,7 @@ func (t *Transport) ListRoles(ctx context.Context, req *transport.ListRolesReque
 }
 
 // AssignRole assigns a role to a user.
-func (t *Transport) AssignRole(ctx context.Context, userID, roleID string) error {
+func (t *Transport) AssignRole(ctx context.Context, userID uint64, roleID string) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -266,7 +319,7 @@ func (t *Transport) AssignRole(ctx context.Context, userID, roleID string) error
 }
 
 // UnassignRole removes a role assignment from a user.
-func (t *Transport) UnassignRole(ctx context.Context, userID, roleID string) error {
+func (t *Transport) UnassignRole(ctx context.Context, userID uint64, roleID string) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}

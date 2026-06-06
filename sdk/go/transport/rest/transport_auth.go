@@ -51,12 +51,13 @@ func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserReq
 }
 
 // GetUser retrieves a user by its globally unique ID. Maps to GET /users/{id}.
-func (t *Transport) GetUser(ctx context.Context, id string) (*transport.User, error) {
+func (t *Transport) GetUser(ctx context.Context, id uint64) (*transport.User, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
 
-	reqURL := t.baseURL + "/users/" + url.PathEscape(id)
+	idStr := strconv.FormatUint(id, 10)
+	reqURL := t.baseURL + "/users/" + idStr
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return nil, &transport.RequestError{Method: "GetUser", Err: err}
@@ -69,7 +70,7 @@ func (t *Transport) GetUser(ctx context.Context, id string) (*transport.User, er
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, &transport.UserNotFoundError{ID: id}
+		return nil, &transport.UserNotFoundError{ID: idStr}
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -84,6 +85,105 @@ func (t *Transport) GetUser(ctx context.Context, id string) (*transport.User, er
 	return &user, nil
 }
 
+// GetUserByUsername retrieves a user by tenant-scoped username. Maps to
+// GET /users/by-username/{tenantID}/{username}.
+func (t *Transport) GetUserByUsername(ctx context.Context, tenantID, username string) (*transport.User, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	query := url.Values{}
+	if tenantID != "" {
+		query.Set("tenantID", tenantID)
+	}
+	reqURL := t.baseURL + "/users/by-username/" + url.PathEscape(username)
+	if encoded := query.Encode(); encoded != "" {
+		reqURL += "?" + encoded
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "GetUserByUsername", Err: err}
+	}
+
+	resp, err := t.client.Do(httpReq)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "GetUserByUsername", Err: err}
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &transport.UserNotFoundError{ID: username}
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, t.decodeErrorResponse("GetUserByUsername", resp)
+	}
+
+	var user transport.User
+	if err := json.NewDecoder(resp.Body).Decode(&user); err != nil {
+		return nil, &transport.RequestError{Method: "GetUserByUsername", Err: &jsonDecodeError{Err: err}}
+	}
+
+	return &user, nil
+}
+
+// GetUserByCertThumbprint resolves a user by mTLS SPKI thumbprint. Maps to
+// GET /users/by-cert-thumbprint/{thumbprint}.
+func (t *Transport) GetUserByCertThumbprint(ctx context.Context, thumbprint string) (*transport.User, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	reqURL := t.baseURL + "/users/by-cert-thumbprint/" + url.PathEscape(thumbprint)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "GetUserByCertThumbprint", Err: err}
+	}
+
+	resp, err := t.client.Do(httpReq)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "GetUserByCertThumbprint", Err: err}
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &transport.UserNotFoundError{ID: "cert_spki/" + thumbprint}
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, t.decodeErrorResponse("GetUserByCertThumbprint", resp)
+	}
+
+	var user transport.User
+	if err := json.NewDecoder(resp.Body).Decode(&user); err != nil {
+		return nil, &transport.RequestError{Method: "GetUserByCertThumbprint", Err: &jsonDecodeError{Err: err}}
+	}
+
+	return &user, nil
+}
+
+// AddCertBinding binds an mTLS SPKI thumbprint to a user. Maps to
+// POST /users/{userID}/cert-bindings.
+func (t *Transport) AddCertBinding(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*transport.User, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	payload := map[string]any{
+		"thumbprint":     thumbprint,
+		"not_after_unix": notAfterUnix,
+	}
+
+	var user transport.User
+	path := "/users/" + strconv.FormatUint(userID, 10) + "/cert-bindings"
+	if err := t.postJSONDecode(ctx, "AddCertBinding", path, payload, &user); err != nil {
+		return nil, err
+	}
+
+	return &user, nil
+}
+
 // UpdateUser applies partial updates to an existing user. Maps to
 // PUT /users/{id}.
 func (t *Transport) UpdateUser(ctx context.Context, req *transport.UpdateUserRequest) (*transport.User, error) {
@@ -92,19 +192,19 @@ func (t *Transport) UpdateUser(ctx context.Context, req *transport.UpdateUserReq
 	}
 
 	var user transport.User
-	if err := t.putJSONDecode(ctx, "UpdateUser", "/users/"+url.PathEscape(req.ID), req, &user); err != nil {
+	if err := t.putJSONDecode(ctx, "UpdateUser", "/users/"+strconv.FormatUint(req.ID, 10), req, &user); err != nil {
 		return nil, err
 	}
 	return &user, nil
 }
 
 // DeleteUser removes a non-system user by ID. Maps to DELETE /users/{id}.
-func (t *Transport) DeleteUser(ctx context.Context, id string) error {
+func (t *Transport) DeleteUser(ctx context.Context, id uint64) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
 
-	reqURL := t.baseURL + "/users/" + url.PathEscape(id)
+	reqURL := t.baseURL + "/users/" + strconv.FormatUint(id, 10)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, reqURL, nil)
 	if err != nil {
 		return &transport.RequestError{Method: "DeleteUser", Err: err}
@@ -173,21 +273,21 @@ func (t *Transport) ListUsers(ctx context.Context, req *transport.ListUsersReque
 }
 
 // EnableUser activates a user account. Maps to POST /users/{id}/enable.
-func (t *Transport) EnableUser(ctx context.Context, id string) error {
+func (t *Transport) EnableUser(ctx context.Context, id uint64) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
 
-	return t.postJSON(ctx, "EnableUser", "/users/"+url.PathEscape(id)+"/enable", nil)
+	return t.postJSON(ctx, "EnableUser", "/users/"+strconv.FormatUint(id, 10)+"/enable", nil)
 }
 
 // DisableUser deactivates a user account. Maps to POST /users/{id}/disable.
-func (t *Transport) DisableUser(ctx context.Context, id string) error {
+func (t *Transport) DisableUser(ctx context.Context, id uint64) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
 
-	return t.postJSON(ctx, "DisableUser", "/users/"+url.PathEscape(id)+"/disable", nil)
+	return t.postJSON(ctx, "DisableUser", "/users/"+strconv.FormatUint(id, 10)+"/disable", nil)
 }
 
 // ---------------------------------------------------------------------------
@@ -330,7 +430,7 @@ func (t *Transport) ListRoles(ctx context.Context, req *transport.ListRolesReque
 }
 
 // AssignRole assigns a role to a user. Maps to POST /roles/assign.
-func (t *Transport) AssignRole(ctx context.Context, userID, roleID string) error {
+func (t *Transport) AssignRole(ctx context.Context, userID uint64, roleID string) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -345,7 +445,7 @@ func (t *Transport) AssignRole(ctx context.Context, userID, roleID string) error
 
 // UnassignRole removes a role assignment from a user. Maps to
 // POST /roles/unassign.
-func (t *Transport) UnassignRole(ctx context.Context, userID, roleID string) error {
+func (t *Transport) UnassignRole(ctx context.Context, userID uint64, roleID string) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}

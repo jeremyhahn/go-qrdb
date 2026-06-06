@@ -14,14 +14,28 @@
 
 package user
 
-// UserNotFoundError is returned when a user ID does not exist.
+import "strconv"
+
+// UserNotFoundError is returned when a user does not exist. For a lookup by
+// ID, ID carries the numeric identifier. For a lookup by a non-numeric key
+// (username or cert thumbprint), Lookup carries a human-readable descriptor of
+// the key that failed to resolve and ID is zero.
 type UserNotFoundError struct {
-	ID string
+	// ID is the numeric user id that was not found. Zero when the lookup was
+	// not by id (see Lookup).
+	ID uint64
+
+	// Lookup is a descriptor of a non-id lookup that failed (e.g.
+	// "tenant/username" or "cert_spki/<thumbprint>"). Empty for id lookups.
+	Lookup string
 }
 
 // Error returns a human-readable description of the not-found condition.
 func (e *UserNotFoundError) Error() string {
-	return "user: not found: " + e.ID
+	if e.Lookup != "" {
+		return "user: not found: " + e.Lookup
+	}
+	return "user: not found: " + strconv.FormatUint(e.ID, 10)
 }
 
 // UsernameExistsError is returned when a username is already taken
@@ -38,22 +52,22 @@ func (e *UsernameExistsError) Error() string {
 
 // UserDisabledError is returned when operating on a disabled user.
 type UserDisabledError struct {
-	ID string
+	ID uint64
 }
 
 // Error returns a human-readable description of the disabled condition.
 func (e *UserDisabledError) Error() string {
-	return "user: disabled: " + e.ID
+	return "user: disabled: " + strconv.FormatUint(e.ID, 10)
 }
 
 // SystemUserImmutableError is returned when trying to delete a system user.
 type SystemUserImmutableError struct {
-	ID string
+	ID uint64
 }
 
 // Error returns a human-readable description of the immutability constraint.
 func (e *SystemUserImmutableError) Error() string {
-	return "user: system user cannot be deleted: " + e.ID
+	return "user: system user cannot be deleted: " + strconv.FormatUint(e.ID, 10)
 }
 
 // StoreError is returned for store-level operation failures.
@@ -87,4 +101,21 @@ type ValidationError struct {
 // Error returns a human-readable description of the validation failure.
 func (e *ValidationError) Error() string {
 	return "user: validation failed: " + e.Field + ": " + e.Reason
+}
+
+// CertBindingConflictError is returned when a caller attempts to bind a
+// certificate thumbprint that is already bound to a different user. A
+// thumbprint resolves to exactly one identity, so silently overwriting the
+// existing mapping would let a caller hijack another user's mTLS identity.
+type CertBindingConflictError struct {
+	Thumbprint   string
+	BoundUserID  uint64
+	TargetUserID uint64
+}
+
+// Error returns a human-readable description of the binding conflict. The
+// thumbprint is included to aid operators; it is a public-key hash, not a
+// secret.
+func (e *CertBindingConflictError) Error() string {
+	return "user: cert thumbprint " + e.Thumbprint + " is already bound to user " + strconv.FormatUint(e.BoundUserID, 10)
 }

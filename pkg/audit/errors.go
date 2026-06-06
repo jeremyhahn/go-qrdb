@@ -51,3 +51,63 @@ type ConfigError struct {
 func (e *ConfigError) Error() string {
 	return "audit: invalid config: " + e.Detail
 }
+
+// ErrChainBroken is returned by VerifyChain when a hash-chain link is broken.
+// Index is the zero-based position of the first mismatching event.
+type ErrChainBroken struct {
+	Index    int
+	Expected string
+	Got      string
+}
+
+// Error returns a human-readable description of the chain break.
+func (e *ErrChainBroken) Error() string {
+	return "audit: chain broken at index " + itoa(e.Index) +
+		": expected prevHash " + e.Expected + ", got " + e.Got
+}
+
+// ErrFileLocked is returned when the audit file cannot be opened because
+// another process holds an exclusive lock.
+type ErrFileLocked struct {
+	Path string
+}
+
+// Error returns a human-readable description of the lock conflict.
+func (e *ErrFileLocked) Error() string {
+	return "audit: file locked: " + e.Path
+}
+
+// RetentionError is returned when the retention pruning scan fails.
+type RetentionError struct {
+	Err error
+}
+
+// Error returns a human-readable description of the retention failure.
+func (e *RetentionError) Error() string { return "audit: retention failure: " + e.Err.Error() }
+
+// Unwrap returns the underlying error.
+func (e *RetentionError) Unwrap() error { return e.Err }
+
+// itoa converts an int to its decimal string representation without
+// importing strconv to keep the errors package lightweight.
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	var buf [20]byte
+	pos := len(buf)
+	for n > 0 {
+		pos--
+		buf[pos] = byte('0' + n%10)
+		n /= 10
+	}
+	if neg {
+		pos--
+		buf[pos] = '-'
+	}
+	return string(buf[pos:])
+}

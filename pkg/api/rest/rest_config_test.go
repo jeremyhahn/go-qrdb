@@ -34,7 +34,7 @@ func TestConfigHandlers_Initialized_True(t *testing.T) {
 		statusFn: func(_ context.Context) (*service.BarrierStatusInfo, error) {
 			return &service.BarrierStatusInfo{
 				Sealed:        false,
-				Strategy:      "software",
+				Strategy:      "passphrase",
 				InitializedAt: time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC),
 			}, nil
 		},
@@ -61,7 +61,7 @@ func TestConfigHandlers_Initialized_False_ZeroTime(t *testing.T) {
 		statusFn: func(_ context.Context) (*service.BarrierStatusInfo, error) {
 			return &service.BarrierStatusInfo{
 				Sealed:   true,
-				Strategy: "software",
+				Strategy: "passphrase",
 			}, nil
 		},
 	}

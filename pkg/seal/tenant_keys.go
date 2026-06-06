@@ -14,7 +14,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/crypto/aesgcm"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
-	"github.com/jeremyhahn/go-quicraft/pkg/enclave"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 const tenantDEKPrefix = "__sys:tenant_keys/"
@@ -24,12 +24,12 @@ var _ TenantKeyManager = (*tenantKeyManager)(nil)
 
 // tenantKeyManager manages per-tenant data encryption keys using envelope
 // encryption. Each tenant's DEK is wrapped by the system EncryptionBarrier
-// and persisted in a KVStore. Plaintext DEKs are cached in memguard
+// and persisted in a KVStore. Plaintext DEKs are cached in *secure.Secret
 // enclaves (encrypted at rest in memory) within a sync.Map for fast access.
 type tenantKeyManager struct {
 	barrier EncryptionBarrier
 	store   kvstore.KVStore
-	cache   sync.Map // map[string]*enclave.ProtectedKey
+	cache   sync.Map // map[string]*secure.Secret
 }
 
 // NewTenantKeyManager creates a new TenantKeyManager that uses the given
@@ -61,8 +61,8 @@ func (t *tenantKeyManager) GetTenantDEK(ctx context.Context, tenantID string) ([
 
 	// Check cache first.
 	if cached, ok := t.cache.Load(tenantID); ok {
-		pk := cached.(*enclave.ProtectedKey)
-		buf, err := pk.Open()
+		sec := cached.(*secure.Secret)
+		buf, err := sec.Open()
 		if err != nil {
 			return nil, &DEKDerivationError{TenantID: tenantID, Err: err}
 		}
@@ -114,11 +114,11 @@ func (t *tenantKeyManager) RotateTenantDEK(ctx context.Context, tenantID string)
 
 	// Wrap and persist.
 	if err := t.wrapAndStore(ctx, tenantID, dek); err != nil {
-		enclave.WipeBytes(dek)
+		secure.Wipe(dek)
 		return err
 	}
 
-	// Update cache (cacheDEK wipes dek via NewProtectedKey).
+	// Update cache (cacheDEK wipes dek via NewSecret).
 	t.clearCachedDEK(tenantID)
 	t.cacheDEK(tenantID, dek)
 	return nil
@@ -169,9 +169,14 @@ func (t *tenantKeyManager) ImportTenantKey(ctx context.Context, tenantID string,
 	return nil
 }
 
-// ClearCache removes all cached plaintext DEKs from memory.
+// ClearCache removes all cached plaintext DEKs from memory, destroying
+// each Secret so its enclave is zeroed immediately rather than waiting
+// for GC finalizers.
 func (t *tenantKeyManager) ClearCache() {
-	t.cache.Range(func(key, _ any) bool {
+	t.cache.Range(func(key, val any) bool {
+		if sec, ok := val.(*secure.Secret); ok {
+			sec.Destroy()
+		}
 		t.cache.Delete(key)
 		return true
 	})
@@ -186,11 +191,11 @@ func (t *tenantKeyManager) generateAndStoreDEK(ctx context.Context, tenantID str
 	}
 
 	if err := t.wrapAndStore(ctx, tenantID, dek); err != nil {
-		enclave.WipeBytes(dek)
+		secure.Wipe(dek)
 		return nil, err
 	}
 
-	// Copy before cacheDEK wipes dek via NewProtectedKey.
+	// Copy before cacheDEK wipes dek via NewSecret.
 	out := make([]byte, len(dek))
 	copy(out, dek)
 	t.cacheDEK(tenantID, dek)
@@ -211,16 +216,32 @@ func (t *tenantKeyManager) wrapAndStore(ctx context.Context, tenantID string, de
 	return nil
 }
 
-// cacheDEK wraps the DEK in a memguard enclave and stores it in the cache.
-// The input dek slice is wiped by NewProtectedKey.
+// cacheDEK wraps the DEK in a *secure.Secret and stores it in the cache.
+// The input dek slice is wiped by secure.NewSecret. Any pre-existing
+// cached Secret for the same tenant is destroyed first to prevent
+// enclave leaks.
 func (t *tenantKeyManager) cacheDEK(tenantID string, dek []byte) {
-	pk := enclave.NewProtectedKey(dek)
-	t.cache.Store(tenantID, pk)
+	sec, err := secure.NewSecret(dek)
+	if err != nil {
+		// NewSecret only fails on empty input, which aesgcm.GenerateKey
+		// never produces. Defensive wipe.
+		secure.Wipe(dek)
+		return
+	}
+	if prev, loaded := t.cache.Swap(tenantID, sec); loaded {
+		if old, ok := prev.(*secure.Secret); ok {
+			old.Destroy()
+		}
+	}
 }
 
-// clearCachedDEK removes a cached DEK.
+// clearCachedDEK removes a cached DEK and destroys its Secret.
 func (t *tenantKeyManager) clearCachedDEK(tenantID string) {
-	t.cache.Delete(tenantID)
+	if prev, loaded := t.cache.LoadAndDelete(tenantID); loaded {
+		if sec, ok := prev.(*secure.Secret); ok {
+			sec.Destroy()
+		}
+	}
 }
 
 // tenantDEKStoreKey returns the KVStore key for a tenant's wrapped DEK.

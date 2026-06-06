@@ -15,6 +15,7 @@
 package statemachine
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"sync"
@@ -248,16 +249,14 @@ func TestFSM_TSWrite_NotConfigured(t *testing.T) {
 	results := make([]sm.Result, 1)
 
 	err := fsm.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected ServiceNotConfiguredError, got nil")
+	if err != nil {
+		t.Fatalf("expected nil error (SNC encoded in result.Data), got %v", err)
 	}
-
-	var svcErr *ServiceNotConfiguredError
-	if !errors.As(err, &svcErr) {
-		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
+	if len(results[0].Data) == 0 {
+		t.Fatal("expected ServiceNotConfiguredError encoded in result.Data")
 	}
-	if svcErr.Service != "timeseries" {
-		t.Fatalf("expected service 'timeseries', got %q", svcErr.Service)
+	if !bytes.Contains(results[0].Data, []byte("timeseries")) {
+		t.Fatalf("expected Data to mention %q, got %q", "timeseries", results[0].Data)
 	}
 }
 
@@ -371,16 +370,14 @@ func TestFSM_TSWriteBatch_NotConfigured(t *testing.T) {
 	results := make([]sm.Result, 1)
 
 	err := fsm.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected ServiceNotConfiguredError, got nil")
+	if err != nil {
+		t.Fatalf("expected nil error (SNC encoded in result.Data), got %v", err)
 	}
-
-	var svcErr *ServiceNotConfiguredError
-	if !errors.As(err, &svcErr) {
-		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
+	if len(results[0].Data) == 0 {
+		t.Fatal("expected ServiceNotConfiguredError encoded in result.Data")
 	}
-	if svcErr.Service != "timeseries" {
-		t.Fatalf("expected service 'timeseries', got %q", svcErr.Service)
+	if !bytes.Contains(results[0].Data, []byte("timeseries")) {
+		t.Fatalf("expected Data to mention %q, got %q", "timeseries", results[0].Data)
 	}
 }
 
@@ -461,16 +458,14 @@ func TestFSM_TSWritePoint_NotConfigured(t *testing.T) {
 	results := make([]sm.Result, 1)
 
 	err := fsm.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected ServiceNotConfiguredError, got nil")
+	if err != nil {
+		t.Fatalf("expected nil error (SNC encoded in result.Data), got %v", err)
 	}
-
-	var svcErr *ServiceNotConfiguredError
-	if !errors.As(err, &svcErr) {
-		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
+	if len(results[0].Data) == 0 {
+		t.Fatal("expected ServiceNotConfiguredError encoded in result.Data")
 	}
-	if svcErr.Service != "timeseries" {
-		t.Fatalf("expected service 'timeseries', got %q", svcErr.Service)
+	if !bytes.Contains(results[0].Data, []byte("timeseries")) {
+		t.Fatalf("expected Data to mention %q, got %q", "timeseries", results[0].Data)
 	}
 }
 
@@ -545,16 +540,14 @@ func TestFSM_TSDeleteSeries_NotConfigured(t *testing.T) {
 	results := make([]sm.Result, 1)
 
 	err := fsm.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected ServiceNotConfiguredError, got nil")
+	if err != nil {
+		t.Fatalf("expected nil error (SNC encoded in result.Data), got %v", err)
 	}
-
-	var svcErr *ServiceNotConfiguredError
-	if !errors.As(err, &svcErr) {
-		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
+	if len(results[0].Data) == 0 {
+		t.Fatal("expected ServiceNotConfiguredError encoded in result.Data")
 	}
-	if svcErr.Service != "timeseries" {
-		t.Fatalf("expected service 'timeseries', got %q", svcErr.Service)
+	if !bytes.Contains(results[0].Data, []byte("timeseries")) {
+		t.Fatalf("expected Data to mention %q, got %q", "timeseries", results[0].Data)
 	}
 }
 
@@ -631,16 +624,14 @@ func TestFSM_TSSetRetention_NotConfigured(t *testing.T) {
 	results := make([]sm.Result, 1)
 
 	err := fsm.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected ServiceNotConfiguredError, got nil")
+	if err != nil {
+		t.Fatalf("expected nil error (SNC encoded in result.Data), got %v", err)
 	}
-
-	var svcErr *ServiceNotConfiguredError
-	if !errors.As(err, &svcErr) {
-		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
+	if len(results[0].Data) == 0 {
+		t.Fatal("expected ServiceNotConfiguredError encoded in result.Data")
 	}
-	if svcErr.Service != "timeseries" {
-		t.Fatalf("expected service 'timeseries', got %q", svcErr.Service)
+	if !bytes.Contains(results[0].Data, []byte("timeseries")) {
+		t.Fatalf("expected Data to mention %q, got %q", "timeseries", results[0].Data)
 	}
 }
 

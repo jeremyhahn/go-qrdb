@@ -196,3 +196,33 @@ func (t *Transport) CeremonySignCSR(ctx context.Context, req *transport.SignCSRI
 		CertPEM: resp.GetCertPem(),
 	}, nil
 }
+
+// CeremonyEnrollExternalOfficer enrols an officer whose key material lives
+// outside go-qrdb (external CA cert or bare public key).
+func (t *Transport) CeremonyEnrollExternalOfficer(ctx context.Context, req *transport.EnrollExternalOfficerRequest) (*transport.EnrollExternalOfficerResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	payload, err := proto.Marshal(&pb.CeremonyEnrollExternalOfficerRequest{
+		Username:   req.Username,
+		CertPem:    req.CertPEM,
+		PubkeyPem:  req.PubKeyPEM,
+		ShareIndex: int32(req.ShareIndex),
+		AuthFactor: req.AuthFactor,
+		ShareBytes: req.ShareBytes,
+	})
+	if err != nil {
+		return nil, &marshalError{Err: err}
+	}
+	respBytes, err := t.call(ctx, "ceremony.EnrollExternalOfficer", payload)
+	if err != nil {
+		return nil, err
+	}
+	var resp pb.CeremonyEnrollExternalOfficerResponse
+	if err := proto.Unmarshal(respBytes, &resp); err != nil {
+		return nil, &unmarshalError{Err: err}
+	}
+	return &transport.EnrollExternalOfficerResponse{
+		SealedShare: resp.GetSealedShare(),
+	}, nil
+}

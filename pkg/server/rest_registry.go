@@ -17,6 +17,7 @@ package server
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -37,7 +38,7 @@ import (
 //     validate that the tenant's barrier is not sealed.
 //  3. The database is resolved from the DatabaseServiceRegistry. When the
 //     database is not found, DatabaseNotFoundError is returned.
-//  4. All non-default tenants receive a namespace-prefixed KVService so that
+//  4. All non-system tenants receive a namespace-prefixed KVService so that
 //     their keys are physically separated under the shared Raft state machine.
 //
 // Both IsolationBarrier and IsolationPrefix modes use namespace prefixing for
@@ -48,10 +49,10 @@ import (
 //
 // restServiceRegistry is safe for concurrent use.
 type restServiceRegistry struct {
-	dbReg         *DatabaseServiceRegistry
-	barrierReg    *seal.BarrierRegistry
-	tenantSvc     tenant.TenantServicer
-	defaultTenant string
+	dbReg        *DatabaseServiceRegistry
+	barrierReg   *seal.BarrierRegistry
+	tenantSvc    tenant.TenantServicer
+	systemTenant string
 }
 
 // NewRESTServiceRegistry creates a rest.ServiceRegistry that resolves
@@ -62,18 +63,18 @@ type restServiceRegistry struct {
 // When barrierReg is nil, barrier checks are skipped.
 // When tenantSvc is nil, tenant lookup and unknown-tenant rejection are skipped
 // (backward-compatible with deployments that do not use the tenant service).
-// defaultTenant is the tenant name that bypasses namespace prefixing (typically
-// "default") so that single-tenant deployments continue to work unchanged.
+// systemTenant is the tenant name that bypasses namespace prefixing (typically
+// tenant.SystemTenantID) so that single-tenant deployments continue to work unchanged.
 func NewRESTServiceRegistry(
 	dbReg *DatabaseServiceRegistry,
 	barrierReg *seal.BarrierRegistry,
-	defaultTenant string,
+	systemTenant string,
 	opts ...RESTRegistryOption,
 ) rest.ServiceRegistry {
 	r := &restServiceRegistry{
-		dbReg:         dbReg,
-		barrierReg:    barrierReg,
-		defaultTenant: defaultTenant,
+		dbReg:        dbReg,
+		barrierReg:   barrierReg,
+		systemTenant: systemTenant,
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -93,7 +94,7 @@ func WithTenantServicer(svc tenant.TenantServicer) RESTRegistryOption {
 }
 
 // resolve validates the (tenant, db) pair and returns the DatabaseServices
-// wrapped with per-tenant namespace isolation. For non-default tenants, the
+// wrapped with per-tenant namespace isolation. For non-system tenants, the
 // KV service is wrapped with a prefix so that each tenant's keys are
 // logically separated under the shared Raft state machine.
 func (r *restServiceRegistry) resolve(tenantID, db string) (*DatabaseServices, error) {
@@ -107,10 +108,10 @@ func (r *restServiceRegistry) resolve(tenantID, db string) (*DatabaseServices, e
 		return nil, &rest.DatabaseNotFoundError{TenantID: tenantID, Database: db}
 	}
 
-	// The default tenant uses the shared keyspace without any prefix. All
+	// The system tenant uses the shared keyspace without any prefix. All
 	// other tenants receive a namespaced copy of DatabaseServices that
 	// transparently prepends "{tenantID}/" to every key.
-	if tenantID == r.defaultTenant {
+	if tenantID == r.systemTenant {
 		return svcs, nil
 	}
 
@@ -126,8 +127,22 @@ func (r *restServiceRegistry) resolveTenant(tenantID string) (tenant.IsolationTy
 		return tenant.IsolationBarrier, r.checkTenantBarrier(tenantID)
 	}
 
-	info, err := r.tenantSvc.GetTenant(context.Background(), tenantID)
+	// Bound the lookup so a stalled Raft ReadIndex during restart cannot
+	// hang every REST request indefinitely. The system-tenant fallback
+	// below still lets requests proceed against the barrier check when
+	// the lookup fails (including timeouts).
+	lookupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	info, err := r.tenantSvc.GetTenant(lookupCtx, tenantID)
+	cancel()
 	if err != nil {
+		// System tenant is auto-provisioned; treat a lookup miss or a sealed
+		// cluster barrier as "not yet materialized" rather than a hard 404 so
+		// fresh deployments keep working before the operator initializes the
+		// barrier via /v1/barrier/initialize. System tenant always uses
+		// barrier isolation per server defaults.
+		if tenantID == r.systemTenant {
+			return tenant.IsolationBarrier, r.checkTenantBarrier(tenantID)
+		}
 		if errors.Is(err, tenant.ErrTenantNotFound) {
 			return "", &rest.TenantNotFoundError{TenantID: tenantID}
 		}
@@ -147,10 +162,10 @@ func (r *restServiceRegistry) resolveTenant(tenantID string) (tenant.IsolationTy
 }
 
 // checkTenantBarrier validates the tenant against the barrier registry when
-// applicable. It is a no-op for the default tenant or when no registry is
+// applicable. It is a no-op for the system tenant or when no registry is
 // configured.
 func (r *restServiceRegistry) checkTenantBarrier(tenantID string) error {
-	if r.barrierReg == nil || tenantID == r.defaultTenant {
+	if r.barrierReg == nil || tenantID == r.systemTenant {
 		return nil
 	}
 	tb, err := r.barrierReg.GetTenant(tenantID)
@@ -252,13 +267,19 @@ func (r *restServiceRegistry) TimeSeriesService(tenantID, db string) (service.Ti
 }
 
 // VectorService returns the VectorServicer for the given (tenant, db) scope.
-// VectorServicer is not yet tracked per-database in DatabaseServices;
-// this method returns ServiceNotImplementedError until it is added.
+// VectorService returns the VectorServicer for the given (tenant, db) scope.
+// Returns ServiceNotImplementedError when the resolved database has no
+// Vector service attached (vector support typically requires the
+// qrdb_vector build tag to register a servicer during startup).
 func (r *restServiceRegistry) VectorService(tenantID, db string) (service.VectorServicer, error) {
-	if _, err := r.resolve(tenantID, db); err != nil {
+	svcs, err := r.resolve(tenantID, db)
+	if err != nil {
 		return nil, err
 	}
-	return nil, &rest.ServiceNotImplementedError{Service: "vector"}
+	if svcs.Vector == nil {
+		return nil, &rest.ServiceNotImplementedError{Service: "vector"}
+	}
+	return svcs.Vector, nil
 }
 
 // TransactionService returns the TransactionServicer for the given (tenant, db) scope.

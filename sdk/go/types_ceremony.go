@@ -148,3 +148,19 @@ var NewCustodianGroupService = ceremony.NewCustodianGroupService
 
 // NewShareService creates a new ShareService.
 var NewShareService = ceremony.NewShareService
+
+// AuthenticatorType identifies the hardware or software that backs an
+// officer's signing credential.
+type AuthenticatorType = ceremony.AuthenticatorType
+
+// AuthenticatorType constants.
+const (
+	// AuthenticatorPIV indicates a PIV smart card credential.
+	AuthenticatorPIV = ceremony.AuthenticatorPIV
+
+	// AuthenticatorFIDO2 indicates a FIDO2 / CTAP2 credential.
+	AuthenticatorFIDO2 = ceremony.AuthenticatorFIDO2
+
+	// AuthenticatorSoftware indicates a software-backed credential.
+	AuthenticatorSoftware = ceremony.AuthenticatorSoftware
+)

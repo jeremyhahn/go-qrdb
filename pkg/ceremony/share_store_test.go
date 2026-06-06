@@ -22,7 +22,7 @@ import (
 )
 
 func TestMemguardShareStore_StoreAndClaim(t *testing.T) {
-	store := newMemguardShareStore()
+	store := newSealedShareStore()
 
 	shareData := []byte(`{"index":1,"value":"abc123"}`)
 	err := store.Store("alice", shareData)
@@ -41,14 +41,14 @@ func TestMemguardShareStore_StoreAndClaim(t *testing.T) {
 }
 
 func TestMemguardShareStore_ClaimNonexistent(t *testing.T) {
-	store := newMemguardShareStore()
+	store := newSealedShareStore()
 
 	_, err := store.Claim("nobody")
 	assert.ErrorIs(t, err, ErrShareNotFound)
 }
 
 func TestMemguardShareStore_DoubleClaim(t *testing.T) {
-	store := newMemguardShareStore()
+	store := newSealedShareStore()
 
 	err := store.Store("bob", []byte(`{"index":2,"value":"def456"}`))
 	require.NoError(t, err)
@@ -61,7 +61,7 @@ func TestMemguardShareStore_DoubleClaim(t *testing.T) {
 }
 
 func TestMemguardShareStore_ExistsAndClaimed(t *testing.T) {
-	store := newMemguardShareStore()
+	store := newSealedShareStore()
 
 	// Before storing: not exists, not claimed.
 	assert.False(t, store.Exists("charlie"))
@@ -81,7 +81,7 @@ func TestMemguardShareStore_ExistsAndClaimed(t *testing.T) {
 }
 
 func TestMemguardShareStore_DestroyAll(t *testing.T) {
-	store := newMemguardShareStore()
+	store := newSealedShareStore()
 
 	err := store.Store("alice", []byte(`share-a`))
 	require.NoError(t, err)
@@ -102,7 +102,7 @@ func TestMemguardShareStore_DestroyAll(t *testing.T) {
 }
 
 func TestMemguardShareStore_StoreMultipleClaimOne(t *testing.T) {
-	store := newMemguardShareStore()
+	store := newSealedShareStore()
 
 	err := store.Store("alice", []byte(`share-alice`))
 	require.NoError(t, err)
@@ -125,7 +125,7 @@ func TestMemguardShareStore_StoreMultipleClaimOne(t *testing.T) {
 }
 
 func TestMemguardShareStore_StoreOverwrite(t *testing.T) {
-	store := newMemguardShareStore()
+	store := newSealedShareStore()
 
 	err := store.Store("alice", []byte(`share-v1`))
 	require.NoError(t, err)

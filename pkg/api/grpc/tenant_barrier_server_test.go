@@ -1,0 +1,567 @@
+// Copyright 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+//go:build codec_json && raft && qrdb_ts && qrdb_vector && qrdb_mysql && qrdb_pgsql && qrdb_etcd
+
+package grpc
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net"
+	"testing"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/wrapperspb"
+
+	tenantpkg "github.com/jeremyhahn/go-qrdb/pkg/tenant"
+)
+
+// ---------------------------------------------------------------------------
+// startTenantBarrierTestServer brings up a bare grpc.Server with the tenant
+// barrier service registered against the supplied servicer and returns a
+// raw client connection plus a cleanup function.
+// ---------------------------------------------------------------------------
+
+func startTenantBarrierTestServer(t *testing.T, svc tenantpkg.TenantServicer) (*grpc.ClientConn, func()) {
+	t.Helper()
+	srv := grpc.NewServer()
+	RegisterTenantBarrierService(srv, svc, nil)
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	go func() { _ = srv.Serve(lis) }()
+
+	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		srv.Stop()
+		t.Fatalf("grpc.NewClient: %v", err)
+	}
+	return conn, func() {
+		_ = conn.Close()
+		srv.Stop()
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Init handler tests
+// ---------------------------------------------------------------------------
+
+func TestTenantBarrier_Init_Success(t *testing.T) {
+	svc := newMockTenantService()
+	captured := struct {
+		id         string
+		passphrase string
+		threshold  int
+		shares     int
+	}{}
+	svc.barrierInitFn = func(_ context.Context, id, passphrase string, th, sh int) error {
+		captured.id, captured.passphrase, captured.threshold, captured.shares = id, passphrase, th, sh
+		return nil
+	}
+
+	err := TenantBarrierInitUnary(context.Background(), connect(t, svc), &GRPCTenantBarrierInitRequest{
+		TenantID: "acme", Passphrase: "supplied-secret", Threshold: 3, Shares: 5,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if captured.id != "acme" || captured.passphrase != "supplied-secret" || captured.threshold != 3 || captured.shares != 5 {
+		t.Errorf("unexpected captured args: %+v", captured)
+	}
+}
+
+func TestTenantBarrier_Init_NilService(t *testing.T) {
+	srv := &tenantBarrierServer{svc: nil}
+	req := wrapperspb.Bytes([]byte(`{"tenant_id":"acme"}`))
+	_, err := srv.init(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if st, _ := status.FromError(err); st.Code() != codes.Unimplemented {
+		t.Fatalf("expected Unimplemented, got %s", st.Code())
+	}
+}
+
+func TestTenantBarrier_Init_EmptyTenantID(t *testing.T) {
+	svc := newMockTenantService()
+	conn, cleanup := startTenantBarrierTestServer(t, svc)
+	defer cleanup()
+
+	err := TenantBarrierInitUnary(context.Background(), conn, &GRPCTenantBarrierInitRequest{TenantID: ""})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if st, _ := status.FromError(err); st.Code() != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument, got %s", st.Code())
+	}
+}
+
+func TestTenantBarrier_Init_InvalidJSON(t *testing.T) {
+	srv := &tenantBarrierServer{svc: newMockTenantService()}
+	req := wrapperspb.Bytes([]byte(`{not-json`))
+	_, err := srv.init(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if st, _ := status.FromError(err); st.Code() != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument, got %s", st.Code())
+	}
+}
+
+func TestTenantBarrier_Init_NotFound(t *testing.T) {
+	svc := newMockTenantService()
+	svc.barrierInitFn = func(_ context.Context, _, _ string, _, _ int) error {
+		return tenantpkg.ErrTenantNotFound
+	}
+	conn, cleanup := startTenantBarrierTestServer(t, svc)
+	defer cleanup()
+
+	err := TenantBarrierInitUnary(context.Background(), conn, &GRPCTenantBarrierInitRequest{TenantID: "missing"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if st, _ := status.FromError(err); st.Code() != codes.NotFound {
+		t.Fatalf("expected NotFound, got %s", st.Code())
+	}
+}
+
+func TestTenantBarrier_Init_BarrierError(t *testing.T) {
+	svc := newMockTenantService()
+	svc.barrierInitFn = func(_ context.Context, _, _ string, _, _ int) error {
+		return &tenantpkg.BarrierError{TenantID: "acme", Op: "initialize", Err: errors.New("boom")}
+	}
+	conn, cleanup := startTenantBarrierTestServer(t, svc)
+	defer cleanup()
+
+	err := TenantBarrierInitUnary(context.Background(), conn, &GRPCTenantBarrierInitRequest{TenantID: "acme"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if st, _ := status.FromError(err); st.Code() != codes.Internal {
+		t.Fatalf("expected Internal, got %s", st.Code())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Unseal handler tests
+// ---------------------------------------------------------------------------
+
+func TestTenantBarrier_Unseal_Success_Key(t *testing.T) {
+	svc := newMockTenantService()
+	var receivedKey []byte
+	svc.barrierUnsealFn = func(_ context.Context, _ string, key []byte) error {
+		receivedKey = key
+		return nil
+	}
+	conn, cleanup := startTenantBarrierTestServer(t, svc)
+	defer cleanup()
+
+	err := TenantBarrierUnsealUnary(context.Background(), conn, &GRPCTenantBarrierUnsealRequest{
+		TenantID: "acme", Key: []byte("super-secret"),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(receivedKey) != "super-secret" {
+		t.Errorf("expected key 'super-secret', got %q", receivedKey)
+	}
+}
+
+func TestTenantBarrier_Unseal_Success_FallbackToShare(t *testing.T) {
+	svc := newMockTenantService()
+	var receivedKey []byte
+	svc.barrierUnsealFn = func(_ context.Context, _ string, key []byte) error {
+		receivedKey = key
+		return nil
+	}
+	conn, cleanup := startTenantBarrierTestServer(t, svc)
+	defer cleanup()
+
+	err := TenantBarrierUnsealUnary(context.Background(), conn, &GRPCTenantBarrierUnsealRequest{
+		TenantID: "acme", Share: []byte("share-bytes"),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(receivedKey) != "share-bytes" {
+		t.Errorf("expected key 'share-bytes', got %q", receivedKey)
+	}
+}
+
+func TestTenantBarrier_Unseal_NilService(t *testing.T) {
+	srv := &tenantBarrierServer{svc: nil}
+	_, err := srv.unseal(context.Background(), wrapperspb.Bytes([]byte(`{"tenant_id":"acme"}`)))
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if st, _ := status.FromError(err); st.Code() != codes.Unimplemented {
+		t.Fatalf("expected Unimplemented, got %s", st.Code())
+	}
+}
+
+func TestTenantBarrier_Unseal_EmptyTenantID(t *testing.T) {
+	svc := newMockTenantService()
+	conn, cleanup := startTenantBarrierTestServer(t, svc)
+	defer cleanup()
+
+	err := TenantBarrierUnsealUnary(context.Background(), conn, &GRPCTenantBarrierUnsealRequest{TenantID: ""})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if st, _ := status.FromError(err); st.Code() != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument, got %s", st.Code())
+	}
+}
+
+func TestTenantBarrier_Unseal_InvalidJSON(t *testing.T) {
+	srv := &tenantBarrierServer{svc: newMockTenantService()}
+	_, err := srv.unseal(context.Background(), wrapperspb.Bytes([]byte(`{nope`)))
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if st, _ := status.FromError(err); st.Code() != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument, got %s", st.Code())
+	}
+}
+
+func TestTenantBarrier_Unseal_NotFound(t *testing.T) {
+	svc := newMockTenantService()
+	svc.barrierUnsealFn = func(_ context.Context, _ string, _ []byte) error {
+		return tenantpkg.ErrTenantNotFound
+	}
+	conn, cleanup := startTenantBarrierTestServer(t, svc)
+	defer cleanup()
+
+	err := TenantBarrierUnsealUnary(context.Background(), conn, &GRPCTenantBarrierUnsealRequest{TenantID: "missing"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if st, _ := status.FromError(err); st.Code() != codes.NotFound {
+		t.Fatalf("expected NotFound, got %s", st.Code())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Seal handler tests
+// ---------------------------------------------------------------------------
+
+func TestTenantBarrier_Seal_Success(t *testing.T) {
+	svc := newMockTenantService()
+	called := false
+	svc.barrierSealFn = func(_ context.Context, id string) error {
+		called = true
+		if id != "acme" {
+			t.Errorf("expected id 'acme', got %q", id)
+		}
+		return nil
+	}
+	conn, cleanup := startTenantBarrierTestServer(t, svc)
+	defer cleanup()
+
+	if err := TenantBarrierSealUnary(context.Background(), conn, &GRPCTenantBarrierSealRequest{TenantID: "acme"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called {
+		t.Error("expected TenantBarrierSeal to be called")
+	}
+}
+
+func TestTenantBarrier_Seal_NilService(t *testing.T) {
+	srv := &tenantBarrierServer{svc: nil}
+	_, err := srv.seal(context.Background(), wrapperspb.Bytes([]byte(`{"tenant_id":"acme"}`)))
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if st, _ := status.FromError(err); st.Code() != codes.Unimplemented {
+		t.Fatalf("expected Unimplemented, got %s", st.Code())
+	}
+}
+
+func TestTenantBarrier_Seal_EmptyTenantID(t *testing.T) {
+	svc := newMockTenantService()
+	conn, cleanup := startTenantBarrierTestServer(t, svc)
+	defer cleanup()
+
+	err := TenantBarrierSealUnary(context.Background(), conn, &GRPCTenantBarrierSealRequest{TenantID: ""})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if st, _ := status.FromError(err); st.Code() != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument, got %s", st.Code())
+	}
+}
+
+func TestTenantBarrier_Seal_InvalidJSON(t *testing.T) {
+	srv := &tenantBarrierServer{svc: newMockTenantService()}
+	_, err := srv.seal(context.Background(), wrapperspb.Bytes([]byte(`{bad`)))
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if st, _ := status.FromError(err); st.Code() != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument, got %s", st.Code())
+	}
+}
+
+func TestTenantBarrier_Seal_NotFound(t *testing.T) {
+	svc := newMockTenantService()
+	svc.barrierSealFn = func(_ context.Context, _ string) error { return tenantpkg.ErrTenantNotFound }
+	conn, cleanup := startTenantBarrierTestServer(t, svc)
+	defer cleanup()
+
+	err := TenantBarrierSealUnary(context.Background(), conn, &GRPCTenantBarrierSealRequest{TenantID: "missing"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if st, _ := status.FromError(err); st.Code() != codes.NotFound {
+		t.Fatalf("expected NotFound, got %s", st.Code())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Status handler tests
+// ---------------------------------------------------------------------------
+
+func TestTenantBarrier_Status_Success(t *testing.T) {
+	svc := newMockTenantService()
+	svc.barrierStatusFn = func(_ context.Context, id string) (*tenantpkg.TenantBarrierStatus, error) {
+		return &tenantpkg.TenantBarrierStatus{
+			TenantID:       id,
+			Sealed:         false,
+			Initialized:    true,
+			Strategy:       "passphrase",
+			HardwareBacked: false,
+		}, nil
+	}
+	conn, cleanup := startTenantBarrierTestServer(t, svc)
+	defer cleanup()
+
+	resp, err := TenantBarrierStatusUnary(context.Background(), conn, &GRPCTenantBarrierStatusRequest{TenantID: "acme"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+	if resp.TenantID != "acme" || resp.Sealed || !resp.Initialized || resp.Strategy != "passphrase" {
+		t.Errorf("unexpected response: %+v", resp)
+	}
+}
+
+func TestTenantBarrier_Status_DefaultUninitialized(t *testing.T) {
+	svc := newMockTenantService()
+	conn, cleanup := startTenantBarrierTestServer(t, svc)
+	defer cleanup()
+
+	resp, err := TenantBarrierStatusUnary(context.Background(), conn, &GRPCTenantBarrierStatusRequest{TenantID: "fresh"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !resp.Sealed || resp.Initialized {
+		t.Errorf("expected Sealed=true, Initialized=false; got Sealed=%v, Initialized=%v", resp.Sealed, resp.Initialized)
+	}
+}
+
+func TestTenantBarrier_Status_NilService(t *testing.T) {
+	srv := &tenantBarrierServer{svc: nil}
+	_, err := srv.getStatus(context.Background(), wrapperspb.Bytes([]byte(`{"tenant_id":"acme"}`)))
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if st, _ := status.FromError(err); st.Code() != codes.Unimplemented {
+		t.Fatalf("expected Unimplemented, got %s", st.Code())
+	}
+}
+
+func TestTenantBarrier_Status_EmptyTenantID(t *testing.T) {
+	svc := newMockTenantService()
+	conn, cleanup := startTenantBarrierTestServer(t, svc)
+	defer cleanup()
+
+	_, err := TenantBarrierStatusUnary(context.Background(), conn, &GRPCTenantBarrierStatusRequest{TenantID: ""})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if st, _ := status.FromError(err); st.Code() != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument, got %s", st.Code())
+	}
+}
+
+func TestTenantBarrier_Status_InvalidJSON(t *testing.T) {
+	srv := &tenantBarrierServer{svc: newMockTenantService()}
+	_, err := srv.getStatus(context.Background(), wrapperspb.Bytes([]byte(`{bad`)))
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if st, _ := status.FromError(err); st.Code() != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument, got %s", st.Code())
+	}
+}
+
+func TestTenantBarrier_Status_ServiceError(t *testing.T) {
+	svc := newMockTenantService()
+	svc.barrierStatusFn = func(_ context.Context, _ string) (*tenantpkg.TenantBarrierStatus, error) {
+		return nil, &tenantpkg.StoreError{Op: "get", Err: errors.New("io")}
+	}
+	conn, cleanup := startTenantBarrierTestServer(t, svc)
+	defer cleanup()
+
+	_, err := TenantBarrierStatusUnary(context.Background(), conn, &GRPCTenantBarrierStatusRequest{TenantID: "acme"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if st, _ := status.FromError(err); st.Code() != codes.Internal {
+		t.Fatalf("expected Internal, got %s", st.Code())
+	}
+}
+
+func TestTenantBarrier_Status_NilStatus(t *testing.T) {
+	svc := newMockTenantService()
+	svc.barrierStatusFn = func(_ context.Context, _ string) (*tenantpkg.TenantBarrierStatus, error) {
+		return nil, nil
+	}
+	conn, cleanup := startTenantBarrierTestServer(t, svc)
+	defer cleanup()
+
+	_, err := TenantBarrierStatusUnary(context.Background(), conn, &GRPCTenantBarrierStatusRequest{TenantID: "acme"})
+	if err == nil {
+		t.Fatal("expected error for nil status response")
+	}
+	if st, _ := status.FromError(err); st.Code() != codes.Internal {
+		t.Fatalf("expected Internal, got %s", st.Code())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Service registration tests
+// ---------------------------------------------------------------------------
+
+func TestRegisterTenantBarrierService_NilSvcSkipsRegistration(t *testing.T) {
+	srv := grpc.NewServer()
+	RegisterTenantBarrierService(srv, nil, nil)
+	// The descriptor must NOT be present when nil is passed.
+	if info, ok := srv.GetServiceInfo()["qrdb.v1.TenantBarrierService"]; ok {
+		t.Fatalf("expected service not to be registered with nil svc, got %+v", info)
+	}
+}
+
+func TestRegisterTenantBarrierService_RegistersWhenConfigured(t *testing.T) {
+	srv := grpc.NewServer()
+	RegisterTenantBarrierService(srv, newMockTenantService(), nil)
+	if _, ok := srv.GetServiceInfo()["qrdb.v1.TenantBarrierService"]; !ok {
+		t.Fatal("expected qrdb.v1.TenantBarrierService to be registered")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Round-trip JSON encoding sanity test
+// ---------------------------------------------------------------------------
+
+func TestTenantBarrier_StatusResponse_JSONShape(t *testing.T) {
+	in := grpcTenantBarrierStatusResponse{
+		TenantID:       "acme",
+		Sealed:         true,
+		Initialized:    true,
+		Strategy:       "shamir",
+		HardwareBacked: true,
+	}
+	b, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var out grpcTenantBarrierStatusResponse
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if in != out {
+		t.Errorf("round-trip mismatch: in=%+v out=%+v", in, out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Helper: connect spins up an in-process server and returns the conn. Cleanup
+// is registered with t.Cleanup so callers can simply use the returned conn.
+// ---------------------------------------------------------------------------
+
+func connect(t *testing.T, svc tenantpkg.TenantServicer) *grpc.ClientConn {
+	t.Helper()
+	conn, cleanup := startTenantBarrierTestServer(t, svc)
+	t.Cleanup(cleanup)
+	return conn
+}
+
+// ---------------------------------------------------------------------------
+// Interceptor branch coverage: when grpc.NewServer is given a UnaryInterceptor,
+// the per-method handlers must invoke it and forward the response. This
+// covers the otherwise-cold interceptor path inside each handler.
+// ---------------------------------------------------------------------------
+
+func startTenantBarrierTestServerWithInterceptor(t *testing.T, svc tenantpkg.TenantServicer, interceptor grpc.UnaryServerInterceptor) (*grpc.ClientConn, func()) {
+	t.Helper()
+	srv := grpc.NewServer(grpc.UnaryInterceptor(interceptor))
+	RegisterTenantBarrierService(srv, svc, nil)
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	go func() { _ = srv.Serve(lis) }()
+
+	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		srv.Stop()
+		t.Fatalf("grpc.NewClient: %v", err)
+	}
+	return conn, func() {
+		_ = conn.Close()
+		srv.Stop()
+	}
+}
+
+func TestTenantBarrier_AllHandlers_Interceptor(t *testing.T) {
+	calls := map[string]int{}
+	icpt := func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		calls[info.FullMethod]++
+		return handler(ctx, req)
+	}
+
+	svc := newMockTenantService()
+	conn, cleanup := startTenantBarrierTestServerWithInterceptor(t, svc, icpt)
+	defer cleanup()
+
+	if err := TenantBarrierInitUnary(context.Background(), conn, &GRPCTenantBarrierInitRequest{TenantID: "acme"}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := TenantBarrierUnsealUnary(context.Background(), conn, &GRPCTenantBarrierUnsealRequest{TenantID: "acme", Key: []byte("k")}); err != nil {
+		t.Fatalf("Unseal: %v", err)
+	}
+	if err := TenantBarrierSealUnary(context.Background(), conn, &GRPCTenantBarrierSealRequest{TenantID: "acme"}); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	if _, err := TenantBarrierStatusUnary(context.Background(), conn, &GRPCTenantBarrierStatusRequest{TenantID: "acme"}); err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+
+	for _, m := range []string{"/qrdb.v1.TenantBarrierService/Init", "/qrdb.v1.TenantBarrierService/Unseal", "/qrdb.v1.TenantBarrierService/Seal", "/qrdb.v1.TenantBarrierService/Status"} {
+		if calls[m] != 1 {
+			t.Errorf("interceptor: expected 1 call to %s, got %d", m, calls[m])
+		}
+	}
+}

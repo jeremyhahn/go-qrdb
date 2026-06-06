@@ -19,7 +19,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"strconv"
 
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -129,103 +128,6 @@ func (t *Transport) BarrierUnsealWithShares(ctx context.Context, req *transport.
 	}
 
 	return t.postJSONDecode(ctx, "BarrierUnsealWithShares", "/v1/barrier/shamir/unseal-shares", req, nil)
-}
-
-// BarrierShamirListShares returns metadata about stored Shamir shares.
-// Maps to GET /v1/barrier/shamir/shares.
-func (t *Transport) BarrierShamirListShares(ctx context.Context) (*transport.BarrierShamirSharesResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, t.baseURL+"/v1/barrier/shamir/shares", nil)
-	if err != nil {
-		return nil, &transport.RequestError{Method: "BarrierShamirListShares", Err: err}
-	}
-
-	resp, err := t.client.Do(httpReq)
-	if err != nil {
-		return nil, &transport.RequestError{Method: "BarrierShamirListShares", Err: err}
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, t.decodeErrorResponse("BarrierShamirListShares", resp)
-	}
-
-	var sharesResp transport.BarrierShamirSharesResponse
-	if err := json.NewDecoder(resp.Body).Decode(&sharesResp); err != nil {
-		return nil, &transport.RequestError{Method: "BarrierShamirListShares", Err: &jsonDecodeError{Err: err}}
-	}
-
-	return &sharesResp, nil
-}
-
-// BarrierShamirDeleteShare deletes a single Shamir share by its zero-based index.
-// Maps to DELETE /v1/barrier/shamir/shares/{index}.
-func (t *Transport) BarrierShamirDeleteShare(ctx context.Context, req *transport.BarrierShamirDeleteShareRequest) error {
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
-
-	reqURL := t.baseURL + "/v1/barrier/shamir/shares/" + strconv.Itoa(req.Index)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, reqURL, nil)
-	if err != nil {
-		return &transport.RequestError{Method: "BarrierShamirDeleteShare", Err: err}
-	}
-
-	resp, err := t.client.Do(httpReq)
-	if err != nil {
-		return &transport.RequestError{Method: "BarrierShamirDeleteShare", Err: err}
-	}
-	defer func() {
-		_, _ = io.Copy(io.Discard, resp.Body)
-		_ = resp.Body.Close()
-	}()
-
-	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusOK {
-		return nil
-	}
-
-	return t.decodeErrorResponse("BarrierShamirDeleteShare", resp)
-}
-
-// BarrierShamirDeleteAllShares deletes all stored Shamir shares.
-// Maps to DELETE /v1/barrier/shamir/shares.
-func (t *Transport) BarrierShamirDeleteAllShares(ctx context.Context) error {
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, t.baseURL+"/v1/barrier/shamir/shares", nil)
-	if err != nil {
-		return &transport.RequestError{Method: "BarrierShamirDeleteAllShares", Err: err}
-	}
-
-	resp, err := t.client.Do(httpReq)
-	if err != nil {
-		return &transport.RequestError{Method: "BarrierShamirDeleteAllShares", Err: err}
-	}
-	defer func() {
-		_, _ = io.Copy(io.Discard, resp.Body)
-		_ = resp.Body.Close()
-	}()
-
-	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusOK {
-		return nil
-	}
-
-	return t.decodeErrorResponse("BarrierShamirDeleteAllShares", resp)
-}
-
-// BarrierShamirVerify verifies the integrity of stored Shamir shares.
-// Maps to POST /v1/barrier/shamir/verify (204 No Content).
-func (t *Transport) BarrierShamirVerify(ctx context.Context) error {
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
-
-	return t.postJSONDecode(ctx, "BarrierShamirVerify", "/v1/barrier/shamir/verify", nil, nil)
 }
 
 // BarrierRekey generates new Shamir shares with the specified threshold and

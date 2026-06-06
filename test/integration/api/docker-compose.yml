@@ -22,6 +22,7 @@ services:
       - ../../..:/workspace/go-qrdb
       - ../../../../go-quicraft:/workspace/go-quicraft
       - ../../../../go-truststrap:/workspace/go-truststrap
+      - ../../../../go-objstore:/workspace/go-objstore
       - qrdb-data:/data
       - qrdb-socket:/var/run/qrdbd
       - ./config.test.yaml:/etc/qrdb/qrdbd.yaml
@@ -35,7 +36,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 15
-      start_period: 30s
+      start_period: 180s
     networks:
       - qrdb-integration
     user: root
@@ -57,25 +58,203 @@ services:
           -ldflags '-X main.version=test -X main.gitCommit=test -X main.buildDate=test' \
           -o /app/build/bin/qrdbd ./cmd/qrdbd
         echo "Starting qrdbd server..."
-        exec /app/build/bin/qrdbd start --config /etc/qrdb/qrdbd.yaml
+        /app/build/bin/qrdbd start --config /etc/qrdb/qrdbd.yaml &
+        QRDBD_PID=$!
+        # Wait for the admin endpoint to come up so we can initialize the barrier.
+        # Wait for the admin-client certificate (written alongside the node
+        # cert by qrdbd's single-node auto-TLS path) before attempting the
+        # mTLS-authenticated barrier init. auth.enabled=true requires a client
+        # cert on every admin request; /health is the only exempt endpoint.
+        echo "Waiting for admin client cert..."
+        for i in $$(seq 1 60); do
+          if [ -f /data/raft/admin-cert.pem ] && [ -f /data/raft/admin-key.pem ]; then
+            echo "Admin client cert ready"
+            break
+          fi
+          sleep 1
+        done
+        AUTH="--cacert /data/raft/ca.pem --cert /data/raft/admin-cert.pem --key /data/raft/admin-key.pem"
+        # Wait for the pre-host sealed-window admin listener to accept
+        # authenticated requests. /v1/barrier/status is on the sealed-window
+        # allowlist and returns 200 (with the admin client cert) while the
+        # barrier is still sealed, so it is the correct readiness probe for
+        # driving init. The public /health endpoint cannot be used here: it is
+        # registered only in the full-boot path (needs the admin service) and
+        # stays 503 until the barrier is unsealed -- gating init on /health
+        # would deadlock (init is what produces the unseal that makes /health
+        # return 200).
+        echo "Waiting for sealed-window admin listener..."
+        for i in $$(seq 1 60); do
+          if curl -ks --max-time 2 -o /dev/null -w '%{http_code}' $$AUTH https://localhost:63002/v1/barrier/status | grep -q 200; then
+            echo "Sealed-window admin listener ready"
+            break
+          fi
+          sleep 1
+        done
+        # Auto-initialize the seal barrier so first boot is non-interactive.
+        # During the sealed window POST /v1/barrier/initialize is allowlisted;
+        # it creates + seals the root key and unseals the barrier, after which
+        # qrdbd tears down the sealed-window listener and continues the full
+        # boot. Idempotent: re-init on an already-initialized barrier is
+        # tolerated via || true.
+        echo "Initializing barrier..."
+        curl -ks --max-time 10 -X POST $$AUTH \
+          -H 'Content-Type: application/json' \
+          --data-binary '{"secret":"integration-test-secret"}' \
+          https://localhost:63002/v1/barrier/initialize || true
+        # Wait for the full-boot admin endpoint: after unseal the data plane
+        # opens, the host elects a leader, and /health flips to 200. Tenant
+        # provisioning needs the full server (tenant service) up, so gate it
+        # on /health here rather than racing the sealed-window teardown.
+        echo "Waiting for admin endpoint (post-unseal full boot)..."
+        for i in $$(seq 1 60); do
+          if curl -ks --max-time 2 -o /dev/null -w '%{http_code}' https://localhost:63002/health | grep -q 200; then
+            echo "Admin endpoint ready"
+            break
+          fi
+          sleep 1
+        done
+        # Provision the default tenant (idempotent via || true). "default" is
+        # distinct from the auto-created "system" first-boot tenant.
+        echo "Provisioning default tenant..."
+        curl -ks --max-time 10 -X POST $$AUTH \
+          -H 'Content-Type: application/json' \
+          --data-binary '{"id":"default","name":"Default","isolation_type":"barrier"}' \
+          https://localhost:63002/v1/tenants || true
+        echo "Bootstrap complete"
+        # Hand control back to qrdbd.
+        wait $$QRDBD_PID
 
-  # Ollama sidecar for embedding integration tests.
-  # Provides an OpenAI-compatible /v1/embeddings endpoint used by the
-  # embedding and RAG integration test suites.
-  ollama:
-    image: ollama/ollama:latest
+  # Dedicated QRDB server configured with the Shamir M-of-N seal strategy.
+  # Runs side by side with the software-seal "qrdbd" server above on a
+  # DISTINCT port set (64001-64005), data volume, and unix socket so the
+  # Shamir CLI tests exercise a real Shamir-sealed barrier without disturbing
+  # the software-seal coverage. The entrypoint mirrors qrdbd's bootstrap but
+  # drives POST /v1/barrier/shamir/initialize during the sealed window and
+  # captures the returned shares to a file on a shared volume.
+  qrdbd-shamir:
+    build:
+      context: ../../..
+      dockerfile: .devcontainer/Dockerfile
+    image: go-qrdb-dev:latest
+    hostname: qrdbd-shamir
+    container_name: qrdb-integration-server-shamir
     expose:
-      - "11434"
+      - "64001/udp"  # Raft/QUIC (UDP)
+      - "64001/tcp"  # Raft fallback (TCP)
+      - "64002"      # REST API
+      - "64003"      # gRPC
+      - "64004/udp"  # QUIC API
+      - "64005"      # MCP
+    # Required for QUIC UDP buffer settings
+    privileged: true
     volumes:
-      - ollama-data:/root/.ollama
+      - ../../..:/workspace/go-qrdb
+      - ../../../../go-quicraft:/workspace/go-quicraft
+      - ../../../../go-truststrap:/workspace/go-truststrap
+      - ../../../../go-objstore:/workspace/go-objstore
+      - qrdb-shamir-data:/data
+      - qrdb-shamir-socket:/var/run/qrdbd-shamir
+      - ./config.test.shamir.yaml:/etc/qrdb/qrdbd.yaml
+      # Dedicated build volume: must NOT share server-build with qrdbd, or the
+      # two servers race building /app/build/bin/qrdbd into the same path,
+      # corrupting the binary and causing intermittent startup failures.
+      - shamir-server-build:/app/build
+    environment:
+      - QRDB_CONFIG=/etc/qrdb/qrdbd.yaml
+      - QRDB_LOG_LEVEL=debug
+      - CGO_ENABLED=1
     healthcheck:
-      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/11434' || exit 1"]
-      interval: 10s
+      test: ["CMD", "curl", "--silent", "--fail", "--insecure", "https://localhost:64002/health"]
+      interval: 5s
       timeout: 5s
-      retries: 10
-      start_period: 15s
+      retries: 15
+      start_period: 180s
     networks:
       - qrdb-integration
+    user: root
+    working_dir: /workspace/go-qrdb
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        # Set UDP buffer sizes for QUIC
+        echo "Configuring UDP buffers for QUIC..."
+        echo 2500000 > /proc/sys/net/core/rmem_max 2>/dev/null || echo "Warning: Could not set rmem_max"
+        echo 2500000 > /proc/sys/net/core/wmem_max 2>/dev/null || echo "Warning: Could not set wmem_max"
+        # Ensure directories exist
+        mkdir -p /var/run/qrdbd-shamir /data /app/build/bin
+        # Build server binary with all feature tags
+        echo "Building qrdbd server..."
+        CGO_ENABLED=1 go build -buildvcs=false \
+          -tags 'codec_json raft qrdb_ts qrdb_vector' \
+          -ldflags '-X main.version=test -X main.gitCommit=test -X main.buildDate=test' \
+          -o /app/build/bin/qrdbd ./cmd/qrdbd
+        echo "Starting qrdbd (shamir) server..."
+        /app/build/bin/qrdbd start --config /etc/qrdb/qrdbd.yaml &
+        QRDBD_PID=$!
+        # Wait for the admin-client certificate (written alongside the node
+        # cert by qrdbd's single-node auto-TLS path) before attempting the
+        # mTLS-authenticated barrier init.
+        echo "Waiting for admin client cert..."
+        for i in $$(seq 1 60); do
+          if [ -f /data/raft/admin-cert.pem ] && [ -f /data/raft/admin-key.pem ]; then
+            echo "Admin client cert ready"
+            break
+          fi
+          sleep 1
+        done
+        AUTH="--cacert /data/raft/ca.pem --cert /data/raft/admin-cert.pem --key /data/raft/admin-key.pem"
+        # Wait for the pre-host sealed-window admin listener. /v1/barrier/status
+        # is on the sealed-window allowlist and returns 200 while sealed.
+        echo "Waiting for sealed-window admin listener..."
+        for i in $$(seq 1 60); do
+          if curl -ks --max-time 2 -o /dev/null -w '%{http_code}' $$AUTH https://localhost:64002/v1/barrier/status | grep -q 200; then
+            echo "Sealed-window admin listener ready"
+            break
+          fi
+          sleep 1
+        done
+        # Auto-initialize the Shamir barrier so first boot is non-interactive.
+        # POST /v1/barrier/shamir/initialize is allowlisted during the sealed
+        # window; it splits the root key into total_shares shares (threshold
+        # required to unseal) and unseals the barrier in direct mode, after
+        # which qrdbd tears down the sealed-window listener and continues the
+        # full boot. The returned shares are captured to a shared volume so
+        # the integration-tests runner can replay them for share-based unseal.
+        echo "Initializing Shamir barrier..."
+        curl -ks --max-time 10 -X POST $$AUTH \
+          -H 'Content-Type: application/json' \
+          --data-binary '{"secret":"integration-test-shamir-secret","threshold":2,"total_shares":3}' \
+          -o /data/raft/shamir-init.json \
+          https://localhost:64002/v1/barrier/shamir/initialize || true
+        echo "Shamir init response:"
+        cat /data/raft/shamir-init.json || true
+        # Wait for the full-boot admin endpoint: after unseal the data plane
+        # opens, the host elects a leader, and /health flips to 200.
+        echo "Waiting for admin endpoint (post-unseal full boot)..."
+        for i in $$(seq 1 60); do
+          if curl -ks --max-time 2 -o /dev/null -w '%{http_code}' https://localhost:64002/health | grep -q 200; then
+            echo "Admin endpoint ready"
+            break
+          fi
+          sleep 1
+        done
+        # Provision the default tenant (idempotent via || true).
+        echo "Provisioning default tenant..."
+        curl -ks --max-time 10 -X POST $$AUTH \
+          -H 'Content-Type: application/json' \
+          --data-binary '{"id":"default","name":"Default","isolation_type":"barrier"}' \
+          https://localhost:64002/v1/tenants || true
+        echo "Bootstrap complete"
+        # Hand control back to qrdbd.
+        wait $$QRDBD_PID
+
+  # NOTE: the resource-heavy Ollama embedding sidecar is NOT part of the
+  # default integration stack — no test in test/integration uses it (the
+  # embedding/RAG suites are mocked unit tests run by `make test`). It lives in
+  # the opt-in docker-compose.embedding.yml overlay so the main standalone and
+  # cluster suites stay fast and light. See `make integration-test-embedding`.
 
   # Integration test runner
   integration-tests:
@@ -89,14 +268,17 @@ services:
     depends_on:
       qrdbd:
         condition: service_healthy
-      ollama:
+      qrdbd-shamir:
         condition: service_healthy
     volumes:
       - ../../..:/workspace/go-qrdb
       - ../../../../go-quicraft:/workspace/go-quicraft
       - ../../../../go-truststrap:/workspace/go-truststrap
+      - ../../../../go-objstore:/workspace/go-objstore
       - qrdb-socket:/var/run/qrdbd
       - qrdb-data:/data:ro
+      - qrdb-shamir-socket:/var/run/qrdbd-shamir
+      - qrdb-shamir-data:/data-shamir:ro
       - cli-build:/app/build
       - go-cache:/root/go
       - go-build-cache:/root/.cache/go-build
@@ -111,8 +293,30 @@ services:
       - QRDB_TLS_CA=/data/raft/ca.pem
       - QRDB_TLS_CERT=/data/raft/admin-cert.pem
       - QRDB_TLS_KEY=/data/raft/admin-key.pem
+      # Dedicated Shamir-seal server connection (mounted read-only at /data-shamir).
+      - QRDB_SHAMIR_REST_URL=https://qrdbd-shamir:64002
+      - QRDB_SHAMIR_GRPC_ADDR=qrdbd-shamir:64003
+      - QRDB_SHAMIR_MCP_ADDR=qrdbd-shamir:64005
+      - QRDB_SHAMIR_QUIC_ADDR=qrdbd-shamir:64004
+      - QRDB_SHAMIR_UNIX_SOCKET=/var/run/qrdbd-shamir/qrdbd.sock
+      - QRDB_SHAMIR_TLS_CA=/data-shamir/raft/ca.pem
+      - QRDB_SHAMIR_TLS_CERT=/data-shamir/raft/admin-cert.pem
+      - QRDB_SHAMIR_TLS_KEY=/data-shamir/raft/admin-key.pem
+      - QRDB_SHAMIR_SHARES_FILE=/data-shamir/raft/shamir-init.json
       - INTEGRATION_TIMEOUT=60s
-      - OLLAMA_URL=http://ollama:11434/v1
+      # Which Go packages the runner tests. Defaults to everything; the
+      # Makefile sets it to ./test/integration/api/... (standalone, against
+      # these servers) or ./test/integration/ (cluster + self-spawned nodes)
+      # so the two suites run in isolated stages and never contend for host CPU.
+      - INTEGRATION_TEST_PKGS=${INTEGRATION_TEST_PKGS:-./test/integration/...}
+      # Optional -run regexp passed to `go test`. Empty (default) runs every
+      # test in the selected packages; overlays (e.g. docker-compose.embedding.yml)
+      # set it to scope the run to a specific suite.
+      - INTEGRATION_RUN=${INTEGRATION_RUN:-}
+      # Build tags for the test compilation. Defaults to just "integration";
+      # overlays add tags (e.g. "integration,ollama") to compile in suites
+      # gated behind extra build constraints, keeping them out of the fast run.
+      - INTEGRATION_TAGS=${INTEGRATION_TAGS:-integration}
     working_dir: /workspace/go-qrdb
     networks:
       - qrdb-integration
@@ -130,8 +334,8 @@ services:
       echo 'Building CLI binary...' &&
       mkdir -p /app/build/bin &&
       CGO_ENABLED=0 go build -buildvcs=false -tags 'qrdb_ts qrdb_vector' -ldflags '-X main.version=test -X main.gitCommit=test -X main.buildDate=test' -o /app/build/bin/qrdb ./cmd/qrdb &&
-      echo 'Running integration tests...' &&
-      go test -v -tags=integration ./test/integration/... -timeout 45m
+      echo \"Running integration tests ($$INTEGRATION_TEST_PKGS, tags='$$INTEGRATION_TAGS', run='$$INTEGRATION_RUN')...\" &&
+      go test -p 1 -v -tags=$$INTEGRATION_TAGS $$INTEGRATION_TEST_PKGS -run \"$$INTEGRATION_RUN\" -timeout 45m
       "
 
 volumes:
@@ -139,15 +343,19 @@ volumes:
     driver: local
   qrdb-socket:
     driver: local
+  qrdb-shamir-data:
+    driver: local
+  qrdb-shamir-socket:
+    driver: local
   cli-build:
     driver: local
   server-build:
     driver: local
+  shamir-server-build:
+    driver: local
   go-cache:
     driver: local
   go-build-cache:
-    driver: local
-  ollama-data:
     driver: local
 
 networks:

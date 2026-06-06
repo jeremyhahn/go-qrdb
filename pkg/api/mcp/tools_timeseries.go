@@ -255,10 +255,14 @@ func toolTSQuery() mcp.Tool {
 		mcp.WithBoolean("descending",
 			mcp.Description("Return data points in reverse chronological order."),
 		),
+		mcp.WithString("consistency",
+			mcp.Description("Read consistency: strong|linearizable|eventual"),
+		),
 	)
 }
 
-// handleTSQuery returns a tool handler that delegates to tsSvc.Query.
+// handleTSQuery returns a tool handler that delegates to tsSvc.Query or
+// tsSvc.QueryWithConsistency when a consistency arg is present.
 func handleTSQuery(tsSvc service.TimeSeriesServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		metric := mcp.ParseString(req, "metric", "")
@@ -294,7 +298,18 @@ func handleTSQuery(tsSvc service.TimeSeriesServicer) mcpserver.ToolHandlerFunc {
 			opts = append(opts, timeseries.WithDescending())
 		}
 
-		points, queryErr := tsSvc.Query(ctx, metric, start, end, opts...)
+		ropts, roptsSet, roptsErr := readOptsFromArg(req)
+		if roptsErr != nil {
+			return mcp.NewToolResultError("invalid consistency: " + roptsErr.Error()), nil
+		}
+
+		var points []timeseries.DataPoint
+		var queryErr error
+		if roptsSet {
+			points, queryErr = tsSvc.QueryWithConsistency(ctx, metric, start, end, ropts, opts...)
+		} else {
+			points, queryErr = tsSvc.Query(ctx, metric, start, end, opts...)
+		}
 		if queryErr != nil {
 			return nil, &ToolError{Tool: "qrdb_ts_query", Err: queryErr}
 		}
@@ -332,11 +347,15 @@ func toolTSAggregate() mcp.Tool {
 			mcp.Required(),
 			mcp.Description("Aggregation interval in nanoseconds."),
 		),
+		mcp.WithString("consistency",
+			mcp.Description("Read consistency: strong|linearizable|eventual"),
+		),
 	)
 }
 
 // handleTSAggregate returns a tool handler that delegates to
-// tsSvc.Aggregate.
+// tsSvc.Aggregate or tsSvc.AggregateWithConsistency when a consistency
+// arg is present.
 func handleTSAggregate(tsSvc service.TimeSeriesServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		metric := mcp.ParseString(req, "metric", "")
@@ -365,11 +384,22 @@ func handleTSAggregate(tsSvc service.TimeSeriesServicer) mcpserver.ToolHandlerFu
 			return mcp.NewToolResultError("invalid func: " + funcName + "; must be one of avg, sum, min, max, count, percentile, first, last"), nil
 		}
 
+		ropts, roptsSet, roptsErr := readOptsFromArg(req)
+		if roptsErr != nil {
+			return mcp.NewToolResultError("invalid consistency: " + roptsErr.Error()), nil
+		}
+
 		start := time.Unix(0, startNano)
 		end := time.Unix(0, endNano)
 		interval := time.Duration(intervalNs)
 
-		results, err := tsSvc.Aggregate(ctx, metric, start, end, aggFunc, interval)
+		var results []timeseries.AggResult
+		var err error
+		if roptsSet {
+			results, err = tsSvc.AggregateWithConsistency(ctx, metric, start, end, aggFunc, interval, ropts)
+		} else {
+			results, err = tsSvc.Aggregate(ctx, metric, start, end, aggFunc, interval)
+		}
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_ts_aggregate", Err: err}
 		}
@@ -536,11 +566,15 @@ func toolTSListMetrics() mcp.Tool {
 		mcp.WithNumber("limit",
 			mcp.Description("Maximum number of metrics to return. Defaults to 100 when 0 or omitted."),
 		),
+		mcp.WithString("consistency",
+			mcp.Description("Read consistency: strong|linearizable|eventual"),
+		),
 	)
 }
 
 // handleTSListMetrics returns a tool handler that delegates to
-// tsSvc.ListMetrics.
+// tsSvc.ListMetrics or tsSvc.ListMetricsWithConsistency when a
+// consistency arg is present.
 func handleTSListMetrics(tsSvc service.TimeSeriesServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		prefix := mcp.ParseString(req, "prefix", "")
@@ -549,7 +583,18 @@ func handleTSListMetrics(tsSvc service.TimeSeriesServicer) mcpserver.ToolHandler
 			limit = 100
 		}
 
-		metrics, err := tsSvc.ListMetrics(prefix, limit)
+		ropts, roptsSet, roptsErr := readOptsFromArg(req)
+		if roptsErr != nil {
+			return mcp.NewToolResultError("invalid consistency: " + roptsErr.Error()), nil
+		}
+
+		var metrics []string
+		var err error
+		if roptsSet {
+			metrics, err = tsSvc.ListMetricsWithConsistency(ctx, prefix, limit, ropts)
+		} else {
+			metrics, err = tsSvc.ListMetrics(prefix, limit)
+		}
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_ts_list_metrics", Err: err}
 		}
@@ -654,11 +699,15 @@ func toolTSRichQuery() mcp.Tool {
 		mcp.WithNumber("percentile",
 			mcp.Description("Percentile value (0-100) when aggregation is 'percentile'."),
 		),
+		mcp.WithString("consistency",
+			mcp.Description("Read consistency: strong|linearizable|eventual"),
+		),
 	)
 }
 
 // handleTSRichQuery returns a tool handler that delegates to
-// tsSvc.QueryRich.
+// tsSvc.QueryRich or tsSvc.QueryRichWithConsistency when a consistency
+// arg is present.
 func handleTSRichQuery(tsSvc service.TimeSeriesServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		metric := mcp.ParseString(req, "metric", "")
@@ -712,7 +761,18 @@ func handleTSRichQuery(tsSvc service.TimeSeriesServicer) mcpserver.ToolHandlerFu
 
 		qr.Percentile = mcp.ParseFloat64(req, "percentile", 0)
 
-		result, queryErr := tsSvc.QueryRich(ctx, qr)
+		ropts, roptsSet, roptsErr := readOptsFromArg(req)
+		if roptsErr != nil {
+			return mcp.NewToolResultError("invalid consistency: " + roptsErr.Error()), nil
+		}
+
+		var result *timeseries.QueryResult
+		var queryErr error
+		if roptsSet {
+			result, queryErr = tsSvc.QueryRichWithConsistency(ctx, qr, ropts)
+		} else {
+			result, queryErr = tsSvc.QueryRich(ctx, qr)
+		}
 		if queryErr != nil {
 			return nil, &ToolError{Tool: "qrdb_ts_rich_query", Err: queryErr}
 		}

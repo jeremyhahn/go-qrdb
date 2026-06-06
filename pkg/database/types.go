@@ -76,14 +76,21 @@ const (
 
 	// BackendRaft uses Raft consensus for distributed, replicated storage.
 	BackendRaft BackendType = "raft"
+
+	// BackendObjstore uses an object store (go-objstore: local, s3, gcs,
+	// azure, minio, ...) as a flat key-value backend. Like BackendFile it is a
+	// simple KV engine (no MVCC); it is intended for blob/backup-oriented
+	// workloads, not hot consensus paths.
+	BackendObjstore BackendType = "objstore"
 )
 
 // validBackends is the set of recognized backend types, used for O(1) lookup.
 var validBackends = map[BackendType]struct{}{
-	BackendMemory: {},
-	BackendFile:   {},
-	BackendPebble: {},
-	BackendRaft:   {},
+	BackendMemory:   {},
+	BackendFile:     {},
+	BackendPebble:   {},
+	BackendRaft:     {},
+	BackendObjstore: {},
 }
 
 // Valid reports whether the backend type is recognized.

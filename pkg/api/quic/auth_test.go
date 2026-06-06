@@ -46,7 +46,7 @@ func (m *mockAuthorizer) Authorize(ctx context.Context, identity *auth.Identity,
 
 // TestAuthorize_UnknownMethodAllowed verifies that a method not present in
 // the QUIC permission map is permitted without calling the authorizer.
-func TestAuthorize_UnknownMethodAllowed(t *testing.T) {
+func TestAuthorize_UnknownMethodDenied(t *testing.T) {
 	callCount := 0
 	authorizer := &mockAuthorizer{
 		authorizeFn: func(_ context.Context, _ *auth.Identity, _, _ string) error {
@@ -59,12 +59,13 @@ func TestAuthorize_UnknownMethodAllowed(t *testing.T) {
 		WithAuthMiddleware(mw),
 	)
 
-	// "unknown.Method" is not in the QUIC permission map, so no authorization
-	// check is performed.
+	// DEFAULT-DENY: "unknown.Method" is not in the QUIC permission map, so it
+	// is REJECTED rather than allowed through. The fine-grained authorizer is
+	// not consulted (the request is denied before the permission check).
 	ctx := context.Background()
 	err := srv.authorize(ctx, "unknown.Method")
-	if err != nil {
-		t.Fatalf("expected nil error for unmapped method, got: %v", err)
+	if err == nil {
+		t.Fatal("expected unmapped method to be denied, got nil")
 	}
 	if callCount != 0 {
 		t.Errorf("expected authorizer not to be called for unknown method, got %d calls", callCount)
@@ -121,7 +122,7 @@ func TestAuthorize_KnownMethodAllowed(t *testing.T) {
 
 	ctx := auth.WithIdentity(context.Background(), &auth.Identity{
 		Subject:  "admin",
-		TenantID: "default",
+		TenantID: "system",
 	})
 
 	err := srv.authorize(ctx, "kv.Get")

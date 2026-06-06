@@ -66,7 +66,7 @@ func TestCLIMultiProtocolTenantsLifecycle(t *testing.T) {
 			assertContains(t, stdout, tenantID,
 				fmt.Sprintf("[%s] tenant list should contain '%s'", proto, tenantID))
 
-			// Step 3: Get tenant by ID.
+			// Step 3: Get tenant by ID — verify name matches.
 			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "tenant", "get", tenantID)
 			if err != nil {
 				t.Logf("stdout: %s", stdout)
@@ -75,9 +75,43 @@ func TestCLIMultiProtocolTenantsLifecycle(t *testing.T) {
 			}
 			assertContains(t, stdout, tenantName,
 				fmt.Sprintf("[%s] tenant get should contain '%s'", proto, tenantName))
-			_ = updatedName // future: tenant update subcommand
 
-			// Step 4: Delete the tenant.
+			// Step 4: Update the tenant name.
+			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto,
+				"tenant", "update", tenantID, "--name", updatedName)
+			if err != nil {
+				t.Logf("stdout: %s", stdout)
+				t.Logf("stderr: %s", stderr)
+				t.Fatalf("[%s] tenant update failed: %v", proto, err)
+			}
+			assertContains(t, stdout, updatedName,
+				fmt.Sprintf("[%s] tenant update response should contain new name '%s'", proto, updatedName))
+
+			// Step 5: Get again — verify updated name persists.
+			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "tenant", "get", tenantID)
+			if err != nil {
+				t.Logf("stdout: %s", stdout)
+				t.Logf("stderr: %s", stderr)
+				t.Fatalf("[%s] tenant get after update failed: %v", proto, err)
+			}
+			assertContains(t, stdout, updatedName,
+				fmt.Sprintf("[%s] tenant get after update should contain '%s'", proto, updatedName))
+
+			// Step 6: Update quotas.
+			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto,
+				"tenant", "update-quotas", tenantID,
+				"--max-keys", "9999",
+				"--max-databases", "5",
+			)
+			if err != nil {
+				t.Logf("stdout: %s", stdout)
+				t.Logf("stderr: %s", stderr)
+				t.Fatalf("[%s] tenant update-quotas failed: %v", proto, err)
+			}
+			assertContains(t, stdout, tenantID,
+				fmt.Sprintf("[%s] tenant update-quotas response should contain tenant ID", proto))
+
+			// Step 7: Delete the tenant.
 			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "tenant", "delete", tenantID)
 			if err != nil {
 				t.Logf("stdout: %s", stdout)
@@ -85,7 +119,7 @@ func TestCLIMultiProtocolTenantsLifecycle(t *testing.T) {
 				t.Fatalf("[%s] tenant delete failed: %v", proto, err)
 			}
 
-			// Step 5: Verify the tenant is gone.
+			// Step 8: Verify the tenant is gone from the list.
 			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "tenant", "list")
 			if err != nil {
 				t.Logf("stdout: %s", stdout)
@@ -94,6 +128,12 @@ func TestCLIMultiProtocolTenantsLifecycle(t *testing.T) {
 			}
 			if strings.Contains(stdout, tenantID) {
 				t.Fatalf("[%s] deleted tenant '%s' still appears in list", proto, tenantID)
+			}
+
+			// Step 9: Get the deleted tenant — expect an error (not found).
+			_, _, err = execCLIWithProtocol(t, cfg, proto, "tenant", "get", tenantID)
+			if err == nil {
+				t.Fatalf("[%s] expected error getting deleted tenant '%s', but got none", proto, tenantID)
 			}
 		})
 	}
@@ -115,7 +155,7 @@ func TestRESTTenantRoutes_NonFourOhFour(t *testing.T) {
 	}
 
 	client := &http.Client{
-		Timeout: 5 * time.Second,
+		Timeout:   5 * time.Second,
 		Transport: tlsTransport(cfg),
 	}
 
@@ -311,11 +351,13 @@ func TestRESTUserRoutes_AuthDisabled(t *testing.T) {
 	username := fmt.Sprintf("auth-disabled-user-%d", ts)
 	userBody, _ := json.Marshal(map[string]string{
 		"username": username,
-		"tenantID": "default",
+		"tenantID": "system",
 	})
 	userResp := assertRouteRegistered(t, http.MethodPost, cfg.RESTBaseURL+"/users", userBody)
 	if userResp != nil {
-		var created struct{ ID string `json:"id"` }
+		var created struct {
+			ID string `json:"id"`
+		}
 		if data, err := io.ReadAll(userResp.Body); err == nil {
 			_ = json.Unmarshal(data, &created)
 		}
@@ -338,12 +380,14 @@ func TestRESTUserRoutes_AuthDisabled(t *testing.T) {
 	roleName := fmt.Sprintf("auth-disabled-role-%d", ts)
 	roleBody, _ := json.Marshal(map[string]interface{}{
 		"name":        roleName,
-		"tenantID":    "default",
+		"tenantID":    "system",
 		"permissions": []string{"kv:get"},
 	})
 	roleResp := assertRouteRegistered(t, http.MethodPost, cfg.RESTBaseURL+"/roles", roleBody)
 	if roleResp != nil {
-		var created struct{ ID string `json:"id"` }
+		var created struct {
+			ID string `json:"id"`
+		}
 		if data, err := io.ReadAll(roleResp.Body); err == nil {
 			_ = json.Unmarshal(data, &created)
 		}

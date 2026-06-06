@@ -17,6 +17,10 @@ package auth
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
+	"errors"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 )
 
 // Compile-time interface check.
@@ -37,18 +41,74 @@ func TLSStateFromContext(ctx context.Context) *tls.ConnectionState {
 }
 
 // MTLSAuthenticator extracts identity from mTLS peer certificates.
-// The Subject CN becomes the identity Subject, and the first OU
-// (if present) becomes the TenantID.
-type MTLSAuthenticator struct{}
+//
+// The Subject CN becomes the identity Subject. The TenantID is derived, in
+// priority order:
+//
+//  1. The tenant-scoped SPIFFE URI SAN
+//     (spiffe://<trust-domain>/tenant/<tenantID>/<kind>/<name>). When a
+//     trust domain is configured it is PINNED: a SPIFFE SAN under a foreign
+//     trust domain is rejected (fail-closed) rather than silently ignored.
+//  2. The first Subject OU, as a legacy fallback for certificates issued
+//     before SPIFFE-SAN tenant binding (and for internal/system paths).
+//
+// This authenticator never invents a tenant: a SPIFFE SAN with a mismatched
+// trust domain is a hard rejection.
+type MTLSAuthenticator struct {
+	// pinnedTrustDomain, when non-empty, is the operator-configured SPIFFE
+	// trust domain. Any SPIFFE tenant SAN under a different trust domain is
+	// rejected.
+	pinnedTrustDomain string
+}
 
-// NewMTLSAuthenticator creates a new mTLS authenticator.
+// NewMTLSAuthenticator creates a new mTLS authenticator with no SPIFFE trust
+// domain pin. SPIFFE SANs (if present) are still honored for tenant
+// derivation, but no trust-domain pinning is enforced. Use
+// NewMTLSAuthenticatorWithTrustDomain to pin a trust domain (recommended).
 func NewMTLSAuthenticator() *MTLSAuthenticator {
 	return &MTLSAuthenticator{}
+}
+
+// NewMTLSAuthenticatorWithTrustDomain creates an mTLS authenticator that pins
+// the given SPIFFE trust domain. A SPIFFE tenant SAN under a different trust
+// domain is rejected (fail-closed).
+func NewMTLSAuthenticatorWithTrustDomain(trustDomain string) *MTLSAuthenticator {
+	return &MTLSAuthenticator{pinnedTrustDomain: trustDomain}
 }
 
 // Name returns "mtls".
 func (a *MTLSAuthenticator) Name() string {
 	return "mtls"
+}
+
+// TenantFromCert derives the tenant from a verified client certificate using
+// the SPIFFE SAN (pinned trust domain) with an OU fallback. It returns the
+// derived tenant ID and reports whether the tenant came from a SPIFFE SAN.
+//
+// A SPIFFE SAN under a mismatched trust domain returns a non-nil error and
+// must cause the login to fail closed.
+func (a *MTLSAuthenticator) TenantFromCert(cert *x509.Certificate) (tenantID string, fromSPIFFE bool, err error) {
+	if cert == nil {
+		return "", false, ErrInvalidCertificate
+	}
+
+	id, serr := spiffe.TenantFromCert(cert, a.pinnedTrustDomain)
+	switch {
+	case serr == nil:
+		return id.TenantID, true, nil
+	case errors.Is(serr, spiffe.ErrTrustDomainMismatch):
+		// Foreign trust domain: fail closed, do not fall back.
+		return "", false, ErrInvalidCertificate
+	case errors.Is(serr, spiffe.ErrNoTenantSPIFFEID):
+		// No SPIFFE SAN: legacy OU fallback.
+		if len(cert.Subject.OrganizationalUnit) > 0 {
+			return cert.Subject.OrganizationalUnit[0], false, nil
+		}
+		return "", false, nil
+	default:
+		// Malformed SPIFFE SAN: fail closed.
+		return "", false, ErrInvalidCertificate
+	}
 }
 
 // Authenticate extracts identity from the TLS peer certificate.
@@ -73,9 +133,17 @@ func (a *MTLSAuthenticator) Authenticate(ctx context.Context) (*Identity, error)
 		Metadata: make(map[string]string),
 	}
 
-	// First OU becomes TenantID if present.
-	if len(cert.Subject.OrganizationalUnit) > 0 {
-		id.TenantID = cert.Subject.OrganizationalUnit[0]
+	// Derive the tenant from the SPIFFE SAN (pinned) with an OU fallback. A
+	// trust-domain mismatch or malformed SPIFFE SAN fails closed.
+	tenantID, fromSPIFFE, err := a.TenantFromCert(cert)
+	if err != nil {
+		return nil, err
+	}
+	id.TenantID = tenantID
+	if fromSPIFFE {
+		id.Metadata["tenant_source"] = "spiffe"
+	} else if tenantID != "" {
+		id.Metadata["tenant_source"] = "ou"
 	}
 
 	// Organization becomes a metadata field.

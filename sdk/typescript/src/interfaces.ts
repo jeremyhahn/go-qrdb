@@ -987,6 +987,26 @@ export interface UserClient {
      * @param id - User identifier.
      */
     disable(id: string): Promise<void>;
+
+    /**
+     * Resolves a user by an mTLS certificate's SPKI thumbprint via the
+     * secondary index (the mTLS-auth hot path).
+     *
+     * @param thumbprint - Base64url SHA-256 SPKI thumbprint of the certificate.
+     * @returns The user entity bound to the thumbprint.
+     */
+    getUserByCertThumbprint(thumbprint: string): Promise<User>;
+
+    /**
+     * Binds an mTLS certificate's SPKI thumbprint to a user so the secondary
+     * index resolves it (the enrollment seam).
+     *
+     * @param userId - User identifier to bind the thumbprint to.
+     * @param thumbprint - Base64url SHA-256 SPKI thumbprint of the certificate.
+     * @param notAfterUnix - Optional unix-seconds expiry; 0 or omitted never expires.
+     * @returns The updated user.
+     */
+    addCertBinding(userId: string, thumbprint: string, notAfterUnix?: number): Promise<User>;
 }
 
 // ---------------------------------------------------------------------------

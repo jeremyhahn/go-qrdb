@@ -29,8 +29,10 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/kv"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/lock"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
@@ -284,14 +286,19 @@ type qrdbServiceServer struct {
 	tsSvc         timeseries.TimeSeriesServicer
 	vectorSvc     service.VectorServicer
 	embeddingSvc  service.EmbeddingServicer
+	ragSvc        service.RAGServicer
 	databaseSvc   service.DatabaseServicer
 	barrierSvc    service.BarrierServicer
+	pinBackend    pin.PINBackend
 	ceremonySvc   service.CeremonyServicer
 	credentialSvc service.CredentialServicer
+	tenantSvc     tenant.TenantServicer
 	userSvc       user.UserServicer
 	roleSvc       role.RoleServicer
 	certProv      cert.CertProvider
 	collectionSvc service.CollectionServicer
+	backupSvc     service.BackupServicer
+	rebalanceSvc  service.RebalanceServicer
 }
 
 // ---------------------------------------------------------------------------
@@ -302,6 +309,12 @@ type qrdbServiceServer struct {
 func (s *qrdbServiceServer) Put(ctx context.Context, req *pb.PutRequest) (*pb.PutResponse, error) {
 	if s.kvSvc == nil {
 		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "kv"}).Error())
+	}
+	if mode, ok := writeModeFromProto(req.GetWriteMode()); ok {
+		if err := s.kvSvc.PutWithMode(ctx, req.GetKey(), req.GetValue(), mode); err != nil {
+			return nil, mapServiceError(err)
+		}
+		return &pb.PutResponse{}, nil
 	}
 	if err := s.kvSvc.Put(ctx, req.GetKey(), req.GetValue()); err != nil {
 		return nil, mapServiceError(err)
@@ -314,7 +327,15 @@ func (s *qrdbServiceServer) Get(ctx context.Context, req *pb.GetRequest) (*pb.Ge
 	if s.kvSvc == nil {
 		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "kv"}).Error())
 	}
-	data, err := s.kvSvc.Get(ctx, req.GetKey())
+	var (
+		data []byte
+		err  error
+	)
+	if opts, ok := readOptionsFromProto(req.GetConsistency()); ok {
+		data, err = s.kvSvc.GetWithConsistency(ctx, req.GetKey(), opts)
+	} else {
+		data, err = s.kvSvc.Get(ctx, req.GetKey())
+	}
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -325,6 +346,12 @@ func (s *qrdbServiceServer) Get(ctx context.Context, req *pb.GetRequest) (*pb.Ge
 func (s *qrdbServiceServer) Delete(ctx context.Context, req *pb.DeleteRequest) (*pb.DeleteResponse, error) {
 	if s.kvSvc == nil {
 		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "kv"}).Error())
+	}
+	if mode, ok := writeModeFromProto(req.GetWriteMode()); ok {
+		if err := s.kvSvc.DeleteWithMode(ctx, req.GetKey(), mode); err != nil {
+			return nil, mapServiceError(err)
+		}
+		return &pb.DeleteResponse{}, nil
 	}
 	if err := s.kvSvc.Delete(ctx, req.GetKey()); err != nil {
 		return nil, mapServiceError(err)
@@ -337,7 +364,15 @@ func (s *qrdbServiceServer) List(ctx context.Context, req *pb.ListRequest) (*pb.
 	if s.kvSvc == nil {
 		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "kv"}).Error())
 	}
-	keys, err := s.kvSvc.List(ctx, req.GetPrefix())
+	var (
+		keys []string
+		err  error
+	)
+	if opts, ok := readOptionsFromProto(req.GetConsistency()); ok {
+		keys, err = s.kvSvc.ListWithConsistency(ctx, req.GetPrefix(), opts)
+	} else {
+		keys, err = s.kvSvc.List(ctx, req.GetPrefix())
+	}
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -349,7 +384,15 @@ func (s *qrdbServiceServer) Scan(ctx context.Context, req *pb.ScanRequest) (*pb.
 	if s.kvSvc == nil {
 		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "kv"}).Error())
 	}
-	data, err := s.kvSvc.Scan(ctx, req.GetPrefix())
+	var (
+		data map[string][]byte
+		err  error
+	)
+	if opts, ok := readOptionsFromProto(req.GetConsistency()); ok {
+		data, err = s.kvSvc.ScanWithConsistency(ctx, req.GetPrefix(), opts)
+	} else {
+		data, err = s.kvSvc.Scan(ctx, req.GetPrefix())
+	}
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -573,7 +616,15 @@ func (s *qrdbServiceServer) PutWithLease(ctx context.Context, req *pb.PutWithLea
 		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "mvcc"}).Error())
 	}
 
-	result, err := s.mvccSvc.PutWithLease(ctx, req.GetKey(), req.GetValue(), req.GetLeaseId())
+	var (
+		result *service.KeyValue
+		err    error
+	)
+	if mode, ok := writeModeFromProto(req.GetWriteMode()); ok {
+		result, err = s.mvccSvc.PutWithLeaseAndMode(ctx, req.GetKey(), req.GetValue(), req.GetLeaseId(), mode)
+	} else {
+		result, err = s.mvccSvc.PutWithLease(ctx, req.GetKey(), req.GetValue(), req.GetLeaseId())
+	}
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -586,7 +637,15 @@ func (s *qrdbServiceServer) GetRevision(ctx context.Context, req *pb.GetRevision
 		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "mvcc"}).Error())
 	}
 
-	result, err := s.mvccSvc.GetRevision(ctx, req.GetKey())
+	var (
+		result *service.KeyValue
+		err    error
+	)
+	if opts, ok := readOptionsFromProto(req.GetConsistency()); ok {
+		result, err = s.mvccSvc.GetRevisionWithConsistency(ctx, req.GetKey(), opts)
+	} else {
+		result, err = s.mvccSvc.GetRevision(ctx, req.GetKey())
+	}
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -599,7 +658,15 @@ func (s *qrdbServiceServer) GetAtRevision(ctx context.Context, req *pb.GetAtRevi
 		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "mvcc"}).Error())
 	}
 
-	result, err := s.mvccSvc.GetAtRevision(ctx, req.GetKey(), req.GetRevision())
+	var (
+		result *service.KeyValue
+		err    error
+	)
+	if opts, ok := readOptionsFromProto(req.GetConsistency()); ok {
+		result, err = s.mvccSvc.GetAtRevisionWithConsistency(ctx, req.GetKey(), req.GetRevision(), opts)
+	} else {
+		result, err = s.mvccSvc.GetAtRevision(ctx, req.GetKey(), req.GetRevision())
+	}
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -632,7 +699,16 @@ func (s *qrdbServiceServer) Range(ctx context.Context, req *pb.RangeRequest) (*p
 		opts = append(opts, service.WithSort(order, target))
 	}
 
-	kvs, count, err := s.mvccSvc.Range(ctx, req.GetStart(), req.GetEnd(), opts...)
+	var (
+		kvs   []*service.KeyValue
+		count int64
+		err   error
+	)
+	if ropts, ok := readOptionsFromProto(req.GetConsistency()); ok {
+		kvs, count, err = s.mvccSvc.RangeWithConsistency(ctx, req.GetStart(), req.GetEnd(), ropts, opts...)
+	} else {
+		kvs, count, err = s.mvccSvc.Range(ctx, req.GetStart(), req.GetEnd(), opts...)
+	}
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -1141,7 +1217,15 @@ func (s *qrdbServiceServer) TSQuery(ctx context.Context, req *pb.TSQueryRequest)
 		opts = append(opts, timeseries.WithDescending())
 	}
 
-	points, err := s.tsSvc.Query(ctx, req.GetMetric(), start, end, opts...)
+	var (
+		points []timeseries.DataPoint
+		err    error
+	)
+	if ropts, ok := readOptionsFromProto(req.GetConsistency()); ok {
+		points, err = s.tsSvc.QueryWithConsistency(ctx, req.GetMetric(), start, end, ropts, opts...)
+	} else {
+		points, err = s.tsSvc.Query(ctx, req.GetMetric(), start, end, opts...)
+	}
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -1164,7 +1248,15 @@ func (s *qrdbServiceServer) TSAggregate(ctx context.Context, req *pb.TSAggregate
 	fn := protoAggFuncMap[req.GetFunction()]
 	interval := time.Duration(req.GetIntervalNs())
 
-	results, err := s.tsSvc.Aggregate(ctx, req.GetMetric(), start, end, fn, interval)
+	var (
+		results []timeseries.AggResult
+		err     error
+	)
+	if ropts, ok := readOptionsFromProto(req.GetConsistency()); ok {
+		results, err = s.tsSvc.AggregateWithConsistency(ctx, req.GetMetric(), start, end, fn, interval, ropts)
+	} else {
+		results, err = s.tsSvc.Aggregate(ctx, req.GetMetric(), start, end, fn, interval)
+	}
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -1219,7 +1311,15 @@ func (s *qrdbServiceServer) TSRichQuery(ctx context.Context, req *pb.TSRichQuery
 		Percentile:  req.GetPercentile(),
 	}
 
-	result, err := s.tsSvc.QueryRich(ctx, qr)
+	var (
+		result *timeseries.QueryResult
+		err    error
+	)
+	if ropts, ok := readOptionsFromProto(req.GetConsistency()); ok {
+		result, err = s.tsSvc.QueryRichWithConsistency(ctx, qr, ropts)
+	} else {
+		result, err = s.tsSvc.QueryRich(ctx, qr)
+	}
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -1329,7 +1429,15 @@ func (s *qrdbServiceServer) TSListMetrics(ctx context.Context, req *pb.TSListMet
 		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "timeseries"}).Error())
 	}
 
-	metrics, err := s.tsSvc.ListMetrics(req.GetPrefix(), int(req.GetLimit()))
+	var (
+		metrics []string
+		err     error
+	)
+	if ropts, ok := readOptionsFromProto(req.GetConsistency()); ok {
+		metrics, err = s.tsSvc.ListMetricsWithConsistency(ctx, req.GetPrefix(), int(req.GetLimit()), ropts)
+	} else {
+		metrics, err = s.tsSvc.ListMetrics(req.GetPrefix(), int(req.GetLimit()))
+	}
 	if err != nil {
 		return nil, mapServiceError(err)
 	}

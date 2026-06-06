@@ -14,7 +14,11 @@
 
 package rest
 
-import "context"
+import (
+	"context"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+)
 
 // contextKey is an unexported integer type for context keys scoped to this
 // package. Using a typed int prevents collisions with keys from other packages.
@@ -23,41 +27,33 @@ type contextKey int
 const (
 	// dbNameKey is the context key for the scoped database name.
 	dbNameKey contextKey = iota
-
-	// tenantIDKey is the context key for the scoped tenant ID.
-	tenantIDKey
 )
 
-// Header name constants for the two scoping dimensions. Exported so that
+// Header name constants for the scoping dimension. Exported so that
 // middleware, tests, and SDK documentation share a single source of truth.
 const (
 	// HeaderDatabase is the HTTP header that carries the target database name.
-	// Defaults to "default" when absent.
+	// Defaults to defaultDatabaseScope when absent.
 	HeaderDatabase = "X-QRDB-Database"
 
-	// HeaderTenant is the HTTP header that carries the target tenant ID.
-	// Defaults to "default" when absent.
-	HeaderTenant = "X-QRDB-Tenant"
-
-	// defaultScope is the fallback value for both tenant and database when
-	// the corresponding header is absent or empty.
-	defaultScope = "default"
+	// defaultDatabaseScope is the fallback database name when the database
+	// header is absent or empty. Single-database deployments use this name.
+	defaultDatabaseScope = "default"
 )
 
 // databaseFromContext returns the database name stored in ctx by
-// scopeMiddleware. Returns "default" when no database is set.
+// scopeMiddleware. Returns defaultDatabaseScope when no database is set.
 func databaseFromContext(ctx context.Context) string {
 	if v, ok := ctx.Value(dbNameKey).(string); ok && v != "" {
 		return v
 	}
-	return defaultScope
+	return defaultDatabaseScope
 }
 
-// tenantFromContext returns the tenant ID stored in ctx by scopeMiddleware.
-// Returns "default" when no tenant is set.
+// tenantFromContext returns the tenant ID from the canonical tenant context
+// bound by the auth middleware from the authenticated mTLS identity. Returns
+// tenant.SystemTenantID when no tenant is bound (unauthenticated endpoints,
+// embedded mode).
 func tenantFromContext(ctx context.Context) string {
-	if v, ok := ctx.Value(tenantIDKey).(string); ok && v != "" {
-		return v
-	}
-	return defaultScope
+	return tenant.FromContext(ctx)
 }

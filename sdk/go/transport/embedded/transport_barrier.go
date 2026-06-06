@@ -18,6 +18,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -30,13 +31,19 @@ var _ transport.BarrierClient = (*Transport)(nil)
 // ---------------------------------------------------------------------------
 
 // BarrierInitialize initializes the cryptographic barrier with a single
-// master key by delegating to the injected BarrierServicer.
+// master key by delegating to the injected BarrierServicer. When the
+// request supplies SOPin / UserPin and a pin.PINBackend has been injected
+// via WithPINBackend, the PINs are persisted on the backend before the
+// barrier is initialized.
 func (t *Transport) BarrierInitialize(ctx context.Context, req *transport.BarrierInitializeRequest) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
 	if t.barrierSvc == nil {
 		return &NilServiceError{Service: "BarrierServicer"}
+	}
+	if err := applyBarrierInitializePINs(t.pinBackend, req.SOPin, req.UserPin); err != nil {
+		return err
 	}
 	return t.barrierSvc.BarrierInitialize(ctx, req.Secret)
 }
@@ -91,13 +98,18 @@ func (t *Transport) BarrierStatus(ctx context.Context) (*transport.BarrierStatus
 
 // BarrierInitializeShamir initializes the barrier using Shamir secret
 // sharing and returns the generated key shares by delegating to the
-// injected BarrierServicer.
+// injected BarrierServicer. When the request supplies SOPin / UserPin
+// and a pin.PINBackend has been injected via WithPINBackend, the PINs
+// are persisted on the backend before initialization.
 func (t *Transport) BarrierInitializeShamir(ctx context.Context, req *transport.BarrierInitializeShamirRequest) (*transport.BarrierInitializeShamirResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
 	if t.barrierSvc == nil {
 		return nil, &NilServiceError{Service: "BarrierServicer"}
+	}
+	if err := applyBarrierInitializePINs(t.pinBackend, req.SOPin, req.UserPin); err != nil {
+		return nil, err
 	}
 	info, err := t.barrierSvc.BarrierInitializeShamir(ctx, req.Secret, req.Threshold, req.TotalShares)
 	if err != nil {
@@ -142,70 +154,19 @@ func (t *Transport) BarrierUnsealWithShares(ctx context.Context, req *transport.
 	return t.barrierSvc.BarrierUnsealWithShares(ctx, req.Shares)
 }
 
-// BarrierShamirListShares returns metadata about stored Shamir shares by
-// delegating to the injected BarrierServicer.
-func (t *Transport) BarrierShamirListShares(ctx context.Context) (*transport.BarrierShamirSharesResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	if t.barrierSvc == nil {
-		return nil, &NilServiceError{Service: "BarrierServicer"}
-	}
-	info, err := t.barrierSvc.BarrierShamirListShares(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return &transport.BarrierShamirSharesResponse{
-		Count:     info.Count,
-		Threshold: info.Threshold,
-		Total:     info.Total,
-	}, nil
-}
-
-// BarrierShamirDeleteShare deletes a single Shamir share by its zero-based
-// index by delegating to the injected BarrierServicer.
-func (t *Transport) BarrierShamirDeleteShare(ctx context.Context, req *transport.BarrierShamirDeleteShareRequest) error {
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
-	if t.barrierSvc == nil {
-		return &NilServiceError{Service: "BarrierServicer"}
-	}
-	return t.barrierSvc.BarrierShamirDeleteShare(ctx, req.Index)
-}
-
-// BarrierShamirDeleteAllShares deletes all stored Shamir shares by
-// delegating to the injected BarrierServicer.
-func (t *Transport) BarrierShamirDeleteAllShares(ctx context.Context) error {
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
-	if t.barrierSvc == nil {
-		return &NilServiceError{Service: "BarrierServicer"}
-	}
-	return t.barrierSvc.BarrierShamirDeleteAllShares(ctx)
-}
-
-// BarrierShamirVerify verifies the integrity of stored Shamir shares by
-// delegating to the injected BarrierServicer.
-func (t *Transport) BarrierShamirVerify(ctx context.Context) error {
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
-	if t.barrierSvc == nil {
-		return &NilServiceError{Service: "BarrierServicer"}
-	}
-	return t.barrierSvc.BarrierShamirVerify(ctx)
-}
-
 // BarrierRekey generates new Shamir shares with the specified threshold
-// and total count by delegating to the injected BarrierServicer.
+// and total count by delegating to the injected BarrierServicer. SO PIN
+// verification is enforced when a pin.PINBackend is injected and has a
+// SO PIN set.
 func (t *Transport) BarrierRekey(ctx context.Context, req *transport.BarrierRekeyRequest) (*transport.BarrierRekeyResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
 	if t.barrierSvc == nil {
 		return nil, &NilServiceError{Service: "BarrierServicer"}
+	}
+	if err := verifyBarrierSOPIN(t.pinBackend, req.SOPin); err != nil {
+		return nil, err
 	}
 	info, err := t.barrierSvc.BarrierRekey(ctx, req.Threshold, req.Total)
 	if err != nil {
@@ -219,13 +180,17 @@ func (t *Transport) BarrierRekey(ctx context.Context, req *transport.BarrierReke
 }
 
 // BarrierGenerateRecoveryKeys generates recovery keys for disaster recovery
-// by delegating to the injected BarrierServicer.
+// by delegating to the injected BarrierServicer. SO PIN verification is
+// enforced when a pin.PINBackend is injected and has a SO PIN set.
 func (t *Transport) BarrierGenerateRecoveryKeys(ctx context.Context, req *transport.BarrierGenerateRecoveryKeysRequest) (*transport.BarrierRecoveryKeysResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
 	if t.barrierSvc == nil {
 		return nil, &NilServiceError{Service: "BarrierServicer"}
+	}
+	if err := verifyBarrierSOPIN(t.pinBackend, req.SOPin); err != nil {
+		return nil, err
 	}
 	info, err := t.barrierSvc.BarrierGenerateRecoveryKeys(ctx, req.Threshold, req.Total)
 	if err != nil {
@@ -370,33 +335,6 @@ func handleBarrierUnsealWithShares(ctx context.Context, t *Transport, req, _ any
 	return t.BarrierUnsealWithShares(ctx, r)
 }
 
-func handleBarrierShamirListShares(ctx context.Context, t *Transport, _, resp any) error {
-	result, err := t.BarrierShamirListShares(ctx)
-	if err != nil {
-		return err
-	}
-	if out, ok := resp.(**transport.BarrierShamirSharesResponse); ok {
-		*out = result
-	}
-	return nil
-}
-
-func handleBarrierShamirDeleteShare(ctx context.Context, t *Transport, req, _ any) error {
-	r, ok := req.(*transport.BarrierShamirDeleteShareRequest)
-	if !ok {
-		return &InvalidRequestError{Method: "BarrierShamirDeleteShare"}
-	}
-	return t.BarrierShamirDeleteShare(ctx, r)
-}
-
-func handleBarrierShamirDeleteAllShares(ctx context.Context, t *Transport, _, _ any) error {
-	return t.BarrierShamirDeleteAllShares(ctx)
-}
-
-func handleBarrierShamirVerify(ctx context.Context, t *Transport, _, _ any) error {
-	return t.BarrierShamirVerify(ctx)
-}
-
 func handleBarrierRekey(ctx context.Context, t *Transport, req, resp any) error {
 	r, ok := req.(*transport.BarrierRekeyRequest)
 	if !ok {
@@ -469,5 +407,15 @@ func handleBarrierGenerateRootToken(ctx context.Context, t *Transport, req, resp
 func WithBarrierService(svc service.BarrierServicer) Option {
 	return func(t *Transport) {
 		t.barrierSvc = svc
+	}
+}
+
+// WithPINBackend injects the canonical pin.PINBackend used by the
+// embedded transport's barrier handlers to provision SO PIN / User PIN
+// on initialize and to verify SO PIN on rekey / recovery-generate. When
+// nil the PIN fields supplied in barrier requests are ignored.
+func WithPINBackend(backend pin.PINBackend) Option {
+	return func(t *Transport) {
+		t.pinBackend = backend
 	}
 }

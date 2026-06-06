@@ -21,7 +21,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/crypto/aesgcm"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
-	"github.com/jeremyhahn/go-quicraft/pkg/enclave"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 // memoryKVStore is an in-memory KVStore for testing tenant keys.
@@ -98,7 +98,7 @@ func (m *memoryKVStore) ScanCompoundIndex(_ context.Context, _ string, _ [][]byt
 }
 
 // testBarrier is a lightweight EncryptionBarrier for unit tests. It uses
-// AES-GCM directly without memguard or enclaves.
+// AES-GCM directly without enclaves.
 type testBarrier struct {
 	aead   cipher.AEAD
 	sealed atomic.Bool
@@ -521,7 +521,7 @@ func TestTenantKeyManager_GetTenantDEK_ReturnsCopy(t *testing.T) {
 	}
 }
 
-func TestTenantKeyManager_CacheUsesProtectedKey(t *testing.T) {
+func TestTenantKeyManager_CacheUsesSecret(t *testing.T) {
 	b := newUnsealedBarrier(t)
 	store := newMemoryKVStore()
 	tkm, err := NewTenantKeyManager(b, store)
@@ -535,21 +535,21 @@ func TestTenantKeyManager_CacheUsesProtectedKey(t *testing.T) {
 		t.Fatalf("GetTenantDEK: %v", err)
 	}
 
-	// Verify the cache contains a ProtectedKey.
+	// Verify the cache contains a *secure.Secret.
 	internal := tkm.(*tenantKeyManager)
 	raw, ok := internal.cache.Load("tenant-pk")
 	if !ok {
 		t.Fatal("expected cache entry for tenant-pk")
 	}
-	pk, isPK := raw.(*enclave.ProtectedKey)
-	if !isPK {
-		t.Fatalf("expected *enclave.ProtectedKey in cache, got %T", raw)
+	sec, isSec := raw.(*secure.Secret)
+	if !isSec {
+		t.Fatalf("expected *secure.Secret in cache, got %T", raw)
 	}
 
 	// Open and verify the DEK is 32 bytes.
-	buf, openErr := pk.Open()
+	buf, openErr := sec.Open()
 	if openErr != nil {
-		t.Fatalf("ProtectedKey.Open() failed: %v", openErr)
+		t.Fatalf("secure.Secret.Open() failed: %v", openErr)
 	}
 	if buf.Size() != 32 {
 		t.Fatalf("expected DEK size 32, got %d", buf.Size())

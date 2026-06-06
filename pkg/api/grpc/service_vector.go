@@ -374,7 +374,7 @@ func (s *qrdbServiceServer) VectorGet(ctx context.Context, req *pb.VectorGetRequ
 		ID:              id,
 		IncludeVector:   true,
 		IncludeMetadata: true,
-		Consistency:     service.ConsistencyLevel(req.GetConsistency()),
+		Consistency:     vectorConsistencyFromProto(req.GetConsistency()),
 		ShardID:         req.GetShardId(),
 	})
 	if err != nil {
@@ -551,7 +551,7 @@ func (s *qrdbServiceServer) VectorSearchSimilar(ctx context.Context, req *pb.Vec
 		K:           int(req.GetK()),
 		EfSearch:    int(req.GetEfSearch()),
 		MinScore:    float32(req.GetMinScore()),
-		Consistency: service.ConsistencyLevel(req.GetConsistency()),
+		Consistency: vectorConsistencyFromProto(req.GetConsistency()),
 		ShardID:     req.GetShardId(),
 	})
 	if err != nil {
@@ -585,7 +585,7 @@ func (s *qrdbServiceServer) VectorSearchByMetadata(ctx context.Context, req *pb.
 		Filters:     filters,
 		Limit:       int(req.GetLimit()),
 		Offset:      int(req.GetOffset()),
-		Consistency: service.ConsistencyLevel(req.GetConsistency()),
+		Consistency: vectorConsistencyFromProto(req.GetConsistency()),
 		ShardID:     req.GetShardId(),
 	})
 	if err != nil {
@@ -624,7 +624,7 @@ func (s *qrdbServiceServer) VectorHybridSearch(ctx context.Context, req *pb.Vect
 		QueryVector:    req.GetVector(),
 		MetadataFilter: metadataFilter,
 		K:              int(req.GetK()),
-		Consistency:    service.ConsistencyLevel(req.GetConsistency()),
+		Consistency:    vectorConsistencyFromProto(req.GetConsistency()),
 		ShardID:        req.GetShardId(),
 	})
 	if err != nil {
@@ -658,7 +658,7 @@ func (s *qrdbServiceServer) VectorSearchByID(ctx context.Context, req *pb.Vector
 		Namespace:   req.GetNamespace(),
 		ID:          id,
 		K:           int(req.GetK()),
-		Consistency: service.ConsistencyLevel(req.GetConsistency()),
+		Consistency: vectorConsistencyFromProto(req.GetConsistency()),
 		ShardID:     req.GetShardId(),
 	})
 	if err != nil {

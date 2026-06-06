@@ -153,6 +153,27 @@ func (m *mockDatabaseClient) UpdateDatabaseConnection(_ context.Context, req Upd
 	return info, nil
 }
 
+func (m *mockDatabaseClient) SealDatabase(_ context.Context, name string) error {
+	if _, ok := m.databases[name]; !ok {
+		return &DatabaseNotFoundError{Name: name}
+	}
+	return nil
+}
+
+func (m *mockDatabaseClient) UnsealDatabase(_ context.Context, name, _ string) error {
+	if _, ok := m.databases[name]; !ok {
+		return &DatabaseNotFoundError{Name: name}
+	}
+	return nil
+}
+
+func (m *mockDatabaseClient) DatabaseBarrierStatus(_ context.Context, name string) (*DatabaseBarrierStatus, error) {
+	if _, ok := m.databases[name]; !ok {
+		return nil, &DatabaseNotFoundError{Name: name}
+	}
+	return &DatabaseBarrierStatus{Sealed: false, Strategy: "software"}, nil
+}
+
 // failingDatabaseClient returns errors for all operations.
 type failingDatabaseClient struct {
 	err error
@@ -191,6 +212,18 @@ func (f *failingDatabaseClient) UpdateDatabaseBarrier(_ context.Context, _ Updat
 }
 
 func (f *failingDatabaseClient) UpdateDatabaseConnection(_ context.Context, _ UpdateDatabaseConnectionRequest) (*DatabaseInfo, error) {
+	return nil, f.err
+}
+
+func (f *failingDatabaseClient) SealDatabase(_ context.Context, _ string) error {
+	return f.err
+}
+
+func (f *failingDatabaseClient) UnsealDatabase(_ context.Context, _, _ string) error {
+	return f.err
+}
+
+func (f *failingDatabaseClient) DatabaseBarrierStatus(_ context.Context, _ string) (*DatabaseBarrierStatus, error) {
 	return nil, f.err
 }
 
@@ -938,5 +971,123 @@ func TestTenantDatabaseClient_CreateGetDropRoundtrip(t *testing.T) {
 	}
 	if len(dbs) != 0 {
 		t.Errorf("expected 0 databases after drop, got %d", len(dbs))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SealDatabase tests
+// ---------------------------------------------------------------------------
+
+func TestTenantDatabaseClient_SealDatabase_OwnedByTenant(t *testing.T) {
+	mock := newMockDatabaseClient()
+	mock.databases["mydb"] = &DatabaseInfo{TenantID: "acme", Name: "mydb", Status: "open"}
+
+	tc, _ := WithTenantDatabase(mock, "acme")
+	if err := tc.SealDatabase(context.Background(), "mydb"); err != nil {
+		t.Fatalf("SealDatabase failed: %v", err)
+	}
+}
+
+func TestTenantDatabaseClient_SealDatabase_CrossTenantDenied(t *testing.T) {
+	mock := newMockDatabaseClient()
+	mock.databases["otherdb"] = &DatabaseInfo{TenantID: "other-tenant", Name: "otherdb", Status: "open"}
+
+	tc, _ := WithTenantDatabase(mock, "acme")
+	err := tc.SealDatabase(context.Background(), "otherdb")
+	if err == nil {
+		t.Fatal("expected access denied error for cross-tenant SealDatabase")
+	}
+	var accessErr *TenantDatabaseAccessDeniedError
+	if !errors.As(err, &accessErr) {
+		t.Fatalf("expected TenantDatabaseAccessDeniedError, got %T", err)
+	}
+}
+
+func TestTenantDatabaseClient_SealDatabase_GetError(t *testing.T) {
+	innerErr := &RequestError{Method: "GetDatabase", Err: errors.New("unavailable")}
+	tc, _ := WithTenantDatabase(&failingDatabaseClient{err: innerErr}, "acme")
+
+	err := tc.SealDatabase(context.Background(), "mydb")
+	if err == nil {
+		t.Fatal("expected error propagated from GetDatabase")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// UnsealDatabase tests
+// ---------------------------------------------------------------------------
+
+func TestTenantDatabaseClient_UnsealDatabase_OwnedByTenant(t *testing.T) {
+	mock := newMockDatabaseClient()
+	mock.databases["mydb"] = &DatabaseInfo{TenantID: "acme", Name: "mydb", Status: "sealed"}
+
+	tc, _ := WithTenantDatabase(mock, "acme")
+	if err := tc.UnsealDatabase(context.Background(), "mydb", "secret123"); err != nil {
+		t.Fatalf("UnsealDatabase failed: %v", err)
+	}
+}
+
+func TestTenantDatabaseClient_UnsealDatabase_CrossTenantDenied(t *testing.T) {
+	mock := newMockDatabaseClient()
+	mock.databases["otherdb"] = &DatabaseInfo{TenantID: "other-tenant", Name: "otherdb", Status: "sealed"}
+
+	tc, _ := WithTenantDatabase(mock, "acme")
+	err := tc.UnsealDatabase(context.Background(), "otherdb", "secret")
+	if err == nil {
+		t.Fatal("expected access denied error for cross-tenant UnsealDatabase")
+	}
+	var accessErr *TenantDatabaseAccessDeniedError
+	if !errors.As(err, &accessErr) {
+		t.Fatalf("expected TenantDatabaseAccessDeniedError, got %T", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DatabaseBarrierStatus tests
+// ---------------------------------------------------------------------------
+
+func TestTenantDatabaseClient_DatabaseBarrierStatus_OwnedByTenant(t *testing.T) {
+	mock := newMockDatabaseClient()
+	mock.databases["mydb"] = &DatabaseInfo{TenantID: "acme", Name: "mydb", Status: "open"}
+
+	tc, _ := WithTenantDatabase(mock, "acme")
+	status, err := tc.DatabaseBarrierStatus(context.Background(), "mydb")
+	if err != nil {
+		t.Fatalf("DatabaseBarrierStatus failed: %v", err)
+	}
+	if status == nil {
+		t.Fatal("expected non-nil DatabaseBarrierStatus")
+	}
+	if status.Sealed {
+		t.Error("expected unsealed status from mock")
+	}
+}
+
+func TestTenantDatabaseClient_DatabaseBarrierStatus_CrossTenantDenied(t *testing.T) {
+	mock := newMockDatabaseClient()
+	mock.databases["otherdb"] = &DatabaseInfo{TenantID: "other-tenant", Name: "otherdb", Status: "open"}
+
+	tc, _ := WithTenantDatabase(mock, "acme")
+	_, err := tc.DatabaseBarrierStatus(context.Background(), "otherdb")
+	if err == nil {
+		t.Fatal("expected access denied error for cross-tenant DatabaseBarrierStatus")
+	}
+	var accessErr *TenantDatabaseAccessDeniedError
+	if !errors.As(err, &accessErr) {
+		t.Fatalf("expected TenantDatabaseAccessDeniedError, got %T", err)
+	}
+}
+
+func TestTenantDatabaseClient_DatabaseBarrierStatus_NotFound(t *testing.T) {
+	mock := newMockDatabaseClient()
+	tc, _ := WithTenantDatabase(mock, "acme")
+
+	_, err := tc.DatabaseBarrierStatus(context.Background(), "nonexistent")
+	if err == nil {
+		t.Fatal("expected error for nonexistent database")
+	}
+	var notFound *DatabaseNotFoundError
+	if !errors.As(err, &notFound) {
+		t.Fatalf("expected DatabaseNotFoundError, got %T", err)
 	}
 }

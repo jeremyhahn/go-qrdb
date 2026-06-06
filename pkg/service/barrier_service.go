@@ -49,19 +49,6 @@ type BarrierServicer interface {
 	// of Shamir shares in a single call.
 	BarrierUnsealWithShares(ctx context.Context, shares []string) error
 
-	// BarrierShamirListShares returns information about the persisted
-	// Shamir shares including count, threshold, and total.
-	BarrierShamirListShares(ctx context.Context) (*ShamirSharesInfo, error)
-
-	// BarrierShamirDeleteShare removes a single Shamir share by index.
-	BarrierShamirDeleteShare(ctx context.Context, index int) error
-
-	// BarrierShamirDeleteAllShares removes all persisted Shamir shares.
-	BarrierShamirDeleteAllShares(ctx context.Context) error
-
-	// BarrierShamirVerify validates the consistency of persisted shares.
-	BarrierShamirVerify(ctx context.Context) error
-
 	// BarrierRekey generates new Shamir shares for the existing root key
 	// with the specified threshold and total parameters.
 	BarrierRekey(ctx context.Context, threshold, total int) (*ShamirInitInfo, error)
@@ -123,18 +110,6 @@ type UnsealShareProgress struct {
 
 	// Complete is true when the quorum threshold has been met.
 	Complete bool
-}
-
-// ShamirSharesInfo describes the persisted Shamir share state.
-type ShamirSharesInfo struct {
-	// Count is the number of shares currently in storage.
-	Count int
-
-	// Threshold is the minimum shares required for reconstruction.
-	Threshold int
-
-	// Total is the total shares generated during initialization.
-	Total int
 }
 
 // RecoveryKeysInfo contains the output of recovery key generation.
@@ -244,56 +219,6 @@ func (s *BarrierService) BarrierUnsealWithShare(ctx context.Context, share strin
 // Shamir shares in a single call.
 func (s *BarrierService) BarrierUnsealWithShares(ctx context.Context, shares []string) error {
 	return s.barrier.UnsealWithShares(ctx, shares)
-}
-
-// BarrierShamirListShares returns information about the persisted Shamir
-// shares. Returns ErrShamirNotConfigured if no ShamirStrategy is registered.
-func (s *BarrierService) BarrierShamirListShares(ctx context.Context) (*ShamirSharesInfo, error) {
-	strat := s.barrier.ShamirStrategy()
-	if strat == nil {
-		return nil, seal.ErrShamirNotConfigured
-	}
-
-	count, err := strat.ShareCount(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	return &ShamirSharesInfo{
-		Count:     count,
-		Threshold: strat.Threshold(),
-		Total:     strat.TotalShares(),
-	}, nil
-}
-
-// BarrierShamirDeleteShare removes a single Shamir share by its 1-based
-// index. Returns ErrShamirNotConfigured if no ShamirStrategy is registered.
-func (s *BarrierService) BarrierShamirDeleteShare(ctx context.Context, index int) error {
-	strat := s.barrier.ShamirStrategy()
-	if strat == nil {
-		return seal.ErrShamirNotConfigured
-	}
-	return strat.DeleteShare(ctx, index)
-}
-
-// BarrierShamirDeleteAllShares removes all persisted Shamir shares.
-// Returns ErrShamirNotConfigured if no ShamirStrategy is registered.
-func (s *BarrierService) BarrierShamirDeleteAllShares(ctx context.Context) error {
-	strat := s.barrier.ShamirStrategy()
-	if strat == nil {
-		return seal.ErrShamirNotConfigured
-	}
-	return strat.DeleteAllShares(ctx)
-}
-
-// BarrierShamirVerify validates the consistency of all persisted shares.
-// Returns ErrShamirNotConfigured if no ShamirStrategy is registered.
-func (s *BarrierService) BarrierShamirVerify(ctx context.Context) error {
-	strat := s.barrier.ShamirStrategy()
-	if strat == nil {
-		return seal.ErrShamirNotConfigured
-	}
-	return strat.VerifyShares(ctx)
 }
 
 // BarrierRekey generates new Shamir shares for the existing root key with

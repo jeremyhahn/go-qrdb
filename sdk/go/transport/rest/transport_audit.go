@@ -1,0 +1,98 @@
+// Copyright 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package rest
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strconv"
+
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+)
+
+// Compile-time interface assertion.
+var _ transport.AuditClient = (*Transport)(nil)
+
+// QueryAudit queries the audit log via GET /v1/audit/events.
+// Authorization: requires "audit:query" permission.
+// TODO: switch to permission.AuditQuery constant once Phase 2 lands.
+func (t *Transport) QueryAudit(ctx context.Context, f transport.AuditFilter) (*transport.AuditPage, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	params := url.Values{}
+	if !f.From.IsZero() {
+		params.Set("from", f.From.UTC().Format("2006-01-02T15:04:05Z"))
+	}
+	if !f.To.IsZero() {
+		params.Set("to", f.To.UTC().Format("2006-01-02T15:04:05Z"))
+	}
+	if f.Actor != "" {
+		params.Set("actor", f.Actor)
+	}
+	if f.Resource != "" {
+		params.Set("resource", f.Resource)
+	}
+	if f.Action != "" {
+		params.Set("action", f.Action)
+	}
+	if f.Outcome != "" {
+		params.Set("outcome", f.Outcome)
+	}
+	if f.TenantID != "" {
+		params.Set("tenant_id", f.TenantID)
+	}
+	if f.Limit > 0 {
+		params.Set("limit", strconv.Itoa(f.Limit))
+	}
+	if f.Cursor != "" {
+		params.Set("cursor", f.Cursor)
+	}
+
+	rawURL := t.baseURL + "/v1/audit/events"
+	if len(params) > 0 {
+		rawURL = rawURL + "?" + params.Encode()
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "QueryAudit", Err: err}
+	}
+
+	resp, err := t.client.Do(req)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "QueryAudit", Err: err}
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, &transport.RequestError{
+			Method: "QueryAudit",
+			Err:    fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body)),
+		}
+	}
+
+	var page transport.AuditPage
+	if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
+		return nil, &transport.RequestError{Method: "QueryAudit", Err: err}
+	}
+	return &page, nil
+}

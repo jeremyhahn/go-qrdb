@@ -233,7 +233,20 @@ func (s *Server) handleTSQuery(w http.ResponseWriter, r *http.Request) {
 		opts = append(opts, timeseries.WithDescending())
 	}
 
-	points, queryErr := tsSvc.Query(ctx, metric, start, end, opts...)
+	consistOpts, consistSpecified, consistOK := parseConsistencyParam(w, q)
+	if !consistOK {
+		return
+	}
+
+	var (
+		points   []timeseries.DataPoint
+		queryErr error
+	)
+	if consistSpecified {
+		points, queryErr = tsSvc.QueryWithConsistency(ctx, metric, start, end, consistOpts, opts...)
+	} else {
+		points, queryErr = tsSvc.Query(ctx, metric, start, end, opts...)
+	}
 	if queryErr != nil {
 		writeErrorJSON(w, mapHTTPError(queryErr), queryErr)
 		return
@@ -318,7 +331,20 @@ func (s *Server) handleTSAggregate(w http.ResponseWriter, r *http.Request) {
 	end := time.Unix(0, endNs)
 	interval := time.Duration(intervalNs)
 
-	results, aggErr := tsSvc.Aggregate(ctx, metric, start, end, fn, interval)
+	consistOpts, consistSpecified, consistOK := parseConsistencyParam(w, q)
+	if !consistOK {
+		return
+	}
+
+	var (
+		results []timeseries.AggResult
+		aggErr  error
+	)
+	if consistSpecified {
+		results, aggErr = tsSvc.AggregateWithConsistency(ctx, metric, start, end, fn, interval, consistOpts)
+	} else {
+		results, aggErr = tsSvc.Aggregate(ctx, metric, start, end, fn, interval)
+	}
 	if aggErr != nil {
 		writeErrorJSON(w, mapHTTPError(aggErr), aggErr)
 		return
@@ -558,7 +584,20 @@ func (s *Server) handleTSListMetrics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	metrics, err := tsSvc.ListMetrics(prefix, limit)
+	consistOpts, consistSpecified, consistOK := parseConsistencyParam(w, q)
+	if !consistOK {
+		return
+	}
+
+	var (
+		metrics []string
+		err     error
+	)
+	if consistSpecified {
+		metrics, err = tsSvc.ListMetricsWithConsistency(ctx, prefix, limit, consistOpts)
+	} else {
+		metrics, err = tsSvc.ListMetrics(prefix, limit)
+	}
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
@@ -693,7 +732,20 @@ func (s *Server) handleTSRichQuery(w http.ResponseWriter, r *http.Request) {
 		qr.Aggregation = agg
 	}
 
-	result, err := tsSvc.QueryRich(ctx, qr)
+	consistOpts, consistSpecified, consistOK := parseConsistencyParam(w, r.URL.Query())
+	if !consistOK {
+		return
+	}
+
+	var (
+		result *timeseries.QueryResult
+		err    error
+	)
+	if consistSpecified {
+		result, err = tsSvc.QueryRichWithConsistency(ctx, qr, consistOpts)
+	} else {
+		result, err = tsSvc.QueryRich(ctx, qr)
+	}
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return

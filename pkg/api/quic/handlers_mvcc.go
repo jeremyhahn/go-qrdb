@@ -24,8 +24,10 @@ import (
 )
 
 // handlePutWithLease stores a key-value pair with an attached lease through
-// the MVCC service layer. The lease must have been previously granted; when
-// it expires the key is automatically deleted.
+// the MVCC service layer. When the request carries a non-UNSPECIFIED
+// WriteMode, PutWithLeaseAndMode is used; otherwise the plain PutWithLease
+// method is called. The lease must have been previously granted; when it
+// expires the key is automatically deleted.
 func (s *Server) handlePutWithLease(ctx context.Context, payload []byte) ([]byte, error) {
 	if s.mvccSvc == nil {
 		return nil, &ServiceNotConfiguredError{Service: "mvcc"}
@@ -36,7 +38,15 @@ func (s *Server) handlePutWithLease(ctx context.Context, payload []byte) ([]byte
 		return nil, &UnmarshalError{Err: err}
 	}
 
-	result, err := s.mvccSvc.PutWithLease(ctx, string(req.GetKey()), req.GetValue(), req.GetLeaseId())
+	var (
+		result *service.KeyValue
+		err    error
+	)
+	if mode, ok := writeModeFromWire(req.GetWriteMode()); ok {
+		result, err = s.mvccSvc.PutWithLeaseAndMode(ctx, string(req.GetKey()), req.GetValue(), req.GetLeaseId(), mode)
+	} else {
+		result, err = s.mvccSvc.PutWithLease(ctx, string(req.GetKey()), req.GetValue(), req.GetLeaseId())
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -49,7 +59,9 @@ func (s *Server) handlePutWithLease(ctx context.Context, payload []byte) ([]byte
 }
 
 // handleGetRevision retrieves a key-value pair with full MVCC revision
-// metadata at the latest committed revision.
+// metadata at the latest committed revision. When the request carries a
+// non-UNSPECIFIED ConsistencyLevel, GetRevisionWithConsistency is used;
+// otherwise the plain GetRevision method is called.
 func (s *Server) handleGetRevision(ctx context.Context, payload []byte) ([]byte, error) {
 	if s.mvccSvc == nil {
 		return nil, &ServiceNotConfiguredError{Service: "mvcc"}
@@ -60,7 +72,15 @@ func (s *Server) handleGetRevision(ctx context.Context, payload []byte) ([]byte,
 		return nil, &UnmarshalError{Err: err}
 	}
 
-	result, err := s.mvccSvc.GetRevision(ctx, string(req.GetKey()))
+	var (
+		result *service.KeyValue
+		err    error
+	)
+	if opts, ok := readOptsFromWire(req.GetConsistency()); ok {
+		result, err = s.mvccSvc.GetRevisionWithConsistency(ctx, string(req.GetKey()), opts)
+	} else {
+		result, err = s.mvccSvc.GetRevision(ctx, string(req.GetKey()))
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -73,7 +93,9 @@ func (s *Server) handleGetRevision(ctx context.Context, payload []byte) ([]byte,
 }
 
 // handleGetAtRevision retrieves a key-value pair as it existed at a
-// specific historical MVCC revision.
+// specific historical MVCC revision. When the request carries a
+// non-UNSPECIFIED ConsistencyLevel, GetAtRevisionWithConsistency is used;
+// otherwise the plain GetAtRevision method is called.
 func (s *Server) handleGetAtRevision(ctx context.Context, payload []byte) ([]byte, error) {
 	if s.mvccSvc == nil {
 		return nil, &ServiceNotConfiguredError{Service: "mvcc"}
@@ -84,7 +106,15 @@ func (s *Server) handleGetAtRevision(ctx context.Context, payload []byte) ([]byt
 		return nil, &UnmarshalError{Err: err}
 	}
 
-	result, err := s.mvccSvc.GetAtRevision(ctx, string(req.GetKey()), req.GetRevision())
+	var (
+		result *service.KeyValue
+		err    error
+	)
+	if opts, ok := readOptsFromWire(req.GetConsistency()); ok {
+		result, err = s.mvccSvc.GetAtRevisionWithConsistency(ctx, string(req.GetKey()), req.GetRevision(), opts)
+	} else {
+		result, err = s.mvccSvc.GetAtRevision(ctx, string(req.GetKey()), req.GetRevision())
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -98,7 +128,9 @@ func (s *Server) handleGetAtRevision(ctx context.Context, payload []byte) ([]byt
 
 // handleRange returns key-value pairs in the half-open interval [start, end).
 // It supports limit, revision, count-only, keys-only, and sort options
-// matching the gRPC Range RPC semantics.
+// matching the gRPC Range RPC semantics. When the request carries a
+// non-UNSPECIFIED ConsistencyLevel, RangeWithConsistency is used; otherwise
+// the plain Range method is called.
 func (s *Server) handleRange(ctx context.Context, payload []byte) ([]byte, error) {
 	if s.mvccSvc == nil {
 		return nil, &ServiceNotConfiguredError{Service: "mvcc"}
@@ -129,7 +161,16 @@ func (s *Server) handleRange(ctx context.Context, payload []byte) ([]byte, error
 		opts = append(opts, service.WithSort(order, target))
 	}
 
-	kvs, count, err := s.mvccSvc.Range(ctx, req.GetStart(), req.GetEnd(), opts...)
+	var (
+		kvs   []*service.KeyValue
+		count int64
+		err   error
+	)
+	if ropts, ok := readOptsFromWire(req.GetConsistency()); ok {
+		kvs, count, err = s.mvccSvc.RangeWithConsistency(ctx, req.GetStart(), req.GetEnd(), ropts, opts...)
+	} else {
+		kvs, count, err = s.mvccSvc.Range(ctx, req.GetStart(), req.GetEnd(), opts...)
+	}
 	if err != nil {
 		return nil, err
 	}

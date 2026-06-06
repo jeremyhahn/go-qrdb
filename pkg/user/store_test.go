@@ -16,6 +16,9 @@ package user
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"sort"
@@ -23,6 +26,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -170,9 +174,21 @@ func (m *errKVStore) ScanCompoundIndex(_ context.Context, _ string, _ [][]byte, 
 // Test helpers
 // ---------------------------------------------------------------------------
 
+// newTestIDGen returns a Snowflake generator seeded with node 1 for unit
+// tests. User IDs assigned during tests are therefore non-zero, monotonic,
+// and node-unique exactly as in production.
+func newTestIDGen(t *testing.T) dao.IDGenerator {
+	t.Helper()
+	gen, err := dao.NewSnowflakeGenerator(1)
+	if err != nil {
+		t.Fatalf("NewSnowflakeGenerator: %v", err)
+	}
+	return gen
+}
+
 func newTestStore(t *testing.T) UserServicer {
 	t.Helper()
-	store, err := NewStore(newMemKVStore())
+	store, err := NewStore(newMemKVStore(), newTestIDGen(t))
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
@@ -198,7 +214,7 @@ func createTestUser(t *testing.T, svc UserServicer, username, tenantID string) *
 // ---------------------------------------------------------------------------
 
 func TestNewStore_Success(t *testing.T) {
-	svc, err := NewStore(newMemKVStore())
+	svc, err := NewStore(newMemKVStore(), newTestIDGen(t))
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
@@ -208,7 +224,7 @@ func TestNewStore_Success(t *testing.T) {
 }
 
 func TestNewStore_NilKVStore(t *testing.T) {
-	_, err := NewStore(nil)
+	_, err := NewStore(nil, newTestIDGen(t))
 	if err == nil {
 		t.Fatal("expected error for nil kvstore")
 	}
@@ -237,7 +253,7 @@ func TestCreateUser_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
-	if user.ID == "" {
+	if user.ID == 0 {
 		t.Error("expected non-empty ID")
 	}
 	if user.Username != "alice" {
@@ -340,8 +356,8 @@ func TestCreateUser_DefaultTenant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
-	if user.TenantID != tenant.DefaultTenantID {
-		t.Errorf("TenantID: got %q, want %q", user.TenantID, tenant.DefaultTenantID)
+	if user.TenantID != tenant.SystemTenantID {
+		t.Errorf("TenantID: got %q, want %q", user.TenantID, tenant.SystemTenantID)
 	}
 }
 
@@ -367,7 +383,7 @@ func TestCreateUser_NilRoleIDs(t *testing.T) {
 
 func TestCreateUser_StoreGetError(t *testing.T) {
 	eStore := &errKVStore{getErr: errors.New("disk fault")}
-	svc, err := NewStore(eStore)
+	svc, err := NewStore(eStore, newTestIDGen(t))
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
@@ -400,7 +416,7 @@ func TestGetUser_Found(t *testing.T) {
 		t.Fatalf("GetUser: %v", err)
 	}
 	if fetched.ID != created.ID {
-		t.Errorf("ID: got %q, want %q", fetched.ID, created.ID)
+		t.Errorf("ID: got %d, want %d", fetched.ID, created.ID)
 	}
 	if fetched.Username != "alice" {
 		t.Errorf("Username: got %q, want %q", fetched.Username, "alice")
@@ -411,7 +427,7 @@ func TestGetUser_NotFound(t *testing.T) {
 	svc := newTestStore(t)
 	ctx := context.Background()
 
-	_, err := svc.GetUser(ctx, "nonexistent-id")
+	_, err := svc.GetUser(ctx, 999999)
 	if err == nil {
 		t.Fatal("expected error for nonexistent user")
 	}
@@ -425,7 +441,7 @@ func TestGetUser_EmptyID(t *testing.T) {
 	svc := newTestStore(t)
 	ctx := context.Background()
 
-	_, err := svc.GetUser(ctx, "")
+	_, err := svc.GetUser(ctx, 0)
 	if err == nil {
 		t.Fatal("expected error for empty ID")
 	}
@@ -449,7 +465,7 @@ func TestGetUserByUsername_Found(t *testing.T) {
 		t.Fatalf("GetUserByUsername: %v", err)
 	}
 	if fetched.ID != created.ID {
-		t.Errorf("ID: got %q, want %q", fetched.ID, created.ID)
+		t.Errorf("ID: got %d, want %d", fetched.ID, created.ID)
 	}
 }
 
@@ -491,7 +507,7 @@ func TestGetUserByUsername_DefaultTenant(t *testing.T) {
 		t.Fatalf("GetUserByUsername: %v", err)
 	}
 	if fetched.ID != created.ID {
-		t.Errorf("ID: got %q, want %q", fetched.ID, created.ID)
+		t.Errorf("ID: got %d, want %d", fetched.ID, created.ID)
 	}
 }
 
@@ -554,7 +570,7 @@ func TestUpdateUser_UsernameChange(t *testing.T) {
 		t.Fatalf("GetUserByUsername(alice2): %v", err)
 	}
 	if fetched.ID != created.ID {
-		t.Errorf("ID: got %q, want %q", fetched.ID, created.ID)
+		t.Errorf("ID: got %d, want %d", fetched.ID, created.ID)
 	}
 }
 
@@ -563,7 +579,7 @@ func TestUpdateUser_NotFound(t *testing.T) {
 	ctx := context.Background()
 
 	_, err := svc.UpdateUser(ctx, &UpdateUserRequest{
-		ID:       "nonexistent-id",
+		ID:       999999,
 		Username: "bob",
 	})
 	if err == nil {
@@ -612,7 +628,7 @@ func TestUpdateUser_EmptyID(t *testing.T) {
 	svc := newTestStore(t)
 	ctx := context.Background()
 
-	_, err := svc.UpdateUser(ctx, &UpdateUserRequest{ID: ""})
+	_, err := svc.UpdateUser(ctx, &UpdateUserRequest{ID: 0})
 	if err == nil {
 		t.Fatal("expected error for empty ID")
 	}
@@ -691,7 +707,7 @@ func TestDeleteUser_NotFound(t *testing.T) {
 	svc := newTestStore(t)
 	ctx := context.Background()
 
-	err := svc.DeleteUser(ctx, "nonexistent-id")
+	err := svc.DeleteUser(ctx, 999999)
 	if err == nil {
 		t.Fatal("expected error for nonexistent user")
 	}
@@ -703,7 +719,7 @@ func TestDeleteUser_NotFound(t *testing.T) {
 
 func TestDeleteUser_SystemUser(t *testing.T) {
 	kv := newMemKVStore()
-	svc, _ := NewStore(kv)
+	svc, _ := NewStore(kv, newTestIDGen(t))
 	ctx := context.Background()
 
 	// Create a user then mark it as system directly in KV.
@@ -731,7 +747,7 @@ func TestDeleteUser_EmptyID(t *testing.T) {
 	svc := newTestStore(t)
 	ctx := context.Background()
 
-	err := svc.DeleteUser(ctx, "")
+	err := svc.DeleteUser(ctx, 0)
 	if err == nil {
 		t.Fatal("expected error for empty ID")
 	}
@@ -981,7 +997,7 @@ func TestEnableUser_NotFound(t *testing.T) {
 	svc := newTestStore(t)
 	ctx := context.Background()
 
-	err := svc.EnableUser(ctx, "nonexistent-id")
+	err := svc.EnableUser(ctx, 999999)
 	if err == nil {
 		t.Fatal("expected error for nonexistent user")
 	}
@@ -995,7 +1011,7 @@ func TestEnableUser_EmptyID(t *testing.T) {
 	svc := newTestStore(t)
 	ctx := context.Background()
 
-	err := svc.EnableUser(ctx, "")
+	err := svc.EnableUser(ctx, 0)
 	if err == nil {
 		t.Fatal("expected error for empty ID")
 	}
@@ -1032,7 +1048,7 @@ func TestDisableUser_NotFound(t *testing.T) {
 	svc := newTestStore(t)
 	ctx := context.Background()
 
-	err := svc.DisableUser(ctx, "nonexistent-id")
+	err := svc.DisableUser(ctx, 999999)
 	if err == nil {
 		t.Fatal("expected error for nonexistent user")
 	}
@@ -1046,7 +1062,7 @@ func TestDisableUser_EmptyID(t *testing.T) {
 	svc := newTestStore(t)
 	ctx := context.Background()
 
-	err := svc.DisableUser(ctx, "")
+	err := svc.DisableUser(ctx, 0)
 	if err == nil {
 		t.Fatal("expected error for empty ID")
 	}
@@ -1061,18 +1077,45 @@ func TestDisableUser_EmptyID(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPrimaryKey(t *testing.T) {
-	key := primaryKey("abc-123")
-	want := "__sys:users/id/abc-123"
+	key := primaryKey(0x0102030405060708)
+	want := keyPrefixPrimary + string([]byte{1, 2, 3, 4, 5, 6, 7, 8})
 	if key != want {
 		t.Errorf("primaryKey: got %q, want %q", key, want)
 	}
 }
 
 func TestTenantIndexKey(t *testing.T) {
-	key := tenantIndexKey("acme", "abc-123")
-	want := "__sys:users/tenant/acme/abc-123"
+	key := tenantIndexKey("acme", 0x0102030405060708)
+	want := keyPrefixTenant + "acme/" + string([]byte{1, 2, 3, 4, 5, 6, 7, 8})
 	if key != want {
 		t.Errorf("tenantIndexKey: got %q, want %q", key, want)
+	}
+}
+
+func TestEncodeDecodeID_RoundTrip(t *testing.T) {
+	for _, id := range []uint64{1, 42, 0x0102030405060708, ^uint64(0)} {
+		b := encodeID(id)
+		if len(b) != 8 {
+			t.Fatalf("encodeID(%d): got %d bytes, want 8", id, len(b))
+		}
+		got, err := decodeID(b)
+		if err != nil {
+			t.Fatalf("decodeID: %v", err)
+		}
+		if got != id {
+			t.Errorf("round-trip: got %d, want %d", got, id)
+		}
+	}
+}
+
+func TestDecodeID_WrongLength(t *testing.T) {
+	_, err := decodeID([]byte{1, 2, 3})
+	var target *IDEncodingError
+	if !errors.As(err, &target) {
+		t.Fatalf("expected *IDEncodingError, got %T: %v", err, err)
+	}
+	if target.Length != 3 {
+		t.Errorf("Length: got %d, want 3", target.Length)
 	}
 }
 
@@ -1173,7 +1216,7 @@ func TestCreateUser_PutPrimaryFails(t *testing.T) {
 		putFailAt: 1,
 		putErr:    errors.New("disk full"),
 	}
-	svc, _ := NewStore(fkv)
+	svc, _ := NewStore(fkv, newTestIDGen(t))
 	ctx := context.Background()
 
 	_, err := svc.CreateUser(ctx, &CreateUserRequest{
@@ -1195,7 +1238,7 @@ func TestCreateUser_PutTenantIndexFails(t *testing.T) {
 		putFailAt: 2, // first Put (primary) succeeds, second (tenant index) fails
 		putErr:    errors.New("disk full"),
 	}
-	svc, _ := NewStore(fkv)
+	svc, _ := NewStore(fkv, newTestIDGen(t))
 	ctx := context.Background()
 
 	_, err := svc.CreateUser(ctx, &CreateUserRequest{
@@ -1217,7 +1260,7 @@ func TestCreateUser_PutUsernameIndexFails(t *testing.T) {
 		putFailAt: 3, // primary and tenant succeed, username index fails
 		putErr:    errors.New("disk full"),
 	}
-	svc, _ := NewStore(fkv)
+	svc, _ := NewStore(fkv, newTestIDGen(t))
 	ctx := context.Background()
 
 	_, err := svc.CreateUser(ctx, &CreateUserRequest{
@@ -1239,10 +1282,10 @@ func TestGetUser_StoreGetError(t *testing.T) {
 		getFailAt: 1,
 		getErr:    errors.New("read error"),
 	}
-	svc, _ := NewStore(fkv)
+	svc, _ := NewStore(fkv, newTestIDGen(t))
 	ctx := context.Background()
 
-	_, err := svc.GetUser(ctx, "some-id")
+	_, err := svc.GetUser(ctx, 12345)
 	if err == nil {
 		t.Fatal("expected error from store Get")
 	}
@@ -1258,7 +1301,7 @@ func TestGetUserByUsername_StoreGetError(t *testing.T) {
 		getFailAt: 1,
 		getErr:    errors.New("read error"),
 	}
-	svc, _ := NewStore(fkv)
+	svc, _ := NewStore(fkv, newTestIDGen(t))
 	ctx := context.Background()
 
 	_, err := svc.GetUserByUsername(ctx, "acme", "alice")
@@ -1274,7 +1317,7 @@ func TestGetUserByUsername_StoreGetError(t *testing.T) {
 func TestUpdateUser_PutPrimaryFails(t *testing.T) {
 	mem := newMemKVStore()
 	fkv := &faultKVStore{inner: mem}
-	svc, _ := NewStore(fkv)
+	svc, _ := NewStore(fkv, newTestIDGen(t))
 	ctx := context.Background()
 
 	user := createTestUser(t, svc, "alice", "acme")
@@ -1299,7 +1342,7 @@ func TestUpdateUser_PutPrimaryFails(t *testing.T) {
 func TestUpdateUser_UsernameChange_GetFails(t *testing.T) {
 	mem := newMemKVStore()
 	fkv := &faultKVStore{inner: mem}
-	svc, _ := NewStore(fkv)
+	svc, _ := NewStore(fkv, newTestIDGen(t))
 	ctx := context.Background()
 
 	user := createTestUser(t, svc, "alice", "acme")
@@ -1326,7 +1369,7 @@ func TestUpdateUser_UsernameChange_GetFails(t *testing.T) {
 func TestUpdateUser_UsernameChange_DeleteOldIndexFails(t *testing.T) {
 	mem := newMemKVStore()
 	fkv := &faultKVStore{inner: mem}
-	svc, _ := NewStore(fkv)
+	svc, _ := NewStore(fkv, newTestIDGen(t))
 	ctx := context.Background()
 
 	user := createTestUser(t, svc, "alice", "acme")
@@ -1351,7 +1394,7 @@ func TestUpdateUser_UsernameChange_DeleteOldIndexFails(t *testing.T) {
 func TestUpdateUser_UsernameChange_PutNewIndexFails(t *testing.T) {
 	mem := newMemKVStore()
 	fkv := &faultKVStore{inner: mem}
-	svc, _ := NewStore(fkv)
+	svc, _ := NewStore(fkv, newTestIDGen(t))
 	ctx := context.Background()
 
 	user := createTestUser(t, svc, "alice", "acme")
@@ -1376,7 +1419,7 @@ func TestUpdateUser_UsernameChange_PutNewIndexFails(t *testing.T) {
 func TestDeleteUser_DeletePrimaryFails(t *testing.T) {
 	mem := newMemKVStore()
 	fkv := &faultKVStore{inner: mem}
-	svc, _ := NewStore(fkv)
+	svc, _ := NewStore(fkv, newTestIDGen(t))
 	ctx := context.Background()
 
 	user := createTestUser(t, svc, "alice", "acme")
@@ -1397,7 +1440,7 @@ func TestDeleteUser_DeletePrimaryFails(t *testing.T) {
 func TestDeleteUser_DeleteTenantIndexFails(t *testing.T) {
 	mem := newMemKVStore()
 	fkv := &faultKVStore{inner: mem}
-	svc, _ := NewStore(fkv)
+	svc, _ := NewStore(fkv, newTestIDGen(t))
 	ctx := context.Background()
 
 	user := createTestUser(t, svc, "alice", "acme")
@@ -1418,7 +1461,7 @@ func TestDeleteUser_DeleteTenantIndexFails(t *testing.T) {
 func TestDeleteUser_DeleteUsernameIndexFails(t *testing.T) {
 	mem := newMemKVStore()
 	fkv := &faultKVStore{inner: mem}
-	svc, _ := NewStore(fkv)
+	svc, _ := NewStore(fkv, newTestIDGen(t))
 	ctx := context.Background()
 
 	user := createTestUser(t, svc, "alice", "acme")
@@ -1441,7 +1484,7 @@ func TestListUsers_ScanFails(t *testing.T) {
 		inner:   newMemKVStore(),
 		scanErr: errors.New("scan error"),
 	}
-	svc, _ := NewStore(fkv)
+	svc, _ := NewStore(fkv, newTestIDGen(t))
 	ctx := context.Background()
 
 	_, err := svc.ListUsers(ctx, &ListUsersRequest{TenantID: "acme"})
@@ -1457,7 +1500,7 @@ func TestListUsers_ScanFails(t *testing.T) {
 func TestEnableUser_PutFails(t *testing.T) {
 	mem := newMemKVStore()
 	fkv := &faultKVStore{inner: mem}
-	svc, _ := NewStore(fkv)
+	svc, _ := NewStore(fkv, newTestIDGen(t))
 	ctx := context.Background()
 
 	user := createTestUser(t, svc, "alice", "acme")
@@ -1478,7 +1521,7 @@ func TestEnableUser_PutFails(t *testing.T) {
 func TestDisableUser_PutFails(t *testing.T) {
 	mem := newMemKVStore()
 	fkv := &faultKVStore{inner: mem}
-	svc, _ := NewStore(fkv)
+	svc, _ := NewStore(fkv, newTestIDGen(t))
 	ctx := context.Background()
 
 	user := createTestUser(t, svc, "alice", "acme")
@@ -1498,13 +1541,13 @@ func TestDisableUser_PutFails(t *testing.T) {
 
 func TestGetUser_CorruptedData(t *testing.T) {
 	mem := newMemKVStore()
-	svc, _ := NewStore(mem)
+	svc, _ := NewStore(mem, newTestIDGen(t))
 	ctx := context.Background()
 
 	// Write garbage directly to the primary key.
-	_ = mem.Put(ctx, primaryKey("corrupt-id"), []byte("{invalid json"))
+	_ = mem.Put(ctx, primaryKey(777), []byte("{invalid json"))
 
-	_, err := svc.GetUser(ctx, "corrupt-id")
+	_, err := svc.GetUser(ctx, 777)
 	if err == nil {
 		t.Fatal("expected error for corrupted data")
 	}
@@ -1550,7 +1593,7 @@ func TestUserLifecycle(t *testing.T) {
 		t.Fatalf("GetUserByUsername: %v", err)
 	}
 	if byName.ID != user.ID {
-		t.Errorf("ID mismatch: got %q, want %q", byName.ID, user.ID)
+		t.Errorf("ID mismatch: got %d, want %d", byName.ID, user.ID)
 	}
 
 	// Update.
@@ -1632,7 +1675,7 @@ func (m *mockUserQuotaChecker) Usage(ctx context.Context, tenantID string, resou
 // newTestStoreWithQuota creates a kvUserStore with the given quota.Checker.
 func newTestStoreWithQuota(t *testing.T, checker quota.Checker) *kvUserStore {
 	t.Helper()
-	s := &kvUserStore{store: newMemKVStore()}
+	s := &kvUserStore{store: newMemKVStore(), idgen: newTestIDGen(t)}
 	return s.WithQuotaChecker(checker)
 }
 
@@ -1718,7 +1761,7 @@ func TestKVUserStore_CreateUser_QuotaPasses(t *testing.T) {
 }
 
 func TestKVUserStore_WithQuotaChecker_DefaultTenant(t *testing.T) {
-	// When TenantID is empty the store falls back to DefaultTenantID.
+	// When TenantID is empty the store falls back to SystemTenantID.
 	var checkedTenantID string
 	checker := &mockUserQuotaChecker{
 		checkFn: func(_ context.Context, tenantID string, _ quota.Resource) error {
@@ -1737,7 +1780,62 @@ func TestKVUserStore_WithQuotaChecker_DefaultTenant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateUser() returned unexpected error: %v", err)
 	}
-	if checkedTenantID != tenant.DefaultTenantID {
-		t.Errorf("quota.Check() tenantID = %q, want %q", checkedTenantID, tenant.DefaultTenantID)
+	if checkedTenantID != tenant.SystemTenantID {
+		t.Errorf("quota.Check() tenantID = %q, want %q", checkedTenantID, tenant.SystemTenantID)
+	}
+}
+
+// TestCreateUser_AssignsSnowflakeID_AndIndexRoundTrip proves that CreateUser
+// assigns a non-zero Snowflake ID and that GetUser, GetUserByUsername, and
+// UserByCertThumbprint all resolve the same uint64 ID through their secondary
+// indexes (exercising the big-endian key/value encoding end to end).
+func TestCreateUser_AssignsSnowflakeID_AndIndexRoundTrip(t *testing.T) {
+	svc := newTestStore(t)
+	ctx := context.Background()
+
+	created, err := svc.CreateUser(ctx, &CreateUserRequest{
+		Username: "snowflake",
+		TenantID: "acme",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if created.ID == 0 {
+		t.Fatal("expected a non-zero store-assigned Snowflake ID")
+	}
+
+	// Primary lookup.
+	byID, err := svc.GetUser(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetUser: %v", err)
+	}
+	if byID.ID != created.ID {
+		t.Errorf("GetUser ID: got %d, want %d", byID.ID, created.ID)
+	}
+
+	// Username index round-trip.
+	byName, err := svc.GetUserByUsername(ctx, "acme", "snowflake")
+	if err != nil {
+		t.Fatalf("GetUserByUsername: %v", err)
+	}
+	if byName.ID != created.ID {
+		t.Errorf("GetUserByUsername ID: got %d, want %d", byName.ID, created.ID)
+	}
+
+	// Cert-thumbprint index round-trip. The cert-SPKI index is tenant-scoped,
+	// so the lookup must run with the user's tenant in context.
+	tctx := tenant.WithTenantID(ctx, "acme")
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	cert := makeCertForKey(t, key, "snowflake", 1)
+	tp := ComputeSPKIThumbprint(cert)
+	if _, err := svc.AddCertBinding(tctx, created.ID, tp, 0); err != nil {
+		t.Fatalf("AddCertBinding: %v", err)
+	}
+	byCert, err := svc.UserByCertThumbprint(tctx, tp)
+	if err != nil {
+		t.Fatalf("UserByCertThumbprint: %v", err)
+	}
+	if byCert.ID != created.ID {
+		t.Errorf("UserByCertThumbprint ID: got %d, want %d", byCert.ID, created.ID)
 	}
 }

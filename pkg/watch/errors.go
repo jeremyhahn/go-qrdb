@@ -14,6 +14,14 @@
 
 package watch
 
+import "errors"
+
+// ErrWatcherOverflow indicates a watcher's event buffer filled because the
+// consumer could not keep up. The hub evicts such a watcher (cancelling it)
+// rather than blocking the state-machine apply loop on delivery; the client
+// observes the watch ending with this error and may re-establish it.
+var ErrWatcherOverflow = errors.New("qrdb/watch: watcher event buffer overflow; consumer too slow")
+
 // HubClosedError is returned when an operation is attempted on a closed hub.
 type HubClosedError struct{}
 

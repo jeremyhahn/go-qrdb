@@ -139,4 +139,3 @@ func TestVectorStoreAdapter_SearchSimilar_Error(t *testing.T) {
 	})
 	require.Error(t, err)
 }
-

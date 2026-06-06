@@ -40,6 +40,24 @@ type getRoleWireRequest struct {
 	ID string `json:"id"`
 }
 
+// getRoleByNameWireRequest is the JSON wire payload for role.GetByName.
+type getRoleByNameWireRequest struct {
+	TenantID string `json:"tenantID"`
+	Name     string `json:"name"`
+}
+
+// resolvePermissionsWireRequest is the JSON wire payload for
+// role.ResolvePermissions.
+type resolvePermissionsWireRequest struct {
+	RoleIDs []string `json:"roleIDs"`
+}
+
+// resolvePermissionsWireResponse is the JSON wire payload returned by
+// role.ResolvePermissions.
+type resolvePermissionsWireResponse struct {
+	Permissions []string `json:"permissions"`
+}
+
 // updateRoleWireRequest is the JSON wire payload for role.Update.
 type updateRoleWireRequest struct {
 	ID          string   `json:"id"`
@@ -62,7 +80,7 @@ type listRolesWireRequest struct {
 // assignRoleWireRequest is the JSON wire payload for role.Assign and
 // role.Unassign.
 type assignRoleWireRequest struct {
-	UserID string `json:"userID"`
+	UserID uint64 `json:"userID"`
 	RoleID string `json:"roleID"`
 }
 
@@ -148,6 +166,61 @@ func (s *Server) handleGetRole(ctx context.Context, payload []byte) ([]byte, err
 		return nil, &MarshalError{Err: err}
 	}
 	return out, nil
+}
+
+// handleGetRoleByName unmarshals a JSON get-role-by-name request, retrieves
+// the role by tenant-scoped name via the service layer, and returns a
+// serialized JSON role response.
+func (s *Server) handleGetRoleByName(ctx context.Context, payload []byte) ([]byte, error) {
+	if s.roleSvc == nil {
+		return nil, &ServiceNotConfiguredError{Service: "role"}
+	}
+
+	var req getRoleByNameWireRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+
+	rl, err := s.roleSvc.GetRoleByName(ctx, req.TenantID, req.Name)
+	if err != nil {
+		return nil, err
+	}
+
+	out, err := json.Marshal(roleToWireResponse(rl))
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return out, nil
+}
+
+// handleResolvePermissions unmarshals a JSON resolve-permissions request,
+// resolves the union of effective permissions for the given role IDs via
+// the service layer, and returns a serialized JSON response.
+func (s *Server) handleResolvePermissions(ctx context.Context, payload []byte) ([]byte, error) {
+	if s.roleSvc == nil {
+		return nil, &ServiceNotConfiguredError{Service: "role"}
+	}
+
+	var req resolvePermissionsWireRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+
+	perms, err := s.roleSvc.ResolvePermissions(ctx, req.RoleIDs)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]string, len(perms))
+	for i, p := range perms {
+		out[i] = p.String()
+	}
+
+	data, err := json.Marshal(resolvePermissionsWireResponse{Permissions: out})
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return data, nil
 }
 
 // handleUpdateRole unmarshals a JSON update role request, applies partial

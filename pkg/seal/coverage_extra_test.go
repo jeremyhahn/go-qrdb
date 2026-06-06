@@ -213,7 +213,7 @@ func TestBarrierRegistry_RegisterTenant_WithStrategy(t *testing.T) {
 	}
 
 	tenantSW := testSoftwareStrategy(t)
-	tb, err := registry.RegisterTenant("tenant-with-strat", NewMemoryBackend(), BarrierConfig{
+	tb, err := registry.RegisterTenant(context.Background(), "tenant-with-strat", NewMemoryBackend(), BarrierConfig{
 		RootKeyPath: "t/root-key",
 	}, tenantSW)
 	if err != nil {
@@ -232,14 +232,14 @@ func TestBarrierRegistry_RegisterTenant_WithStrategy(t *testing.T) {
 // in verifySecretAndGetRootKey, which returns ErrNotInitialized when the
 // root key has never been stored (barrier was never initialized).
 func TestVerifySecretAndGetRootKey_NotInitialized(t *testing.T) {
-	shamirStore := NewMemoryBackend()
-	shamirStrat, err := NewShamirStrategy(shamirStore, 2, 3)
+	shamirStrat, err := NewShamirStrategy(2, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
 	b, err := NewBarrier(testLogger(), NewMemoryBackend(), BarrierConfig{
-		RootKeyPath: "test/root-key",
-		Shamir:      &ShamirConfig{Threshold: 2, TotalShares: 3},
+		RootKeyPath:     "test/root-key",
+		Shamir:          &ShamirConfig{Threshold: 2, TotalShares: 3},
+		PreferenceOrder: []StrategyID{StrategyShamir},
 	}, testSoftwareStrategy(t), shamirStrat)
 	if err != nil {
 		t.Fatal(err)
@@ -258,14 +258,14 @@ func TestVerifySecretAndGetRootKey_NotInitialized(t *testing.T) {
 // path in verifySecretAndGetRootKey when the storage backend fails.
 func TestVerifySecretAndGetRootKey_ExistsError(t *testing.T) {
 	fb := newFailingBackend()
-	shamirStore := NewMemoryBackend()
-	shamirStrat, err := NewShamirStrategy(shamirStore, 2, 3)
+	shamirStrat, err := NewShamirStrategy(2, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
 	b, err := NewBarrier(testLogger(), fb, BarrierConfig{
-		RootKeyPath: "test/root-key",
-		Shamir:      &ShamirConfig{Threshold: 2, TotalShares: 3},
+		RootKeyPath:     "test/root-key",
+		Shamir:          &ShamirConfig{Threshold: 2, TotalShares: 3},
+		PreferenceOrder: []StrategyID{StrategyShamir},
 	}, testSoftwareStrategy(t), shamirStrat)
 	if err != nil {
 		t.Fatal(err)
@@ -471,7 +471,7 @@ func TestBarrierRegistry_RegisterTenant_ConcurrentRace(t *testing.T) {
 	results := make(chan error, goroutines)
 	for i := 0; i < goroutines; i++ {
 		go func() {
-			_, err := reg.RegisterTenant(tenantID, NewMemoryBackend(), BarrierConfig{
+			_, err := reg.RegisterTenant(context.Background(), tenantID, NewMemoryBackend(), BarrierConfig{
 				RootKeyPath: "t/root-key",
 			}, testSoftwareStrategy(t))
 			results <- err
@@ -510,17 +510,17 @@ func TestBarrierRegistry_RegisterTenant_ConcurrentRace(t *testing.T) {
 // b.barrier.Initialize which succeeds, persisting the blob via the else branch.
 func TestUnsealDirect_FreshEpochBarrier(t *testing.T) {
 	backend := NewMemoryBackend()
-	shamirStore := NewMemoryBackend()
 
 	newBarrier := func() *Barrier {
 		t.Helper()
-		shamirStrat, err := NewShamirStrategy(shamirStore, 2, 3)
+		shamirStrat, err := NewShamirStrategy(2, 3)
 		if err != nil {
 			t.Fatalf("NewShamirStrategy: %v", err)
 		}
 		b, err := NewBarrier(testLogger(), backend, BarrierConfig{
-			RootKeyPath: "test/root-key",
-			Shamir:      &ShamirConfig{Threshold: 2, TotalShares: 3},
+			RootKeyPath:     "test/root-key",
+			Shamir:          &ShamirConfig{Threshold: 2, TotalShares: 3},
+			PreferenceOrder: []StrategyID{StrategyShamir},
 		}, testSoftwareStrategy(t), shamirStrat)
 		if err != nil {
 			t.Fatalf("NewBarrier: %v", err)

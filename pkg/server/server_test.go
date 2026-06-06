@@ -1099,19 +1099,26 @@ type stubUserService struct{}
 func (s *stubUserService) CreateUser(_ context.Context, _ *user.CreateUserRequest) (*user.User, error) {
 	return nil, nil
 }
-func (s *stubUserService) GetUser(_ context.Context, _ string) (*user.User, error) { return nil, nil }
+func (s *stubUserService) GetUser(_ context.Context, _ uint64) (*user.User, error) { return nil, nil }
 func (s *stubUserService) GetUserByUsername(_ context.Context, _, _ string) (*user.User, error) {
 	return nil, nil
 }
 func (s *stubUserService) UpdateUser(_ context.Context, _ *user.UpdateUserRequest) (*user.User, error) {
 	return nil, nil
 }
-func (s *stubUserService) DeleteUser(_ context.Context, _ string) error { return nil }
+func (s *stubUserService) DeleteUser(_ context.Context, _ uint64) error { return nil }
 func (s *stubUserService) ListUsers(_ context.Context, _ *user.ListUsersRequest) (*user.ListUsersResponse, error) {
 	return nil, nil
 }
-func (s *stubUserService) EnableUser(_ context.Context, _ string) error  { return nil }
-func (s *stubUserService) DisableUser(_ context.Context, _ string) error { return nil }
+func (s *stubUserService) EnableUser(_ context.Context, _ uint64) error  { return nil }
+func (s *stubUserService) DisableUser(_ context.Context, _ uint64) error { return nil }
+func (s *stubUserService) UserByCertThumbprint(_ context.Context, _ string) (*user.User, error) {
+	return nil, nil
+}
+
+func (s *stubUserService) AddCertBinding(_ context.Context, _ uint64, _ string, _ int64) (*user.User, error) {
+	return nil, nil
+}
 
 // stubRoleService is a minimal role.RoleServicer for option propagation tests.
 type stubRoleService struct{}

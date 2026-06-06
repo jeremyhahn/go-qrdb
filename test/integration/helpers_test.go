@@ -191,7 +191,7 @@ func (ca *testCA) generateNodeCert(t *testing.T) (certPath, keyPath string) {
 
 // generateAdminClientCert creates a client-only certificate signed by this
 // CA with CN=admin and OU=tenantID. This matches the admin user created by
-// bootstrapRolesAndAdmin so the mTLS authenticator recognizes it. The cert
+// firstboot.Initialize so the mTLS authenticator recognizes it. The cert
 // and key are written to {dataDir}/admin-cert.pem and admin-key.pem.
 func (ca *testCA) generateAdminClientCert(t *testing.T, dataDir string) (certPath, keyPath string) {
 	t.Helper()
@@ -211,7 +211,7 @@ func (ca *testCA) generateAdminClientCert(t *testing.T, dataDir string) (certPat
 		Subject: pkix.Name{
 			Organization:       []string{"go-quicraft-test"},
 			CommonName:         "admin",
-			OrganizationalUnit: []string{"default"},
+			OrganizationalUnit: []string{"system"},
 		},
 		NotBefore: time.Now().Add(-1 * time.Minute),
 		NotAfter:  time.Now().Add(1 * time.Hour),
@@ -280,8 +280,9 @@ func caHTTPClient(pool *x509.CertPool, timeout time.Duration) *http.Client {
 
 // mtlsHTTPClient returns an HTTP client that presents a client certificate
 // signed by the given CA with CN=admin and OU=default. This matches the
-// admin user created by bootstrapRolesAndAdmin, so the mTLS authenticator
-// + RBAC authorizer grants superadmin access to all endpoints.
+// admin user created by firstboot.Initialize, so the mTLS authenticator
+// + RBAC authorizer grants Admin@system platform-wide access via the
+// system-tenant rule.
 func mtlsHTTPClient(t *testing.T, ca *testCA, timeout time.Duration) *http.Client {
 	t.Helper()
 
@@ -300,7 +301,7 @@ func mtlsHTTPClient(t *testing.T, ca *testCA, timeout time.Duration) *http.Clien
 		Subject: pkix.Name{
 			Organization:       []string{"go-quicraft-test"},
 			CommonName:         "admin",
-			OrganizationalUnit: []string{"default"},
+			OrganizationalUnit: []string{"system"},
 		},
 		NotBefore: time.Now().Add(-1 * time.Minute),
 		NotAfter:  time.Now().Add(1 * time.Hour),
@@ -379,6 +380,45 @@ func buildBinary(t *testing.T) string {
 	return builtBinary
 }
 
+// buildCLIBinary compiles the qrdb client CLI binary (headless, no desktop
+// GUI tags) into a temporary directory and returns its path. The binary is
+// built once per test run. It mirrors buildBinary but targets ./cmd/qrdb
+// instead of the daemon, so integration tests can exercise the real client
+// CLI (e.g. `qrdb admin drain`) against a spawned qrdbd node.
+//
+// Note: os.MkdirTemp is used instead of t.TempDir() for the same reason as
+// buildBinary -- sync.Once captures the first caller's t, whose temp dir
+// would be removed when that test finishes.
+var (
+	cliBuildOnce sync.Once
+	cliBinary    string
+	cliBuildErr  error
+)
+
+func buildCLIBinary(t *testing.T) string {
+	t.Helper()
+	cliBuildOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "qrdb-cli-test-*")
+		if err != nil {
+			cliBuildErr = fmt.Errorf("MkdirTemp: %v", err)
+			return
+		}
+		cliBinary = filepath.Join(dir, "qrdb")
+		cmd := exec.Command("go", "build", "-buildvcs=false",
+			"-tags", "qrdb_ts qrdb_vector",
+			"-o", cliBinary, "./cmd/qrdb")
+		cmd.Dir = projectRoot()
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			cliBuildErr = fmt.Errorf("go build failed: %v\n%s", err, out)
+		}
+	})
+	if cliBuildErr != nil {
+		t.Fatalf("buildCLIBinary: %v", cliBuildErr)
+	}
+	return cliBinary
+}
+
 // projectRoot returns the module root directory by walking up from the
 // current working directory to find go.mod.
 func projectRoot() string {
@@ -446,26 +486,64 @@ func startNode(t *testing.T, binary string, args []string, prefix string) *exec.
 	return cmd
 }
 
-// allocatePorts returns n free UDP ports for node listen addresses.
-// All listeners are held open until all ports are determined, preventing
-// the OS from reassigning a port within the same batch.
+// reservedPorts tracks every port handed out by allocatePorts /
+// allocateTCPPorts for the lifetime of the test process. A single allocate
+// call holds its listeners open simultaneously so ports are distinct WITHIN
+// the call, but each call closes its listeners before returning — so the OS
+// can re-hand a previously-returned port to a LATER call. When a node is then
+// started with ports drawn from several separate allocate calls (admin, grpc,
+// mysql, pgsql, ...), two of its servers can collide on the same port and the
+// second fails to bind ("address already in use"). Reserving every handed-out
+// port across calls (and re-rolling on a hit) eliminates that race for every
+// call site at once. TCP and UDP share the table: skipping a number that the
+// other protocol used is harmless and keeps the logic simple.
+var (
+	reservedPortsMu sync.Mutex
+	reservedPorts   = make(map[int]struct{})
+)
+
+// reservePortUnique records port as handed out and reports whether it was not
+// already reserved by an earlier allocate call.
+func reservePortUnique(port int) bool {
+	reservedPortsMu.Lock()
+	defer reservedPortsMu.Unlock()
+	if _, taken := reservedPorts[port]; taken {
+		return false
+	}
+	reservedPorts[port] = struct{}{}
+	return true
+}
+
+// allocatePorts returns n free UDP ports for node listen addresses. All
+// listeners are held open until all ports are determined (distinct within the
+// batch), and each port is reserved process-wide so a later allocate call
+// cannot hand back the same number (see reservedPorts).
 func allocatePorts(t *testing.T, n int) []int {
 	t.Helper()
-	ports := make([]int, n)
-	listeners := make([]net.PacketConn, n)
-	for i := range n {
+	ports := make([]int, 0, n)
+	var listeners []net.PacketConn
+	const maxAttempts = 100
+	for attempt := 0; len(ports) < n && attempt < maxAttempts; attempt++ {
 		pc, err := net.ListenPacket("udp", "127.0.0.1:0")
 		if err != nil {
-			for j := range i {
-				listeners[j].Close()
+			for _, l := range listeners {
+				l.Close()
 			}
 			t.Fatalf("allocatePorts: %v", err)
 		}
-		listeners[i] = pc
-		ports[i] = pc.LocalAddr().(*net.UDPAddr).Port
+		port := pc.LocalAddr().(*net.UDPAddr).Port
+		if !reservePortUnique(port) {
+			pc.Close() // already handed out by an earlier call; re-roll
+			continue
+		}
+		listeners = append(listeners, pc)
+		ports = append(ports, port)
 	}
 	for _, pc := range listeners {
 		pc.Close()
+	}
+	if len(ports) < n {
+		t.Fatalf("allocatePorts: could not allocate %d unique UDP ports", n)
 	}
 	return ports
 }
@@ -506,26 +584,37 @@ func runCLI(t *testing.T, binary string, args ...string) (string, error) {
 	return string(out), err
 }
 
-// allocateTCPPorts returns n free TCP ports for admin server addresses.
-// All listeners are held open until all ports are determined, preventing
-// the OS from reassigning a port within the same batch.
+// allocateTCPPorts returns n free TCP ports for server addresses. All
+// listeners are held open until all ports are determined (distinct within the
+// batch), and each port is reserved process-wide so a later allocate call
+// cannot hand back the same number (see reservedPorts) — preventing two
+// servers in the same node from colliding on a port.
 func allocateTCPPorts(t *testing.T, n int) []int {
 	t.Helper()
-	ports := make([]int, n)
-	listeners := make([]net.Listener, n)
-	for i := range n {
+	ports := make([]int, 0, n)
+	var listeners []net.Listener
+	const maxAttempts = 100
+	for attempt := 0; len(ports) < n && attempt < maxAttempts; attempt++ {
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
-			for j := range i {
-				listeners[j].Close()
+			for _, l := range listeners {
+				l.Close()
 			}
 			t.Fatalf("allocateTCPPorts: %v", err)
 		}
-		listeners[i] = ln
-		ports[i] = ln.Addr().(*net.TCPAddr).Port
+		port := ln.Addr().(*net.TCPAddr).Port
+		if !reservePortUnique(port) {
+			ln.Close() // already handed out by an earlier call; re-roll
+			continue
+		}
+		listeners = append(listeners, ln)
+		ports = append(ports, port)
 	}
 	for _, ln := range listeners {
 		ln.Close()
+	}
+	if len(ports) < n {
+		t.Fatalf("allocateTCPPorts: could not allocate %d unique TCP ports", n)
 	}
 	return ports
 }

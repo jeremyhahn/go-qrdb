@@ -19,9 +19,12 @@ package quota
 
 import "strconv"
 
-// Quotas holds per-tenant resource limits. A value of -1 means unlimited
-// and 0 means use the system default.
+// Quotas holds per-tenant resource limits and current usage counters.
+// A Max* value of -1 means unlimited; 0 means use the system default.
+// Current* fields track actual usage and are persisted alongside the
+// tenant metadata so quota enforcement reads a single record.
 type Quotas struct {
+	// Configured limits.
 	MaxDatabases    int64 `json:"max_databases"`
 	MaxRaftGroups   int64 `json:"max_raft_groups"`
 	MaxCollections  int64 `json:"max_collections"`
@@ -33,6 +36,19 @@ type Quotas struct {
 	MaxBackups      int64 `json:"max_backups"`
 	MaxVectorDims   int64 `json:"max_vector_dims"`
 	MaxTSMetrics    int64 `json:"max_ts_metrics"`
+
+	// Current usage counters (persisted with the tenant record).
+	CurrentDatabases    int64 `json:"current_databases,omitempty"`
+	CurrentRaftGroups   int64 `json:"current_raft_groups,omitempty"`
+	CurrentCollections  int64 `json:"current_collections,omitempty"`
+	CurrentKeys         int64 `json:"current_keys,omitempty"`
+	CurrentStorageBytes int64 `json:"current_storage_bytes,omitempty"`
+	CurrentUsers        int64 `json:"current_users,omitempty"`
+	CurrentRoles        int64 `json:"current_roles,omitempty"`
+	CurrentCertificates int64 `json:"current_certificates,omitempty"`
+	CurrentBackups      int64 `json:"current_backups,omitempty"`
+	CurrentVectorDims   int64 `json:"current_vector_dims,omitempty"`
+	CurrentTSMetrics    int64 `json:"current_ts_metrics,omitempty"`
 }
 
 // Resource identifies a quota-limited resource type.
@@ -86,8 +102,7 @@ func (r Resource) String() string {
 	return "unknown(" + strconv.Itoa(int(r)) + ")"
 }
 
-// resourceLimits maps each Resource to the corresponding field accessor
-// on Quotas.
+// resourceLimits maps each Resource to the corresponding limit accessor.
 var resourceLimits = map[Resource]func(*Quotas) int64{
 	ResourceDatabases:    func(q *Quotas) int64 { return q.MaxDatabases },
 	ResourceRaftGroups:   func(q *Quotas) int64 { return q.MaxRaftGroups },
@@ -102,6 +117,37 @@ var resourceLimits = map[Resource]func(*Quotas) int64{
 	ResourceTSMetrics:    func(q *Quotas) int64 { return q.MaxTSMetrics },
 }
 
+// resourceCurrentUsage maps each Resource to its current-usage accessor.
+var resourceCurrentUsage = map[Resource]func(*Quotas) int64{
+	ResourceDatabases:    func(q *Quotas) int64 { return q.CurrentDatabases },
+	ResourceRaftGroups:   func(q *Quotas) int64 { return q.CurrentRaftGroups },
+	ResourceCollections:  func(q *Quotas) int64 { return q.CurrentCollections },
+	ResourceKeys:         func(q *Quotas) int64 { return q.CurrentKeys },
+	ResourceStorageBytes: func(q *Quotas) int64 { return q.CurrentStorageBytes },
+	ResourceUsers:        func(q *Quotas) int64 { return q.CurrentUsers },
+	ResourceRoles:        func(q *Quotas) int64 { return q.CurrentRoles },
+	ResourceCertificates: func(q *Quotas) int64 { return q.CurrentCertificates },
+	ResourceBackups:      func(q *Quotas) int64 { return q.CurrentBackups },
+	ResourceVectorDims:   func(q *Quotas) int64 { return q.CurrentVectorDims },
+	ResourceTSMetrics:    func(q *Quotas) int64 { return q.CurrentTSMetrics },
+}
+
+// resourceSetCurrent maps each Resource to a setter that mutates the
+// corresponding current-usage field in-place.
+var resourceSetCurrent = map[Resource]func(*Quotas, int64){
+	ResourceDatabases:    func(q *Quotas, v int64) { q.CurrentDatabases = v },
+	ResourceRaftGroups:   func(q *Quotas, v int64) { q.CurrentRaftGroups = v },
+	ResourceCollections:  func(q *Quotas, v int64) { q.CurrentCollections = v },
+	ResourceKeys:         func(q *Quotas, v int64) { q.CurrentKeys = v },
+	ResourceStorageBytes: func(q *Quotas, v int64) { q.CurrentStorageBytes = v },
+	ResourceUsers:        func(q *Quotas, v int64) { q.CurrentUsers = v },
+	ResourceRoles:        func(q *Quotas, v int64) { q.CurrentRoles = v },
+	ResourceCertificates: func(q *Quotas, v int64) { q.CurrentCertificates = v },
+	ResourceBackups:      func(q *Quotas, v int64) { q.CurrentBackups = v },
+	ResourceVectorDims:   func(q *Quotas, v int64) { q.CurrentVectorDims = v },
+	ResourceTSMetrics:    func(q *Quotas, v int64) { q.CurrentTSMetrics = v },
+}
+
 // Limit returns the configured limit for the given resource. Returns
 // an error if the resource type is not recognized.
 func (q *Quotas) Limit(r Resource) (int64, error) {
@@ -110,4 +156,29 @@ func (q *Quotas) Limit(r Resource) (int64, error) {
 		return 0, &InvalidResourceError{Resource: r}
 	}
 	return fn(q), nil
+}
+
+// CurrentUsage returns the tracked current usage for the given resource.
+// Returns an error if the resource type is not recognized.
+func (q *Quotas) CurrentUsage(r Resource) (int64, error) {
+	fn, ok := resourceCurrentUsage[r]
+	if !ok {
+		return 0, &InvalidResourceError{Resource: r}
+	}
+	return fn(q), nil
+}
+
+// SetCurrentUsage updates the tracked current usage for the given resource
+// to the supplied value. Returns an error if the resource type is not
+// recognized. Negative values are clamped to zero.
+func (q *Quotas) SetCurrentUsage(r Resource, v int64) error {
+	fn, ok := resourceSetCurrent[r]
+	if !ok {
+		return &InvalidResourceError{Resource: r}
+	}
+	if v < 0 {
+		v = 0
+	}
+	fn(q, v)
+	return nil
 }

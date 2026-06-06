@@ -21,7 +21,7 @@ package transport
 // User represents a passwordless user entity. Authentication is exclusively
 // via mTLS X.509 certificates.
 type User struct {
-	ID        string   `json:"id"`
+	ID        uint64   `json:"id"`
 	Username  string   `json:"username"`
 	TenantID  string   `json:"tenantID"`
 	RoleIDs   []string `json:"roleIDs"`
@@ -40,7 +40,7 @@ type CreateUserRequest struct {
 
 // UpdateUserRequest holds parameters for updating a user.
 type UpdateUserRequest struct {
-	ID       string   `json:"id"`
+	ID       uint64   `json:"id"`
 	Username string   `json:"username,omitempty"`
 	RoleIDs  []string `json:"roleIDs,omitempty"`
 }
@@ -105,13 +105,13 @@ type ListRolesResponse struct {
 
 // AssignRoleRequest holds parameters for assigning a role to a user.
 type AssignRoleRequest struct {
-	UserID string `json:"userID"`
+	UserID uint64 `json:"userID"`
 	RoleID string `json:"roleID"`
 }
 
 // UnassignRoleRequest holds parameters for unassigning a role from a user.
 type UnassignRoleRequest struct {
-	UserID string `json:"userID"`
+	UserID uint64 `json:"userID"`
 	RoleID string `json:"roleID"`
 }
 
@@ -126,6 +126,25 @@ type PermissionCategory struct {
 // ListPermissionsResponse holds all permission categories.
 type ListPermissionsResponse struct {
 	Categories []*PermissionCategory `json:"categories"`
+}
+
+// GetRoleByNameRequest holds parameters for retrieving a role by its
+// tenant-scoped name.
+type GetRoleByNameRequest struct {
+	TenantID string `json:"tenantID,omitempty"`
+	Name     string `json:"name"`
+}
+
+// ResolvePermissionsRequest holds the role IDs whose effective permissions
+// should be resolved.
+type ResolvePermissionsRequest struct {
+	RoleIDs []string `json:"roleIDs"`
+}
+
+// ResolvePermissionsResponse holds the resolved union of effective
+// permissions for the requested roles.
+type ResolvePermissionsResponse struct {
+	Permissions []string `json:"permissions"`
 }
 
 // ---------------------------------------------------------------------------

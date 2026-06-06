@@ -12,7 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM golang:1.26.1-bookworm
+# Go 1.26.4+ is required: the go-objstore dependency declares `go 1.26.4`
+# in its go.mod, and the official golang images pin GOTOOLCHAIN=local so a
+# 1.26.3 base cannot satisfy that requirement (and cannot auto-upgrade).
+# This must stay >= the highest `go` directive across the workspace modules.
+FROM golang:1.26.4-bookworm
 
 # Install build, test, and debugging dependencies.
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -67,22 +71,34 @@ RUN go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.7.2 && 
 
 WORKDIR /workspace/go-qrdb
 
-# Cache module downloads in a separate layer to speed up rebuilds.
-# Replace directives point to sibling repos (../go-quicraft, etc.)
-# that aren't in the build context. We temporarily swap them to
-# stub directories so `go mod download` can resolve the module
-# graph and cache all remote dependencies.
+# Cache third-party module downloads in a separate layer to speed up
+# rebuilds. go.mod carries NO local replace directives (it builds against
+# upstream-published versions); the sibling repos (go-quicraft, go-truststrap,
+# go-objstore) are unpublished placeholders (v0.0.0) resolved by a Go
+# workspace at runtime. They are not in the build context here, so to build a
+# module graph that lets `go mod download` fetch the third-party deps we
+# create empty STUB modules for the siblings and a TEMPORARY go.work that
+# `use`s them. The workspace and stubs are discarded after caching; the real
+# siblings are mounted and resolved by /workspace/go.work at runtime.
 COPY go.mod go.sum* ./
 COPY sdk/go/go.mod sdk/go/go.sum* sdk/go/
-RUN mkdir -p /tmp/stubs/go-quicraft /tmp/stubs/go-truststrap && \
-    printf 'module github.com/jeremyhahn/go-quicraft\n\ngo 1.26.1\n' > /tmp/stubs/go-quicraft/go.mod && \
-    printf 'module github.com/jeremyhahn/go-truststrap\n\ngo 1.26.1\n' > /tmp/stubs/go-truststrap/go.mod && \
-    cp go.mod go.mod.orig && \
-    sed -i 's|=> \.\./go-quicraft|=> /tmp/stubs/go-quicraft|' go.mod && \
-    sed -i 's|=> \.\./go-truststrap|=> /tmp/stubs/go-truststrap|' go.mod && \
+RUN mkdir -p /tmp/stubs/go-quicraft /tmp/stubs/go-truststrap /tmp/stubs/go-objstore && \
+    printf 'module github.com/jeremyhahn/go-quicraft\n\ngo 1.26.4\n' > /tmp/stubs/go-quicraft/go.mod && \
+    printf 'module github.com/jeremyhahn/go-truststrap\n\ngo 1.26.4\n' > /tmp/stubs/go-truststrap/go.mod && \
+    printf 'module github.com/jeremyhahn/go-objstore\n\ngo 1.26.4\n' > /tmp/stubs/go-objstore/go.mod && \
+    printf 'go 1.26.4\n\nuse (\n\t.\n\t./sdk/go\n)\n\nreplace github.com/jeremyhahn/go-qrdb v0.0.0 => .\nreplace github.com/jeremyhahn/go-qrdb/sdk/go v0.0.0 => ./sdk/go\nreplace github.com/jeremyhahn/go-quicraft => /tmp/stubs/go-quicraft\nreplace github.com/jeremyhahn/go-truststrap => /tmp/stubs/go-truststrap\nreplace github.com/jeremyhahn/go-objstore => /tmp/stubs/go-objstore\n' > go.work && \
     GONOSUMCHECK='github.com/jeremyhahn/*' GONOSUMDB='github.com/jeremyhahn/*' \
     GOFLAGS=-mod=mod go mod download 2>/dev/null || true; \
-    mv go.mod.orig go.mod
+    rm -f go.work go.work.sum
+
+# Bake the runtime Go workspace that resolves the locally-mounted modules.
+# go.mod carries no local replace directives, so this workspace is what wires
+# the in-tree sibling repos (go-quicraft, go-truststrap, go-objstore) and the
+# sdk/go submodule during integration/client builds. The referenced paths are
+# populated by the docker-compose volume mounts at runtime; every go build/test
+# runs from /workspace/go-qrdb and walks up to auto-discover this /workspace/go.work
+# (so do NOT pass GOWORK=off in the entrypoints).
+RUN printf 'go 1.26.4\n\nuse (\n\t./go-qrdb\n\t./go-qrdb/sdk/go\n)\n\nreplace github.com/jeremyhahn/go-qrdb v0.0.0 => ./go-qrdb\nreplace github.com/jeremyhahn/go-qrdb/sdk/go v0.0.0 => ./go-qrdb/sdk/go\nreplace github.com/jeremyhahn/go-quicraft => ./go-quicraft\nreplace github.com/jeremyhahn/go-truststrap => ./go-truststrap\nreplace github.com/jeremyhahn/go-objstore => ./go-objstore\n' > /workspace/go.work
 
 # Copy the full project source tree.
 COPY . .

@@ -17,8 +17,6 @@ package rest
 import (
 	"encoding/json"
 	"net/http"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -30,7 +28,9 @@ import (
 
 // barrierInitializeRequest is the JSON payload for POST /v1/barrier/initialize.
 type barrierInitializeRequest struct {
-	Secret string `json:"secret"`
+	Secret  string `json:"secret"`
+	SOPin   string `json:"so_pin,omitempty"`
+	UserPin string `json:"user_pin,omitempty"`
 }
 
 // barrierUnsealRequest is the JSON payload for POST /v1/barrier/unseal.
@@ -44,6 +44,8 @@ type barrierShamirInitializeRequest struct {
 	Secret      string `json:"secret"`
 	Threshold   int    `json:"threshold"`
 	TotalShares int    `json:"total_shares"`
+	SOPin       string `json:"so_pin,omitempty"`
+	UserPin     string `json:"user_pin,omitempty"`
 }
 
 // barrierShamirUnsealShareRequest is the JSON payload for
@@ -60,21 +62,31 @@ type barrierShamirUnsealSharesRequest struct {
 
 // barrierRekeyRequest is the JSON payload for POST /v1/barrier/rekey.
 type barrierRekeyRequest struct {
-	Threshold int `json:"threshold"`
-	Total     int `json:"total"`
+	Threshold int    `json:"threshold"`
+	Total     int    `json:"total"`
+	SOPin     string `json:"so_pin,omitempty"`
 }
 
 // barrierRecoveryGenerateRequest is the JSON payload for
 // POST /v1/barrier/recovery/generate.
 type barrierRecoveryGenerateRequest struct {
-	Threshold int `json:"threshold"`
-	Total     int `json:"total"`
+	Threshold int    `json:"threshold"`
+	Total     int    `json:"total"`
+	SOPin     string `json:"so_pin,omitempty"`
 }
 
 // barrierRecoveryRecoverRequest is the JSON payload for
 // POST /v1/barrier/recovery/recover.
 type barrierRecoveryRecoverRequest struct {
 	Keys []string `json:"keys"`
+}
+
+// barrierSealRequest is the JSON payload for POST /v1/barrier/seal.
+// When the request body is empty or absent the server treats SOPin as
+// the empty string; verification is enforced only when a pin.PINBackend
+// is configured AND has a SO PIN set.
+type barrierSealRequest struct {
+	SOPin string `json:"so_pin,omitempty"`
 }
 
 // barrierRootTokenRequest is the JSON payload for
@@ -89,6 +101,7 @@ type barrierRootTokenRequest struct {
 
 // handleBarrierInitialize handles POST /v1/barrier/initialize -- initializes
 // the barrier with a secret credential.
+// Required permission: seal:bootstrap (SO role).
 func (s *Server) handleBarrierInitialize(w http.ResponseWriter, r *http.Request) {
 	if s.barrierSvc == nil {
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "barrier"})
@@ -98,6 +111,14 @@ func (s *Server) handleBarrierInitialize(w http.ResponseWriter, r *http.Request)
 	var req barrierInitializeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+		return
+	}
+
+	// Apply optional SO PIN / User PIN to the pin.PINBackend before
+	// initializing the barrier. When the backend is nil the call is a
+	// no-op so dev-mode flows continue to work.
+	if err := applyBarrierInitializePINs(s.pinBackend, req.SOPin, req.UserPin); err != nil {
+		writeErrorJSON(w, mapPINHTTPError(err), err)
 		return
 	}
 
@@ -111,6 +132,7 @@ func (s *Server) handleBarrierInitialize(w http.ResponseWriter, r *http.Request)
 
 // handleBarrierUnseal handles POST /v1/barrier/unseal -- unseals the barrier
 // with a secret credential.
+// Required permission: seal:unseal (SO, Admin, Operator).
 func (s *Server) handleBarrierUnseal(w http.ResponseWriter, r *http.Request) {
 	if s.barrierSvc == nil {
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "barrier"})
@@ -132,10 +154,28 @@ func (s *Server) handleBarrierUnseal(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleBarrierSeal handles POST /v1/barrier/seal -- transitions the barrier
-// to the sealed state.
+// to the sealed state. When a request body is present it is decoded into a
+// barrierSealRequest carrying an optional SO PIN; when absent the handler
+// treats SOPin as empty and verification is a no-op.
+// Required permission: seal:seal (SO, Admin, Operator).
 func (s *Server) handleBarrierSeal(w http.ResponseWriter, r *http.Request) {
 	if s.barrierSvc == nil {
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "barrier"})
+		return
+	}
+
+	// Decode the optional SO PIN body. An empty body is permitted —
+	// json.Decoder.Decode returns io.EOF which we treat as a no-op.
+	var req barrierSealRequest
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+			return
+		}
+	}
+
+	if err := verifyBarrierSOPIN(s.pinBackend, req.SOPin); err != nil {
+		writeErrorJSON(w, mapPINHTTPError(err), err)
 		return
 	}
 
@@ -149,6 +189,7 @@ func (s *Server) handleBarrierSeal(w http.ResponseWriter, r *http.Request) {
 
 // handleBarrierStatus handles GET /v1/barrier/status -- returns the current
 // barrier status including sealed state, strategy, and initialization time.
+// Required permission: seal:status (SO, Admin, Operator, Auditor).
 func (s *Server) handleBarrierStatus(w http.ResponseWriter, r *http.Request) {
 	if s.barrierSvc == nil {
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "barrier"})
@@ -167,6 +208,7 @@ func (s *Server) handleBarrierStatus(w http.ResponseWriter, r *http.Request) {
 // handleBarrierShamirInitialize handles POST /v1/barrier/shamir/initialize --
 // initializes the barrier with Shamir secret sharing, splitting the root key
 // into threshold-of-totalShares shares.
+// Required permission: seal:initialize_shamir (SO role only).
 func (s *Server) handleBarrierShamirInitialize(w http.ResponseWriter, r *http.Request) {
 	if s.barrierSvc == nil {
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "barrier"})
@@ -176,6 +218,13 @@ func (s *Server) handleBarrierShamirInitialize(w http.ResponseWriter, r *http.Re
 	var req barrierShamirInitializeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+		return
+	}
+
+	// Apply optional SO PIN / User PIN to the pin.PINBackend before
+	// initializing the barrier (no-op when no backend is configured).
+	if err := applyBarrierInitializePINs(s.pinBackend, req.SOPin, req.UserPin); err != nil {
+		writeErrorJSON(w, mapPINHTTPError(err), err)
 		return
 	}
 
@@ -190,6 +239,7 @@ func (s *Server) handleBarrierShamirInitialize(w http.ResponseWriter, r *http.Re
 
 // handleBarrierShamirUnsealShare handles POST /v1/barrier/shamir/unseal-share --
 // submits a single Shamir share toward the quorum threshold.
+// Required permission: barrier:unseal-share (Custodian role only).
 func (s *Server) handleBarrierShamirUnsealShare(w http.ResponseWriter, r *http.Request) {
 	if s.barrierSvc == nil {
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "barrier"})
@@ -213,6 +263,7 @@ func (s *Server) handleBarrierShamirUnsealShare(w http.ResponseWriter, r *http.R
 
 // handleBarrierShamirUnsealShares handles POST /v1/barrier/shamir/unseal-shares --
 // unseals the barrier using a complete set of Shamir shares in a single call.
+// Required permission: barrier:unseal-share (Custodian role only).
 func (s *Server) handleBarrierShamirUnsealShares(w http.ResponseWriter, r *http.Request) {
 	if s.barrierSvc == nil {
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "barrier"})
@@ -233,110 +284,9 @@ func (s *Server) handleBarrierShamirUnsealShares(w http.ResponseWriter, r *http.
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleBarrierShamirSharesByPath routes requests to /v1/barrier/shamir/shares
-// with optional path parameters. When no index is present, it dispatches to
-// list (GET) or delete-all (DELETE). When an index is present, it dispatches
-// to delete-by-index (DELETE).
-func (s *Server) handleBarrierShamirSharesByPath(w http.ResponseWriter, r *http.Request) {
-	if s.barrierSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "barrier"})
-		return
-	}
-
-	remainder := strings.TrimPrefix(r.URL.Path, "/v1/barrier/shamir/shares/")
-	if remainder == "" || remainder == r.URL.Path {
-		// No index in path -- dispatch based on method.
-		switch r.Method {
-		case http.MethodGet:
-			s.handleBarrierShamirListShares(w, r)
-		case http.MethodDelete:
-			s.handleBarrierShamirDeleteAllShares(w, r)
-		default:
-			w.Header().Set("Allow", "GET, DELETE")
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		}
-		return
-	}
-
-	// Parse index from path.
-	index, err := strconv.Atoi(remainder)
-	if err != nil {
-		writeErrorJSON(w, http.StatusBadRequest, &InvalidParameterError{Param: "index", Err: err})
-		return
-	}
-
-	if r.Method != http.MethodDelete {
-		w.Header().Set("Allow", "DELETE")
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	s.handleBarrierShamirDeleteShare(w, r, index)
-}
-
-// handleBarrierShamirListShares handles GET /v1/barrier/shamir/shares --
-// returns information about the persisted Shamir shares including count,
-// threshold, and total.
-func (s *Server) handleBarrierShamirListShares(w http.ResponseWriter, r *http.Request) {
-	if s.barrierSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "barrier"})
-		return
-	}
-
-	info, err := s.barrierSvc.BarrierShamirListShares(r.Context())
-	if err != nil {
-		writeErrorJSON(w, mapHTTPError(err), err)
-		return
-	}
-
-	writeJSON(w, shamirSharesToResponse(info))
-}
-
-// handleBarrierShamirDeleteShare handles DELETE /v1/barrier/shamir/shares/{index} --
-// removes a single Shamir share by its index.
-func (s *Server) handleBarrierShamirDeleteShare(w http.ResponseWriter, r *http.Request, index int) {
-	if err := s.barrierSvc.BarrierShamirDeleteShare(r.Context(), index); err != nil {
-		writeErrorJSON(w, mapHTTPError(err), err)
-		return
-	}
-
-	w.WriteHeader(http.StatusNoContent)
-}
-
-// handleBarrierShamirDeleteAllShares handles DELETE /v1/barrier/shamir/shares --
-// removes all persisted Shamir shares.
-func (s *Server) handleBarrierShamirDeleteAllShares(w http.ResponseWriter, r *http.Request) {
-	if s.barrierSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "barrier"})
-		return
-	}
-
-	if err := s.barrierSvc.BarrierShamirDeleteAllShares(r.Context()); err != nil {
-		writeErrorJSON(w, mapHTTPError(err), err)
-		return
-	}
-
-	w.WriteHeader(http.StatusNoContent)
-}
-
-// handleBarrierShamirVerify handles POST /v1/barrier/shamir/verify --
-// validates the consistency of persisted Shamir shares.
-func (s *Server) handleBarrierShamirVerify(w http.ResponseWriter, r *http.Request) {
-	if s.barrierSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "barrier"})
-		return
-	}
-
-	if err := s.barrierSvc.BarrierShamirVerify(r.Context()); err != nil {
-		writeErrorJSON(w, mapHTTPError(err), err)
-		return
-	}
-
-	w.WriteHeader(http.StatusNoContent)
-}
-
 // handleBarrierRekey handles POST /v1/barrier/rekey -- generates new Shamir
 // shares for the existing root key with the specified threshold and total.
+// Required permission: seal:rekey (SO role only).
 func (s *Server) handleBarrierRekey(w http.ResponseWriter, r *http.Request) {
 	if s.barrierSvc == nil {
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "barrier"})
@@ -346,6 +296,13 @@ func (s *Server) handleBarrierRekey(w http.ResponseWriter, r *http.Request) {
 	var req barrierRekeyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+		return
+	}
+
+	// Verify SO PIN before performing the rekey administrative operation.
+	// Enforced only when a PINBackend is configured AND has a SO PIN set.
+	if err := verifyBarrierSOPIN(s.pinBackend, req.SOPin); err != nil {
+		writeErrorJSON(w, mapPINHTTPError(err), err)
 		return
 	}
 
@@ -360,6 +317,7 @@ func (s *Server) handleBarrierRekey(w http.ResponseWriter, r *http.Request) {
 
 // handleBarrierRecoveryGenerate handles POST /v1/barrier/recovery/generate --
 // generates a set of Shamir recovery shares from the root key.
+// Required permission: seal:generate_recovery (SO role only).
 func (s *Server) handleBarrierRecoveryGenerate(w http.ResponseWriter, r *http.Request) {
 	if s.barrierSvc == nil {
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "barrier"})
@@ -369,6 +327,13 @@ func (s *Server) handleBarrierRecoveryGenerate(w http.ResponseWriter, r *http.Re
 	var req barrierRecoveryGenerateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+		return
+	}
+
+	// Verify SO PIN before generating recovery keys (no-op when no
+	// PINBackend is configured or no SO PIN has been set).
+	if err := verifyBarrierSOPIN(s.pinBackend, req.SOPin); err != nil {
+		writeErrorJSON(w, mapPINHTTPError(err), err)
 		return
 	}
 
@@ -383,6 +348,7 @@ func (s *Server) handleBarrierRecoveryGenerate(w http.ResponseWriter, r *http.Re
 
 // handleBarrierRecoveryRecover handles POST /v1/barrier/recovery/recover --
 // unseals the barrier using recovery shares.
+// Required permission: seal:recover_with_keys (SO, Admin).
 func (s *Server) handleBarrierRecoveryRecover(w http.ResponseWriter, r *http.Request) {
 	if s.barrierSvc == nil {
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "barrier"})
@@ -405,6 +371,7 @@ func (s *Server) handleBarrierRecoveryRecover(w http.ResponseWriter, r *http.Req
 
 // handleBarrierRecoveryDelete handles DELETE /v1/barrier/recovery -- removes
 // recovery key metadata from storage.
+// Required permission: seal:generate_recovery (SO role only).
 func (s *Server) handleBarrierRecoveryDelete(w http.ResponseWriter, r *http.Request) {
 	if s.barrierSvc == nil {
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "barrier"})
@@ -421,6 +388,7 @@ func (s *Server) handleBarrierRecoveryDelete(w http.ResponseWriter, r *http.Requ
 
 // handleBarrierRecoveryStatus handles GET /v1/barrier/recovery/status --
 // reports whether recovery key metadata exists in storage.
+// Required permission: seal:status (SO, Admin, Operator, Auditor).
 func (s *Server) handleBarrierRecoveryStatus(w http.ResponseWriter, r *http.Request) {
 	if s.barrierSvc == nil {
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "barrier"})
@@ -440,6 +408,7 @@ func (s *Server) handleBarrierRecoveryStatus(w http.ResponseWriter, r *http.Requ
 
 // handleBarrierRootToken handles POST /v1/barrier/root-token -- creates a
 // new root token by proving knowledge of the master key through Shamir shares.
+// Required permission: seal:bootstrap (SO role only).
 func (s *Server) handleBarrierRootToken(w http.ResponseWriter, r *http.Request) {
 	if s.barrierSvc == nil {
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "barrier"})
@@ -495,15 +464,6 @@ func unsealShareProgressToResponse(info *service.UnsealShareProgress) map[string
 		"required":  info.Required,
 		"submitted": info.Submitted,
 		"complete":  info.Complete,
-	}
-}
-
-// shamirSharesToResponse converts a ShamirSharesInfo to a JSON-friendly map.
-func shamirSharesToResponse(info *service.ShamirSharesInfo) map[string]interface{} {
-	return map[string]interface{}{
-		"count":     info.Count,
-		"threshold": info.Threshold,
-		"total":     info.Total,
 	}
 }
 

@@ -52,6 +52,7 @@ type mockUserService struct {
 	enableErr         error
 	disableErr        error
 	lastUpdateRoleIDs []string
+	lastGetID         uint64
 }
 
 func (m *mockUserService) CreateUser(_ context.Context, _ *user.CreateUserRequest) (*user.User, error) {
@@ -61,7 +62,8 @@ func (m *mockUserService) CreateUser(_ context.Context, _ *user.CreateUserReques
 	return m.createResult, nil
 }
 
-func (m *mockUserService) GetUser(_ context.Context, _ string) (*user.User, error) {
+func (m *mockUserService) GetUser(_ context.Context, id uint64) (*user.User, error) {
+	m.lastGetID = id
 	if m.getErr != nil {
 		return nil, m.getErr
 	}
@@ -80,7 +82,7 @@ func (m *mockUserService) UpdateUser(_ context.Context, req *user.UpdateUserRequ
 	return m.updateResult, nil
 }
 
-func (m *mockUserService) DeleteUser(_ context.Context, _ string) error {
+func (m *mockUserService) DeleteUser(_ context.Context, _ uint64) error {
 	return m.deleteErr
 }
 
@@ -91,12 +93,20 @@ func (m *mockUserService) ListUsers(_ context.Context, _ *user.ListUsersRequest)
 	return m.listResult, nil
 }
 
-func (m *mockUserService) EnableUser(_ context.Context, _ string) error {
+func (m *mockUserService) EnableUser(_ context.Context, _ uint64) error {
 	return m.enableErr
 }
 
-func (m *mockUserService) DisableUser(_ context.Context, _ string) error {
+func (m *mockUserService) DisableUser(_ context.Context, _ uint64) error {
 	return m.disableErr
+}
+
+func (m *mockUserService) UserByCertThumbprint(_ context.Context, _ string) (*user.User, error) {
+	return nil, nil
+}
+
+func (m *mockUserService) AddCertBinding(_ context.Context, _ uint64, _ string, _ int64) (*user.User, error) {
+	return nil, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -104,18 +114,19 @@ func (m *mockUserService) DisableUser(_ context.Context, _ string) error {
 // ---------------------------------------------------------------------------
 
 type mockRoleService struct {
-	createResult  *role.Role
-	createErr     error
-	getResult     *role.Role
-	getErr        error
-	getByNameErr  error
-	updateResult  *role.Role
-	updateErr     error
-	deleteErr     error
-	listResult    *role.ListRolesResponse
-	listErr       error
-	resolveResult []permission.Permission
-	resolveErr    error
+	createResult    *role.Role
+	createErr       error
+	getResult       *role.Role
+	getErr          error
+	getByNameResult *role.Role
+	getByNameErr    error
+	updateResult    *role.Role
+	updateErr       error
+	deleteErr       error
+	listResult      *role.ListRolesResponse
+	listErr         error
+	resolveResult   []permission.Permission
+	resolveErr      error
 }
 
 func (m *mockRoleService) CreateRole(_ context.Context, _ *role.CreateRoleRequest) (*role.Role, error) {
@@ -133,7 +144,10 @@ func (m *mockRoleService) GetRole(_ context.Context, _ string) (*role.Role, erro
 }
 
 func (m *mockRoleService) GetRoleByName(_ context.Context, _, _ string) (*role.Role, error) {
-	return nil, m.getByNameErr
+	if m.getByNameErr != nil {
+		return nil, m.getByNameErr
+	}
+	return m.getByNameResult, nil
 }
 
 func (m *mockRoleService) UpdateRole(_ context.Context, _ *role.UpdateRoleRequest) (*role.Role, error) {
@@ -230,7 +244,7 @@ func TestUserToProto_Nil(t *testing.T) {
 
 func TestUserToProto_Valid(t *testing.T) {
 	u := &user.User{
-		ID:        "user-1",
+		ID:        1,
 		Username:  "alice",
 		TenantID:  "tenant-1",
 		RoleIDs:   []string{"role-1", "role-2"},
@@ -240,8 +254,8 @@ func TestUserToProto_Valid(t *testing.T) {
 		UpdatedAt: testTime,
 	}
 	result := userToProto(u)
-	if result.GetId() != "user-1" {
-		t.Fatalf("expected ID 'user-1', got %q", result.GetId())
+	if result.GetId() != 1 {
+		t.Fatalf("expected ID 1, got %d", result.GetId())
 	}
 	if result.GetUsername() != "alice" {
 		t.Fatalf("expected username 'alice', got %q", result.GetUsername())
@@ -343,7 +357,7 @@ func TestMapAuthServiceError_Nil(t *testing.T) {
 }
 
 func TestMapAuthServiceError_UserNotFoundError(t *testing.T) {
-	err := mapAuthServiceError(&user.UserNotFoundError{ID: "u1"})
+	err := mapAuthServiceError(&user.UserNotFoundError{ID: 1})
 	st, _ := status.FromError(err)
 	if st.Code() != codes.NotFound {
 		t.Fatalf("expected NotFound, got %s", st.Code())
@@ -359,7 +373,7 @@ func TestMapAuthServiceError_UsernameExistsError(t *testing.T) {
 }
 
 func TestMapAuthServiceError_UserDisabledError(t *testing.T) {
-	err := mapAuthServiceError(&user.UserDisabledError{ID: "u1"})
+	err := mapAuthServiceError(&user.UserDisabledError{ID: 1})
 	st, _ := status.FromError(err)
 	if st.Code() != codes.FailedPrecondition {
 		t.Fatalf("expected FailedPrecondition, got %s", st.Code())
@@ -367,7 +381,7 @@ func TestMapAuthServiceError_UserDisabledError(t *testing.T) {
 }
 
 func TestMapAuthServiceError_SystemUserImmutableError(t *testing.T) {
-	err := mapAuthServiceError(&user.SystemUserImmutableError{ID: "u1"})
+	err := mapAuthServiceError(&user.SystemUserImmutableError{ID: 1})
 	st, _ := status.FromError(err)
 	if st.Code() != codes.FailedPrecondition {
 		t.Fatalf("expected FailedPrecondition, got %s", st.Code())
@@ -517,7 +531,7 @@ func TestMapAuthServiceError_UnknownError(t *testing.T) {
 func TestGRPC_CreateUser_Success(t *testing.T) {
 	userSvc := &mockUserService{
 		createResult: &user.User{
-			ID: "u1", Username: "alice", TenantID: "t1",
+			ID: 1, Username: "alice", TenantID: "t1",
 			RoleIDs: []string{"r1"}, Enabled: true,
 			CreatedAt: testTime, UpdatedAt: testTime,
 		},
@@ -531,8 +545,8 @@ func TestGRPC_CreateUser_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateUser failed: %v", err)
 	}
-	if resp.GetId() != "u1" {
-		t.Fatalf("expected ID 'u1', got %q", resp.GetId())
+	if resp.GetId() != 1 {
+		t.Fatalf("expected ID 1, got %d", resp.GetId())
 	}
 	if resp.GetUsername() != "alice" {
 		t.Fatalf("expected username 'alice', got %q", resp.GetUsername())
@@ -577,14 +591,14 @@ func TestGRPC_CreateUser_NilService(t *testing.T) {
 func TestGRPC_GetUser_Success(t *testing.T) {
 	userSvc := &mockUserService{
 		getResult: &user.User{
-			ID: "u1", Username: "bob", Enabled: true,
+			ID: 1, Username: "bob", Enabled: true,
 			CreatedAt: testTime, UpdatedAt: testTime,
 		},
 	}
 	client, cleanup := startTestServerFull(t, WithUserService(userSvc))
 	defer cleanup()
 
-	resp, err := client.GetUser(context.Background(), &pb.GetUserRequest{Id: "u1"})
+	resp, err := client.GetUser(context.Background(), &pb.GetUserRequest{Id: 1})
 	if err != nil {
 		t.Fatalf("GetUser failed: %v", err)
 	}
@@ -593,14 +607,38 @@ func TestGRPC_GetUser_Success(t *testing.T) {
 	}
 }
 
+// TestGRPC_GetUser_Uint64IDRoundTrip proves a large uint64 user id survives
+// the gRPC wire intact on both the request (echoed via lastGetID) and the
+// response (UserResponse.id getter), which a string-era encoding could not
+// represent without lossy conversion.
+func TestGRPC_GetUser_Uint64IDRoundTrip(t *testing.T) {
+	const wantID uint64 = 1<<63 + 1234567890
+
+	userSvc := &mockUserService{}
+	userSvc.getResult = &user.User{ID: wantID, Username: "snowflake", Enabled: true, CreatedAt: testTime, UpdatedAt: testTime}
+	client, cleanup := startTestServerFull(t, WithUserService(userSvc))
+	defer cleanup()
+
+	resp, err := client.GetUser(context.Background(), &pb.GetUserRequest{Id: wantID})
+	if err != nil {
+		t.Fatalf("GetUser failed: %v", err)
+	}
+	if userSvc.lastGetID != wantID {
+		t.Fatalf("request id lost on wire: got %d, want %d", userSvc.lastGetID, wantID)
+	}
+	if resp.GetId() != wantID {
+		t.Fatalf("response id lost on wire: got %d, want %d", resp.GetId(), wantID)
+	}
+}
+
 func TestGRPC_GetUser_Error(t *testing.T) {
 	userSvc := &mockUserService{
-		getErr: &user.UserNotFoundError{ID: "u1"},
+		getErr: &user.UserNotFoundError{ID: 1},
 	}
 	client, cleanup := startTestServerFull(t, WithUserService(userSvc))
 	defer cleanup()
 
-	_, err := client.GetUser(context.Background(), &pb.GetUserRequest{Id: "u1"})
+	_, err := client.GetUser(context.Background(), &pb.GetUserRequest{Id: 1})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -614,7 +652,7 @@ func TestGRPC_GetUser_NilService(t *testing.T) {
 	client, cleanup := startTestServerFull(t)
 	defer cleanup()
 
-	_, err := client.GetUser(context.Background(), &pb.GetUserRequest{Id: "u1"})
+	_, err := client.GetUser(context.Background(), &pb.GetUserRequest{Id: 1})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -627,7 +665,7 @@ func TestGRPC_GetUser_NilService(t *testing.T) {
 func TestGRPC_UpdateUser_Success(t *testing.T) {
 	userSvc := &mockUserService{
 		updateResult: &user.User{
-			ID: "u1", Username: "alice-updated", Enabled: true,
+			ID: 1, Username: "alice-updated", Enabled: true,
 			CreatedAt: testTime, UpdatedAt: testTime,
 		},
 	}
@@ -635,7 +673,7 @@ func TestGRPC_UpdateUser_Success(t *testing.T) {
 	defer cleanup()
 
 	resp, err := client.UpdateUser(context.Background(), &pb.UpdateUserProtoRequest{
-		Id: "u1", Username: "alice-updated", RoleIds: []string{"r2"},
+		Id: 1, Username: "alice-updated", RoleIds: []string{"r2"},
 	})
 	if err != nil {
 		t.Fatalf("UpdateUser failed: %v", err)
@@ -647,13 +685,13 @@ func TestGRPC_UpdateUser_Success(t *testing.T) {
 
 func TestGRPC_UpdateUser_Error(t *testing.T) {
 	userSvc := &mockUserService{
-		updateErr: &user.UserNotFoundError{ID: "u1"},
+		updateErr: &user.UserNotFoundError{ID: 1},
 	}
 	client, cleanup := startTestServerFull(t, WithUserService(userSvc))
 	defer cleanup()
 
 	_, err := client.UpdateUser(context.Background(), &pb.UpdateUserProtoRequest{
-		Id: "u1", Username: "new",
+		Id: 1, Username: "new",
 	})
 	if err == nil {
 		t.Fatal("expected error, got nil")
@@ -665,7 +703,7 @@ func TestGRPC_UpdateUser_NilService(t *testing.T) {
 	defer cleanup()
 
 	_, err := client.UpdateUser(context.Background(), &pb.UpdateUserProtoRequest{
-		Id: "u1",
+		Id: 1,
 	})
 	if err == nil {
 		t.Fatal("expected error, got nil")
@@ -681,7 +719,7 @@ func TestGRPC_DeleteUser_Success(t *testing.T) {
 	client, cleanup := startTestServerFull(t, WithUserService(userSvc))
 	defer cleanup()
 
-	_, err := client.DeleteUser(context.Background(), &pb.DeleteUserRequest{Id: "u1"})
+	_, err := client.DeleteUser(context.Background(), &pb.DeleteUserRequest{Id: 1})
 	if err != nil {
 		t.Fatalf("DeleteUser failed: %v", err)
 	}
@@ -689,12 +727,12 @@ func TestGRPC_DeleteUser_Success(t *testing.T) {
 
 func TestGRPC_DeleteUser_Error(t *testing.T) {
 	userSvc := &mockUserService{
-		deleteErr: &user.SystemUserImmutableError{ID: "u1"},
+		deleteErr: &user.SystemUserImmutableError{ID: 1},
 	}
 	client, cleanup := startTestServerFull(t, WithUserService(userSvc))
 	defer cleanup()
 
-	_, err := client.DeleteUser(context.Background(), &pb.DeleteUserRequest{Id: "u1"})
+	_, err := client.DeleteUser(context.Background(), &pb.DeleteUserRequest{Id: 1})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -704,7 +742,7 @@ func TestGRPC_DeleteUser_NilService(t *testing.T) {
 	client, cleanup := startTestServerFull(t)
 	defer cleanup()
 
-	_, err := client.DeleteUser(context.Background(), &pb.DeleteUserRequest{Id: "u1"})
+	_, err := client.DeleteUser(context.Background(), &pb.DeleteUserRequest{Id: 1})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -718,8 +756,8 @@ func TestGRPC_ListUsers_Success(t *testing.T) {
 	userSvc := &mockUserService{
 		listResult: &user.ListUsersResponse{
 			Users: []*user.User{
-				{ID: "u1", Username: "a", CreatedAt: testTime, UpdatedAt: testTime},
-				{ID: "u2", Username: "b", CreatedAt: testTime, UpdatedAt: testTime},
+				{ID: 1, Username: "a", CreatedAt: testTime, UpdatedAt: testTime},
+				{ID: 2, Username: "b", CreatedAt: testTime, UpdatedAt: testTime},
 			},
 			Total:   2,
 			HasMore: false,
@@ -774,7 +812,7 @@ func TestGRPC_EnableUser_Success(t *testing.T) {
 	client, cleanup := startTestServerFull(t, WithUserService(userSvc))
 	defer cleanup()
 
-	_, err := client.EnableUser(context.Background(), &pb.EnableUserRequest{Id: "u1"})
+	_, err := client.EnableUser(context.Background(), &pb.EnableUserRequest{Id: 1})
 	if err != nil {
 		t.Fatalf("EnableUser failed: %v", err)
 	}
@@ -782,12 +820,12 @@ func TestGRPC_EnableUser_Success(t *testing.T) {
 
 func TestGRPC_EnableUser_Error(t *testing.T) {
 	userSvc := &mockUserService{
-		enableErr: &user.UserNotFoundError{ID: "u1"},
+		enableErr: &user.UserNotFoundError{ID: 1},
 	}
 	client, cleanup := startTestServerFull(t, WithUserService(userSvc))
 	defer cleanup()
 
-	_, err := client.EnableUser(context.Background(), &pb.EnableUserRequest{Id: "u1"})
+	_, err := client.EnableUser(context.Background(), &pb.EnableUserRequest{Id: 1})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -797,7 +835,7 @@ func TestGRPC_EnableUser_NilService(t *testing.T) {
 	client, cleanup := startTestServerFull(t)
 	defer cleanup()
 
-	_, err := client.EnableUser(context.Background(), &pb.EnableUserRequest{Id: "u1"})
+	_, err := client.EnableUser(context.Background(), &pb.EnableUserRequest{Id: 1})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -812,7 +850,7 @@ func TestGRPC_DisableUser_Success(t *testing.T) {
 	client, cleanup := startTestServerFull(t, WithUserService(userSvc))
 	defer cleanup()
 
-	_, err := client.DisableUser(context.Background(), &pb.DisableUserRequest{Id: "u1"})
+	_, err := client.DisableUser(context.Background(), &pb.DisableUserRequest{Id: 1})
 	if err != nil {
 		t.Fatalf("DisableUser failed: %v", err)
 	}
@@ -820,12 +858,12 @@ func TestGRPC_DisableUser_Success(t *testing.T) {
 
 func TestGRPC_DisableUser_Error(t *testing.T) {
 	userSvc := &mockUserService{
-		disableErr: &user.UserNotFoundError{ID: "u1"},
+		disableErr: &user.UserNotFoundError{ID: 1},
 	}
 	client, cleanup := startTestServerFull(t, WithUserService(userSvc))
 	defer cleanup()
 
-	_, err := client.DisableUser(context.Background(), &pb.DisableUserRequest{Id: "u1"})
+	_, err := client.DisableUser(context.Background(), &pb.DisableUserRequest{Id: 1})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -835,7 +873,7 @@ func TestGRPC_DisableUser_NilService(t *testing.T) {
 	client, cleanup := startTestServerFull(t)
 	defer cleanup()
 
-	_, err := client.DisableUser(context.Background(), &pb.DisableUserRequest{Id: "u1"})
+	_, err := client.DisableUser(context.Background(), &pb.DisableUserRequest{Id: 1})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -1113,11 +1151,11 @@ func TestGRPC_AssignRole_Success(t *testing.T) {
 	}
 	userSvc := &mockUserService{
 		getResult: &user.User{
-			ID: "u1", RoleIDs: []string{"r1"},
+			ID: 1, RoleIDs: []string{"r1"},
 			CreatedAt: testTime, UpdatedAt: testTime,
 		},
 		updateResult: &user.User{
-			ID: "u1", RoleIDs: []string{"r1", "r2"},
+			ID: 1, RoleIDs: []string{"r1", "r2"},
 			CreatedAt: testTime, UpdatedAt: testTime,
 		},
 	}
@@ -1125,7 +1163,7 @@ func TestGRPC_AssignRole_Success(t *testing.T) {
 	defer cleanup()
 
 	_, err := client.AssignRole(context.Background(), &pb.AssignRoleRequest{
-		UserId: "u1", RoleId: "r2",
+		UserId: 1, RoleId: "r2",
 	})
 	if err != nil {
 		t.Fatalf("AssignRole failed: %v", err)
@@ -1140,7 +1178,7 @@ func TestGRPC_AssignRole_AlreadyAssigned(t *testing.T) {
 	}
 	userSvc := &mockUserService{
 		getResult: &user.User{
-			ID: "u1", RoleIDs: []string{"r1"},
+			ID: 1, RoleIDs: []string{"r1"},
 			CreatedAt: testTime, UpdatedAt: testTime,
 		},
 	}
@@ -1149,7 +1187,7 @@ func TestGRPC_AssignRole_AlreadyAssigned(t *testing.T) {
 
 	// Should succeed silently (idempotent).
 	_, err := client.AssignRole(context.Background(), &pb.AssignRoleRequest{
-		UserId: "u1", RoleId: "r1",
+		UserId: 1, RoleId: "r1",
 	})
 	if err != nil {
 		t.Fatalf("AssignRole failed: %v", err)
@@ -1165,7 +1203,7 @@ func TestGRPC_AssignRole_RoleNotFound(t *testing.T) {
 	defer cleanup()
 
 	_, err := client.AssignRole(context.Background(), &pb.AssignRoleRequest{
-		UserId: "u1", RoleId: "r99",
+		UserId: 1, RoleId: "r99",
 	})
 	if err == nil {
 		t.Fatal("expected error, got nil")
@@ -1181,7 +1219,7 @@ func TestGRPC_AssignRole_NilRoleService(t *testing.T) {
 	defer cleanup()
 
 	_, err := client.AssignRole(context.Background(), &pb.AssignRoleRequest{
-		UserId: "u1", RoleId: "r1",
+		UserId: 1, RoleId: "r1",
 	})
 	if err == nil {
 		t.Fatal("expected error, got nil")
@@ -1200,7 +1238,7 @@ func TestGRPC_AssignRole_NilUserService(t *testing.T) {
 	defer cleanup()
 
 	_, err := client.AssignRole(context.Background(), &pb.AssignRoleRequest{
-		UserId: "u1", RoleId: "r1",
+		UserId: 1, RoleId: "r1",
 	})
 	if err == nil {
 		t.Fatal("expected error, got nil")
@@ -1215,11 +1253,11 @@ func TestGRPC_UnassignRole_Success(t *testing.T) {
 	roleSvc := &mockRoleService{}
 	userSvc := &mockUserService{
 		getResult: &user.User{
-			ID: "u1", RoleIDs: []string{"r1", "r2"},
+			ID: 1, RoleIDs: []string{"r1", "r2"},
 			CreatedAt: testTime, UpdatedAt: testTime,
 		},
 		updateResult: &user.User{
-			ID: "u1", RoleIDs: []string{"r1"},
+			ID: 1, RoleIDs: []string{"r1"},
 			CreatedAt: testTime, UpdatedAt: testTime,
 		},
 	}
@@ -1227,7 +1265,7 @@ func TestGRPC_UnassignRole_Success(t *testing.T) {
 	defer cleanup()
 
 	_, err := client.UnassignRole(context.Background(), &pb.UnassignRoleRequest{
-		UserId: "u1", RoleId: "r2",
+		UserId: 1, RoleId: "r2",
 	})
 	if err != nil {
 		t.Fatalf("UnassignRole failed: %v", err)
@@ -1239,7 +1277,7 @@ func TestGRPC_UnassignRole_NilRoleService(t *testing.T) {
 	defer cleanup()
 
 	_, err := client.UnassignRole(context.Background(), &pb.UnassignRoleRequest{
-		UserId: "u1", RoleId: "r1",
+		UserId: 1, RoleId: "r1",
 	})
 	if err == nil {
 		t.Fatal("expected error, got nil")
@@ -1255,7 +1293,7 @@ func TestGRPC_UnassignRole_NilUserService(t *testing.T) {
 	defer cleanup()
 
 	_, err := client.UnassignRole(context.Background(), &pb.UnassignRoleRequest{
-		UserId: "u1", RoleId: "r1",
+		UserId: 1, RoleId: "r1",
 	})
 	if err == nil {
 		t.Fatal("expected error, got nil")
@@ -1269,13 +1307,13 @@ func TestGRPC_UnassignRole_NilUserService(t *testing.T) {
 func TestGRPC_UnassignRole_UserNotFound(t *testing.T) {
 	roleSvc := &mockRoleService{}
 	userSvc := &mockUserService{
-		getErr: &user.UserNotFoundError{ID: "u1"},
+		getErr: &user.UserNotFoundError{ID: 1},
 	}
 	client, cleanup := startTestServerFull(t, WithRoleService(roleSvc), WithUserService(userSvc))
 	defer cleanup()
 
 	_, err := client.UnassignRole(context.Background(), &pb.UnassignRoleRequest{
-		UserId: "u1", RoleId: "r1",
+		UserId: 1, RoleId: "r1",
 	})
 	if err == nil {
 		t.Fatal("expected error, got nil")
@@ -1315,6 +1353,161 @@ func TestGRPC_ListPermissions_HasCategories(t *testing.T) {
 	}
 	// Categories may or may not be registered. Verify the response is structured.
 	_ = resp.GetCategories()
+}
+
+// ---------------------------------------------------------------------------
+// GetRoleByName handler tests
+// ---------------------------------------------------------------------------
+
+func TestGRPC_GetRoleByName_Success(t *testing.T) {
+	roleSvc := &mockRoleService{
+		getByNameResult: &role.Role{
+			ID: "r-001", Name: "editor", TenantID: "t1",
+			Permissions: []permission.Permission{"kv:put", "kv:get"},
+			CreatedAt:   testTime, UpdatedAt: testTime,
+		},
+	}
+	client, cleanup := startTestServerFull(t, WithRoleService(roleSvc))
+	defer cleanup()
+
+	resp, err := client.GetRoleByName(context.Background(), &pb.GetRoleByNameRequest{
+		TenantId: "t1", Name: "editor",
+	})
+	if err != nil {
+		t.Fatalf("GetRoleByName failed: %v", err)
+	}
+	if resp.GetId() != "r-001" {
+		t.Fatalf("expected ID 'r-001', got %q", resp.GetId())
+	}
+	if resp.GetName() != "editor" {
+		t.Fatalf("expected name 'editor', got %q", resp.GetName())
+	}
+	if resp.GetTenantId() != "t1" {
+		t.Fatalf("expected tenantID 't1', got %q", resp.GetTenantId())
+	}
+	if len(resp.GetPermissions()) != 2 {
+		t.Fatalf("expected 2 permissions, got %d", len(resp.GetPermissions()))
+	}
+}
+
+func TestGRPC_GetRoleByName_NotFound(t *testing.T) {
+	roleSvc := &mockRoleService{
+		getByNameErr: &role.RoleNotFoundError{ID: "editor"},
+	}
+	client, cleanup := startTestServerFull(t, WithRoleService(roleSvc))
+	defer cleanup()
+
+	_, err := client.GetRoleByName(context.Background(), &pb.GetRoleByNameRequest{
+		TenantId: "t1", Name: "editor",
+	})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	st, _ := status.FromError(err)
+	if st.Code() != codes.NotFound {
+		t.Fatalf("expected NotFound, got %s", st.Code())
+	}
+}
+
+func TestGRPC_GetRoleByName_NilService(t *testing.T) {
+	client, cleanup := startTestServerFull(t)
+	defer cleanup()
+
+	_, err := client.GetRoleByName(context.Background(), &pb.GetRoleByNameRequest{
+		TenantId: "t1", Name: "editor",
+	})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	st, _ := status.FromError(err)
+	if st.Code() != codes.Unimplemented {
+		t.Fatalf("expected Unimplemented, got %s", st.Code())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ResolveRolePermissions handler tests
+// ---------------------------------------------------------------------------
+
+func TestGRPC_ResolveRolePermissions_Success(t *testing.T) {
+	roleSvc := &mockRoleService{
+		resolveResult: []permission.Permission{"kv:put", "kv:get", "admin:health"},
+	}
+	client, cleanup := startTestServerFull(t, WithRoleService(roleSvc))
+	defer cleanup()
+
+	resp, err := client.ResolveRolePermissions(context.Background(), &pb.ResolveRolePermissionsRequest{
+		RoleIds: []string{"r-001", "r-002"},
+	})
+	if err != nil {
+		t.Fatalf("ResolveRolePermissions failed: %v", err)
+	}
+	if len(resp.GetPermissions()) != 3 {
+		t.Fatalf("expected 3 permissions, got %d", len(resp.GetPermissions()))
+	}
+	found := false
+	for _, p := range resp.GetPermissions() {
+		if p == "kv:put" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected 'kv:put' in permissions, got %v", resp.GetPermissions())
+	}
+}
+
+func TestGRPC_ResolveRolePermissions_ServiceError(t *testing.T) {
+	roleSvc := &mockRoleService{
+		resolveErr: &role.StoreError{Op: "resolve", Err: errors.New("storage failure")},
+	}
+	client, cleanup := startTestServerFull(t, WithRoleService(roleSvc))
+	defer cleanup()
+
+	_, err := client.ResolveRolePermissions(context.Background(), &pb.ResolveRolePermissionsRequest{
+		RoleIds: []string{"r-001"},
+	})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	st, _ := status.FromError(err)
+	if st.Code() != codes.Internal {
+		t.Fatalf("expected Internal, got %s", st.Code())
+	}
+}
+
+func TestGRPC_ResolveRolePermissions_EmptyRoleIDs(t *testing.T) {
+	roleSvc := &mockRoleService{
+		resolveResult: []permission.Permission{},
+	}
+	client, cleanup := startTestServerFull(t, WithRoleService(roleSvc))
+	defer cleanup()
+
+	resp, err := client.ResolveRolePermissions(context.Background(), &pb.ResolveRolePermissionsRequest{
+		RoleIds: []string{},
+	})
+	if err != nil {
+		t.Fatalf("ResolveRolePermissions with empty IDs failed: %v", err)
+	}
+	if len(resp.GetPermissions()) != 0 {
+		t.Fatalf("expected 0 permissions for empty role IDs, got %d", len(resp.GetPermissions()))
+	}
+}
+
+func TestGRPC_ResolveRolePermissions_NilService(t *testing.T) {
+	client, cleanup := startTestServerFull(t)
+	defer cleanup()
+
+	_, err := client.ResolveRolePermissions(context.Background(), &pb.ResolveRolePermissionsRequest{
+		RoleIds: []string{"r-001"},
+	})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	st, _ := status.FromError(err)
+	if st.Code() != codes.Unimplemented {
+		t.Fatalf("expected Unimplemented, got %s", st.Code())
+	}
 }
 
 // ---------------------------------------------------------------------------

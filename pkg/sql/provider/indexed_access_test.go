@@ -120,7 +120,7 @@ func TestIndexedRowIter_Close(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestKVTable_GetIndexes_NilService(t *testing.T) {
-	tbl := NewKVTable(&mockKVService{}, "default", nil)
+	tbl := NewKVTable(&mockKVService{}, "system", nil)
 	ctx := newTestContext()
 
 	indexes, err := tbl.GetIndexes(ctx)
@@ -134,7 +134,7 @@ func TestKVTable_GetIndexes_WithService(t *testing.T) {
 			return []string{"Email", "Name"}, nil
 		},
 	}
-	tbl := NewKVTable(&mockKVService{}, "default", svc)
+	tbl := NewKVTable(&mockKVService{}, "system", svc)
 	ctx := newTestContext()
 
 	indexes, err := tbl.GetIndexes(ctx)
@@ -155,7 +155,7 @@ func TestKVTable_GetIndexes_ListError(t *testing.T) {
 			return nil, errors.New("storage unavailable")
 		},
 	}
-	tbl := NewKVTable(&mockKVService{}, "default", svc)
+	tbl := NewKVTable(&mockKVService{}, "system", svc)
 	ctx := newTestContext()
 
 	_, err := tbl.GetIndexes(ctx)
@@ -167,7 +167,7 @@ func TestKVTable_GetIndexes_ListError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestKVTable_PreciseMatch(t *testing.T) {
-	tbl := NewKVTable(&mockKVService{}, "default", nil)
+	tbl := NewKVTable(&mockKVService{}, "system", nil)
 	assert.True(t, tbl.PreciseMatch())
 }
 
@@ -176,7 +176,7 @@ func TestKVTable_PreciseMatch(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestKVTable_IndexedAccess(t *testing.T) {
-	tbl := NewKVTable(&mockKVService{}, "default", nil)
+	tbl := NewKVTable(&mockKVService{}, "system", nil)
 	ctx := newTestContext()
 	// IndexedAccess returns the table itself since KVTable implements IndexedTable.
 	result := tbl.IndexedAccess(ctx, sqle.IndexLookup{})
@@ -188,7 +188,7 @@ func TestKVTable_IndexedAccess(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestKVTable_LookupPartitions_NilService_FallsToFullScan(t *testing.T) {
-	tbl := NewKVTable(&mockKVService{}, "default", nil)
+	tbl := NewKVTable(&mockKVService{}, "system", nil)
 	ctx := newTestContext()
 
 	iter, err := tbl.LookupPartitions(ctx, sqle.IndexLookup{})
@@ -198,7 +198,7 @@ func TestKVTable_LookupPartitions_NilService_FallsToFullScan(t *testing.T) {
 
 func TestKVTable_LookupPartitions_EmptyLookup_FallsToFullScan(t *testing.T) {
 	svc := &mockIndexServicer{}
-	tbl := NewKVTable(&mockKVService{}, "default", svc)
+	tbl := NewKVTable(&mockKVService{}, "system", svc)
 	ctx := newTestContext()
 
 	// Empty IndexLookup (no index set) falls back to full scan.
@@ -209,7 +209,7 @@ func TestKVTable_LookupPartitions_EmptyLookup_FallsToFullScan(t *testing.T) {
 
 func TestKVTable_LookupPartitions_NonQRDBIndex_FallsToFullScan(t *testing.T) {
 	svc := &mockIndexServicer{}
-	tbl := NewKVTable(&mockKVService{}, "default", svc)
+	tbl := NewKVTable(&mockKVService{}, "system", svc)
 	ctx := newTestContext()
 
 	// An IndexLookup with a non-qrdbIndex falls back to full scan.

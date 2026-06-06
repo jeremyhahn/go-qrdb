@@ -1,0 +1,490 @@
+// Copyright 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package grpc
+
+import (
+	"context"
+	"errors"
+	"net"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	googlegrpc "google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+
+	grpcpkg "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
+	"github.com/jeremyhahn/go-qrdb/pkg/quota"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	tenantpkg "github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+)
+
+// ---------------------------------------------------------------------------
+// fakeTenantServicer is a minimal in-memory tenant.TenantServicer used to
+// drive the per-tenant barrier round-trip tests over a real gRPC connection.
+// Only the four barrier methods are exercised — the CRUD methods return zero
+// values that satisfy the interface contract.
+// ---------------------------------------------------------------------------
+
+type fakeTenantServicer struct {
+	initFn   func(ctx context.Context, id, passphrase string, threshold, shares int) error
+	unsealFn func(ctx context.Context, id string, key []byte) error
+	sealFn   func(ctx context.Context, id string) error
+	statusFn func(ctx context.Context, id string) (*tenantpkg.TenantBarrierStatus, error)
+}
+
+var _ tenantpkg.TenantServicer = (*fakeTenantServicer)(nil)
+
+func (f *fakeTenantServicer) CreateTenant(_ context.Context, id, name string, iso tenantpkg.IsolationType) (*tenantpkg.TenantInfo, error) {
+	return &tenantpkg.TenantInfo{ID: id, Name: name, IsolationType: iso}, nil
+}
+func (f *fakeTenantServicer) GetTenant(_ context.Context, id string) (*tenantpkg.TenantInfo, error) {
+	return &tenantpkg.TenantInfo{ID: id}, nil
+}
+func (f *fakeTenantServicer) ListTenants(_ context.Context) ([]tenantpkg.TenantInfo, error) {
+	return nil, nil
+}
+func (f *fakeTenantServicer) DeleteTenant(_ context.Context, _ string) error {
+	return nil
+}
+func (f *fakeTenantServicer) UpdateTenant(_ context.Context, id string, _ tenantpkg.TenantPatch) (*tenantpkg.TenantInfo, error) {
+	return &tenantpkg.TenantInfo{ID: id}, nil
+}
+func (f *fakeTenantServicer) UpdateQuotas(_ context.Context, id string, q *quota.Quotas) (*tenantpkg.TenantInfo, error) {
+	return &tenantpkg.TenantInfo{ID: id, Quotas: q}, nil
+}
+func (f *fakeTenantServicer) TenantBarrierInitWithStrategy(ctx context.Context, id, passphrase string, threshold, shares int, _ seal.StrategyID) error {
+	return f.TenantBarrierInit(ctx, id, passphrase, threshold, shares)
+}
+
+func (f *fakeTenantServicer) TenantBarrierInit(ctx context.Context, id, passphrase string, threshold, shares int) error {
+	if f.initFn != nil {
+		return f.initFn(ctx, id, passphrase, threshold, shares)
+	}
+	return nil
+}
+func (f *fakeTenantServicer) TenantBarrierUnseal(ctx context.Context, id string, key []byte) error {
+	if f.unsealFn != nil {
+		return f.unsealFn(ctx, id, key)
+	}
+	return nil
+}
+func (f *fakeTenantServicer) TenantBarrierSeal(ctx context.Context, id string) error {
+	if f.sealFn != nil {
+		return f.sealFn(ctx, id)
+	}
+	return nil
+}
+func (f *fakeTenantServicer) TenantBarrierStatus(ctx context.Context, id string) (*tenantpkg.TenantBarrierStatus, error) {
+	if f.statusFn != nil {
+		return f.statusFn(ctx, id)
+	}
+	return &tenantpkg.TenantBarrierStatus{TenantID: id, Sealed: true, Initialized: false}, nil
+}
+func (f *fakeTenantServicer) IncrementQuotaUsage(_ context.Context, _ string, _ quota.Resource, _ int64) (*tenantpkg.TenantInfo, error) {
+	return nil, nil
+}
+func (f *fakeTenantServicer) DecrementQuotaUsage(_ context.Context, _ string, _ quota.Resource, _ int64) (*tenantpkg.TenantInfo, error) {
+	return nil, nil
+}
+func (f *fakeTenantServicer) GetQuotaUsage(_ context.Context, _ string, _ quota.Resource) (int64, error) {
+	return 0, nil
+}
+
+// ---------------------------------------------------------------------------
+// startTenantBarrierServer spins up a bare gRPC server that registers ONLY
+// the per-tenant barrier service and returns the listener address plus a
+// cleanup function. The transport is connected without a health check to
+// avoid pulling in QRDBService.
+// ---------------------------------------------------------------------------
+
+func startTenantBarrierServer(t *testing.T, svc tenantpkg.TenantServicer) (string, func()) {
+	t.Helper()
+	srv := googlegrpc.NewServer()
+	grpcpkg.RegisterTenantBarrierService(srv, svc, nil)
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	go func() { _ = srv.Serve(lis) }()
+
+	return lis.Addr().String(), func() { srv.Stop() }
+}
+
+// connectBareTransport returns a Transport whose conn is dialed against the
+// given address. It bypasses Connect() so we don't require the QRDBService
+// health check to be registered on the test server.
+func connectBareTransport(t *testing.T, addr string) (*Transport, func()) {
+	t.Helper()
+	conn, err := googlegrpc.NewClient(addr, googlegrpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("grpc.NewClient: %v", err)
+	}
+	tr := &Transport{
+		config: &transport.Config{Address: addr},
+		conn:   conn,
+		// closed defaults to zero-value (false) which is the desired open state.
+	}
+	cleanup := func() {
+		_ = conn.Close()
+	}
+	return tr, cleanup
+}
+
+// ---------------------------------------------------------------------------
+// TenantBarrierInit
+// ---------------------------------------------------------------------------
+
+func TestTransport_TenantBarrierInit_Success(t *testing.T) {
+	captured := struct {
+		id        string
+		threshold int
+		shares    int
+	}{}
+	svc := &fakeTenantServicer{
+		initFn: func(_ context.Context, id, _ string, th, sh int) error {
+			captured.id, captured.threshold, captured.shares = id, th, sh
+			return nil
+		},
+	}
+	addr, stop := startTenantBarrierServer(t, svc)
+	defer stop()
+
+	tr, cleanup := connectBareTransport(t, addr)
+	defer cleanup()
+
+	err := tr.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{
+		TenantID: "acme", Threshold: 3, Shares: 5,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if captured.id != "acme" || captured.threshold != 3 || captured.shares != 5 {
+		t.Errorf("unexpected captured args: %+v", captured)
+	}
+}
+
+func TestTransport_TenantBarrierInit_NilRequest(t *testing.T) {
+	tr := &Transport{config: &transport.Config{}}
+	err := tr.TenantBarrierInit(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected error for nil request")
+	}
+}
+
+func TestTransport_TenantBarrierInit_AfterClose(t *testing.T) {
+	tr := &Transport{config: &transport.Config{}}
+	tr.closed.Store(true)
+	err := tr.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{TenantID: "acme"})
+	if err == nil {
+		t.Fatal("expected ClosedError")
+	}
+	var ce *transport.ClosedError
+	if !errors.As(err, &ce) {
+		t.Errorf("expected ClosedError, got %T: %v", err, err)
+	}
+}
+
+func TestTransport_TenantBarrierInit_ServerError(t *testing.T) {
+	svc := &fakeTenantServicer{
+		initFn: func(_ context.Context, _, _ string, _, _ int) error {
+			return tenantpkg.ErrTenantNotFound
+		},
+	}
+	addr, stop := startTenantBarrierServer(t, svc)
+	defer stop()
+
+	tr, cleanup := connectBareTransport(t, addr)
+	defer cleanup()
+
+	err := tr.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{TenantID: "missing"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TenantBarrierUnseal
+// ---------------------------------------------------------------------------
+
+func TestTransport_TenantBarrierUnseal_Success_Key(t *testing.T) {
+	var seen atomic.Pointer[[]byte]
+	svc := &fakeTenantServicer{
+		unsealFn: func(_ context.Context, _ string, key []byte) error {
+			b := append([]byte(nil), key...)
+			seen.Store(&b)
+			return nil
+		},
+	}
+	addr, stop := startTenantBarrierServer(t, svc)
+	defer stop()
+	tr, cleanup := connectBareTransport(t, addr)
+	defer cleanup()
+
+	err := tr.TenantBarrierUnseal(context.Background(), &transport.TenantBarrierUnsealRequest{
+		TenantID: "acme", Key: []byte("the-key"),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := seen.Load()
+	if got == nil || string(*got) != "the-key" {
+		t.Errorf("expected server to receive 'the-key', got %v", got)
+	}
+}
+
+func TestTransport_TenantBarrierUnseal_Success_FallbackShare(t *testing.T) {
+	var seen atomic.Pointer[[]byte]
+	svc := &fakeTenantServicer{
+		unsealFn: func(_ context.Context, _ string, key []byte) error {
+			b := append([]byte(nil), key...)
+			seen.Store(&b)
+			return nil
+		},
+	}
+	addr, stop := startTenantBarrierServer(t, svc)
+	defer stop()
+	tr, cleanup := connectBareTransport(t, addr)
+	defer cleanup()
+
+	err := tr.TenantBarrierUnseal(context.Background(), &transport.TenantBarrierUnsealRequest{
+		TenantID: "acme", Share: []byte("share-fallback"),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := seen.Load()
+	if got == nil || string(*got) != "share-fallback" {
+		t.Errorf("expected server to receive 'share-fallback', got %v", got)
+	}
+}
+
+func TestTransport_TenantBarrierUnseal_NilRequest(t *testing.T) {
+	tr := &Transport{config: &transport.Config{}}
+	err := tr.TenantBarrierUnseal(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected error for nil request")
+	}
+}
+
+func TestTransport_TenantBarrierUnseal_AfterClose(t *testing.T) {
+	tr := &Transport{config: &transport.Config{}}
+	tr.closed.Store(true)
+	err := tr.TenantBarrierUnseal(context.Background(), &transport.TenantBarrierUnsealRequest{TenantID: "acme"})
+	if err == nil {
+		t.Fatal("expected ClosedError")
+	}
+	var ce *transport.ClosedError
+	if !errors.As(err, &ce) {
+		t.Errorf("expected ClosedError, got %T", err)
+	}
+}
+
+func TestTransport_TenantBarrierUnseal_ServerError(t *testing.T) {
+	svc := &fakeTenantServicer{
+		unsealFn: func(_ context.Context, _ string, _ []byte) error {
+			return &tenantpkg.BarrierError{TenantID: "acme", Op: "unseal", Err: errors.New("boom")}
+		},
+	}
+	addr, stop := startTenantBarrierServer(t, svc)
+	defer stop()
+	tr, cleanup := connectBareTransport(t, addr)
+	defer cleanup()
+
+	err := tr.TenantBarrierUnseal(context.Background(), &transport.TenantBarrierUnsealRequest{TenantID: "acme", Key: []byte("k")})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TenantBarrierSeal
+// ---------------------------------------------------------------------------
+
+func TestTransport_TenantBarrierSeal_Success(t *testing.T) {
+	called := atomic.Bool{}
+	svc := &fakeTenantServicer{
+		sealFn: func(_ context.Context, id string) error {
+			called.Store(true)
+			if id != "acme" {
+				t.Errorf("expected id 'acme', got %q", id)
+			}
+			return nil
+		},
+	}
+	addr, stop := startTenantBarrierServer(t, svc)
+	defer stop()
+	tr, cleanup := connectBareTransport(t, addr)
+	defer cleanup()
+
+	if err := tr.TenantBarrierSeal(context.Background(), &transport.TenantBarrierSealRequest{TenantID: "acme"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called.Load() {
+		t.Error("expected sealFn to be called")
+	}
+}
+
+func TestTransport_TenantBarrierSeal_NilRequest(t *testing.T) {
+	tr := &Transport{config: &transport.Config{}}
+	err := tr.TenantBarrierSeal(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected error for nil request")
+	}
+}
+
+func TestTransport_TenantBarrierSeal_AfterClose(t *testing.T) {
+	tr := &Transport{config: &transport.Config{}}
+	tr.closed.Store(true)
+	err := tr.TenantBarrierSeal(context.Background(), &transport.TenantBarrierSealRequest{TenantID: "acme"})
+	if err == nil {
+		t.Fatal("expected ClosedError")
+	}
+	var ce *transport.ClosedError
+	if !errors.As(err, &ce) {
+		t.Errorf("expected ClosedError, got %T", err)
+	}
+}
+
+func TestTransport_TenantBarrierSeal_ServerError(t *testing.T) {
+	svc := &fakeTenantServicer{
+		sealFn: func(_ context.Context, _ string) error {
+			return tenantpkg.ErrTenantNotFound
+		},
+	}
+	addr, stop := startTenantBarrierServer(t, svc)
+	defer stop()
+	tr, cleanup := connectBareTransport(t, addr)
+	defer cleanup()
+
+	err := tr.TenantBarrierSeal(context.Background(), &transport.TenantBarrierSealRequest{TenantID: "missing"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TenantBarrierStatus
+// ---------------------------------------------------------------------------
+
+func TestTransport_TenantBarrierStatus_Success(t *testing.T) {
+	svc := &fakeTenantServicer{
+		statusFn: func(_ context.Context, id string) (*tenantpkg.TenantBarrierStatus, error) {
+			return &tenantpkg.TenantBarrierStatus{
+				TenantID:       id,
+				Sealed:         false,
+				Initialized:    true,
+				Strategy:       "shamir",
+				HardwareBacked: true,
+			}, nil
+		},
+	}
+	addr, stop := startTenantBarrierServer(t, svc)
+	defer stop()
+	tr, cleanup := connectBareTransport(t, addr)
+	defer cleanup()
+
+	resp, err := tr.TenantBarrierStatus(context.Background(), &transport.TenantBarrierStatusRequest{TenantID: "acme"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+	if resp.TenantID != "acme" || resp.Sealed || !resp.Initialized || resp.Strategy != "shamir" || !resp.HardwareBacked {
+		t.Errorf("unexpected response: %+v", resp)
+	}
+}
+
+func TestTransport_TenantBarrierStatus_NilRequest(t *testing.T) {
+	tr := &Transport{config: &transport.Config{}}
+	_, err := tr.TenantBarrierStatus(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected error for nil request")
+	}
+}
+
+func TestTransport_TenantBarrierStatus_AfterClose(t *testing.T) {
+	tr := &Transport{config: &transport.Config{}}
+	tr.closed.Store(true)
+	_, err := tr.TenantBarrierStatus(context.Background(), &transport.TenantBarrierStatusRequest{TenantID: "acme"})
+	if err == nil {
+		t.Fatal("expected ClosedError")
+	}
+	var ce *transport.ClosedError
+	if !errors.As(err, &ce) {
+		t.Errorf("expected ClosedError, got %T", err)
+	}
+}
+
+func TestTransport_TenantBarrierStatus_ServerError(t *testing.T) {
+	svc := &fakeTenantServicer{
+		statusFn: func(_ context.Context, _ string) (*tenantpkg.TenantBarrierStatus, error) {
+			return nil, &tenantpkg.StoreError{Op: "get", Err: errors.New("io")}
+		},
+	}
+	addr, stop := startTenantBarrierServer(t, svc)
+	defer stop()
+	tr, cleanup := connectBareTransport(t, addr)
+	defer cleanup()
+
+	_, err := tr.TenantBarrierStatus(context.Background(), &transport.TenantBarrierStatusRequest{TenantID: "acme"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Sentinel error types
+// ---------------------------------------------------------------------------
+
+func TestErrNilRequest_Error(t *testing.T) {
+	if got := (errNilRequest{}).Error(); got != "tenant barrier: nil request" {
+		t.Errorf("unexpected message: %q", got)
+	}
+}
+
+func TestErrEmptyResponse_Error(t *testing.T) {
+	if got := (errEmptyResponse{}).Error(); got != "tenant barrier: empty response" {
+		t.Errorf("unexpected message: %q", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Round-trip with deadline propagation
+// ---------------------------------------------------------------------------
+
+func TestTransport_TenantBarrier_DeadlineRespected(t *testing.T) {
+	// Server blocks until ctx is done, returning ctx.Err on cancellation.
+	svc := &fakeTenantServicer{
+		sealFn: func(ctx context.Context, _ string) error {
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	}
+	addr, stop := startTenantBarrierServer(t, svc)
+	defer stop()
+	tr, cleanup := connectBareTransport(t, addr)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	err := tr.TenantBarrierSeal(ctx, &transport.TenantBarrierSealRequest{TenantID: "acme"})
+	if err == nil {
+		t.Fatal("expected deadline-exceeded error")
+	}
+}

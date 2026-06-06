@@ -56,11 +56,11 @@ func TestStorageBarrier_StrategiesAccessor(t *testing.T) {
 	if len(strats) != 1 {
 		t.Fatalf("Strategies: expected 1, got %d", len(strats))
 	}
-	if _, ok := strats[StrategySoftware]; !ok {
+	if _, ok := strats[StrategyPassphrase]; !ok {
 		t.Error("expected software strategy in map")
 	}
 	// Verify it is a copy (modifying returned map does not affect barrier).
-	delete(strats, StrategySoftware)
+	delete(strats, StrategyPassphrase)
 	strats2 := b.Strategies()
 	if len(strats2) != 1 {
 		t.Error("Strategies should return a copy; original was modified")
@@ -311,8 +311,7 @@ func TestRecoverWithKeys_ShamirStrategyPath(t *testing.T) {
 // --------------------------------------------------------------------------
 
 func TestShamirStrategy_Close(t *testing.T) {
-	store := NewMemoryBackend()
-	strat, err := NewShamirStrategy(store, 2, 3)
+	strat, err := NewShamirStrategy(2, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -431,7 +430,7 @@ func TestBarrierRegistry_RegisterTenant_NilStrategy(t *testing.T) {
 
 	// Register without providing any strategy. NewTenantBarrier calls
 	// NewStorageBarrier which requires at least one strategy.
-	_, err = registry.RegisterTenant("tenant-no-strat", NewMemoryBackend(), BarrierConfig{
+	_, err = registry.RegisterTenant(context.Background(), "tenant-no-strat", NewMemoryBackend(), BarrierConfig{
 		RootKeyPath: "t/root-key",
 	})
 	if !errors.Is(err, ErrNoAvailableStrategy) {
@@ -448,8 +447,7 @@ func TestStorageBarrier_UnsealDirect_AlreadyInitialized(t *testing.T) {
 	// EpochBarrier.Initialize returns ErrBarrierAlreadyInit, causing
 	// it to fall through to the Unseal branch.
 	backend := NewMemoryBackend()
-	shamirStore := NewMemoryBackend()
-	shamirStrat, err := NewShamirStrategy(shamirStore, 2, 3)
+	shamirStrat, err := NewShamirStrategy(2, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -570,8 +568,7 @@ func TestRecoverWithSoftwareStrategy_StrategyNotFound(t *testing.T) {
 func TestGenerateRootToken_VerifyDirectMode_NonShamirStrategy(t *testing.T) {
 	// Create a Shamir barrier where the sealed root key uses Shamir strategy.
 	backend := NewMemoryBackend()
-	shamirStore := NewMemoryBackend()
-	shamirStrat, err := NewShamirStrategy(shamirStore, 2, 3)
+	shamirStrat, err := NewShamirStrategy(2, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -604,8 +601,7 @@ func TestGenerateRootToken_VerifyDirectMode_NonShamirStrategy(t *testing.T) {
 
 func TestGenerateRootToken_VerifyDirectMode_CorruptBlob(t *testing.T) {
 	backend := NewMemoryBackend()
-	shamirStore := NewMemoryBackend()
-	shamirStrat, err := NewShamirStrategy(shamirStore, 2, 3)
+	shamirStrat, err := NewShamirStrategy(2, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -637,7 +633,7 @@ func TestGenerateRootToken_VerifyDirectMode_CorruptBlob(t *testing.T) {
 
 func TestInitializeShamirDirect_ExistsError(t *testing.T) {
 	errBackend := &errorBackend{existsErr: errors.New("exists failed")}
-	shamirStrat, err := NewShamirStrategy(NewMemoryBackend(), 2, 3)
+	shamirStrat, err := NewShamirStrategy(2, 3)
 	if err != nil {
 		t.Fatal(err)
 	}

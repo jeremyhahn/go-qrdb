@@ -29,8 +29,11 @@ func TestTenantService_CreateTenant_RegistryDuplicateError(t *testing.T) {
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 
-	// Create once successfully so the registry has it.
-	_, err := svc.CreateTenant(ctx, "reg-dup", "Reg Dup", "")
+	// Create a barrier tenant once successfully so the registry has it.
+	// (Barrier isolation registers a per-tenant barrier; prefix isolation
+	// would not, so the duplicate-registry branch is only reachable for
+	// barrier tenants.)
+	_, err := svc.CreateTenant(ctx, "reg-dup", "Reg Dup", IsolationBarrier)
 	if err != nil {
 		t.Fatalf("first CreateTenant: %v", err)
 	}
@@ -41,9 +44,9 @@ func TestTenantService_CreateTenant_RegistryDuplicateError(t *testing.T) {
 		t.Fatalf("store.Delete: %v", err)
 	}
 
-	// The registry.RegisterTenantDefault should return ErrTenantAlreadyExists,
-	// which the service maps to our typed error.
-	_, err = svc.CreateTenant(ctx, "reg-dup", "Reg Dup Again", "")
+	// RegisterTenantPooled should return ErrTenantAlreadyExists, which the
+	// service maps to our typed error.
+	_, err = svc.CreateTenant(ctx, "reg-dup", "Reg Dup Again", IsolationBarrier)
 	if !errors.Is(err, ErrTenantAlreadyExists) {
 		t.Errorf("expected ErrTenantAlreadyExists from registry duplicate, got %v", err)
 	}

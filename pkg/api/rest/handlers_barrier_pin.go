@@ -1,0 +1,89 @@
+// Copyright 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package rest
+
+import (
+	"errors"
+	"net/http"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/pin"
+)
+
+// pinErrorHTTPCodes maps PIN sentinel errors to HTTP status codes for the
+// REST barrier handlers. The map is used by mapPINHTTPError to translate
+// pin.PINBackend errors before they leave the REST surface.
+var pinErrorHTTPCodes = map[error]int{
+	pin.ErrPINNotSet:         http.StatusPreconditionFailed,
+	pin.ErrPINLocked:         http.StatusTooManyRequests,
+	pin.ErrPINInvalid:        http.StatusUnauthorized,
+	pin.ErrSOPINRequired:     http.StatusUnauthorized,
+	pin.ErrPINTooShort:       http.StatusBadRequest,
+	pin.ErrPINAlreadySet:     http.StatusConflict,
+	pin.ErrInvalidCurrentPIN: http.StatusUnauthorized,
+	pin.ErrStateCorrupted:    http.StatusInternalServerError,
+	pin.ErrStrategyNotSet:    http.StatusPreconditionFailed,
+}
+
+// mapPINHTTPError maps a PIN error from pin.PINBackend to its REST HTTP
+// status code. Unknown errors map to 500 Internal Server Error.
+func mapPINHTTPError(err error) int {
+	if err == nil {
+		return http.StatusOK
+	}
+	for sentinel, code := range pinErrorHTTPCodes {
+		if errors.Is(err, sentinel) {
+			return code
+		}
+	}
+	return http.StatusInternalServerError
+}
+
+// applyBarrierInitializePINs forwards SO PIN / User PIN supplied on the
+// initialize request to the configured pin.PINBackend. When no backend is
+// configured the PIN fields are silently ignored — this preserves
+// dev-mode flows (--barrier-strategy=none with no PIN setup).
+//
+// SOPin must be set before UserPin because SetUserPIN requires SO PIN
+// authorization.
+func applyBarrierInitializePINs(backend pin.PINBackend, soPIN, userPIN string) error {
+	if backend == nil {
+		return nil
+	}
+	if soPIN != "" {
+		if err := backend.SetSOPIN("", soPIN); err != nil {
+			return err
+		}
+	}
+	if userPIN != "" {
+		if err := backend.SetUserPIN(soPIN, userPIN); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// verifyBarrierSOPIN gates an administrative barrier operation behind SO
+// PIN authorization. The check is enforced only when the backend is
+// configured AND has a SO PIN set; in any other state the call is a
+// no-op so dev-mode flows continue to work.
+func verifyBarrierSOPIN(backend pin.PINBackend, soPIN string) error {
+	if backend == nil {
+		return nil
+	}
+	if !backend.SOPINSet() {
+		return nil
+	}
+	return backend.VerifySOPIN(soPIN)
+}

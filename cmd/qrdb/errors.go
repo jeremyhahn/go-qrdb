@@ -253,3 +253,26 @@ func (e *EmbeddedBarrierError) Error() string {
 func (e *EmbeddedBarrierError) Unwrap() error {
 	return e.Err
 }
+
+// UserAbortError is returned when an interactive operator declines a
+// confirmation prompt (or stdin is closed before an answer is given).
+// The Op field identifies the destructive operation that was canceled.
+type UserAbortError struct {
+	Op string
+}
+
+// Error returns a human-readable description.
+func (e *UserAbortError) Error() string {
+	return "qrdb: " + e.Op + " aborted by user"
+}
+
+// EmbeddedTransportUnavailableError is returned when the operator selects
+// `--transport embedded` from a binary that is not built with an
+// in-process server (i.e. the CLI). Embedded transport requires the
+// desktop / GUI build which links the server side in-process.
+type EmbeddedTransportUnavailableError struct{}
+
+// Error returns a human-readable description.
+func (e *EmbeddedTransportUnavailableError) Error() string {
+	return "qrdb: --transport=embedded is only available in the desktop/GUI build (which links the server side in-process); use --transport=unix for a local connection over the default Unix socket"
+}

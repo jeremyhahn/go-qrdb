@@ -1,0 +1,340 @@
+//go:build !integration
+
+// Copyright (c) 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package middleware
+
+import (
+	"context"
+	"crypto/tls"
+	"encoding/json"
+	"errors"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
+	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
+)
+
+// discardLogger returns a slog.Logger that discards all output.
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// ---------------------------------------------------------------------------
+// Mock helpers for SOMiddleware tests
+// ---------------------------------------------------------------------------
+
+type mockSOVerifier struct {
+	err   error
+	calls atomic.Int64
+}
+
+func (m *mockSOVerifier) VerifySOPIN(_ context.Context, _ string, _ []byte) error {
+	m.calls.Add(1)
+	return m.err
+}
+
+type mockSOAuditLogger struct {
+	events []audit.AuditEvent
+}
+
+func (m *mockSOAuditLogger) Emit(_ context.Context, evt audit.AuditEvent) {
+	m.events = append(m.events, evt)
+}
+
+func (m *mockSOAuditLogger) Query(_ context.Context, _ audit.Filter) (*audit.Page, error) {
+	return &audit.Page{}, nil
+}
+
+func (m *mockSOAuditLogger) Close() error { return nil }
+
+// newSORequest builds an httptest.Request with TLS state set and an
+// optional X-QRDB-SO-PIN header.
+func newSORequest(method, path, pin string) *http.Request {
+	req := httptest.NewRequest(method, path, nil)
+	req.TLS = &tls.ConnectionState{}
+	if pin != "" {
+		req.Header.Set(SOPINHeader, pin)
+	}
+	return req
+}
+
+// withSOIdentity stores an SO identity in the request context.
+func withSOIdentity(req *http.Request, tenantID string) *http.Request {
+	id := &auth.Identity{
+		Subject:  "custodian",
+		TenantID: tenantID,
+		Roles:    []string{role.RoleNameSO},
+	}
+	return req.WithContext(auth.WithIdentity(req.Context(), id))
+}
+
+// ---------------------------------------------------------------------------
+// SOMiddleware — plain HTTP rejected with 401
+// ---------------------------------------------------------------------------
+
+func TestSOMiddleware_PlainHTTP_Rejected(t *testing.T) {
+	verifier := &mockSOVerifier{}
+	next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Error("next should not be called for plain HTTP")
+	})
+
+	h := SOMiddleware(verifier, nil, discardLogger(), next)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/initialize", nil)
+	// req.TLS is nil — plain HTTP
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec.Code)
+	}
+	if verifier.calls.Load() != 0 {
+		t.Error("VerifySOPIN should not be called for plain HTTP")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SOMiddleware — unmapped route passes through
+// ---------------------------------------------------------------------------
+
+func TestSOMiddleware_UnmappedRoute_PassesThrough(t *testing.T) {
+	verifier := &mockSOVerifier{}
+	nextCalled := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		nextCalled = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	h := SOMiddleware(verifier, nil, discardLogger(), next)
+
+	req := newSORequest(http.MethodGet, "/v1/status", "")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if !nextCalled {
+		t.Error("expected next to be called for unmapped route")
+	}
+	if verifier.calls.Load() != 0 {
+		t.Error("VerifySOPIN should not be called for unmapped routes")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SOMiddleware — mapped but non-SO route passes through
+// ---------------------------------------------------------------------------
+
+func TestSOMiddleware_NonSOPermission_PassesThrough(t *testing.T) {
+	verifier := &mockSOVerifier{}
+	nextCalled := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		nextCalled = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	h := SOMiddleware(verifier, nil, discardLogger(), next)
+
+	// PUT /v1/kv/{key} maps to KVPut which is NOT an SO permission.
+	req := newSORequest(http.MethodPut, "/v1/kv/mykey", "")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if !nextCalled {
+		t.Error("expected next to be called for non-SO permission")
+	}
+	if verifier.calls.Load() != 0 {
+		t.Error("VerifySOPIN should not be called for non-SO permissions")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SOMiddleware — SO route, identity missing → 403
+// ---------------------------------------------------------------------------
+
+func TestSOMiddleware_SORoute_NoIdentity_Forbidden(t *testing.T) {
+	verifier := &mockSOVerifier{}
+	next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Error("next should not be called without identity")
+	})
+
+	h := SOMiddleware(verifier, nil, discardLogger(), next)
+
+	req := newSORequest(http.MethodPost, "/v1/ceremony/initialize", "correct-pin")
+	// No identity stored in context.
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", rec.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SOMiddleware — SO route, identity without SO role → 403
+// ---------------------------------------------------------------------------
+
+func TestSOMiddleware_SORoute_NonSORole_Forbidden(t *testing.T) {
+	verifier := &mockSOVerifier{}
+	next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Error("next should not be called without SO role")
+	})
+
+	h := SOMiddleware(verifier, nil, discardLogger(), next)
+
+	req := newSORequest(http.MethodPost, "/v1/ceremony/initialize", "pin")
+	id := &auth.Identity{Subject: "alice", TenantID: "t1", Roles: []string{"operator"}}
+	req = req.WithContext(auth.WithIdentity(req.Context(), id))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", rec.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SOMiddleware — SO route, SO identity, missing PIN → 401 + audit failure
+// ---------------------------------------------------------------------------
+
+func TestSOMiddleware_SORoute_MissingPIN_Unauthorized(t *testing.T) {
+	verifier := &mockSOVerifier{}
+	al := &mockSOAuditLogger{}
+	next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Error("next should not be called when PIN is missing")
+	})
+
+	h := SOMiddleware(verifier, al, discardLogger(), next)
+
+	req := newSORequest(http.MethodPost, "/v1/ceremony/initialize", "" /* no PIN */)
+	req = withSOIdentity(req, "t1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec.Code)
+	}
+	if len(al.events) != 1 {
+		t.Fatalf("expected 1 audit event, got %d", len(al.events))
+	}
+	if al.events[0].Outcome == "" {
+		t.Error("expected non-empty audit outcome")
+	}
+	if verifier.calls.Load() != 0 {
+		t.Error("VerifySOPIN should not be called when PIN header is missing")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SOMiddleware — SO route, SO identity, wrong PIN → 401 + audit failure
+// ---------------------------------------------------------------------------
+
+func TestSOMiddleware_SORoute_WrongPIN_Unauthorized(t *testing.T) {
+	verifier := &mockSOVerifier{err: errors.New("pin mismatch")}
+	al := &mockSOAuditLogger{}
+	next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Error("next should not be called with wrong PIN")
+	})
+
+	h := SOMiddleware(verifier, al, discardLogger(), next)
+
+	req := newSORequest(http.MethodPost, "/v1/ceremony/initialize", "wrong-pin")
+	req = withSOIdentity(req, "t1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec.Code)
+	}
+	if verifier.calls.Load() != 1 {
+		t.Errorf("expected 1 VerifySOPIN call, got %d", verifier.calls.Load())
+	}
+	if len(al.events) != 1 {
+		t.Fatalf("expected 1 audit event, got %d", len(al.events))
+	}
+
+	var errResp restErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&errResp); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+	if errResp.Error == "" {
+		t.Error("expected non-empty error field")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SOMiddleware — SO route, SO identity, correct PIN → next called + audit success
+// ---------------------------------------------------------------------------
+
+func TestSOMiddleware_SORoute_CorrectPIN_Success(t *testing.T) {
+	verifier := &mockSOVerifier{err: nil}
+	al := &mockSOAuditLogger{}
+	nextCalled := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		nextCalled = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	h := SOMiddleware(verifier, al, discardLogger(), next)
+
+	req := newSORequest(http.MethodPost, "/v1/ceremony/initialize", "correct-pin")
+	req = withSOIdentity(req, "t1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if !nextCalled {
+		t.Error("expected next to be called on success")
+	}
+	if verifier.calls.Load() != 1 {
+		t.Errorf("expected 1 VerifySOPIN call, got %d", verifier.calls.Load())
+	}
+	if len(al.events) != 1 {
+		t.Fatalf("expected 1 audit event, got %d", len(al.events))
+	}
+	if al.events[0].Outcome != audit.OutcomeSuccess {
+		t.Errorf("expected success outcome, got %q", al.events[0].Outcome)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SOMiddleware — nil audit logger (no panic)
+// ---------------------------------------------------------------------------
+
+func TestSOMiddleware_NilAuditLogger_NoPanic(t *testing.T) {
+	verifier := &mockSOVerifier{err: errors.New("bad pin")}
+	next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Error("next should not be called")
+	})
+
+	// nil audit logger — must not panic.
+	h := SOMiddleware(verifier, nil, discardLogger(), next)
+
+	req := newSORequest(http.MethodPost, "/v1/ceremony/initialize", "pin")
+	req = withSOIdentity(req, "t1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec.Code)
+	}
+}

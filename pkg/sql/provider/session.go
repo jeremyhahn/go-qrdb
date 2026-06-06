@@ -17,6 +17,7 @@ package provider
 import (
 	sqle "github.com/dolthub/go-mysql-server/sql"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // QRDBSession extends sql.BaseSession with QRDB identity and tenant context.
@@ -42,11 +43,12 @@ func (s *QRDBSession) Identity() *auth.Identity {
 	return s.identity
 }
 
-// TenantID returns the tenant namespace for this session. Returns "default"
-// if the identity is nil or has an empty TenantID.
+// TenantID returns the tenant namespace for this session. Returns
+// tenant.SystemTenantID if the identity is nil or has an empty TenantID —
+// callers without explicit tenant binding execute against the system tenant.
 func (s *QRDBSession) TenantID() string {
 	if s.identity == nil || s.identity.TenantID == "" {
-		return "default"
+		return tenant.SystemTenantID
 	}
 	return s.identity.TenantID
 }

@@ -23,7 +23,9 @@ import (
 
 	"github.com/cockroachdb/pebble/v2"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/interfaces"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector/schema"
 )
 
@@ -49,8 +51,35 @@ type PebbleVectorStorage struct {
 	writeSem chan struct{}
 }
 
+// StorageOption configures a PebbleVectorStorage instance.
+type StorageOption func(*pebble.Options)
+
+// WithBarrier wraps the Pebble vfs.FS with seal/encfs so that every file
+// the vector store writes is transparently encrypted under the supplied
+// StorageBarrier. The barrier must already be unsealed when the storage is
+// opened. A nil barrier is a no-op — the store opens in plaintext mode,
+// which is the default and is appropriate for tests and non-encrypted
+// deployments.
+//
+// Deprecated: prefer WithEncryptor(atrest.New(barrier)) which routes
+// through the single atrest.Encryptor authority. WithBarrier is kept for
+// backward compatibility.
+func WithBarrier(barrier *seal.StorageBarrier) StorageOption {
+	return WithEncryptor(atrest.New(barrier))
+}
+
+// WithEncryptor applies enc to the Pebble options, wrapping the vfs.FS
+// with barrier-driven AES-256-GCM encryption. A nil enc or an enc whose
+// barrier is nil is a no-op, so plaintext deployments and tests are
+// unaffected.
+func WithEncryptor(enc *atrest.Encryptor) StorageOption {
+	return func(o *pebble.Options) {
+		enc.Apply(o)
+	}
+}
+
 // NewPebbleVectorStorage creates a new PebbleDB vector storage instance.
-func NewPebbleVectorStorage(config *Config, logger interfaces.Logger) (*PebbleVectorStorage, error) {
+func NewPebbleVectorStorage(config *Config, logger interfaces.Logger, opts ...StorageOption) (*PebbleVectorStorage, error) {
 	if config == nil {
 		return nil, ErrInvalidConfig
 	}
@@ -65,10 +94,15 @@ func NewPebbleVectorStorage(config *Config, logger interfaces.Logger) (*PebbleVe
 	config = config.WithDefaults()
 
 	// Convert config to PebbleDB options
-	opts := config.ToPebbleOptions()
+	pOpts := config.ToPebbleOptions()
+
+	// Apply storage options (e.g. encryption FS wrapper).
+	for _, opt := range opts {
+		opt(pOpts)
+	}
 
 	// Open the database
-	db, err := pebble.Open(config.DataDir, opts)
+	db, err := pebble.Open(config.DataDir, pOpts)
 	if err != nil {
 		return nil, err
 	}

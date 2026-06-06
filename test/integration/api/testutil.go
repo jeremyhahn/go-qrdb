@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -35,6 +36,23 @@ type TestConfig struct {
 	TLSCACert      string
 	TLSCert        string
 	TLSKey         string
+
+	// Shamir-seal server connection. These point at the dedicated
+	// "qrdbd-shamir" server configured with the Shamir M-of-N seal
+	// strategy, which runs alongside the software-seal server so the
+	// Shamir CLI tests can exercise a real Shamir-sealed barrier.
+	ShamirUnixSocketPath string
+	ShamirRESTBaseURL    string
+	ShamirGRPCAddr       string
+	ShamirMCPAddr        string
+	ShamirQUICAddr       string
+	ShamirTLSCACert      string
+	ShamirTLSCert        string
+	ShamirTLSKey         string
+	// ShamirSharesFile is the path to the JSON file ({"shares":[...]})
+	// produced by the qrdbd-shamir bootstrap when it initialized the
+	// barrier. Used to replay shares for share-based unseal.
+	ShamirSharesFile string
 }
 
 // getProjectRoot returns the project root directory by walking up from the test file location.
@@ -62,6 +80,16 @@ func LoadTestConfig() *TestConfig {
 		TLSCACert:      getEnv("QRDB_TLS_CA", "/data/raft/ca.pem"),
 		TLSCert:        getEnv("QRDB_TLS_CERT", ""),
 		TLSKey:         getEnv("QRDB_TLS_KEY", ""),
+
+		ShamirUnixSocketPath: getEnv("QRDB_SHAMIR_UNIX_SOCKET", "/var/run/qrdbd-shamir/qrdbd.sock"),
+		ShamirRESTBaseURL:    getEnv("QRDB_SHAMIR_REST_URL", "https://localhost:64002"),
+		ShamirGRPCAddr:       getEnv("QRDB_SHAMIR_GRPC_ADDR", "localhost:64003"),
+		ShamirMCPAddr:        getEnv("QRDB_SHAMIR_MCP_ADDR", "localhost:64005"),
+		ShamirQUICAddr:       getEnv("QRDB_SHAMIR_QUIC_ADDR", "localhost:64004"),
+		ShamirTLSCACert:      getEnv("QRDB_SHAMIR_TLS_CA", "/data-shamir/raft/ca.pem"),
+		ShamirTLSCert:        getEnv("QRDB_SHAMIR_TLS_CERT", ""),
+		ShamirTLSKey:         getEnv("QRDB_SHAMIR_TLS_KEY", ""),
+		ShamirSharesFile:     getEnv("QRDB_SHAMIR_SHARES_FILE", "/data-shamir/raft/shamir-init.json"),
 	}
 }
 
@@ -138,7 +166,7 @@ func isServerAvailable(t *testing.T, cfg *TestConfig) bool {
 		tlsCfg.InsecureSkipVerify = true //nolint:gosec // availability probe only
 	}
 	client := &http.Client{
-		Timeout: 2 * time.Second,
+		Timeout:   2 * time.Second,
 		Transport: &http.Transport{TLSClientConfig: tlsCfg},
 	}
 	resp, err := client.Get(cfg.RESTBaseURL + "/health")
@@ -222,6 +250,65 @@ func (cfg *TestConfig) GetServerURL(protocol ProtocolType) string {
 	default:
 		return ""
 	}
+}
+
+// GetShamirServerURL returns the dedicated Shamir-seal server URL for the
+// specified protocol. It mirrors GetServerURL but targets the qrdbd-shamir
+// server's distinct port set / socket.
+func (cfg *TestConfig) GetShamirServerURL(protocol ProtocolType) string {
+	switch protocol {
+	case ProtocolUnix:
+		return "unix://" + cfg.ShamirUnixSocketPath
+	case ProtocolREST:
+		return cfg.ShamirRESTBaseURL
+	case ProtocolGRPC:
+		return "grpcs://" + cfg.ShamirGRPCAddr
+	case ProtocolMCP:
+		return "mcp://" + cfg.ShamirMCPAddr
+	case ProtocolQUIC:
+		return "quics://" + cfg.ShamirQUICAddr
+	default:
+		return ""
+	}
+}
+
+// shamirConfig returns a TestConfig clone whose primary connection fields
+// (REST URL, gRPC/MCP/QUIC addrs, unix socket, and TLS material) point at
+// the dedicated Shamir-seal server. This lets the existing protocol-aware
+// helpers (GetServerURL, IsProtocolAvailable) operate against the Shamir
+// server without duplicating their logic.
+func (cfg *TestConfig) shamirConfig() *TestConfig {
+	clone := *cfg
+	clone.UnixSocketPath = cfg.ShamirUnixSocketPath
+	clone.RESTBaseURL = cfg.ShamirRESTBaseURL
+	clone.GRPCAddr = cfg.ShamirGRPCAddr
+	clone.MCPAddr = cfg.ShamirMCPAddr
+	clone.QUICAddr = cfg.ShamirQUICAddr
+	clone.TLSCACert = cfg.ShamirTLSCACert
+	clone.TLSCert = cfg.ShamirTLSCert
+	clone.TLSKey = cfg.ShamirTLSKey
+	return &clone
+}
+
+// loadShamirShares reads the JSON file produced by the qrdbd-shamir
+// bootstrap (POST /v1/barrier/shamir/initialize) and returns the generated
+// shares. The file shape is {"shares":[...],"threshold":N,"total_shares":N}.
+func loadShamirShares(t *testing.T, cfg *TestConfig) []string {
+	t.Helper()
+	data, err := os.ReadFile(cfg.ShamirSharesFile)
+	if err != nil {
+		t.Fatalf("failed to read shamir shares file %q: %v", cfg.ShamirSharesFile, err)
+	}
+	var parsed struct {
+		Shares []string `json:"shares"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("failed to parse shamir shares file %q: %v (content: %s)", cfg.ShamirSharesFile, err, string(data))
+	}
+	if len(parsed.Shares) == 0 {
+		t.Fatalf("shamir shares file %q contained no shares (content: %s)", cfg.ShamirSharesFile, string(data))
+	}
+	return parsed.Shares
 }
 
 // IsProtocolAvailable checks if the specified protocol server is available.
@@ -322,6 +409,55 @@ func execCLIBackground(t *testing.T, cfg *TestConfig, protocol ProtocolType, tim
 	})
 
 	return &stdout, cancel
+}
+
+// execCLIWithShamirProtocol executes the CLI against the dedicated
+// Shamir-seal server for the given protocol. Unlike execCLIWithServer
+// (which reads QRDB_TLS_* env vars directly), this helper sources the
+// server URL and TLS material from the Shamir-specific TestConfig fields so
+// the two servers never cross wires.
+func execCLIWithShamirProtocol(t *testing.T, cfg *TestConfig, protocol ProtocolType, args ...string) (string, string, error) {
+	t.Helper()
+
+	shamir := cfg.shamirConfig()
+	serverURL := shamir.GetServerURL(protocol)
+
+	var prefixArgs []string
+	if serverURL != "" {
+		prefixArgs = append(prefixArgs, "--server", serverURL)
+	}
+
+	needsTLS := strings.HasPrefix(serverURL, "https://") ||
+		strings.HasPrefix(serverURL, "grpcs://") ||
+		strings.HasPrefix(serverURL, "mcp://") ||
+		strings.HasPrefix(serverURL, "quics://")
+
+	if needsTLS {
+		if shamir.TLSCACert != "" {
+			prefixArgs = append(prefixArgs, "--ca-file", shamir.TLSCACert)
+		}
+		if shamir.TLSCert != "" && shamir.TLSKey != "" {
+			prefixArgs = append(prefixArgs, "--cert-file", shamir.TLSCert, "--key-file", shamir.TLSKey)
+		}
+	}
+
+	prefixArgs = append(prefixArgs, "--timeout", "30s")
+	args = append(prefixArgs, args...)
+
+	// Exec deadline exceeds the CLI --timeout (+bounded connect-retry) so a
+	// stalled call self-terminates cleanly inside the CLI instead of being
+	// SIGKILLed here. See execCLIWithServer for the rationale.
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	t.Logf("exec (shamir): %s %s", cfg.CLIBinPath, strings.Join(args, " "))
+
+	cmd := exec.CommandContext(ctx, cfg.CLIBinPath, args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	return stdout.String(), stderr.String(), err
 }
 
 // generateUniqueID generates a unique identifier for test resources.

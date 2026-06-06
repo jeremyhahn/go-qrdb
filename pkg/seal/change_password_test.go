@@ -137,7 +137,7 @@ func TestChangePassword_NoSoftwareStrategy(t *testing.T) {
 
 	// Use the mock hardware strategy which registers under "mock-hardware".
 	// Set PreferenceOrder so bestStrategy finds it during Initialize, but
-	// ChangePassword will fail because no StrategySoftware is registered.
+	// ChangePassword will fail because no StrategyPassphrase is registered.
 	hwStrat := &mockHardwareStrategy{}
 	cfg := BarrierConfig{
 		RootKeyPath:     "test/root-key",

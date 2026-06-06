@@ -211,8 +211,9 @@ func newBarrierWithAudit(t *testing.T) (*Barrier, *mockAuditLogger) {
 	t.Helper()
 	audit := &mockAuditLogger{}
 	cfg := BarrierConfig{
-		RootKeyPath: "test/root-key",
-		AuditLogger: audit,
+		RootKeyPath:     "test/root-key",
+		AuditLogger:     audit,
+		PreferenceOrder: []StrategyID{StrategyPassphrase},
 	}
 	b, err := NewBarrier(testLogger(), NewMemoryBackend(), cfg, testSoftwareStrategy(t))
 	if err != nil {
@@ -256,20 +257,39 @@ func TestNewBarrier_NoStrategies(t *testing.T) {
 	}
 }
 
-func TestNewBarrier_DefaultPreferenceOrder(t *testing.T) {
+// TestNewBarrier_NoImplicitPreferenceOrder verifies there is NO implicit
+// multi-strategy ranking. With no PreferenceOrder: a single registered strategy
+// is used (unambiguous, operator-configured), but MULTIPLE registered strategies
+// fail closed with ErrNoStrategySpecified rather than silently auto-ranking.
+func TestNewBarrier_NoImplicitPreferenceOrder(t *testing.T) {
 	cfg := BarrierConfig{RootKeyPath: "root-key"}
+
+	// Single strategy, no PreferenceOrder: prefOrder stays empty, but the lone
+	// registered strategy is selected unambiguously.
 	b, err := NewBarrier(testLogger(), NewMemoryBackend(), cfg, testSoftwareStrategy(t))
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
-	if len(b.prefOrder) != len(DefaultPreferenceOrder) {
-		t.Errorf("expected default preference order length %d, got %d",
-			len(DefaultPreferenceOrder), len(b.prefOrder))
+	if len(b.prefOrder) != 0 {
+		t.Errorf("expected empty preference order (no implicit default), got %d entries", len(b.prefOrder))
+	}
+	if s, err := b.bestStrategy(); err != nil || s == nil {
+		t.Errorf("bestStrategy with a single registered strategy = (%v, %v), want the lone strategy", s, err)
+	}
+
+	// Multiple strategies, no PreferenceOrder: refuse to guess.
+	b2, err := NewBarrier(testLogger(), NewMemoryBackend(), cfg,
+		testSoftwareStrategy(t), NewNoneStrategy())
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if _, err := b2.bestStrategy(); !errors.Is(err, ErrNoStrategySpecified) {
+		t.Errorf("bestStrategy with multiple strategies and no order = %v, want ErrNoStrategySpecified", err)
 	}
 }
 
 func TestNewBarrier_CustomPreferenceOrder(t *testing.T) {
-	customOrder := []StrategyID{StrategySoftware, StrategyTPM2}
+	customOrder := []StrategyID{StrategyPassphrase, StrategyID("tpm2")}
 	cfg := BarrierConfig{
 		RootKeyPath:     "root-key",
 		PreferenceOrder: customOrder,
@@ -282,9 +302,9 @@ func TestNewBarrier_CustomPreferenceOrder(t *testing.T) {
 		t.Errorf("expected preference order length %d, got %d",
 			len(customOrder), len(b.prefOrder))
 	}
-	if b.prefOrder[0] != StrategySoftware {
+	if b.prefOrder[0] != StrategyPassphrase {
 		t.Errorf("expected first preference to be %s, got %s",
-			StrategySoftware, b.prefOrder[0])
+			StrategyPassphrase, b.prefOrder[0])
 	}
 }
 
@@ -301,9 +321,9 @@ func TestBarrier_Initialize_Success(t *testing.T) {
 	if b.IsSealed() {
 		t.Error("expected barrier to be unsealed after Initialize")
 	}
-	if b.ActiveStrategy() != StrategySoftware {
+	if b.ActiveStrategy() != StrategyPassphrase {
 		t.Errorf("expected active strategy %s, got %s",
-			StrategySoftware, b.ActiveStrategy())
+			StrategyPassphrase, b.ActiveStrategy())
 	}
 
 	// Verify audit event.
@@ -317,6 +337,138 @@ func TestBarrier_Initialize_Success(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected audit event for successful initialize")
+	}
+}
+
+// TestBarrier_Status_InitializedAtPopulatedAfterInitialize verifies that
+// Status() reports a non-zero InitializedAt timestamp after Initialize. The
+// GUI's connection-manager probe relies on this: a zero InitializedAt makes
+// the manager classify the connection as needs-init, which surfaces the
+// "Server needs initialization. Use the CLI: qrdbd seal init" toast even
+// though the embedded server's barrier was just initialized successfully.
+func TestBarrier_Status_InitializedAtPopulatedAfterInitialize(t *testing.T) {
+	b, _ := newBarrierWithAudit(t)
+	ctx := context.Background()
+
+	// Pre-init: status should report zero InitializedAt.
+	pre := b.Status()
+	if !pre.InitializedAt.IsZero() {
+		t.Errorf("pre-Initialize Status(): InitializedAt should be zero, got %v",
+			pre.InitializedAt)
+	}
+
+	if err := b.Initialize(ctx, Credentials{Secret: "strong-password"}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	post := b.Status()
+	if post.InitializedAt.IsZero() {
+		t.Fatal("post-Initialize Status(): InitializedAt should be non-zero")
+	}
+	if post.Sealed {
+		t.Error("post-Initialize: expected unsealed")
+	}
+}
+
+// TestBarrier_Status_InitializedAtPopulatedAfterUnseal verifies that
+// Status() reports a non-zero InitializedAt after Unseal. A barrier that was
+// previously initialized in another process (then unsealed in this one) must
+// still report itself as initialized so the GUI doesn't prompt for init again.
+func TestBarrier_Status_InitializedAtPopulatedAfterUnseal(t *testing.T) {
+	b, _ := newBarrierWithAudit(t)
+	ctx := context.Background()
+	creds := Credentials{Secret: "unseal-test-password"}
+
+	if err := b.Initialize(ctx, creds); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if err := b.Seal(); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	if err := b.Unseal(ctx, creds); err != nil {
+		t.Fatalf("Unseal: %v", err)
+	}
+
+	status := b.Status()
+	if status.InitializedAt.IsZero() {
+		t.Error("post-Unseal Status(): InitializedAt should be non-zero")
+	}
+	if status.Sealed {
+		t.Error("post-Unseal: expected unsealed")
+	}
+}
+
+// TestBarrier_Status_InitializedAtPersistsAcrossWarmBoot proves that the
+// initialization timestamp survives a warm boot. A fresh StorageBarrier
+// constructed over the SAME backend (the warm-boot case) reports a non-zero
+// InitializedAt from persisted metadata while still sealed — without an
+// unseal — and the value matches the original initialization time rather than
+// a sentinel. This is the regression guard for the gap where InitializedAt
+// lived only in memory and read back zero after a restart.
+func TestBarrier_Status_InitializedAtPersistsAcrossWarmBoot(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryBackend()
+	cfg := BarrierConfig{
+		RootKeyPath:     "test/root-key",
+		PreferenceOrder: []StrategyID{StrategyPassphrase},
+	}
+	creds := Credentials{Secret: "warm-boot-password"}
+
+	// First boot: initialize over the shared store and capture the timestamp.
+	first, err := NewStorageBarrier(testLogger(), store, cfg, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatalf("NewStorageBarrier(first): %v", err)
+	}
+	if err := first.Initialize(ctx, creds); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	original := first.Status().InitializedAt
+	if original.IsZero() {
+		t.Fatal("first boot Status(): InitializedAt should be non-zero")
+	}
+
+	// Warm boot: a brand-new barrier over the same store, still sealed.
+	second, err := NewStorageBarrier(testLogger(), store, cfg, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatalf("NewStorageBarrier(second): %v", err)
+	}
+	warm := second.Status()
+	if !warm.Sealed {
+		t.Fatal("warm-boot barrier should start sealed")
+	}
+	if warm.InitializedAt.IsZero() {
+		t.Fatal("warm-boot Status(): InitializedAt should be non-zero from persisted metadata")
+	}
+	if !warm.InitializedAt.Equal(original) {
+		t.Fatalf("warm-boot InitializedAt = %v, want persisted original %v (not a sentinel)",
+			warm.InitializedAt, original)
+	}
+
+	// After unseal the same persisted timestamp must be reported.
+	if err := second.Unseal(ctx, creds); err != nil {
+		t.Fatalf("Unseal: %v", err)
+	}
+	unsealed := second.Status()
+	if !unsealed.InitializedAt.Equal(original) {
+		t.Fatalf("post-unseal InitializedAt = %v, want persisted original %v",
+			unsealed.InitializedAt, original)
+	}
+}
+
+// TestBarrier_Status_InitializedAtZeroWhenNeverInitialized ensures a fresh,
+// never-initialized barrier reports a zero InitializedAt (no spurious
+// metadata recovery).
+func TestBarrier_Status_InitializedAtZeroWhenNeverInitialized(t *testing.T) {
+	cfg := BarrierConfig{
+		RootKeyPath:     "test/root-key",
+		PreferenceOrder: []StrategyID{StrategyPassphrase},
+	}
+	b, err := NewStorageBarrier(testLogger(), NewMemoryBackend(), cfg, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatalf("NewStorageBarrier: %v", err)
+	}
+	if got := b.Status().InitializedAt; !got.IsZero() {
+		t.Fatalf("never-initialized Status(): InitializedAt = %v, want zero", got)
 	}
 }
 
@@ -546,7 +698,7 @@ func TestBarrier_Unseal_StrategyNotFound(t *testing.T) {
 	}
 
 	// Create new barrier with ONLY an unavailable/different strategy.
-	// The sealed blob references StrategySoftware but this barrier only has "unavailable".
+	// The sealed blob references StrategyPassphrase but this barrier only has "unavailable".
 	b2, err := NewBarrier(testLogger(), backend, cfg, &mockUnavailableStrategy{})
 	if err != nil {
 		t.Fatalf("NewBarrier: %v", err)
@@ -579,7 +731,7 @@ func TestBarrier_Unseal_BarrierEncryptorFails(t *testing.T) {
 	backend := NewMemoryBackend()
 	cfg := BarrierConfig{
 		RootKeyPath:     "test/root-key",
-		PreferenceOrder: []StrategyID{StrategySoftware},
+		PreferenceOrder: []StrategyID{StrategyPassphrase},
 	}
 	b, err := NewBarrier(testLogger(), backend, cfg, testSoftwareStrategy(t))
 	if err != nil {
@@ -594,7 +746,7 @@ func TestBarrier_Unseal_BarrierEncryptorFails(t *testing.T) {
 	}
 
 	// Replace the strategy with one that fails on BarrierEncryptor.
-	b.strategies[StrategySoftware] = &mockFailingSealStrategy{}
+	b.strategies[StrategyPassphrase] = &mockFailingSealStrategy{}
 
 	err = b.Unseal(context.Background(), creds)
 	if err == nil {
@@ -966,7 +1118,7 @@ func TestBarrier_GetMasterKey_Sealed(t *testing.T) {
 func TestBarrier_GetMasterKey_HardwareEncryptor(t *testing.T) {
 	// In the new architecture, GetMasterKey() delegates to the EpochBarrier's
 	// RootKey() which succeeds even in hardware mode because the root key is
-	// stored in a memguard enclave. The hardware encryptor handles
+	// stored in a secure.Secret enclave. The hardware encryptor handles
 	// encrypt/decrypt but the root key is still accessible.
 	backend := NewMemoryBackend()
 	cfg := BarrierConfig{
@@ -1014,8 +1166,8 @@ func TestBarrier_Status_Unsealed(t *testing.T) {
 	if status.Sealed {
 		t.Error("expected unsealed status")
 	}
-	if status.Strategy != StrategySoftware {
-		t.Errorf("expected strategy %s, got %s", StrategySoftware, status.Strategy)
+	if status.Strategy != StrategyPassphrase {
+		t.Errorf("expected strategy %s, got %s", StrategyPassphrase, status.Strategy)
 	}
 	if status.HardwareBacked {
 		t.Error("expected hardware_backed = false for software strategy")
@@ -1055,8 +1207,8 @@ func TestBarrier_ActiveStrategy_Empty(t *testing.T) {
 func TestBarrier_ActiveStrategy_AfterInit(t *testing.T) {
 	b, _ := newBarrierWithAudit(t)
 	initBarrier(t, b)
-	if id := b.ActiveStrategy(); id != StrategySoftware {
-		t.Errorf("expected %s, got %s", StrategySoftware, id)
+	if id := b.ActiveStrategy(); id != StrategyPassphrase {
+		t.Errorf("expected %s, got %s", StrategyPassphrase, id)
 	}
 }
 
@@ -1239,14 +1391,14 @@ func TestBarrier_ShamirStrategy_WrongType(t *testing.T) {
 }
 
 func TestBarrier_ShamirStrategy_Registered(t *testing.T) {
-	shamirStore := NewMemoryBackend()
-	shamirStrat, err := NewShamirStrategy(shamirStore, 3, 5)
+	shamirStrat, err := NewShamirStrategy(3, 5)
 	if err != nil {
 		t.Fatalf("NewShamirStrategy: %v", err)
 	}
 	cfg := BarrierConfig{
-		RootKeyPath: "root-key",
-		Shamir:      &ShamirConfig{Threshold: 3, TotalShares: 5},
+		RootKeyPath:     "root-key",
+		Shamir:          &ShamirConfig{Threshold: 3, TotalShares: 5},
+		PreferenceOrder: []StrategyID{StrategyShamir},
 	}
 	b, err := NewBarrier(testLogger(), NewMemoryBackend(), cfg, testSoftwareStrategy(t), shamirStrat)
 	if err != nil {
@@ -1267,14 +1419,14 @@ func TestBarrier_ShamirStrategy_Registered(t *testing.T) {
 func TestBarrier_UnsealDirect_Success(t *testing.T) {
 	// Create barrier with ShamirStrategy and initialize via Shamir.
 	backend := NewMemoryBackend()
-	shamirStore := NewMemoryBackend()
-	shamirStrat, err := NewShamirStrategy(shamirStore, 2, 3)
+	shamirStrat, err := NewShamirStrategy(2, 3)
 	if err != nil {
 		t.Fatalf("NewShamirStrategy: %v", err)
 	}
 	cfg := BarrierConfig{
-		RootKeyPath: "test/root-key",
-		Shamir:      &ShamirConfig{Threshold: 2, TotalShares: 3},
+		RootKeyPath:     "test/root-key",
+		Shamir:          &ShamirConfig{Threshold: 2, TotalShares: 3},
+		PreferenceOrder: []StrategyID{StrategyShamir},
 	}
 	b, err := NewBarrier(testLogger(), backend, cfg, testSoftwareStrategy(t), shamirStrat)
 	if err != nil {
@@ -1323,7 +1475,7 @@ func TestBarrier_UnsealDirect_EncryptorError(t *testing.T) {
 	failStrat := &mockFailingSealStrategy{}
 	cfg := BarrierConfig{
 		RootKeyPath:     "test/root-key",
-		PreferenceOrder: []StrategyID{StrategySoftware},
+		PreferenceOrder: []StrategyID{StrategyPassphrase},
 	}
 	b, err := NewBarrier(testLogger(), NewMemoryBackend(), cfg, testSoftwareStrategy(t))
 	if err != nil {

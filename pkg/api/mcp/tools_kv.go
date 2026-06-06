@@ -62,10 +62,14 @@ func toolPut() mcp.Tool {
 			mcp.Required(),
 			mcp.Description("The value to store (UTF-8 text)."),
 		),
+		mcp.WithString("write_mode",
+			mcp.Description("Write durability mode: sync, wal_durable, or batched. Absent or empty uses sync."),
+		),
 	)
 }
 
-// handlePut returns a tool handler that delegates to kvSvc.Put.
+// handlePut returns a tool handler that delegates to kvSvc.Put or
+// kvSvc.PutWithMode when a write_mode arg is present.
 func handlePut(kvSvc service.KVServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		key := mcp.ParseString(req, "key", "")
@@ -77,7 +81,18 @@ func handlePut(kvSvc service.KVServicer) mcpserver.ToolHandlerFunc {
 			return mcp.NewToolResultError("value is required"), nil
 		}
 
-		if err := kvSvc.Put(ctx, key, []byte(value)); err != nil {
+		mode, modeSet, modeErr := writeModeFromArg(req)
+		if modeErr != nil {
+			return mcp.NewToolResultError("invalid write_mode: " + modeErr.Error()), nil
+		}
+
+		var err error
+		if modeSet {
+			err = kvSvc.PutWithMode(ctx, key, []byte(value), mode)
+		} else {
+			err = kvSvc.Put(ctx, key, []byte(value))
+		}
+		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_put", Err: err}
 		}
 
@@ -93,10 +108,14 @@ func toolGet() mcp.Tool {
 			mcp.Required(),
 			mcp.Description("The key to retrieve."),
 		),
+		mcp.WithString("consistency",
+			mcp.Description("Read consistency level: strong, linearizable, or eventual. Absent or empty uses linearizable."),
+		),
 	)
 }
 
-// handleGet returns a tool handler that delegates to kvSvc.Get.
+// handleGet returns a tool handler that delegates to kvSvc.Get or
+// kvSvc.GetWithConsistency when a consistency arg is present.
 func handleGet(kvSvc service.KVServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		key := mcp.ParseString(req, "key", "")
@@ -104,7 +123,20 @@ func handleGet(kvSvc service.KVServicer) mcpserver.ToolHandlerFunc {
 			return mcp.NewToolResultError("key is required"), nil
 		}
 
-		data, err := kvSvc.Get(ctx, key)
+		opts, optsSet, optsErr := readOptsFromArg(req)
+		if optsErr != nil {
+			return mcp.NewToolResultError("invalid consistency: " + optsErr.Error()), nil
+		}
+
+		var (
+			data []byte
+			err  error
+		)
+		if optsSet {
+			data, err = kvSvc.GetWithConsistency(ctx, key, opts)
+		} else {
+			data, err = kvSvc.Get(ctx, key)
+		}
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_get", Err: err}
 		}
@@ -121,10 +153,14 @@ func toolDelete() mcp.Tool {
 			mcp.Required(),
 			mcp.Description("The key to delete."),
 		),
+		mcp.WithString("write_mode",
+			mcp.Description("Write durability mode: sync, wal_durable, or batched. Absent or empty uses sync."),
+		),
 	)
 }
 
-// handleDelete returns a tool handler that delegates to kvSvc.Delete.
+// handleDelete returns a tool handler that delegates to kvSvc.Delete or
+// kvSvc.DeleteWithMode when a write_mode arg is present.
 func handleDelete(kvSvc service.KVServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		key := mcp.ParseString(req, "key", "")
@@ -132,7 +168,18 @@ func handleDelete(kvSvc service.KVServicer) mcpserver.ToolHandlerFunc {
 			return mcp.NewToolResultError("key is required"), nil
 		}
 
-		if err := kvSvc.Delete(ctx, key); err != nil {
+		mode, modeSet, modeErr := writeModeFromArg(req)
+		if modeErr != nil {
+			return mcp.NewToolResultError("invalid write_mode: " + modeErr.Error()), nil
+		}
+
+		var err error
+		if modeSet {
+			err = kvSvc.DeleteWithMode(ctx, key, mode)
+		} else {
+			err = kvSvc.Delete(ctx, key)
+		}
+		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_delete", Err: err}
 		}
 
@@ -147,15 +194,32 @@ func toolList() mcp.Tool {
 		mcp.WithString("prefix",
 			mcp.Description("Optional key prefix filter."),
 		),
+		mcp.WithString("consistency",
+			mcp.Description("Read consistency level: strong, linearizable, or eventual. Absent or empty uses linearizable."),
+		),
 	)
 }
 
-// handleList returns a tool handler that delegates to kvSvc.List.
+// handleList returns a tool handler that delegates to kvSvc.List or
+// kvSvc.ListWithConsistency when a consistency arg is present.
 func handleList(kvSvc service.KVServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		prefix := mcp.ParseString(req, "prefix", "")
 
-		keys, err := kvSvc.List(ctx, prefix)
+		opts, optsSet, optsErr := readOptsFromArg(req)
+		if optsErr != nil {
+			return mcp.NewToolResultError("invalid consistency: " + optsErr.Error()), nil
+		}
+
+		var (
+			keys []string
+			err  error
+		)
+		if optsSet {
+			keys, err = kvSvc.ListWithConsistency(ctx, prefix, opts)
+		} else {
+			keys, err = kvSvc.List(ctx, prefix)
+		}
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_list", Err: err}
 		}
@@ -176,15 +240,32 @@ func toolScan() mcp.Tool {
 		mcp.WithString("prefix",
 			mcp.Description("Optional key prefix filter."),
 		),
+		mcp.WithString("consistency",
+			mcp.Description("Read consistency level: strong, linearizable, or eventual. Absent or empty uses linearizable."),
+		),
 	)
 }
 
-// handleScan returns a tool handler that delegates to kvSvc.Scan.
+// handleScan returns a tool handler that delegates to kvSvc.Scan or
+// kvSvc.ScanWithConsistency when a consistency arg is present.
 func handleScan(kvSvc service.KVServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		prefix := mcp.ParseString(req, "prefix", "")
 
-		pairs, err := kvSvc.Scan(ctx, prefix)
+		opts, optsSet, optsErr := readOptsFromArg(req)
+		if optsErr != nil {
+			return mcp.NewToolResultError("invalid consistency: " + optsErr.Error()), nil
+		}
+
+		var (
+			pairs map[string][]byte
+			err   error
+		)
+		if optsSet {
+			pairs, err = kvSvc.ScanWithConsistency(ctx, prefix, opts)
+		} else {
+			pairs, err = kvSvc.Scan(ctx, prefix)
+		}
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_scan", Err: err}
 		}

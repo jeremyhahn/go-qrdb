@@ -229,6 +229,15 @@ const (
 	UsersEnable Permission = "users:enable"
 	// UsersDisable grants access to disable user accounts.
 	UsersDisable Permission = "users:disable"
+	// UsersGetByCertThumbprint grants access to resolve a user by an mTLS
+	// certificate SPKI thumbprint. It is a read, distinct from UsersRead so the
+	// identity-lookup surface can be granted independently.
+	UsersGetByCertThumbprint Permission = "users:get_by_cert_thumbprint"
+	// UsersAddCertBinding grants access to bind an mTLS certificate thumbprint
+	// to a user. It mutates the user's identity record and is a sensitive
+	// operation (it controls which certificates authenticate as the user), so
+	// it is a distinct permission rather than folded into UsersUpdate.
+	UsersAddCertBinding Permission = "users:add_cert_binding"
 )
 
 // ---------------------------------------------------------------------------
@@ -252,6 +261,9 @@ const (
 	RolesUnassign Permission = "roles:unassign"
 	// PermissionsList grants access to list available permission categories.
 	PermissionsList Permission = "permissions:list"
+	// PermissionsResolve grants access to resolve the effective (unioned)
+	// permissions for a set of roles.
+	PermissionsResolve Permission = "permissions:resolve"
 )
 
 // ---------------------------------------------------------------------------
@@ -270,6 +282,35 @@ const (
 )
 
 // ---------------------------------------------------------------------------
+// Keys permissions (cryptographic key operations)
+// ---------------------------------------------------------------------------
+
+const (
+	// KeysSign grants access to sign data using a key.
+	KeysSign Permission = "keys:sign"
+	// KeysVerify grants access to verify signatures.
+	KeysVerify Permission = "keys:verify"
+	// KeysEncrypt grants access to encrypt data using a key.
+	KeysEncrypt Permission = "keys:encrypt"
+	// KeysDecrypt grants access to decrypt data using a key.
+	KeysDecrypt Permission = "keys:decrypt"
+	// KeysWrap grants access to wrap (export-encrypt) a key.
+	KeysWrap Permission = "keys:wrap"
+	// KeysUnwrap grants access to unwrap (import-decrypt) a key.
+	KeysUnwrap Permission = "keys:unwrap"
+	// KeysCreate grants access to create new cryptographic keys.
+	KeysCreate Permission = "keys:create"
+	// KeysRotate grants access to rotate existing keys.
+	KeysRotate Permission = "keys:rotate"
+	// KeysDelete grants access to delete keys.
+	KeysDelete Permission = "keys:delete"
+	// KeysList grants access to list key metadata.
+	KeysList Permission = "keys:list"
+	// KeysGet grants access to read key metadata (public fields only).
+	KeysGet Permission = "keys:get"
+)
+
+// ---------------------------------------------------------------------------
 // Seal management permissions
 // ---------------------------------------------------------------------------
 
@@ -282,6 +323,72 @@ const (
 	SealSeal Permission = "seal:seal"
 	// SealStatus grants access to query seal status.
 	SealStatus Permission = "seal:status"
+	// SealRotateRootKey grants access to rotate the barrier root key (SO only).
+	SealRotateRootKey Permission = "seal:rotate_root_key"
+	// SealRekey grants access to rekey Shamir shares (SO only).
+	SealRekey Permission = "seal:rekey"
+	// SealGenerateRecovery grants access to generate offline recovery keys (SO only).
+	SealGenerateRecovery Permission = "seal:generate_recovery"
+	// SealRecoverWithKeys grants access to recover the barrier using offline recovery keys.
+	SealRecoverWithKeys Permission = "seal:recover_with_keys"
+	// SealInitializeShamir grants access to initialize Shamir secret sharing (SO only).
+	SealInitializeShamir Permission = "seal:initialize_shamir"
+	// BarrierUnsealShare grants access to submit a single Shamir share toward unseal quorum.
+	// This is the sole permission granted to the Custodian role.
+	BarrierUnsealShare Permission = "barrier:unseal-share"
+)
+
+// ---------------------------------------------------------------------------
+// Ceremony permissions
+// ---------------------------------------------------------------------------
+
+const (
+	// CeremonyInitialize grants access to initialize the key ceremony (SO only).
+	CeremonyInitialize Permission = "ceremony:initialize"
+	// CeremonyEnrollCustodian grants access to enroll a custodian during ceremony (SO only).
+	CeremonyEnrollCustodian Permission = "ceremony:enroll_custodian"
+	// CeremonyRevokeCustodian grants access to revoke a custodian (SO only).
+	CeremonyRevokeCustodian Permission = "ceremony:revoke_custodian"
+	// CeremonyClaimCert grants access to claim a certificate during ceremony (enrolled officer).
+	CeremonyClaimCert Permission = "ceremony:claim_cert"
+	// CeremonyClaimShareBegin grants access to begin claiming a Shamir share (enrolled custodian).
+	CeremonyClaimShareBegin Permission = "ceremony:claim_share_begin"
+	// CeremonyClaimShareComplete grants access to complete claiming a Shamir share (enrolled custodian).
+	CeremonyClaimShareComplete Permission = "ceremony:claim_share_complete"
+	// CeremonySignCSR grants access to sign a CSR during ceremony (SO only).
+	CeremonySignCSR Permission = "ceremony:sign_csr"
+	// CeremonyStatus grants access to query ceremony state (SO, Admin, Operator, Auditor).
+	CeremonyStatus Permission = "ceremony:status"
+)
+
+// ---------------------------------------------------------------------------
+// Audit permissions
+// ---------------------------------------------------------------------------
+
+const (
+	// AuditRead grants access to read audit events.
+	AuditRead Permission = "audit:read"
+	// AuditQuery grants access to query audit events with filtering.
+	AuditQuery Permission = "audit:query"
+	// AuditStream grants access to stream audit events in real time.
+	AuditStream Permission = "audit:stream"
+)
+
+// ---------------------------------------------------------------------------
+// AuthFactor permissions (stubs — implementation in Phase 3)
+// ---------------------------------------------------------------------------
+
+const (
+	// AuthFactorEnroll grants access to enroll an authentication factor.
+	AuthFactorEnroll Permission = "authfactor:enroll"
+	// AuthFactorChallenge grants access to request an auth factor challenge.
+	AuthFactorChallenge Permission = "authfactor:challenge"
+	// AuthFactorVerify grants access to verify an auth factor response.
+	AuthFactorVerify Permission = "authfactor:verify"
+	// AuthFactorList grants access to list enrolled auth factors.
+	AuthFactorList Permission = "authfactor:list"
+	// AuthFactorRevoke grants access to revoke an enrolled auth factor.
+	AuthFactorRevoke Permission = "authfactor:revoke"
 )
 
 // ---------------------------------------------------------------------------
@@ -299,6 +406,144 @@ const (
 	TenantsDelete Permission = "tenants:delete"
 	// TenantsList grants access to list tenants.
 	TenantsList Permission = "tenants:list"
+
+	// TenantBarrierInit grants a tenant admin the ability to initialize
+	// their own tenant's barrier with a caller-supplied passphrase. This
+	// permission is tenant-scoped (ScopeTenantOnly): it is exercisable only
+	// by an admin acting on their own tenant, and is denied to the system
+	// tenant — the platform operator does not hold tenant key material.
+	TenantBarrierInit Permission = "tenant_barrier:init"
+
+	// TenantBarrierUnseal grants a tenant admin the ability to unseal their
+	// own tenant's barrier. Tenant-scoped (ScopeTenantOnly).
+	TenantBarrierUnseal Permission = "tenant_barrier:unseal"
+
+	// TenantBarrierSeal grants a tenant admin the ability to seal their own
+	// tenant's barrier. Tenant-scoped (ScopeTenantOnly).
+	TenantBarrierSeal Permission = "tenant_barrier:seal"
+
+	// TenantBarrierStatus grants a tenant admin the ability to read the
+	// sealed/initialized state and active strategy of their own tenant's
+	// barrier. Tenant-scoped (ScopeTenantOnly): reading another tenant's
+	// barrier state leaks isolation metadata, so the system tenant and any
+	// cross-tenant access are denied.
+	TenantBarrierStatus Permission = "tenant_barrier:status"
+)
+
+// Database management permissions. A database is a logical engine/storage
+// container; these gate its lifecycle and configuration.
+const (
+	DatabasesCreate Permission = "databases:create"
+	DatabasesRead   Permission = "databases:read"
+	DatabasesList   Permission = "databases:list"
+	DatabasesDelete Permission = "databases:delete"
+	// DatabasesUpdate covers all database configuration updates (barrier,
+	// connection, etcd, protocol, raft).
+	DatabasesUpdate Permission = "databases:update"
+
+	// Database encryption-barrier lifecycle. Sealing/unsealing a database's
+	// at-rest barrier is a sensitive custody operation, gated separately from
+	// generic configuration updates.
+	DatabasesSeal          Permission = "databases:seal"
+	DatabasesUnseal        Permission = "databases:unseal"
+	DatabasesBarrierStatus Permission = "databases:barrier_status"
+)
+
+// Collection management permissions. Collections are document containers; the
+// document-level actions gate reads/writes of their contents.
+const (
+	CollectionsCreate Permission = "collections:create"
+	CollectionsRead   Permission = "collections:read"
+	CollectionsList   Permission = "collections:list"
+	CollectionsDrop   Permission = "collections:drop"
+	CollectionsInsert Permission = "collections:insert"
+	CollectionsUpdate Permission = "collections:update"
+	CollectionsDelete Permission = "collections:delete"
+)
+
+// Distributed lock permissions.
+const (
+	LocksAcquire Permission = "locks:acquire"
+	LocksRelease Permission = "locks:release"
+	LocksExtend  Permission = "locks:extend"
+	LocksStatus  Permission = "locks:status"
+	LocksList    Permission = "locks:list"
+)
+
+// Named-credential rotation permissions. Credentials custody secret material,
+// so write/rotate/delete are sensitive and distinct from reads.
+const (
+	CredentialsSubmit          Permission = "credentials:submit"
+	CredentialsStrategy        Permission = "credentials:strategy"
+	CredentialsList            Permission = "credentials:list"
+	CredentialsDelete          Permission = "credentials:delete"
+	CredentialsRotate          Permission = "credentials:rotate"
+	CredentialsGCExpired       Permission = "credentials:gc_expired"
+	CredentialsRetrieveVersion Permission = "credentials:retrieve_version"
+	CredentialsListVersions    Permission = "credentials:list_versions"
+	// CredentialsStore persists a credential value; CredentialsRetrieve reads
+	// the current value (sensitive: returns secret material).
+	CredentialsStore    Permission = "credentials:store"
+	CredentialsRetrieve Permission = "credentials:retrieve"
+)
+
+// Cluster shard-control permissions. Starting/stopping shards and reading
+// shard/topology state are cluster-admin operations.
+const (
+	AdminStartShard Permission = "admin:start_shard"
+	AdminStopShard  Permission = "admin:stop_shard"
+	AdminShardState Permission = "admin:shard_state"
+	AdminTopology   Permission = "admin:topology"
+)
+
+// Per-user authentication-factor permissions (the user-side factor lifecycle:
+// WebAuthn/FIDO2/PIV enrollments bound to a user).
+const (
+	UserAuthFactorsAdd     Permission = "user_authfactors:add"
+	UserAuthFactorsGet     Permission = "user_authfactors:get"
+	UserAuthFactorsList    Permission = "user_authfactors:list"
+	UserAuthFactorsRemove  Permission = "user_authfactors:remove"
+	UserAuthFactorsRotate  Permission = "user_authfactors:rotate"
+	UserAuthFactorsRelabel Permission = "user_authfactors:relabel"
+	UserAuthFactorsLogin   Permission = "user_authfactors:login"
+)
+
+// IndexList grants listing of secondary index names (a read, distinct from
+// IndexQuery which reads index contents).
+const IndexList Permission = "index:list"
+
+// Backup/restore permissions. Restore is the most destructive (it overwrites
+// shard state), so it is distinct from create/read.
+const (
+	BackupCreate  Permission = "backup:create"
+	BackupList    Permission = "backup:list"
+	BackupRead    Permission = "backup:read"
+	BackupDelete  Permission = "backup:delete"
+	BackupRestore Permission = "backup:restore"
+	BackupVerify  Permission = "backup:verify"
+)
+
+// Cluster rebalance permissions. Execute physically moves shards between nodes
+// and is distinct from the read-only stats/plan/report operations.
+const (
+	RebalanceStats   Permission = "rebalance:stats"
+	RebalancePlan    Permission = "rebalance:plan"
+	RebalanceExecute Permission = "rebalance:execute"
+	RebalanceReport  Permission = "rebalance:report"
+)
+
+// Embedding permissions (text→vector embedding service).
+const (
+	EmbeddingEmbed      Permission = "embedding:embed"
+	EmbeddingListModels Permission = "embedding:list_models"
+)
+
+// RAG (retrieval-augmented generation) permissions.
+const (
+	RAGIngest         Permission = "rag:ingest"
+	RAGQuery          Permission = "rag:query"
+	RAGListDocuments  Permission = "rag:list_documents"
+	RAGDeleteDocument Permission = "rag:delete_document"
 )
 
 // ---------------------------------------------------------------------------
@@ -396,6 +641,7 @@ var categories = []Category{
 		Permissions: []Permission{
 			UsersCreate, UsersRead, UsersUpdate, UsersDelete,
 			UsersList, UsersEnable, UsersDisable,
+			UsersGetByCertThumbprint, UsersAddCertBinding,
 		},
 	},
 	{
@@ -404,6 +650,7 @@ var categories = []Category{
 		Permissions: []Permission{
 			RolesCreate, RolesRead, RolesUpdate, RolesDelete,
 			RolesList, RolesAssign, RolesUnassign, PermissionsList,
+			PermissionsResolve,
 		},
 	},
 	{
@@ -414,10 +661,45 @@ var categories = []Category{
 		},
 	},
 	{
+		Name:  "Keys",
+		Group: "Cryptographic Services",
+		Permissions: []Permission{
+			KeysSign, KeysVerify, KeysEncrypt, KeysDecrypt,
+			KeysWrap, KeysUnwrap, KeysCreate, KeysRotate,
+			KeysDelete, KeysList, KeysGet,
+		},
+	},
+	{
 		Name:  "Seal Management",
 		Group: "Admin Services",
 		Permissions: []Permission{
 			SealBootstrap, SealUnseal, SealSeal, SealStatus,
+			SealRotateRootKey, SealRekey, SealGenerateRecovery,
+			SealRecoverWithKeys, SealInitializeShamir, BarrierUnsealShare,
+		},
+	},
+	{
+		Name:  "Ceremony",
+		Group: "Admin Services",
+		Permissions: []Permission{
+			CeremonyInitialize, CeremonyEnrollCustodian, CeremonyRevokeCustodian,
+			CeremonyClaimCert, CeremonyClaimShareBegin, CeremonyClaimShareComplete,
+			CeremonySignCSR, CeremonyStatus,
+		},
+	},
+	{
+		Name:  "Audit",
+		Group: "Admin Services",
+		Permissions: []Permission{
+			AuditRead, AuditQuery, AuditStream,
+		},
+	},
+	{
+		Name:  "Authentication Factors",
+		Group: "Admin Services",
+		Permissions: []Permission{
+			AuthFactorEnroll, AuthFactorChallenge, AuthFactorVerify,
+			AuthFactorList, AuthFactorRevoke,
 		},
 	},
 	{
@@ -425,6 +707,112 @@ var categories = []Category{
 		Group: "Management Services",
 		Permissions: []Permission{
 			TenantsCreate, TenantsRead, TenantsUpdate, TenantsDelete, TenantsList,
+			TenantsListCross, TenantsCreateCross, TenantsApprove,
+			TenantBarrierInit, TenantBarrierUnseal, TenantBarrierSeal, TenantBarrierStatus,
+		},
+	},
+	{
+		Name:  "Volume Pool Management",
+		Group: "Management Services",
+		Permissions: []Permission{
+			VolumePoolCreate, VolumePoolList, VolumePoolRead,
+			VolumePoolUpdate, VolumePoolDelete,
+		},
+	},
+	{
+		Name:  "Registration Configuration",
+		Group: "Management Services",
+		Permissions: []Permission{
+			RegistrationConfigRead, RegistrationConfigUpdate,
+		},
+	},
+	{
+		Name:  "Cross-Tenant Audit",
+		Group: "Admin Services",
+		Permissions: []Permission{
+			AuditReadCross,
+		},
+	},
+	{
+		Name:  "Database Management",
+		Group: "Management Services",
+		Permissions: []Permission{
+			DatabasesCreate, DatabasesRead, DatabasesList, DatabasesDelete, DatabasesUpdate,
+			DatabasesSeal, DatabasesUnseal, DatabasesBarrierStatus,
+		},
+	},
+	{
+		Name:  "Collection Management",
+		Group: "Management Services",
+		Permissions: []Permission{
+			CollectionsCreate, CollectionsRead, CollectionsList, CollectionsDrop,
+			CollectionsInsert, CollectionsUpdate, CollectionsDelete,
+		},
+	},
+	{
+		Name:  "Lock Management",
+		Group: "Data Services",
+		Permissions: []Permission{
+			LocksAcquire, LocksRelease, LocksExtend, LocksStatus, LocksList,
+		},
+	},
+	{
+		Name:  "Credential Management",
+		Group: "Security Services",
+		Permissions: []Permission{
+			CredentialsSubmit, CredentialsStrategy, CredentialsList, CredentialsDelete,
+			CredentialsRotate, CredentialsGCExpired, CredentialsRetrieveVersion, CredentialsListVersions,
+			CredentialsStore, CredentialsRetrieve,
+		},
+	},
+	{
+		Name:  "Shard Control",
+		Group: "Admin Services",
+		Permissions: []Permission{
+			AdminStartShard, AdminStopShard, AdminShardState, AdminTopology,
+		},
+	},
+	{
+		Name:  "Backup & Restore",
+		Group: "Admin Services",
+		Permissions: []Permission{
+			BackupCreate, BackupList, BackupRead, BackupDelete, BackupRestore, BackupVerify,
+		},
+	},
+	{
+		Name:  "Cluster Rebalance",
+		Group: "Admin Services",
+		Permissions: []Permission{
+			RebalanceStats, RebalancePlan, RebalanceExecute, RebalanceReport,
+		},
+	},
+	{
+		Name:  "User Authentication Factors",
+		Group: "Security Services",
+		Permissions: []Permission{
+			UserAuthFactorsAdd, UserAuthFactorsGet, UserAuthFactorsList, UserAuthFactorsRemove,
+			UserAuthFactorsRotate, UserAuthFactorsRelabel, UserAuthFactorsLogin,
+		},
+	},
+	{
+		Name:  "Secondary Index (list)",
+		Group: "Data Services",
+		Permissions: []Permission{
+			IndexList,
+		},
+	},
+	{
+		Name:  "Embedding",
+		Group: "AI Services",
+		Permissions: []Permission{
+			EmbeddingEmbed, EmbeddingListModels,
+		},
+	},
+	{
+		Name:  "RAG",
+		Group: "AI Services",
+		Permissions: []Permission{
+			RAGIngest, RAGQuery, RAGListDocuments, RAGDeleteDocument,
 		},
 	},
 }

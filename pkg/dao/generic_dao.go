@@ -101,7 +101,7 @@ func New[E Entity](
 	// Parse struct tags for index definitions and register them.
 	entity := newEntity()
 	eType := reflect.TypeOf(entity)
-	if eType.Kind() == reflect.Ptr {
+	if eType.Kind() == reflect.Pointer {
 		eType = eType.Elem()
 	}
 
@@ -702,7 +702,7 @@ func sortEntitiesByField[E any](entities []E, fieldName string, order int) {
 // fieldValue extracts a string representation of a struct field value via reflection.
 func fieldValue(entity interface{}, fieldName string) string {
 	v := reflect.ValueOf(entity)
-	if v.Kind() == reflect.Ptr {
+	if v.Kind() == reflect.Pointer {
 		v = v.Elem()
 	}
 	if v.Kind() != reflect.Struct {
@@ -791,7 +791,7 @@ func detectIDField[E Entity](newEntity func() E, eType reflect.Type) (jsonName, 
 	e := newEntity()
 	e.SetEntityID(idSentinel)
 	v := reflect.ValueOf(e)
-	if v.Kind() == reflect.Ptr {
+	if v.Kind() == reflect.Pointer {
 		v = v.Elem()
 	}
 	for i := 0; i < eType.NumField(); i++ {

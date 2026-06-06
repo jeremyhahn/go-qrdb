@@ -23,6 +23,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/entity"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // Compile-time interface assertions.
@@ -309,7 +310,7 @@ func (d *Database) GetTableInsensitive(ctx *sqle.Context, name string) (sqle.Tab
 	if d.hasTable(lower) {
 		switch lower {
 		case tableName:
-			tenantID := "default"
+			tenantID := tenant.SystemTenantID
 			if sess, ok := ctx.Session.(*QRDBSession); ok {
 				tenantID = sess.TenantID()
 			}
@@ -327,7 +328,7 @@ func (d *Database) GetTableInsensitive(ctx *sqle.Context, name string) (sqle.Tab
 
 	// Check entity registry for DAO-registered entity types.
 	if reg, ok := entity.Global().Get(lower); ok {
-		tenantID := "default"
+		tenantID := tenant.SystemTenantID
 		if sess, ok := ctx.Session.(*QRDBSession); ok {
 			tenantID = sess.TenantID()
 		}

@@ -143,40 +143,43 @@ func (m *mockDatabaseService) DatabaseBarrierStatus(_ string) (*seal.BarrierStat
 	return &seal.BarrierStatus{}, nil
 }
 
-func (m *mockDatabaseService) CreateForTenant(_ context.Context, _ database.DatabaseConfig) (*database.DatabaseInfo, error) {
-	return nil, nil
+// The *ForTenant methods delegate to the plain methods, mirroring the real
+// DatabaseService's scope routing for the system tenant (no tenant in the test
+// context), so handlers calling the ctx-aware path exercise the same behavior.
+func (m *mockDatabaseService) CreateForTenant(_ context.Context, cfg database.DatabaseConfig) (*database.DatabaseInfo, error) {
+	return m.Create(cfg)
 }
 
-func (m *mockDatabaseService) GetForTenant(_ context.Context, _ string) (*database.DatabaseInfo, error) {
-	return nil, nil
+func (m *mockDatabaseService) GetForTenant(_ context.Context, name string) (*database.DatabaseInfo, error) {
+	return m.Get(name)
 }
 
 func (m *mockDatabaseService) ListForTenant(_ context.Context) ([]database.DatabaseInfo, error) {
-	return nil, nil
+	return m.List()
 }
 
-func (m *mockDatabaseService) DropForTenant(_ context.Context, _ string) error {
-	return nil
+func (m *mockDatabaseService) DropForTenant(_ context.Context, name string) error {
+	return m.Drop(name)
 }
 
-func (m *mockDatabaseService) UpdateProtocolForTenant(_ context.Context, _ string, _ database.ProtocolConfig) (*database.DatabaseInfo, error) {
-	return nil, nil
+func (m *mockDatabaseService) UpdateProtocolForTenant(_ context.Context, name string, proto database.ProtocolConfig) (*database.DatabaseInfo, error) {
+	return m.UpdateProtocol(name, proto)
 }
 
-func (m *mockDatabaseService) UpdateEtcdForTenant(_ context.Context, _ string, _ *database.EtcdConfig) (*database.DatabaseInfo, error) {
-	return nil, nil
+func (m *mockDatabaseService) UpdateEtcdForTenant(_ context.Context, name string, cfg *database.EtcdConfig) (*database.DatabaseInfo, error) {
+	return m.UpdateEtcd(name, cfg)
 }
 
-func (m *mockDatabaseService) UpdateRaftForTenant(_ context.Context, _ string, _ *database.DatabaseRaftConfig) (*database.DatabaseInfo, error) {
-	return nil, nil
+func (m *mockDatabaseService) UpdateRaftForTenant(_ context.Context, name string, cfg *database.DatabaseRaftConfig) (*database.DatabaseInfo, error) {
+	return m.UpdateRaft(name, cfg)
 }
 
-func (m *mockDatabaseService) UpdateBarrierForTenant(_ context.Context, _ string, _ *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
-	return nil, nil
+func (m *mockDatabaseService) UpdateBarrierForTenant(_ context.Context, name string, cfg *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
+	return m.UpdateBarrier(name, cfg)
 }
 
-func (m *mockDatabaseService) UpdateConnectionForTenant(_ context.Context, _ string, _ *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-	return nil, nil
+func (m *mockDatabaseService) UpdateConnectionForTenant(_ context.Context, name string, cfg *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
+	return m.UpdateConnection(name, cfg)
 }
 
 // ---------------------------------------------------------------------------
@@ -197,6 +200,9 @@ func TestDatabaseTools_Registration(t *testing.T) {
 		"qrdb_database_update_raft",
 		"qrdb_database_update_barrier",
 		"qrdb_database_update_connection",
+		"qrdb_database_seal",
+		"qrdb_database_unseal",
+		"qrdb_database_barrier_status",
 	}
 
 	if len(tools) != len(expectedNames) {

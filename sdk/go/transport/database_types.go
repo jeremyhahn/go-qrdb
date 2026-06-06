@@ -14,7 +14,10 @@
 
 package transport
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // ---------------------------------------------------------------------------
 // Database management types
@@ -170,4 +173,30 @@ type DatabaseClient interface {
 	// UpdateDatabaseConnection updates the remote connection configuration
 	// for a database.
 	UpdateDatabaseConnection(ctx context.Context, req UpdateDatabaseConnectionRequest) (*DatabaseInfo, error)
+
+	// SealDatabase seals the encryption barrier for a database.
+	SealDatabase(ctx context.Context, name string) error
+
+	// UnsealDatabase unseals the encryption barrier for a database using the
+	// provided secret.
+	UnsealDatabase(ctx context.Context, name, secret string) error
+
+	// DatabaseBarrierStatus returns the encryption-barrier status for a database.
+	DatabaseBarrierStatus(ctx context.Context, name string) (*DatabaseBarrierStatus, error)
+}
+
+// DatabaseBarrierStatus reports a database barrier's sealed state and active
+// strategy metadata.
+type DatabaseBarrierStatus struct {
+	// Sealed is true when the barrier is in sealed state.
+	Sealed bool `json:"sealed"`
+
+	// Strategy identifies the sealing strategy protecting the root key.
+	Strategy string `json:"strategy"`
+
+	// HardwareBacked is true when the active strategy uses dedicated hardware.
+	HardwareBacked bool `json:"hardware_backed"`
+
+	// InitializedAt records when the barrier was first initialized.
+	InitializedAt time.Time `json:"initialized_at"`
 }

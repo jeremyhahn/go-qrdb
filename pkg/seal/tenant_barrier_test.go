@@ -144,8 +144,8 @@ func TestTenantBarrier_Status(t *testing.T) {
 	if status.Sealed {
 		t.Error("expected status.Sealed=false after init")
 	}
-	if status.Strategy != StrategySoftware {
-		t.Errorf("expected strategy=%s, got %s", StrategySoftware, status.Strategy)
+	if status.Strategy != StrategyPassphrase {
+		t.Errorf("expected strategy=%s, got %s", StrategyPassphrase, status.Strategy)
 	}
 }
 

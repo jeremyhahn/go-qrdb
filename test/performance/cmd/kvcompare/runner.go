@@ -26,15 +26,15 @@ import (
 
 // SystemRunner holds configuration for running a benchmark system via Docker.
 type SystemRunner struct {
-	System          string
-	Image           string
-	Dockerfile      string
-	BuildCtx        string
-	ExtraBuildArgs  []string // Extra args passed to docker build (e.g. --build-context).
-	DockerRunArgs   []string // Extra docker run args (before image name).
-	BenchPattern    string   // Benchmark filter pattern (default ".").
-	PreRun          func() error
-	PostRun         func()
+	System         string
+	Image          string
+	Dockerfile     string
+	BuildCtx       string
+	ExtraBuildArgs []string // Extra args passed to docker build (e.g. --build-context).
+	DockerRunArgs  []string // Extra docker run args (before image name).
+	BenchPattern   string   // Benchmark filter pattern (default ".").
+	PreRun         func() error
+	PostRun        func()
 }
 
 // RunnerFactory creates a SystemRunner with the correct paths for the given
@@ -405,7 +405,7 @@ func newTiKV3NRunner(baseDir, qrdbRoot string) *SystemRunner {
 		Dockerfile:     filepath.Join(qrdbRoot, "test/performance/tikv/Dockerfile"),
 		BuildCtx:       qrdbRoot,
 		ExtraBuildArgs: quicraftBuildContext(baseDir),
-		BenchPattern: "BenchmarkTiKV_KV(Put|Get)",
+		BenchPattern:   "BenchmarkTiKV_KV(Put|Get)",
 		DockerRunArgs: []string{
 			"--network=host",
 			"-v", "/var/run/docker.sock:/var/run/docker.sock",

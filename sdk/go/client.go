@@ -178,6 +178,35 @@ func (c *Client) SealStore() transport.SealStoreClient {
 	return c.transport.(transport.SealStoreClient)
 }
 
+// AuthFactors returns an AuthFactorClient for custodian auth factor enrollment,
+// challenge issuance, verification, listing, and revocation. This is the
+// ceremony-time enrolment surface used by custodian unseal flows.
+//
+// For the user-side N-factor model (User -> []AuthFactor) per
+// docs/08-bootstrap-auth-architecture.md §5e, use UserAuthFactors() instead.
+func (c *Client) AuthFactors() transport.AuthFactorClient {
+	return c.transport.(transport.AuthFactorClient)
+}
+
+// UserAuthFactors returns the user-side N-factor client (M14 interface) per
+// docs/08-bootstrap-auth-architecture.md §5e. It is distinct from the
+// ceremony-time AuthFactors() accessor: the user-side surface models a
+// 1-to-many relationship between Users and AuthFactors and exposes Add /
+// List / Get / Remove / Rotate / Relabel / Login. Hardware verification
+// (FIDO2 / PIV / mTLS) is performed by the caller; this RPC only resolves
+// (Type, LookupKey) tuples to a User.
+//
+// Returns nil when the underlying transport does not implement the
+// UserAuthFactorClient interface (e.g., the embedded transport which
+// currently only exposes the legacy AuthFactorClient surface). Callers
+// SHOULD nil-check the result and fall back appropriately.
+func (c *Client) UserAuthFactors() transport.UserAuthFactorClient {
+	if uac, ok := c.transport.(transport.UserAuthFactorClient); ok {
+		return uac
+	}
+	return nil
+}
+
 // CustodianGroups returns a CustodianGroupClient for managing custodian
 // groups used in Shamir secret sharing.
 func (c *Client) CustodianGroups() transport.CustodianGroupClient {
@@ -202,6 +231,84 @@ func (c *Client) WithTenant(tenantID string) (transport.KVClient, error) {
 		return nil, &ClientClosedError{}
 	}
 	return transport.WithTenant(c.KV(), tenantID)
+}
+
+// Permissions returns a PermissionClient exposing the read-only
+// permission registry. The transport must implement
+// transport.PermissionProvider; otherwise the returned client is nil
+// and callers should fall back appropriately.
+func (c *Client) Permissions() transport.PermissionClient {
+	if c.closed.Load() {
+		return nil
+	}
+	if p, ok := c.transport.(transport.PermissionProvider); ok {
+		return p.PermissionClient()
+	}
+	return nil
+}
+
+// RBAC returns an RBACClient that exposes the qrdb auth.Authorizer.
+// Honours the Phase 0 system-tenant rule transitively — the underlying
+// authorizer performs all gating.
+func (c *Client) RBAC() transport.RBACClient {
+	if c.closed.Load() {
+		return nil
+	}
+	if p, ok := c.transport.(transport.RBACProvider); ok {
+		return p.RBACClient()
+	}
+	return nil
+}
+
+// Factors returns a FactorClient for managing user authentication
+// factors (FIDO2 / PIV / mTLS) and verifying signed challenges.
+func (c *Client) Factors() transport.FactorClient {
+	if c.closed.Load() {
+		return nil
+	}
+	if p, ok := c.transport.(transport.FactorProvider); ok {
+		return p.FactorClient()
+	}
+	return nil
+}
+
+// Login returns a LoginClient that wraps qrdb's login resolver and
+// session issuer. BeginLogin / FinishLogin perform the challenge /
+// signature exchange; ResolveIdentity validates an existing bearer.
+func (c *Client) Login() transport.LoginClient {
+	if c.closed.Load() {
+		return nil
+	}
+	if p, ok := c.transport.(transport.LoginProvider); ok {
+		return p.LoginClient()
+	}
+	return nil
+}
+
+// Sessions returns a SessionClient for resolving and revoking bearer
+// tokens issued by Login.FinishLogin. Issuance lives on LoginClient;
+// validation / invalidation lives here.
+func (c *Client) Sessions() transport.SessionClient {
+	if c.closed.Load() {
+		return nil
+	}
+	if p, ok := c.transport.(transport.SessionProvider); ok {
+		return p.SessionClient()
+	}
+	return nil
+}
+
+// VolumePools returns a VolumePoolClient that wraps the configured
+// objstore pool.Manager. List / Pick are read operations; RegisterPool
+// is admin-gated upstream by the volumepool:create permission.
+func (c *Client) VolumePools() transport.VolumePoolClient {
+	if c.closed.Load() {
+		return nil
+	}
+	if p, ok := c.transport.(transport.VolumePoolProvider); ok {
+		return p.VolumePoolClient()
+	}
+	return nil
 }
 
 // Healthy returns true if the transport connection is healthy.

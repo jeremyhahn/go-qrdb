@@ -180,9 +180,15 @@ func (s *BatchService) Execute(ctx context.Context, ops []Op) ([]OpResponse, err
 
 	if len(writeOps) > 0 {
 		cmd := protocol.EncodeBatch(writeOps)
-		_, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+		result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 		if err != nil {
 			return nil, s.translateProposeError(err)
+		}
+		// Surface a state-machine-encoded application error (e.g. a unique-index
+		// violation that rejected the batch without stalling consensus) instead
+		// of falsely reporting the writes as succeeded.
+		if resultErr := checkResultError(result); resultErr != nil {
+			return nil, resultErr
 		}
 	}
 
@@ -234,9 +240,12 @@ func (s *BatchService) ExecuteWithMode(ctx context.Context, ops []Op, mode write
 
 	if len(writeOps) > 0 {
 		cmd := protocol.EncodeBatch(writeOps)
-		_, err := s.host.ProposeWithMode(ctx, s.shardID, cmd, mode)
+		result, err := s.host.ProposeWithMode(ctx, s.shardID, cmd, mode)
 		if err != nil {
 			return nil, s.translateProposeError(err)
+		}
+		if resultErr := checkResultError(result); resultErr != nil {
+			return nil, resultErr
 		}
 	}
 

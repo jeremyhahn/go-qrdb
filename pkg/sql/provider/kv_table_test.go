@@ -148,7 +148,7 @@ func TestNewKVTable(t *testing.T) {
 }
 
 func TestKVTable_Schema(t *testing.T) {
-	tbl := NewKVTable(&mockKVService{}, "default", nil)
+	tbl := NewKVTable(&mockKVService{}, "system", nil)
 
 	schema := tbl.Schema()
 
@@ -163,12 +163,12 @@ func TestKVTable_Schema(t *testing.T) {
 }
 
 func TestKVTable_Collation(t *testing.T) {
-	tbl := NewKVTable(&mockKVService{}, "default", nil)
+	tbl := NewKVTable(&mockKVService{}, "system", nil)
 	assert.Equal(t, sqle.Collation_Default, tbl.Collation())
 }
 
 func TestKVTable_Partitions(t *testing.T) {
-	tbl := NewKVTable(&mockKVService{}, "default", nil)
+	tbl := NewKVTable(&mockKVService{}, "system", nil)
 	ctx := newTestContext()
 
 	iter, err := tbl.Partitions(ctx)
@@ -239,7 +239,7 @@ func TestKVTable_PartitionRows_ScanError(t *testing.T) {
 			return nil, scanErr
 		},
 	}
-	tbl := NewKVTable(svc, "default", nil)
+	tbl := NewKVTable(svc, "system", nil)
 	ctx := newTestContext()
 
 	_, err := tbl.PartitionRows(ctx, &kvPartition{})
@@ -284,7 +284,7 @@ func TestKVTable_Insert_StringValue(t *testing.T) {
 			return nil
 		},
 	}
-	tbl := NewKVTable(svc, "default", nil)
+	tbl := NewKVTable(svc, "system", nil)
 	ctx := newTestContext()
 
 	inserter := tbl.Inserter(ctx)
@@ -294,7 +294,7 @@ func TestKVTable_Insert_StringValue(t *testing.T) {
 }
 
 func TestKVTable_Insert_EmptyKey(t *testing.T) {
-	tbl := NewKVTable(&mockKVService{}, "default", nil)
+	tbl := NewKVTable(&mockKVService{}, "system", nil)
 	ctx := newTestContext()
 
 	inserter := tbl.Inserter(ctx)
@@ -303,7 +303,7 @@ func TestKVTable_Insert_EmptyKey(t *testing.T) {
 }
 
 func TestKVTable_Insert_NilValue(t *testing.T) {
-	tbl := NewKVTable(&mockKVService{}, "default", nil)
+	tbl := NewKVTable(&mockKVService{}, "system", nil)
 	ctx := newTestContext()
 
 	inserter := tbl.Inserter(ctx)
@@ -312,7 +312,7 @@ func TestKVTable_Insert_NilValue(t *testing.T) {
 }
 
 func TestKVTable_Insert_MissingValueColumn(t *testing.T) {
-	tbl := NewKVTable(&mockKVService{}, "default", nil)
+	tbl := NewKVTable(&mockKVService{}, "system", nil)
 	ctx := newTestContext()
 
 	inserter := tbl.Inserter(ctx)
@@ -321,7 +321,7 @@ func TestKVTable_Insert_MissingValueColumn(t *testing.T) {
 }
 
 func TestKVTable_Insert_EmptyRow(t *testing.T) {
-	tbl := NewKVTable(&mockKVService{}, "default", nil)
+	tbl := NewKVTable(&mockKVService{}, "system", nil)
 	ctx := newTestContext()
 
 	inserter := tbl.Inserter(ctx)
@@ -330,7 +330,7 @@ func TestKVTable_Insert_EmptyRow(t *testing.T) {
 }
 
 func TestKVTable_Insert_NonStringKey(t *testing.T) {
-	tbl := NewKVTable(&mockKVService{}, "default", nil)
+	tbl := NewKVTable(&mockKVService{}, "system", nil)
 	ctx := newTestContext()
 
 	inserter := tbl.Inserter(ctx)
@@ -345,7 +345,7 @@ func TestKVTable_Insert_PutError(t *testing.T) {
 			return putErr
 		},
 	}
-	tbl := NewKVTable(svc, "default", nil)
+	tbl := NewKVTable(svc, "system", nil)
 	ctx := newTestContext()
 
 	inserter := tbl.Inserter(ctx)
@@ -379,7 +379,7 @@ func TestKVTable_Delete(t *testing.T) {
 }
 
 func TestKVTable_Delete_EmptyKey(t *testing.T) {
-	tbl := NewKVTable(&mockKVService{}, "default", nil)
+	tbl := NewKVTable(&mockKVService{}, "system", nil)
 	ctx := newTestContext()
 
 	deleter := tbl.Deleter(ctx)
@@ -394,7 +394,7 @@ func TestKVTable_Delete_DeleteError(t *testing.T) {
 			return deleteErr
 		},
 	}
-	tbl := NewKVTable(svc, "default", nil)
+	tbl := NewKVTable(svc, "system", nil)
 	ctx := newTestContext()
 
 	deleter := tbl.Deleter(ctx)
@@ -470,7 +470,7 @@ func TestKVTable_Update_PutError(t *testing.T) {
 			return putErr
 		},
 	}
-	tbl := NewKVTable(svc, "default", nil)
+	tbl := NewKVTable(svc, "system", nil)
 	ctx := newTestContext()
 
 	updater := tbl.Updater(ctx)
@@ -491,7 +491,7 @@ func TestKVTable_Update_DeleteError(t *testing.T) {
 			return deleteErr
 		},
 	}
-	tbl := NewKVTable(svc, "default", nil)
+	tbl := NewKVTable(svc, "system", nil)
 	ctx := newTestContext()
 
 	updater := tbl.Updater(ctx)
@@ -503,7 +503,7 @@ func TestKVTable_Update_DeleteError(t *testing.T) {
 }
 
 func TestKVTable_Update_InvalidOldKey(t *testing.T) {
-	tbl := NewKVTable(&mockKVService{}, "default", nil)
+	tbl := NewKVTable(&mockKVService{}, "system", nil)
 	ctx := newTestContext()
 
 	updater := tbl.Updater(ctx)
@@ -515,7 +515,7 @@ func TestKVTable_Update_InvalidOldKey(t *testing.T) {
 }
 
 func TestKVTable_Update_InvalidNewKey(t *testing.T) {
-	tbl := NewKVTable(&mockKVService{}, "default", nil)
+	tbl := NewKVTable(&mockKVService{}, "system", nil)
 	ctx := newTestContext()
 
 	updater := tbl.Updater(ctx)
@@ -554,7 +554,7 @@ func TestKVTable_Replace(t *testing.T) {
 }
 
 func TestKVTable_Replace_InvalidRow(t *testing.T) {
-	tbl := NewKVTable(&mockKVService{}, "default", nil)
+	tbl := NewKVTable(&mockKVService{}, "system", nil)
 	ctx := newTestContext()
 
 	replacer := tbl.Replacer(ctx)
@@ -567,7 +567,7 @@ func TestKVTable_Replace_InvalidRow(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestKVWriter_StatementBegin_NoError(t *testing.T) {
-	w := &kvWriter{kvSvc: &mockKVService{}, tenantID: "default"}
+	w := &kvWriter{kvSvc: &mockKVService{}, tenantID: "system"}
 	ctx := newTestContext()
 
 	// Should not panic.
@@ -575,7 +575,7 @@ func TestKVWriter_StatementBegin_NoError(t *testing.T) {
 }
 
 func TestKVWriter_DiscardChanges_NoError(t *testing.T) {
-	w := &kvWriter{kvSvc: &mockKVService{}, tenantID: "default"}
+	w := &kvWriter{kvSvc: &mockKVService{}, tenantID: "system"}
 	ctx := newTestContext()
 
 	err := w.DiscardChanges(ctx, errors.New("some error"))
@@ -583,7 +583,7 @@ func TestKVWriter_DiscardChanges_NoError(t *testing.T) {
 }
 
 func TestKVWriter_StatementComplete_NoError(t *testing.T) {
-	w := &kvWriter{kvSvc: &mockKVService{}, tenantID: "default"}
+	w := &kvWriter{kvSvc: &mockKVService{}, tenantID: "system"}
 	ctx := newTestContext()
 
 	err := w.StatementComplete(ctx)
@@ -591,7 +591,7 @@ func TestKVWriter_StatementComplete_NoError(t *testing.T) {
 }
 
 func TestKVWriter_Close_NoError(t *testing.T) {
-	w := &kvWriter{kvSvc: &mockKVService{}, tenantID: "default"}
+	w := &kvWriter{kvSvc: &mockKVService{}, tenantID: "system"}
 	ctx := newTestContext()
 
 	err := w.Close(ctx)
@@ -749,7 +749,7 @@ func TestKVWriter_ImplementsRowReplacer(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestKVTable_Insert_UnsupportedValueType(t *testing.T) {
-	tbl := NewKVTable(&mockKVService{}, "default", nil)
+	tbl := NewKVTable(&mockKVService{}, "system", nil)
 	ctx := newTestContext()
 
 	inserter := tbl.Inserter(ctx)

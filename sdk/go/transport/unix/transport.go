@@ -150,7 +150,7 @@ func (t *Transport) Put(ctx context.Context, key string, value []byte, opts ...t
 
 	ctx = applyWriteMetadata(ctx, opts...)
 
-	_, err := t.client.Put(ctx, &pb.PutRequest{Key: key, Value: value})
+	_, err := t.client.Put(ctx, &pb.PutRequest{Key: key, Value: value, WriteMode: protoWriteMode(opts...)})
 	if err != nil {
 		return mapGRPCError("Put", err)
 	}
@@ -166,7 +166,7 @@ func (t *Transport) Get(ctx context.Context, key string, opts ...transport.ReadO
 
 	ctx = applyReadMetadata(ctx, opts...)
 
-	resp, err := t.client.Get(ctx, &pb.GetRequest{Key: key})
+	resp, err := t.client.Get(ctx, &pb.GetRequest{Key: key, Consistency: protoConsistency(opts...)})
 	if err != nil {
 		return nil, mapGRPCError("Get", err)
 	}
@@ -181,7 +181,7 @@ func (t *Transport) Delete(ctx context.Context, key string, opts ...transport.Wr
 
 	ctx = applyWriteMetadata(ctx, opts...)
 
-	_, err := t.client.Delete(ctx, &pb.DeleteRequest{Key: key})
+	_, err := t.client.Delete(ctx, &pb.DeleteRequest{Key: key, WriteMode: protoWriteMode(opts...)})
 	if err != nil {
 		return mapGRPCError("Delete", err)
 	}
@@ -197,7 +197,7 @@ func (t *Transport) List(ctx context.Context, prefix string, opts ...transport.R
 
 	ctx = applyReadMetadata(ctx, opts...)
 
-	resp, err := t.client.List(ctx, &pb.ListRequest{Prefix: prefix})
+	resp, err := t.client.List(ctx, &pb.ListRequest{Prefix: prefix, Consistency: protoConsistency(opts...)})
 	if err != nil {
 		return nil, mapGRPCError("List", err)
 	}
@@ -212,7 +212,7 @@ func (t *Transport) Scan(ctx context.Context, prefix string, opts ...transport.R
 
 	ctx = applyReadMetadata(ctx, opts...)
 
-	resp, err := t.client.Scan(ctx, &pb.ScanRequest{Prefix: prefix})
+	resp, err := t.client.Scan(ctx, &pb.ScanRequest{Prefix: prefix, Consistency: protoConsistency(opts...)})
 	if err != nil {
 		return nil, mapGRPCError("Scan", err)
 	}
@@ -533,4 +533,59 @@ func applyReadMetadata(ctx context.Context, opts ...transport.ReadOption) contex
 		ctx = metadata.AppendToOutgoingContext(ctx, "x-qrdb-allow-stale", "true")
 	}
 	return ctx
+}
+
+// vectorConsistencyToProto maps a transport.ConsistencyLevel stored as a
+// uint8 in vector request types to its proto ConsistencyLevel equivalent.
+// The zero value (ConsistencyStrong) maps to STRONG so that the server
+// preserves the same behavior clients received when the field was int32.
+func vectorConsistencyToProto(level uint8) pb.ConsistencyLevel {
+	switch transport.ConsistencyLevel(level) {
+	case transport.ConsistencyLinearizable:
+		return pb.ConsistencyLevel_CONSISTENCY_LEVEL_LINEARIZABLE
+	case transport.ConsistencyEventual:
+		return pb.ConsistencyLevel_CONSISTENCY_LEVEL_EVENTUAL
+	default:
+		// ConsistencyStrong (0) and any unrecognized value → STRONG.
+		return pb.ConsistencyLevel_CONSISTENCY_LEVEL_STRONG
+	}
+}
+
+// protoConsistency resolves read options into the proto ConsistencyLevel
+// carried in the request body. UNSPECIFIED is returned when no consistency
+// was requested, letting the server apply its default. An explicit
+// WithAllowStale (without a level) maps to EVENTUAL.
+func protoConsistency(opts ...transport.ReadOption) pb.ConsistencyLevel {
+	ro := transport.ResolveReadOptions(opts...)
+	if ro.ConsistencySet {
+		switch ro.Consistency {
+		case transport.ConsistencyStrong:
+			return pb.ConsistencyLevel_CONSISTENCY_LEVEL_STRONG
+		case transport.ConsistencyLinearizable:
+			return pb.ConsistencyLevel_CONSISTENCY_LEVEL_LINEARIZABLE
+		case transport.ConsistencyEventual:
+			return pb.ConsistencyLevel_CONSISTENCY_LEVEL_EVENTUAL
+		}
+	}
+	if ro.AllowStale {
+		return pb.ConsistencyLevel_CONSISTENCY_LEVEL_EVENTUAL
+	}
+	return pb.ConsistencyLevel_CONSISTENCY_LEVEL_UNSPECIFIED
+}
+
+// protoWriteMode resolves write options into the proto WriteMode carried in
+// the request body. UNSPECIFIED is returned when no mode was requested.
+func protoWriteMode(opts ...transport.WriteOption) pb.WriteMode {
+	wo := transport.ResolveWriteOptions(opts...)
+	if wo.ModeSet {
+		switch wo.Mode {
+		case transport.WriteModeSync:
+			return pb.WriteMode_WRITE_MODE_SYNC
+		case transport.WriteModeWALDurable:
+			return pb.WriteMode_WRITE_MODE_WAL_DURABLE
+		case transport.WriteModeBatched:
+			return pb.WriteMode_WRITE_MODE_BATCHED
+		}
+	}
+	return pb.WriteMode_WRITE_MODE_UNSPECIFIED
 }

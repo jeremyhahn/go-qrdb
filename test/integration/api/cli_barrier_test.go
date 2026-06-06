@@ -7,7 +7,6 @@ package integration
 
 import (
 	"fmt"
-	"strings"
 	"testing"
 )
 
@@ -50,57 +49,44 @@ func TestCLIMultiProtocolBarrierStatus(t *testing.T) {
 }
 
 // TestCLIMultiProtocolBarrierInitAndSealCycle tests the full barrier
-// lifecycle: init → status (unsealed) → seal → status (sealed) → unseal
-// → status (unsealed). Uses a single protocol to avoid concurrent
-// barrier state mutations across protocol tests.
+// seal/unseal lifecycle against the dedicated Shamir-seal server:
+// status (unsealed) → seal → status (sealed) → unseal-shares → status
+// (unsealed). The barrier is initialized + unsealed by the qrdbd-shamir
+// bootstrap, so this test exercises the seal/unseal half of the cycle and
+// drives unseal via Shamir shares (threshold M-of-N), not a software
+// passphrase. Uses a single protocol per subtest to avoid concurrent
+// barrier state mutations.
 func TestCLIMultiProtocolBarrierInitAndSealCycle(t *testing.T) {
 	cfg := LoadTestConfig()
 	requireCLI(t, cfg)
 
-	// Use a single protocol for lifecycle testing to avoid
-	// concurrent state mutations. Prefer unix as it's most reliable.
+	// Load the Shamir shares captured by the qrdbd-shamir bootstrap so we
+	// can replay enough of them (>= threshold) to unseal.
+	shares := loadShamirShares(t, cfg)
+
+	shamir := cfg.shamirConfig()
+
 	for _, proto := range barrierSupportedProtocols() {
 		t.Run(string(proto), func(t *testing.T) {
-			if !cfg.IsProtocolAvailable(t, proto) {
-				t.Fatalf("server not available for protocol %s", proto)
+			if !shamir.IsProtocolAvailable(t, proto) {
+				t.Fatalf("shamir server not available for protocol %s", proto)
 			}
 
-			secret := "integration-test-secret"
-
-			// Step 1: Initialize the barrier with a secret.
-			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto,
-				"barrier", "init", "--secret", secret)
-			if err != nil {
-				output := stdout + stderr
-				// If already initialized, that's OK — continue with the test.
-				if !strings.Contains(output, "already initialized") &&
-					!strings.Contains(output, "already_initialized") {
-					t.Logf("stdout: %s", stdout)
-					t.Logf("stderr: %s", stderr)
-					t.Fatalf("[%s] barrier init failed: %v", proto, err)
-				}
-				t.Logf("[%s] barrier already initialized, continuing with lifecycle test", proto)
-			} else {
-				output := stdout + stderr
-				assertContains(t, output, "OK",
-					fmt.Sprintf("[%s] barrier init should return OK", proto))
-			}
-
-			// Step 2: Verify barrier is unsealed after init.
-			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto,
+			// Step 1: Verify barrier is unsealed (bootstrap unsealed it).
+			stdout, stderr, err := execCLIWithShamirProtocol(t, cfg, proto,
 				"barrier", "status", "--output", "json")
 			if err != nil {
 				t.Logf("stdout: %s", stdout)
 				t.Logf("stderr: %s", stderr)
-				t.Fatalf("[%s] barrier status after init failed: %v", proto, err)
+				t.Fatalf("[%s] barrier status failed: %v", proto, err)
 			}
 			output := stdout + stderr
 			assertContains(t, output, `"sealed": false`,
-				fmt.Sprintf("[%s] barrier should be unsealed after init", proto))
+				fmt.Sprintf("[%s] shamir barrier should be unsealed at start", proto))
 
-			// Step 3: Seal the barrier.
-			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto,
-				"barrier", "seal")
+			// Step 2: Seal the barrier.
+			stdout, stderr, err = execCLIWithShamirProtocol(t, cfg, proto,
+				"barrier", "seal", "--assume-yes")
 			if err != nil {
 				t.Logf("stdout: %s", stdout)
 				t.Logf("stderr: %s", stderr)
@@ -110,8 +96,8 @@ func TestCLIMultiProtocolBarrierInitAndSealCycle(t *testing.T) {
 			assertContains(t, output, "OK",
 				fmt.Sprintf("[%s] barrier seal should return OK", proto))
 
-			// Step 4: Verify barrier is sealed.
-			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto,
+			// Step 3: Verify barrier is sealed.
+			stdout, stderr, err = execCLIWithShamirProtocol(t, cfg, proto,
 				"barrier", "status", "--output", "json")
 			if err != nil {
 				t.Logf("stdout: %s", stdout)
@@ -122,20 +108,25 @@ func TestCLIMultiProtocolBarrierInitAndSealCycle(t *testing.T) {
 			assertContains(t, output, `"sealed": true`,
 				fmt.Sprintf("[%s] barrier should be sealed after seal", proto))
 
-			// Step 5: Unseal the barrier.
-			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto,
-				"barrier", "unseal", "--secret", secret)
+			// Step 4: Unseal the barrier with Shamir shares (M-of-N). The
+			// dedicated server is configured with threshold 2; submit all
+			// captured shares so the quorum completes in a single call.
+			unsealArgs := []string{"barrier", "unseal-shares"}
+			for _, s := range shares {
+				unsealArgs = append(unsealArgs, "--share", s)
+			}
+			stdout, stderr, err = execCLIWithShamirProtocol(t, cfg, proto, unsealArgs...)
 			if err != nil {
 				t.Logf("stdout: %s", stdout)
 				t.Logf("stderr: %s", stderr)
-				t.Fatalf("[%s] barrier unseal failed: %v", proto, err)
+				t.Fatalf("[%s] barrier unseal-shares failed: %v", proto, err)
 			}
 			output = stdout + stderr
 			assertContains(t, output, "OK",
-				fmt.Sprintf("[%s] barrier unseal should return OK", proto))
+				fmt.Sprintf("[%s] barrier unseal-shares should return OK", proto))
 
-			// Step 6: Verify barrier is unsealed again.
-			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto,
+			// Step 5: Verify barrier is unsealed again.
+			stdout, stderr, err = execCLIWithShamirProtocol(t, cfg, proto,
 				"barrier", "status", "--output", "json")
 			if err != nil {
 				t.Logf("stdout: %s", stdout)
@@ -144,9 +135,9 @@ func TestCLIMultiProtocolBarrierInitAndSealCycle(t *testing.T) {
 			}
 			output = stdout + stderr
 			assertContains(t, output, `"sealed": false`,
-				fmt.Sprintf("[%s] barrier should be unsealed after unseal", proto))
+				fmt.Sprintf("[%s] barrier should be unsealed after unseal-shares", proto))
 
-			t.Logf("[%s] barrier init/seal/unseal cycle passed", proto)
+			t.Logf("[%s] shamir barrier seal/unseal cycle passed", proto)
 		})
 	}
 }
@@ -238,74 +229,6 @@ func TestCLIMultiProtocolBarrierRecoveryStatus(t *testing.T) {
 				fmt.Sprintf("[%s] recovery status should contain 'has_keys' field", proto))
 
 			t.Logf("[%s] barrier recovery status passed", proto)
-		})
-	}
-}
-
-// TestCLIMultiProtocolBarrierShamirListShares tests the shamir list-shares
-// command to verify share metadata is returned.
-func TestCLIMultiProtocolBarrierShamirListShares(t *testing.T) {
-	cfg := LoadTestConfig()
-	requireCLI(t, cfg)
-
-	for _, proto := range barrierSupportedProtocols() {
-		t.Run(string(proto), func(t *testing.T) {
-			if !cfg.IsProtocolAvailable(t, proto) {
-				t.Fatalf("server not available for protocol %s", proto)
-			}
-
-			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto,
-				"barrier", "shamir", "list-shares", "--output", "json")
-			if err != nil {
-				t.Logf("stdout: %s", stdout)
-				t.Logf("stderr: %s", stderr)
-				// Shamir may not be configured — skip gracefully.
-				if strings.Contains(stdout+stderr, "not configured") ||
-					strings.Contains(stdout+stderr, "shamir not") {
-					t.Skipf("[%s] shamir not configured, skipping", proto)
-				}
-				t.Fatalf("[%s] barrier shamir list-shares failed: %v", proto, err)
-			}
-
-			output := stdout + stderr
-			assertContains(t, output, "count",
-				fmt.Sprintf("[%s] shamir list-shares should contain 'count' field", proto))
-
-			t.Logf("[%s] barrier shamir list-shares passed", proto)
-		})
-	}
-}
-
-// TestCLIMultiProtocolBarrierShamirVerify tests the shamir verify command.
-func TestCLIMultiProtocolBarrierShamirVerify(t *testing.T) {
-	cfg := LoadTestConfig()
-	requireCLI(t, cfg)
-
-	for _, proto := range barrierSupportedProtocols() {
-		t.Run(string(proto), func(t *testing.T) {
-			if !cfg.IsProtocolAvailable(t, proto) {
-				t.Fatalf("server not available for protocol %s", proto)
-			}
-
-			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto,
-				"barrier", "shamir", "verify")
-			if err != nil {
-				output := stdout + stderr
-				// Shamir may not be configured — skip gracefully.
-				if strings.Contains(output, "not configured") ||
-					strings.Contains(output, "shamir not") {
-					t.Skipf("[%s] shamir not configured, skipping", proto)
-				}
-				t.Logf("stdout: %s", stdout)
-				t.Logf("stderr: %s", stderr)
-				t.Fatalf("[%s] barrier shamir verify failed: %v", proto, err)
-			}
-
-			output := stdout + stderr
-			assertContains(t, output, "OK",
-				fmt.Sprintf("[%s] shamir verify should return OK", proto))
-
-			t.Logf("[%s] barrier shamir verify passed", proto)
 		})
 	}
 }

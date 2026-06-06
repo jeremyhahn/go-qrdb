@@ -20,10 +20,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus"
 
 	api "github.com/jeremyhahn/go-qrdb/pkg/api"
 	qrdbErrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
@@ -46,7 +48,7 @@ type vectorService struct {
 	raftNode       interfaces.RaftNode
 	shardID        uint64
 	nodeID         string
-	hnswIndexes    map[string]interfaces.HNSWIndex // Map namespace -> HNSW index
+	hnswIndexes    map[string]interfaces.HNSWIndex // Map scoped-namespace -> HNSW index
 	indexFactory   interfaces.HNSWIndexFactory     // Factory for creating HNSW indexes
 	logger         interfaces.Logger
 	metrics        *vectorServiceMetrics
@@ -56,7 +58,13 @@ type vectorService struct {
 	rebuildJobs    map[string]*RebuildJobState
 	compactionJobs map[string]*CompactionJobState
 	jobMu          sync.RWMutex
+	strictTenant   bool // reject create when no tenant in context
 }
+
+// namespaceSep is the single-byte separator used to join a tenant ID and a
+// logical namespace name into a physical storage key. Unit Separator (0x1f)
+// cannot appear in a valid namespace name, which follows DNS label rules.
+const namespaceSep = "\x1f"
 
 // vectorServiceMetrics holds Prometheus metrics for vector operations.
 type vectorServiceMetrics struct {
@@ -126,6 +134,78 @@ func WithNodeID(nodeID string) VectorServiceOption {
 func WithHNSWIndexFactory(factory interfaces.HNSWIndexFactory) VectorServiceOption {
 	return func(v *vectorService) {
 		v.indexFactory = factory
+	}
+}
+
+// WithStrictTenantIsolation enables strict tenant isolation mode. When true,
+// CreateNamespace rejects requests that carry no tenant ID in the context
+// (i.e. the caller is operating as the system tenant). This mirrors the
+// RBAC WithStrictSeparation pattern and is automatically engaged when the
+// process runs under FIPS-140 or when the operator sets
+// config.Tenant.StrictIsolation.
+func WithStrictTenantIsolation(strict bool) VectorServiceOption {
+	return func(v *vectorService) {
+		v.strictTenant = strict
+	}
+}
+
+// =============================================================================
+// Tenant Namespace Scoping
+// =============================================================================
+
+// scopedNamespace converts a logical namespace name and a tenant ID into a
+// physical storage key. The format is:
+//
+//	tenantID + "\x1f" + logical
+//
+// The system tenant ("system") and the empty string are both mapped to the
+// empty-segment form "\x1f" + logical so that the system namespace is stable
+// and distinct from any user-created tenant.
+func scopedNamespace(tenantID, logical string) string {
+	if tenantID == "" || tenantID == tenant.SystemTenantID {
+		return namespaceSep + logical
+	}
+	return tenantID + namespaceSep + logical
+}
+
+// unscopedNamespace splits a physical storage key produced by scopedNamespace
+// into its constituent tenant ID and logical name. The system namespace
+// ("\x1f" + logical) returns tenant.SystemTenantID as the tenant.
+func unscopedNamespace(physical string) (tenantID, logical string) {
+	for i := 0; i < len(physical); i++ {
+		if physical[i] == namespaceSep[0] {
+			prefix := physical[:i]
+			if prefix == "" {
+				tenantID = tenant.SystemTenantID
+			} else {
+				tenantID = prefix
+			}
+			logical = physical[i+1:]
+			return
+		}
+	}
+	// No separator found — treat as a legacy unscoped name owned by system.
+	return tenant.SystemTenantID, physical
+}
+
+// scopedFromContext returns the physical namespace key for the given logical
+// namespace name, deriving the tenant from the provided context.
+func scopedFromContext(ctx context.Context, logical string) string {
+	return scopedNamespace(tenant.FromContext(ctx), logical)
+}
+
+// namespaceMetricLabels returns Prometheus label values for the two GaugeVecs
+// (vectorCount, indexSizeBytes) keyed by a physical (scoped) namespace name.
+// The "namespace" label carries the logical name (control-byte-free, tenant
+// prefix stripped) and "tenant" carries the owner tenant ID.
+//
+// This ensures no \x1f byte or other control character appears in emitted
+// label values, and prevents cross-tenant namespace name leakage on /metrics.
+func namespaceMetricLabels(physical string) prometheus.Labels {
+	tenantID, logical := unscopedNamespace(physical)
+	return prometheus.Labels{
+		"namespace": logical,
+		"tenant":    tenantID,
 	}
 }
 
@@ -242,19 +322,21 @@ func (v *vectorService) initMetrics() {
 			Namespace: "qrdb",
 			Subsystem: "vector",
 			Name:      "index_size_bytes",
-			Help:      "Size of HNSW index in bytes",
-		}, []string{"namespace"}),
+			Help:      "Size of HNSW index in bytes, partitioned by logical namespace and tenant",
+		}, []string{"namespace", "tenant"}),
 
 		vectorCount: metrics.NewGaugeVec(metrics.GaugeOpts{
 			Namespace: "qrdb",
 			Subsystem: "vector",
 			Name:      "vector_count",
-			Help:      "Number of vectors in namespace",
-		}, []string{"namespace"}),
+			Help:      "Number of vectors in namespace, partitioned by logical namespace and tenant",
+		}, []string{"namespace", "tenant"}),
 	}
 }
 
 // loadNamespaces loads existing namespaces and initializes HNSW indexes.
+// Physical namespace names stored in the backend are already scoped; they are
+// used directly as map keys so every index lookup stays consistent.
 func (v *vectorService) loadNamespaces() error {
 	ctx := context.Background()
 
@@ -266,7 +348,8 @@ func (v *vectorService) loadNamespaces() error {
 	v.logger.WithField("count", len(namespaces)).Debug("loading namespaces")
 
 	for _, ns := range namespaces {
-		// Initialize HNSW index for namespace
+		// Initialize HNSW index for namespace. The map key is the physical
+		// (scoped) namespace name that the storage layer already holds.
 		config := &hnsw.Config{
 			M:              16,
 			MMax:           32,
@@ -288,9 +371,10 @@ func (v *vectorService) loadNamespaces() error {
 		v.hnswIndexes[ns.Name] = hnsw.NewIndexAdapter(index)
 		v.indexMu.Unlock()
 
-		// Update metrics
+		// Update metrics with logical namespace name and tenant label so
+		// that no scoped key (containing \x1f) appears in emitted label values.
 		if v.metrics != nil {
-			v.metrics.vectorCount.With(ns.Name).Set(float64(ns.VectorCount))
+			v.metrics.vectorCount.WithLabels(namespaceMetricLabels(ns.Name)).Set(float64(ns.VectorCount))
 		}
 	}
 
@@ -379,61 +463,40 @@ func (v *vectorService) ensureHNSWIndex(ctx context.Context, namespace string) (
 // Tenant Validation Helpers
 // =============================================================================
 
-// validateTenantAccess checks if the request context tenant matches the namespace tenant.
-func (v *vectorService) validateTenantAccess(ctx context.Context, namespace string) error {
-	requestTenant := tenant.FromContext(ctx)
-
-	// No tenant in context = system/internal request, allow all
-	if requestTenant == "" {
+// validateTenantCreate enforces strict isolation on namespace creation.
+// When strictTenant is enabled and the context carries the system tenant
+// (meaning no explicit tenant was bound), the create is rejected.
+func (v *vectorService) validateTenantCreate(ctx context.Context) error {
+	if !v.strictTenant {
 		return nil
 	}
-
-	// Get namespace info to check its tenant
-	info, err := v.storage.GetNamespaceInfo(ctx, namespace)
-	if err != nil {
-		// Namespace doesn't exist - let the caller handle this
-		return nil
-	}
-
-	// Namespace has no tenant = shared/system namespace, allow all
-	if info.TenantID == "" {
-		return nil
-	}
-
-	// Tenant mismatch = cross-tenant access attempt
-	if info.TenantID != requestTenant {
+	if tenant.FromContext(ctx) == tenant.SystemTenantID {
 		return &qrdbErrors.QRDBError{
 			Code: qrdbErrors.ErrForbidden,
-			Op:   "vector.validateTenantAccess",
-			Err:  &api.InvalidInputError{Message: "cross-tenant access denied: namespace " + namespace + " belongs to tenant " + info.TenantID},
-			Context: map[string]interface{}{
-				"namespace":      namespace,
-				"request_tenant": requestTenant,
-				"owner_tenant":   info.TenantID,
-			},
+			Op:   "vector.validateTenantCreate",
+			Err:  &TenantRequiredError{Op: "CreateNamespace"},
 		}
 	}
-
 	return nil
 }
 
-// filterNamespacesByTenant filters namespace list based on tenant context.
+// filterNamespacesByTenant filters a raw storage namespace list to only
+// those belonging to the calling tenant. It unscopess physical names and
+// returns logical NamespaceInfo values with the storage Name field set to
+// the logical (user-visible) name.
 func (v *vectorService) filterNamespacesByTenant(ctx context.Context, namespaces []vector.NamespaceInfo) []vector.NamespaceInfo {
-	requestTenant := tenant.FromContext(ctx)
-
-	// No tenant in context = return all namespaces
-	if requestTenant == "" {
-		return namespaces
-	}
-
+	callerTenant := tenant.FromContext(ctx)
 	filtered := make([]vector.NamespaceInfo, 0, len(namespaces))
 	for _, ns := range namespaces {
-		// Include if: no tenant (shared) or tenant matches
-		if ns.TenantID == "" || ns.TenantID == requestTenant {
-			filtered = append(filtered, ns)
+		ownerTenant, logical := unscopedNamespace(ns.Name)
+		if ownerTenant != callerTenant {
+			continue
 		}
+		// Rewrite the Name field to the logical (user-visible) form.
+		copy := ns
+		copy.Name = logical
+		filtered = append(filtered, copy)
 	}
-
 	return filtered
 }
 
@@ -488,6 +551,18 @@ func (v *vectorService) CreateNamespace(ctx context.Context, req *CreateNamespac
 		return nil, err
 	}
 
+	// Enforce strict tenant isolation before acquiring any locks.
+	if err := v.validateTenantCreate(ctx); err != nil {
+		if v.metrics != nil {
+			v.metrics.operationErrors.With("create_namespace", "tenant_required").Inc()
+		}
+		return nil, err
+	}
+
+	// Compute the physical (scoped) namespace key for this tenant.
+	scoped := scopedFromContext(ctx, req.Namespace)
+	tenantID := tenant.FromContext(ctx)
+
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
@@ -499,8 +574,8 @@ func (v *vectorService) CreateNamespace(ctx context.Context, req *CreateNamespac
 		}
 	}
 
-	// Check if namespace already exists
-	existingInfo, err := v.storage.GetNamespaceInfo(ctx, req.Namespace)
+	// Check if namespace already exists under this tenant's scoped key.
+	existingInfo, err := v.storage.GetNamespaceInfo(ctx, scoped)
 	if err == nil && existingInfo != nil {
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("create_namespace", "already_exists").Inc()
@@ -514,6 +589,8 @@ func (v *vectorService) CreateNamespace(ctx context.Context, req *CreateNamespac
 
 	v.logger.WithFields(map[string]interface{}{
 		"namespace": req.Namespace,
+		"scoped":    scoped,
+		"tenant":    tenantID,
 		"dimension": req.Dimension,
 	}).Debug("creating namespace")
 
@@ -529,16 +606,15 @@ func (v *vectorService) CreateNamespace(ctx context.Context, req *CreateNamespac
 			indexType = "HNSW"
 		}
 
-		var nsMeta map[string]string
+		nsMeta := make(map[string]string)
 		if req.Metadata != nil {
-			nsMeta = make(map[string]string)
 			for k, val := range req.Metadata {
 				nsMeta[k] = fmt.Sprintf("%v", val)
 			}
 		}
 
 		cmd := statemachine.NewCreateNamespaceCommandFull(&statemachine.NamespaceConfig{
-			Namespace:      req.Namespace,
+			Namespace:      scoped,
 			Dimension:      req.Dimension,
 			DistanceMetric: distMetric,
 			IndexType:      indexType,
@@ -556,10 +632,13 @@ func (v *vectorService) CreateNamespace(ctx context.Context, req *CreateNamespac
 
 		if v.metrics != nil {
 			v.metrics.namespacesCreated.Inc()
-			v.metrics.vectorCount.With(req.Namespace).Set(0)
+			v.metrics.vectorCount.WithLabels(namespaceMetricLabels(scoped)).Set(0)
 		}
 
-		v.logger.WithField("namespace", req.Namespace).Info("namespace created successfully via Raft")
+		v.logger.WithFields(map[string]interface{}{
+			"namespace": req.Namespace,
+			"tenant":    tenantID,
+		}).Info("namespace created successfully via Raft")
 
 		return &CreateNamespaceResponse{
 			Namespace: req.Namespace,
@@ -588,7 +667,8 @@ func (v *vectorService) CreateNamespace(ctx context.Context, req *CreateNamespac
 	}
 
 	info := &vector.NamespaceInfo{
-		Name:           req.Namespace,
+		Name:           scoped,
+		TenantID:       tenantID,
 		Dimension:      req.Dimension,
 		VectorCount:    0,
 		DistanceMetric: distanceMetric,
@@ -605,6 +685,7 @@ func (v *vectorService) CreateNamespace(ctx context.Context, req *CreateNamespac
 		}
 		v.logger.WithFields(map[string]interface{}{
 			"namespace": req.Namespace,
+			"scoped":    scoped,
 			"error":     err,
 		}).Error("failed to create namespace")
 		return nil, &qrdbErrors.QRDBError{
@@ -614,7 +695,7 @@ func (v *vectorService) CreateNamespace(ctx context.Context, req *CreateNamespac
 		}
 	}
 
-	// Initialize HNSW index for namespace
+	// Initialize HNSW index for namespace keyed by the scoped name.
 	config := &hnsw.Config{
 		M:              16,
 		MMax:           32,
@@ -657,7 +738,7 @@ func (v *vectorService) CreateNamespace(ctx context.Context, req *CreateNamespac
 
 	index, err := hnsw.NewHNSWIndex(config)
 	if err != nil {
-		_ = v.storage.DeleteNamespace(ctx, req.Namespace)
+		_ = v.storage.DeleteNamespace(ctx, scoped)
 		return nil, &qrdbErrors.QRDBError{
 			Code: qrdbErrors.ErrInternal,
 			Op:   "vector.CreateNamespace",
@@ -666,15 +747,18 @@ func (v *vectorService) CreateNamespace(ctx context.Context, req *CreateNamespac
 	}
 
 	v.indexMu.Lock()
-	v.hnswIndexes[req.Namespace] = hnsw.NewIndexAdapter(index)
+	v.hnswIndexes[scoped] = hnsw.NewIndexAdapter(index)
 	v.indexMu.Unlock()
 
 	if v.metrics != nil {
 		v.metrics.namespacesCreated.Inc()
-		v.metrics.vectorCount.With(req.Namespace).Set(0)
+		v.metrics.vectorCount.WithLabels(namespaceMetricLabels(scoped)).Set(0)
 	}
 
-	v.logger.WithField("namespace", req.Namespace).Info("namespace created successfully")
+	v.logger.WithFields(map[string]interface{}{
+		"namespace": req.Namespace,
+		"tenant":    tenantID,
+	}).Info("namespace created successfully")
 
 	return &CreateNamespaceResponse{
 		Namespace: req.Namespace,
@@ -700,6 +784,8 @@ func (v *vectorService) DeleteNamespace(ctx context.Context, req *DeleteNamespac
 		return nil, err
 	}
 
+	scoped := scopedFromContext(ctx, req.Namespace)
+
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
@@ -713,14 +799,14 @@ func (v *vectorService) DeleteNamespace(ctx context.Context, req *DeleteNamespac
 
 	v.logger.WithField("namespace", req.Namespace).Debug("deleting namespace")
 
-	info, err := v.storage.GetNamespaceInfo(ctx, req.Namespace)
+	info, err := v.storage.GetNamespaceInfo(ctx, scoped)
 	var vectorsDeleted uint64
 	if err == nil {
 		vectorsDeleted = info.VectorCount
 	}
 
 	if v.raftNode != nil {
-		cmd := statemachine.NewDeleteNamespaceCommand(req.Namespace, v.nodeID)
+		cmd := statemachine.NewDeleteNamespaceCommand(scoped, v.nodeID)
 		if err := v.proposeToRaft(ctx, cmd); err != nil {
 			if v.metrics != nil {
 				v.metrics.operationErrors.With("delete_namespace", "raft_error").Inc()
@@ -729,12 +815,12 @@ func (v *vectorService) DeleteNamespace(ctx context.Context, req *DeleteNamespac
 		}
 
 		v.indexMu.Lock()
-		delete(v.hnswIndexes, req.Namespace)
+		delete(v.hnswIndexes, scoped)
 		v.indexMu.Unlock()
 
 		if v.metrics != nil {
 			v.metrics.namespacesDeleted.Inc()
-			v.metrics.vectorCount.With(req.Namespace).Set(0)
+			v.metrics.vectorCount.WithLabels(namespaceMetricLabels(scoped)).Set(0)
 		}
 
 		v.logger.WithField("namespace", req.Namespace).Info("namespace deleted successfully via Raft")
@@ -746,7 +832,7 @@ func (v *vectorService) DeleteNamespace(ctx context.Context, req *DeleteNamespac
 		}, nil
 	}
 
-	if err := v.storage.DeleteNamespace(ctx, req.Namespace); err != nil {
+	if err := v.storage.DeleteNamespace(ctx, scoped); err != nil {
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("delete_namespace", "storage_error").Inc()
 		}
@@ -758,12 +844,12 @@ func (v *vectorService) DeleteNamespace(ctx context.Context, req *DeleteNamespac
 	}
 
 	v.indexMu.Lock()
-	delete(v.hnswIndexes, req.Namespace)
+	delete(v.hnswIndexes, scoped)
 	v.indexMu.Unlock()
 
 	if v.metrics != nil {
 		v.metrics.namespacesDeleted.Inc()
-		v.metrics.vectorCount.With(req.Namespace).Set(0)
+		v.metrics.vectorCount.WithLabels(namespaceMetricLabels(scoped)).Set(0)
 	}
 
 	v.logger.WithField("namespace", req.Namespace).Info("namespace deleted successfully")
@@ -807,10 +893,13 @@ func (v *vectorService) ListNamespaces(ctx context.Context, req *ListNamespacesR
 		}
 	}
 
+	// filterNamespacesByTenant returns only the caller's namespaces with
+	// logical (unscoped) names in the Name field.
 	tenantFiltered := v.filterNamespacesByTenant(ctx, namespaces)
 
 	filtered := make([]*NamespaceInfo, 0)
 	for _, ns := range tenantFiltered {
+		// ns.Name is already the logical name after filterNamespacesByTenant.
 		if req.Prefix != "" && len(ns.Name) >= len(req.Prefix) {
 			if ns.Name[:len(req.Prefix)] != req.Prefix {
 				continue
@@ -872,12 +961,7 @@ func (v *vectorService) GetNamespaceInfo(ctx context.Context, req *GetNamespaceI
 		return nil, err
 	}
 
-	if err := v.validateTenantAccess(ctx, req.Namespace); err != nil {
-		if v.metrics != nil {
-			v.metrics.operationErrors.With("get_namespace_info", "forbidden").Inc()
-		}
-		return nil, err
-	}
+	scoped := scopedFromContext(ctx, req.Namespace)
 
 	v.mu.RLock()
 	defer v.mu.RUnlock()
@@ -890,7 +974,7 @@ func (v *vectorService) GetNamespaceInfo(ctx context.Context, req *GetNamespaceI
 		}
 	}
 
-	info, err := v.storage.GetNamespaceInfo(ctx, req.Namespace)
+	info, err := v.storage.GetNamespaceInfo(ctx, scoped)
 	if err != nil {
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("get_namespace_info", "not_found").Inc()
@@ -925,7 +1009,7 @@ func (v *vectorService) GetNamespaceInfo(ctx context.Context, req *GetNamespaceI
 	}
 
 	return &GetNamespaceInfoResponse{
-		Namespace:      info.Name,
+		Namespace:      req.Namespace, // logical name, not scoped storage key
 		Dimension:      info.Dimension,
 		VectorCount:    info.VectorCount,
 		DistanceMetric: distanceMetric,
@@ -957,12 +1041,7 @@ func (v *vectorService) UpsertVector(ctx context.Context, req *UpsertVectorReque
 		return nil, err
 	}
 
-	if err := v.validateTenantAccess(ctx, req.Namespace); err != nil {
-		if v.metrics != nil {
-			v.metrics.operationErrors.With("upsert_vector", "forbidden").Inc()
-		}
-		return nil, err
-	}
+	scoped := scopedFromContext(ctx, req.Namespace)
 
 	v.mu.RLock()
 	defer v.mu.RUnlock()
@@ -975,7 +1054,7 @@ func (v *vectorService) UpsertVector(ctx context.Context, req *UpsertVectorReque
 		}
 	}
 
-	nsInfo, err := v.storage.GetNamespaceInfo(ctx, req.Namespace)
+	nsInfo, err := v.storage.GetNamespaceInfo(ctx, scoped)
 	if err != nil {
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("upsert_vector", "namespace_not_found").Inc()
@@ -1002,7 +1081,7 @@ func (v *vectorService) UpsertVector(ctx context.Context, req *UpsertVectorReque
 	now := time.Now().UnixNano()
 
 	if v.raftNode != nil {
-		cmd := statemachine.NewUpsertCommand(req.Namespace, req.ID, req.Vector, req.Metadata, v.nodeID)
+		cmd := statemachine.NewUpsertCommand(scoped, req.ID, req.Vector, req.Metadata, v.nodeID)
 		if err := v.proposeToRaft(ctx, cmd); err != nil {
 			if v.metrics != nil {
 				v.metrics.operationErrors.With("upsert_vector", "raft_error").Inc()
@@ -1010,7 +1089,7 @@ func (v *vectorService) UpsertVector(ctx context.Context, req *UpsertVectorReque
 			return nil, err
 		}
 
-		index, err := v.ensureHNSWIndex(ctx, req.Namespace)
+		index, err := v.ensureHNSWIndex(ctx, scoped)
 		if err != nil {
 			v.logger.WithFields(map[string]interface{}{
 				"namespace": req.Namespace,
@@ -1028,7 +1107,7 @@ func (v *vectorService) UpsertVector(ctx context.Context, req *UpsertVectorReque
 
 		if v.metrics != nil {
 			v.metrics.vectorsUpserted.Inc()
-			v.metrics.vectorCount.With(req.Namespace).Inc()
+			v.metrics.vectorCount.WithLabels(namespaceMetricLabels(scoped)).Inc()
 		}
 
 		v.logger.WithFields(map[string]interface{}{
@@ -1053,7 +1132,7 @@ func (v *vectorService) UpsertVector(ctx context.Context, req *UpsertVectorReque
 		Version:   1,
 	}
 
-	if err := v.storage.UpsertVector(ctx, req.Namespace, vecValue); err != nil {
+	if err := v.storage.UpsertVector(ctx, scoped, vecValue); err != nil {
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("upsert_vector", "storage_error").Inc()
 		}
@@ -1065,7 +1144,7 @@ func (v *vectorService) UpsertVector(ctx context.Context, req *UpsertVectorReque
 	}
 
 	v.indexMu.RLock()
-	index, exists := v.hnswIndexes[req.Namespace]
+	index, exists := v.hnswIndexes[scoped]
 	v.indexMu.RUnlock()
 
 	if exists {
@@ -1080,7 +1159,7 @@ func (v *vectorService) UpsertVector(ctx context.Context, req *UpsertVectorReque
 
 	if v.metrics != nil {
 		v.metrics.vectorsUpserted.Inc()
-		v.metrics.vectorCount.With(req.Namespace).Inc()
+		v.metrics.vectorCount.WithLabels(namespaceMetricLabels(scoped)).Inc()
 	}
 
 	v.logger.WithFields(map[string]interface{}{
@@ -1112,12 +1191,7 @@ func (v *vectorService) GetVector(ctx context.Context, req *GetVectorRequest) (*
 		return nil, err
 	}
 
-	if err := v.validateTenantAccess(ctx, req.Namespace); err != nil {
-		if v.metrics != nil {
-			v.metrics.operationErrors.With("get_vector", "forbidden").Inc()
-		}
-		return nil, err
-	}
+	scoped := scopedFromContext(ctx, req.Namespace)
 
 	v.mu.RLock()
 	defer v.mu.RUnlock()
@@ -1130,7 +1204,7 @@ func (v *vectorService) GetVector(ctx context.Context, req *GetVectorRequest) (*
 		}
 	}
 
-	vecValue, err := v.storage.GetVector(ctx, req.Namespace, req.ID)
+	vecValue, err := v.storage.GetVector(ctx, scoped, req.ID)
 	if err != nil {
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("get_vector", "not_found").Inc()
@@ -1177,12 +1251,7 @@ func (v *vectorService) DeleteVector(ctx context.Context, req *DeleteVectorReque
 		return nil, err
 	}
 
-	if err := v.validateTenantAccess(ctx, req.Namespace); err != nil {
-		if v.metrics != nil {
-			v.metrics.operationErrors.With("delete_vector", "forbidden").Inc()
-		}
-		return nil, err
-	}
+	scoped := scopedFromContext(ctx, req.Namespace)
 
 	v.mu.RLock()
 	defer v.mu.RUnlock()
@@ -1196,7 +1265,7 @@ func (v *vectorService) DeleteVector(ctx context.Context, req *DeleteVectorReque
 	}
 
 	if v.raftNode != nil {
-		cmd := statemachine.NewDeleteCommand(req.Namespace, req.ID, v.nodeID)
+		cmd := statemachine.NewDeleteCommand(scoped, req.ID, v.nodeID)
 		if err := v.proposeToRaft(ctx, cmd); err != nil {
 			if v.metrics != nil {
 				v.metrics.operationErrors.With("delete_vector", "raft_error").Inc()
@@ -1205,7 +1274,7 @@ func (v *vectorService) DeleteVector(ctx context.Context, req *DeleteVectorReque
 		}
 
 		v.indexMu.RLock()
-		index, exists := v.hnswIndexes[req.Namespace]
+		index, exists := v.hnswIndexes[scoped]
 		v.indexMu.RUnlock()
 		if exists {
 			if deleteErr := index.Delete(req.ID); deleteErr != nil {
@@ -1219,7 +1288,7 @@ func (v *vectorService) DeleteVector(ctx context.Context, req *DeleteVectorReque
 
 		if v.metrics != nil {
 			v.metrics.vectorsDeleted.Inc()
-			v.metrics.vectorCount.With(req.Namespace).Dec()
+			v.metrics.vectorCount.WithLabels(namespaceMetricLabels(scoped)).Dec()
 		}
 
 		v.logger.WithFields(map[string]interface{}{
@@ -1233,7 +1302,7 @@ func (v *vectorService) DeleteVector(ctx context.Context, req *DeleteVectorReque
 		}, nil
 	}
 
-	if err := v.storage.DeleteVector(ctx, req.Namespace, req.ID); err != nil {
+	if err := v.storage.DeleteVector(ctx, scoped, req.ID); err != nil {
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("delete_vector", "storage_error").Inc()
 		}
@@ -1245,7 +1314,7 @@ func (v *vectorService) DeleteVector(ctx context.Context, req *DeleteVectorReque
 	}
 
 	v.indexMu.RLock()
-	index, exists := v.hnswIndexes[req.Namespace]
+	index, exists := v.hnswIndexes[scoped]
 	v.indexMu.RUnlock()
 
 	if exists {
@@ -1260,7 +1329,7 @@ func (v *vectorService) DeleteVector(ctx context.Context, req *DeleteVectorReque
 
 	if v.metrics != nil {
 		v.metrics.vectorsDeleted.Inc()
-		v.metrics.vectorCount.With(req.Namespace).Dec()
+		v.metrics.vectorCount.WithLabels(namespaceMetricLabels(scoped)).Dec()
 	}
 
 	v.logger.WithFields(map[string]interface{}{
@@ -1290,12 +1359,7 @@ func (v *vectorService) BatchUpsert(ctx context.Context, req *BatchUpsertRequest
 		return nil, err
 	}
 
-	if err := v.validateTenantAccess(ctx, req.Namespace); err != nil {
-		if v.metrics != nil {
-			v.metrics.operationErrors.With("batch_upsert", "forbidden").Inc()
-		}
-		return nil, err
-	}
+	scoped := scopedFromContext(ctx, req.Namespace)
 
 	v.mu.RLock()
 	defer v.mu.RUnlock()
@@ -1325,7 +1389,7 @@ func (v *vectorService) BatchUpsert(ctx context.Context, req *BatchUpsertRequest
 			batchVectors[i] = vec.Vector
 		}
 
-		cmd := statemachine.NewBatchUpsertCommand(req.Namespace, batchIDs, batchVectors, v.nodeID)
+		cmd := statemachine.NewBatchUpsertCommand(scoped, batchIDs, batchVectors, v.nodeID)
 		if err := v.proposeToRaft(ctx, cmd); err != nil {
 			if v.metrics != nil {
 				v.metrics.operationErrors.With("batch_upsert", "raft_error").Inc()
@@ -1333,7 +1397,7 @@ func (v *vectorService) BatchUpsert(ctx context.Context, req *BatchUpsertRequest
 			return nil, err
 		}
 
-		index, err := v.ensureHNSWIndex(ctx, req.Namespace)
+		index, err := v.ensureHNSWIndex(ctx, scoped)
 		if err != nil {
 			v.logger.WithFields(map[string]interface{}{
 				"namespace": req.Namespace,
@@ -1353,7 +1417,7 @@ func (v *vectorService) BatchUpsert(ctx context.Context, req *BatchUpsertRequest
 
 		if v.metrics != nil {
 			v.metrics.vectorsUpserted.Add(float64(len(req.Vectors)))
-			v.metrics.vectorCount.With(req.Namespace).Add(float64(len(req.Vectors)))
+			v.metrics.vectorCount.WithLabels(namespaceMetricLabels(scoped)).Add(float64(len(req.Vectors)))
 		}
 
 		v.logger.WithFields(map[string]interface{}{
@@ -1382,7 +1446,7 @@ func (v *vectorService) BatchUpsert(ctx context.Context, req *BatchUpsertRequest
 		}
 	}
 
-	if err := v.storage.BatchUpsertVectors(ctx, req.Namespace, vecs); err != nil {
+	if err := v.storage.BatchUpsertVectors(ctx, scoped, vecs); err != nil {
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("batch_upsert", "storage_error").Inc()
 		}
@@ -1394,7 +1458,7 @@ func (v *vectorService) BatchUpsert(ctx context.Context, req *BatchUpsertRequest
 	}
 
 	v.indexMu.RLock()
-	index, exists := v.hnswIndexes[req.Namespace]
+	index, exists := v.hnswIndexes[scoped]
 	v.indexMu.RUnlock()
 
 	if exists {
@@ -1411,7 +1475,7 @@ func (v *vectorService) BatchUpsert(ctx context.Context, req *BatchUpsertRequest
 
 	if v.metrics != nil {
 		v.metrics.vectorsUpserted.Add(float64(len(req.Vectors)))
-		v.metrics.vectorCount.With(req.Namespace).Add(float64(len(req.Vectors)))
+		v.metrics.vectorCount.WithLabels(namespaceMetricLabels(scoped)).Add(float64(len(req.Vectors)))
 	}
 
 	v.logger.WithFields(map[string]interface{}{
@@ -1449,12 +1513,7 @@ func (v *vectorService) SearchSimilar(ctx context.Context, req *SearchSimilarReq
 		return nil, err
 	}
 
-	if err := v.validateTenantAccess(ctx, req.Namespace); err != nil {
-		if v.metrics != nil {
-			v.metrics.operationErrors.With("search_similar", "forbidden").Inc()
-		}
-		return nil, err
-	}
+	scoped := scopedFromContext(ctx, req.Namespace)
 
 	v.mu.RLock()
 	defer v.mu.RUnlock()
@@ -1467,7 +1526,7 @@ func (v *vectorService) SearchSimilar(ctx context.Context, req *SearchSimilarReq
 		}
 	}
 
-	index, err := v.ensureHNSWIndex(ctx, req.Namespace)
+	index, err := v.ensureHNSWIndex(ctx, scoped)
 	if err != nil {
 		v.logger.WithFields(map[string]interface{}{
 			"namespace": req.Namespace,
@@ -1515,7 +1574,7 @@ func (v *vectorService) SearchSimilar(ctx context.Context, req *SearchSimilarReq
 		}
 
 		if req.IncludeVectors || req.IncludeMetadata {
-			vec, err := v.storage.GetVector(ctx, req.Namespace, res.ID)
+			vec, err := v.storage.GetVector(ctx, scoped, res.ID)
 			if err == nil {
 				if req.IncludeVectors {
 					result.Vector = vec.Embedding
@@ -1556,12 +1615,7 @@ func (v *vectorService) SearchByMetadata(ctx context.Context, req *SearchByMetad
 		return nil, err
 	}
 
-	if err := v.validateTenantAccess(ctx, req.Namespace); err != nil {
-		if v.metrics != nil {
-			v.metrics.operationErrors.With("search_by_metadata", "forbidden").Inc()
-		}
-		return nil, err
-	}
+	scoped := scopedFromContext(ctx, req.Namespace)
 
 	v.mu.RLock()
 	defer v.mu.RUnlock()
@@ -1596,7 +1650,7 @@ func (v *vectorService) SearchByMetadata(ctx context.Context, req *SearchByMetad
 		Offset: req.Offset,
 	}
 
-	vecs, err := v.storage.ScanByMultipleFilters(ctx, req.Namespace, filters, opts)
+	vecs, err := v.storage.ScanByMultipleFilters(ctx, scoped, filters, opts)
 	if err != nil {
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("search_by_metadata", "scan_failed").Inc()
@@ -1700,8 +1754,9 @@ func (v *vectorService) RebuildIndex(ctx context.Context, req *RebuildIndexReque
 	}
 
 	jobID := uuid.New().String()
+	scoped := scopedFromContext(ctx, req.Namespace)
 
-	info, err := v.storage.GetNamespaceInfo(ctx, req.Namespace)
+	info, err := v.storage.GetNamespaceInfo(ctx, scoped)
 	if err != nil {
 		return nil, &qrdbErrors.QRDBError{
 			Code: qrdbErrors.ErrNotFound,
@@ -1725,7 +1780,7 @@ func (v *vectorService) RebuildIndex(ctx context.Context, req *RebuildIndexReque
 
 	if req.Async {
 		go func() {
-			if err := v.performIndexRebuild(ctx, jobID, req.Namespace, req.IndexConfig); err != nil {
+			if err := v.performIndexRebuild(ctx, jobID, scoped, req.IndexConfig); err != nil {
 				v.logger.WithFields(map[string]interface{}{
 					"job_id":    jobID,
 					"namespace": req.Namespace,
@@ -1746,7 +1801,7 @@ func (v *vectorService) RebuildIndex(ctx context.Context, req *RebuildIndexReque
 		}, nil
 	}
 
-	if err := v.performIndexRebuild(ctx, jobID, req.Namespace, req.IndexConfig); err != nil {
+	if err := v.performIndexRebuild(ctx, jobID, scoped, req.IndexConfig); err != nil {
 		return nil, err
 	}
 
@@ -2020,7 +2075,9 @@ func (v *vectorService) GetIndexStats(ctx context.Context, req *GetIndexStatsReq
 		}
 	}
 
-	info, err := v.storage.GetNamespaceInfo(ctx, req.Namespace)
+	scoped := scopedFromContext(ctx, req.Namespace)
+
+	info, err := v.storage.GetNamespaceInfo(ctx, scoped)
 	if err != nil {
 		return nil, &qrdbErrors.QRDBError{
 			Code: qrdbErrors.ErrNotFound,
@@ -2030,7 +2087,7 @@ func (v *vectorService) GetIndexStats(ctx context.Context, req *GetIndexStatsReq
 	}
 
 	v.indexMu.RLock()
-	index, exists := v.hnswIndexes[req.Namespace]
+	index, exists := v.hnswIndexes[scoped]
 	v.indexMu.RUnlock()
 
 	var indexCount int64
@@ -2096,6 +2153,45 @@ func (v *vectorService) GetIndexStats(ctx context.Context, req *GetIndexStatsReq
 // Validation Methods
 // =============================================================================
 
+// maxNamespaceNameLen is the maximum byte length for a namespace name.
+// DNS label rules cap component length at 63; we allow slightly more (255)
+// to accommodate hierarchical logical names while still bounding storage key
+// sizes without truncation.
+const maxNamespaceNameLen = 255
+
+// validateNamespaceName rejects namespace names that are empty, exceed the
+// maximum length, or contain any byte below 0x20 (control characters) or the
+// unit-separator byte (0x1f) used as the scoped-key separator. The check
+// applies a conservative allowlist approach: only printable, non-control bytes
+// are accepted. Callers use this helper before constructing scoped storage keys.
+func validateNamespaceName(name string) error {
+	if name == "" {
+		return &InvalidNamespaceNameError{Name: name, Reason: "name must not be empty"}
+	}
+	if len(name) > maxNamespaceNameLen {
+		return &InvalidNamespaceNameError{
+			Name:   name,
+			Reason: fmt.Sprintf("name exceeds maximum length of %d bytes", maxNamespaceNameLen),
+		}
+	}
+	// Reject control characters (< 0x20) and the explicit separator byte (0x1f).
+	// 0x1f (unit separator) is used as namespaceSep and must never appear in a
+	// user-supplied name to prevent key-prefix collisions across tenants.
+	for _, b := range []byte(name) {
+		if b < 0x20 {
+			return &InvalidNamespaceNameError{
+				Name:   name,
+				Reason: fmt.Sprintf("name contains illegal control character 0x%02x", b),
+			}
+		}
+	}
+	// Additionally reject a name that is only whitespace.
+	if strings.TrimSpace(name) == "" {
+		return &InvalidNamespaceNameError{Name: name, Reason: "name must not be blank"}
+	}
+	return nil
+}
+
 func (v *vectorService) validateCreateNamespaceRequest(req *CreateNamespaceRequest) error {
 	if req == nil {
 		return &qrdbErrors.QRDBError{
@@ -2109,6 +2205,13 @@ func (v *vectorService) validateCreateNamespaceRequest(req *CreateNamespaceReque
 			Code: qrdbErrors.ErrInvalidInput,
 			Op:   "vector.validateCreateNamespaceRequest",
 			Err:  &api.RequiredFieldError{Field: "namespace"},
+		}
+	}
+	if err := validateNamespaceName(req.Namespace); err != nil {
+		return &qrdbErrors.QRDBError{
+			Code: qrdbErrors.ErrInvalidInput,
+			Op:   "vector.validateCreateNamespaceRequest",
+			Err:  err,
 		}
 	}
 	if req.Dimension == 0 {
@@ -2433,12 +2536,7 @@ func (v *vectorService) CompactNamespace(ctx context.Context, req *CompactNamesp
 		return nil, err
 	}
 
-	if err := v.validateTenantAccess(ctx, req.Namespace); err != nil {
-		if v.metrics != nil {
-			v.metrics.operationErrors.With("compact_namespace", "forbidden").Inc()
-		}
-		return nil, err
-	}
+	scoped := scopedFromContext(ctx, req.Namespace)
 
 	v.mu.RLock()
 	if v.closed {
@@ -2451,7 +2549,7 @@ func (v *vectorService) CompactNamespace(ctx context.Context, req *CompactNamesp
 	}
 	v.mu.RUnlock()
 
-	info, err := v.storage.GetNamespaceInfo(ctx, req.Namespace)
+	info, err := v.storage.GetNamespaceInfo(ctx, scoped)
 	if err != nil {
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("compact_namespace", "not_found").Inc()
@@ -2485,7 +2583,7 @@ func (v *vectorService) CompactNamespace(ctx context.Context, req *CompactNamesp
 
 	if req.Async {
 		go func() { // #nosec G118 -- async compaction must outlive request
-			if err := v.performCompaction(context.Background(), operationID, req.Namespace); err != nil {
+			if err := v.performCompaction(context.Background(), operationID, scoped); err != nil {
 				v.logger.WithFields(map[string]interface{}{
 					"operation_id": operationID,
 					"namespace":    req.Namespace,
@@ -2501,7 +2599,7 @@ func (v *vectorService) CompactNamespace(ctx context.Context, req *CompactNamesp
 		}, nil
 	}
 
-	if err := v.performCompaction(ctx, operationID, req.Namespace); err != nil {
+	if err := v.performCompaction(ctx, operationID, scoped); err != nil {
 		return nil, err
 	}
 
@@ -2783,11 +2881,9 @@ func (v *vectorService) BatchDeleteVectors(ctx context.Context, req *BatchDelete
 		}
 	}
 
-	if err := v.validateTenantAccess(ctx, req.Namespace); err != nil {
-		return nil, err
-	}
+	scoped := scopedFromContext(ctx, req.Namespace)
 
-	err := v.storage.BatchDeleteVectors(ctx, req.Namespace, req.IDs)
+	err := v.storage.BatchDeleteVectors(ctx, scoped, req.IDs)
 	if err != nil {
 		deletedCount := 0
 		var failedIDs []uint64
@@ -2850,11 +2946,9 @@ func (v *vectorService) ListVectors(ctx context.Context, req *ListVectorsRequest
 		}
 	}
 
-	if err := v.validateTenantAccess(ctx, req.Namespace); err != nil {
-		return nil, err
-	}
+	scoped := scopedFromContext(ctx, req.Namespace)
 
-	namespaceInfo, err := v.storage.GetNamespaceInfo(ctx, req.Namespace)
+	namespaceInfo, err := v.storage.GetNamespaceInfo(ctx, scoped)
 	if err != nil {
 		return nil, &qrdbErrors.QRDBError{
 			Code: qrdbErrors.ErrNotFound,
@@ -2882,7 +2976,7 @@ func (v *vectorService) ListVectors(ctx context.Context, req *ListVectorsRequest
 		Limit:  limit + 1,
 		Offset: offset,
 	}
-	vectors, err := v.storage.ScanNamespace(ctx, req.Namespace, scanOpts)
+	vectors, err := v.storage.ScanNamespace(ctx, scoped, scanOpts)
 	if err != nil {
 		return nil, &qrdbErrors.QRDBError{
 			Code: qrdbErrors.ErrInternal,
@@ -2960,11 +3054,9 @@ func (v *vectorService) UpdateMetadata(ctx context.Context, req *UpdateVectorMet
 		}
 	}
 
-	if err := v.validateTenantAccess(ctx, req.Namespace); err != nil {
-		return nil, err
-	}
+	scoped := scopedFromContext(ctx, req.Namespace)
 
-	existingVector, err := v.storage.GetVector(ctx, req.Namespace, req.ID)
+	existingVector, err := v.storage.GetVector(ctx, scoped, req.ID)
 	if err != nil {
 		return nil, &qrdbErrors.QRDBError{
 			Code: qrdbErrors.ErrNotFound,
@@ -3053,11 +3145,9 @@ func (v *vectorService) SearchByID(ctx context.Context, req *SearchByIDRequest) 
 		}
 	}
 
-	if err := v.validateTenantAccess(ctx, req.Namespace); err != nil {
-		return nil, err
-	}
+	scoped := scopedFromContext(ctx, req.Namespace)
 
-	sourceVector, err := v.storage.GetVector(ctx, req.Namespace, req.ID)
+	sourceVector, err := v.storage.GetVector(ctx, scoped, req.ID)
 	if err != nil {
 		return nil, &qrdbErrors.QRDBError{
 			Code: qrdbErrors.ErrNotFound,

@@ -1,0 +1,133 @@
+// Copyright (c) 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package user
+
+import (
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/json"
+	"time"
+)
+
+// RoleBinding grants a role within a tenant scope. It is the tenant-scoped RBAC
+// primitive: a control-plane user can hold an Admin binding for tenant X without
+// being an admin of the system tenant.
+type RoleBinding struct {
+	RoleID   string `json:"roleID"`
+	TenantID string `json:"tenantID"`
+}
+
+// CertBindingKind identifies how an mTLS certificate is matched to a user.
+type CertBindingKind int
+
+const (
+	// CertBindingSPKIThumbprint binds to the SHA-256 of the certificate's
+	// SubjectPublicKeyInfo. It is the CANONICAL default: it tracks the public
+	// key, so it survives certificate renewal/re-issuance with the same key.
+	CertBindingSPKIThumbprint CertBindingKind = iota
+	// CertBindingFullCertFingerprint binds to the SHA-256 of the whole
+	// certificate DER. Use only when exact-certificate pinning is required.
+	CertBindingFullCertFingerprint
+	// CertBindingPIVAttested marks a binding established via PIV attestation.
+	CertBindingPIVAttested
+)
+
+// CertBinding binds an mTLS client certificate to a user. Thumbprint is the
+// canonical SPKI SHA-256 thumbprint (base64url) unless Kind says otherwise.
+type CertBinding struct {
+	Thumbprint string          `json:"thumbprint"`
+	Kind       CertBindingKind `json:"kind"`
+	NotAfter   time.Time       `json:"notAfter,omitempty"`
+}
+
+// FactorEnrollment is an opaque auth-factor enrollment record (webauthn, fido2,
+// piv, ...). qrdb stores it; the registered pkg/authfactors.Factor named by
+// FactorName interprets Data during verification. qrdb never inspects Data.
+type FactorEnrollment struct {
+	ID         string          `json:"id"`
+	FactorName string          `json:"factorName"`
+	Data       json.RawMessage `json:"data,omitempty"`
+	CreatedAt  time.Time       `json:"createdAt"`
+}
+
+// spkiThumbprintLen is the decoded byte length of a canonical SPKI thumbprint
+// (SHA-256 → 32 bytes).
+const spkiThumbprintLen = sha256.Size
+
+// ComputeSPKIThumbprint returns the canonical mTLS identity for a certificate:
+// the SHA-256 of its SubjectPublicKeyInfo, base64url (no padding). Because it is
+// computed over the public key, two certificates issued for the same key (e.g.
+// a renewal) produce the same thumbprint. This is THE single algorithm for the
+// whole stack — xkms and quicbaas must not reimplement it.
+func ComputeSPKIThumbprint(cert *x509.Certificate) string {
+	if cert == nil {
+		return ""
+	}
+	sum := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
+	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+// IsValidSPKIThumbprint reports whether s is a canonical SPKI thumbprint: a
+// base64url (no padding) encoding of exactly 32 bytes. Binding writes validate
+// against this so the identity index only ever holds canonical thumbprints and
+// a caller cannot pollute it with arbitrary or non-canonical strings (which a
+// lookup using the canonical encoding would never match).
+func IsValidSPKIThumbprint(s string) bool {
+	raw, err := base64.RawURLEncoding.DecodeString(s)
+	if err != nil {
+		return false
+	}
+	return len(raw) == spkiThumbprintLen
+}
+
+// IsExpired reports whether the binding has a non-zero NotAfter that is at or
+// before now. A zero NotAfter means the binding never expires.
+func (b CertBinding) IsExpired(now time.Time) bool {
+	return !b.NotAfter.IsZero() && !now.Before(b.NotAfter)
+}
+
+// AddCertBinding appends a cert binding, de-duplicating by thumbprint.
+func (u *User) AddCertBinding(b CertBinding) {
+	for i := range u.CertBindings {
+		if u.CertBindings[i].Thumbprint == b.Thumbprint {
+			u.CertBindings[i] = b
+			return
+		}
+	}
+	u.CertBindings = append(u.CertBindings, b)
+}
+
+// HasCertBinding reports whether the user has a currently-valid (non-expired)
+// binding for the given thumbprint. Expiry is enforced on every resolution so a
+// decommissioned credential cannot be replayed after its NotAfter.
+func (u *User) HasCertBinding(thumbprint string) bool {
+	now := time.Now().UTC()
+	for i := range u.CertBindings {
+		if u.CertBindings[i].Thumbprint == thumbprint && !u.CertBindings[i].IsExpired(now) {
+			return true
+		}
+	}
+	return false
+}
+
+// MatchesCert reports whether the presented certificate's SPKI thumbprint is
+// bound to this user and the binding has not expired — the mTLS-auth predicate.
+func (u *User) MatchesCert(cert *x509.Certificate) bool {
+	if cert == nil {
+		return false
+	}
+	return u.HasCertBinding(ComputeSPKIThumbprint(cert))
+}

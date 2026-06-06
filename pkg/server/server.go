@@ -35,12 +35,17 @@ import (
 	quicapi "github.com/jeremyhahn/go-qrdb/pkg/api/quic"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
 	unixapi "github.com/jeremyhahn/go-qrdb/pkg/api/unix"
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/config"
+	"github.com/jeremyhahn/go-qrdb/pkg/custodian"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/dek"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -152,8 +157,51 @@ type serverOptions struct {
 	barrierRegistry *seal.BarrierRegistry
 	tenantDEKMgr    dek.TenantDEKManager
 	tenantSvc       tenant.TenantServicer
+	backupSvc       service.BackupServicer
+	rebalanceSvc    service.RebalanceServicer
 	dbRegistry      *DatabaseServiceRegistry
 	webUI           http.Handler
+	auditLogger     audit.AuditLogger
+	authFactorSvc   service.AuthFactorServicer
+	custodianSvc    custodian.Servicer
+	soAuthenticator *auth.SOAuthenticator
+
+	// sealStrategy overrides the default seal strategy used when no
+	// strategyRegistry is configured. When both are nil the daemon
+	// constructs a NewDeferredSoftwareStrategy at init time as fallback.
+	sealStrategy seal.SealingStrategy
+
+	// strategyRegistry is the canonical name→factory lookup for sealing
+	// strategies. qrdb provides a default registry pre-populated with
+	// Software + None; higher layers (xkms via quicbaas composition)
+	// register hardware-backed strategies into it.
+	strategyRegistry seal.StrategyRegistry
+
+	// pinBackend is the canonical PIN management implementation. nil
+	// means qrdb constructs a default SoftwareBackend at init time;
+	// hardware-aware callers inject a TPM2 or PKCS#11 backend here.
+	pinBackend pin.PINBackend
+
+	// factorRegistry is the canonical authentication-factor lookup
+	// (FIDO2 / PIV / PKCS#11 / mTLS). qrdb provides a default registry
+	// with only the software mTLS factor; higher layers register
+	// hardware-backed factors from go-xkms.
+	factorRegistry *authfactors.FactorRegistry
+
+	// sealedWindowProbe controls the sealed-window middleware /
+	// interceptors on REST and gRPC. While the probe reports sealed,
+	// every endpoint not on the allowlist returns 503 / Unavailable.
+	// Wired identically across protocol servers so operators see the
+	// same envelope on every transport.
+	sealedWindowProbe SealedWindowProbe
+}
+
+// SealedWindowProbe is the abstraction the sealed-window middleware /
+// interceptors need to know whether the storage barrier is currently
+// sealed. *seal.StorageBarrier satisfies this directly via its
+// IsSealed method; tests may substitute a deterministic fake.
+type SealedWindowProbe interface {
+	IsSealed() bool
 }
 
 // ServerOption configures optional Server dependencies.
@@ -218,6 +266,17 @@ func WithCertProvider(svc cert.CertProvider) ServerOption {
 // for REST and gRPC protocol servers.
 func WithAuthMiddleware(mw *authmw.AuthMiddleware) ServerOption {
 	return func(o *serverOptions) { o.authMW = mw }
+}
+
+// WithSealedWindowProbe installs the sealed-window middleware on REST
+// and the equivalent interceptors on gRPC. While the probe reports
+// sealed, every endpoint not on the allowlist returns 503 / Unavailable
+// with body {"error":"barrier sealed","code":"SEALED"}. Once unsealed
+// the wrappers are passthrough; on re-seal they engage again. The same
+// option drives all protocol surfaces so operators see consistent
+// behavior across transports.
+func WithSealedWindowProbe(probe SealedWindowProbe) ServerOption {
+	return func(o *serverOptions) { o.sealedWindowProbe = probe }
 }
 
 // WithCABootstrap enables the /v1/ca/bootstrap endpoint on the REST
@@ -352,6 +411,23 @@ func WithTenantService(svc tenant.TenantServicer) ServerOption {
 	}
 }
 
+// WithBackupService sets the backup/restore service. When set, backups can be
+// created, listed, restored, and verified across all wire transports.
+func WithBackupService(svc service.BackupServicer) ServerOption {
+	return func(o *serverOptions) {
+		o.backupSvc = svc
+	}
+}
+
+// WithRebalanceService sets the cluster rebalance service. When set, shard
+// statistics, rebalance planning, and execution are exposed across all wire
+// transports.
+func WithRebalanceService(svc service.RebalanceServicer) ServerOption {
+	return func(o *serverOptions) {
+		o.rebalanceSvc = svc
+	}
+}
+
 // WithDatabaseServiceRegistry sets the per-database service registry.
 // When set, protocol handlers can resolve the correct service set for a
 // given database name instead of falling back to the single shared set.
@@ -379,6 +455,114 @@ func WithAdminService(svc service.AdminServicer) ServerOption {
 // REST server. Non-API requests are forwarded to this handler.
 func WithWebUI(h http.Handler) ServerOption {
 	return func(o *serverOptions) { o.webUI = h }
+}
+
+// WithAuditLogger configures a compliance-grade AuditLogger for all protocol
+// servers. When set, the audit query endpoint is registered on REST, gRPC
+// (Unix socket), QUIC, and MCP servers.
+func WithAuditLogger(l audit.AuditLogger) ServerOption {
+	return func(o *serverOptions) { o.auditLogger = l }
+}
+
+// WithAuthFactorService configures the auth factor service for custodian
+// enrollment, challenge issuance, and verification across all protocol servers.
+func WithAuthFactorService(svc service.AuthFactorServicer) ServerOption {
+	return func(o *serverOptions) { o.authFactorSvc = svc }
+}
+
+// WithCustodianService configures the custodian lifecycle service for barrier
+// ceremony enrollment, revocation, and metadata persistence. When set, the
+// custodian management endpoints are registered on the REST server.
+func WithCustodianService(svc custodian.Servicer) ServerOption {
+	return func(o *serverOptions) { o.custodianSvc = svc }
+}
+
+// WithSOAuthenticator configures the Security Officer dual-factor PIN
+// authenticator. When set, SO-permissioned endpoints require an in-band
+// X-QRDB-SO-PIN header over TLS for verification against the hash-committed
+// PIN (never stored plaintext).
+func WithSOAuthenticator(a *auth.SOAuthenticator) ServerOption {
+	return func(o *serverOptions) { o.soAuthenticator = a }
+}
+
+// WithSealStrategy injects a pre-constructed SealingStrategy to use as
+// the default for the storage barrier. Use this when the strategy is
+// fully known at server construction time (typical for software-only
+// deployments). For name-based selection at `qrdbd init --barrier-strategy`
+// time use WithStrategyRegistry instead.
+func WithSealStrategy(strategy seal.SealingStrategy) ServerOption {
+	return func(o *serverOptions) { o.sealStrategy = strategy }
+}
+
+// WithStrategyRegistry injects a populated StrategyRegistry so per-tenant
+// barriers can resolve hardware/cloud seal strategies (TPM2, PKCS#11, cloud
+// KMS, Vault) by name. qrdb provides a default registry pre-populated with
+// Software + None; higher layers (xkms via quicbaas composition) call Register
+// on the supplied registry to add hardware-backed strategies.
+//
+// The TenantService that consumes this registry is constructed during
+// lifecycle.BuildServices — before server.New runs — so the SDK node builders
+// (NewStandaloneNode/NewClusteredNode) resolve this option via
+// ResolveCryptoOptions and forward it into lifecycle.Infra.StrategyRegistry up
+// front. Passing it only to server.New would be too late; use the node
+// builders (or populate lifecycle.Infra directly) for hardware-strategy
+// injection to take effect.
+func WithStrategyRegistry(reg seal.StrategyRegistry) ServerOption {
+	return func(o *serverOptions) { o.strategyRegistry = reg }
+}
+
+// WithPINBackend injects the canonical PIN backend. When nil, qrdb
+// constructs a default pin.SoftwareBackend at init time. Hardware
+// callers inject TPM2 or PKCS#11 backends from go-xkms here; the
+// ceremony service uses the backend to store and verify the SO and
+// User PINs (never as raw bytes).
+func WithPINBackend(backend pin.PINBackend) ServerOption {
+	return func(o *serverOptions) { o.pinBackend = backend }
+}
+
+// WithFactorRegistry injects a populated authentication-factor
+// registry. qrdb provides a default with the software mTLS factor;
+// higher layers (xkms via quicbaas) register FIDO2 / PIV / PKCS#11
+// factors so callers can enroll and verify them through the unified
+// AuthFactorService surface.
+func WithFactorRegistry(reg *authfactors.FactorRegistry) ServerOption {
+	return func(o *serverOptions) { o.factorRegistry = reg }
+}
+
+// CryptoOptions holds the hardware/seal injection values carried by a set of
+// ServerOptions. It exists because the TenantService (which consumes the
+// StrategyRegistry to resolve per-tenant hardware/cloud seal strategies) is
+// constructed during lifecycle.BuildServices — strictly BEFORE server.New
+// runs. An embedder (the SDK node builders, quicbaas) must therefore resolve
+// these values from its ServerOptions and forward them into lifecycle.Infra
+// up front; passing them only to server.New would be too late and the
+// injection would silently no-op.
+type CryptoOptions struct {
+	StrategyRegistry seal.StrategyRegistry
+	SealStrategy     seal.SealingStrategy
+	PINBackend       pin.PINBackend
+	FactorRegistry   *authfactors.FactorRegistry
+}
+
+// ResolveCryptoOptions applies the given ServerOptions to a throwaway option
+// set and returns the crypto-injection values (strategy registry, seal
+// strategy, PIN backend, factor registry). Embedders call this before
+// lifecycle.BuildServices so an injected StrategyRegistry reaches the
+// TenantService. The ServerOption setters are pure field assignments, so
+// applying the full set here has no side effects.
+func ResolveCryptoOptions(opts ...ServerOption) CryptoOptions {
+	o := &serverOptions{}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(o)
+		}
+	}
+	return CryptoOptions{
+		StrategyRegistry: o.strategyRegistry,
+		SealStrategy:     o.sealStrategy,
+		PINBackend:       o.pinBackend,
+		FactorRegistry:   o.factorRegistry,
+	}
 }
 
 // New creates a new multi-protocol server orchestrator. kvSvc and adminSvc may
@@ -574,6 +758,9 @@ func (s *Server) startREST() error {
 	if s.opts.authMW != nil {
 		restOpts = append(restOpts, rest.WithAuthMiddleware(s.opts.authMW))
 	}
+	if s.opts.sealedWindowProbe != nil {
+		restOpts = append(restOpts, rest.WithSealedWindowProbe(s.opts.sealedWindowProbe))
+	}
 	if s.opts.batchSvc != nil {
 		restOpts = append(restOpts, rest.WithBatch(s.opts.batchSvc))
 	}
@@ -613,6 +800,9 @@ func (s *Server) startREST() error {
 	if s.opts.barrierSvc != nil {
 		restOpts = append(restOpts, rest.WithBarrierService(s.opts.barrierSvc))
 	}
+	if s.opts.pinBackend != nil {
+		restOpts = append(restOpts, rest.WithPINBackend(s.opts.pinBackend))
+	}
 	if s.opts.ceremonySvc != nil {
 		restOpts = append(restOpts, rest.WithCeremonyService(s.opts.ceremonySvc))
 	}
@@ -628,6 +818,12 @@ func (s *Server) startREST() error {
 	if s.opts.tenantSvc != nil {
 		restOpts = append(restOpts, rest.WithTenantService(s.opts.tenantSvc))
 	}
+	if s.opts.backupSvc != nil {
+		restOpts = append(restOpts, rest.WithBackupService(s.opts.backupSvc))
+	}
+	if s.opts.rebalanceSvc != nil {
+		restOpts = append(restOpts, rest.WithRebalanceService(s.opts.rebalanceSvc))
+	}
 	if len(s.opts.caBootstrapCert) > 0 {
 		restOpts = append(restOpts, rest.WithCABootstrap(s.opts.caBootstrapCert, s.opts.caBootstrapKey))
 	}
@@ -637,13 +833,25 @@ func (s *Server) startREST() error {
 	if s.opts.webUI != nil {
 		restOpts = append(restOpts, rest.WithWebUI(s.opts.webUI))
 	}
+	if s.opts.auditLogger != nil {
+		restOpts = append(restOpts, rest.WithAuditLogger(s.opts.auditLogger))
+	}
+	if s.opts.authFactorSvc != nil {
+		restOpts = append(restOpts, rest.WithAuthFactorService(s.opts.authFactorSvc))
+	}
+	if s.opts.custodianSvc != nil {
+		restOpts = append(restOpts, rest.WithCustodianService(s.opts.custodianSvc))
+	}
+	if s.opts.soAuthenticator != nil {
+		restOpts = append(restOpts, rest.WithSOAuthenticator(s.opts.soAuthenticator))
+	}
 	if s.opts.dbRegistry != nil {
 		regOpts := []RESTRegistryOption{}
 		if s.opts.tenantSvc != nil {
 			regOpts = append(regOpts, WithTenantServicer(s.opts.tenantSvc))
 		}
 		restOpts = append(restOpts, rest.WithServiceRegistry(
-			NewRESTServiceRegistry(s.opts.dbRegistry, s.opts.barrierRegistry, "default", regOpts...),
+			NewRESTServiceRegistry(s.opts.dbRegistry, s.opts.barrierRegistry, tenant.SystemTenantID, regOpts...),
 		))
 	}
 
@@ -678,14 +886,23 @@ func (s *Server) startGRPC() error {
 	if s.opts.authMW != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithAuthMiddleware(s.opts.authMW))
 	}
+	if s.opts.sealedWindowProbe != nil {
+		grpcOpts = append(grpcOpts, grpcapi.WithSealedWindowProbe(s.opts.sealedWindowProbe))
+	}
 	if s.opts.barrierSvc != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithBarrierService(s.opts.barrierSvc))
+	}
+	if s.opts.pinBackend != nil {
+		grpcOpts = append(grpcOpts, grpcapi.WithPINBackend(s.opts.pinBackend))
 	}
 	if s.opts.ceremonySvc != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithCeremonyService(s.opts.ceremonySvc))
 	}
 	if s.opts.credentialSvc != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithCredentialService(s.opts.credentialSvc))
+	}
+	if s.opts.auditLogger != nil {
+		grpcOpts = append(grpcOpts, grpcapi.WithAuditLogger(s.opts.auditLogger))
 	}
 	if s.opts.collectionSvc != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithCollectionService(s.opts.collectionSvc))
@@ -720,8 +937,23 @@ func (s *Server) startGRPC() error {
 	if s.opts.embeddingSvc != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithEmbedding(s.opts.embeddingSvc))
 	}
+	if s.opts.ragSvc != nil {
+		grpcOpts = append(grpcOpts, grpcapi.WithRAGService(s.opts.ragSvc))
+	}
 	if s.opts.databaseSvc != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithDatabaseService(s.opts.databaseSvc))
+	}
+	if s.opts.tenantSvc != nil {
+		grpcOpts = append(grpcOpts, grpcapi.WithTenantService(s.opts.tenantSvc))
+	}
+	if s.opts.backupSvc != nil {
+		grpcOpts = append(grpcOpts, grpcapi.WithBackupService(s.opts.backupSvc))
+	}
+	if s.opts.rebalanceSvc != nil {
+		grpcOpts = append(grpcOpts, grpcapi.WithRebalanceService(s.opts.rebalanceSvc))
+	}
+	if s.opts.authFactorSvc != nil {
+		grpcOpts = append(grpcOpts, grpcapi.WithAuthFactorService(s.opts.authFactorSvc))
 	}
 
 	s.grpcSrv = grpcapi.NewServer(s.kvSvc, s.adminSvc, addr, grpcOpts...)
@@ -791,8 +1023,32 @@ func (s *Server) startQUIC() error {
 	if s.opts.barrierSvc != nil {
 		quicOpts = append(quicOpts, quicapi.WithBarrierService(s.opts.barrierSvc))
 	}
+	if s.opts.pinBackend != nil {
+		quicOpts = append(quicOpts, quicapi.WithPINBackend(s.opts.pinBackend))
+	}
 	if s.opts.ceremonySvc != nil {
 		quicOpts = append(quicOpts, quicapi.WithCeremonyService(s.opts.ceremonySvc))
+	}
+	if s.opts.auditLogger != nil {
+		quicOpts = append(quicOpts, quicapi.WithAuditLogger(s.opts.auditLogger))
+	}
+	if s.opts.tenantSvc != nil {
+		quicOpts = append(quicOpts, quicapi.WithTenantService(s.opts.tenantSvc))
+	}
+	if s.opts.backupSvc != nil {
+		quicOpts = append(quicOpts, quicapi.WithBackupService(s.opts.backupSvc))
+	}
+	if s.opts.rebalanceSvc != nil {
+		quicOpts = append(quicOpts, quicapi.WithRebalanceService(s.opts.rebalanceSvc))
+	}
+	if s.opts.embeddingSvc != nil {
+		quicOpts = append(quicOpts, quicapi.WithEmbedding(s.opts.embeddingSvc))
+	}
+	if s.opts.ragSvc != nil {
+		quicOpts = append(quicOpts, quicapi.WithRAGService(s.opts.ragSvc))
+	}
+	if s.opts.authFactorSvc != nil {
+		quicOpts = append(quicOpts, quicapi.WithAuthFactorService(s.opts.authFactorSvc))
 	}
 
 	s.quicSrv = quicapi.NewServer(s.kvSvc, s.adminSvc, addr, quicOpts...)
@@ -819,6 +1075,9 @@ func (s *Server) startUnix() error {
 	}
 	if s.opts.barrierSvc != nil {
 		unixOpts = append(unixOpts, unixapi.WithBarrierService(s.opts.barrierSvc))
+	}
+	if s.opts.pinBackend != nil {
+		unixOpts = append(unixOpts, unixapi.WithPINBackend(s.opts.pinBackend))
 	}
 	if s.opts.ceremonySvc != nil {
 		unixOpts = append(unixOpts, unixapi.WithCeremonyService(s.opts.ceremonySvc))
@@ -856,8 +1115,29 @@ func (s *Server) startUnix() error {
 	if s.opts.vectorSvc != nil {
 		unixOpts = append(unixOpts, unixapi.WithVector(s.opts.vectorSvc))
 	}
+	if s.opts.embeddingSvc != nil {
+		unixOpts = append(unixOpts, unixapi.WithEmbedding(s.opts.embeddingSvc))
+	}
+	if s.opts.ragSvc != nil {
+		unixOpts = append(unixOpts, unixapi.WithRAGService(s.opts.ragSvc))
+	}
 	if s.opts.databaseSvc != nil {
 		unixOpts = append(unixOpts, unixapi.WithDatabaseService(s.opts.databaseSvc))
+	}
+	if s.opts.auditLogger != nil {
+		unixOpts = append(unixOpts, unixapi.WithAuditLogger(s.opts.auditLogger))
+	}
+	if s.opts.tenantSvc != nil {
+		unixOpts = append(unixOpts, unixapi.WithTenantService(s.opts.tenantSvc))
+	}
+	if s.opts.backupSvc != nil {
+		unixOpts = append(unixOpts, unixapi.WithBackupService(s.opts.backupSvc))
+	}
+	if s.opts.rebalanceSvc != nil {
+		unixOpts = append(unixOpts, unixapi.WithRebalanceService(s.opts.rebalanceSvc))
+	}
+	if s.opts.authFactorSvc != nil {
+		unixOpts = append(unixOpts, unixapi.WithAuthFactorService(s.opts.authFactorSvc))
 	}
 
 	s.unixSrv = unixapi.NewServer(s.kvSvc, s.adminSvc, s.config.Unix.SocketPath, unixOpts...)
@@ -879,6 +1159,11 @@ func (s *Server) startMCP() error {
 	if s.opts.tlsConfig != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithTLS(s.opts.tlsConfig))
 	}
+	if s.opts.authMW != nil {
+		// Authenticate the mTLS peer and authorize every tool call
+		// (default-deny). Parity with REST/gRPC/QUIC.
+		mcpOpts = append(mcpOpts, mcpapi.WithAuthMiddleware(s.opts.authMW))
+	}
 	if s.opts.userSvc != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithUserService(s.opts.userSvc))
 	}
@@ -890,6 +1175,9 @@ func (s *Server) startMCP() error {
 	}
 	if s.opts.barrierSvc != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithBarrierService(s.opts.barrierSvc))
+	}
+	if s.opts.pinBackend != nil {
+		mcpOpts = append(mcpOpts, mcpapi.WithPINBackend(s.opts.pinBackend))
 	}
 	if s.opts.ceremonySvc != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithCeremonyService(s.opts.ceremonySvc))
@@ -938,6 +1226,21 @@ func (s *Server) startMCP() error {
 	}
 	if s.opts.databaseSvc != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithDatabaseService(s.opts.databaseSvc))
+	}
+	if s.opts.auditLogger != nil {
+		mcpOpts = append(mcpOpts, mcpapi.WithAuditLogger(s.opts.auditLogger))
+	}
+	if s.opts.tenantSvc != nil {
+		mcpOpts = append(mcpOpts, mcpapi.WithTenantService(s.opts.tenantSvc))
+	}
+	if s.opts.backupSvc != nil {
+		mcpOpts = append(mcpOpts, mcpapi.WithBackupService(s.opts.backupSvc))
+	}
+	if s.opts.rebalanceSvc != nil {
+		mcpOpts = append(mcpOpts, mcpapi.WithRebalanceService(s.opts.rebalanceSvc))
+	}
+	if s.opts.authFactorSvc != nil {
+		mcpOpts = append(mcpOpts, mcpapi.WithAuthFactorService(s.opts.authFactorSvc))
 	}
 
 	s.mcpSrv = mcpapi.NewServer(s.kvSvc, s.adminSvc, addr, mcpOpts...)

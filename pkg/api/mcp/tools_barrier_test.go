@@ -31,23 +31,19 @@ import (
 // ---------------------------------------------------------------------------
 
 type mockBarrierService struct {
-	initializeFn            func(ctx context.Context, secret string) error
-	unsealFn                func(ctx context.Context, secret string) error
-	sealFn                  func(ctx context.Context) error
-	statusFn                func(ctx context.Context) (*service.BarrierStatusInfo, error)
-	initializeShamirFn      func(ctx context.Context, secret string, threshold, totalShares int) (*service.ShamirInitInfo, error)
-	unsealWithShareFn       func(ctx context.Context, share string) (*service.UnsealShareProgress, error)
-	unsealWithSharesFn      func(ctx context.Context, shares []string) error
-	shamirListSharesFn      func(ctx context.Context) (*service.ShamirSharesInfo, error)
-	shamirDeleteShareFn     func(ctx context.Context, index int) error
-	shamirDeleteAllSharesFn func(ctx context.Context) error
-	shamirVerifyFn          func(ctx context.Context) error
-	rekeyFn                 func(ctx context.Context, threshold, total int) (*service.ShamirInitInfo, error)
-	generateRecoveryKeysFn  func(ctx context.Context, threshold, total int) (*service.RecoveryKeysInfo, error)
-	recoverWithKeysFn       func(ctx context.Context, keys []string) error
-	deleteRecoveryKeysFn    func(ctx context.Context) error
-	hasRecoveryKeysFn       func(ctx context.Context) (bool, error)
-	generateRootTokenFn     func(ctx context.Context, shares []string) (*service.RootTokenInfo, error)
+	initializeFn           func(ctx context.Context, secret string) error
+	unsealFn               func(ctx context.Context, secret string) error
+	sealFn                 func(ctx context.Context) error
+	statusFn               func(ctx context.Context) (*service.BarrierStatusInfo, error)
+	initializeShamirFn     func(ctx context.Context, secret string, threshold, totalShares int) (*service.ShamirInitInfo, error)
+	unsealWithShareFn      func(ctx context.Context, share string) (*service.UnsealShareProgress, error)
+	unsealWithSharesFn     func(ctx context.Context, shares []string) error
+	rekeyFn                func(ctx context.Context, threshold, total int) (*service.ShamirInitInfo, error)
+	generateRecoveryKeysFn func(ctx context.Context, threshold, total int) (*service.RecoveryKeysInfo, error)
+	recoverWithKeysFn      func(ctx context.Context, keys []string) error
+	deleteRecoveryKeysFn   func(ctx context.Context) error
+	hasRecoveryKeysFn      func(ctx context.Context) (bool, error)
+	generateRootTokenFn    func(ctx context.Context, shares []string) (*service.RootTokenInfo, error)
 }
 
 func newMockBarrierService() *mockBarrierService {
@@ -120,38 +116,6 @@ func (m *mockBarrierService) BarrierUnsealWithShares(ctx context.Context, shares
 	return nil
 }
 
-func (m *mockBarrierService) BarrierShamirListShares(ctx context.Context) (*service.ShamirSharesInfo, error) {
-	if m.shamirListSharesFn != nil {
-		return m.shamirListSharesFn(ctx)
-	}
-	return &service.ShamirSharesInfo{
-		Count:     3,
-		Threshold: 2,
-		Total:     3,
-	}, nil
-}
-
-func (m *mockBarrierService) BarrierShamirDeleteShare(ctx context.Context, index int) error {
-	if m.shamirDeleteShareFn != nil {
-		return m.shamirDeleteShareFn(ctx, index)
-	}
-	return nil
-}
-
-func (m *mockBarrierService) BarrierShamirDeleteAllShares(ctx context.Context) error {
-	if m.shamirDeleteAllSharesFn != nil {
-		return m.shamirDeleteAllSharesFn(ctx)
-	}
-	return nil
-}
-
-func (m *mockBarrierService) BarrierShamirVerify(ctx context.Context) error {
-	if m.shamirVerifyFn != nil {
-		return m.shamirVerifyFn(ctx)
-	}
-	return nil
-}
-
 func (m *mockBarrierService) BarrierRekey(ctx context.Context, threshold, total int) (*service.ShamirInitInfo, error) {
 	if m.rekeyFn != nil {
 		return m.rekeyFn(ctx, threshold, total)
@@ -219,7 +183,7 @@ func (m *mockBarrierService) BarrierGenerateRootToken(ctx context.Context, share
 
 func TestBarrierTools_Registration(t *testing.T) {
 	svc := newMockBarrierService()
-	tools := barrierTools(svc)
+	tools := barrierTools(svc, nil)
 
 	expectedNames := []string{
 		"qrdb_barrier_initialize",
@@ -229,10 +193,6 @@ func TestBarrierTools_Registration(t *testing.T) {
 		"qrdb_barrier_shamir_initialize",
 		"qrdb_barrier_shamir_unseal_share",
 		"qrdb_barrier_shamir_unseal_shares",
-		"qrdb_barrier_shamir_list_shares",
-		"qrdb_barrier_shamir_delete_share",
-		"qrdb_barrier_shamir_delete_all_shares",
-		"qrdb_barrier_shamir_verify",
 		"qrdb_barrier_rekey",
 		"qrdb_barrier_recovery_generate",
 		"qrdb_barrier_recovery_recover",
@@ -278,7 +238,7 @@ func TestServer_WithBarrierService(t *testing.T) {
 
 func TestHandleBarrierInitialize_Success(t *testing.T) {
 	svc := newMockBarrierService()
-	handler := handleBarrierInitialize(svc)
+	handler := handleBarrierInitialize(svc, nil)
 
 	req := buildCallToolRequest(t, "qrdb_barrier_initialize", map[string]any{
 		"secret": "mysecret",
@@ -297,7 +257,7 @@ func TestHandleBarrierInitialize_Success(t *testing.T) {
 
 func TestHandleBarrierInitialize_MissingSecret(t *testing.T) {
 	svc := newMockBarrierService()
-	handler := handleBarrierInitialize(svc)
+	handler := handleBarrierInitialize(svc, nil)
 
 	req := buildCallToolRequest(t, "qrdb_barrier_initialize", map[string]any{})
 
@@ -315,7 +275,7 @@ func TestHandleBarrierInitialize_ServiceError(t *testing.T) {
 	svc.initializeFn = func(_ context.Context, _ string) error {
 		return errors.New("barrier already initialized")
 	}
-	handler := handleBarrierInitialize(svc)
+	handler := handleBarrierInitialize(svc, nil)
 
 	req := buildCallToolRequest(t, "qrdb_barrier_initialize", map[string]any{
 		"secret": "mysecret",
@@ -401,7 +361,7 @@ func TestHandleBarrierUnseal_ServiceError(t *testing.T) {
 
 func TestHandleBarrierSeal_Success(t *testing.T) {
 	svc := newMockBarrierService()
-	handler := handleBarrierSeal(svc)
+	handler := handleBarrierSeal(svc, nil)
 
 	req := buildCallToolRequest(t, "qrdb_barrier_seal", map[string]any{})
 
@@ -421,7 +381,7 @@ func TestHandleBarrierSeal_ServiceError(t *testing.T) {
 	svc.sealFn = func(_ context.Context) error {
 		return errors.New("seal failed")
 	}
-	handler := handleBarrierSeal(svc)
+	handler := handleBarrierSeal(svc, nil)
 
 	req := buildCallToolRequest(t, "qrdb_barrier_seal", map[string]any{})
 
@@ -496,7 +456,7 @@ func TestHandleBarrierStatus_ServiceError(t *testing.T) {
 
 func TestHandleBarrierShamirInitialize_Success(t *testing.T) {
 	svc := newMockBarrierService()
-	handler := handleBarrierShamirInitialize(svc)
+	handler := handleBarrierShamirInitialize(svc, nil)
 
 	req := buildCallToolRequest(t, "qrdb_barrier_shamir_initialize", map[string]any{
 		"secret":       "mysecret",
@@ -527,7 +487,7 @@ func TestHandleBarrierShamirInitialize_Success(t *testing.T) {
 
 func TestHandleBarrierShamirInitialize_MissingSecret(t *testing.T) {
 	svc := newMockBarrierService()
-	handler := handleBarrierShamirInitialize(svc)
+	handler := handleBarrierShamirInitialize(svc, nil)
 
 	req := buildCallToolRequest(t, "qrdb_barrier_shamir_initialize", map[string]any{
 		"threshold":    float64(2),
@@ -545,7 +505,7 @@ func TestHandleBarrierShamirInitialize_MissingSecret(t *testing.T) {
 
 func TestHandleBarrierShamirInitialize_MissingThreshold(t *testing.T) {
 	svc := newMockBarrierService()
-	handler := handleBarrierShamirInitialize(svc)
+	handler := handleBarrierShamirInitialize(svc, nil)
 
 	req := buildCallToolRequest(t, "qrdb_barrier_shamir_initialize", map[string]any{
 		"secret":       "mysecret",
@@ -563,7 +523,7 @@ func TestHandleBarrierShamirInitialize_MissingThreshold(t *testing.T) {
 
 func TestHandleBarrierShamirInitialize_MissingTotalShares(t *testing.T) {
 	svc := newMockBarrierService()
-	handler := handleBarrierShamirInitialize(svc)
+	handler := handleBarrierShamirInitialize(svc, nil)
 
 	req := buildCallToolRequest(t, "qrdb_barrier_shamir_initialize", map[string]any{
 		"secret":    "mysecret",
@@ -584,7 +544,7 @@ func TestHandleBarrierShamirInitialize_ServiceError(t *testing.T) {
 	svc.initializeShamirFn = func(_ context.Context, _ string, _, _ int) (*service.ShamirInitInfo, error) {
 		return nil, errors.New("already initialized")
 	}
-	handler := handleBarrierShamirInitialize(svc)
+	handler := handleBarrierShamirInitialize(svc, nil)
 
 	req := buildCallToolRequest(t, "qrdb_barrier_shamir_initialize", map[string]any{
 		"secret":       "mysecret",
@@ -731,202 +691,12 @@ func TestHandleBarrierShamirUnsealShares_ServiceError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// handleBarrierShamirListShares
-// ---------------------------------------------------------------------------
-
-func TestHandleBarrierShamirListShares_Success(t *testing.T) {
-	svc := newMockBarrierService()
-	handler := handleBarrierShamirListShares(svc)
-
-	req := buildCallToolRequest(t, "qrdb_barrier_shamir_list_shares", map[string]any{})
-
-	result, err := handler(context.Background(), req)
-	if err != nil {
-		t.Fatalf("handleBarrierShamirListShares: %v", err)
-	}
-
-	text := resultText(t, result)
-	var info service.ShamirSharesInfo
-	if jsonErr := json.Unmarshal([]byte(text), &info); jsonErr != nil {
-		t.Fatalf("unmarshal: %v", jsonErr)
-	}
-	if info.Count != 3 {
-		t.Errorf("count: got %d, want %d", info.Count, 3)
-	}
-	if info.Threshold != 2 {
-		t.Errorf("threshold: got %d, want %d", info.Threshold, 2)
-	}
-}
-
-func TestHandleBarrierShamirListShares_ServiceError(t *testing.T) {
-	svc := newMockBarrierService()
-	svc.shamirListSharesFn = func(_ context.Context) (*service.ShamirSharesInfo, error) {
-		return nil, errors.New("list failed")
-	}
-	handler := handleBarrierShamirListShares(svc)
-
-	req := buildCallToolRequest(t, "qrdb_barrier_shamir_list_shares", map[string]any{})
-
-	_, err := handler(context.Background(), req)
-	if err == nil {
-		t.Fatal("expected error from service")
-	}
-
-	var toolErr *ToolError
-	if !errors.As(err, &toolErr) {
-		t.Errorf("expected *ToolError, got %T", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// handleBarrierShamirDeleteShare
-// ---------------------------------------------------------------------------
-
-func TestHandleBarrierShamirDeleteShare_Success(t *testing.T) {
-	svc := newMockBarrierService()
-	handler := handleBarrierShamirDeleteShare(svc)
-
-	req := buildCallToolRequest(t, "qrdb_barrier_shamir_delete_share", map[string]any{
-		"index": float64(2),
-	})
-
-	result, err := handler(context.Background(), req)
-	if err != nil {
-		t.Fatalf("handleBarrierShamirDeleteShare: %v", err)
-	}
-
-	text := resultText(t, result)
-	if text != "share deleted" {
-		t.Errorf("expected 'share deleted', got %q", text)
-	}
-}
-
-func TestHandleBarrierShamirDeleteShare_MissingIndex(t *testing.T) {
-	svc := newMockBarrierService()
-	handler := handleBarrierShamirDeleteShare(svc)
-
-	req := buildCallToolRequest(t, "qrdb_barrier_shamir_delete_share", map[string]any{})
-
-	result, err := handler(context.Background(), req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.IsError {
-		t.Error("expected error result for missing index")
-	}
-}
-
-func TestHandleBarrierShamirDeleteShare_ServiceError(t *testing.T) {
-	svc := newMockBarrierService()
-	svc.shamirDeleteShareFn = func(_ context.Context, _ int) error {
-		return errors.New("share not found")
-	}
-	handler := handleBarrierShamirDeleteShare(svc)
-
-	req := buildCallToolRequest(t, "qrdb_barrier_shamir_delete_share", map[string]any{
-		"index": float64(99),
-	})
-
-	_, err := handler(context.Background(), req)
-	if err == nil {
-		t.Fatal("expected error from service")
-	}
-
-	var toolErr *ToolError
-	if !errors.As(err, &toolErr) {
-		t.Errorf("expected *ToolError, got %T", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// handleBarrierShamirDeleteAllShares
-// ---------------------------------------------------------------------------
-
-func TestHandleBarrierShamirDeleteAllShares_Success(t *testing.T) {
-	svc := newMockBarrierService()
-	handler := handleBarrierShamirDeleteAllShares(svc)
-
-	req := buildCallToolRequest(t, "qrdb_barrier_shamir_delete_all_shares", map[string]any{})
-
-	result, err := handler(context.Background(), req)
-	if err != nil {
-		t.Fatalf("handleBarrierShamirDeleteAllShares: %v", err)
-	}
-
-	text := resultText(t, result)
-	if text != "all shares deleted" {
-		t.Errorf("expected 'all shares deleted', got %q", text)
-	}
-}
-
-func TestHandleBarrierShamirDeleteAllShares_ServiceError(t *testing.T) {
-	svc := newMockBarrierService()
-	svc.shamirDeleteAllSharesFn = func(_ context.Context) error {
-		return errors.New("delete all failed")
-	}
-	handler := handleBarrierShamirDeleteAllShares(svc)
-
-	req := buildCallToolRequest(t, "qrdb_barrier_shamir_delete_all_shares", map[string]any{})
-
-	_, err := handler(context.Background(), req)
-	if err == nil {
-		t.Fatal("expected error from service")
-	}
-
-	var toolErr *ToolError
-	if !errors.As(err, &toolErr) {
-		t.Errorf("expected *ToolError, got %T", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// handleBarrierShamirVerify
-// ---------------------------------------------------------------------------
-
-func TestHandleBarrierShamirVerify_Success(t *testing.T) {
-	svc := newMockBarrierService()
-	handler := handleBarrierShamirVerify(svc)
-
-	req := buildCallToolRequest(t, "qrdb_barrier_shamir_verify", map[string]any{})
-
-	result, err := handler(context.Background(), req)
-	if err != nil {
-		t.Fatalf("handleBarrierShamirVerify: %v", err)
-	}
-
-	text := resultText(t, result)
-	if text != "shares verified" {
-		t.Errorf("expected 'shares verified', got %q", text)
-	}
-}
-
-func TestHandleBarrierShamirVerify_ServiceError(t *testing.T) {
-	svc := newMockBarrierService()
-	svc.shamirVerifyFn = func(_ context.Context) error {
-		return errors.New("verification failed")
-	}
-	handler := handleBarrierShamirVerify(svc)
-
-	req := buildCallToolRequest(t, "qrdb_barrier_shamir_verify", map[string]any{})
-
-	_, err := handler(context.Background(), req)
-	if err == nil {
-		t.Fatal("expected error from service")
-	}
-
-	var toolErr *ToolError
-	if !errors.As(err, &toolErr) {
-		t.Errorf("expected *ToolError, got %T", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // handleBarrierRekey
 // ---------------------------------------------------------------------------
 
 func TestHandleBarrierRekey_Success(t *testing.T) {
 	svc := newMockBarrierService()
-	handler := handleBarrierRekey(svc)
+	handler := handleBarrierRekey(svc, nil)
 
 	req := buildCallToolRequest(t, "qrdb_barrier_rekey", map[string]any{
 		"threshold": float64(3),
@@ -953,7 +723,7 @@ func TestHandleBarrierRekey_Success(t *testing.T) {
 
 func TestHandleBarrierRekey_MissingThreshold(t *testing.T) {
 	svc := newMockBarrierService()
-	handler := handleBarrierRekey(svc)
+	handler := handleBarrierRekey(svc, nil)
 
 	req := buildCallToolRequest(t, "qrdb_barrier_rekey", map[string]any{
 		"total": float64(5),
@@ -970,7 +740,7 @@ func TestHandleBarrierRekey_MissingThreshold(t *testing.T) {
 
 func TestHandleBarrierRekey_MissingTotal(t *testing.T) {
 	svc := newMockBarrierService()
-	handler := handleBarrierRekey(svc)
+	handler := handleBarrierRekey(svc, nil)
 
 	req := buildCallToolRequest(t, "qrdb_barrier_rekey", map[string]any{
 		"threshold": float64(2),
@@ -990,7 +760,7 @@ func TestHandleBarrierRekey_ServiceError(t *testing.T) {
 	svc.rekeyFn = func(_ context.Context, _, _ int) (*service.ShamirInitInfo, error) {
 		return nil, errors.New("rekey failed")
 	}
-	handler := handleBarrierRekey(svc)
+	handler := handleBarrierRekey(svc, nil)
 
 	req := buildCallToolRequest(t, "qrdb_barrier_rekey", map[string]any{
 		"threshold": float64(2),
@@ -1014,7 +784,7 @@ func TestHandleBarrierRekey_ServiceError(t *testing.T) {
 
 func TestHandleBarrierRecoveryGenerate_Success(t *testing.T) {
 	svc := newMockBarrierService()
-	handler := handleBarrierRecoveryGenerate(svc)
+	handler := handleBarrierRecoveryGenerate(svc, nil)
 
 	req := buildCallToolRequest(t, "qrdb_barrier_recovery_generate", map[string]any{
 		"threshold": float64(2),
@@ -1044,7 +814,7 @@ func TestHandleBarrierRecoveryGenerate_Success(t *testing.T) {
 
 func TestHandleBarrierRecoveryGenerate_MissingThreshold(t *testing.T) {
 	svc := newMockBarrierService()
-	handler := handleBarrierRecoveryGenerate(svc)
+	handler := handleBarrierRecoveryGenerate(svc, nil)
 
 	req := buildCallToolRequest(t, "qrdb_barrier_recovery_generate", map[string]any{
 		"total": float64(4),
@@ -1061,7 +831,7 @@ func TestHandleBarrierRecoveryGenerate_MissingThreshold(t *testing.T) {
 
 func TestHandleBarrierRecoveryGenerate_MissingTotal(t *testing.T) {
 	svc := newMockBarrierService()
-	handler := handleBarrierRecoveryGenerate(svc)
+	handler := handleBarrierRecoveryGenerate(svc, nil)
 
 	req := buildCallToolRequest(t, "qrdb_barrier_recovery_generate", map[string]any{
 		"threshold": float64(2),
@@ -1081,7 +851,7 @@ func TestHandleBarrierRecoveryGenerate_ServiceError(t *testing.T) {
 	svc.generateRecoveryKeysFn = func(_ context.Context, _, _ int) (*service.RecoveryKeysInfo, error) {
 		return nil, errors.New("generate failed")
 	}
-	handler := handleBarrierRecoveryGenerate(svc)
+	handler := handleBarrierRecoveryGenerate(svc, nil)
 
 	req := buildCallToolRequest(t, "qrdb_barrier_recovery_generate", map[string]any{
 		"threshold": float64(2),

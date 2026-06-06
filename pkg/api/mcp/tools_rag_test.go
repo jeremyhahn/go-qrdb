@@ -107,7 +107,9 @@ func TestHandleRAGIngest_Success(t *testing.T) {
 	result, err := handler(context.Background(), req)
 	require.NoError(t, err)
 	assert.False(t, result.IsError)
-	assert.Contains(t, result.Content[0].(mcp.TextContent).Text, "Ingested document doc1")
+	text := result.Content[0].(mcp.TextContent).Text
+	assert.Contains(t, text, `"DocumentID":"doc1"`)
+	assert.Contains(t, text, `"Namespace":"ns"`)
 }
 
 func TestHandleRAGIngest_ServiceError(t *testing.T) {
@@ -177,7 +179,7 @@ func TestHandleRAGDeleteDocument_Success(t *testing.T) {
 	result, err := handler(context.Background(), req)
 	require.NoError(t, err)
 	assert.False(t, result.IsError)
-	assert.Contains(t, result.Content[0].(mcp.TextContent).Text, "Deleted document doc1")
+	assert.Contains(t, result.Content[0].(mcp.TextContent).Text, `"DocumentID":"doc1"`)
 }
 
 func TestHandleRAGDeleteDocument_ServiceError(t *testing.T) {

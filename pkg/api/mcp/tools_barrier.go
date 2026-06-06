@@ -22,27 +22,30 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // barrierTools returns the MCP tool registrations for barrier lifecycle
 // operations including initialization, seal/unseal, Shamir share management,
 // rekey, recovery, and root token generation.
-func barrierTools(svc service.BarrierServicer) []mcpserver.ServerTool {
+//
+// pinBackend is optional: when supplied, handleBarrierInitialize forwards
+// the so_pin / user_pin tool arguments to the backend before invoking the
+// barrier service, and handleBarrierRekey / handleBarrierRecoveryGenerate
+// verify the SO PIN. When nil the PIN-related arguments are ignored,
+// preserving dev-mode and unconfigured-deployment flows.
+func barrierTools(svc service.BarrierServicer, pinBackend pin.PINBackend) []mcpserver.ServerTool {
 	return []mcpserver.ServerTool{
-		{Tool: toolBarrierInitialize(), Handler: handleBarrierInitialize(svc)},
+		{Tool: toolBarrierInitialize(), Handler: handleBarrierInitialize(svc, pinBackend)},
 		{Tool: toolBarrierUnseal(), Handler: handleBarrierUnseal(svc)},
-		{Tool: toolBarrierSeal(), Handler: handleBarrierSeal(svc)},
+		{Tool: toolBarrierSeal(), Handler: handleBarrierSeal(svc, pinBackend)},
 		{Tool: toolBarrierStatus(), Handler: handleBarrierStatus(svc)},
-		{Tool: toolBarrierShamirInitialize(), Handler: handleBarrierShamirInitialize(svc)},
+		{Tool: toolBarrierShamirInitialize(), Handler: handleBarrierShamirInitialize(svc, pinBackend)},
 		{Tool: toolBarrierShamirUnsealShare(), Handler: handleBarrierShamirUnsealShare(svc)},
 		{Tool: toolBarrierShamirUnsealShares(), Handler: handleBarrierShamirUnsealShares(svc)},
-		{Tool: toolBarrierShamirListShares(), Handler: handleBarrierShamirListShares(svc)},
-		{Tool: toolBarrierShamirDeleteShare(), Handler: handleBarrierShamirDeleteShare(svc)},
-		{Tool: toolBarrierShamirDeleteAllShares(), Handler: handleBarrierShamirDeleteAllShares(svc)},
-		{Tool: toolBarrierShamirVerify(), Handler: handleBarrierShamirVerify(svc)},
-		{Tool: toolBarrierRekey(), Handler: handleBarrierRekey(svc)},
-		{Tool: toolBarrierRecoveryGenerate(), Handler: handleBarrierRecoveryGenerate(svc)},
+		{Tool: toolBarrierRekey(), Handler: handleBarrierRekey(svc, pinBackend)},
+		{Tool: toolBarrierRecoveryGenerate(), Handler: handleBarrierRecoveryGenerate(svc, pinBackend)},
 		{Tool: toolBarrierRecoveryRecover(), Handler: handleBarrierRecoveryRecover(svc)},
 		{Tool: toolBarrierRecoveryDelete(), Handler: handleBarrierRecoveryDelete(svc)},
 		{Tool: toolBarrierRecoveryStatus(), Handler: handleBarrierRecoveryStatus(svc)},
@@ -51,23 +54,39 @@ func barrierTools(svc service.BarrierServicer) []mcpserver.ServerTool {
 }
 
 // toolBarrierInitialize defines the qrdb_barrier_initialize tool schema.
+// so_pin and user_pin are optional and feed the configured pin.PINBackend
+// when supplied.
 func toolBarrierInitialize() mcp.Tool {
 	return mcp.NewTool("qrdb_barrier_initialize",
-		mcp.WithDescription("Initialize the cryptographic barrier with a secret."),
+		mcp.WithDescription("Initialize the cryptographic barrier with a secret. Optionally supply so_pin and user_pin to provision the PINBackend in the same call."),
 		mcp.WithString("secret",
 			mcp.Required(),
-			mcp.Description("Secret for barrier initialization."),
+			mcp.Description("Secret for barrier initialization (strategy wrapping passphrase)."),
+		),
+		mcp.WithString("so_pin",
+			mcp.Description("Optional Security Officer PIN routed to the configured pin.PINBackend."),
+		),
+		mcp.WithString("user_pin",
+			mcp.Description("Optional User PIN routed to the configured pin.PINBackend."),
 		),
 	)
 }
 
 // handleBarrierInitialize returns a tool handler that delegates to
-// svc.BarrierInitialize.
-func handleBarrierInitialize(svc service.BarrierServicer) mcpserver.ToolHandlerFunc {
+// svc.BarrierInitialize. When pinBackend is non-nil and the request
+// supplies so_pin / user_pin, the PINs are persisted on the backend
+// before the barrier is initialized.
+func handleBarrierInitialize(svc service.BarrierServicer, pinBackend pin.PINBackend) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		secret := mcp.ParseString(req, "secret", "")
 		if secret == "" {
 			return mcp.NewToolResultError("secret is required"), nil
+		}
+
+		soPIN := mcp.ParseString(req, "so_pin", "")
+		userPIN := mcp.ParseString(req, "user_pin", "")
+		if err := applyBarrierInitializePINs(pinBackend, soPIN, userPIN); err != nil {
+			return nil, &ToolError{Tool: "qrdb_barrier_initialize", Err: err}
 		}
 
 		if err := svc.BarrierInitialize(ctx, secret); err != nil {
@@ -107,16 +126,27 @@ func handleBarrierUnseal(svc service.BarrierServicer) mcpserver.ToolHandlerFunc 
 }
 
 // toolBarrierSeal defines the qrdb_barrier_seal tool schema.
+// so_pin is optional and verified against the configured pin.PINBackend
+// when one is set; when no backend is configured the argument is ignored.
 func toolBarrierSeal() mcp.Tool {
 	return mcp.NewTool("qrdb_barrier_seal",
 		mcp.WithDescription("Seal the cryptographic barrier, transitioning it to the sealed state."),
+		mcp.WithString("so_pin",
+			mcp.Description("Optional SO PIN verified against the configured pin.PINBackend."),
+		),
 	)
 }
 
 // handleBarrierSeal returns a tool handler that delegates to
-// svc.BarrierSeal.
-func handleBarrierSeal(svc service.BarrierServicer) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+// svc.BarrierSeal. SO PIN verification is enforced when pinBackend is
+// non-nil and has a SO PIN set.
+func handleBarrierSeal(svc service.BarrierServicer, pinBackend pin.PINBackend) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		soPIN := mcp.ParseString(req, "so_pin", "")
+		if err := verifyBarrierSOPIN(pinBackend, soPIN); err != nil {
+			return nil, &ToolError{Tool: "qrdb_barrier_seal", Err: err}
+		}
+
 		if err := svc.BarrierSeal(ctx); err != nil {
 			return nil, &ToolError{Tool: "qrdb_barrier_seal", Err: err}
 		}
@@ -151,13 +181,14 @@ func handleBarrierStatus(svc service.BarrierServicer) mcpserver.ToolHandlerFunc 
 }
 
 // toolBarrierShamirInitialize defines the qrdb_barrier_shamir_initialize
-// tool schema.
+// tool schema. so_pin and user_pin are optional and feed the configured
+// pin.PINBackend when supplied.
 func toolBarrierShamirInitialize() mcp.Tool {
 	return mcp.NewTool("qrdb_barrier_shamir_initialize",
-		mcp.WithDescription("Initialize the barrier with Shamir secret sharing, splitting the root key into shares."),
+		mcp.WithDescription("Initialize the barrier with Shamir secret sharing, splitting the root key into shares. Optionally supply so_pin and user_pin to provision the PINBackend in the same call."),
 		mcp.WithString("secret",
 			mcp.Required(),
-			mcp.Description("Secret for Shamir barrier initialization."),
+			mcp.Description("Secret for Shamir barrier initialization (strategy wrapping passphrase)."),
 		),
 		mcp.WithNumber("threshold",
 			mcp.Required(),
@@ -167,12 +198,20 @@ func toolBarrierShamirInitialize() mcp.Tool {
 			mcp.Required(),
 			mcp.Description("Total number of Shamir shares to generate."),
 		),
+		mcp.WithString("so_pin",
+			mcp.Description("Optional Security Officer PIN routed to the configured pin.PINBackend."),
+		),
+		mcp.WithString("user_pin",
+			mcp.Description("Optional User PIN routed to the configured pin.PINBackend."),
+		),
 	)
 }
 
 // handleBarrierShamirInitialize returns a tool handler that delegates to
-// svc.BarrierInitializeShamir.
-func handleBarrierShamirInitialize(svc service.BarrierServicer) mcpserver.ToolHandlerFunc {
+// svc.BarrierInitializeShamir. When pinBackend is non-nil and the request
+// supplies so_pin / user_pin, the PINs are persisted on the backend before
+// initialization.
+func handleBarrierShamirInitialize(svc service.BarrierServicer, pinBackend pin.PINBackend) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		secret := mcp.ParseString(req, "secret", "")
 		if secret == "" {
@@ -187,6 +226,12 @@ func handleBarrierShamirInitialize(svc service.BarrierServicer) mcpserver.ToolHa
 		totalShares := mcp.ParseInt(req, "total_shares", 0)
 		if totalShares <= 0 {
 			return mcp.NewToolResultError("total_shares is required and must be positive"), nil
+		}
+
+		soPIN := mcp.ParseString(req, "so_pin", "")
+		userPIN := mcp.ParseString(req, "user_pin", "")
+		if err := applyBarrierInitializePINs(pinBackend, soPIN, userPIN); err != nil {
+			return nil, &ToolError{Tool: "qrdb_barrier_shamir_initialize", Err: err}
 		}
 
 		info, err := svc.BarrierInitializeShamir(ctx, secret, threshold, totalShares)
@@ -272,101 +317,8 @@ func handleBarrierShamirUnsealShares(svc service.BarrierServicer) mcpserver.Tool
 	}
 }
 
-// toolBarrierShamirListShares defines the qrdb_barrier_shamir_list_shares
-// tool schema.
-func toolBarrierShamirListShares() mcp.Tool {
-	return mcp.NewTool("qrdb_barrier_shamir_list_shares",
-		mcp.WithDescription("List information about persisted Shamir shares including count, threshold, and total."),
-	)
-}
-
-// handleBarrierShamirListShares returns a tool handler that delegates to
-// svc.BarrierShamirListShares.
-func handleBarrierShamirListShares(svc service.BarrierServicer) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		info, err := svc.BarrierShamirListShares(ctx)
-		if err != nil {
-			return nil, &ToolError{Tool: "qrdb_barrier_shamir_list_shares", Err: err}
-		}
-
-		data, jsonErr := json.Marshal(info)
-		if jsonErr != nil {
-			return nil, &ToolError{Tool: "qrdb_barrier_shamir_list_shares", Err: jsonErr}
-		}
-
-		return mcp.NewToolResultText(string(data)), nil
-	}
-}
-
-// toolBarrierShamirDeleteShare defines the qrdb_barrier_shamir_delete_share
-// tool schema.
-func toolBarrierShamirDeleteShare() mcp.Tool {
-	return mcp.NewTool("qrdb_barrier_shamir_delete_share",
-		mcp.WithDescription("Delete a single Shamir share by its 1-based index."),
-		mcp.WithNumber("index",
-			mcp.Required(),
-			mcp.Description("The 1-based index of the share to delete."),
-		),
-	)
-}
-
-// handleBarrierShamirDeleteShare returns a tool handler that delegates to
-// svc.BarrierShamirDeleteShare.
-func handleBarrierShamirDeleteShare(svc service.BarrierServicer) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		index := mcp.ParseInt(req, "index", 0)
-		if index <= 0 {
-			return mcp.NewToolResultError("index is required and must be positive"), nil
-		}
-
-		if err := svc.BarrierShamirDeleteShare(ctx, index); err != nil {
-			return nil, &ToolError{Tool: "qrdb_barrier_shamir_delete_share", Err: err}
-		}
-
-		return mcp.NewToolResultText("share deleted"), nil
-	}
-}
-
-// toolBarrierShamirDeleteAllShares defines the
-// qrdb_barrier_shamir_delete_all_shares tool schema.
-func toolBarrierShamirDeleteAllShares() mcp.Tool {
-	return mcp.NewTool("qrdb_barrier_shamir_delete_all_shares",
-		mcp.WithDescription("Delete all persisted Shamir shares."),
-	)
-}
-
-// handleBarrierShamirDeleteAllShares returns a tool handler that delegates to
-// svc.BarrierShamirDeleteAllShares.
-func handleBarrierShamirDeleteAllShares(svc service.BarrierServicer) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		if err := svc.BarrierShamirDeleteAllShares(ctx); err != nil {
-			return nil, &ToolError{Tool: "qrdb_barrier_shamir_delete_all_shares", Err: err}
-		}
-
-		return mcp.NewToolResultText("all shares deleted"), nil
-	}
-}
-
-// toolBarrierShamirVerify defines the qrdb_barrier_shamir_verify tool schema.
-func toolBarrierShamirVerify() mcp.Tool {
-	return mcp.NewTool("qrdb_barrier_shamir_verify",
-		mcp.WithDescription("Verify the consistency of all persisted Shamir shares."),
-	)
-}
-
-// handleBarrierShamirVerify returns a tool handler that delegates to
-// svc.BarrierShamirVerify.
-func handleBarrierShamirVerify(svc service.BarrierServicer) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		if err := svc.BarrierShamirVerify(ctx); err != nil {
-			return nil, &ToolError{Tool: "qrdb_barrier_shamir_verify", Err: err}
-		}
-
-		return mcp.NewToolResultText("shares verified"), nil
-	}
-}
-
 // toolBarrierRekey defines the qrdb_barrier_rekey tool schema.
+// so_pin is optional and verified against the configured pin.PINBackend.
 func toolBarrierRekey() mcp.Tool {
 	return mcp.NewTool("qrdb_barrier_rekey",
 		mcp.WithDescription("Generate new Shamir shares for the existing root key with new threshold and total parameters."),
@@ -378,12 +330,16 @@ func toolBarrierRekey() mcp.Tool {
 			mcp.Required(),
 			mcp.Description("New total number of shares to generate."),
 		),
+		mcp.WithString("so_pin",
+			mcp.Description("Optional SO PIN verified against the configured pin.PINBackend."),
+		),
 	)
 }
 
 // handleBarrierRekey returns a tool handler that delegates to
-// svc.BarrierRekey.
-func handleBarrierRekey(svc service.BarrierServicer) mcpserver.ToolHandlerFunc {
+// svc.BarrierRekey. SO PIN verification is enforced when pinBackend is
+// non-nil and has a SO PIN set.
+func handleBarrierRekey(svc service.BarrierServicer, pinBackend pin.PINBackend) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		threshold := mcp.ParseInt(req, "threshold", 0)
 		if threshold <= 0 {
@@ -393,6 +349,11 @@ func handleBarrierRekey(svc service.BarrierServicer) mcpserver.ToolHandlerFunc {
 		total := mcp.ParseInt(req, "total", 0)
 		if total <= 0 {
 			return mcp.NewToolResultError("total is required and must be positive"), nil
+		}
+
+		soPIN := mcp.ParseString(req, "so_pin", "")
+		if err := verifyBarrierSOPIN(pinBackend, soPIN); err != nil {
+			return nil, &ToolError{Tool: "qrdb_barrier_rekey", Err: err}
 		}
 
 		info, err := svc.BarrierRekey(ctx, threshold, total)
@@ -410,7 +371,8 @@ func handleBarrierRekey(svc service.BarrierServicer) mcpserver.ToolHandlerFunc {
 }
 
 // toolBarrierRecoveryGenerate defines the qrdb_barrier_recovery_generate
-// tool schema.
+// tool schema. so_pin is optional and verified against the configured
+// pin.PINBackend.
 func toolBarrierRecoveryGenerate() mcp.Tool {
 	return mcp.NewTool("qrdb_barrier_recovery_generate",
 		mcp.WithDescription("Generate recovery keys from the root key for disaster recovery."),
@@ -422,12 +384,16 @@ func toolBarrierRecoveryGenerate() mcp.Tool {
 			mcp.Required(),
 			mcp.Description("Total number of recovery keys to generate."),
 		),
+		mcp.WithString("so_pin",
+			mcp.Description("Optional SO PIN verified against the configured pin.PINBackend."),
+		),
 	)
 }
 
 // handleBarrierRecoveryGenerate returns a tool handler that delegates to
-// svc.BarrierGenerateRecoveryKeys.
-func handleBarrierRecoveryGenerate(svc service.BarrierServicer) mcpserver.ToolHandlerFunc {
+// svc.BarrierGenerateRecoveryKeys. SO PIN verification is enforced when
+// pinBackend is non-nil and has a SO PIN set.
+func handleBarrierRecoveryGenerate(svc service.BarrierServicer, pinBackend pin.PINBackend) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		threshold := mcp.ParseInt(req, "threshold", 0)
 		if threshold <= 0 {
@@ -437,6 +403,11 @@ func handleBarrierRecoveryGenerate(svc service.BarrierServicer) mcpserver.ToolHa
 		total := mcp.ParseInt(req, "total", 0)
 		if total <= 0 {
 			return mcp.NewToolResultError("total is required and must be positive"), nil
+		}
+
+		soPIN := mcp.ParseString(req, "so_pin", "")
+		if err := verifyBarrierSOPIN(pinBackend, soPIN); err != nil {
+			return nil, &ToolError{Tool: "qrdb_barrier_recovery_generate", Err: err}
 		}
 
 		info, err := svc.BarrierGenerateRecoveryKeys(ctx, threshold, total)

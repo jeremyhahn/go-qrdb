@@ -21,18 +21,29 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // handleCeremonyInitialize performs the initialization ceremony by delegating
 // to the ceremony service layer. The QUIC transport passes nil for the
 // CeremonyCA parameter since it does not have access to the CA instance
-// directly, matching the gRPC transport behavior.
-func (s *Server) handleCeremonyInitialize(ctx context.Context, _ []byte) ([]byte, error) {
+// directly, matching the gRPC transport behavior. The per-request SO and
+// user PINs are decoded from the request payload and forwarded to the
+// service layer.
+func (s *Server) handleCeremonyInitialize(ctx context.Context, payload []byte) ([]byte, error) {
 	if s.ceremonySvc == nil {
 		return nil, &ServiceNotConfiguredError{Service: "ceremony"}
 	}
 
-	result, err := s.ceremonySvc.CeremonyInitialize(ctx, nil)
+	var req pb.CeremonyInitializeRequest
+	if err := proto.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+
+	result, err := s.ceremonySvc.CeremonyInitialize(ctx, nil, &service.CeremonyInitializeOptions{
+		SOPin:   req.GetSoPin(),
+		UserPin: req.GetUserPin(),
+	})
 	if err != nil {
 		return nil, err
 	}

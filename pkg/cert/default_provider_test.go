@@ -293,7 +293,7 @@ func TestDefaultCertProvider_Initialize_NewCA(t *testing.T) {
 	}
 
 	// Verify wrapped key was stored.
-	wrappedKey, err := kv.Get(ctx, "__sys:cert_ca/default/wrapped_key")
+	wrappedKey, err := kv.Get(ctx, "__sys:cert_ca/system/wrapped_key")
 	if err != nil {
 		t.Fatalf("Get wrapped_key: %v", err)
 	}
@@ -302,7 +302,7 @@ func TestDefaultCertProvider_Initialize_NewCA(t *testing.T) {
 	}
 
 	// Verify CA cert PEM was stored.
-	certPEM, err := kv.Get(ctx, "__sys:cert_ca/default/cert_pem")
+	certPEM, err := kv.Get(ctx, "__sys:cert_ca/system/cert_pem")
 	if err != nil {
 		t.Fatalf("Get cert_pem: %v", err)
 	}
@@ -468,7 +468,7 @@ func TestDefaultCertProvider_SealUnsealCycle(t *testing.T) {
 	ctx := context.Background()
 
 	// Generate a cert before sealing.
-	req := &GenerateRequest{Username: "alice", TenantID: "default"}
+	req := &GenerateRequest{Username: "alice", TenantID: "system"}
 	bundle, err := p.GenerateClientCert(ctx, req)
 	if err != nil {
 		t.Fatalf("GenerateClientCert: %v", err)
@@ -515,7 +515,7 @@ func TestDefaultCertProvider_GenerateClientCert_Success(t *testing.T) {
 
 	req := &GenerateRequest{
 		Username: "alice",
-		TenantID: "default",
+		TenantID: "system",
 		TTL:      24 * time.Hour,
 	}
 
@@ -547,8 +547,8 @@ func TestDefaultCertProvider_GenerateClientCert_Success(t *testing.T) {
 	if cert.Subject.CommonName != "alice" {
 		t.Errorf("CN: got %q, want %q", cert.Subject.CommonName, "alice")
 	}
-	if len(cert.Subject.OrganizationalUnit) == 0 || cert.Subject.OrganizationalUnit[0] != "default" {
-		t.Errorf("OU: got %v, want [default]", cert.Subject.OrganizationalUnit)
+	if len(cert.Subject.OrganizationalUnit) == 0 || cert.Subject.OrganizationalUnit[0] != "system" {
+		t.Errorf("OU: got %v, want [system]", cert.Subject.OrganizationalUnit)
 	}
 
 	// Verify key PEM is valid.
@@ -607,7 +607,7 @@ func TestDefaultCertProvider_GenerateClientCert_DefaultTTL(t *testing.T) {
 
 	req := &GenerateRequest{
 		Username: "charlie",
-		TenantID: "default",
+		TenantID: "system",
 		// TTL zero = use default.
 	}
 
@@ -632,7 +632,7 @@ func TestDefaultCertProvider_GenerateClientCert_WhenSealed(t *testing.T) {
 	p, _, barrier := initializeProvider(t)
 	barrier.seal()
 
-	req := &GenerateRequest{Username: "sealed-user", TenantID: "default"}
+	req := &GenerateRequest{Username: "sealed-user", TenantID: "system"}
 	_, err := p.GenerateClientCert(context.Background(), req)
 	if err == nil {
 		t.Fatal("expected error when barrier is sealed")
@@ -659,7 +659,7 @@ func TestDefaultCertProvider_GenerateClientCert_NilRequest(t *testing.T) {
 func TestDefaultCertProvider_GenerateClientCert_EmptyUsername(t *testing.T) {
 	p, _, _ := initializeProvider(t)
 
-	req := &GenerateRequest{Username: "", TenantID: "default"}
+	req := &GenerateRequest{Username: "", TenantID: "system"}
 	_, err := p.GenerateClientCert(context.Background(), req)
 	if err == nil {
 		t.Fatal("expected error for empty username")
@@ -693,7 +693,7 @@ func TestDefaultCertProvider_GenerateClientCert_EmptyTenantID(t *testing.T) {
 func TestDefaultCertProvider_GenerateClientCert_NegativeTTL(t *testing.T) {
 	p, _, _ := initializeProvider(t)
 
-	req := &GenerateRequest{Username: "alice", TenantID: "default", TTL: -1 * time.Hour}
+	req := &GenerateRequest{Username: "alice", TenantID: "system", TTL: -1 * time.Hour}
 	_, err := p.GenerateClientCert(context.Background(), req)
 	if err == nil {
 		t.Fatal("expected error for negative TTL")
@@ -717,7 +717,7 @@ func TestDefaultCertProvider_GenerateClientCert_CAKeyNotAvailable(t *testing.T) 
 	}
 	barrier.seal()
 
-	req := &GenerateRequest{Username: "alice", TenantID: "default"}
+	req := &GenerateRequest{Username: "alice", TenantID: "system"}
 	_, err := p.GenerateClientCert(context.Background(), req)
 	if err == nil {
 		t.Fatal("expected error when CA key is not available")
@@ -734,7 +734,7 @@ func TestDefaultCertProvider_GenerateClientCert_VerifyRecord(t *testing.T) {
 
 	req := &GenerateRequest{
 		Username: "record-user",
-		TenantID: "default",
+		TenantID: "system",
 		TTL:      12 * time.Hour,
 	}
 
@@ -744,7 +744,7 @@ func TestDefaultCertProvider_GenerateClientCert_VerifyRecord(t *testing.T) {
 	}
 
 	// Verify the record was persisted.
-	recordKey := "__sys:certs/default/" + bundle.Serial
+	recordKey := "__sys:certs/system/" + bundle.Serial
 	recordBytes, err := kv.Get(ctx, recordKey)
 	if err != nil {
 		t.Fatalf("Get record: %v", err)
@@ -760,7 +760,7 @@ func TestDefaultCertProvider_GenerateClientCert_MultipleCerts(t *testing.T) {
 
 	serials := make(map[string]bool)
 	for i := 0; i < 5; i++ {
-		req := &GenerateRequest{Username: "user", TenantID: "default"}
+		req := &GenerateRequest{Username: "user", TenantID: "system"}
 		bundle, err := p.GenerateClientCert(ctx, req)
 		if err != nil {
 			t.Fatalf("GenerateClientCert #%d: %v", i, err)
@@ -780,7 +780,7 @@ func TestDefaultCertProvider_ExportPKCS12_Success(t *testing.T) {
 	p, _, _ := initializeProvider(t)
 	ctx := context.Background()
 
-	req := &GenerateRequest{Username: "pkcs12-user", TenantID: "default"}
+	req := &GenerateRequest{Username: "pkcs12-user", TenantID: "system"}
 	bundle, err := p.GenerateClientCert(ctx, req)
 	if err != nil {
 		t.Fatalf("GenerateClientCert: %v", err)
@@ -813,7 +813,7 @@ func TestDefaultCertProvider_ExportPKCS12_InvalidCertPEM(t *testing.T) {
 	p, _, _ := initializeProvider(t)
 	ctx := context.Background()
 
-	req := &GenerateRequest{Username: "bad-cert-user", TenantID: "default"}
+	req := &GenerateRequest{Username: "bad-cert-user", TenantID: "system"}
 	bundle, err := p.GenerateClientCert(ctx, req)
 	if err != nil {
 		t.Fatalf("GenerateClientCert: %v", err)
@@ -833,7 +833,7 @@ func TestDefaultCertProvider_ExportPKCS12_InvalidKeyPEM(t *testing.T) {
 	p, _, _ := initializeProvider(t)
 	ctx := context.Background()
 
-	req := &GenerateRequest{Username: "bad-key-user", TenantID: "default"}
+	req := &GenerateRequest{Username: "bad-key-user", TenantID: "system"}
 	bundle, err := p.GenerateClientCert(ctx, req)
 	if err != nil {
 		t.Fatalf("GenerateClientCert: %v", err)
@@ -857,7 +857,7 @@ func TestDefaultCertProvider_RevokeCert(t *testing.T) {
 	p, _, _ := initializeProvider(t)
 	ctx := context.Background()
 
-	req := &GenerateRequest{Username: "revoke-user", TenantID: "default"}
+	req := &GenerateRequest{Username: "revoke-user", TenantID: "system"}
 	bundle, err := p.GenerateClientCert(ctx, req)
 	if err != nil {
 		t.Fatalf("GenerateClientCert: %v", err)
@@ -907,7 +907,7 @@ func TestDefaultCertProvider_RevokeCert_Idempotent(t *testing.T) {
 	p, _, _ := initializeProvider(t)
 	ctx := context.Background()
 
-	req := &GenerateRequest{Username: "idempotent-user", TenantID: "default"}
+	req := &GenerateRequest{Username: "idempotent-user", TenantID: "system"}
 	bundle, err := p.GenerateClientCert(ctx, req)
 	if err != nil {
 		t.Fatalf("GenerateClientCert: %v", err)
@@ -937,7 +937,7 @@ func TestDefaultCertProvider_IsRevoked_NotRevoked(t *testing.T) {
 	p, _, _ := initializeProvider(t)
 	ctx := context.Background()
 
-	req := &GenerateRequest{Username: "not-revoked", TenantID: "default"}
+	req := &GenerateRequest{Username: "not-revoked", TenantID: "system"}
 	bundle, err := p.GenerateClientCert(ctx, req)
 	if err != nil {
 		t.Fatalf("GenerateClientCert: %v", err)
@@ -1053,7 +1053,7 @@ func TestDefaultCertProvider_ListCerts_WhenSealed(t *testing.T) {
 	p, _, barrier := initializeProvider(t)
 	barrier.seal()
 
-	_, err := p.ListCerts(context.Background(), "default")
+	_, err := p.ListCerts(context.Background(), "system")
 	if err == nil {
 		t.Fatal("expected error when barrier is sealed")
 	}
@@ -1171,7 +1171,7 @@ func TestDefaultTTL_WhenNotSet(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestValidateGenerateRequest_Valid(t *testing.T) {
-	req := &GenerateRequest{Username: "alice", TenantID: "default"}
+	req := &GenerateRequest{Username: "alice", TenantID: "system"}
 	if err := validateGenerateRequest(req); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1193,13 +1193,13 @@ func TestValidateGenerateRequest_Nil(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHasSerialSuffix_Match(t *testing.T) {
-	if !hasSerialSuffix("__sys:certs/default/abc123", "abc123") {
+	if !hasSerialSuffix("__sys:certs/system/abc123", "abc123") {
 		t.Error("should match when key ends with /serial")
 	}
 }
 
 func TestHasSerialSuffix_NoMatch(t *testing.T) {
-	if hasSerialSuffix("__sys:certs/default/abc123", "xyz789") {
+	if hasSerialSuffix("__sys:certs/system/abc123", "xyz789") {
 		t.Error("should not match when serial differs")
 	}
 }
@@ -1244,7 +1244,7 @@ func TestDefaultCertProvider_RevokeCert_UpdatesRecord(t *testing.T) {
 	p, _, _ := initializeProvider(t)
 	ctx := context.Background()
 
-	req := &GenerateRequest{Username: "revoke-record-user", TenantID: "default"}
+	req := &GenerateRequest{Username: "revoke-record-user", TenantID: "system"}
 	bundle, err := p.GenerateClientCert(ctx, req)
 	if err != nil {
 		t.Fatalf("GenerateClientCert: %v", err)
@@ -1255,7 +1255,7 @@ func TestDefaultCertProvider_RevokeCert_UpdatesRecord(t *testing.T) {
 	}
 
 	// List certs and verify the record is marked as revoked.
-	records, err := p.ListCerts(ctx, "default")
+	records, err := p.ListCerts(ctx, "system")
 	if err != nil {
 		t.Fatalf("ListCerts: %v", err)
 	}
@@ -1369,7 +1369,7 @@ func TestDefaultCertProvider_RevokeCert_ScanError(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 
-	req := &GenerateRequest{Username: "scan-err-user", TenantID: "default"}
+	req := &GenerateRequest{Username: "scan-err-user", TenantID: "system"}
 	bundle, err := p.GenerateClientCert(ctx, req)
 	if err != nil {
 		t.Fatalf("GenerateClientCert: %v", err)
@@ -1393,7 +1393,7 @@ func TestDefaultCertProvider_RevokeCert_CorruptRecord(t *testing.T) {
 	ctx := context.Background()
 
 	// Inject a corrupt cert record.
-	_ = kv.Put(ctx, "__sys:certs/default/bad-serial", []byte("not-json{{{"))
+	_ = kv.Put(ctx, "__sys:certs/system/bad-serial", []byte("not-json{{{"))
 
 	// Revoke should still succeed (corrupt records are skipped).
 	if err := p.RevokeCert(ctx, "bad-serial"); err != nil {
@@ -1436,7 +1436,7 @@ func TestDefaultCertProvider_ListCerts_ScanError(t *testing.T) {
 
 	p.kvStore = &errorKVStore{err: errors.New("scan failure")}
 
-	_, err := p.ListCerts(ctx, "default")
+	_, err := p.ListCerts(ctx, "system")
 	if err == nil {
 		t.Fatal("expected error when Scan fails")
 	}
@@ -1477,7 +1477,7 @@ func TestDefaultCertProvider_Unseal_LoadCA_CertPEMGetError(t *testing.T) {
 	}
 
 	// Remove the cert PEM but leave the wrapped key.
-	_ = inner.Delete(ctx, "__sys:cert_ca/default/cert_pem")
+	_ = inner.Delete(ctx, "__sys:cert_ca/system/cert_pem")
 
 	err := p.Unseal(ctx)
 	if err == nil {
@@ -1503,7 +1503,7 @@ func TestDefaultCertProvider_Unseal_LoadCA_DecryptError(t *testing.T) {
 	}
 
 	// Corrupt the wrapped key.
-	_ = inner.Put(ctx, "__sys:cert_ca/default/wrapped_key", []byte("corrupt-data"))
+	_ = inner.Put(ctx, "__sys:cert_ca/system/wrapped_key", []byte("corrupt-data"))
 
 	err := p.Unseal(ctx)
 	if err == nil {
@@ -1529,7 +1529,7 @@ func TestDefaultCertProvider_Unseal_LoadCA_InvalidPEM(t *testing.T) {
 	}
 
 	// Replace cert PEM with invalid PEM.
-	_ = inner.Put(ctx, "__sys:cert_ca/default/cert_pem", []byte("not-pem-data"))
+	_ = inner.Put(ctx, "__sys:cert_ca/system/cert_pem", []byte("not-pem-data"))
 
 	err := p.Unseal(ctx)
 	if err == nil {
@@ -1559,7 +1559,7 @@ func TestDefaultCertProvider_Unseal_LoadCA_InvalidCert(t *testing.T) {
 		Type:  "CERTIFICATE",
 		Bytes: []byte("not-a-real-certificate"),
 	})
-	_ = inner.Put(ctx, "__sys:cert_ca/default/cert_pem", invalidPEM)
+	_ = inner.Put(ctx, "__sys:cert_ca/system/cert_pem", invalidPEM)
 
 	err := p.Unseal(ctx)
 	if err == nil {
@@ -1584,7 +1584,7 @@ func TestDefaultCertProvider_GenerateClientCert_RecordPutError(t *testing.T) {
 	// Replace with error store after Initialize.
 	p.kvStore = &errorKVStore{err: errors.New("put failed")}
 
-	req := &GenerateRequest{Username: "store-err-user", TenantID: "default"}
+	req := &GenerateRequest{Username: "store-err-user", TenantID: "system"}
 	_, err := p.GenerateClientCert(ctx, req)
 	if err == nil {
 		t.Fatal("expected error when record Put fails")
@@ -1682,7 +1682,7 @@ func TestEncodePKCS12_InvalidCACertPEM(t *testing.T) {
 	p, _, _ := initializeProvider(t)
 	ctx := context.Background()
 
-	req := &GenerateRequest{Username: "pkcs12-ca-err", TenantID: "default"}
+	req := &GenerateRequest{Username: "pkcs12-ca-err", TenantID: "system"}
 	bundle, err := p.GenerateClientCert(ctx, req)
 	if err != nil {
 		t.Fatalf("GenerateClientCert: %v", err)
@@ -1711,7 +1711,7 @@ func TestEncodePKCS12_NoCACertPEM(t *testing.T) {
 	p, _, _ := initializeProvider(t)
 	ctx := context.Background()
 
-	req := &GenerateRequest{Username: "pkcs12-no-ca", TenantID: "default"}
+	req := &GenerateRequest{Username: "pkcs12-no-ca", TenantID: "system"}
 	bundle, err := p.GenerateClientCert(ctx, req)
 	if err != nil {
 		t.Fatalf("GenerateClientCert: %v", err)
@@ -1759,7 +1759,7 @@ func TestEncodePKCS12_ValidKeyBadCertDirect(t *testing.T) {
 	p, _, _ := initializeProvider(t)
 	ctx := context.Background()
 
-	req := &GenerateRequest{Username: "direct-test", TenantID: "default"}
+	req := &GenerateRequest{Username: "direct-test", TenantID: "system"}
 	bundle, err := p.GenerateClientCert(ctx, req)
 	if err != nil {
 		t.Fatalf("GenerateClientCert: %v", err)
@@ -1780,7 +1780,7 @@ func TestEncodePKCS12_ValidKeyInvalidCertDER(t *testing.T) {
 	p, _, _ := initializeProvider(t)
 	ctx := context.Background()
 
-	req := &GenerateRequest{Username: "invalid-der", TenantID: "default"}
+	req := &GenerateRequest{Username: "invalid-der", TenantID: "system"}
 	bundle, err := p.GenerateClientCert(ctx, req)
 	if err != nil {
 		t.Fatalf("GenerateClientCert: %v", err)
@@ -1806,7 +1806,7 @@ func TestEncodePKCS12_ValidKeyInvalidKeyDER(t *testing.T) {
 	p, _, _ := initializeProvider(t)
 	ctx := context.Background()
 
-	req := &GenerateRequest{Username: "invalid-key-der", TenantID: "default"}
+	req := &GenerateRequest{Username: "invalid-key-der", TenantID: "system"}
 	bundle, err := p.GenerateClientCert(ctx, req)
 	if err != nil {
 		t.Fatalf("GenerateClientCert: %v", err)

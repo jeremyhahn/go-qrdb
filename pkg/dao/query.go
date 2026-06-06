@@ -447,7 +447,7 @@ func (q *QueryBuilder[E]) fullScan() ([]E, error) {
 // predicate evaluation.
 func (q *QueryBuilder[E]) applyPostFilters(entities []E, predicates []planner.Predicate) []E {
 	eType := reflect.TypeOf(q.dao.newEntity())
-	if eType.Kind() == reflect.Ptr {
+	if eType.Kind() == reflect.Pointer {
 		eType = eType.Elem()
 	}
 
@@ -471,7 +471,7 @@ func (q *QueryBuilder[E]) applyPostFilters(entities []E, predicates []planner.Pr
 func (d *genericDAO[E]) validFieldMap() map[string]struct{} {
 	entity := d.newEntity()
 	eType := reflect.TypeOf(entity)
-	if eType.Kind() == reflect.Ptr {
+	if eType.Kind() == reflect.Pointer {
 		eType = eType.Elem()
 	}
 
@@ -503,7 +503,7 @@ func (d *genericDAO[E]) validFieldMap() map[string]struct{} {
 func (d *genericDAO[E]) buildCatalog() planner.IndexCatalog {
 	entity := d.newEntity()
 	eType := reflect.TypeOf(entity)
-	if eType.Kind() == reflect.Ptr {
+	if eType.Kind() == reflect.Pointer {
 		eType = eType.Elem()
 	}
 

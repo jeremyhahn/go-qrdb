@@ -159,3 +159,109 @@ func TestInvalidVectorErrorImplementsError(t *testing.T) {
 		t.Errorf("Reason = %q, want %q", target.Reason, "empty vector")
 	}
 }
+
+func TestInvalidNamespaceNameError(t *testing.T) {
+	err := &InvalidNamespaceNameError{Name: "bad\x1fname", Reason: "contains illegal control character 0x1f"}
+	got := err.Error()
+	if got == "" {
+		t.Error("Error() must return non-empty string")
+	}
+}
+
+func TestInvalidNamespaceNameErrorImplementsError(t *testing.T) {
+	var err error = &InvalidNamespaceNameError{Name: "x", Reason: "too short"}
+	var target *InvalidNamespaceNameError
+	if !errors.As(err, &target) {
+		t.Error("errors.As failed for InvalidNamespaceNameError")
+	}
+	if target.Name != "x" {
+		t.Errorf("Name = %q, want %q", target.Name, "x")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// validateNamespaceName tests
+// ---------------------------------------------------------------------------
+
+func TestValidateNamespaceName_ValidNames(t *testing.T) {
+	valid := []string{
+		"docs",
+		"my-vectors",
+		"namespace_with_underscore",
+		"ns123",
+		"a",
+		"UPPERCASE",
+		"with spaces", // spaces (0x20) are allowed
+		"unicode-αβγ", // multi-byte UTF-8 is fine
+	}
+	for _, name := range valid {
+		t.Run(name, func(t *testing.T) {
+			if err := validateNamespaceName(name); err != nil {
+				t.Errorf("validateNamespaceName(%q) = %v, want nil", name, err)
+			}
+		})
+	}
+}
+
+func TestValidateNamespaceName_RejectsEmpty(t *testing.T) {
+	err := validateNamespaceName("")
+	if err == nil {
+		t.Fatal("expected error for empty name, got nil")
+	}
+	var target *InvalidNamespaceNameError
+	if !errors.As(err, &target) {
+		t.Fatalf("expected InvalidNamespaceNameError, got %T: %v", err, err)
+	}
+}
+
+func TestValidateNamespaceName_RejectsControlBytes(t *testing.T) {
+	controls := []struct {
+		name string
+		b    byte
+	}{
+		{"null byte", 0x00},
+		{"unit separator (namespaceSep)", 0x1f},
+		{"tab", 0x09},
+		{"newline", 0x0a},
+		{"carriage return", 0x0d},
+		{"escape", 0x1b},
+	}
+	for _, tc := range controls {
+		t.Run(tc.name, func(t *testing.T) {
+			name := "valid" + string([]byte{tc.b}) + "suffix"
+			err := validateNamespaceName(name)
+			if err == nil {
+				t.Fatalf("validateNamespaceName(%q) = nil, want error for control byte 0x%02x", name, tc.b)
+			}
+			var target *InvalidNamespaceNameError
+			if !errors.As(err, &target) {
+				t.Fatalf("expected InvalidNamespaceNameError, got %T: %v", err, err)
+			}
+		})
+	}
+}
+
+func TestValidateNamespaceName_RejectsTooLong(t *testing.T) {
+	name := ""
+	for i := 0; i <= maxNamespaceNameLen; i++ {
+		name += "a"
+	}
+	err := validateNamespaceName(name)
+	if err == nil {
+		t.Fatal("validateNamespaceName: expected error for name exceeding max length, got nil")
+	}
+	var target *InvalidNamespaceNameError
+	if !errors.As(err, &target) {
+		t.Fatalf("expected InvalidNamespaceNameError, got %T: %v", err, err)
+	}
+}
+
+func TestValidateNamespaceName_MaxLengthExactlyAccepted(t *testing.T) {
+	name := ""
+	for i := 0; i < maxNamespaceNameLen; i++ {
+		name += "a"
+	}
+	if err := validateNamespaceName(name); err != nil {
+		t.Errorf("validateNamespaceName: expected nil for exactly-max-length name, got %v", err)
+	}
+}

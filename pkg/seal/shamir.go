@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir"
 )
 
@@ -61,8 +62,12 @@ func (b *StorageBarrier) InitializeShamir(ctx context.Context, creds Credentials
 }
 
 // initializeShamirDirect initializes the barrier when a ShamirStrategy is
-// registered. The strategy's SealRootKey splits the root key into shares
-// and persists them. This method loads the shares back and returns them.
+// registered. The EpochBarrier generates the root key during Initialize; we
+// then read it back in memory, split it into M-of-N shares with the in-memory
+// ShareSplitter, and return those shares to the Security Officers. The shares
+// are NEVER persisted — only the key-material-free SealedRootKey envelope is
+// stored. Unsealing later requires the SOs to re-submit their shares via
+// UnsealWithShare.
 func (b *StorageBarrier) initializeShamirDirect(ctx context.Context, shamirStrat *ShamirStrategy) (*ShamirInitResult, error) {
 	exists, err := b.base.Exists(ctx, b.config.RootKeyPath)
 	if err != nil {
@@ -72,27 +77,30 @@ func (b *StorageBarrier) initializeShamirDirect(ctx context.Context, shamirStrat
 		return nil, ErrAlreadyInitialized
 	}
 
-	// Initialize with empty credentials; the ShamirStrategy will handle
-	// root key splitting during SealRootKey.
+	// Initialize generates the root key, derives the initial DEK, persists the
+	// (key-material-free) Shamir envelope, and leaves the barrier unsealed.
 	if err := b.Initialize(ctx, Credentials{}); err != nil {
 		return nil, err
 	}
 
-	shares, err := shamirStrat.LoadAllShares(ctx)
+	// Read the root key back in memory and split it. Nothing is written to
+	// storage; the shares exist only in the returned result.
+	rootKey, err := b.GetMasterKey()
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrShamirStorageFailed, err)
+		return nil, err
+	}
+	defer secure.Wipe(rootKey)
+
+	shareVals, err := NewShamirShareSplitter().Split(rootKey, shamirStrat.Threshold(), shamirStrat.TotalShares())
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrShamirSplitFailed, err)
 	}
 
-	result := &ShamirInitResult{
-		Shares:      make([]string, len(shares)),
-		Threshold:   shamirStrat.threshold,
-		TotalShares: shamirStrat.total,
-	}
-	for i, share := range shares {
-		result.Shares[i] = share.Value
-	}
-
-	return result, nil
+	return &ShamirInitResult{
+		Shares:      shareVals,
+		Threshold:   shamirStrat.Threshold(),
+		TotalShares: shamirStrat.TotalShares(),
+	}, nil
 }
 
 // UnsealWithShare submits a single Shamir share toward the quorum threshold.
@@ -110,7 +118,7 @@ func (b *StorageBarrier) UnsealWithShare(ctx context.Context, shareValue string)
 	threshold := b.config.Shamir.Threshold
 	total := b.config.Shamir.TotalShares
 
-	ttl := DefaultQuorumTTL
+	ttl := DefaultShareTTL
 	if b.config.Shamir.QuorumTTL > 0 {
 		ttl = b.config.Shamir.QuorumTTL
 	}
@@ -133,7 +141,10 @@ func (b *StorageBarrier) UnsealWithShare(ctx context.Context, shareValue string)
 		return nil, fmt.Errorf("%w: %v", ErrShamirCombineFailed, err)
 	}
 
-	// Clear the accumulator.
+	// Wipe the transient reconstructed secret once the unseal has consumed it,
+	// and destroy every accumulated share immediately — a subsequent unseal
+	// requires the Security Officers to submit fresh shares.
+	defer secure.Wipe(secret)
 	acc.Reset()
 
 	if strat := b.ShamirStrategy(); strat != nil {
@@ -154,9 +165,16 @@ func (b *StorageBarrier) UnsealWithShare(ctx context.Context, shareValue string)
 // loadOrCreateAccumulator returns the current ShareAccumulator or creates a
 // new one. If the existing accumulator has expired, it is replaced.
 func (b *StorageBarrier) loadOrCreateAccumulator(threshold, total int, ttl time.Duration) ShareAccumulator {
-	val := b.accumulator.Load()
-	if acc, ok := val.(ShareAccumulator); ok && acc != nil && !acc.Expired() {
-		return acc
+	b.accumulatorMu.Lock()
+	defer b.accumulatorMu.Unlock()
+
+	if acc, ok := b.accumulator.Load().(ShareAccumulator); ok && acc != nil {
+		if !acc.Expired() {
+			return acc
+		}
+		// Expired: destroy its share enclaves before discarding so no share
+		// material lingers in memory past the quorum TTL.
+		acc.Reset()
 	}
 
 	fresh := NewShamirShareAccumulator(threshold, total, ttl)
@@ -196,6 +214,9 @@ func (b *StorageBarrier) UnsealWithShares(ctx context.Context, shareValues []str
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrShamirCombineFailed, err)
 	}
+	// Wipe the transient reconstructed secret once the unseal has consumed it,
+	// matching the single-share UnsealWithShare path.
+	defer secure.Wipe(secret)
 
 	if strat := b.ShamirStrategy(); strat != nil {
 		return b.unsealDirect(secret)

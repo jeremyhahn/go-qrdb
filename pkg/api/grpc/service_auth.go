@@ -67,6 +67,48 @@ func (s *qrdbServiceServer) GetUser(ctx context.Context, req *pb.GetUserRequest)
 	return userToProto(u), nil
 }
 
+// GetUserByUsername retrieves a user by tenant-scoped username.
+func (s *qrdbServiceServer) GetUserByUsername(ctx context.Context, req *pb.GetUserByUsernameRequest) (*pb.UserResponse, error) {
+	if s.userSvc == nil {
+		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "user"}).Error())
+	}
+
+	u, err := s.userSvc.GetUserByUsername(ctx, req.GetTenantId(), req.GetUsername())
+	if err != nil {
+		return nil, mapAuthServiceError(err)
+	}
+
+	return userToProto(u), nil
+}
+
+// GetUserByCertThumbprint resolves a user by mTLS SPKI thumbprint.
+func (s *qrdbServiceServer) GetUserByCertThumbprint(ctx context.Context, req *pb.GetUserByCertThumbprintRequest) (*pb.UserResponse, error) {
+	if s.userSvc == nil {
+		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "user"}).Error())
+	}
+
+	u, err := s.userSvc.UserByCertThumbprint(ctx, req.GetThumbprint())
+	if err != nil {
+		return nil, mapAuthServiceError(err)
+	}
+
+	return userToProto(u), nil
+}
+
+// AddCertBinding binds an mTLS SPKI thumbprint to a user.
+func (s *qrdbServiceServer) AddCertBinding(ctx context.Context, req *pb.AddCertBindingRequest) (*pb.UserResponse, error) {
+	if s.userSvc == nil {
+		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "user"}).Error())
+	}
+
+	u, err := s.userSvc.AddCertBinding(ctx, req.GetUserId(), req.GetThumbprint(), req.GetNotAfterUnix())
+	if err != nil {
+		return nil, mapAuthServiceError(err)
+	}
+
+	return userToProto(u), nil
+}
+
 // UpdateUser applies partial updates to an existing user.
 func (s *qrdbServiceServer) UpdateUser(ctx context.Context, req *pb.UpdateUserProtoRequest) (*pb.UserResponse, error) {
 	if s.userSvc == nil {
@@ -189,6 +231,20 @@ func (s *qrdbServiceServer) GetRole(ctx context.Context, req *pb.GetRoleRequest)
 	}
 
 	r, err := s.roleSvc.GetRole(ctx, req.GetId())
+	if err != nil {
+		return nil, mapAuthServiceError(err)
+	}
+
+	return roleToProto(r), nil
+}
+
+// GetRoleByName retrieves a role by its tenant-scoped name.
+func (s *qrdbServiceServer) GetRoleByName(ctx context.Context, req *pb.GetRoleByNameRequest) (*pb.RoleResponse, error) {
+	if s.roleSvc == nil {
+		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "role"}).Error())
+	}
+
+	r, err := s.roleSvc.GetRoleByName(ctx, req.GetTenantId(), req.GetName())
 	if err != nil {
 		return nil, mapAuthServiceError(err)
 	}
@@ -352,6 +408,26 @@ func (s *qrdbServiceServer) ListPermissions(_ context.Context, _ *emptypb.Empty)
 	}
 
 	return &pb.ListPermissionsResponse{Categories: pbCats}, nil
+}
+
+// ResolveRolePermissions returns the union of effective permissions for the
+// given role IDs (sorted, deduplicated).
+func (s *qrdbServiceServer) ResolveRolePermissions(ctx context.Context, req *pb.ResolveRolePermissionsRequest) (*pb.ResolveRolePermissionsResponse, error) {
+	if s.roleSvc == nil {
+		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "role"}).Error())
+	}
+
+	perms, err := s.roleSvc.ResolvePermissions(ctx, req.GetRoleIds())
+	if err != nil {
+		return nil, mapAuthServiceError(err)
+	}
+
+	out := make([]string, len(perms))
+	for i, p := range perms {
+		out[i] = p.String()
+	}
+
+	return &pb.ResolveRolePermissionsResponse{Permissions: out}, nil
 }
 
 // ---------------------------------------------------------------------------

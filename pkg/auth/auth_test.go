@@ -19,22 +19,6 @@ import (
 	"testing"
 )
 
-func TestIdentity_IsCrossTenant(t *testing.T) {
-	t.Run("empty_tenant_is_cross_tenant", func(t *testing.T) {
-		id := &Identity{Subject: "admin", TenantID: ""}
-		if !id.IsCrossTenant() {
-			t.Fatal("expected IsCrossTenant to return true for empty TenantID")
-		}
-	})
-
-	t.Run("non_empty_tenant_is_not_cross_tenant", func(t *testing.T) {
-		id := &Identity{Subject: "user1", TenantID: "tenant-abc"}
-		if id.IsCrossTenant() {
-			t.Fatal("expected IsCrossTenant to return false for non-empty TenantID")
-		}
-	})
-}
-
 func TestIdentity_HasRole(t *testing.T) {
 	t.Run("found_role", func(t *testing.T) {
 		id := &Identity{
@@ -51,7 +35,7 @@ func TestIdentity_HasRole(t *testing.T) {
 			Subject: "user1",
 			Roles:   []string{"admin", "reader"},
 		}
-		if id.HasRole("superadmin") {
+		if id.HasRole("custodian") {
 			t.Fatal("expected HasRole to return false for non-existent role")
 		}
 	})

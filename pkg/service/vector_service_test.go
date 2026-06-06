@@ -29,7 +29,16 @@ import (
 
 	qrdbErrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
+
+// testScopedNS returns the physical (scoped) storage key for a logical
+// namespace name under the system tenant. Tests that seed mock storage
+// directly (bypassing the service) must use this to produce the key the
+// service will look up.
+func testScopedNS(logical string) string {
+	return scopedNamespace(tenant.SystemTenantID, logical)
+}
 
 // =============================================================================
 // Mock Vector Storage for Unit Testing
@@ -528,7 +537,7 @@ func TestVectorService_DeleteNamespace_Success(t *testing.T) {
 
 	// Create namespace first
 	require.NoError(t, storage.CreateNamespace(context.Background(), &vector.NamespaceInfo{
-		Name:      "test-namespace",
+		Name:      testScopedNS("test-namespace"),
 		Dimension: 128,
 	}))
 
@@ -709,7 +718,7 @@ func TestVectorService_GetNamespaceInfo_Success(t *testing.T) {
 	require.NoError(t, err)
 
 	_ = storage.CreateNamespace(context.Background(), &vector.NamespaceInfo{
-		Name:      "test-namespace",
+		Name:      testScopedNS("test-namespace"),
 		Dimension: 128,
 	})
 
@@ -789,7 +798,7 @@ func TestVectorService_UpsertVector_Success(t *testing.T) {
 
 	// Create namespace first
 	_ = storage.CreateNamespace(context.Background(), &vector.NamespaceInfo{
-		Name:      "test-namespace",
+		Name:      testScopedNS("test-namespace"),
 		Dimension: 3,
 	})
 
@@ -915,10 +924,10 @@ func TestVectorService_GetVector_Success(t *testing.T) {
 
 	// Create namespace and insert vector
 	require.NoError(t, storage.CreateNamespace(context.Background(), &vector.NamespaceInfo{
-		Name:      "test-namespace",
+		Name:      testScopedNS("test-namespace"),
 		Dimension: 3,
 	}))
-	require.NoError(t, storage.UpsertVector(context.Background(), "test-namespace", &vector.VectorValue{
+	require.NoError(t, storage.UpsertVector(context.Background(), testScopedNS("test-namespace"), &vector.VectorValue{
 		ID:        1,
 		Embedding: []float32{1.0, 2.0, 3.0},
 		Metadata:  map[string]string{"type": "test"},
@@ -999,7 +1008,7 @@ func TestVectorService_GetVector_NotFound(t *testing.T) {
 	require.NoError(t, err)
 
 	_ = storage.CreateNamespace(context.Background(), &vector.NamespaceInfo{
-		Name:      "test-namespace",
+		Name:      testScopedNS("test-namespace"),
 		Dimension: 3,
 	})
 
@@ -1030,10 +1039,10 @@ func TestVectorService_DeleteVector_Success(t *testing.T) {
 
 	// Create namespace and insert vector
 	require.NoError(t, storage.CreateNamespace(context.Background(), &vector.NamespaceInfo{
-		Name:      "test-namespace",
+		Name:      testScopedNS("test-namespace"),
 		Dimension: 3,
 	}))
-	require.NoError(t, storage.UpsertVector(context.Background(), "test-namespace", &vector.VectorValue{
+	require.NoError(t, storage.UpsertVector(context.Background(), testScopedNS("test-namespace"), &vector.VectorValue{
 		ID:        1,
 		Embedding: []float32{1.0, 2.0, 3.0},
 	}))
@@ -1113,7 +1122,7 @@ func TestVectorService_BatchUpsert_Success(t *testing.T) {
 
 	// Create namespace
 	_ = storage.CreateNamespace(context.Background(), &vector.NamespaceInfo{
-		Name:      "test-namespace",
+		Name:      testScopedNS("test-namespace"),
 		Dimension: 3,
 	})
 
@@ -1208,7 +1217,7 @@ func TestVectorService_SearchSimilar_Success(t *testing.T) {
 	// Create namespace and insert vectors
 	ctx := context.Background()
 	_ = storage.CreateNamespace(ctx, &vector.NamespaceInfo{
-		Name:      "test-namespace",
+		Name:      testScopedNS("test-namespace"),
 		Dimension: 3,
 	})
 
@@ -1338,15 +1347,15 @@ func TestVectorService_SearchByMetadata_Success(t *testing.T) {
 	// Create namespace and insert vectors
 	ctx := context.Background()
 	require.NoError(t, storage.CreateNamespace(ctx, &vector.NamespaceInfo{
-		Name:      "test-namespace",
+		Name:      testScopedNS("test-namespace"),
 		Dimension: 3,
 	}))
-	require.NoError(t, storage.UpsertVector(ctx, "test-namespace", &vector.VectorValue{
+	require.NoError(t, storage.UpsertVector(ctx, testScopedNS("test-namespace"), &vector.VectorValue{
 		ID:        1,
 		Embedding: []float32{1.0, 2.0, 3.0},
 		Metadata:  map[string]string{"category": "A"},
 	}))
-	require.NoError(t, storage.UpsertVector(ctx, "test-namespace", &vector.VectorValue{
+	require.NoError(t, storage.UpsertVector(ctx, testScopedNS("test-namespace"), &vector.VectorValue{
 		ID:        2,
 		Embedding: []float32{4.0, 5.0, 6.0},
 		Metadata:  map[string]string{"category": "B"},
@@ -1477,11 +1486,11 @@ func TestVectorService_RebuildIndex_Sync_Success(t *testing.T) {
 	// Create namespace and add vectors
 	ctx := context.Background()
 	_ = storage.CreateNamespace(ctx, &vector.NamespaceInfo{
-		Name:        "test-namespace",
+		Name:        testScopedNS("test-namespace"),
 		Dimension:   3,
 		VectorCount: 2,
 	})
-	_ = storage.UpsertVector(ctx, "test-namespace", &vector.VectorValue{
+	_ = storage.UpsertVector(ctx, testScopedNS("test-namespace"), &vector.VectorValue{
 		ID:        1,
 		Embedding: []float32{1.0, 2.0, 3.0},
 	})
@@ -1510,7 +1519,7 @@ func TestVectorService_RebuildIndex_Async_Success(t *testing.T) {
 	// Create namespace
 	ctx := context.Background()
 	_ = storage.CreateNamespace(ctx, &vector.NamespaceInfo{
-		Name:        "test-namespace",
+		Name:        testScopedNS("test-namespace"),
 		Dimension:   3,
 		VectorCount: 2,
 	})
@@ -1593,7 +1602,7 @@ func TestVectorService_GetRebuildProgress_ByJobID(t *testing.T) {
 	// Create namespace
 	ctx := context.Background()
 	_ = storage.CreateNamespace(ctx, &vector.NamespaceInfo{
-		Name:        "test-namespace",
+		Name:        testScopedNS("test-namespace"),
 		Dimension:   128,
 		VectorCount: 1000,
 	})
@@ -1629,7 +1638,7 @@ func TestVectorService_GetRebuildProgress_ByNamespace(t *testing.T) {
 	// Create namespace
 	ctx := context.Background()
 	_ = storage.CreateNamespace(ctx, &vector.NamespaceInfo{
-		Name:        "test-namespace",
+		Name:        testScopedNS("test-namespace"),
 		Dimension:   128,
 		VectorCount: 1000,
 	})
@@ -1663,7 +1672,7 @@ func TestVectorService_GetRebuildProgress_Completed(t *testing.T) {
 	// Create namespace
 	ctx := context.Background()
 	_ = storage.CreateNamespace(ctx, &vector.NamespaceInfo{
-		Name:        "test-namespace",
+		Name:        testScopedNS("test-namespace"),
 		Dimension:   128,
 		VectorCount: 100,
 	})
@@ -1757,7 +1766,7 @@ func TestVectorService_GetRebuildProgress_EstimatedTimeRemaining(t *testing.T) {
 	// Create namespace with vectors
 	ctx := context.Background()
 	_ = storage.CreateNamespace(ctx, &vector.NamespaceInfo{
-		Name:        "test-namespace",
+		Name:        testScopedNS("test-namespace"),
 		Dimension:   128,
 		VectorCount: 10000,
 	})
@@ -1797,7 +1806,7 @@ func TestVectorService_GetIndexStats_Success(t *testing.T) {
 	// Create namespace
 	ctx := context.Background()
 	_ = storage.CreateNamespace(ctx, &vector.NamespaceInfo{
-		Name:      "test-namespace",
+		Name:      testScopedNS("test-namespace"),
 		Dimension: 128,
 	})
 
@@ -2001,7 +2010,7 @@ func TestVectorService_BatchUpsert_LargeBatch(t *testing.T) {
 
 	// Create namespace
 	_ = storage.CreateNamespace(context.Background(), &vector.NamespaceInfo{
-		Name:      "test-namespace",
+		Name:      testScopedNS("test-namespace"),
 		Dimension: 3,
 	})
 
@@ -2035,13 +2044,13 @@ func TestVectorService_SearchByMetadata_WithPagination(t *testing.T) {
 
 	ctx := context.Background()
 	_ = storage.CreateNamespace(ctx, &vector.NamespaceInfo{
-		Name:      "test-namespace",
+		Name:      testScopedNS("test-namespace"),
 		Dimension: 3,
 	})
 
 	// Insert multiple vectors with same metadata
 	for i := 0; i < 10; i++ {
-		_ = storage.UpsertVector(ctx, "test-namespace", &vector.VectorValue{
+		_ = storage.UpsertVector(ctx, testScopedNS("test-namespace"), &vector.VectorValue{
 			ID:        uint64(i + 1),
 			Embedding: []float32{float32(i), float32(i), float32(i)},
 			Metadata:  map[string]string{"category": "A"},
@@ -2071,7 +2080,7 @@ func TestVectorService_RebuildIndex_WithCustomConfig(t *testing.T) {
 
 	ctx := context.Background()
 	_ = storage.CreateNamespace(ctx, &vector.NamespaceInfo{
-		Name:        "test-namespace",
+		Name:        testScopedNS("test-namespace"),
 		Dimension:   3,
 		VectorCount: 2,
 	})
@@ -2105,7 +2114,7 @@ func TestVectorService_CompactNamespace_Success(t *testing.T) {
 
 	ctx := context.Background()
 	_ = storage.CreateNamespace(ctx, &vector.NamespaceInfo{
-		Name:      "test-namespace",
+		Name:      testScopedNS("test-namespace"),
 		Dimension: 128,
 	})
 
@@ -2132,7 +2141,7 @@ func TestVectorService_CompactNamespace_Async(t *testing.T) {
 
 	ctx := context.Background()
 	_ = storage.CreateNamespace(ctx, &vector.NamespaceInfo{
-		Name:      "test-namespace",
+		Name:      testScopedNS("test-namespace"),
 		Dimension: 128,
 	})
 
@@ -2225,7 +2234,7 @@ func TestVectorService_CompactNamespace_StorageError(t *testing.T) {
 
 	ctx := context.Background()
 	_ = storage.CreateNamespace(ctx, &vector.NamespaceInfo{
-		Name:      "test-namespace",
+		Name:      testScopedNS("test-namespace"),
 		Dimension: 128,
 	})
 
@@ -2248,7 +2257,7 @@ func TestVectorService_GetCompactionProgress_ByOperationID(t *testing.T) {
 
 	ctx := context.Background()
 	_ = storage.CreateNamespace(ctx, &vector.NamespaceInfo{
-		Name:      "test-namespace",
+		Name:      testScopedNS("test-namespace"),
 		Dimension: 128,
 	})
 
@@ -2283,7 +2292,7 @@ func TestVectorService_GetCompactionProgress_ByNamespace(t *testing.T) {
 
 	ctx := context.Background()
 	_ = storage.CreateNamespace(ctx, &vector.NamespaceInfo{
-		Name:      "test-namespace",
+		Name:      testScopedNS("test-namespace"),
 		Dimension: 128,
 	})
 
@@ -2382,7 +2391,7 @@ func TestVectorService_CompactNamespace_MultipleOperations(t *testing.T) {
 
 	ctx := context.Background()
 	_ = storage.CreateNamespace(ctx, &vector.NamespaceInfo{
-		Name:      "test-namespace",
+		Name:      testScopedNS("test-namespace"),
 		Dimension: 128,
 	})
 

@@ -181,30 +181,15 @@ type AuditLogger = seal.AuditLogger
 // Strategy ID constants
 // ---------------------------------------------------------------------------
 
+// Hardware/cloud strategy IDs (tpm2/pkcs11/awskms/gcpkms/azurekv/vault) are
+// owned by go-xkms and exported from its SDK; go-qrdb does not define them.
 const (
-	// StrategyTPM2 identifies the TPM 2.0 sealing strategy.
-	StrategyTPM2 = seal.StrategyTPM2
-
-	// StrategyPKCS11 identifies the PKCS#11 sealing strategy.
-	StrategyPKCS11 = seal.StrategyPKCS11
-
-	// StrategyAWSKMS identifies the AWS KMS sealing strategy.
-	StrategyAWSKMS = seal.StrategyAWSKMS
-
-	// StrategyGCPKMS identifies the GCP KMS sealing strategy.
-	StrategyGCPKMS = seal.StrategyGCPKMS
-
-	// StrategyAzureKV identifies the Azure Key Vault sealing strategy.
-	StrategyAzureKV = seal.StrategyAzureKV
-
-	// StrategyVault identifies the HashiCorp Vault sealing strategy.
-	StrategyVault = seal.StrategyVault
-
 	// StrategyShamir identifies the Shamir secret sharing sealing strategy.
 	StrategyShamir = seal.StrategyShamir
 
-	// StrategySoftware identifies the software-only sealing strategy.
-	StrategySoftware = seal.StrategySoftware
+	// StrategyPassphrase identifies the canonical passphrase-protected software
+	// sealing strategy.
+	StrategyPassphrase = seal.StrategyPassphrase
 )
 
 // DefaultQuorumTTL is the default time-to-live for a Shamir quorum session.
@@ -222,6 +207,21 @@ var NewBarrier = seal.NewBarrier
 
 // NewBarrierRegistry creates a new BarrierRegistry for the given system barrier.
 var NewBarrierRegistry = seal.NewBarrierRegistry
+
+// BarrierRegistryOption configures a BarrierRegistry at construction
+// time. Re-exported so SDK consumers can attach the volume pool and
+// per-tenant Pebble registry without importing pkg/seal directly.
+type BarrierRegistryOption = seal.Option
+
+// WithVolumePool attaches a volume pool to the BarrierRegistry. After
+// this option is applied, RegisterTenant calls that pass a nil
+// backend allocate a per-tenant path from the named pool.
+var WithVolumePool = seal.WithVolumePool
+
+// WithPerTenantRegistry attaches the per-tenant Pebble registry that
+// owns the lifecycle of the dedicated Pebble each barrier-mode tenant
+// runs on.
+var WithPerTenantRegistry = seal.WithPerTenantRegistry
 
 // NewTenantBarrier creates a new TenantBarrier for the given tenant.
 var NewTenantBarrier = seal.NewTenantBarrier
@@ -264,6 +264,3 @@ var NewSoftwareAEADProvider = seal.NewSoftwareAEADProvider
 
 // DefaultEpochBarrierConfig returns the default epoch barrier configuration.
 var DefaultEpochBarrierConfig = seal.DefaultEpochBarrierConfig
-
-// DefaultPreferenceOrder is the default strategy preference order.
-var DefaultPreferenceOrder = seal.DefaultPreferenceOrder

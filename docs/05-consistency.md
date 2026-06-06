@@ -270,6 +270,35 @@ value, err := kvService.Get(ctx, key, &service.ReadOptions{
 })
 ```
 
+## 7a. Transport Exposure
+
+Read consistency and write durability are selectable on every transport for
+the KV, MVCC, and time-series read/write operations. The wire contract uses an
+**unspecified** default: when a client omits the field the server applies its
+default (linearizable reads / sync writes), so existing clients are unaffected.
+
+| Transport | Consistency (reads) | Write mode (writes) |
+|-----------|--------------------|---------------------|
+| **gRPC / Unix** | `ConsistencyLevel` enum on the request (`CONSISTENCY_LEVEL_STRONG/LINEARIZABLE/EVENTUAL`; `UNSPECIFIED`=default) | `WriteMode` enum (`WRITE_MODE_SYNC/WAL_DURABLE/BATCHED`) |
+| **QUIC** | Same protobuf request enums as gRPC | Same |
+| **REST** | `?consistency=strong\|linearizable\|eventual` query param (legacy `?stale=true` ≡ `eventual`) | `?write_mode=sync\|wal_durable\|batched` query param |
+| **MCP** | optional `consistency` tool argument | optional `write_mode` tool argument |
+| **Embedded / SDK** | `transport.WithConsistency(level)` / `WithAllowStale()` read option | `transport.WithWriteMode(mode)` write option |
+| **Time-series** | `Consistency` field on the TS request structs (SDK) / `consistency` arg/param/enum on each transport | n/a (writes go through Raft proposal) |
+
+**CLI flags** (the `qrdb` tool, via the SDK):
+
+```bash
+qrdb kv get mykey   --consistency eventual     # local stale read
+qrdb kv list app/   --consistency strong       # full-consensus read
+qrdb kv put mykey v --write-mode batched       # amortized durable write
+qrdb kv del mykey   --write-mode wal_durable
+qrdb kv range a z   --consistency linearizable
+```
+
+Accepted CLI values: consistency `strong`/`linearizable`/`eventual`; write mode
+`sync`/`wal_durable`/`batched`. Omitting the flag uses the server default.
+
 ## 8. Performance Impact
 
 Latency by consistency level (measured on local 3-node cluster):

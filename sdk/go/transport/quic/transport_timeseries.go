@@ -27,6 +27,22 @@ import (
 // Compile-time interface assertion.
 var _ transport.TimeSeriesClient = (*Transport)(nil)
 
+// protoConsistencyFromString maps an SDK consistency string to its proto
+// ConsistencyLevel. An empty or unrecognised string maps to UNSPECIFIED so
+// the server uses its default path.
+func protoConsistencyFromString(s string) pb.ConsistencyLevel {
+	switch s {
+	case "strong":
+		return pb.ConsistencyLevel_CONSISTENCY_LEVEL_STRONG
+	case "linearizable":
+		return pb.ConsistencyLevel_CONSISTENCY_LEVEL_LINEARIZABLE
+	case "eventual", "stale":
+		return pb.ConsistencyLevel_CONSISTENCY_LEVEL_EVENTUAL
+	default:
+		return pb.ConsistencyLevel_CONSISTENCY_LEVEL_UNSPECIFIED
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Enum conversion maps
 // ---------------------------------------------------------------------------
@@ -92,14 +108,20 @@ func (t *Transport) TSQuery(ctx context.Context, req *transport.TSQueryRequest) 
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	if req.Consistency != "" {
+		if _, perr := transport.ParseConsistencyLevel(req.Consistency); perr != nil {
+			return nil, &transport.RequestError{Method: "TSQuery", Err: perr}
+		}
+	}
 
 	payload, err := proto.Marshal(&pb.TSQueryRequest{
-		Metric:     req.Metric,
-		StartNs:    req.StartNs,
-		EndNs:      req.EndNs,
-		Tags:       tagsToProto(req.Tags),
-		Limit:      req.Limit,
-		Descending: req.Descending,
+		Metric:      req.Metric,
+		StartNs:     req.StartNs,
+		EndNs:       req.EndNs,
+		Tags:        tagsToProto(req.Tags),
+		Limit:       req.Limit,
+		Descending:  req.Descending,
+		Consistency: protoConsistencyFromString(req.Consistency),
 	})
 	if err != nil {
 		return nil, &marshalError{Err: err}
@@ -129,13 +151,19 @@ func (t *Transport) TSAggregate(ctx context.Context, req *transport.TSAggregateR
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	if req.Consistency != "" {
+		if _, perr := transport.ParseConsistencyLevel(req.Consistency); perr != nil {
+			return nil, &transport.RequestError{Method: "TSAggregate", Err: perr}
+		}
+	}
 
 	payload, err := proto.Marshal(&pb.TSAggregateRequest{
-		Metric:     req.Metric,
-		StartNs:    req.StartNs,
-		EndNs:      req.EndNs,
-		Function:   aggFuncToProto[req.Function],
-		IntervalNs: req.IntervalNs,
+		Metric:      req.Metric,
+		StartNs:     req.StartNs,
+		EndNs:       req.EndNs,
+		Function:    aggFuncToProto[req.Function],
+		IntervalNs:  req.IntervalNs,
+		Consistency: protoConsistencyFromString(req.Consistency),
 	})
 	if err != nil {
 		return nil, &marshalError{Err: err}
@@ -184,6 +212,8 @@ type tsRichQueryRequest struct {
 	GroupBy     []string          `json:"group_by,omitempty"`
 	Limit       int               `json:"limit,omitempty"`
 	Percentile  float64           `json:"percentile,omitempty"`
+	// Consistency selects the read-consistency level. Empty uses the server default.
+	Consistency string `json:"consistency,omitempty"`
 }
 
 type tsRichQueryResponse struct {
@@ -238,6 +268,8 @@ type tsSetRetentionRequest struct {
 type tsListMetricsRequest struct {
 	Prefix string `json:"prefix,omitempty"`
 	Limit  int32  `json:"limit,omitempty"`
+	// Consistency selects the read-consistency level. Empty uses the server default.
+	Consistency string `json:"consistency,omitempty"`
 }
 
 type tsListMetricsResponse struct {
@@ -276,6 +308,11 @@ func (t *Transport) TSRichQuery(ctx context.Context, req *transport.TSRichQueryR
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	if req.Consistency != "" {
+		if _, perr := transport.ParseConsistencyLevel(req.Consistency); perr != nil {
+			return nil, &transport.RequestError{Method: "TSRichQuery", Err: perr}
+		}
+	}
 
 	wireReq := tsRichQueryRequest{
 		Metric:      req.Metric,
@@ -287,6 +324,7 @@ func (t *Transport) TSRichQuery(ctx context.Context, req *transport.TSRichQueryR
 		GroupBy:     req.GroupBy,
 		Limit:       req.Limit,
 		Percentile:  req.Percentile,
+		Consistency: req.Consistency,
 	}
 
 	payload, err := json.Marshal(wireReq)
@@ -439,10 +477,16 @@ func (t *Transport) TSListMetrics(ctx context.Context, req *transport.TSListMetr
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	if req.Consistency != "" {
+		if _, perr := transport.ParseConsistencyLevel(req.Consistency); perr != nil {
+			return nil, &transport.RequestError{Method: "TSListMetrics", Err: perr}
+		}
+	}
 
 	wireReq := tsListMetricsRequest{
-		Prefix: req.Prefix,
-		Limit:  req.Limit,
+		Prefix:      req.Prefix,
+		Limit:       req.Limit,
+		Consistency: req.Consistency,
 	}
 
 	payload, err := json.Marshal(wireReq)

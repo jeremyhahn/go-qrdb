@@ -18,6 +18,29 @@
 // implementations to communicate with the server's RAG pipeline.
 package transport
 
+import "context"
+
+// RAGClient is the transport-agnostic interface for RAG pipeline operations.
+// Each transport (embedded, gRPC, REST, QUIC, MCP) implements it. RAG requires
+// the vector store, so this interface is only built under the qrdb_vector tag.
+// Method names are RAG-prefixed to avoid colliding with CollectionClient's
+// DeleteDocument/ListDocuments on transports that implement both.
+type RAGClient interface {
+	// RAGIngestDocument chunks, embeds, and stores a document for later retrieval.
+	RAGIngestDocument(ctx context.Context, req *RAGIngestRequest) (*RAGIngestResponse, error)
+
+	// RAGQuery embeds the query text and retrieves the most semantically similar
+	// passages from a namespace.
+	RAGQuery(ctx context.Context, req *RAGQueryRequest) (*RAGQueryResponse, error)
+
+	// RAGDeleteDocument removes a document and all of its chunk vectors and KV
+	// entries.
+	RAGDeleteDocument(ctx context.Context, req *RAGDeleteDocumentRequest) (*RAGDeleteDocumentResponse, error)
+
+	// RAGListDocuments returns metadata about ingested documents in a namespace.
+	RAGListDocuments(ctx context.Context, req *RAGListDocumentsRequest) (*RAGListDocumentsResponse, error)
+}
+
 // RAGIngestRequest is the transport-layer request to ingest a document into
 // the RAG pipeline.
 type RAGIngestRequest struct {

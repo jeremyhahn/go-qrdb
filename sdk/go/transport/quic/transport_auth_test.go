@@ -35,7 +35,7 @@ func TestWireToUser_Nil(t *testing.T) {
 
 func TestWireToUser_Valid(t *testing.T) {
 	wire := &userWireResponse{
-		ID:        "user-123",
+		ID:        123,
 		Username:  "admin",
 		TenantID:  "tenant-1",
 		RoleIDs:   []string{"role-1", "role-2"},
@@ -48,8 +48,8 @@ func TestWireToUser_Valid(t *testing.T) {
 	if result == nil {
 		t.Fatal("wireToUser() returned nil for valid input")
 	}
-	if result.ID != "user-123" {
-		t.Errorf("ID = %q, want %q", result.ID, "user-123")
+	if result.ID != 123 {
+		t.Errorf("ID = %d, want %d", result.ID, uint64(123))
 	}
 	if result.Username != "admin" {
 		t.Errorf("Username = %q, want %q", result.Username, "admin")
@@ -80,8 +80,8 @@ func TestWireToUser_EmptyFields(t *testing.T) {
 	if result == nil {
 		t.Fatal("wireToUser() returned nil for empty wire response")
 	}
-	if result.ID != "" {
-		t.Errorf("ID = %q, want empty", result.ID)
+	if result.ID != 0 {
+		t.Errorf("ID = %d, want 0", result.ID)
 	}
 	if result.Enabled {
 		t.Error("Enabled = true, want false")
@@ -175,7 +175,7 @@ func TestTransport_GetUser_Closed(t *testing.T) {
 	}
 	_ = tr.Close()
 	ctx := context.Background()
-	_, err = tr.GetUser(ctx, "user-1")
+	_, err = tr.GetUser(ctx, 1)
 	if err == nil {
 		t.Fatal("GetUser() on closed transport should return error")
 	}
@@ -192,7 +192,7 @@ func TestTransport_UpdateUser_Closed(t *testing.T) {
 	}
 	_ = tr.Close()
 	ctx := context.Background()
-	_, err = tr.UpdateUser(ctx, &transport.UpdateUserRequest{ID: "user-1"})
+	_, err = tr.UpdateUser(ctx, &transport.UpdateUserRequest{ID: 1})
 	if err == nil {
 		t.Fatal("UpdateUser() on closed transport should return error")
 	}
@@ -209,7 +209,7 @@ func TestTransport_DeleteUser_Closed(t *testing.T) {
 	}
 	_ = tr.Close()
 	ctx := context.Background()
-	err = tr.DeleteUser(ctx, "user-1")
+	err = tr.DeleteUser(ctx, 1)
 	if err == nil {
 		t.Fatal("DeleteUser() on closed transport should return error")
 	}
@@ -243,7 +243,7 @@ func TestTransport_EnableUser_Closed(t *testing.T) {
 	}
 	_ = tr.Close()
 	ctx := context.Background()
-	err = tr.EnableUser(ctx, "user-1")
+	err = tr.EnableUser(ctx, 1)
 	if err == nil {
 		t.Fatal("EnableUser() on closed transport should return error")
 	}
@@ -260,7 +260,7 @@ func TestTransport_DisableUser_Closed(t *testing.T) {
 	}
 	_ = tr.Close()
 	ctx := context.Background()
-	err = tr.DisableUser(ctx, "user-1")
+	err = tr.DisableUser(ctx, 1)
 	if err == nil {
 		t.Fatal("DisableUser() on closed transport should return error")
 	}
@@ -366,7 +366,7 @@ func TestTransport_AssignRole_Closed(t *testing.T) {
 	}
 	_ = tr.Close()
 	ctx := context.Background()
-	err = tr.AssignRole(ctx, "user-1", "role-1")
+	err = tr.AssignRole(ctx, 1, "role-1")
 	if err == nil {
 		t.Fatal("AssignRole() on closed transport should return error")
 	}
@@ -383,7 +383,7 @@ func TestTransport_UnassignRole_Closed(t *testing.T) {
 	}
 	_ = tr.Close()
 	ctx := context.Background()
-	err = tr.UnassignRole(ctx, "user-1", "role-1")
+	err = tr.UnassignRole(ctx, 1, "role-1")
 	if err == nil {
 		t.Fatal("UnassignRole() on closed transport should return error")
 	}

@@ -46,7 +46,7 @@ func ParseIndexTags(structType reflect.Type) (map[string]*IndexMetadata, error) 
 	}
 
 	// Dereference pointer if needed
-	if structType.Kind() == reflect.Ptr {
+	if structType.Kind() == reflect.Pointer {
 		structType = structType.Elem()
 	}
 
@@ -166,7 +166,7 @@ func GetFieldValue(entity interface{}, fieldName string) ([]byte, error) {
 	val := reflect.ValueOf(entity)
 
 	// Dereference pointer if needed
-	if val.Kind() == reflect.Ptr {
+	if val.Kind() == reflect.Pointer {
 		if val.IsNil() {
 			return nil, errors.Newf(
 				errors.ErrInvalidInput,

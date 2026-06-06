@@ -133,3 +133,116 @@ func TestQuotasLimitUnlimitedMinusOne(t *testing.T) {
 		t.Errorf("Quotas.Limit(ResourceDatabases) = %d, want -1", got)
 	}
 }
+
+// --- Quotas.CurrentUsage() ---
+
+func TestQuotasCurrentUsageReturnsCorrectFieldForEachResource(t *testing.T) {
+	q := &Quotas{
+		CurrentDatabases:    1,
+		CurrentRaftGroups:   2,
+		CurrentCollections:  3,
+		CurrentKeys:         4,
+		CurrentStorageBytes: 5,
+		CurrentUsers:        6,
+		CurrentRoles:        7,
+		CurrentCertificates: 8,
+		CurrentBackups:      9,
+		CurrentVectorDims:   10,
+		CurrentTSMetrics:    11,
+	}
+	tests := []struct {
+		resource Resource
+		want     int64
+	}{
+		{ResourceDatabases, 1},
+		{ResourceRaftGroups, 2},
+		{ResourceCollections, 3},
+		{ResourceKeys, 4},
+		{ResourceStorageBytes, 5},
+		{ResourceUsers, 6},
+		{ResourceRoles, 7},
+		{ResourceCertificates, 8},
+		{ResourceBackups, 9},
+		{ResourceVectorDims, 10},
+		{ResourceTSMetrics, 11},
+	}
+	for _, tc := range tests {
+		got, err := q.CurrentUsage(tc.resource)
+		if err != nil {
+			t.Errorf("Quotas.CurrentUsage(%v) returned unexpected error: %v", tc.resource, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("Quotas.CurrentUsage(%v) = %d, want %d", tc.resource, got, tc.want)
+		}
+	}
+}
+
+func TestQuotasCurrentUsageUnknownResourceReturnsError(t *testing.T) {
+	q := &Quotas{}
+	_, err := q.CurrentUsage(Resource(999))
+	if err == nil {
+		t.Fatal("Quotas.CurrentUsage(unknown) expected error, got nil")
+	}
+	if _, ok := err.(*InvalidResourceError); !ok {
+		t.Errorf("error type = %T, want *InvalidResourceError", err)
+	}
+}
+
+func TestQuotasCurrentUsageZeroValueReturnsZero(t *testing.T) {
+	q := &Quotas{}
+	got, err := q.CurrentUsage(ResourceKeys)
+	if err != nil {
+		t.Fatalf("Quotas{}.CurrentUsage(ResourceKeys) unexpected error: %v", err)
+	}
+	if got != 0 {
+		t.Errorf("Quotas{}.CurrentUsage(ResourceKeys) = %d, want 0", got)
+	}
+}
+
+// --- Quotas.SetCurrentUsage() ---
+
+func TestQuotasSetCurrentUsageRoundTrip(t *testing.T) {
+	resources := []Resource{
+		ResourceDatabases, ResourceRaftGroups, ResourceCollections, ResourceKeys,
+		ResourceStorageBytes, ResourceUsers, ResourceRoles, ResourceCertificates,
+		ResourceBackups, ResourceVectorDims, ResourceTSMetrics,
+	}
+	for _, r := range resources {
+		q := &Quotas{}
+		if err := q.SetCurrentUsage(r, 42); err != nil {
+			t.Errorf("SetCurrentUsage(%v, 42) unexpected error: %v", r, err)
+			continue
+		}
+		got, err := q.CurrentUsage(r)
+		if err != nil {
+			t.Errorf("CurrentUsage(%v) after set unexpected error: %v", r, err)
+			continue
+		}
+		if got != 42 {
+			t.Errorf("CurrentUsage(%v) = %d after SetCurrentUsage(42), want 42", r, got)
+		}
+	}
+}
+
+func TestQuotasSetCurrentUsageClampNegativeToZero(t *testing.T) {
+	q := &Quotas{}
+	if err := q.SetCurrentUsage(ResourceKeys, -5); err != nil {
+		t.Fatalf("SetCurrentUsage(ResourceKeys, -5) unexpected error: %v", err)
+	}
+	got, _ := q.CurrentUsage(ResourceKeys)
+	if got != 0 {
+		t.Errorf("SetCurrentUsage with negative value = %d, want 0 (clamped)", got)
+	}
+}
+
+func TestQuotasSetCurrentUsageUnknownResourceReturnsError(t *testing.T) {
+	q := &Quotas{}
+	err := q.SetCurrentUsage(Resource(999), 10)
+	if err == nil {
+		t.Fatal("SetCurrentUsage(unknown) expected error, got nil")
+	}
+	if _, ok := err.(*InvalidResourceError); !ok {
+		t.Errorf("error type = %T, want *InvalidResourceError", err)
+	}
+}

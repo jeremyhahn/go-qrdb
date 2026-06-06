@@ -67,8 +67,7 @@ func newShamirTestBarrier(t *testing.T) *Barrier {
 func newShamirTestBarrierDirect(t *testing.T) *Barrier {
 	t.Helper()
 	store := NewMemoryBackend()
-	shamirStore := NewMemoryBackend()
-	shamirStrat, err := NewShamirStrategy(shamirStore, 2, 3)
+	shamirStrat, err := NewShamirStrategy(2, 3)
 	if err != nil {
 		t.Fatalf("NewShamirStrategy: %v", err)
 	}
@@ -79,6 +78,7 @@ func newShamirTestBarrierDirect(t *testing.T) *Barrier {
 			Threshold:   2,
 			TotalShares: 3,
 		},
+		PreferenceOrder: []StrategyID{StrategyShamir},
 	}, shamirStrat, swStrat)
 	if err != nil {
 		t.Fatalf("NewBarrier: %v", err)
@@ -201,8 +201,7 @@ func TestShamirInitializeShamir_DirectMode_AlreadyInitialized(t *testing.T) {
 
 func TestShamirInitializeShamir_DirectMode_BaseExistsError(t *testing.T) {
 	fb := newFailingBackend()
-	shamirStore := NewMemoryBackend()
-	shamirStrat, err := NewShamirStrategy(shamirStore, 2, 3)
+	shamirStrat, err := NewShamirStrategy(2, 3)
 	if err != nil {
 		t.Fatalf("NewShamirStrategy: %v", err)
 	}
@@ -213,6 +212,7 @@ func TestShamirInitializeShamir_DirectMode_BaseExistsError(t *testing.T) {
 			Threshold:   2,
 			TotalShares: 3,
 		},
+		PreferenceOrder: []StrategyID{StrategyShamir},
 	}, shamirStrat, testSoftwareStrategy(t))
 	if err != nil {
 		t.Fatalf("NewBarrier: %v", err)

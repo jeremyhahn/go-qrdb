@@ -16,13 +16,19 @@ limitations under the License.
 
 # Retrieval-Augmented Generation (RAG)
 
-QRDB includes a RAG (Retrieval-Augmented Generation) pipeline for semantic document search. The pipeline handles document chunking, embedding generation, vector storage, and similarity-based retrieval. The feature is gated behind the `qrdb_vector` build tag.
+QRDB includes a thin, tenant-scoped RAG ingest/retrieve **primitive** for document chunking,
+embedding generation, and similarity-based retrieval. It is NOT a complete RAG orchestration
+pipeline — full orchestration (ranking strategies, query rewriting, context assembly, LLM
+text generation) is the responsibility of higher layers (go-quicbaas, application code).
+The RAG primitive is gated behind the `qrdb_vector` build tag.
 
-## Pipeline Overview
+## RAG Primitive Overview
 
-The RAG pipeline has two phases: ingestion and retrieval.
+The RAG primitive provides two core operations: **ingestion** and **retrieval**. It handles
+document chunking, embedding generation, and vector search. Higher layers orchestrate ranking,
+query rewriting, context assembly, and LLM generation.
 
-**Ingestion:**
+**Ingest Phase (qrdb primitive responsibility):**
 ```
 Document Text
      ↓
@@ -30,18 +36,18 @@ Document Chunker (fixed/sentence/paragraph strategy)
      ↓
 Text Chunks
      ↓
-Embedding Service
+Embedding Service (provider-proxy)
      ↓
-Vectors + KV Store Entries
+Vectors + KV Store Entries (tenant-scoped)
      ↓
-Vector Namespace + KV Backend
+Vector Namespace + KV Backend (barrier-encrypted)
 ```
 
-**Retrieval:**
+**Query Phase (qrdb primitive responsibility):**
 ```
 Query Text
      ↓
-Embedding Service
+Embedding Service (provider-proxy)
      ↓
 Query Vector
      ↓
@@ -49,9 +55,24 @@ Vector Search (k-NN)
      ↓
 Vector IDs
      ↓
-KV Retrieval
+KV Retrieval (chunk text + metadata)
      ↓
-Chunk Text + Metadata + Similarity Score
+Ranked Results (k results by similarity score)
+```
+
+**Orchestration Phase (L4 responsibility, NOT qrdb):**
+```
+Ranked Results
+     ↓
+Query Rewriting / Caching
+     ↓
+Result Fusion (BM25, hybrid search, RRF)
+     ↓
+Context Assembly (prompt building)
+     ↓
+LLM Generation (text synthesis)
+     ↓
+Final Response
 ```
 
 ## Service Interface
@@ -225,18 +246,26 @@ resp, err := ragService.DeleteDocument(ctx, &DeleteRAGDocumentRequest{
 fmt.Printf("Deleted %d chunks\n", resp.ChunkCount)
 ```
 
-## API Endpoints
+## Transport Exposure & Authorization
 
-### REST API
+The RAG pipeline is exposed on **every** API transport. Each operation is
+guarded by a permission under the default-deny posture. The Unix-domain-socket
+transport inherits the full gRPC surface (gRPC over UDS). RAG requires the
+vector store, so it is only built under the `qrdb_vector` build tag.
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/v1/rag/ingest` | POST | Ingest a document |
-| `/api/v1/rag/query` | POST | Query for similar passages |
-| `/api/v1/rag/documents` | GET | List documents in a namespace |
-| `/api/v1/rag/documents/{doc_id}` | DELETE | Delete a document |
+| Operation | Permission | gRPC RPC (`qrdb.v1.QRDBService/`) | REST | QUIC method | MCP tool |
+|-----------|-----------|-----------------------------------|------|-------------|----------|
+| Ingest | `rag:ingest` | `RAGIngestDocument` | `POST /v1/rag/ingest` | `rag.IngestDocument` | `qrdb_rag_ingest` |
+| Query | `rag:query` | `RAGQuery` | `POST /v1/rag/query` | `rag.Query` | `qrdb_rag_query` |
+| Delete | `rag:delete_document` | `RAGDeleteDocument` | `POST /v1/rag/documents/delete` | `rag.DeleteDocument` | `qrdb_rag_delete_document` |
+| List | `rag:list_documents` | `RAGListDocuments` | `GET /v1/rag/documents?namespace=&limit=&offset=` | `rag.ListDocuments` | `qrdb_rag_list_documents` |
 
-Request body for `/api/v1/rag/ingest`:
+RAG RPCs are methods on the unified `QRDBService` (not a separate service).
+Sources: `pkg/api/grpc/service_rag.go`, `pkg/api/rest/handlers_rag.go`,
+`pkg/api/quic/handlers_rag.go`, `pkg/api/mcp/tools_rag.go`.
+
+Request body for `POST /v1/rag/ingest` (chunk config is supplied as flat
+fields):
 
 ```json
 {
@@ -245,19 +274,15 @@ Request body for `/api/v1/rag/ingest`:
   "namespace": "documents",
   "model": "mxbai-embed-large",
   "provider": "ollama",
-  "chunk_config": {
-    "strategy": "fixed",
-    "chunk_size": 512,
-    "overlap": 50
-  },
-  "metadata": {
-    "source": "wiki",
-    "category": "science"
-  }
+  "chunk_strategy": "fixed",
+  "chunk_size": 512,
+  "chunk_overlap": 50,
+  "chunk_min_size": 0,
+  "metadata": { "source": "wiki", "category": "science" }
 }
 ```
 
-Request body for `/api/v1/rag/query`:
+Request body for `POST /v1/rag/query`:
 
 ```json
 {
@@ -266,21 +291,25 @@ Request body for `/api/v1/rag/query`:
   "top_k": 5,
   "model": "mxbai-embed-large",
   "provider": "ollama",
-  "filter": {
-    "category": "science"
-  }
+  "filter": { "category": "science" }
 }
 ```
 
-### gRPC API
+### SDK access
 
-Source: `pkg/api/grpc/service_rag.go`
+The Go SDK exposes the RAG pipeline uniformly across every transport via
+`client.RAG()` (available under the `qrdb_vector` tag), which returns a
+`transport.RAGClient`:
 
-### MCP (Model Context Protocol)
+```go
+resp, err := client.RAG().RAGQuery(ctx, &transport.RAGQueryRequest{
+    Query:     "what is machine learning?",
+    Namespace: "documents",
+    TopK:      5,
+})
+```
 
-Tools are registered as "rag_ingest", "rag_query", "rag_delete", and "rag_list_documents".
-
-Source: `pkg/api/mcp/tools_rag.go`
+The `qrdb rag ingest|query|delete|list` CLI commands wrap the same client.
 
 ## Best Practices
 

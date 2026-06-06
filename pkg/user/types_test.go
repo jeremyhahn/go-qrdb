@@ -23,7 +23,7 @@ import (
 func TestUser_JSONRoundTrip(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	original := &User{
-		ID:        "test-uuid",
+		ID:        9001,
 		Username:  "alice",
 		TenantID:  "acme",
 		RoleIDs:   []string{"admin", "viewer"},
@@ -44,7 +44,7 @@ func TestUser_JSONRoundTrip(t *testing.T) {
 	}
 
 	if decoded.ID != original.ID {
-		t.Errorf("ID: got %q, want %q", decoded.ID, original.ID)
+		t.Errorf("ID: got %d, want %d", decoded.ID, original.ID)
 	}
 	if decoded.Username != original.Username {
 		t.Errorf("Username: got %q, want %q", decoded.Username, original.Username)
@@ -68,9 +68,9 @@ func TestUser_JSONRoundTrip(t *testing.T) {
 
 func TestUser_JSONEmptyRoleIDs(t *testing.T) {
 	original := &User{
-		ID:       "test-uuid",
+		ID:       9001,
 		Username: "bob",
-		TenantID: "default",
+		TenantID: "system",
 		RoleIDs:  []string{},
 		Enabled:  true,
 	}
@@ -95,7 +95,7 @@ func TestUser_JSONEmptyRoleIDs(t *testing.T) {
 
 func TestListUsersResponse_JSON(t *testing.T) {
 	resp := &ListUsersResponse{
-		Users:   []*User{{ID: "u1", Username: "alice"}},
+		Users:   []*User{{ID: 1, Username: "alice"}},
 		Total:   10,
 		HasMore: true,
 	}
@@ -119,8 +119,8 @@ func TestListUsersResponse_JSON(t *testing.T) {
 	if len(decoded.Users) != 1 {
 		t.Fatalf("Users: got %d, want 1", len(decoded.Users))
 	}
-	if decoded.Users[0].ID != "u1" {
-		t.Errorf("Users[0].ID: got %q, want %q", decoded.Users[0].ID, "u1")
+	if decoded.Users[0].ID != 1 {
+		t.Errorf("Users[0].ID: got %d, want %d", decoded.Users[0].ID, 1)
 	}
 }
 

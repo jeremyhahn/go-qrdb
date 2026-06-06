@@ -188,10 +188,11 @@ func (r *RegularStateMachine) Update(_ context.Context, entries []sm.Entry, resu
 
 		revision := r.revision.Add(1)
 		result, err := handler(cmd[1:], revision)
-		if err != nil {
-			return err
+		resolved, stop, applyErr := resolveApplyError(r.logger, entries[i].Index, result, err)
+		if stop {
+			return applyErr
 		}
-		results[i] = result
+		results[i] = resolved
 	}
 	return nil
 }

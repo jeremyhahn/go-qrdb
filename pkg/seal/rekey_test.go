@@ -20,14 +20,14 @@ import (
 func newRekeyBarrier(t *testing.T) (*Barrier, *MemoryBackend) {
 	t.Helper()
 	backend := NewMemoryBackend()
-	shamirStore := NewMemoryBackend()
-	shamirStrat, err := NewShamirStrategy(shamirStore, 3, 5)
+	shamirStrat, err := NewShamirStrategy(3, 5)
 	if err != nil {
 		t.Fatal(err)
 	}
 	b, err := NewBarrier(testLogger(), backend, BarrierConfig{
-		RootKeyPath: "test/root-key",
-		Shamir:      &ShamirConfig{Threshold: 3, TotalShares: 5},
+		RootKeyPath:     "test/root-key",
+		Shamir:          &ShamirConfig{Threshold: 3, TotalShares: 5},
+		PreferenceOrder: []StrategyID{StrategyShamir},
 	}, testSoftwareStrategy(t), shamirStrat)
 	if err != nil {
 		t.Fatal(err)

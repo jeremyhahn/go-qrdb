@@ -25,8 +25,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/awnumar/memguard"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir"
 )
 
@@ -66,12 +66,24 @@ type CeremonyService struct {
 
 	state      CeremonyState
 	ca         CeremonyCA
-	shareStore *memguardShareStore
+	shareStore *sealedShareStore
 
 	pendingCerts map[string]*PendingCert
 	challenges   map[string]*ChallengeResponse
 
 	thresholdRegistry *ThresholdRegistry
+
+	// officerRegistry persists officer enrollment metadata behind the
+	// data-plane barrier. Lazy-initialized in Initialize.
+	officerRegistry *OfficerRegistry
+
+	// extCAPool holds CA pools used to validate externally-supplied
+	// officer certificates. Configured via SetExternalCAPools.
+	extCAPool *x509.CertPool
+
+	// ext holds Phase-4 custodian and auth-factor dependencies.
+	// Set via SetExtension after construction.
+	ext *CeremonyExtension
 }
 
 // NewCeremonyService creates a new CeremonyService with the given
@@ -102,7 +114,7 @@ func NewCeremonyService(
 		credService:       credService,
 		logger:            logger,
 		state:             StateAwaitingInit,
-		shareStore:        newMemguardShareStore(),
+		shareStore:        newSealedShareStore(),
 		pendingCerts:      make(map[string]*PendingCert),
 		challenges:        make(map[string]*ChallengeResponse),
 		thresholdRegistry: NewThresholdRegistry(),
@@ -142,12 +154,34 @@ func (s *CeremonyService) SPKIPin() (string, error) {
 // configuration, stores the CA reference, issues TLS and SO certificates,
 // stores credentials, and either starts M-of-N enrollment or transitions
 // directly to operational state for single-admin mode.
-func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA) (*InitResult, error) {
+//
+// opts carries per-request parameters (notably the Security Officer and
+// user PINs). When a per-request PIN is non-empty it takes precedence over
+// the corresponding CeremonyConfig field; empty per-request fields fall
+// back to the configured value. opts may be nil, in which case the
+// configured PINs are used unchanged. If, after this resolution, a required
+// PIN is still empty, validateConfig fails closed with ErrInvalidSOPIN /
+// ErrInvalidUserPIN and no cryptographic work is performed.
+func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *InitializeOptions) (*InitResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.state != StateAwaitingInit {
 		return nil, ErrAlreadyInitialized
+	}
+
+	// Per-request PINs take precedence over the configured PINs. We hold the
+	// write lock and Initialize runs exactly once, so persisting the
+	// effective PINs back into s.config is safe and keeps later operations
+	// that validate against the configured SO PIN (e.g. SignCSRInit)
+	// consistent with the PIN actually used at initialization.
+	if opts != nil {
+		if opts.SOPin != "" {
+			s.config.SOPin = opts.SOPin
+		}
+		if opts.UserPin != "" {
+			s.config.UserPin = opts.UserPin
+		}
 	}
 
 	if err := s.validateConfig(); err != nil {
@@ -353,7 +387,7 @@ func (s *CeremonyService) CompleteClaimCert(
 }
 
 // ClaimShare retrieves the Shamir share for the given officer username
-// from the memguard share store. If all officers have claimed both
+// from the in-memory share store. If all officers have claimed both
 // their certificates and shares, the ceremony transitions to the
 // operational state.
 func (s *CeremonyService) ClaimShare(ctx context.Context, username string) ([]byte, error) {
@@ -376,6 +410,17 @@ func (s *CeremonyService) ClaimShare(ctx context.Context, username string) ([]by
 	shareJSON, err := s.shareStore.Claim(username)
 	if err != nil {
 		return nil, err
+	}
+
+	// Best-effort: record the claim in the persistent registry. Failures
+	// are logged but do not invalidate the in-memory claim — the share
+	// has already been delivered out of the secure store.
+	if s.officerRegistry != nil {
+		if markErr := s.officerRegistry.MarkClaimed(ctx, username, time.Now().UTC()); markErr != nil {
+			s.logger.Warn("failed to record share claim in persistent registry",
+				slog.String("username", username),
+				slog.String("error", markErr.Error()))
+		}
 	}
 
 	s.logger.Info("share claimed",
@@ -478,6 +523,9 @@ func (s *CeremonyService) validateConfig() error {
 		if err := validateUniqueOfficerUsernames(s.config.Officers); err != nil {
 			return err
 		}
+		if err := validateOfficerAuthenticators(s.config.Officers); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -485,7 +533,7 @@ func (s *CeremonyService) validateConfig() error {
 
 // initializeMofN sets up M-of-N Shamir secret sharing. It splits the
 // user PIN into shares, signs CSRs for each officer, and stores shares
-// in the memguard share store. Transitions to StateEnrolling.
+// in the in-memory share store. Transitions to StateEnrolling.
 func (s *CeremonyService) initializeMofN(ctx context.Context, result *InitResult) error {
 	shares, err := shamir.Split(
 		[]byte(s.config.UserPin),
@@ -495,6 +543,25 @@ func (s *CeremonyService) initializeMofN(ctx context.Context, result *InitResult
 	if err != nil {
 		return &ShamirSplitError{Err: err}
 	}
+
+	// Lazily set up the persistent officer registry against the data-plane
+	// barrier. The registry persists enrollment metadata only — secret share
+	// material is never stored. Failure to construct a registry is fatal:
+	// the ceremony cannot guarantee durable enrollment without it.
+	if s.officerRegistry == nil {
+		reg, regErr := NewOfficerRegistry(s.barrier)
+		if regErr != nil {
+			return regErr
+		}
+		s.officerRegistry = reg
+	}
+
+	// The barrier may legitimately be sealed at this point: in M-of-N mode
+	// the daemon's barrier is unsealed AFTER officers submit shares.
+	// Persistent registry writes are best-effort during initial enrollment;
+	// callers can re-run RestoreFromRegistry after unseal if they want a
+	// hot in-memory copy.
+	registryWritable := !s.barrier.IsSealed()
 
 	for i, officer := range s.config.Officers {
 		// Parse the officer's CSR to extract the public key.
@@ -528,13 +595,42 @@ func (s *CeremonyService) initializeMofN(ctx context.Context, result *InitResult
 
 		// Store the pending certificate.
 		s.pendingCerts[officer.Username] = &PendingCert{
-			Username:  officer.Username,
-			CertPEM:   certPEM,
-			CSRPubKey: csr.PublicKey,
-			Claimed:   false,
+			AuthenticatorType: officer.AuthenticatorType.Normalized(),
+			AuthenticatorRef:  officer.AuthenticatorRef,
+			Username:          officer.Username,
+			CertPEM:           certPEM,
+			CSRPubKey:         csr.PublicKey,
+			Claimed:           false,
 		}
 
-		// Marshal the share and store in memguard.
+		// Persist the public enrollment record. Secret share data is NOT
+		// stored — it lives only in the in-memory sealed share store.
+		thumb := certThumbprint(cert.Raw)
+		pubPEM, marshalErr := marshalPublicKeyPEM(csr.PublicKey)
+		if marshalErr != nil {
+			return &CertEncodeError{Err: marshalErr}
+		}
+		persisted := &PersistentOfficer{
+			Username:       officer.Username,
+			CertThumbprint: thumb,
+			PubKeyPEM:      pubPEM,
+			ShareIndex:     i + 1,
+			AuthFactor:     authFactorFromAuthenticator(officer.AuthenticatorType),
+			EnrolledAt:     time.Now().UTC(),
+		}
+		if registryWritable {
+			if err := s.officerRegistry.Save(ctx, persisted); err != nil {
+				return err
+			}
+		} else {
+			// Stash the record in the in-memory cache so RestoreFromRegistry
+			// or post-unseal flushes can persist it durably later.
+			s.officerRegistry.mu.Lock()
+			s.officerRegistry.cache[persisted.Username] = persisted
+			s.officerRegistry.mu.Unlock()
+		}
+
+		// Marshal the share and store in the sealed share store.
 		shareJSON, err := json.Marshal(shares[i])
 		if err != nil {
 			return &ShareStoreError{Err: err}
@@ -597,6 +693,106 @@ func validateUniqueOfficerUsernames(officers []OfficerConfig) error {
 	return nil
 }
 
+// validateOfficerAuthenticators checks that every officer's
+// AuthenticatorType is either empty (meaning software default) or one
+// of the known AuthenticatorType constants.
+func validateOfficerAuthenticators(officers []OfficerConfig) error {
+	for _, officer := range officers {
+		if err := officer.AuthenticatorType.Validate(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// OfficerRegistry returns the persistent officer registry. It is non-nil
+// only after a successful Initialize that ran in M-of-N mode, or after
+// AttachOfficerRegistry has been called explicitly.
+func (s *CeremonyService) OfficerRegistry() *OfficerRegistry {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.officerRegistry
+}
+
+// AttachOfficerRegistry installs an existing persistent officer registry.
+// The cmd/qrdbd boot path uses this so a registry built around the
+// data-plane barrier survives across the unseal/restore handshake.
+func (s *CeremonyService) AttachOfficerRegistry(reg *OfficerRegistry) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.officerRegistry = reg
+}
+
+// SetExternalCAPools configures the X.509 trust anchors used to validate
+// officer certificates supplied to EnrollExternalOfficer. The pool MUST
+// include both the additional_cas trust list and the mtls.client_ca_files
+// trust list as documented in the unification plan; the caller is
+// responsible for merging.
+func (s *CeremonyService) SetExternalCAPools(pool *x509.CertPool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.extCAPool = pool
+}
+
+// FlushPendingOfficers writes any officer records that were buffered in
+// the registry's in-memory cache while the barrier was sealed. This is
+// intended to be called once after the barrier becomes unsealed.
+func (s *CeremonyService) FlushPendingOfficers(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.officerRegistry == nil {
+		return nil
+	}
+	for _, officer := range s.officerRegistry.Cached() {
+		if err := s.officerRegistry.Save(ctx, officer); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// RestoreFromRegistry rebuilds the in-memory pendingCerts map from the
+// persistent officer registry. This is intended to be invoked once the
+// barrier has been unsealed so that operations like BeginClaimCert and
+// CompleteClaimCert can verify officer identities even if the daemon
+// has been restarted between enrollment and claim.
+//
+// The caller is expected to have already populated the in-memory share
+// store from out-of-band (e.g. from custodian-distributed shares); this
+// method only rehydrates public certificate metadata.
+func (s *CeremonyService) RestoreFromRegistry(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.officerRegistry == nil {
+		return nil
+	}
+
+	if err := s.officerRegistry.Reload(ctx); err != nil {
+		return err
+	}
+
+	for _, officer := range s.officerRegistry.Cached() {
+		if _, exists := s.pendingCerts[officer.Username]; exists {
+			continue
+		}
+		pubKey, err := parsePublicKeyPEM(officer.PubKeyPEM)
+		if err != nil {
+			s.logger.Warn("skipping persistent officer with invalid pubkey",
+				slog.String("username", officer.Username),
+				slog.String("error", err.Error()))
+			continue
+		}
+		s.pendingCerts[officer.Username] = &PendingCert{
+			Username:  officer.Username,
+			CSRPubKey: pubKey,
+			Claimed:   !officer.ClaimedAt.IsZero(),
+		}
+	}
+	return nil
+}
+
 // Cleanup destroys all remaining shares and clears sensitive state.
 // This should be called when the ceremony is abandoned or the service
 // is shutting down.
@@ -608,7 +804,7 @@ func (s *CeremonyService) Cleanup() {
 
 	// Wipe any remaining challenge nonces.
 	for username, challenge := range s.challenges {
-		memguard.WipeBytes(challenge.Nonce)
+		secure.Wipe(challenge.Nonce)
 		delete(s.challenges, username)
 	}
 }

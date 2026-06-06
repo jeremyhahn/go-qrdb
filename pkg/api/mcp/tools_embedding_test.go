@@ -370,15 +370,3 @@ func TestListEmbeddingModels_ServiceError(t *testing.T) {
 		t.Error("expected error result for provider not found")
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Tests: formatEmbedResponse and itoa helpers
-// ---------------------------------------------------------------------------
-
-func TestFormatEmbedResponse(t *testing.T) {
-	embeddings := [][]float32{{0.1, 0.2}, {0.3, 0.4}}
-	result := formatEmbedResponse(embeddings, "test-model", true)
-	if result == "" {
-		t.Error("expected non-empty format result")
-	}
-}

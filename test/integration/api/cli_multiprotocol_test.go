@@ -45,12 +45,18 @@ func execCLIWithServer(t *testing.T, cfg *TestConfig, serverURL string, args ...
 		}
 	}
 
-	// Set a short CLI timeout to avoid blocking the test suite.
-	prefixArgs = append(prefixArgs, "--timeout", "15s")
+	// Bound each CLI call so a stalled request fails rather than hangs. 30s
+	// gives headroom for transient slowness when the software- and Shamir-seal
+	// servers share the host with the node-spawning cluster tests.
+	prefixArgs = append(prefixArgs, "--timeout", "30s")
 
 	args = append(prefixArgs, args...)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// The exec deadline must exceed the CLI's own --timeout (30s) plus its
+	// bounded connect-retry, so a stalled call self-terminates with a clean
+	// error inside the CLI rather than being SIGKILLed here (which surfaces
+	// as an opaque "signal: killed"). 60s leaves clear headroom.
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	t.Logf("exec: %s %s", cfg.CLIBinPath, strings.Join(args, " "))

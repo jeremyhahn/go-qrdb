@@ -35,6 +35,12 @@ type BarrierEncryptor interface {
 // BarrierBackend wraps a Backend with a BarrierEncryptor to provide
 // transparent value encryption/decryption. Keys remain in plaintext.
 // When the barrier is sealed, all operations return SealedError.
+//
+// Deprecated: per-value encryption is retired in favour of FS-level
+// at-rest encryption via pkg/atrest.Encryptor (store-level AES-256-GCM).
+// BarrierBackend is no longer constructed by Manager; it is kept only for
+// backward compatibility of the exported SDK surface and test coverage.
+// New code must not use BarrierBackend to wrap production store backends.
 type BarrierBackend struct {
 	inner   Backend
 	barrier BarrierEncryptor

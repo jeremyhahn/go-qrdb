@@ -72,9 +72,13 @@ logging:
   format: "text"
 
 discovery:
-  method: "multicast"
-  multicast_secret: "quicraft"
+  method: "static"          # default: single-node; no network auto-join
+  multicast_secret: ""      # no default PSK — required when method is "multicast"
   dns_domain: ""
+  # token discovery (method: "token")
+  token_endpoint: ""
+  token: ""
+  token_cluster_size: 0
 
 mvcc:
   compaction_retention: 1000
@@ -99,9 +103,10 @@ timeseries:
 auth:
   enabled: true
   admin_username: "admin"
-  default_tenant: "default"
+  default_tenant: "system"
   cert_ttl: "8760h"
   perm_cache_ttl: 30
+  separation_of_duties: false
 
 audit:
   enabled: true
@@ -324,32 +329,46 @@ Configures structured logging output.
 
 ### discovery
 
-Configures peer discovery for cluster formation.
+Configures peer discovery for cluster formation. The discovery engine
+(`pkg/discovery`) and bootstrap orchestration (`pkg/cluster`) are described in
+detail in [discovery.md](discovery.md).
 
-| Field              | Type   | Default      | CLI Flag             | Description                                       |
-|--------------------|--------|--------------|----------------------|---------------------------------------------------|
-| `method`           | string | `multicast`  | `--discovery`        | Discovery mechanism                               |
-| `multicast_secret` | string | `quicraft`   | `--multicast-secret` | Shared secret for multicast discovery auth         |
-| `dns_domain`       | string | `""`         | `--dns-domain`       | DNS domain for DNS-based peer discovery            |
+| Field                       | Type   | Default      | CLI Flag                   | Description                                          |
+|-----------------------------|--------|--------------|----------------------------|------------------------------------------------------|
+| `method`                    | string | `static`     | `--discovery`              | Discovery mechanism (default: single-node static)    |
+| `multicast_secret`          | string | `""`         | `--multicast-secret`       | Shared PSK for multicast auth; **required** for multicast, no default |
+| `multicast_group`           | string | `""`         | —                          | Override multicast address (host:port)               |
+| `dns_domain`                | string | `""`         | `--dns-domain`             | DNS domain for DNS SRV peer discovery                |
+| `dns_service`               | string | `_raft`      | —                          | SRV service label                                    |
+| `dns_proto`                 | string | `_udp`       | —                          | SRV protocol label                                   |
+| `token_endpoint`            | string | `""`         | `--discovery-endpoint`     | Token discovery service URL (token method)           |
+| `token`                     | string | `""`         | `--discovery-token`        | Shared bootstrap token (token method)                |
+| `token_cluster_size`        | int    | `0`          | `--discovery-cluster-size` | Expected cluster size for token discovery            |
+| `allow_insecure_token_http` | bool   | `false`      | `--discovery-insecure-http`| Permit http:// token endpoints (dev/testing only)    |
+| `min_peers`                 | int    | `0` (=3)     | `--cluster-min-peers`      | Minimum cluster size for bootstrap quorum + dynamic-membership removal guard |
+| `dynamic_membership`        | bool   | `false`      | `--dynamic-membership`     | Enable opt-in lease/watch dynamic Raft membership (off by default)  |
 
 **Validation rules:**
 
-- `method`, when non-empty, must be one of: `static`, `multicast`, `dns`.
+- `method`, when non-empty, must be one of: `static`, `multicast`, `dns`, `token`.
 
 **Valid `method` values:**
 
-| Value       | Description                                                      |
-|-------------|------------------------------------------------------------------|
-| `static`    | Peers are specified explicitly via the `raft.peers` field        |
-| `multicast` | Peers discover each other via authenticated multicast (default)  |
-| `dns`       | Peers are discovered via DNS SRV records                         |
+| Value       | Description                                                            |
+|-------------|------------------------------------------------------------------------|
+| `static`    | Peers from `raft.peers` (default; empty/single entry = single node)    |
+| `multicast` | Peers discover each other via authenticated multicast (opt-in, PSK req) |
+| `dns`       | Peers are discovered via DNS SRV records                               |
+| `token`     | Peers register with a shared-token HTTP discovery service (etcd-style) |
 
 **Notes:**
 
+- **Default is single-node `static`** with no network auto-join and no shared secret — the production-safe default. Multi-node discovery (multicast/dns/token) is an explicit opt-in.
 - **Static discovery** requires the `raft.peers` field to contain the complete initial member list. A single entry (`1=127.0.0.1:63001`) creates a single-node cluster with transport disabled.
-- **Multicast discovery** requires a shared `multicast_secret` across all nodes for authentication. The default minimum cluster size for bootstrap is 3 nodes.
-- **DNS discovery** requires `dns_domain` to be set. It looks up SRV records at `_raft._udp.{dns_domain}`.
-- When using multicast or dns discovery without a config file, the server auto-generates `replica_id`, selects free ports, and appends the replica ID to `data_dir` to avoid collisions.
+- **Multicast discovery** requires an operator-chosen `multicast_secret` shared across all nodes (the protocol is authenticated-only; there is deliberately **no well-known default** PSK). The default minimum cluster size for bootstrap is 3 nodes.
+- **DNS discovery** requires `dns_domain` to be set. It looks up SRV records at `{dns_service}.{dns_proto}.{dns_domain}` (default `_raft._udp.{dns_domain}`).
+- **Token discovery** requires `token_endpoint` and `token`. Each node registers via the endpoint and polls until `token_cluster_size` (or `min_peers`) nodes have registered. The endpoint must use `https://` unless `allow_insecure_token_http` is set. The token is sent as an `Authorization: Bearer` header, never in the URL.
+- When using multicast, dns, or token discovery without a config file, the server auto-generates `replica_id`, selects free ports, and appends the replica ID to `data_dir` to avoid collisions.
 
 ---
 
@@ -471,9 +490,10 @@ Configures authentication and role-based access control (RBAC).
 |--------------------|--------|-------------|----------|--------------------|----------------------------------------------|
 | `enabled`          | bool   | `true`      | no       | `--auth-enabled`   | Enable authentication and RBAC               |
 | `admin_username`   | string | `"admin"`   | no       | N/A                | Default admin username (certificate CN)      |
-| `default_tenant`   | string | `"default"` | no       | N/A                | Default tenant ID (certificate OU)           |
+| `default_tenant`   | string | `"system"`  | no       | N/A                | Bootstrap admin tenant ID (certificate OU)   |
 | `cert_ttl`         | string | `"8760h"`   | no       | N/A                | Default certificate TTL (1 year)             |
 | `perm_cache_ttl`   | int    | `30`        | no       | N/A                | Permission cache TTL in seconds              |
+| `separation_of_duties` | bool | `false`   | no       | N/A                | Enforce strict FIPS/PCI role separation      |
 
 **Validation rules:**
 
@@ -486,8 +506,12 @@ Configures authentication and role-based access control (RBAC).
 
 - When `enabled` is `false`, all requests are treated as unauthenticated and all authorization checks are bypassed.
 - The `admin_username` is used as the CN for the auto-generated admin client certificate at first start.
-- The `default_tenant` is used as the OU for the admin certificate, establishing the initial tenant context.
+- The `default_tenant` is used as the OU for the admin certificate, establishing the bootstrap admin's membership in the structurally privileged `system` tenant.
 - The `perm_cache_ttl` controls how long resolved permissions are cached per user in the RBAC authorizer's `sync.Map`. Setting to `0` disables caching.
+- `separation_of_duties` selects the RBAC posture:
+  - **`false` (default, standard):** the bootstrap `admin` is also granted the `owner` role (full operational authority — `permission.All()`), so a single identity runs the entire database. This is the convenient posture for commercial deployments with no regulatory separation-of-duties requirement.
+  - **`true` (strict):** the canonical six-role FIPS 140-3 / PCI-DSS least-privilege model is enforced — `admin` is control-plane only, the data plane requires the `operator` role, governance requires the `SO` role, and the SO→crypto deny-list applies. The `owner` role is neither seeded nor assigned.
+  - This setting only **raises** strictness. A binary built in FIPS 140-3 mode (`GOFIPS140=latest`, i.e. `crypto/fips140.Enabled()` is true) — or run with `GODEBUG=fips140=on` — is **always** strict regardless of this flag, so a FIPS deployment cannot be relaxed into the standard posture. The `owner` role is additionally voided by the RBAC authorizer under strict mode as defense-in-depth.
 
 ---
 
@@ -705,6 +729,74 @@ rag:
 - Chunk size significantly impacts retrieval quality; 256-1024 characters is typical.
 - Overlap prevents losing context at chunk boundaries; 50+ characters is recommended.
 - Document size limits protect against memory exhaustion from very large documents.
+
+---
+
+### tenant
+
+Configures multi-tenant isolation behavior, particularly for vector namespaces and
+strict mode enforcement.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `strict_isolation` | bool | `false` | Reject vector namespace creation when the authenticated identity carries no (non-system) tenant |
+
+**Strict Mode Behavior:**
+
+When `strict_isolation: true`:
+
+1. **Vector namespace creation** requires the authenticated identity to carry a
+   non-system tenant. An identity resolving to the `system` tenant is rejected with
+   `403 Forbidden` (`tenant required`).
+2. **System tenant assumption** is disabled — there is no implicit fallback to the `system`
+   tenant. The tenant comes from the authenticated mTLS identity (see [scoping.md](scoping.md)),
+   so creation must be performed by an identity that belongs to a real tenant.
+3. **Use cases**: Multi-tenant SaaS deployments, regulatory environments (HIPAA, PCI-DSS)
+   where implicit data ownership is unacceptable.
+
+**Standard Mode (default, strict_isolation: false):**
+
+When `strict_isolation: false`:
+
+1. **Un-tenanted identities pool into `system`.** An identity with no explicit tenant
+   resolves to the structurally privileged `system` tenant. Vector namespaces created
+   by such identities are owned by `system`.
+2. **This is NOT cross-tenant isolation.** Standard mode is a single-tenant convenience
+   that makes un-owned and system-owned namespaces indistinguishable. It does not
+   prevent an identity from accidentally writing to another tenant's namespace if it
+   somehow resolves to the same tenant; it does not audit or gate implicit system-tenant
+   ownership; and it emits a startup WARN log to make the posture visible.
+3. **Suitable for** single-tenant deployments, development environments, or applications
+   where all callers are trusted and tenant partitioning is not a security boundary.
+4. **Not suitable for** multi-tenant SaaS, HIPAA, PCI-DSS, or any deployment where
+   namespace ownership must be enforced per authenticated identity.
+
+**FIPS 140-3 Enforcement:**
+
+When the binary is compiled in FIPS 140-3 mode (`GOFIPS140=latest` or `GODEBUG=fips140=on`),
+strict isolation is **always** enabled regardless of this configuration flag. A FIPS-compiled
+process cannot be relaxed into standard mode and will always reject un-tenanted namespace
+operations.
+
+**Example configuration:**
+
+```yaml
+tenant:
+  strict_isolation: false  # (default) use system tenant for un-tenanted requests
+
+# OR for strict mode:
+
+tenant:
+  strict_isolation: true   # reject un-tenanted requests
+```
+
+**Notes:**
+
+- The tenant is derived from the authenticated identity, not a request header (see
+  [scoping.md](scoping.md)).
+- Vector namespaces are tenant-partitioned in both modes; strict mode additionally
+  refuses to create a namespace for an identity that has no real tenant (i.e. the
+  `system` tenant), preventing accidental shared/un-owned namespaces.
 
 ---
 

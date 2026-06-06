@@ -181,6 +181,8 @@ import type {
     ConnectionState,
 } from './types.js';
 
+import { deepSnakeToCamel, deepCamelToSnake } from './transform.js';
+
 // ---------------------------------------------------------------------------
 // SDK version constant
 // ---------------------------------------------------------------------------
@@ -193,36 +195,51 @@ const SDK_VERSION = '0.1.0';
 // ---------------------------------------------------------------------------
 
 /**
- * Converts a camelCase string to snake_case.
- * E.g. "fieldName" → "field_name", "startNs" → "start_ns".
+ * Recursively converts all object keys from camelCase to snake_case before
+ * passing arguments to Go Wails bindings. Go transport structs use snake_case
+ * JSON tags so the Wails IPC serializer must receive snake_case keys.
+ *
+ * Delegates to the shared {@link deepCamelToSnake} transformer.
  */
-function toSnakeKey(key: string): string {
-    return key.replace(/[A-Z]/g, (ch) => '_' + ch.toLowerCase());
+function toSnake<T>(obj: T): T {
+    return deepCamelToSnake(obj) as T;
 }
 
 /**
- * Recursively converts all object keys from camelCase to snake_case.
+ * Recursively converts all object keys from snake_case to camelCase on the
+ * response returned by a Wails binding call. Go's encoding/json respects the
+ * struct's json tags (e.g. `json:"is_leader"`) so responses arrive as
+ * snake_case and must be transformed before SDK consumers see them.
  *
- * Wails v2 uses JSON serialization between TypeScript and Go. Go transport
- * structs use snake_case JSON tags (e.g. `json:"field_name"`) while
- * TypeScript interfaces use camelCase. This function bridges the gap by
- * transforming all object keys before passing to Go bindings.
- *
- * Primitives, arrays, null, and undefined are returned as-is.
- * Array elements are recursively transformed.
+ * Delegates to the shared {@link deepSnakeToCamel} transformer.
  */
-function toSnake<T>(obj: T): T {
-    if (obj === null || obj === undefined || typeof obj !== 'object') {
-        return obj;
-    }
-    if (Array.isArray(obj)) {
-        return obj.map((item) => toSnake(item)) as unknown as T;
-    }
-    const result: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
-        result[toSnakeKey(key)] = toSnake(value);
-    }
-    return result as T;
+function fromSnake<T>(obj: unknown): T {
+    return deepSnakeToCamel(obj) as T;
+}
+
+/**
+ * Wraps a Wails binding namespace so that every method call automatically
+ * applies {@link fromSnake} to the resolved value. Methods returning void
+ * (undefined) are passed through without transformation.
+ *
+ * This avoids having to call `fromSnake` at every call site while keeping the
+ * transformation logic in a single place.
+ */
+function wrapBindings(
+    b: Record<string, (...args: unknown[]) => Promise<unknown>>,
+): Record<string, (...args: unknown[]) => Promise<unknown>> {
+    return new Proxy(b, {
+        get(target, prop: string) {
+            const fn = target[prop];
+            if (typeof fn !== 'function') return fn;
+            return (...args: unknown[]) =>
+                fn.apply(target, args).then((result: unknown) =>
+                    result === undefined || result === null
+                        ? result
+                        : fromSnake(result),
+                );
+        },
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -339,7 +356,7 @@ export class WailsClient implements Client {
 
     /** @inheritdoc */
     get kv(): KVClient {
-        const b = getBindings().main.KVBinding;
+        const b = wrapBindings(getBindings().main.KVBinding);
         return {
             put: async (key: string, value: string): Promise<void> => {
                 await b.Put(key, value);
@@ -368,7 +385,7 @@ export class WailsClient implements Client {
 
     /** @inheritdoc */
     get admin(): AdminClient {
-        const b = getBindings().main.AdminBinding;
+        const b = wrapBindings(getBindings().main.AdminBinding);
         return {
             health: async (): Promise<HealthResponse> => {
                 return b.Health() as Promise<HealthResponse>;
@@ -407,7 +424,7 @@ export class WailsClient implements Client {
 
     /** @inheritdoc */
     get mvcc(): MVCCClient {
-        const b = getBindings().main.MVCCBinding;
+        const b = wrapBindings(getBindings().main.MVCCBinding);
         return {
             putWithLease: async (
                 key: string,
@@ -444,7 +461,7 @@ export class WailsClient implements Client {
 
     /** @inheritdoc */
     get transaction(): TransactionClient {
-        const b = getBindings().main.TransactionBinding;
+        const b = wrapBindings(getBindings().main.TransactionBinding);
         return {
             execute: async (req: TransactionRequest): Promise<TransactionResponse> => {
                 return b.Execute(toSnake(req)) as Promise<TransactionResponse>;
@@ -458,7 +475,7 @@ export class WailsClient implements Client {
 
     /** @inheritdoc */
     get batch(): BatchClient {
-        const b = getBindings().main.BatchBinding;
+        const b = wrapBindings(getBindings().main.BatchBinding);
         return {
             execute: async (ops: readonly Op[]): Promise<BatchResponse> => {
                 return b.Execute(toSnake(ops)) as Promise<BatchResponse>;
@@ -481,7 +498,7 @@ export class WailsClient implements Client {
 
     /** @inheritdoc */
     get watch(): WatchClient {
-        const b = getBindings().main.WatchBinding;
+        const b = wrapBindings(getBindings().main.WatchBinding);
         return {
             watch: async (key: string, opts: WatchOptions): Promise<WatchHandle> => {
                 return this.createWailsWatchHandle(b, key, opts, false);
@@ -564,7 +581,7 @@ export class WailsClient implements Client {
 
     /** @inheritdoc */
     get lease(): LeaseClient {
-        const b = getBindings().main.LeaseBinding;
+        const b = wrapBindings(getBindings().main.LeaseBinding);
         return {
             grant: async (ttl: number): Promise<LeaseInfo> => {
                 return b.Grant(ttl) as Promise<LeaseInfo>;
@@ -590,7 +607,7 @@ export class WailsClient implements Client {
 
     /** @inheritdoc */
     get lock(): LockClient {
-        const b = getBindings().main.LockBinding;
+        const b = wrapBindings(getBindings().main.LockBinding);
         return {
             acquire: async (req: LockAcquireRequest): Promise<LockInfo> => {
                 return b.Acquire(toSnake(req)) as Promise<LockInfo>;
@@ -620,7 +637,7 @@ export class WailsClient implements Client {
 
     /** @inheritdoc */
     get index(): IndexClient {
-        const b = getBindings().main.IndexBinding;
+        const b = wrapBindings(getBindings().main.IndexBinding);
         return {
             create: async (req: IndexCreateRequest): Promise<void> => {
                 await b.Create(toSnake(req));
@@ -650,7 +667,7 @@ export class WailsClient implements Client {
 
     /** @inheritdoc */
     get timeSeries(): TimeSeriesClient | null {
-        const b = getBindings().main.TimeSeriesBinding;
+        const b = wrapBindings(getBindings().main.TimeSeriesBinding);
         return {
             write: async (point: TSDataPoint): Promise<void> => {
                 await b.Write(toSnake(point));
@@ -691,7 +708,7 @@ export class WailsClient implements Client {
 
     /** @inheritdoc */
     get vector(): VectorClient | null {
-        const b = getBindings().main.VectorBinding;
+        const b = wrapBindings(getBindings().main.VectorBinding);
         return {
             createNamespace: async (
                 req: CreateNamespaceRequest,
@@ -782,7 +799,7 @@ export class WailsClient implements Client {
 
     /** @inheritdoc */
     get users(): UserClient {
-        const b = getBindings().main.UserBinding;
+        const b = wrapBindings(getBindings().main.UserBinding);
         return {
             create: async (req: CreateUserRequest): Promise<User> => {
                 return b.Create(toSnake(req)) as Promise<User>;
@@ -805,6 +822,16 @@ export class WailsClient implements Client {
             disable: async (id: string): Promise<void> => {
                 await b.Disable(id);
             },
+            getUserByCertThumbprint: async (thumbprint: string): Promise<User> => {
+                return b.GetByCertThumbprint(thumbprint) as Promise<User>;
+            },
+            addCertBinding: async (
+                userId: string,
+                thumbprint: string,
+                notAfterUnix?: number,
+            ): Promise<User> => {
+                return b.AddCertBinding(userId, thumbprint, notAfterUnix ?? 0) as Promise<User>;
+            },
         };
     }
 
@@ -814,7 +841,7 @@ export class WailsClient implements Client {
 
     /** @inheritdoc */
     get roles(): RoleClient {
-        const b = getBindings().main.RoleBinding;
+        const b = wrapBindings(getBindings().main.RoleBinding);
         return {
             create: async (req: CreateRoleRequest): Promise<Role> => {
                 return b.Create(toSnake(req)) as Promise<Role>;
@@ -849,7 +876,7 @@ export class WailsClient implements Client {
 
     /** @inheritdoc */
     get certs(): CertClient {
-        const b = getBindings().main.CertBinding;
+        const b = wrapBindings(getBindings().main.CertBinding);
         return {
             generate: async (req: GenerateCertRequest): Promise<CertBundle> => {
                 return b.Generate(toSnake(req)) as Promise<CertBundle>;
@@ -872,7 +899,7 @@ export class WailsClient implements Client {
 
     /** @inheritdoc */
     get database(): DatabaseClient {
-        const b = getBindings().main.DatabaseBinding;
+        const b = wrapBindings(getBindings().main.DatabaseBinding);
         return {
             create: async (req: CreateDatabaseRequest): Promise<DatabaseInfo> => {
                 return b.Create(req) as Promise<DatabaseInfo>;
@@ -907,7 +934,7 @@ export class WailsClient implements Client {
 
     /** @inheritdoc */
     get collection(): CollectionClient {
-        const b = getBindings().main.CollectionBinding;
+        const b = wrapBindings(getBindings().main.CollectionBinding);
         return {
             create: async (req: CreateCollectionRequest): Promise<CollectionInfo> => {
                 return b.Create(toSnake(req)) as Promise<CollectionInfo>;
@@ -954,7 +981,7 @@ export class WailsClient implements Client {
 
     /** @inheritdoc */
     get sql(): SQLClient {
-        const b = getBindings().main.SQLBinding;
+        const b = wrapBindings(getBindings().main.SQLBinding);
         return {
             query: async (query: string, database: string): Promise<SQLQueryResult> => {
                 return b.Execute(query, database) as Promise<SQLQueryResult>;
@@ -968,7 +995,7 @@ export class WailsClient implements Client {
 
     /** @inheritdoc */
     get seal(): SealClient {
-        const b = getBindings().main.SealBinding;
+        const b = wrapBindings(getBindings().main.SealBinding);
         return {
             bootstrap: async (): Promise<BootstrapResult> => {
                 return b.Bootstrap() as Promise<BootstrapResult>;
@@ -997,7 +1024,7 @@ export class WailsClient implements Client {
 
     /** @inheritdoc */
     get embeddedServer(): EmbeddedServerClient {
-        const b = getBindings().main.EmbeddedServerBinding;
+        const b = wrapBindings(getBindings().main.EmbeddedServerBinding);
         return {
             startEmbedded: async (config: EmbeddedConfig): Promise<void> => {
                 await b.StartEmbedded(config);
@@ -1029,7 +1056,7 @@ export class WailsClient implements Client {
 
     /** @inheritdoc */
     get daemon(): DaemonClient {
-        const b = getBindings().main.DaemonBinding;
+        const b = wrapBindings(getBindings().main.DaemonBinding);
         return {
             startDaemon: async (configPath: string): Promise<void> => {
                 await b.Start(configPath);
@@ -1055,7 +1082,7 @@ export class WailsClient implements Client {
 
     /** @inheritdoc */
     get tenants(): TenantClient {
-        const b = getBindings().main.TenantBinding;
+        const b = wrapBindings(getBindings().main.TenantBinding);
         return {
             create: async (req: CreateTenantRequest): Promise<CreateTenantResponse> => {
                 return b.Create(toSnake(req)) as Promise<CreateTenantResponse>;
@@ -1090,7 +1117,7 @@ export class WailsClient implements Client {
 
     /** @inheritdoc */
     get config(): ServerConfigClient {
-        const b = getBindings().main.ConfigBinding;
+        const b = wrapBindings(getBindings().main.ConfigBinding);
         return {
             initialized: async (): Promise<ConfigInitializedResponse> => {
                 return b.Initialized() as Promise<ConfigInitializedResponse>;
@@ -1107,7 +1134,7 @@ export class WailsClient implements Client {
 
     /** @inheritdoc */
     get backups(): BackupClient {
-        const b = getBindings().main.BackupBinding;
+        const b = wrapBindings(getBindings().main.BackupBinding);
         return {
             create: async (req: BackupRequest): Promise<BackupInfo> => {
                 return b.Create(toSnake(req)) as Promise<BackupInfo>;
@@ -1136,7 +1163,7 @@ export class WailsClient implements Client {
 
     /** @inheritdoc */
     get rebalance(): RebalanceClient {
-        const b = getBindings().main.RebalanceBinding;
+        const b = wrapBindings(getBindings().main.RebalanceBinding);
         return {
             getShardStats: async (shardId: number): Promise<ShardStatsResponse> => {
                 return b.GetShardStats(shardId) as Promise<ShardStatsResponse>;
@@ -1159,7 +1186,7 @@ export class WailsClient implements Client {
 
     /** @inheritdoc */
     get connectionManager(): ConnectionManagerClient {
-        const b = getBindings().main.ConnectionManagerBinding;
+        const b = wrapBindings(getBindings().main.ConnectionManagerBinding);
         return {
             listProfiles: async (): Promise<ConnectionProfile[]> => {
                 return b.ListProfiles() as Promise<ConnectionProfile[]>;

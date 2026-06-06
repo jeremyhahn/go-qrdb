@@ -317,13 +317,13 @@ func TestGetTableInsensitive_EntityTable_TenantFromSession(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// TestGetTableInsensitive_EntityTable_DefaultTenant
+// TestGetTableInsensitive_EntityTable_SystemTenant
 // ---------------------------------------------------------------------------
 
-// TestGetTableInsensitive_EntityTable_DefaultTenant verifies that when the
-// sqle.Context carries no QRDBSession, the EntityTable receives "default" as
+// TestGetTableInsensitive_EntityTable_SystemTenant verifies that when the
+// sqle.Context carries no QRDBSession, the EntityTable receives the system tenant id as
 // the tenant ID.
-func TestGetTableInsensitive_EntityTable_DefaultTenant(t *testing.T) {
+func TestGetTableInsensitive_EntityTable_SystemTenant(t *testing.T) {
 	const entityType = "provider_entity_default_tenant"
 	reg := providerEntityRegistration(entityType)
 	if err := entity.Global().Register(reg); err != nil {
@@ -348,7 +348,7 @@ func TestGetTableInsensitive_EntityTable_DefaultTenant(t *testing.T) {
 	if !ok {
 		t.Fatalf("table is %T, want *EntityTable", tbl)
 	}
-	if et.tenantID != "default" {
-		t.Errorf("EntityTable tenantID = %q, want %q", et.tenantID, "default")
+	if et.tenantID != "system" {
+		t.Errorf("EntityTable tenantID = %q, want %q", et.tenantID, "system")
 	}
 }

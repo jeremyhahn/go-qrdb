@@ -19,7 +19,9 @@ import (
 	"encoding/hex"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/custodian"
 )
 
 // CeremonyServicer provides ceremony lifecycle operations including
@@ -27,8 +29,11 @@ import (
 // and status queries.
 type CeremonyServicer interface {
 	// CeremonyInitialize performs the initialization ceremony, issuing TLS
-	// and SO certificates and optionally starting M-of-N enrollment.
-	CeremonyInitialize(ctx context.Context, ca ceremony.CeremonyCA) (*CeremonyInitResult, error)
+	// and SO certificates and optionally starting M-of-N enrollment. The
+	// opts argument carries per-request parameters (notably the SO and user
+	// PINs); per-request PINs take precedence over the construction-time
+	// configuration when non-empty. opts may be nil.
+	CeremonyInitialize(ctx context.Context, ca ceremony.CeremonyCA, opts *CeremonyInitializeOptions) (*CeremonyInitResult, error)
 
 	// CeremonyBeginClaimCert starts the certificate claim handshake for
 	// the given officer username, returning a challenge nonce.
@@ -48,6 +53,99 @@ type CeremonyServicer interface {
 
 	// CeremonyStatus returns the current ceremony state and SPKI pin.
 	CeremonyStatus(ctx context.Context) (*CeremonyStatusInfo, error)
+
+	// CeremonyClaimShareBegin issues a factor challenge nonce for the given
+	// custodian. The returned challenge must be presented to
+	// CeremonyClaimShareComplete.
+	CeremonyClaimShareBegin(ctx context.Context, custodianID string) (*CeremonyCustodianChallenge, error)
+
+	// CeremonyClaimShareComplete verifies the custodian's factor response for
+	// the challenge issued by CeremonyClaimShareBegin. On success it marks the
+	// share envelope as delivered and returns the custodian metadata.
+	CeremonyClaimShareComplete(ctx context.Context, custodianID, challengeID string, factorResponse []byte) (*custodian.Custodian, error)
+
+	// CeremonySubmitUnsealShare accepts a plaintext Shamir share from a
+	// custodian along with factor proof of identity. When the configured
+	// threshold is met the barrier is unsealed automatically.
+	CeremonySubmitUnsealShare(ctx context.Context, custodianID, challengeID string, factorResponse, shareBytes []byte) (*CeremonyUnsealShareResult, error)
+
+	// CeremonyEnrollExternalOfficer enrols an officer whose key material
+	// lives outside go-qrdb. The administrator supplies trust material —
+	// either an X.509 certificate (validated against the configured CA
+	// pools) or a raw SPKI public key — along with an assigned share
+	// index and an auth factor. When ShareBytes is supplied, it is sealed
+	// to the officer's public key and the base64 ciphertext is returned.
+	CeremonyEnrollExternalOfficer(ctx context.Context, req *CeremonyEnrollExternalOfficerRequest) (*CeremonyEnrollExternalOfficerResponse, error)
+}
+
+// CeremonyInitializeOptions carries per-request parameters for the
+// initialization ceremony. Per-request PINs take precedence over the
+// construction-time CeremonyConfig PINs when non-empty; empty fields fall
+// back to the configured values. When a required PIN is absent from both
+// the request and the configuration, the ceremony fails closed.
+type CeremonyInitializeOptions struct {
+	// SOPin is the Security Officer PIN supplied for this ceremony.
+	SOPin string
+
+	// UserPin is the user-level PIN supplied for this ceremony.
+	UserPin string
+}
+
+// CeremonyEnrollExternalOfficerRequest is the service-layer request for
+// enrolling an external officer.
+type CeremonyEnrollExternalOfficerRequest struct {
+	// Username is the unique identifier for the officer.
+	Username string
+
+	// CertPEM is the X.509 certificate PEM. Mutually exclusive with PubKeyPEM.
+	CertPEM string
+
+	// PubKeyPEM is the SPKI-encoded public key PEM. Mutually exclusive with CertPEM.
+	PubKeyPEM string
+
+	// ShareIndex is the 1-based Shamir share index to assign.
+	ShareIndex int
+
+	// AuthFactor is the auth factor identifier ("mtls", "webauthn", "piv").
+	AuthFactor string
+
+	// ShareBytes is the optional plaintext Shamir share to seal. When
+	// nil or empty, the response carries no SealedShare.
+	ShareBytes []byte
+}
+
+// CeremonyEnrollExternalOfficerResponse is the service-layer response for
+// enrolling an external officer.
+type CeremonyEnrollExternalOfficerResponse struct {
+	// SealedShare is the base64-encoded sealed share envelope. Empty when
+	// no ShareBytes were supplied.
+	SealedShare string
+}
+
+// CeremonyCustodianChallenge is the service-layer challenge returned by
+// CeremonyClaimShareBegin. It is serialised directly in the REST response.
+type CeremonyCustodianChallenge struct {
+	// CustodianID is the unique ID of the challenged custodian.
+	CustodianID string `json:"custodianID"`
+
+	// Nonce is the 32-byte random challenge the custodian must sign.
+	Nonce []byte `json:"nonce"`
+
+	// ExpiresAt is the UTC deadline for the response.
+	ExpiresAt time.Time `json:"expiresAt"`
+}
+
+// CeremonyUnsealShareResult is the service-layer result returned by
+// CeremonySubmitUnsealShare. It is serialised directly in the REST response.
+type CeremonyUnsealShareResult struct {
+	// Submitted is the number of shares accepted so far.
+	Submitted int `json:"submitted"`
+
+	// Required is the threshold needed to unseal.
+	Required int `json:"required"`
+
+	// Unsealed is true when the threshold was reached and the barrier unsealed.
+	Unsealed bool `json:"unsealed"`
 }
 
 // CeremonyInitResult contains the output of a successful ceremony
@@ -132,8 +230,15 @@ func NewCeremonyService(c *ceremony.CeremonyService) CeremonyServicer {
 // CeremonyInitialize performs the initialization ceremony by delegating
 // to the underlying CeremonyService's Initialize method and mapping the
 // result to the service-layer CeremonyInitResult type.
-func (s *CeremonyService) CeremonyInitialize(ctx context.Context, ca ceremony.CeremonyCA) (*CeremonyInitResult, error) {
-	result, err := s.ceremony.Initialize(ctx, ca)
+func (s *CeremonyService) CeremonyInitialize(ctx context.Context, ca ceremony.CeremonyCA, opts *CeremonyInitializeOptions) (*CeremonyInitResult, error) {
+	var ceremonyOpts *ceremony.InitializeOptions
+	if opts != nil {
+		ceremonyOpts = &ceremony.InitializeOptions{
+			SOPin:   opts.SOPin,
+			UserPin: opts.UserPin,
+		}
+	}
+	result, err := s.ceremony.Initialize(ctx, ca, ceremonyOpts)
 	if err != nil {
 		return nil, err
 	}
@@ -198,6 +303,69 @@ func (s *CeremonyService) CeremonySignCSR(ctx context.Context, username, soPin, 
 	return &CeremonySignCSRResult{
 		CertPEM: result.CertPEM,
 	}, nil
+}
+
+// CeremonyClaimShareBegin delegates to the underlying CeremonyService's
+// ClaimShareChallenge method and maps the challenge to the service-layer type.
+func (s *CeremonyService) CeremonyClaimShareBegin(ctx context.Context, custodianID string) (*CeremonyCustodianChallenge, error) {
+	ch, err := s.ceremony.ClaimShareChallenge(ctx, custodianID)
+	if err != nil {
+		return nil, err
+	}
+	return &CeremonyCustodianChallenge{
+		CustodianID: ch.CustodianID,
+		Nonce:       ch.Nonce,
+		ExpiresAt:   ch.ExpiresAt,
+	}, nil
+}
+
+// CeremonyClaimShareComplete delegates to the underlying CeremonyService's
+// VerifyClaimAndDeliver method. The raw factorResponse bytes are wrapped in
+// an authfactors.Response before delegation.
+func (s *CeremonyService) CeremonyClaimShareComplete(ctx context.Context, custodianID, challengeID string, factorResponse []byte) (*custodian.Custodian, error) {
+	resp := &authfactors.Response{Value: factorResponse}
+	return s.ceremony.VerifyClaimAndDeliver(ctx, custodianID, challengeID, resp)
+}
+
+// CeremonySubmitUnsealShare delegates to the underlying CeremonyService's
+// SubmitUnsealShare method, wrapping the raw factorResponse bytes in an
+// authfactors.Response and mapping the result to the service-layer type.
+func (s *CeremonyService) CeremonySubmitUnsealShare(ctx context.Context, custodianID, challengeID string, factorResponse, shareBytes []byte) (*CeremonyUnsealShareResult, error) {
+	req := ceremony.SubmitUnsealShareRequest{
+		CustodianID:    custodianID,
+		ChallengeID:    challengeID,
+		FactorResponse: &authfactors.Response{Value: factorResponse},
+		ShareBytes:     shareBytes,
+	}
+	result, err := s.ceremony.SubmitUnsealShare(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return &CeremonyUnsealShareResult{
+		Submitted: result.Submitted,
+		Required:  result.Required,
+		Unsealed:  result.Unsealed,
+	}, nil
+}
+
+// CeremonyEnrollExternalOfficer delegates to the underlying CeremonyService's
+// EnrollExternalOfficer method, mapping the service-layer request/response.
+func (s *CeremonyService) CeremonyEnrollExternalOfficer(ctx context.Context, req *CeremonyEnrollExternalOfficerRequest) (*CeremonyEnrollExternalOfficerResponse, error) {
+	if req == nil {
+		return nil, ceremony.ErrInvalidOfficerRecord
+	}
+	resp, err := s.ceremony.EnrollExternalOfficer(ctx, ceremony.EnrollExternalOfficerRequest{
+		Username:   req.Username,
+		CertPEM:    req.CertPEM,
+		PubKeyPEM:  req.PubKeyPEM,
+		ShareIndex: req.ShareIndex,
+		AuthFactor: req.AuthFactor,
+		ShareBytes: req.ShareBytes,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &CeremonyEnrollExternalOfficerResponse{SealedShare: resp.SealedShare}, nil
 }
 
 // CeremonyStatus returns the current ceremony state and SPKI pin by

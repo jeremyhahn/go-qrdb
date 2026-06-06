@@ -16,7 +16,6 @@ package mcp
 import (
 	"context"
 	"encoding/json"
-	"strconv"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
@@ -194,11 +193,11 @@ func handleRAGIngest(svc service.RAGServicer) mcpserver.ToolHandlerFunc {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 
-		return mcp.NewToolResultText(
-			"Ingested document " + resp.DocumentID +
-				" into namespace " + resp.Namespace +
-				" as " + strconv.Itoa(resp.ChunkCount) + " chunk(s).",
-		), nil
+		out, err := json.Marshal(resp)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		return mcp.NewToolResultText(string(out)), nil
 	}
 }
 
@@ -251,10 +250,11 @@ func handleRAGDeleteDocument(svc service.RAGServicer) mcpserver.ToolHandlerFunc 
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 
-		return mcp.NewToolResultText(
-			"Deleted document " + resp.DocumentID +
-				": removed " + strconv.Itoa(resp.ChunksRemoved) + " chunk(s).",
-		), nil
+		out, err := json.Marshal(resp)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		return mcp.NewToolResultText(string(out)), nil
 	}
 }
 

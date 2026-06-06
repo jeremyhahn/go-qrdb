@@ -191,10 +191,14 @@ func TestKVDispatch_MVCCPut_NotConfigured(t *testing.T) {
 	entries := []sm.Entry{{Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
+	// Update must not return an error — ServiceNotConfiguredError is encoded
+	// in result.Data to prevent Raft lastApplied from stalling.
 	err := k.Update(entries, results)
-	var sncErr *ServiceNotConfiguredError
-	if !errors.As(err, &sncErr) {
-		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
+	if err != nil {
+		t.Fatalf("Update must not return error for unconfigured mvcc service: %v", err)
+	}
+	if len(results[0].Data) == 0 {
+		t.Fatal("expected ServiceNotConfiguredError encoded in result.Data")
 	}
 }
 
@@ -222,9 +226,11 @@ func TestKVDispatch_MVCCDelete_NotConfigured(t *testing.T) {
 	results := make([]sm.Result, 1)
 
 	err := k.Update(entries, results)
-	var sncErr *ServiceNotConfiguredError
-	if !errors.As(err, &sncErr) {
-		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
+	if err != nil {
+		t.Fatalf("Update must not return error for unconfigured mvcc service: %v", err)
+	}
+	if len(results[0].Data) == 0 {
+		t.Fatal("expected ServiceNotConfiguredError encoded in result.Data")
 	}
 }
 
@@ -288,9 +294,11 @@ func TestKVDispatch_Transaction_NotConfigured(t *testing.T) {
 	results := make([]sm.Result, 1)
 
 	err := k.Update(entries, results)
-	var sncErr *ServiceNotConfiguredError
-	if !errors.As(err, &sncErr) {
-		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
+	if err != nil {
+		t.Fatalf("Update must not return error for unconfigured transaction service: %v", err)
+	}
+	if len(results[0].Data) == 0 {
+		t.Fatal("expected ServiceNotConfiguredError encoded in result.Data")
 	}
 }
 
@@ -464,9 +472,11 @@ func TestKVDispatch_TSWrite_NotConfigured(t *testing.T) {
 	results := make([]sm.Result, 1)
 
 	err := k.Update(entries, results)
-	var sncErr *ServiceNotConfiguredError
-	if !errors.As(err, &sncErr) {
-		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
+	if err != nil {
+		t.Fatalf("Update must not return error for unconfigured timeseries service: %v", err)
+	}
+	if len(results[0].Data) == 0 {
+		t.Fatal("expected ServiceNotConfiguredError encoded in result.Data")
 	}
 }
 

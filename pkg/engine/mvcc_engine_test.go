@@ -22,7 +22,6 @@ import (
 
 	"github.com/cockroachdb/pebble/v2"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -791,17 +790,33 @@ func TestMVCCEngine_IndexCreateDuplicate(t *testing.T) {
 	if err := eng.Update(context.Background(), entries, results); err != nil {
 		t.Fatalf("first create: %v", err)
 	}
+	if results[0].Value != 1 {
+		t.Fatalf("first create: expected result 1, got %d", results[0].Value)
+	}
 
-	// Second create should error (already exists).
+	// Second create of the same index is a no-op success (idempotent). A
+	// non-nil error from a Raft Update() handler permanently stalls the
+	// cluster, so duplicate-create must succeed without error.
 	entries2 := []sm.Entry{{Index: 2, Cmd: idxCmd}}
 	results2 := make([]sm.Result, 1)
-	err := eng.Update(context.Background(), entries2, results2)
-	if err == nil {
-		t.Fatal("expected error for duplicate index create")
+	if err := eng.Update(context.Background(), entries2, results2); err != nil {
+		t.Fatalf("duplicate create: expected no-op success, got error: %v", err)
 	}
-	var iqe *InvalidQueryError
-	if !errors.As(err, &iqe) {
-		t.Errorf("expected *InvalidQueryError, got %T: %v", err, err)
+	if results2[0].Value != 1 {
+		t.Fatalf("duplicate create: expected result 1, got %d", results2[0].Value)
+	}
+
+	// The original index must still be intact after the duplicate proposal.
+	got, err := eng.Lookup(context.Background(), service.IndexListRequest{})
+	if err != nil {
+		t.Fatalf("Lookup IndexListRequest: %v", err)
+	}
+	names := got.([]string)
+	if len(names) != 1 {
+		t.Fatalf("expected 1 index after duplicate create, got %d", len(names))
+	}
+	if names[0] != "by_name" {
+		t.Fatalf("expected index name by_name, got %s", names[0])
 	}
 }
 
@@ -848,12 +863,17 @@ func TestMVCCEngine_IndexDropNonExistent(t *testing.T) {
 	defer func() { _ = stg.Close() }()
 	defer func() { _ = eng.Close(context.Background()) }()
 
+	// Dropping a non-existent index is a no-op success (idempotent). A
+	// non-nil error from a Raft Update() handler permanently stalls the
+	// cluster, so drop-not-found must succeed without error.
 	dropCmd := protocol.EncodeIndexDrop("nonexistent")
 	entries := []sm.Entry{{Index: 1, Cmd: dropCmd}}
 	results := make([]sm.Result, 1)
-	err := eng.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error dropping nonexistent index")
+	if err := eng.Update(context.Background(), entries, results); err != nil {
+		t.Fatalf("drop nonexistent: expected no-op success, got error: %v", err)
+	}
+	if results[0].Value != 1 {
+		t.Fatalf("drop nonexistent: expected result 1, got %d", results[0].Value)
 	}
 }
 
@@ -921,9 +941,11 @@ func TestMVCCEngine_LeaseGrantNoLessor(t *testing.T) {
 	cmd := protocol.EncodeLeaseGrant(60)
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
-	err := eng.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error with no lessor")
+	if err := eng.Update(context.Background(), entries, results); err != nil {
+		t.Fatalf("Update must not return a fatal error with no lessor: %v", err)
+	}
+	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
+		t.Fatal("expected app-error payload in result with no lessor")
 	}
 }
 
@@ -1010,9 +1032,11 @@ func TestMVCCEngine_LeaseKeepAliveNoLessor(t *testing.T) {
 	kaCmd := protocol.EncodeLeaseKeepAlive(1)
 	entries := []sm.Entry{{Index: 1, Cmd: kaCmd}}
 	results := make([]sm.Result, 1)
-	err := eng.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error with no lessor")
+	if err := eng.Update(context.Background(), entries, results); err != nil {
+		t.Fatalf("Update must not return a fatal error with no lessor: %v", err)
+	}
+	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
+		t.Fatal("expected app-error payload in result with no lessor")
 	}
 }
 
@@ -1786,9 +1810,11 @@ func TestMVCCEngine_Update_TSWriteNoTS(t *testing.T) {
 	tsCmd := protocol.EncodeTSWrite("cpu", time.Now().UnixNano(), 42.0, nil)
 	entries := []sm.Entry{{Index: 1, Cmd: tsCmd}}
 	results := make([]sm.Result, 1)
-	err := eng.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for TS write without TS configured")
+	if err := eng.Update(context.Background(), entries, results); err != nil {
+		t.Fatalf("Update must not return a fatal error without TS configured: %v", err)
+	}
+	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
+		t.Fatal("expected app-error payload for TS write without TS configured")
 	}
 }
 
@@ -1800,9 +1826,11 @@ func TestMVCCEngine_Update_TSWritePointNoTS(t *testing.T) {
 	tsCmd := protocol.EncodeTSWritePoint("cpu", time.Now().UnixNano(), 42.0, nil)
 	entries := []sm.Entry{{Index: 1, Cmd: tsCmd}}
 	results := make([]sm.Result, 1)
-	err := eng.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for TS write point without TS configured")
+	if err := eng.Update(context.Background(), entries, results); err != nil {
+		t.Fatalf("Update must not return a fatal error without TS configured: %v", err)
+	}
+	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
+		t.Fatal("expected app-error payload for TS write point without TS configured")
 	}
 }
 
@@ -1814,9 +1842,11 @@ func TestMVCCEngine_Update_TSDeleteSeriesNoTS(t *testing.T) {
 	tsCmd := protocol.EncodeTSDeleteSeries("cpu", 0, 0, nil)
 	entries := []sm.Entry{{Index: 1, Cmd: tsCmd}}
 	results := make([]sm.Result, 1)
-	err := eng.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for TS delete series without TS configured")
+	if err := eng.Update(context.Background(), entries, results); err != nil {
+		t.Fatalf("Update must not return a fatal error without TS configured: %v", err)
+	}
+	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
+		t.Fatal("expected app-error payload for TS delete series without TS configured")
 	}
 }
 
@@ -1828,9 +1858,11 @@ func TestMVCCEngine_Update_TSSetRetentionNoTS(t *testing.T) {
 	tsCmd := protocol.EncodeTSSetRetention("cpu", 3600_000_000_000, 60_000_000_000, 0)
 	entries := []sm.Entry{{Index: 1, Cmd: tsCmd}}
 	results := make([]sm.Result, 1)
-	err := eng.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for TS set retention without TS configured")
+	if err := eng.Update(context.Background(), entries, results); err != nil {
+		t.Fatalf("Update must not return a fatal error without TS configured: %v", err)
+	}
+	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
+		t.Fatal("expected app-error payload for TS set retention without TS configured")
 	}
 }
 
@@ -1844,9 +1876,11 @@ func TestMVCCEngine_Update_TSWriteBatchNoTS(t *testing.T) {
 	})
 	entries := []sm.Entry{{Index: 1, Cmd: tsCmd}}
 	results := make([]sm.Result, 1)
-	err := eng.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for TS write batch without TS configured")
+	if err := eng.Update(context.Background(), entries, results); err != nil {
+		t.Fatalf("Update must not return a fatal error without TS configured: %v", err)
+	}
+	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
+		t.Fatal("expected app-error payload for TS write batch without TS configured")
 	}
 }
 
@@ -1862,9 +1896,11 @@ func TestMVCCEngine_LeaseRevokeNoLessor(t *testing.T) {
 	revokeCmd := protocol.EncodeLeaseRevoke(1)
 	entries := []sm.Entry{{Index: 1, Cmd: revokeCmd}}
 	results := make([]sm.Result, 1)
-	err := eng.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error with no lessor")
+	if err := eng.Update(context.Background(), entries, results); err != nil {
+		t.Fatalf("Update must not return a fatal error with no lessor: %v", err)
+	}
+	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
+		t.Fatal("expected app-error payload in result with no lessor")
 	}
 }
 
@@ -2912,9 +2948,11 @@ func TestMVCCEngine_LeaseGrant_InvalidTTL(t *testing.T) {
 	cmd := protocol.EncodeLeaseGrant(0) // invalid TTL
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
-	err = eng.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for zero TTL")
+	if err = eng.Update(context.Background(), entries, results); err != nil {
+		t.Fatalf("Update must not return a fatal error for zero TTL: %v", err)
+	}
+	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
+		t.Fatal("expected app-error payload for zero TTL")
 	}
 }
 
@@ -2933,12 +2971,18 @@ func TestMVCCEngine_LeaseKeepAlive_NonExistent(t *testing.T) {
 	}
 	defer func() { _ = eng.Close(context.Background()) }()
 
+	// KeepAlive on a non-existent lease is a no-op success (idempotent). A
+	// non-nil error from a Raft Update() handler permanently stalls the
+	// cluster, so keepalive-not-found must succeed without error.
 	kaCmd := protocol.EncodeLeaseKeepAlive(99999)
 	entries := []sm.Entry{{Index: 1, Cmd: kaCmd}}
 	results := make([]sm.Result, 1)
-	err = eng.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for non-existent lease keepalive")
+	if err = eng.Update(context.Background(), entries, results); err != nil {
+		t.Fatalf("keepalive non-existent: expected no-op success, got error: %v", err)
+	}
+	// Value is 0 when the lease is not found (no lease ID echoed back).
+	if results[0].Value != 0 {
+		t.Fatalf("keepalive non-existent: expected result 0, got %d", results[0].Value)
 	}
 }
 
@@ -2957,12 +3001,18 @@ func TestMVCCEngine_LeaseRevoke_NonExistent(t *testing.T) {
 	}
 	defer func() { _ = eng.Close(context.Background()) }()
 
+	// Revoking a non-existent lease is a no-op success (idempotent). A
+	// non-nil error from a Raft Update() handler permanently stalls the
+	// cluster, so revoke-not-found must succeed without error.
 	revokeCmd := protocol.EncodeLeaseRevoke(99999)
 	entries := []sm.Entry{{Index: 1, Cmd: revokeCmd}}
 	results := make([]sm.Result, 1)
-	err = eng.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for non-existent lease revoke")
+	if err = eng.Update(context.Background(), entries, results); err != nil {
+		t.Fatalf("revoke non-existent: expected no-op success, got error: %v", err)
+	}
+	// Value is 0: no attached keys were deleted.
+	if results[0].Value != 0 {
+		t.Fatalf("revoke non-existent: expected result 0, got %d", results[0].Value)
 	}
 }
 
@@ -3350,18 +3400,18 @@ func TestMVCCEngine_UniqueIndex_ViolationAbortsMVCCPut(t *testing.T) {
 		mvccPutEntry(2, []byte("user:1"), []byte(`{"email":"a@example.com"}`), 0),
 	})
 
-	// Second document with the same email: must return an error.
+	// Second document with the same email: must be rejected as a non-fatal
+	// app-error (a unique-index violation is a deterministic consequence of
+	// valid committed input, so Update must not return a Go error).
 	results2 := make([]sm.Result, 1)
 	err := eng.Update(context.Background(), []sm.Entry{
 		mvccPutEntry(3, []byte("user:2"), []byte(`{"email":"a@example.com"}`), 0),
 	}, results2)
-	if err == nil {
-		t.Fatal("expected unique constraint error, got nil")
+	if err != nil {
+		t.Fatalf("Update must not return a fatal error on unique violation: %v", err)
 	}
-
-	var uv *index.UniqueViolationError
-	if !errors.As(err, &uv) {
-		t.Errorf("expected *index.UniqueViolationError, got %T: %v", err, err)
+	if _, ok := protocol.DecodeAppError(results2[0].Data); !ok {
+		t.Fatal("expected app-error payload for unique constraint violation")
 	}
 
 	// user:2 must NOT exist in the store (batch was not committed).
@@ -3390,18 +3440,22 @@ func TestMVCCEngine_UniqueIndex_ViolationAbortsBaseKVPut(t *testing.T) {
 		baseKVPutEntry(2, "doc:1", `{"uid":"x42"}`),
 	})
 
-	// Duplicate via base KV put: must fail.
+	// Duplicate via base KV put: must be rejected as a non-fatal app-error.
 	results2 := make([]sm.Result, 1)
 	err := eng.Update(context.Background(), []sm.Entry{
 		baseKVPutEntry(3, "doc:2", `{"uid":"x42"}`),
 	}, results2)
-	if err == nil {
-		t.Fatal("expected unique constraint error, got nil")
+	if err != nil {
+		t.Fatalf("Update must not return a fatal error on unique violation: %v", err)
+	}
+	if _, ok := protocol.DecodeAppError(results2[0].Data); !ok {
+		t.Fatal("expected app-error payload for unique constraint violation")
 	}
 
-	var uv *index.UniqueViolationError
-	if !errors.As(err, &uv) {
-		t.Errorf("expected *index.UniqueViolationError, got %T: %v", err, err)
+	// doc:2 must NOT exist in the store (batch was not committed).
+	got, lookupErr := eng.Lookup(context.Background(), service.MVCCGetQuery{Key: []byte("doc:2")})
+	if lookupErr == nil && got != nil {
+		t.Error("doc:2 was persisted despite unique constraint violation")
 	}
 }
 

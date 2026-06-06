@@ -162,18 +162,33 @@ func TestMVCCStateMachine_IndexCreate_Duplicate(t *testing.T) {
 	if err := s.Update(ctx, entries, results); err != nil {
 		t.Fatalf("Update: unexpected error: %v", err)
 	}
-
-	// Attempt to create the same index again.
-	entries2 := []sm.Entry{indexCreateEntry(2, "dup_idx", "field1", false, false)}
-	results2 := make([]sm.Result, len(entries2))
-	err := s.Update(ctx, entries2, results2)
-	if err == nil {
-		t.Fatal("expected error creating duplicate index, got nil")
+	if results[0].Value != 1 {
+		t.Fatalf("first create: expected result 1, got %d", results[0].Value)
 	}
 
-	var iqe *engine.InvalidQueryError
-	if !errors.As(err, &iqe) {
-		t.Fatalf("expected *engine.InvalidQueryError, got %T: %v", err, err)
+	// Creating the same index again is a no-op success (idempotent). A
+	// non-nil error from a Raft Update() handler permanently stalls the
+	// cluster, so duplicate-create must succeed without error.
+	entries2 := []sm.Entry{indexCreateEntry(2, "dup_idx", "field1", false, false)}
+	results2 := make([]sm.Result, len(entries2))
+	if err := s.Update(ctx, entries2, results2); err != nil {
+		t.Fatalf("duplicate create: expected no-op success, got error: %v", err)
+	}
+	if results2[0].Value != 1 {
+		t.Fatalf("duplicate create: expected result 1, got %d", results2[0].Value)
+	}
+
+	// The original index must still be present and intact.
+	listResult, err := s.Lookup(ctx, service.IndexListRequest{})
+	if err != nil {
+		t.Fatalf("Lookup IndexListRequest: unexpected error: %v", err)
+	}
+	names := listResult.([]string)
+	if len(names) != 1 {
+		t.Fatalf("expected exactly 1 index after duplicate create, got %d", len(names))
+	}
+	if names[0] != "dup_idx" {
+		t.Fatalf("expected index name dup_idx, got %s", names[0])
 	}
 }
 
@@ -181,25 +196,32 @@ func TestMVCCStateMachine_IndexCreate_DuplicateErrorMessage(t *testing.T) {
 	s := newTestMVCCStateMachine(t)
 	ctx := context.Background()
 
+	// Create the first index.
 	entries := []sm.Entry{indexCreateEntry(1, "dup_idx2", "field1", false, false)}
 	results := make([]sm.Result, len(entries))
 	if err := s.Update(ctx, entries, results); err != nil {
 		t.Fatalf("Update: unexpected error: %v", err)
 	}
 
+	// Duplicate create is a no-op success — the idempotent contract locks in
+	// that no error is returned and the result value is 1.
 	entries2 := []sm.Entry{indexCreateEntry(2, "dup_idx2", "field1", false, false)}
 	results2 := make([]sm.Result, len(entries2))
-	err := s.Update(ctx, entries2, results2)
-	if err == nil {
-		t.Fatal("expected error, got nil")
+	if err := s.Update(ctx, entries2, results2); err != nil {
+		t.Fatalf("duplicate create: expected no-op success, got error: %v", err)
+	}
+	if results2[0].Value != 1 {
+		t.Fatalf("duplicate create: expected result 1, got %d", results2[0].Value)
 	}
 
-	var iqe *engine.InvalidQueryError
-	if !errors.As(err, &iqe) {
-		t.Fatalf("expected *engine.InvalidQueryError, got %T: %v", err, err)
+	// Only one index should exist (the duplicate was silently ignored).
+	listResult, err := s.Lookup(ctx, service.IndexListRequest{})
+	if err != nil {
+		t.Fatalf("Lookup IndexListRequest: unexpected error: %v", err)
 	}
-	if iqe.Reason != "index already exists: dup_idx2" {
-		t.Fatalf("expected reason containing index name, got %q", iqe.Reason)
+	names := listResult.([]string)
+	if len(names) != 1 {
+		t.Fatalf("expected 1 index after duplicate create, got %d", len(names))
 	}
 }
 
@@ -285,16 +307,16 @@ func TestMVCCStateMachine_IndexDrop_NotFound(t *testing.T) {
 	s := newTestMVCCStateMachine(t)
 	ctx := context.Background()
 
+	// Dropping a non-existent index is a no-op success (idempotent). A
+	// non-nil error from a Raft Update() handler permanently stalls the
+	// cluster, so drop-not-found must succeed without error.
 	entries := []sm.Entry{indexDropEntry(1, "nonexistent_idx")}
 	results := make([]sm.Result, len(entries))
-	err := s.Update(ctx, entries, results)
-	if err == nil {
-		t.Fatal("expected error dropping nonexistent index, got nil")
+	if err := s.Update(ctx, entries, results); err != nil {
+		t.Fatalf("drop nonexistent: expected no-op success, got error: %v", err)
 	}
-
-	var iqe *engine.InvalidQueryError
-	if !errors.As(err, &iqe) {
-		t.Fatalf("expected *engine.InvalidQueryError, got %T: %v", err, err)
+	if results[0].Value != 1 {
+		t.Fatalf("drop nonexistent: expected result 1, got %d", results[0].Value)
 	}
 }
 
@@ -302,19 +324,27 @@ func TestMVCCStateMachine_IndexDrop_NotFound_ErrorMessage(t *testing.T) {
 	s := newTestMVCCStateMachine(t)
 	ctx := context.Background()
 
+	// Drop of a non-existent index is a no-op success. This test previously
+	// asserted an error message; it is repurposed to lock in the idempotent
+	// contract: no error, result value 1, and subsequent index list is empty.
 	entries := []sm.Entry{indexDropEntry(1, "ghost_idx")}
 	results := make([]sm.Result, len(entries))
-	err := s.Update(ctx, entries, results)
-	if err == nil {
-		t.Fatal("expected error, got nil")
+	if err := s.Update(ctx, entries, results); err != nil {
+		t.Fatalf("drop ghost_idx: expected no-op success, got error: %v", err)
+	}
+	if results[0].Value != 1 {
+		t.Fatalf("drop ghost_idx: expected result 1, got %d", results[0].Value)
 	}
 
-	var iqe *engine.InvalidQueryError
-	if !errors.As(err, &iqe) {
-		t.Fatalf("expected *engine.InvalidQueryError, got %T: %v", err, err)
+	// Index list must remain empty — the drop of a nonexistent index must not
+	// corrupt the index registry.
+	listResult, err := s.Lookup(ctx, service.IndexListRequest{})
+	if err != nil {
+		t.Fatalf("Lookup IndexListRequest: unexpected error: %v", err)
 	}
-	if iqe.Reason != "index not found: ghost_idx" {
-		t.Fatalf("expected reason with index name, got %q", iqe.Reason)
+	names := listResult.([]string)
+	if len(names) != 0 {
+		t.Fatalf("expected empty index list after no-op drop, got %d names", len(names))
 	}
 }
 
@@ -521,14 +551,11 @@ func TestMVCCStateMachine_TSWrite_NoStorage(t *testing.T) {
 	now := time.Now().UTC()
 	entries := []sm.Entry{tsWriteEntry(1, "cpu.usage", now.UnixNano(), 42.5, nil)}
 	results := make([]sm.Result, len(entries))
-	err := s.Update(ctx, entries, results)
-	if err == nil {
-		t.Fatal("expected error writing TS without storage, got nil")
+	if err := s.Update(ctx, entries, results); err != nil {
+		t.Fatalf("Update must not return a fatal error writing TS without storage: %v", err)
 	}
-
-	var noe *engine.NotOpenError
-	if !errors.As(err, &noe) {
-		t.Fatalf("expected *engine.NotOpenError, got %T: %v", err, err)
+	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
+		t.Fatal("expected app-error payload writing TS without storage")
 	}
 }
 
@@ -600,14 +627,11 @@ func TestMVCCStateMachine_TSWriteBatch_NoStorage(t *testing.T) {
 	}
 	entries := []sm.Entry{tsWriteBatchEntry(1, params)}
 	results := make([]sm.Result, len(entries))
-	err := s.Update(ctx, entries, results)
-	if err == nil {
-		t.Fatal("expected error writing TS batch without storage, got nil")
+	if err := s.Update(ctx, entries, results); err != nil {
+		t.Fatalf("Update must not return a fatal error writing TS batch without storage: %v", err)
 	}
-
-	var noe *engine.NotOpenError
-	if !errors.As(err, &noe) {
-		t.Fatalf("expected *engine.NotOpenError, got %T: %v", err, err)
+	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
+		t.Fatal("expected app-error payload writing TS batch without storage")
 	}
 }
 
@@ -960,14 +984,11 @@ func TestMVCCStateMachine_TSWritePoint_NoStorage(t *testing.T) {
 	now := time.Now().UTC()
 	entries := []sm.Entry{tsWritePointEntry(1, "net.rx", now.UnixNano(), 99.9, nil)}
 	results := make([]sm.Result, len(entries))
-	err := s.Update(ctx, entries, results)
-	if err == nil {
-		t.Fatal("expected error writing TSWritePoint without storage, got nil")
+	if err := s.Update(ctx, entries, results); err != nil {
+		t.Fatalf("Update must not return a fatal error writing TSWritePoint without storage: %v", err)
 	}
-
-	var noe *engine.NotOpenError
-	if !errors.As(err, &noe) {
-		t.Fatalf("expected *engine.NotOpenError, got %T: %v", err, err)
+	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
+		t.Fatal("expected app-error payload writing TSWritePoint without storage")
 	}
 }
 
@@ -1119,14 +1140,11 @@ func TestMVCCStateMachine_TSDeleteSeries_NoStorage(t *testing.T) {
 
 	entries := []sm.Entry{tsDeleteSeriesEntry(1, "some.metric", 0, 0, nil)}
 	results := make([]sm.Result, len(entries))
-	err := s.Update(ctx, entries, results)
-	if err == nil {
-		t.Fatal("expected error deleting TS series without storage, got nil")
+	if err := s.Update(ctx, entries, results); err != nil {
+		t.Fatalf("Update must not return a fatal error deleting TS series without storage: %v", err)
 	}
-
-	var noe *engine.NotOpenError
-	if !errors.As(err, &noe) {
-		t.Fatalf("expected *engine.NotOpenError, got %T: %v", err, err)
+	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
+		t.Fatal("expected app-error payload deleting TS series without storage")
 	}
 }
 
@@ -1246,14 +1264,11 @@ func TestMVCCStateMachine_TSSetRetention_NoStorage(t *testing.T) {
 	entries := []sm.Entry{tsSetRetentionEntry(1, "any.metric",
 		int64(time.Hour), int64(time.Second), byte(timeseries.AggAvg))}
 	results := make([]sm.Result, len(entries))
-	err := s.Update(ctx, entries, results)
-	if err == nil {
-		t.Fatal("expected error setting retention without storage, got nil")
+	if err := s.Update(ctx, entries, results); err != nil {
+		t.Fatalf("Update must not return a fatal error setting retention without storage: %v", err)
 	}
-
-	var noe *engine.NotOpenError
-	if !errors.As(err, &noe) {
-		t.Fatalf("expected *engine.NotOpenError, got %T: %v", err, err)
+	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
+		t.Fatal("expected app-error payload setting retention without storage")
 	}
 }
 

@@ -57,9 +57,7 @@ var expectedMethods = []string{
 	// Batch (1)
 	"batch.Batch",
 
-	// Watch (2)
-	"watch.Watch",
-	"watch.WatchPrefix",
+	// Watch is server-streaming (handleWatchStream); not in the unary table.
 
 	// Lease (5)
 	"lease.Grant",
@@ -117,24 +115,29 @@ var expectedMethods = []string{
 	"vector.CompactNamespace",
 	"vector.GetCompactionProgress",
 
-	// User management (7)
+	// User management (10)
 	"user.Create",
 	"user.Get",
+	"user.GetByUsername",
+	"user.GetByCertThumbprint",
+	"user.AddCertBinding",
 	"user.Update",
 	"user.Delete",
 	"user.List",
 	"user.Enable",
 	"user.Disable",
 
-	// Role management (8)
+	// Role management (10)
 	"role.Create",
 	"role.Get",
+	"role.GetByName",
 	"role.Update",
 	"role.Delete",
 	"role.List",
 	"role.Assign",
 	"role.Unassign",
 	"role.ListPermissions",
+	"role.ResolvePermissions",
 
 	// Certificate management (4)
 	"cert.Generate",
@@ -163,8 +166,11 @@ var expectedMethods = []string{
 	"db.UpdateRaft",
 	"db.UpdateBarrier",
 	"db.UpdateConnection",
+	"db.Seal",
+	"db.Unseal",
+	"db.BarrierStatus",
 
-	// Barrier (17)
+	// Barrier (13)
 	"barrier.Initialize",
 	"barrier.Unseal",
 	"barrier.Seal",
@@ -172,10 +178,6 @@ var expectedMethods = []string{
 	"barrier.ShamirInitialize",
 	"barrier.ShamirUnsealShare",
 	"barrier.ShamirUnsealShares",
-	"barrier.ShamirListShares",
-	"barrier.ShamirDeleteShare",
-	"barrier.ShamirDeleteAllShares",
-	"barrier.ShamirVerify",
 	"barrier.Rekey",
 	"barrier.RecoveryGenerate",
 	"barrier.RecoveryRecover",
@@ -183,13 +185,24 @@ var expectedMethods = []string{
 	"barrier.RecoveryStatus",
 	"barrier.RootToken",
 
-	// Ceremony (6)
+	// Ceremony (9)
 	"ceremony.Initialize",
 	"ceremony.Status",
 	"ceremony.ClaimCertBegin",
 	"ceremony.ClaimCertComplete",
 	"ceremony.ClaimShare",
 	"ceremony.SignCSR",
+	"ceremony.ClaimShareBegin",
+	"ceremony.ClaimShareComplete",
+	"ceremony.SubmitUnsealShare",
+
+	// Tenant (6)
+	"tenant.Create",
+	"tenant.Get",
+	"tenant.List",
+	"tenant.Update",
+	"tenant.Delete",
+	"tenant.UpdateQuotas",
 }
 
 func TestBuildHandlers_RegistersAllMethods(t *testing.T) {
@@ -207,7 +220,12 @@ func TestBuildHandlers_RegistersAllMethods(t *testing.T) {
 func TestBuildHandlers_MethodCount(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{})
 
-	const wantCount = 133
+	// 144 = 136 prior unary handlers + 3 database barrier handlers
+	// (db.Seal/Unseal/BarrierStatus) + 3 ceremony custodian handlers
+	// (ceremony.ClaimShareBegin/ClaimShareComplete/SubmitUnsealShare) + 2 role
+	// handlers (role.GetByName/role.ResolvePermissions). The 2 watch methods
+	// remain on the streaming path, not the unary table.
+	const wantCount = 144
 	if got := len(srv.handlers); got != wantCount {
 		t.Fatalf("handler count = %d, want %d", got, wantCount)
 	}
@@ -280,6 +298,7 @@ func TestBuildHandlers_CategoryCounts(t *testing.T) {
 		"cert":     0,
 		"barrier":  0,
 		"ceremony": 0,
+		"tenant":   0,
 	}
 
 	for method := range srv.handlers {
@@ -300,17 +319,17 @@ func TestBuildHandlers_CategoryCounts(t *testing.T) {
 		"mvcc":     6,
 		"tx":       1,
 		"batch":    1,
-		"watch":    2,
 		"lease":    5,
 		"lock":     6,
 		"index":    5,
 		"ts":       10,
 		"vector":   20,
-		"user":     7,
-		"role":     8,
+		"user":     10,
+		"role":     10,
 		"cert":     4,
-		"barrier":  17,
-		"ceremony": 6,
+		"barrier":  13,
+		"ceremony": 9,
+		"tenant":   6,
 	}
 
 	for cat, want := range expectedCounts {

@@ -24,9 +24,22 @@ import (
 
 func TestDefaultConfig(t *testing.T) {
 	cfg := DefaultConfig()
-	assert.Equal(t, TypeMsgPack, cfg.StorageCodec)
+	assert.Equal(t, TypeJSON, cfg.StorageCodec)
 	assert.Equal(t, TypeJSON, cfg.WireCodec)
 	assert.True(t, cfg.UseOptimized)
+}
+
+// TestDefaultConfig_ValidateWithNoExtraCodecTags ensures that DefaultConfig
+// passes Validate() in a minimal build where only the JSON codec is registered.
+// This is the canonical regression test for the default-build / default-config
+// coherence invariant: DefaultConfig must never reference a codec that requires
+// a build tag to be registered.
+func TestDefaultConfig_ValidateWithNoExtraCodecTags(t *testing.T) {
+	cfg := DefaultConfig()
+	err := cfg.Validate()
+	if err != nil {
+		t.Fatalf("DefaultConfig().Validate() failed — default codec %q is not registered in this build: %v", cfg.StorageCodec, err)
+	}
 }
 
 func TestConfig_Validate_Success(t *testing.T) {

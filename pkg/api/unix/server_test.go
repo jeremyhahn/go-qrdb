@@ -33,6 +33,8 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
+	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
+	"github.com/jeremyhahn/go-qrdb/pkg/custodian"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
@@ -708,19 +710,26 @@ type stubUserSvc struct{}
 func (s *stubUserSvc) CreateUser(_ context.Context, _ *user.CreateUserRequest) (*user.User, error) {
 	return nil, nil
 }
-func (s *stubUserSvc) GetUser(_ context.Context, _ string) (*user.User, error) { return nil, nil }
+func (s *stubUserSvc) GetUser(_ context.Context, _ uint64) (*user.User, error) { return nil, nil }
 func (s *stubUserSvc) GetUserByUsername(_ context.Context, _, _ string) (*user.User, error) {
 	return nil, nil
 }
 func (s *stubUserSvc) UpdateUser(_ context.Context, _ *user.UpdateUserRequest) (*user.User, error) {
 	return nil, nil
 }
-func (s *stubUserSvc) DeleteUser(_ context.Context, _ string) error { return nil }
+func (s *stubUserSvc) DeleteUser(_ context.Context, _ uint64) error { return nil }
 func (s *stubUserSvc) ListUsers(_ context.Context, _ *user.ListUsersRequest) (*user.ListUsersResponse, error) {
 	return nil, nil
 }
-func (s *stubUserSvc) EnableUser(_ context.Context, _ string) error  { return nil }
-func (s *stubUserSvc) DisableUser(_ context.Context, _ string) error { return nil }
+func (s *stubUserSvc) EnableUser(_ context.Context, _ uint64) error  { return nil }
+func (s *stubUserSvc) DisableUser(_ context.Context, _ uint64) error { return nil }
+func (s *stubUserSvc) UserByCertThumbprint(_ context.Context, _ string) (*user.User, error) {
+	return nil, nil
+}
+
+func (s *stubUserSvc) AddCertBinding(_ context.Context, _ uint64, _ string, _ int64) (*user.User, error) {
+	return nil, nil
+}
 
 // stubRoleSvc satisfies role.RoleServicer for option propagation tests.
 type stubRoleSvc struct{}
@@ -831,12 +840,6 @@ func (s *stubBarrierSvc) BarrierUnsealWithShare(_ context.Context, _ string) (*s
 	return nil, nil
 }
 func (s *stubBarrierSvc) BarrierUnsealWithShares(_ context.Context, _ []string) error { return nil }
-func (s *stubBarrierSvc) BarrierShamirListShares(_ context.Context) (*service.ShamirSharesInfo, error) {
-	return nil, nil
-}
-func (s *stubBarrierSvc) BarrierShamirDeleteShare(_ context.Context, _ int) error { return nil }
-func (s *stubBarrierSvc) BarrierShamirDeleteAllShares(_ context.Context) error    { return nil }
-func (s *stubBarrierSvc) BarrierShamirVerify(_ context.Context) error             { return nil }
 func (s *stubBarrierSvc) BarrierRekey(_ context.Context, _, _ int) (*service.ShamirInitInfo, error) {
 	return nil, nil
 }
@@ -853,7 +856,7 @@ func (s *stubBarrierSvc) BarrierGenerateRootToken(_ context.Context, _ []string)
 // stubCeremonySvc satisfies service.CeremonyServicer for option propagation tests.
 type stubCeremonySvc struct{}
 
-func (s *stubCeremonySvc) CeremonyInitialize(_ context.Context, _ ceremony.CeremonyCA) (*service.CeremonyInitResult, error) {
+func (s *stubCeremonySvc) CeremonyInitialize(_ context.Context, _ ceremony.CeremonyCA, _ *service.CeremonyInitializeOptions) (*service.CeremonyInitResult, error) {
 	return nil, nil
 }
 func (s *stubCeremonySvc) CeremonyBeginClaimCert(_ context.Context, _ string) (*service.CeremonyChallenge, error) {
@@ -871,6 +874,18 @@ func (s *stubCeremonySvc) CeremonySignCSR(_ context.Context, _, _, _, _ string) 
 func (s *stubCeremonySvc) CeremonyStatus(_ context.Context) (*service.CeremonyStatusInfo, error) {
 	return nil, nil
 }
+func (s *stubCeremonySvc) CeremonyClaimShareBegin(_ context.Context, _ string) (*service.CeremonyCustodianChallenge, error) {
+	return nil, nil
+}
+func (s *stubCeremonySvc) CeremonyClaimShareComplete(_ context.Context, _, _ string, _ []byte) (*custodian.Custodian, error) {
+	return nil, nil
+}
+func (s *stubCeremonySvc) CeremonySubmitUnsealShare(_ context.Context, _, _ string, _, _ []byte) (*service.CeremonyUnsealShareResult, error) {
+	return nil, nil
+}
+func (s *stubCeremonySvc) CeremonyEnrollExternalOfficer(_ context.Context, _ *service.CeremonyEnrollExternalOfficerRequest) (*service.CeremonyEnrollExternalOfficerResponse, error) {
+	return nil, nil
+}
 
 // stubCredentialSvc satisfies service.CredentialServicer for option propagation tests.
 type stubCredentialSvc struct{}
@@ -886,6 +901,21 @@ func (s *stubCredentialSvc) CredentialSubmit(_ context.Context, _ string, _ []by
 }
 func (s *stubCredentialSvc) CredentialDelete(_ context.Context, _ string) error { return nil }
 func (s *stubCredentialSvc) CredentialStrategy() string                         { return "stub" }
+func (s *stubCredentialSvc) CredentialList(_ context.Context) ([]string, error) {
+	return nil, nil
+}
+func (s *stubCredentialSvc) CredentialRotate(_ context.Context, _ string, _ credentials.RotateOptions) (*credentials.RotateResult, error) {
+	return &credentials.RotateResult{}, nil
+}
+func (s *stubCredentialSvc) CredentialRetrieveVersion(_ context.Context, _ string, _ uint64) ([]byte, error) {
+	return nil, nil
+}
+func (s *stubCredentialSvc) CredentialListVersions(_ context.Context, _ string) ([]credentials.CredentialVersion, error) {
+	return nil, nil
+}
+func (s *stubCredentialSvc) CredentialGCExpired(_ context.Context, _ string) (int, error) {
+	return 0, nil
+}
 
 // stubCollectionSvc satisfies service.CollectionServicer for option propagation tests.
 type stubCollectionSvc struct{}
@@ -1018,6 +1048,22 @@ func (s *stubTimeSeriesSvc) SetRetentionPolicy(_ string, _ *timeseries.Retention
 	return nil
 }
 func (s *stubTimeSeriesSvc) ListMetrics(_ string, _ int) ([]string, error) { return nil, nil }
+
+func (s *stubTimeSeriesSvc) QueryWithConsistency(ctx context.Context, metric string, start, end time.Time, _ consistency.ReadOptions, opts ...timeseries.TSQueryOption) ([]timeseries.DataPoint, error) {
+	return s.Query(ctx, metric, start, end, opts...)
+}
+
+func (s *stubTimeSeriesSvc) AggregateWithConsistency(ctx context.Context, metric string, start, end time.Time, fn timeseries.AggFunc, interval time.Duration, _ consistency.ReadOptions) ([]timeseries.AggResult, error) {
+	return s.Aggregate(ctx, metric, start, end, fn, interval)
+}
+
+func (s *stubTimeSeriesSvc) QueryRichWithConsistency(ctx context.Context, req *timeseries.QueryRequest, _ consistency.ReadOptions) (*timeseries.QueryResult, error) {
+	return s.QueryRich(ctx, req)
+}
+
+func (s *stubTimeSeriesSvc) ListMetricsWithConsistency(_ context.Context, prefix string, limit int, _ consistency.ReadOptions) ([]string, error) {
+	return s.ListMetrics(prefix, limit)
+}
 
 // stubDatabaseSvc satisfies service.DatabaseServicer for option propagation tests.
 type stubDatabaseSvc struct{}

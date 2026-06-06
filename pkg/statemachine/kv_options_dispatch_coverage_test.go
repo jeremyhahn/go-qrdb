@@ -12,11 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:build codec_json && raft && qrdb_ts && qrdb_vector && qrdb_mysql && qrdb_pgsql && qrdb_etcd
+//go:build codec_json && raft
 
 package statemachine
 
 import (
+	"bytes"
 	"errors"
 	"log/slog"
 	"os"
@@ -74,9 +75,14 @@ func TestKVDispatch_TSWriteBatch_NotConfigured(t *testing.T) {
 	results := make([]sm.Result, 1)
 
 	err := k.Update(entries, results)
-	var sncErr *ServiceNotConfiguredError
-	if !errors.As(err, &sncErr) {
-		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
+	if err != nil {
+		t.Fatalf("expected nil error (SNC encoded in result.Data), got %v", err)
+	}
+	if len(results[0].Data) == 0 {
+		t.Fatal("expected ServiceNotConfiguredError encoded in result.Data")
+	}
+	if !bytes.Contains(results[0].Data, []byte("timeseries")) {
+		t.Fatalf("expected Data to mention timeseries, got %q", results[0].Data)
 	}
 }
 
@@ -283,9 +289,11 @@ func TestKVDispatch_IndexDrop_NotConfigured(t *testing.T) {
 	results := make([]sm.Result, 1)
 
 	err := k.Update(entries, results)
-	var sncErr *ServiceNotConfiguredError
-	if !errors.As(err, &sncErr) {
-		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
+	if err != nil {
+		t.Fatalf("expected nil error (SNC encoded in result.Data), got %v", err)
+	}
+	if !bytes.Contains(results[0].Data, []byte("index")) {
+		t.Fatalf("expected Data to mention index, got %q", results[0].Data)
 	}
 }
 
@@ -301,9 +309,11 @@ func TestKVDispatch_LeaseRevoke_NotConfigured(t *testing.T) {
 	results := make([]sm.Result, 1)
 
 	err := k.Update(entries, results)
-	var sncErr *ServiceNotConfiguredError
-	if !errors.As(err, &sncErr) {
-		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
+	if err != nil {
+		t.Fatalf("expected nil error (SNC encoded in result.Data), got %v", err)
+	}
+	if !bytes.Contains(results[0].Data, []byte("lease")) {
+		t.Fatalf("expected Data to mention lease, got %q", results[0].Data)
 	}
 }
 
@@ -315,9 +325,11 @@ func TestKVDispatch_LeaseKeepAlive_NotConfigured(t *testing.T) {
 	results := make([]sm.Result, 1)
 
 	err := k.Update(entries, results)
-	var sncErr *ServiceNotConfiguredError
-	if !errors.As(err, &sncErr) {
-		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
+	if err != nil {
+		t.Fatalf("expected nil error (SNC encoded in result.Data), got %v", err)
+	}
+	if !bytes.Contains(results[0].Data, []byte("lease")) {
+		t.Fatalf("expected Data to mention lease, got %q", results[0].Data)
 	}
 }
 
@@ -332,9 +344,11 @@ func TestKVDispatch_TSWritePoint_NotConfigured(t *testing.T) {
 	results := make([]sm.Result, 1)
 
 	err := k.Update(entries, results)
-	var sncErr *ServiceNotConfiguredError
-	if !errors.As(err, &sncErr) {
-		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
+	if err != nil {
+		t.Fatalf("expected nil error (SNC encoded in result.Data), got %v", err)
+	}
+	if !bytes.Contains(results[0].Data, []byte("timeseries")) {
+		t.Fatalf("expected Data to mention timeseries, got %q", results[0].Data)
 	}
 }
 
@@ -345,9 +359,11 @@ func TestKVDispatch_TSDeleteSeries_NotConfigured(t *testing.T) {
 	results := make([]sm.Result, 1)
 
 	err := k.Update(entries, results)
-	var sncErr *ServiceNotConfiguredError
-	if !errors.As(err, &sncErr) {
-		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
+	if err != nil {
+		t.Fatalf("expected nil error (SNC encoded in result.Data), got %v", err)
+	}
+	if !bytes.Contains(results[0].Data, []byte("timeseries")) {
+		t.Fatalf("expected Data to mention timeseries, got %q", results[0].Data)
 	}
 }
 
@@ -358,9 +374,11 @@ func TestKVDispatch_TSSetRetention_NotConfigured(t *testing.T) {
 	results := make([]sm.Result, 1)
 
 	err := k.Update(entries, results)
-	var sncErr *ServiceNotConfiguredError
-	if !errors.As(err, &sncErr) {
-		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
+	if err != nil {
+		t.Fatalf("expected nil error (SNC encoded in result.Data), got %v", err)
+	}
+	if !bytes.Contains(results[0].Data, []byte("timeseries")) {
+		t.Fatalf("expected Data to mention timeseries, got %q", results[0].Data)
 	}
 }
 

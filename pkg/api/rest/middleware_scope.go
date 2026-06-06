@@ -19,27 +19,28 @@ import (
 	"net/http"
 )
 
-// scopeMiddleware reads X-QRDB-Tenant and X-QRDB-Database from the incoming
-// request headers exactly once and injects their values into the request
-// context. Missing or empty headers default to "default".
+// scopeMiddleware reads X-QRDB-Database from the incoming request header and
+// injects the value into the request context. Missing or empty database header
+// defaults to defaultDatabaseScope.
+//
+// The tenant dimension is NOT sourced from a header. The authenticated mTLS
+// identity is the sole source of tenant — the auth middleware binds it via
+// pkg/tenant.WithTenantID before this middleware runs, and downstream handlers
+// read it through tenantFromContext (which delegates to tenant.FromContext).
+// Accepting a tenant from an unauthenticated header was a spoofing vector and
+// has been removed.
 //
 // It is positioned between CORS and auth in the handler chain so that both
-// the auth middleware and all downstream handlers can read the scope from
-// context without re-parsing headers.
+// the auth middleware and all downstream handlers can read the database scope
+// from context without re-parsing headers.
 func scopeMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		tenantID := r.Header.Get(HeaderTenant)
-		if tenantID == "" {
-			tenantID = defaultScope
-		}
-
 		dbName := r.Header.Get(HeaderDatabase)
 		if dbName == "" {
-			dbName = defaultScope
+			dbName = defaultDatabaseScope
 		}
 
 		ctx := r.Context()
-		ctx = context.WithValue(ctx, tenantIDKey, tenantID)
 		ctx = context.WithValue(ctx, dbNameKey, dbName)
 
 		next.ServeHTTP(w, r.WithContext(ctx))

@@ -22,6 +22,71 @@ the `vector` subcommand from being registered in the Cobra command tree.
 On the server side, the `VectorService` implementation is similarly
 stubbed, returning `FeatureDisabledError` for all operations.
 
+## Multi-Tenancy & Encryption
+
+### Tenant-Partitioned Namespaces
+
+Vector namespaces are **tenant-partitioned** — the physical storage key is
+qualified by the request-context tenant ID, preventing namespace-name collision
+between tenants. Two tenants can create a namespace named `embeddings` with no
+conflict; the underlying keys are isolated as `tenant-a:embeddings` and
+`tenant-b:embeddings`.
+
+In STRICT mode (a FIPS 140-3 build where `crypto/fips140.Enabled()` is true,
+OR when `config.tenant.strict_isolation: true`), namespace creation without
+a tenant context is rejected — no implicit shared or system namespaces.
+Standard mode (default) uses the `system` tenant as the implicit owner for
+un-tenanted requests, suitable for single-tenant deployments.
+
+**Example: CreateNamespace behavior**
+
+```
+CreateNamespace(ctx, &CreateNamespaceRequest{Namespace: "embeddings"})
+  → Binds the owner tenant from ctx (defaults to "system" if omitted in standard mode)
+  → In STRICT mode, error if no tenant context
+  → Returns namespace scoped to that tenant's isolation context
+```
+
+### Barrier Encryption at Rest
+
+Vector data is **barrier-encrypted at rest** via the cluster `StorageBarrier` —
+the same cryptographic seal that protects the KV/MVCC store. The vector
+PebbleDB store's filesystem is wrapped by the barrier's encrypting FS
+(`encfs`), so all persisted vector bytes — vectors, metadata, and index data —
+are encrypted under the cluster barrier's data-encryption key. This ensures:
+
+- **At-rest confidentiality**: vector data is not readable without the cluster
+  barrier unsealed (matches the KV/MVCC encryption model).
+- **Unified seal lifecycle**: barrier init/unseal/seal applies to the vector
+  store alongside KV data.
+- **Plaintext fallback only when seal is disabled**: with no barrier
+  configured the vector store is plaintext, exactly as the KV store is.
+
+Tenant isolation of vector data is provided by the **tenant-partitioned
+namespace keys** described above (logical key isolation), *not* by per-tenant
+encryption keys — vectors are encrypted under the single cluster `StorageBarrier`
+DEK, just like KV data. (Per-tenant DEK encryption of vector data — reusing the
+`BarrierRegistry`/`TenantBarrier` mechanism that backs `IsolationBarrier` tenant
+KV data — is a possible future hardening, not the current behavior.)
+
+**Example: Vector data encryption flow**
+
+```
+1. A client calls UpsertVector (tenant taken from request context)
+2. Vector + metadata → Raft proposal → state machine Update
+3. The namespace key is qualified by the tenant (tenant-partitioned isolation)
+4. The StorageBarrier's encrypting FS encrypts the bytes written to PebbleDB
+5. On Read: SyncRead → Lookup → the encrypting FS transparently decrypts
+```
+
+### Auto-Provisioning for RAG
+
+When a RAG ingest request is processed, a tenant-scoped vector namespace is
+automatically provisioned (if not already present) with sensible defaults
+(dimension from the embedding model, cosine distance metric, HNSW index).
+This avoids requiring explicit namespace pre-creation and ensures RAG
+documents are stored in the requesting tenant's isolated namespace.
+
 ## Service Interface
 
 Source: `pkg/service/vector_service.go`

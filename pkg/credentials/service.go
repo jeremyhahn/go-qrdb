@@ -14,8 +14,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/awnumar/memguard"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 const credentialPrefix = "credentials/"
@@ -25,13 +25,26 @@ const credentialPrefix = "credentials/"
 // semantics. The barrier strategy delegates to a seal.StorageBarrier for
 // encrypted persistence.
 type CredentialService struct {
-	barrier     *seal.StorageBarrier
-	strategy    string
-	logger      *slog.Logger
-	mu          sync.RWMutex
-	manualCreds map[string][]byte
+	barrier  *seal.StorageBarrier
+	strategy string
+	logger   *slog.Logger
+	mu       sync.RWMutex
+	// manualCreds holds manual-strategy credential values at rest inside
+	// memguard enclaves — never as raw, garbage-collected heap bytes. The
+	// plaintext is only materialized transiently (Open → copy → Destroy)
+	// when a value is read.
+	manualCreds map[string]*secure.Secret
 	waitersMu   sync.Mutex
 	waiters     map[string][]chan []byte
+
+	// Manual-strategy versioned-rotation state. Guarded by mu.
+	// manualVersions stores non-current grace-period values keyed by
+	// [name][version], also enclave-protected. manualMeta stores the
+	// metadata sidecar (current version + grace history) keyed by name.
+	// Both are lazily initialised on the first rotate; legacy untracked
+	// credentials remain in manualCreds with no entry here.
+	manualVersions map[string]map[uint64]*secure.Secret
+	manualMeta     map[string]*credentialMeta
 }
 
 // NewCredentialService creates a new CredentialService with the given
@@ -62,7 +75,7 @@ func NewCredentialService(cfg *Config, barrier *seal.StorageBarrier, logger *slo
 		barrier:     barrier,
 		strategy:    strategy,
 		logger:      logger,
-		manualCreds: make(map[string][]byte),
+		manualCreds: make(map[string]*secure.Secret),
 		waiters:     make(map[string][]chan []byte),
 	}, nil
 }
@@ -156,14 +169,40 @@ func (s *CredentialService) AutoUnsealAvailable() bool {
 	return s.strategy != StrategyManual
 }
 
-// storeManual stores a credential in the in-memory map. The value is
-// copied to prevent caller mutations from affecting stored data.
+// newSecretCopy seals a copy of value into a memguard enclave. The caller's
+// value is left intact (a throwaway copy is what NewSecret wipes).
+func newSecretCopy(value []byte) (*secure.Secret, error) {
+	tmp := make([]byte, len(value))
+	copy(tmp, value)
+	return secure.NewSecret(tmp) // wipes tmp
+}
+
+// openSecretCopy materializes a sealed secret's plaintext into a fresh
+// caller-owned []byte, destroying the transient enclave buffer before return.
+func openSecretCopy(sec *secure.Secret) ([]byte, error) {
+	buf, err := sec.Open()
+	if err != nil {
+		return nil, err
+	}
+	defer buf.Destroy()
+	out := make([]byte, buf.Size())
+	copy(out, buf.Bytes())
+	return out, nil
+}
+
+// storeManual seals a credential into an in-memory memguard enclave. Any prior
+// enclave for the same name is destroyed first.
 func (s *CredentialService) storeManual(name string, value []byte) error {
-	stored := make([]byte, len(value))
-	copy(stored, value)
+	sec, err := newSecretCopy(value)
+	if err != nil {
+		return err
+	}
 
 	s.mu.Lock()
-	s.manualCreds[name] = stored
+	if old := s.manualCreds[name]; old != nil {
+		old.Destroy()
+	}
+	s.manualCreds[name] = sec
 	s.mu.Unlock()
 
 	s.logger.Debug("credential stored",
@@ -178,14 +217,14 @@ func (s *CredentialService) storeManual(name string, value []byte) error {
 // and the call blocks until the credential is submitted or the context
 // is cancelled.
 func (s *CredentialService) retrieveManual(ctx context.Context, name string) ([]byte, error) {
-	// Fast path: credential already exists.
+	// Fast path: credential already exists. Materialize the enclave into a
+	// transient copy while holding the read lock.
 	s.mu.RLock()
-	stored, ok := s.manualCreds[name]
+	sec, ok := s.manualCreds[name]
 	if ok {
-		out := make([]byte, len(stored))
-		copy(out, stored)
+		out, err := openSecretCopy(sec)
 		s.mu.RUnlock()
-		return out, nil
+		return out, err
 	}
 	s.mu.RUnlock()
 
@@ -203,9 +242,37 @@ func (s *CredentialService) retrieveManual(ctx context.Context, name string) ([]
 	case value := <-ch:
 		out := make([]byte, len(value))
 		copy(out, value)
+		// Wipe the channel-delivered plaintext copy; the caller keeps `out`.
+		secure.Wipe(value)
 		return out, nil
 	case <-ctx.Done():
+		// Deregister this waiter so a later submit does not copy the credential
+		// into an abandoned buffered channel. If submit already raced and
+		// delivered, drain and wipe the buffered plaintext.
+		s.removeWaiter(name, ch)
+		select {
+		case value := <-ch:
+			secure.Wipe(value)
+		default:
+		}
 		return nil, ctx.Err()
+	}
+}
+
+// removeWaiter removes a single waiter channel from the pending-waiters list
+// for name. Used when a waiting retrieve is cancelled before a submit arrives.
+func (s *CredentialService) removeWaiter(name string, ch chan []byte) {
+	s.waitersMu.Lock()
+	defer s.waitersMu.Unlock()
+	waiters := s.waiters[name]
+	for i, w := range waiters {
+		if w == ch {
+			s.waiters[name] = append(waiters[:i], waiters[i+1:]...)
+			break
+		}
+	}
+	if len(s.waiters[name]) == 0 {
+		delete(s.waiters, name)
 	}
 }
 
@@ -223,30 +290,33 @@ func (s *CredentialService) retrieveBarrier(ctx context.Context, name string) ([
 // all registered waiters. Returns ErrCredentialAlreadySubmitted if the
 // credential has already been stored.
 func (s *CredentialService) submitManual(name string, value []byte) error {
+	sec, err := newSecretCopy(value)
+	if err != nil {
+		return err
+	}
+
 	s.mu.Lock()
 	if _, exists := s.manualCreds[name]; exists {
 		s.mu.Unlock()
+		sec.Destroy()
 		return ErrCredentialAlreadySubmitted
 	}
-
-	stored := make([]byte, len(value))
-	copy(stored, value)
-	s.manualCreds[name] = stored
+	s.manualCreds[name] = sec
 	s.mu.Unlock()
 
-	// Notify waiters outside the main lock to avoid holding it during
-	// channel sends.
+	// Notify waiters while holding waitersMu so a concurrent cancellation
+	// (removeWaiter) cannot interleave with the send. The waiter channels are
+	// buffered (cap 1), so the sends never block.
 	s.waitersMu.Lock()
 	waiters := s.waiters[name]
 	delete(s.waiters, name)
-	s.waitersMu.Unlock()
-
 	for _, ch := range waiters {
 		out := make([]byte, len(value))
 		copy(out, value)
 		ch <- out
 		close(ch)
 	}
+	s.waitersMu.Unlock()
 
 	s.logger.Debug("credential submitted",
 		slog.String("name", name),
@@ -255,17 +325,25 @@ func (s *CredentialService) submitManual(name string, value []byte) error {
 	return nil
 }
 
-// deleteManual removes a credential from the in-memory map after securely
-// wiping the stored bytes.
+// deleteManual removes a credential and all of its non-current grace versions,
+// destroying every backing memguard enclave.
 func (s *CredentialService) deleteManual(name string) error {
 	s.mu.Lock()
-	stored, ok := s.manualCreds[name]
+	sec, ok := s.manualCreds[name]
 	if !ok {
 		s.mu.Unlock()
 		return ErrCredentialNotFound
 	}
-	memguard.WipeBytes(stored)
+	sec.Destroy()
 	delete(s.manualCreds, name)
+
+	// Destroy any grace-period version enclaves and drop the metadata sidecar
+	// so the contract "delete removes all non-current versions" holds.
+	for _, vsec := range s.manualVersions[name] {
+		vsec.Destroy()
+	}
+	delete(s.manualVersions, name)
+	delete(s.manualMeta, name)
 	s.mu.Unlock()
 
 	s.logger.Debug("credential deleted",

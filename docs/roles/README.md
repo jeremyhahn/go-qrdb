@@ -182,21 +182,25 @@ The `roles permissions` subcommand lists all registered permissions grouped by c
 | `POST` | `/v1/roles` | Create role |
 | `GET` | `/v1/roles` | List roles (query: `tenantId`, `page`, `pageSize`) |
 | `GET` | `/v1/roles/{id}` | Get role by ID |
+| `GET` | `/roles/by-name` | Get role by tenant-scoped name (query: `tenant_id`, `name`) |
 | `PUT` | `/v1/roles/{id}` | Update role |
 | `DELETE` | `/v1/roles/{id}` | Delete role |
 | `POST` | `/v1/roles/assign` | Assign role to user |
 | `POST` | `/v1/roles/unassign` | Unassign role from user |
+| `POST` | `/roles/resolve-permissions` | Resolve the effective (unioned) permissions for a set of role IDs (`{"role_ids":[...]}`) |
 
 ### gRPC
 
 ```protobuf
 rpc CreateRole(CreateRoleRequest) returns (Role);
 rpc GetRole(GetRoleRequest) returns (Role);
+rpc GetRoleByName(GetRoleByNameRequest) returns (RoleResponse);
 rpc UpdateRole(UpdateRoleRequest) returns (Role);
 rpc DeleteRole(DeleteRoleRequest) returns (google.protobuf.Empty);
 rpc ListRoles(ListRolesRequest) returns (ListRolesResponse);
 rpc AssignRole(AssignRoleRequest) returns (google.protobuf.Empty);
 rpc UnassignRole(UnassignRoleRequest) returns (google.protobuf.Empty);
+rpc ResolveRolePermissions(ResolveRolePermissionsRequest) returns (ResolveRolePermissionsResponse);
 ```
 
 ### MCP Tools
@@ -205,23 +209,28 @@ rpc UnassignRole(UnassignRoleRequest) returns (google.protobuf.Empty);
 |------|-------------|
 | `qrdb_role_create` | Create a new role |
 | `qrdb_role_get` | Get role by ID |
+| `qrdb_role_get_by_name` | Get role by tenant-scoped name |
 | `qrdb_role_update` | Update role fields |
 | `qrdb_role_delete` | Delete a role |
 | `qrdb_role_list` | List roles for a tenant |
 | `qrdb_role_assign` | Assign role to user |
 | `qrdb_role_unassign` | Unassign role from user |
+| `qrdb_permissions_resolve` | Resolve the effective permissions for a set of role IDs |
+
+All operations are exposed with full parity across REST, gRPC, QUIC, MCP, Unix, and the embedded transport, plus the `qrdb roles` CLI (`get-by-name`, `resolve-permissions`).
 
 ## Required Permissions
 
 | Operation | Permission |
 |-----------|------------|
 | Create role | `roles:create` |
-| Read role | `roles:read` |
+| Read role (by ID or name) | `roles:read` |
 | Update role | `roles:update` |
 | Delete role | `roles:delete` |
 | List roles | `roles:list` |
 | Assign role | `roles:assign` |
 | Unassign role | `roles:unassign` |
+| Resolve effective permissions | `permissions:resolve` |
 
 ## Error Types
 

@@ -17,7 +17,9 @@ package store
 import (
 	"github.com/cockroachdb/pebble/v2"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 )
@@ -43,6 +45,34 @@ func WithWALDir(dir string) Option {
 func WithMaxOpenFiles(n int) Option {
 	return func(o *pebble.Options) {
 		o.MaxOpenFiles = n
+	}
+}
+
+// WithEncryptingFS wraps the Pebble vfs.FS with seal/encfs so that
+// every file the database writes — sstables, WAL, manifest,
+// snapshots — is transparently encrypted using the supplied barrier
+// as the key-encryption-key. The barrier MUST already be unsealed
+// when the state machine factory is invoked; if it is sealed, file
+// open and creation operations return errors wrapping
+// seal.ErrSealed.
+//
+// If barrier is nil this is a no-op so existing tests and
+// non-encrypted deployments continue to work unchanged.
+//
+// Deprecated: prefer WithEncryptor(atrest.New(barrier)) which routes
+// through the single atrest.Encryptor authority. WithEncryptingFS is
+// kept for backward compatibility.
+func WithEncryptingFS(barrier *seal.StorageBarrier) Option {
+	return WithEncryptor(atrest.New(barrier))
+}
+
+// WithEncryptor applies enc to the Pebble options, wrapping the vfs.FS
+// with barrier-driven AES-256-GCM encryption. A nil enc or an enc whose
+// barrier is nil is a no-op, so plaintext deployments and tests are
+// unaffected.
+func WithEncryptor(enc *atrest.Encryptor) Option {
+	return func(o *pebble.Options) {
+		enc.Apply(o)
 	}
 }
 
@@ -79,6 +109,17 @@ func WithTimeSeriesEnabled() MVCCOption {
 	}
 }
 
+// WithNoSync disables fsync on PebbleDB batch commits. When set, the state
+// machine's Update does not wait for OS-level write synchronisation, trading
+// durability for performance. This is appropriate only for testing environments
+// where Docker overlay2 fsync latency would otherwise cause Raft proposal
+// timeouts. Never use in production.
+func WithNoSync() MVCCOption {
+	return func(s *MVCCStateMachine) {
+		s.noSync = true
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Factory functions
 // ---------------------------------------------------------------------------
@@ -110,6 +151,32 @@ func NewMVCCCreateFuncWith(pebbleOpts []Option, mvccOpts ...MVCCOption) sm.Creat
 		s := NewMVCCStateMachine(pOpts)
 		for _, opt := range mvccOpts {
 			opt(s)
+		}
+		return s
+	})
+}
+
+// PebbleConfigurator mutates a fully-built *PebbleStateMachine after the
+// pebble.Options have been applied. It exposes the same kind of
+// dependency-injection seam that NewMVCCCreateFuncWith does for the
+// MVCC state machine, so callers can wire shared subsystems (lessor,
+// watch hub, time-series) into the pebble state machine factory.
+type PebbleConfigurator func(*PebbleStateMachine)
+
+// NewPebbleCreateFuncWith returns a sm.CreateFunc that creates
+// PebbleStateMachine instances with both pebble-level options and
+// post-construction configurators applied. The pebble Options are
+// useful for wiring store.WithEncryptingFS so that the data-plane
+// Pebble instance is opened on top of the seal/encfs vfs.
+func NewPebbleCreateFuncWith(pebbleOpts []Option, configurators ...PebbleConfigurator) sm.CreateFunc {
+	return sm.NewDiskCreateFunc(func(_, _ uint64) sm.DiskStateMachine {
+		pOpts := &pebble.Options{}
+		for _, opt := range pebbleOpts {
+			opt(pOpts)
+		}
+		s := NewPebbleStateMachine(pOpts)
+		for _, cfg := range configurators {
+			cfg(s)
 		}
 		return s
 	})

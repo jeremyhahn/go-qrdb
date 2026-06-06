@@ -5,7 +5,7 @@ Licensed under the Apache License, Version 2.0
 
 # Shamir Threshold Unsealing
 
-The ExtendedBarrier supports M-of-N Shamir secret sharing for root key custody. Multiple key holders must collaborate to unseal the barrier.
+The StorageBarrier supports M-of-N Shamir secret sharing for root key custody. Multiple key holders must collaborate to unseal the barrier.
 
 ## Initialization
 
@@ -31,7 +31,7 @@ Distribute shares to key holders. The barrier is unsealed after initialization.
 
 ### Stateful (one-at-a-time)
 
-`UnsealWithShare` accumulates shares in an internal quorum accumulator with a 5-minute TTL:
+`UnsealWithShare` accumulates shares in an internal quorum accumulator with a configurable TTL (default **15 minutes**; set `seal.share_ttl` / `QRDB_SEAL_SHARE_TTL`):
 
 ```go
 progress, _ := barrier.UnsealWithShare(ctx, shares[0])
@@ -45,6 +45,16 @@ progress, _ = barrier.UnsealWithShare(ctx, shares[4])
 ```
 
 Duplicate shares are rejected (`ErrShamirDuplicateShare`). The accumulator resets after TTL expiry (`ErrShamirQuorumExpired`).
+
+**Share custody:** submitted shares are held only inside **memguard secure
+enclaves** (never as raw, garbage-collected strings) — deduplication is done
+against a SHA-256 digest so the raw share is never retained as a map key, and
+plaintext is materialized only transiently during reconstruction. The instant
+the quorum reconstructs the secret, every accumulated share enclave is
+destroyed and the reconstructed secret is wiped after the unseal consumes it —
+so a subsequent unseal requires the Security Officers to submit fresh shares.
+The session TTL bounds how long un-completed shares may linger
+(`seal.share_ttl`, default 15m).
 
 ### Stateless (batch)
 
@@ -89,7 +99,7 @@ token, err := barrier.GenerateRootToken(ctx, shares[:3])
 | `ErrShamirNotConfigured` | `BarrierConfig.Shamir` is nil |
 | `ErrShamirThresholdInvalid` | Threshold < 2 or > total |
 | `ErrShamirDuplicateShare` | Same share submitted twice |
-| `ErrShamirQuorumExpired` | 5-min TTL elapsed |
+| `ErrShamirQuorumExpired` | share TTL elapsed (default 15m, `seal.share_ttl`) |
 | `ErrShamirQuorumIncomplete` | Not enough shares provided |
 | `ErrShamirCombineFailed` | Share reconstruction failed |
 | `ErrRecoveryKeysNotFound` | No recovery key metadata |

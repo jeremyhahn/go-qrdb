@@ -68,7 +68,7 @@ func (m *DatabaseBarrierManager) EnsureBarrier(
 		return &BarrierCreateError{Name: dbName, Err: err}
 	}
 
-	_, err = m.registry.RegisterTenant(dbName, storage, barrierCfg, strategy)
+	_, err = m.registry.RegisterTenant(ctx, dbName, storage, barrierCfg, strategy)
 	if err != nil {
 		return &BarrierCreateError{Name: dbName, Err: err}
 	}
@@ -109,7 +109,10 @@ func (m *DatabaseBarrierManager) RegisterBarrier(
 		return &BarrierCreateError{Name: dbName, Err: err}
 	}
 
-	_, err = m.registry.RegisterTenant(dbName, storage, barrierCfg, strategy)
+	// RegisterBarrier always supplies a real backend, so the pool path
+	// is never engaged here. context.Background is sufficient because
+	// RegisterTenant only consults ctx on the pool path.
+	_, err = m.registry.RegisterTenant(context.Background(), dbName, storage, barrierCfg, strategy)
 	if err != nil {
 		return &BarrierCreateError{Name: dbName, Err: err}
 	}

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package sdk
+package sdk_test
 
 import (
 	"context"
@@ -26,6 +26,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
 )
@@ -257,7 +258,7 @@ func TestNewClient_Success(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	client, err := NewClient(tr)
+	client, err := sdk.NewClient(tr)
 	if err != nil {
 		t.Fatalf("NewClient failed: %v", err)
 	}
@@ -267,11 +268,11 @@ func TestNewClient_Success(t *testing.T) {
 }
 
 func TestNewClient_NilTransport(t *testing.T) {
-	_, err := NewClient(nil)
+	_, err := sdk.NewClient(nil)
 	if err == nil {
 		t.Fatal("expected error for nil transport")
 	}
-	var nilErr *NilTransportError
+	var nilErr *sdk.NilTransportError
 	if !errors.As(err, &nilErr) {
 		t.Errorf("expected NilTransportError, got %T", err)
 	}
@@ -283,7 +284,7 @@ func TestNewClient_NilTransport(t *testing.T) {
 
 func TestClient_Connect(t *testing.T) {
 	tr, _ := embedded.New(newMockKVService(), &mockAdminService{})
-	client, _ := NewClient(tr)
+	client, _ := sdk.NewClient(tr)
 
 	if err := client.Connect(context.Background()); err != nil {
 		t.Fatalf("Connect failed: %v", err)
@@ -292,14 +293,14 @@ func TestClient_Connect(t *testing.T) {
 
 func TestClient_Connect_AfterClose(t *testing.T) {
 	tr, _ := embedded.New(newMockKVService(), &mockAdminService{})
-	client, _ := NewClient(tr)
+	client, _ := sdk.NewClient(tr)
 	_ = client.Close()
 
 	err := client.Connect(context.Background())
 	if err == nil {
 		t.Fatal("expected error connecting after close")
 	}
-	var closedErr *ClientClosedError
+	var closedErr *sdk.ClientClosedError
 	if !errors.As(err, &closedErr) {
 		t.Errorf("expected ClientClosedError, got %T", err)
 	}
@@ -307,7 +308,7 @@ func TestClient_Connect_AfterClose(t *testing.T) {
 
 func TestClient_Healthy(t *testing.T) {
 	tr, _ := embedded.New(newMockKVService(), &mockAdminService{})
-	client, _ := NewClient(tr)
+	client, _ := sdk.NewClient(tr)
 
 	if !client.Healthy(context.Background()) {
 		t.Error("expected healthy")
@@ -316,7 +317,7 @@ func TestClient_Healthy(t *testing.T) {
 
 func TestClient_Healthy_AfterClose(t *testing.T) {
 	tr, _ := embedded.New(newMockKVService(), &mockAdminService{})
-	client, _ := NewClient(tr)
+	client, _ := sdk.NewClient(tr)
 	_ = client.Close()
 
 	if client.Healthy(context.Background()) {
@@ -326,7 +327,7 @@ func TestClient_Healthy_AfterClose(t *testing.T) {
 
 func TestClient_Close_Idempotent(t *testing.T) {
 	tr, _ := embedded.New(newMockKVService(), &mockAdminService{})
-	client, _ := NewClient(tr)
+	client, _ := sdk.NewClient(tr)
 
 	if err := client.Close(); err != nil {
 		t.Errorf("first close failed: %v", err)
@@ -342,7 +343,7 @@ func TestClient_Close_Idempotent(t *testing.T) {
 
 func TestClient_KV_PutGetDeleteRoundtrip(t *testing.T) {
 	tr, _ := embedded.New(newMockKVService(), &mockAdminService{})
-	client, _ := NewClient(tr)
+	client, _ := sdk.NewClient(tr)
 	defer client.Close()
 
 	ctx := context.Background()
@@ -380,7 +381,7 @@ func TestClient_KV_PutGetDeleteRoundtrip(t *testing.T) {
 
 func TestClient_KV_List(t *testing.T) {
 	tr, _ := embedded.New(newMockKVService(), &mockAdminService{})
-	client, _ := NewClient(tr)
+	client, _ := sdk.NewClient(tr)
 	defer client.Close()
 
 	ctx := context.Background()
@@ -405,7 +406,7 @@ func TestClient_KV_List(t *testing.T) {
 
 func TestClient_Admin_Health(t *testing.T) {
 	tr, _ := embedded.New(newMockKVService(), &mockAdminService{})
-	client, _ := NewClient(tr)
+	client, _ := sdk.NewClient(tr)
 	defer client.Close()
 
 	resp, err := client.Admin().Health(context.Background())
@@ -419,7 +420,7 @@ func TestClient_Admin_Health(t *testing.T) {
 
 func TestClient_Admin_Status(t *testing.T) {
 	tr, _ := embedded.New(newMockKVService(), &mockAdminService{})
-	client, _ := NewClient(tr)
+	client, _ := sdk.NewClient(tr)
 	defer client.Close()
 
 	resp, err := client.Admin().Status(context.Background())
@@ -433,7 +434,7 @@ func TestClient_Admin_Status(t *testing.T) {
 
 func TestClient_Admin_Peers(t *testing.T) {
 	tr, _ := embedded.New(newMockKVService(), &mockAdminService{})
-	client, _ := NewClient(tr)
+	client, _ := sdk.NewClient(tr)
 	defer client.Close()
 
 	resp, err := client.Admin().Peers(context.Background())
@@ -447,7 +448,7 @@ func TestClient_Admin_Peers(t *testing.T) {
 
 func TestClient_Admin_AddMember(t *testing.T) {
 	tr, _ := embedded.New(newMockKVService(), &mockAdminService{})
-	client, _ := NewClient(tr)
+	client, _ := sdk.NewClient(tr)
 	defer client.Close()
 
 	err := client.Admin().AddMember(context.Background(), 0, 2, "10.0.0.2:63001")
@@ -458,7 +459,7 @@ func TestClient_Admin_AddMember(t *testing.T) {
 
 func TestClient_Admin_RemoveMember(t *testing.T) {
 	tr, _ := embedded.New(newMockKVService(), &mockAdminService{})
-	client, _ := NewClient(tr)
+	client, _ := sdk.NewClient(tr)
 	defer client.Close()
 
 	err := client.Admin().RemoveMember(context.Background(), 0, 2)
@@ -469,7 +470,7 @@ func TestClient_Admin_RemoveMember(t *testing.T) {
 
 func TestClient_Admin_RequestSnapshot(t *testing.T) {
 	tr, _ := embedded.New(newMockKVService(), &mockAdminService{})
-	client, _ := NewClient(tr)
+	client, _ := sdk.NewClient(tr)
 	defer client.Close()
 
 	err := client.Admin().RequestSnapshot(context.Background(), 0)
@@ -480,7 +481,7 @@ func TestClient_Admin_RequestSnapshot(t *testing.T) {
 
 func TestClient_Admin_Drain(t *testing.T) {
 	tr, _ := embedded.New(newMockKVService(), &mockAdminService{})
-	client, _ := NewClient(tr)
+	client, _ := sdk.NewClient(tr)
 	defer client.Close()
 
 	err := client.Admin().Drain(context.Background())
@@ -495,7 +496,7 @@ func TestClient_Admin_Drain(t *testing.T) {
 
 func TestClientError_Unwrap(t *testing.T) {
 	inner := errors.New("oops")
-	err := &ClientError{Op: "connect", Err: inner}
+	err := &sdk.ClientError{Op: "connect", Err: inner}
 	if !errors.Is(err, inner) {
 		t.Error("expected Unwrap to return inner error")
 	}
@@ -506,7 +507,7 @@ func TestClientError_Unwrap(t *testing.T) {
 }
 
 func TestClientClosedError_Message(t *testing.T) {
-	err := &ClientClosedError{}
+	err := &sdk.ClientClosedError{}
 	expected := "sdk: client is closed"
 	if err.Error() != expected {
 		t.Errorf("expected %q, got %q", expected, err.Error())
@@ -514,7 +515,7 @@ func TestClientClosedError_Message(t *testing.T) {
 }
 
 func TestNilTransportError_Message(t *testing.T) {
-	err := &NilTransportError{}
+	err := &sdk.NilTransportError{}
 	expected := "sdk: transport must not be nil"
 	if err.Error() != expected {
 		t.Errorf("expected %q, got %q", expected, err.Error())

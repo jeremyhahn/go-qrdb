@@ -295,6 +295,17 @@ service QRDBService {
     // GetUser retrieves a user by ID.
     rpc GetUser(GetUserRequest) returns (UserResponse);
 
+    // GetUserByUsername retrieves a user by tenant-scoped username.
+    rpc GetUserByUsername(GetUserByUsernameRequest) returns (UserResponse);
+
+    // GetUserByCertThumbprint resolves a user by an mTLS certificate's
+    // SPKI thumbprint via the secondary index (the mTLS-auth hot path).
+    rpc GetUserByCertThumbprint(GetUserByCertThumbprintRequest) returns (UserResponse);
+
+    // AddCertBinding binds an mTLS certificate's SPKI thumbprint to a user
+    // so GetUserByCertThumbprint resolves it (the enrollment seam).
+    rpc AddCertBinding(AddCertBindingRequest) returns (UserResponse);
+
     // UpdateUser applies partial updates to an existing user.
     rpc UpdateUser(UpdateUserProtoRequest) returns (UserResponse);
 
@@ -320,6 +331,9 @@ service QRDBService {
     // GetRole retrieves a role by ID.
     rpc GetRole(GetRoleRequest) returns (RoleResponse);
 
+    // GetRoleByName retrieves a role by tenant-scoped name.
+    rpc GetRoleByName(GetRoleByNameRequest) returns (RoleResponse);
+
     // UpdateRole applies partial updates to an existing role.
     rpc UpdateRole(UpdateRoleProtoRequest) returns (RoleResponse);
 
@@ -337,6 +351,10 @@ service QRDBService {
 
     // ListPermissions returns all available permission categories.
     rpc ListPermissions(google.protobuf.Empty) returns (ListPermissionsResponse);
+
+    // ResolveRolePermissions returns the union of effective permissions
+    // for the given role IDs (sorted, deduplicated).
+    rpc ResolveRolePermissions(ResolveRolePermissionsRequest) returns (ResolveRolePermissionsResponse);
 
     // -----------------------------------------------------------------------
     // Certificate management
@@ -442,18 +460,6 @@ service QRDBService {
     // BarrierShamirUnsealShares submits multiple Shamir shares to unseal in one call.
     rpc BarrierShamirUnsealShares(BarrierShamirUnsealSharesRequest) returns (google.protobuf.Empty);
 
-    // BarrierShamirListShares returns metadata about stored Shamir shares.
-    rpc BarrierShamirListShares(google.protobuf.Empty) returns (BarrierShamirSharesResponse);
-
-    // BarrierShamirDeleteShare deletes a single Shamir share by index.
-    rpc BarrierShamirDeleteShare(BarrierShamirDeleteShareRequest) returns (google.protobuf.Empty);
-
-    // BarrierShamirDeleteAllShares deletes all stored Shamir shares.
-    rpc BarrierShamirDeleteAllShares(google.protobuf.Empty) returns (google.protobuf.Empty);
-
-    // BarrierShamirVerify verifies the integrity of stored Shamir shares.
-    rpc BarrierShamirVerify(google.protobuf.Empty) returns (google.protobuf.Empty);
-
     // BarrierRekey generates new Shamir shares with the specified parameters.
     rpc BarrierRekey(BarrierRekeyRequest) returns (BarrierShamirInitializeResponse);
 
@@ -494,6 +500,179 @@ service QRDBService {
     // CeremonySignCSR submits a CSR for signing during the ceremony.
     rpc CeremonySignCSR(CeremonySignCSRRequest) returns (CeremonySignCSRResponse);
 
+    // CeremonyEnrollExternalOfficer enrols an officer whose key material
+    // lives outside go-qrdb. Either CertPEM (validated against the
+    // configured CA pools) or PubKeyPEM (admin-asserted trust) MUST be
+    // supplied, but not both.
+    rpc CeremonyEnrollExternalOfficer(CeremonyEnrollExternalOfficerRequest) returns (CeremonyEnrollExternalOfficerResponse);
+
+    // CeremonyClaimShareBegin issues a factor challenge for an enrolled
+    // custodian to claim their Shamir share.
+    rpc CeremonyClaimShareBegin(CeremonyClaimShareBeginRequest) returns (CeremonyClaimShareBeginResponse);
+
+    // CeremonyClaimShareComplete verifies the custodian's factor response and
+    // returns the custodian metadata confirming share delivery.
+    rpc CeremonyClaimShareComplete(CeremonyClaimShareCompleteRequest) returns (CeremonyCustodianResponse);
+
+    // CeremonySubmitUnsealShare submits a custodian's plaintext Shamir share
+    // (with factor proof) toward the unseal quorum.
+    rpc CeremonySubmitUnsealShare(CeremonySubmitUnsealShareRequest) returns (CeremonySubmitUnsealShareResponse);
+
+    // -----------------------------------------------------------------------
+    // Tenant operations
+    // -----------------------------------------------------------------------
+
+    // TenantCreate creates a new tenant with the given ID, name, and isolation type.
+    rpc TenantCreate(TenantCreateRequest) returns (TenantResponse);
+
+    // TenantGet retrieves a tenant by ID.
+    rpc TenantGet(TenantGetRequest) returns (TenantResponse);
+
+    // TenantList returns metadata for all registered tenants.
+    rpc TenantList(google.protobuf.Empty) returns (TenantListResponse);
+
+    // TenantUpdate applies a partial update to an existing tenant.
+    rpc TenantUpdate(TenantUpdateRequest) returns (TenantResponse);
+
+    // TenantDelete removes a tenant and its metadata.
+    rpc TenantDelete(TenantDeleteRequest) returns (google.protobuf.Empty);
+
+    // TenantUpdateQuotas sets the resource quotas for a tenant.
+    rpc TenantUpdateQuotas(TenantUpdateQuotasRequest) returns (TenantResponse);
+
+    // -----------------------------------------------------------------------
+    // Credential operations
+    // -----------------------------------------------------------------------
+
+    // CredentialSubmit submits a named credential value via the active strategy.
+    rpc CredentialSubmit(CredentialSubmitRequest) returns (google.protobuf.Empty);
+
+    // CredentialStrategy returns the active credential management strategy.
+    rpc CredentialStrategy(google.protobuf.Empty) returns (CredentialStrategyResponse);
+
+    // CredentialDelete removes a named credential and any non-current versions.
+    rpc CredentialDelete(CredentialDeleteRequest) returns (google.protobuf.Empty);
+
+    // CredentialList returns the names of every stored credential. Values are
+    // never returned by enumeration.
+    rpc CredentialList(CredentialListRequest) returns (CredentialListResponse);
+
+    // CredentialRotate atomically replaces the current value of a credential,
+    // optionally keeping the previous version retrievable for a grace period.
+    rpc CredentialRotate(CredentialRotateRequest) returns (CredentialRotateResponse);
+
+    // CredentialRetrieveVersion returns the stored credential value for a
+    // specific version. Version == 0 means "current version".
+    rpc CredentialRetrieveVersion(CredentialRetrieveVersionRequest) returns (CredentialRetrieveVersionResponse);
+
+    // CredentialListVersions returns the version history (current + non-expired
+    // grace versions) for a credential. Values are never returned.
+    rpc CredentialListVersions(CredentialListVersionsRequest) returns (CredentialListVersionsResponse);
+
+    // CredentialGCExpired reaps historical versions whose grace period has
+    // elapsed. Returns the count reaped.
+    rpc CredentialGCExpired(CredentialGCRequest) returns (CredentialGCResponse);
+
+    // CredentialStore persists a credential value under the given name.
+    rpc CredentialStore(CredentialStoreRequest) returns (google.protobuf.Empty);
+
+    // CredentialRetrieve returns the credential value for the given name. For
+    // the manual strategy this blocks until the credential is submitted or the
+    // context is cancelled.
+    rpc CredentialRetrieve(CredentialRetrieveRequest) returns (CredentialRetrieveResponse);
+
+    // -----------------------------------------------------------------------
+    // Backup operations
+    // -----------------------------------------------------------------------
+
+    // BackupCreate captures a consistent snapshot of the selected shards (or
+    // all shards) and stores it as a named backup artifact.
+    rpc BackupCreate(BackupCreateRequest) returns (BackupInfo);
+
+    // BackupList returns metadata for every stored backup. Artifact contents
+    // are never returned by enumeration.
+    rpc BackupList(google.protobuf.Empty) returns (BackupListResponse);
+
+    // BackupGet returns the metadata for a single backup by ID.
+    rpc BackupGet(BackupGetRequest) returns (BackupInfo);
+
+    // BackupDelete removes a stored backup and its artifact.
+    rpc BackupDelete(BackupDeleteRequest) returns (google.protobuf.Empty);
+
+    // BackupRestore restores shards from a previously created backup.
+    rpc BackupRestore(BackupRestoreRequest) returns (BackupRestoreResponse);
+
+    // BackupVerify validates the integrity (checksum) of a stored backup.
+    rpc BackupVerify(BackupVerifyRequest) returns (BackupVerifyResponse);
+
+    // -----------------------------------------------------------------------
+    // Rebalance operations
+    // -----------------------------------------------------------------------
+
+    // RebalanceGetShardStats returns statistics for a single shard including
+    // key count, byte count, leader, and replica count.
+    rpc RebalanceGetShardStats(RebalanceShardStatsRequest) returns (ShardStats);
+
+    // RebalanceCreatePlan analyzes shard distribution across nodes and
+    // generates an optimal move plan to balance the cluster.
+    rpc RebalanceCreatePlan(RebalancePlanRequest) returns (RebalancePlan);
+
+    // RebalanceExecute executes a previously generated rebalance plan by
+    // moving shards between nodes.
+    rpc RebalanceExecute(RebalancePlan) returns (RebalanceExecutionResponse);
+
+    // RebalanceGetImbalanceReport returns the current cluster balance report
+    // including per-node load distribution and hotspot identification.
+    rpc RebalanceGetImbalanceReport(google.protobuf.Empty) returns (ImbalanceReport);
+
+    // -----------------------------------------------------------------------
+    // Embedding operations
+    // -----------------------------------------------------------------------
+
+    // Embed generates embedding vectors for one or more texts.
+    rpc Embed(EmbedRequest) returns (EmbedResponse);
+
+    // BatchEmbed embeds a large set of texts, splitting them into provider
+    // sub-batches and aggregating the results in input order.
+    rpc BatchEmbed(BatchEmbedRequest) returns (BatchEmbedResponse);
+
+    // ListEmbeddingModels returns the embedding models available from a
+    // provider.
+    rpc ListEmbeddingModels(ListEmbeddingModelsRequest) returns (ListEmbeddingModelsResponse);
+
+    // -----------------------------------------------------------------------
+    // RAG (retrieval-augmented generation) operations
+    // -----------------------------------------------------------------------
+
+    // RAGIngestDocument chunks, embeds, and stores a document for later
+    // semantic retrieval.
+    rpc RAGIngestDocument(RAGIngestDocumentRequest) returns (RAGIngestDocumentResponse);
+
+    // RAGQuery embeds the query text and retrieves the most semantically
+    // similar passages from a namespace.
+    rpc RAGQuery(RAGQueryRequest) returns (RAGQueryResponse);
+
+    // RAGDeleteDocument removes a document and all of its chunk vectors and
+    // KV entries.
+    rpc RAGDeleteDocument(RAGDeleteDocumentRequest) returns (RAGDeleteDocumentResponse);
+
+    // RAGListDocuments returns metadata about ingested documents in a
+    // namespace, with optional pagination.
+    rpc RAGListDocuments(RAGListDocumentsRequest) returns (RAGListDocumentsResponse);
+
+    // -----------------------------------------------------------------------
+    // Database encryption-barrier operations
+    // -----------------------------------------------------------------------
+
+    // DatabaseSeal seals the encryption barrier for a database.
+    rpc DatabaseSeal(DatabaseSealRequest) returns (google.protobuf.Empty);
+
+    // DatabaseUnseal unseals the encryption barrier for a database.
+    rpc DatabaseUnseal(DatabaseUnsealRequest) returns (google.protobuf.Empty);
+
+    // DatabaseBarrierStatus returns the encryption-barrier status for a database.
+    rpc DatabaseBarrierStatus(DatabaseBarrierStatusRequest) returns (DatabaseBarrierStatusResponse);
+
 }
 
 // ===========================================================================
@@ -504,6 +683,7 @@ service QRDBService {
 message PutRequest {
     string key = 1;
     bytes value = 2;
+    WriteMode write_mode = 3;
 }
 
 // PutResponse is the response payload for Put.
@@ -512,6 +692,7 @@ message PutResponse {}
 // GetRequest is the request payload for Get.
 message GetRequest {
     string key = 1;
+    ConsistencyLevel consistency = 2;
 }
 
 // GetResponse is the response payload for Get.
@@ -522,6 +703,7 @@ message GetResponse {
 // DeleteRequest is the request payload for Delete.
 message DeleteRequest {
     string key = 1;
+    WriteMode write_mode = 2;
 }
 
 // DeleteResponse is the response payload for Delete.
@@ -530,6 +712,7 @@ message DeleteResponse {}
 // ListRequest is the request payload for List.
 message ListRequest {
     string prefix = 1;
+    ConsistencyLevel consistency = 2;
 }
 
 // ListResponse is the response payload for List.
@@ -540,6 +723,7 @@ message ListResponse {
 // ScanRequest is the request payload for Scan.
 message ScanRequest {
     string prefix = 1;
+    ConsistencyLevel consistency = 2;
 }
 
 // ScanResponse is the response payload for Scan.
@@ -566,6 +750,7 @@ message PutWithLeaseRequest {
     string key = 1;
     bytes value = 2;
     int64 lease_id = 3;
+    WriteMode write_mode = 4;
 }
 
 // PutWithLeaseResponse returns the resulting key-value.
@@ -576,6 +761,7 @@ message PutWithLeaseResponse {
 // GetRevisionRequest retrieves a key with full revision metadata.
 message GetRevisionRequest {
     string key = 1;
+    ConsistencyLevel consistency = 2;
 }
 
 // GetRevisionResponse returns the key-value with revision metadata.
@@ -587,6 +773,7 @@ message GetRevisionResponse {
 message GetAtRevisionRequest {
     string key = 1;
     int64 revision = 2;
+    ConsistencyLevel consistency = 3;
 }
 
 // GetAtRevisionResponse returns the historical key-value.
@@ -604,6 +791,7 @@ message RangeRequest {
     bool keys_only = 6;
     SortOrder sort_order = 7;
     SortTarget sort_target = 8;
+    ConsistencyLevel consistency = 9;
 }
 
 // SortOrder specifies the sort direction.
@@ -620,6 +808,26 @@ enum SortTarget {
     SORT_BY_CREATE_REVISION = 2;
     SORT_BY_MOD_REVISION = 3;
     SORT_BY_VALUE = 4;
+}
+
+// ConsistencyLevel selects the read-consistency guarantee for a read
+// operation. UNSPECIFIED lets the server choose its default (linearizable),
+// keeping older clients that omit the field unaffected.
+enum ConsistencyLevel {
+    CONSISTENCY_LEVEL_UNSPECIFIED = 0;
+    CONSISTENCY_LEVEL_STRONG = 1;
+    CONSISTENCY_LEVEL_LINEARIZABLE = 2;
+    CONSISTENCY_LEVEL_EVENTUAL = 3;
+}
+
+// WriteMode selects the durability guarantee for a write operation.
+// UNSPECIFIED lets the server choose its default (sync/quorum), keeping
+// older clients that omit the field unaffected.
+enum WriteMode {
+    WRITE_MODE_UNSPECIFIED = 0;
+    WRITE_MODE_SYNC = 1;
+    WRITE_MODE_WAL_DURABLE = 2;
+    WRITE_MODE_BATCHED = 3;
 }
 
 // RangeResponse returns the matched key-values and total count.
@@ -978,6 +1186,7 @@ message TSQueryRequest {
     repeated TSTag tags = 4;
     int32 limit = 5;
     bool descending = 6;
+    ConsistencyLevel consistency = 7;
 }
 
 // TSQueryResponse returns matching data points.
@@ -1002,6 +1211,7 @@ message TSAggregateRequest {
     int64 end_ns = 3;
     AggFunc function = 4;
     int64 interval_ns = 5;
+    ConsistencyLevel consistency = 6;
 }
 
 // TSAggResult is an aggregation result for a single interval.
@@ -1027,6 +1237,7 @@ message TSRichQueryRequest {
     repeated string group_by = 7;
     int32 limit = 8;
     double percentile = 9;
+    ConsistencyLevel consistency = 10;
 }
 
 // TSRichQueryResponse returns the result of a rich query.
@@ -1079,6 +1290,7 @@ message TSSetRetentionRequest {
 message TSListMetricsRequest {
     string prefix = 1;
     int32 limit = 2;
+    ConsistencyLevel consistency = 3;
 }
 
 // TSListMetricsResponse returns matching metric names.
@@ -1318,7 +1530,7 @@ message VectorUpsertResponse {
 message VectorGetRequest {
     string namespace = 1;
     string id = 2;
-    int32 consistency = 3;
+    ConsistencyLevel consistency = 3;
     uint64 shard_id = 4;
 }
 
@@ -1406,7 +1618,7 @@ message VectorSearchSimilarRequest {
     int32 k = 3;
     int32 ef_search = 4;
     double min_score = 5;
-    int32 consistency = 6;
+    ConsistencyLevel consistency = 6;
     uint64 shard_id = 7;
 }
 
@@ -1422,7 +1634,7 @@ message VectorSearchByMetadataRequest {
     string filters_json = 2;
     int32 limit = 3;
     int32 offset = 4;
-    int32 consistency = 5;
+    ConsistencyLevel consistency = 5;
     uint64 shard_id = 6;
 }
 
@@ -1440,7 +1652,7 @@ message VectorHybridSearchRequest {
     int32 k = 4;
     double vector_weight = 5;
     double metadata_weight = 6;
-    int32 consistency = 7;
+    ConsistencyLevel consistency = 7;
     uint64 shard_id = 8;
 }
 
@@ -1455,7 +1667,7 @@ message VectorSearchByIDRequest {
     string namespace = 1;
     string id = 2;
     int32 k = 3;
-    int32 consistency = 4;
+    ConsistencyLevel consistency = 4;
     uint64 shard_id = 5;
 }
 
@@ -1555,20 +1767,40 @@ message CreateUserRequest {
 
 // GetUserRequest retrieves a user by ID.
 message GetUserRequest {
-    string id = 1;
+    uint64 id = 1;
+}
+
+// GetUserByUsernameRequest retrieves a user by tenant-scoped username.
+message GetUserByUsernameRequest {
+    string tenant_id = 1;
+    string username = 2;
+}
+
+// GetUserByCertThumbprintRequest resolves a user by an mTLS certificate's
+// SPKI thumbprint via the secondary index.
+message GetUserByCertThumbprintRequest {
+    string thumbprint = 1;
+}
+
+// AddCertBindingRequest binds an mTLS certificate's SPKI thumbprint to a user.
+// A not_after_unix > 0 sets the binding's expiry; otherwise it never expires.
+message AddCertBindingRequest {
+    uint64 user_id = 1;
+    string thumbprint = 2;
+    int64 not_after_unix = 3;
 }
 
 // UpdateUserProtoRequest applies partial updates to an existing user.
 // Named with "Proto" suffix to avoid collision with the Go domain type.
 message UpdateUserProtoRequest {
-    string id = 1;
+    uint64 id = 1;
     string username = 2;
     repeated string role_ids = 3;
 }
 
 // DeleteUserRequest removes a user by ID.
 message DeleteUserRequest {
-    string id = 1;
+    uint64 id = 1;
 }
 
 // ListUsersRequest returns a paginated list of users.
@@ -1587,17 +1819,17 @@ message ListUsersResponse {
 
 // EnableUserRequest activates a user account.
 message EnableUserRequest {
-    string id = 1;
+    uint64 id = 1;
 }
 
 // DisableUserRequest deactivates a user account.
 message DisableUserRequest {
-    string id = 1;
+    uint64 id = 1;
 }
 
 // UserResponse is the response payload for user operations.
 message UserResponse {
-    string id = 1;
+    uint64 id = 1;
     string tenant_id = 2;
     string username = 3;
     repeated string role_ids = 4;
@@ -1621,6 +1853,16 @@ message CreateRoleRequest {
 // GetRoleRequest retrieves a role by ID.
 message GetRoleRequest {
     string id = 1;
+}
+message GetRoleByNameRequest {
+    string tenant_id = 1;
+    string name = 2;
+}
+message ResolveRolePermissionsRequest {
+    repeated string role_ids = 1;
+}
+message ResolveRolePermissionsResponse {
+    repeated string permissions = 1;
 }
 
 // UpdateRoleProtoRequest applies partial updates to an existing role.
@@ -1652,13 +1894,13 @@ message ListRolesResponse {
 
 // AssignRoleRequest assigns a role to a user.
 message AssignRoleRequest {
-    string user_id = 1;
+    uint64 user_id = 1;
     string role_id = 2;
 }
 
 // UnassignRoleRequest removes a role assignment from a user.
 message UnassignRoleRequest {
-    string user_id = 1;
+    uint64 user_id = 1;
     string role_id = 2;
 }
 
@@ -1999,8 +2241,16 @@ message DatabaseUpdateConnectionRequest {
 // ===========================================================================
 
 // BarrierInitializeRequest initializes the barrier with a single master key.
+//
+// secret is the strategy wrapping passphrase. so_pin and user_pin, when
+// supplied, are routed to the canonical pin.PINBackend on the server.
+// They are independent of and complementary to secret: secret protects
+// the wrapping key; the PINs gate two-PIN authorization on administrative
+// operations.
 message BarrierInitializeRequest {
     string secret = 1;
+    string so_pin = 2;
+    string user_pin = 3;
 }
 
 // BarrierUnsealRequest unseals the barrier with a master key.
@@ -2017,10 +2267,15 @@ message BarrierStatusResponse {
 }
 
 // BarrierShamirInitializeRequest initializes the barrier with Shamir secret sharing.
+//
+// secret is the strategy wrapping passphrase. so_pin and user_pin, when
+// supplied, are routed to the canonical pin.PINBackend on the server.
 message BarrierShamirInitializeRequest {
     string secret = 1;
     int32 threshold = 2;
     int32 total_shares = 3;
+    string so_pin = 4;
+    string user_pin = 5;
 }
 
 // BarrierShamirInitializeResponse returns the generated key shares.
@@ -2047,28 +2302,29 @@ message BarrierShamirUnsealSharesRequest {
     repeated string shares = 1;
 }
 
-// BarrierShamirSharesResponse describes stored Shamir share metadata.
-message BarrierShamirSharesResponse {
-    int32 count = 1;
-    int32 threshold = 2;
-    int32 total = 3;
-}
-
-// BarrierShamirDeleteShareRequest deletes a single share by index.
-message BarrierShamirDeleteShareRequest {
-    int32 index = 1;
-}
-
 // BarrierRekeyRequest generates new Shamir shares.
+//
+// so_pin is the optional Security Officer PIN required for the rekey
+// administrative operation when the server has a pin.PINBackend
+// configured with a SO PIN set. When the backend is unconfigured or no
+// SO PIN has been set, this field is ignored (preserves dev-mode flows).
+// new_secret optionally rotates the strategy wrapping passphrase.
 message BarrierRekeyRequest {
     int32 threshold = 1;
     int32 total = 2;
+    string so_pin = 3;
+    string new_secret = 4;
 }
 
 // BarrierRecoveryGenerateRequest generates recovery keys.
+//
+// so_pin is the optional Security Officer PIN required for the recovery
+// key generation administrative operation when the server has a
+// pin.PINBackend configured with a SO PIN set.
 message BarrierRecoveryGenerateRequest {
     int32 threshold = 1;
     int32 total = 2;
+    string so_pin = 3;
 }
 
 // BarrierRecoveryKeysResponse returns generated recovery keys.
@@ -2182,4 +2438,591 @@ message CeremonySignCSRRequest {
 // CeremonySignCSRResponse returns the signed certificate.
 message CeremonySignCSRResponse {
     string cert_pem = 1;
+}
+
+// CeremonyEnrollExternalOfficerRequest requests enrolment of an external
+// officer whose key material lives outside go-qrdb.
+message CeremonyEnrollExternalOfficerRequest {
+    string username    = 1;
+    string cert_pem    = 2;
+    string pubkey_pem  = 3;
+    int32  share_index = 4;
+    string auth_factor = 5;
+    bytes  share_bytes = 6;
+}
+
+// CeremonyEnrollExternalOfficerResponse returns the sealed share envelope.
+message CeremonyEnrollExternalOfficerResponse {
+    string sealed_share = 1;
+}
+
+// ===========================================================================
+// Tenant messages
+// ===========================================================================
+
+// TenantQuotas holds per-tenant resource limits. -1 means unlimited, 0 means
+// use the system default.
+message TenantQuotas {
+    int64 max_databases     = 1;
+    int64 max_raft_groups   = 2;
+    int64 max_collections   = 3;
+    int64 max_keys          = 4;
+    int64 max_storage_bytes = 5;
+    int64 max_users         = 6;
+    int64 max_roles         = 7;
+    int64 max_certificates  = 8;
+    int64 max_backups       = 9;
+    int64 max_vector_dims   = 10;
+    int64 max_ts_metrics    = 11;
+}
+
+// TenantResponse is the shared response shape for tenant CRUD operations.
+message TenantResponse {
+    string       id             = 1;
+    string       name           = 2;
+    string       isolation_type = 3;
+    TenantQuotas quotas         = 4;
+    string       created_at     = 5;
+    string       updated_at     = 6;
+}
+
+// TenantCreateRequest creates a new tenant.
+message TenantCreateRequest {
+    string id             = 1;
+    string name           = 2;
+    string isolation_type = 3;
+}
+
+// TenantGetRequest retrieves a tenant by ID.
+message TenantGetRequest {
+    string id = 1;
+}
+
+// TenantListResponse returns all tenants.
+message TenantListResponse {
+    repeated TenantResponse tenants = 1;
+}
+
+// TenantUpdateRequest applies a partial update to an existing tenant.
+message TenantUpdateRequest {
+    string id             = 1;
+    string name           = 2;
+    string isolation_type = 3;
+}
+
+// TenantDeleteRequest removes a tenant by ID.
+message TenantDeleteRequest {
+    string id = 1;
+}
+
+// TenantUpdateQuotasRequest sets the resource quotas for a tenant.
+message TenantUpdateQuotasRequest {
+    string       id     = 1;
+    TenantQuotas quotas = 2;
+}
+
+// ===========================================================================
+// Credential messages
+// ===========================================================================
+
+// CredentialSubmitRequest carries the named credential value to store.
+message CredentialSubmitRequest {
+    string name  = 1;
+    string value = 2;
+}
+
+// CredentialStoreRequest carries the named credential value to persist.
+message CredentialStoreRequest {
+    string name  = 1;
+    string value = 2;
+}
+
+// CredentialRetrieveRequest identifies a credential to read by name.
+message CredentialRetrieveRequest {
+    string name = 1;
+}
+
+// CredentialRetrieveResponse carries the credential value for the named
+// credential.
+message CredentialRetrieveResponse {
+    string value = 1;
+}
+
+// CredentialStrategyResponse describes the active credential management
+// strategy.
+message CredentialStrategyResponse {
+    string strategy = 1;
+}
+
+// CredentialDeleteRequest identifies a credential to delete by name.
+message CredentialDeleteRequest {
+    string name = 1;
+}
+
+// CredentialListRequest is the request shape for credential enumeration.
+// Currently empty; reserved for future filter fields (tenant, prefix, label).
+message CredentialListRequest {}
+
+// CredentialListResponse returns the sorted list of credential names.
+message CredentialListResponse {
+    repeated string names = 1;
+}
+
+// CredentialRotateRequest captures all inputs to a CredentialRotate call.
+// grace_period_seconds == 0 means "no grace" — the previous value is wiped
+// immediately.
+message CredentialRotateRequest {
+    string name                  = 1;
+    string new_value             = 2;
+    int64  grace_period_seconds  = 3;
+}
+
+// CredentialRotateResponse describes the outcome of a rotation.
+// grace_until_unix is zero when no previous version existed or when the
+// caller specified grace_period_seconds == 0.
+message CredentialRotateResponse {
+    string name             = 1;
+    uint64 previous_version = 2;
+    uint64 new_version      = 3;
+    int64  grace_until_unix = 4;
+}
+
+// CredentialRetrieveVersionRequest selects a specific version of a
+// credential to retrieve. version == 0 means "current version".
+message CredentialRetrieveVersionRequest {
+    string name    = 1;
+    uint64 version = 2;
+}
+
+// CredentialRetrieveVersionResponse carries the credential value for the
+// requested version.
+message CredentialRetrieveVersionResponse {
+    string value = 1;
+}
+
+// CredentialListVersionsRequest identifies the credential whose version
+// history is being requested.
+message CredentialListVersionsRequest {
+    string name = 1;
+}
+
+// CredentialVersionInfo is the wire-format version metadata entry. The
+// value bytes are intentionally absent — use CredentialRetrieveVersion to
+// read the bytes for a specific version.
+message CredentialVersionInfo {
+    uint64 version           = 1;
+    bool   is_current        = 2;
+    int64  created_at_unix   = 3;
+    int64  grace_until_unix  = 4;
+}
+
+// CredentialListVersionsResponse returns one entry per non-expired version
+// (current + grace history).
+message CredentialListVersionsResponse {
+    string                         name     = 1;
+    repeated CredentialVersionInfo versions = 2;
+}
+
+// CredentialGCRequest names the credential whose expired grace versions
+// should be reaped.
+message CredentialGCRequest {
+    string name = 1;
+}
+
+// CredentialGCResponse reports how many historical versions were reaped.
+message CredentialGCResponse {
+    int32 reaped = 1;
+}
+
+// ===========================================================================
+// Backup messages
+//
+// compression is one of "none", "zstd", "snappy"; encryption is one of
+// "none", "aes256"; status is one of "pending", "running", "complete",
+// "failed". These mirror the string-typed service enums.
+// ===========================================================================
+
+// BackupCreateRequest describes a backup to capture. An empty shard_ids list
+// backs up every shard on the host.
+message BackupCreateRequest {
+    string              destination    = 1;
+    string              compression    = 2;
+    string              encryption     = 3;
+    bytes               encryption_key = 4;
+    map<string, string> metadata       = 5;
+    repeated uint64     shard_ids      = 6;
+}
+
+// BackupInfo is the metadata describing a stored backup artifact.
+message BackupInfo {
+    string              id            = 1;
+    int64               timestamp_ns  = 2;
+    int64               size          = 3;
+    int32               shard_count   = 4;
+    string              status        = 5;
+    string              checksum      = 6;
+    string              destination   = 7;
+    string              compression   = 8;
+    string              encryption    = 9;
+    map<string, string> metadata      = 10;
+    int64               duration_ns   = 11;
+    string              error_message = 12;
+}
+
+// BackupListResponse enumerates stored backups. Artifact contents are never
+// returned.
+message BackupListResponse {
+    repeated BackupInfo backups = 1;
+}
+
+// BackupGetRequest names a backup by ID.
+message BackupGetRequest {
+    string id = 1;
+}
+
+// BackupDeleteRequest names a backup to remove.
+message BackupDeleteRequest {
+    string id = 1;
+}
+
+// BackupRestoreRequest restores shards from a stored backup. An empty
+// target_shards list restores every shard captured in the backup.
+message BackupRestoreRequest {
+    string          backup_id      = 1;
+    repeated uint64 target_shards  = 2;
+    bool            validate_first = 3;
+    bytes           decryption_key = 4;
+}
+
+// ShardError reports a per-shard failure during restore.
+message ShardError {
+    uint64 shard_id = 1;
+    string message  = 2;
+}
+
+// BackupRestoreResponse reports the outcome of a restore.
+message BackupRestoreResponse {
+    string              backup_id       = 1;
+    int32               shards_restored = 2;
+    int64               duration_ns     = 3;
+    repeated ShardError errors          = 4;
+}
+
+// BackupVerifyRequest names a backup to verify.
+message BackupVerifyRequest {
+    string id = 1;
+}
+
+// BackupVerifyResponse reports backup integrity-check results.
+message BackupVerifyResponse {
+    bool            valid             = 1;
+    bool            checksum_match    = 2;
+    string          expected_checksum = 3;
+    string          actual_checksum   = 4;
+    repeated string errors            = 5;
+}
+
+// ===========================================================================
+// Rebalance messages
+// ===========================================================================
+
+// RebalanceShardStatsRequest names a shard to inspect.
+message RebalanceShardStatsRequest {
+    uint64 shard_id = 1;
+}
+
+// ShardStats contains statistics for a single shard.
+message ShardStats {
+    uint64 shard_id      = 1;
+    uint64 key_count     = 2;
+    uint64 byte_count    = 3;
+    uint64 leader_id     = 4;
+    int32  replica_count = 5;
+}
+
+// RebalancePlanRequest parameterizes plan generation. max_moves == 0 means no
+// limit; target_balance is a percentage (0-100).
+message RebalancePlanRequest {
+    int32  max_moves      = 1;
+    bool   dry_run        = 2;
+    double target_balance = 3;
+}
+
+// RebalanceMove describes a single planned shard move.
+message RebalanceMove {
+    uint64 shard_id        = 1;
+    string from_node       = 2;
+    string to_node         = 3;
+    uint64 estimated_bytes = 4;
+}
+
+// RebalancePlan is the generated set of moves and its metadata. It is both the
+// result of RebalanceCreatePlan and the input to RebalanceExecute.
+message RebalancePlan {
+    repeated RebalanceMove moves                 = 1;
+    int64                  estimated_duration_ns = 2;
+    double                 current_imbalance     = 3;
+}
+
+// RebalanceExecutionResponse reports the outcome of an executed plan.
+message RebalanceExecutionResponse {
+    int32  moves_completed = 1;
+    int32  moves_failed    = 2;
+    int64  duration_ns     = 3;
+    double final_imbalance = 4;
+}
+
+// NodeLoad describes the load distribution on a single node.
+message NodeLoad {
+    string node_id      = 1;
+    string address      = 2;
+    int32  shard_count  = 3;
+    uint64 total_keys   = 4;
+    uint64 total_bytes  = 5;
+    int32  leader_count = 6;
+}
+
+// ImbalanceReport describes the cluster's current load distribution.
+message ImbalanceReport {
+    repeated NodeLoad nodes           = 1;
+    double            imbalance_score = 2;
+    repeated string   hotspots        = 3;
+}
+
+// ===========================================================================
+// Embedding messages
+// ===========================================================================
+
+// EmbeddingVector wraps a single embedding vector so a repeated field can
+// model a [][]float matrix.
+message EmbeddingVector {
+    repeated float values = 1;
+}
+
+// EmbeddingUsage reports token consumption for an embedding request.
+message EmbeddingUsage {
+    int32 prompt_tokens = 1;
+    int32 total_tokens  = 2;
+}
+
+// EmbeddingModelInfo describes a single embedding model.
+message EmbeddingModelInfo {
+    string name       = 1;
+    int32  dimensions = 2;
+    int32  max_tokens = 3;
+}
+
+// EmbedRequest embeds one or more texts. An empty provider/model selects the
+// service default.
+message EmbedRequest {
+    repeated string texts    = 1;
+    string          model    = 2;
+    string          provider = 3;
+}
+
+// EmbedResponse returns one vector per input text, in input order.
+message EmbedResponse {
+    repeated EmbeddingVector embeddings = 1;
+    string                   model      = 2;
+    EmbeddingUsage           usage      = 3;
+    bool                     cached     = 4;
+}
+
+// BatchEmbedRequest embeds a large set of texts. batch_size == 0 lets the
+// service pick a default.
+message BatchEmbedRequest {
+    repeated string texts      = 1;
+    string          model      = 2;
+    string          provider   = 3;
+    int32           batch_size = 4;
+}
+
+// BatchEmbedResponse returns one vector per input text, in input order.
+message BatchEmbedResponse {
+    repeated EmbeddingVector embeddings  = 1;
+    string                   model       = 2;
+    EmbeddingUsage           total_usage = 3;
+}
+
+// ListEmbeddingModelsRequest names a provider to query (empty = default).
+message ListEmbeddingModelsRequest {
+    string provider = 1;
+}
+
+// ListEmbeddingModelsResponse enumerates a provider's models.
+message ListEmbeddingModelsResponse {
+    repeated EmbeddingModelInfo models = 1;
+}
+
+// ===========================================================================
+// RAG (retrieval-augmented generation) messages
+// ===========================================================================
+
+// ChunkConfig overrides the document chunking configuration.
+message ChunkConfig {
+    string strategy   = 1;
+    int32  chunk_size = 2;
+    int32  overlap    = 3;
+    int32  min_size   = 4;
+}
+
+// RAGIngestDocumentRequest chunks, embeds, and stores a document.
+message RAGIngestDocumentRequest {
+    string              document_id  = 1;
+    string              text         = 2;
+    string              namespace    = 3;
+    string              model        = 4;
+    string              provider     = 5;
+    ChunkConfig         chunk_config = 6;
+    map<string, string> metadata     = 7;
+}
+
+// RAGIngestDocumentResponse reports the outcome of ingestion.
+message RAGIngestDocumentResponse {
+    string document_id = 1;
+    int32  chunk_count = 2;
+    string namespace   = 3;
+}
+
+// RAGQueryRequest searches a namespace for semantically similar passages.
+message RAGQueryRequest {
+    string              query     = 1;
+    string              namespace = 2;
+    int32               top_k     = 3;
+    string              model     = 4;
+    string              provider  = 5;
+    map<string, string> filter    = 6;
+}
+
+// RAGQueryResult is a single retrieved passage.
+message RAGQueryResult {
+    string              chunk_text  = 1;
+    float               score       = 2;
+    string              document_id = 3;
+    int32               chunk_index = 4;
+    map<string, string> metadata    = 5;
+}
+
+// RAGQueryResponse returns retrieved passages ordered by relevance.
+message RAGQueryResponse {
+    repeated RAGQueryResult results = 1;
+}
+
+// RAGDeleteDocumentRequest names a document to remove from a namespace.
+message RAGDeleteDocumentRequest {
+    string document_id = 1;
+    string namespace   = 2;
+}
+
+// RAGDeleteDocumentResponse reports how many chunks were removed.
+message RAGDeleteDocumentResponse {
+    string document_id   = 1;
+    int32  chunks_removed = 2;
+}
+
+// RAGListDocumentsRequest pages through documents in a namespace. limit == 0
+// means no limit.
+message RAGListDocumentsRequest {
+    string namespace = 1;
+    int32  limit     = 2;
+    int32  offset    = 3;
+}
+
+// RAGDocumentInfo describes an ingested document.
+message RAGDocumentInfo {
+    string              id          = 1;
+    string              namespace   = 2;
+    int32               chunk_count = 3;
+    map<string, string> metadata    = 4;
+}
+
+// RAGListDocumentsResponse returns a page of documents and the namespace total.
+message RAGListDocumentsResponse {
+    repeated RAGDocumentInfo documents = 1;
+    int32                    total     = 2;
+}
+
+// ===========================================================================
+// Database encryption-barrier messages
+// ===========================================================================
+
+// DatabaseSealRequest names the database whose barrier should be sealed.
+message DatabaseSealRequest {
+    string name = 1;
+}
+
+// DatabaseUnsealRequest carries the unseal secret for a database barrier.
+message DatabaseUnsealRequest {
+    string name   = 1;
+    string secret = 2;
+}
+
+// DatabaseBarrierStatusRequest names the database to query.
+message DatabaseBarrierStatusRequest {
+    string name = 1;
+}
+
+// DatabaseBarrierStatusResponse reports a database barrier's sealed state and
+// active strategy metadata.
+message DatabaseBarrierStatusResponse {
+    bool   sealed              = 1;
+    string strategy            = 2;
+    bool   hardware_backed     = 3;
+    int64  initialized_at_unix = 4;
+}
+
+// ===========================================================================
+// Ceremony custodian claim-share / unseal-share messages
+// ===========================================================================
+
+// CeremonyClaimShareBeginRequest names the enrolled custodian beginning a claim.
+message CeremonyClaimShareBeginRequest {
+    string custodian_id = 1;
+}
+
+// CeremonyClaimShareBeginResponse carries the factor challenge the custodian
+// must answer.
+message CeremonyClaimShareBeginResponse {
+    string custodian_id    = 1;
+    bytes  nonce           = 2;
+    int64  expires_at_unix = 3;
+}
+
+// CeremonyClaimShareCompleteRequest carries the custodian's factor response.
+message CeremonyClaimShareCompleteRequest {
+    string custodian_id    = 1;
+    string challenge_id    = 2;
+    bytes  factor_response = 3;
+}
+
+// CeremonyCustodianResponse is the custodian metadata returned after a
+// successful claim-complete.
+message CeremonyCustodianResponse {
+    string id                   = 1;
+    string username             = 2;
+    string tenant_id            = 3;
+    string method               = 4;
+    string enrollment_id        = 5;
+    string public_key_pem       = 6;
+    int32  share_index          = 7;
+    int64  enrolled_at_unix     = 8;
+    int64  revoked_at_unix      = 9;
+    bool   share_claimed        = 10;
+    int64  share_claimed_at_unix = 11;
+}
+
+// CeremonySubmitUnsealShareRequest carries a custodian's plaintext share plus
+// factor proof.
+message CeremonySubmitUnsealShareRequest {
+    string custodian_id    = 1;
+    string challenge_id    = 2;
+    bytes  factor_response = 3;
+    bytes  share_bytes     = 4;
+}
+
+// CeremonySubmitUnsealShareResponse reports quorum progress after submission.
+message CeremonySubmitUnsealShareResponse {
+    int32 submitted = 1;
+    int32 required  = 2;
+    bool  unsealed  = 3;
 }

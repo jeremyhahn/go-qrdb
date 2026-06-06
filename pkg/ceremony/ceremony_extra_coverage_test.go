@@ -41,7 +41,7 @@ func TestInitialize_MofN_SignCSRFails_Coverage(t *testing.T) {
 	ca := newErrorCA(t)
 	ca.failSignCSR = true
 
-	_, err = svc.Initialize(context.Background(), ca)
+	_, err = svc.Initialize(context.Background(), ca, nil)
 	require.Error(t, err)
 	var certErr *CertEncodeError
 	assert.ErrorAs(t, err, &certErr)
@@ -59,7 +59,7 @@ func TestAllClaimsComplete_ShareNotClaimed(t *testing.T) {
 	svc, err := NewCeremonyService(cfg, testBarrier(t), newTestCredentialService(), testLogger())
 	require.NoError(t, err)
 
-	_, err = svc.Initialize(context.Background(), newMockCA(t))
+	_, err = svc.Initialize(context.Background(), newMockCA(t), nil)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -95,7 +95,7 @@ func TestBeginClaimCert_AlreadyClaimed(t *testing.T) {
 	require.NoError(t, err)
 
 	ctx := context.Background()
-	_, err = svc.Initialize(ctx, newMockCA(t))
+	_, err = svc.Initialize(ctx, newMockCA(t), nil)
 	require.NoError(t, err)
 
 	// First claim.
@@ -125,7 +125,7 @@ func TestCompleteClaimCert_CABundleError_Coverage(t *testing.T) {
 	require.NoError(t, err)
 
 	ctx := context.Background()
-	_, err = svc.Initialize(ctx, ca)
+	_, err = svc.Initialize(ctx, ca, nil)
 	require.NoError(t, err)
 
 	challenge, err := svc.BeginClaimCert(ctx, "officer-0")
@@ -155,7 +155,7 @@ func TestCompleteClaimCert_AlreadyClaimed_Coverage(t *testing.T) {
 	require.NoError(t, err)
 
 	ctx := context.Background()
-	_, err = svc.Initialize(ctx, newMockCA(t))
+	_, err = svc.Initialize(ctx, newMockCA(t), nil)
 	require.NoError(t, err)
 
 	// First complete claim succeeds.
@@ -198,7 +198,7 @@ func TestSignCSRInit_SignCSRFails(t *testing.T) {
 
 	ca := newErrorCA(t)
 	ctx := context.Background()
-	_, err = svc.Initialize(ctx, ca)
+	_, err = svc.Initialize(ctx, ca, nil)
 	require.NoError(t, err)
 
 	// Now make SignCSR fail.

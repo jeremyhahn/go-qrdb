@@ -161,21 +161,19 @@ func (m *Manager) CreateWithCredentials(ctx context.Context, cfg DatabaseConfig,
 		return nil, err
 	}
 
-	// Wire barrier encryption when enabled and barrier manager is available.
-	activeBackend := Backend(backend)
+	// Register a dedicated per-database barrier when enabled. The barrier
+	// isolates key material for per-tenant-own-store deployments. At-rest
+	// protection for the store's files is provided by the store-level
+	// atrest.Encryptor (FS-layer AES-256-GCM), not per-value encryption.
 	if cfg.Barrier != nil && cfg.Barrier.Enabled && m.barrierMgr != nil {
 		storageAdapter := NewBackendStorageAdapter(backend)
 		if err := m.barrierMgr.EnsureBarrier(ctx, cfg.Name, cfg.Barrier, storageAdapter, creds); err != nil {
 			_ = backend.Close()
 			return nil, err
 		}
-		barrier := m.barrierMgr.GetBarrier(cfg.Name)
-		if barrier != nil {
-			activeBackend = NewBarrierBackend(backend, barrier)
-		}
 	}
 
-	db := NewDatabase(cfg, activeBackend, dataDir)
+	db := NewDatabase(cfg, backend, dataDir)
 
 	if cfg.Barrier != nil && cfg.Barrier.Enabled && m.barrierMgr != nil {
 		db.SetBarrierEnabled(true)
@@ -184,7 +182,7 @@ func (m *Manager) CreateWithCredentials(ctx context.Context, cfg DatabaseConfig,
 	// Store in map (race-safe with LoadOrStore).
 	if _, loaded := m.databases.LoadOrStore(cfg.Name, db); loaded {
 		// Another goroutine created it concurrently.
-		_ = activeBackend.Close()
+		_ = backend.Close()
 		return nil, &AlreadyExistsError{Name: cfg.Name}
 	}
 
@@ -241,22 +239,18 @@ func (m *Manager) Open(name string) (*Database, error) {
 		return nil, err
 	}
 
-	// Wire barrier encryption when enabled. The barrier starts sealed
-	// and must be explicitly unsealed via UnsealDatabase.
-	activeBackend := Backend(backend)
+	// Register the per-database barrier when enabled. The barrier starts sealed
+	// and must be explicitly unsealed via UnsealDatabase. At-rest protection
+	// is provided by the store-level atrest.Encryptor, not per-value encryption.
 	if meta.Barrier != nil && meta.Barrier.Enabled && m.barrierMgr != nil {
 		storageAdapter := NewBackendStorageAdapter(backend)
 		if err := m.barrierMgr.RegisterBarrier(name, meta.Barrier, storageAdapter); err != nil {
 			_ = backend.Close()
 			return nil, err
 		}
-		barrier := m.barrierMgr.GetBarrier(name)
-		if barrier != nil {
-			activeBackend = NewBarrierBackend(backend, barrier)
-		}
 	}
 
-	db := NewDatabase(cfg, activeBackend, dataDir)
+	db := NewDatabase(cfg, backend, dataDir)
 
 	// Mark barrier-enabled databases as sealed until explicitly unsealed.
 	if meta.Barrier != nil && meta.Barrier.Enabled && m.barrierMgr != nil {
@@ -266,7 +260,7 @@ func (m *Manager) Open(name string) (*Database, error) {
 
 	if actual, loaded := m.databases.LoadOrStore(name, db); loaded {
 		// Another goroutine opened it concurrently.
-		_ = activeBackend.Close()
+		_ = backend.Close()
 		return actual.(*Database), nil
 	}
 

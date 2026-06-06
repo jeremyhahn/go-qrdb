@@ -20,6 +20,9 @@
 export { isDesktop, getClient } from './factory.js';
 export type { ClientConfig } from './factory.js';
 
+// Wire-format key transformers (exported for testing and custom transport use)
+export { deepSnakeToCamel, deepCamelToSnake, snakeToCamelKey, camelToSnakeKey } from './transform.js';
+
 // Transport implementations
 export { RestClient } from './rest.js';
 export { WailsClient } from './wails.js';
@@ -230,6 +233,7 @@ export type {
     User,
     CreateUserRequest,
     UpdateUserRequest,
+    AddCertBindingRequest,
     ListUsersRequest,
     ListUsersResponse,
 
@@ -334,3 +338,21 @@ export type {
     ExternalConnectionConfig,
 
 } from './types.js';
+
+// Audit event retrieval (Phase 6 compliance)
+export { AuditClient } from './audit.js';
+export type { AuditEvent, AuditFilter, AuditPage } from './audit.js';
+
+// Auth factor operations (Phase 3 compliance: PKCS#11, PIV, FIDO2)
+export { AuthFactorClient, AuthFactorError } from './authfactor.js';
+export type {
+    Enrollment,
+    EnrollFactorRequest,
+    EnrollFactorResponse,
+    ChallengeFactorRequest,
+    ChallengeFactorResponse,
+    VerifyFactorRequest,
+    ListFactorsRequest,
+    ListFactorsResponse,
+    RevokeFactorRequest,
+} from './authfactor.js';

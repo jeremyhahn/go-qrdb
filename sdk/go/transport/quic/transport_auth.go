@@ -41,19 +41,39 @@ type createUserWireRequest struct {
 
 // getUserWireRequest is the JSON wire payload for user.Get.
 type getUserWireRequest struct {
-	ID string `json:"id"`
+	ID uint64 `json:"id"`
+}
+
+// getUserByUsernameWireRequest is the JSON wire payload for
+// user.GetByUsername.
+type getUserByUsernameWireRequest struct {
+	TenantID string `json:"tenantID"`
+	Username string `json:"username"`
+}
+
+// getUserByCertThumbprintWireRequest is the JSON wire payload for
+// user.GetByCertThumbprint.
+type getUserByCertThumbprintWireRequest struct {
+	Thumbprint string `json:"thumbprint"`
+}
+
+// addCertBindingWireRequest is the JSON wire payload for user.AddCertBinding.
+type addCertBindingWireRequest struct {
+	UserID       uint64 `json:"userID"`
+	Thumbprint   string `json:"thumbprint"`
+	NotAfterUnix int64  `json:"notAfterUnix"`
 }
 
 // updateUserWireRequest is the JSON wire payload for user.Update.
 type updateUserWireRequest struct {
-	ID       string   `json:"id"`
+	ID       uint64   `json:"id"`
 	Username string   `json:"username"`
 	RoleIDs  []string `json:"roleIDs"`
 }
 
 // deleteUserWireRequest is the JSON wire payload for user.Delete.
 type deleteUserWireRequest struct {
-	ID string `json:"id"`
+	ID uint64 `json:"id"`
 }
 
 // listUsersWireRequest is the JSON wire payload for user.List.
@@ -65,18 +85,18 @@ type listUsersWireRequest struct {
 
 // enableUserWireRequest is the JSON wire payload for user.Enable.
 type enableUserWireRequest struct {
-	ID string `json:"id"`
+	ID uint64 `json:"id"`
 }
 
 // disableUserWireRequest is the JSON wire payload for user.Disable.
 type disableUserWireRequest struct {
-	ID string `json:"id"`
+	ID uint64 `json:"id"`
 }
 
 // userWireResponse is the JSON wire representation of a user entity
 // returned by the server.
 type userWireResponse struct {
-	ID        string   `json:"id"`
+	ID        uint64   `json:"id"`
 	Username  string   `json:"username"`
 	TenantID  string   `json:"tenantID"`
 	RoleIDs   []string `json:"roleIDs"`
@@ -137,7 +157,7 @@ type listRolesWireRequest struct {
 // assignRoleWireRequest is the JSON wire payload for role.Assign and
 // role.Unassign.
 type assignRoleWireRequest struct {
-	UserID string `json:"userID"`
+	UserID uint64 `json:"userID"`
 	RoleID string `json:"roleID"`
 }
 
@@ -259,7 +279,7 @@ func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserReq
 
 // GetUser retrieves a user by its globally unique ID via the QUIC
 // user.Get method.
-func (t *Transport) GetUser(ctx context.Context, id string) (*transport.User, error) {
+func (t *Transport) GetUser(ctx context.Context, id uint64) (*transport.User, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -277,6 +297,85 @@ func (t *Transport) GetUser(ctx context.Context, id string) (*transport.User, er
 	var wire userWireResponse
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return nil, &transport.RequestError{Method: "GetUser", Err: &UnmarshalError{Err: err}}
+	}
+
+	return wireToUser(&wire), nil
+}
+
+// GetUserByUsername retrieves a user by tenant-scoped username via the
+// QUIC user.GetByUsername method.
+func (t *Transport) GetUserByUsername(ctx context.Context, tenantID, username string) (*transport.User, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	payload, err := json.Marshal(getUserByUsernameWireRequest{TenantID: tenantID, Username: username})
+	if err != nil {
+		return nil, &transport.RequestError{Method: "GetUserByUsername", Err: &MarshalError{Err: err}}
+	}
+
+	data, err := t.call(ctx, "user.GetByUsername", payload)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "GetUserByUsername", Err: err}
+	}
+
+	var wire userWireResponse
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return nil, &transport.RequestError{Method: "GetUserByUsername", Err: &UnmarshalError{Err: err}}
+	}
+
+	return wireToUser(&wire), nil
+}
+
+// GetUserByCertThumbprint resolves a user by mTLS SPKI thumbprint via the
+// QUIC user.GetByCertThumbprint method.
+func (t *Transport) GetUserByCertThumbprint(ctx context.Context, thumbprint string) (*transport.User, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	payload, err := json.Marshal(getUserByCertThumbprintWireRequest{Thumbprint: thumbprint})
+	if err != nil {
+		return nil, &transport.RequestError{Method: "GetUserByCertThumbprint", Err: &MarshalError{Err: err}}
+	}
+
+	data, err := t.call(ctx, "user.GetByCertThumbprint", payload)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "GetUserByCertThumbprint", Err: err}
+	}
+
+	var wire userWireResponse
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return nil, &transport.RequestError{Method: "GetUserByCertThumbprint", Err: &UnmarshalError{Err: err}}
+	}
+
+	return wireToUser(&wire), nil
+}
+
+// AddCertBinding binds an mTLS SPKI thumbprint to a user via the QUIC
+// user.AddCertBinding method.
+func (t *Transport) AddCertBinding(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*transport.User, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	payload, err := json.Marshal(addCertBindingWireRequest{
+		UserID:       userID,
+		Thumbprint:   thumbprint,
+		NotAfterUnix: notAfterUnix,
+	})
+	if err != nil {
+		return nil, &transport.RequestError{Method: "AddCertBinding", Err: &MarshalError{Err: err}}
+	}
+
+	data, err := t.call(ctx, "user.AddCertBinding", payload)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "AddCertBinding", Err: err}
+	}
+
+	var wire userWireResponse
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return nil, &transport.RequestError{Method: "AddCertBinding", Err: &UnmarshalError{Err: err}}
 	}
 
 	return wireToUser(&wire), nil
@@ -313,7 +412,7 @@ func (t *Transport) UpdateUser(ctx context.Context, req *transport.UpdateUserReq
 
 // DeleteUser removes a non-system user by ID via the QUIC user.Delete
 // method.
-func (t *Transport) DeleteUser(ctx context.Context, id string) error {
+func (t *Transport) DeleteUser(ctx context.Context, id uint64) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -370,7 +469,7 @@ func (t *Transport) ListUsers(ctx context.Context, req *transport.ListUsersReque
 }
 
 // EnableUser activates a user account via the QUIC user.Enable method.
-func (t *Transport) EnableUser(ctx context.Context, id string) error {
+func (t *Transport) EnableUser(ctx context.Context, id uint64) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -390,7 +489,7 @@ func (t *Transport) EnableUser(ctx context.Context, id string) error {
 
 // DisableUser deactivates a user account via the QUIC user.Disable
 // method.
-func (t *Transport) DisableUser(ctx context.Context, id string) error {
+func (t *Transport) DisableUser(ctx context.Context, id uint64) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -554,7 +653,7 @@ func (t *Transport) ListRoles(ctx context.Context, req *transport.ListRolesReque
 }
 
 // AssignRole assigns a role to a user via the QUIC role.Assign method.
-func (t *Transport) AssignRole(ctx context.Context, userID, roleID string) error {
+func (t *Transport) AssignRole(ctx context.Context, userID uint64, roleID string) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -577,7 +676,7 @@ func (t *Transport) AssignRole(ctx context.Context, userID, roleID string) error
 
 // UnassignRole removes a role assignment from a user via the QUIC
 // role.Unassign method.
-func (t *Transport) UnassignRole(ctx context.Context, userID, roleID string) error {
+func (t *Transport) UnassignRole(ctx context.Context, userID uint64, roleID string) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}

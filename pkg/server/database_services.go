@@ -55,6 +55,9 @@ type DatabaseServices struct {
 
 	// Collection provides collection operations for this database.
 	Collection service.CollectionServicer
+
+	// Vector provides vector database operations for this database.
+	Vector service.VectorServicer
 }
 
 // DatabaseServiceRegistry manages per-database service instances.

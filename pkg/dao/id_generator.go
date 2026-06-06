@@ -77,7 +77,7 @@ func (g *FieldHashGenerator) NextID(entity Entity) uint64 {
 	val := reflect.ValueOf(entity)
 
 	// Dereference pointers to get the underlying struct.
-	for val.Kind() == reflect.Ptr {
+	for val.Kind() == reflect.Pointer {
 		val = val.Elem()
 	}
 

@@ -36,6 +36,47 @@ const (
 	StateOperational CeremonyState = "operational"
 )
 
+// AuthenticatorType identifies the hardware or software that backs an
+// officer's signing credential. The empty value is treated as a
+// software-backed credential (see Normalized).
+type AuthenticatorType string
+
+const (
+	// AuthenticatorSoftware indicates a software-backed credential whose
+	// private key lives in process memory or on disk.
+	AuthenticatorSoftware AuthenticatorType = "software"
+
+	// AuthenticatorPIV indicates a PIV smart card credential where the
+	// AuthenticatorRef is the slot identifier (e.g. "9a").
+	AuthenticatorPIV AuthenticatorType = "piv"
+
+	// AuthenticatorFIDO2 indicates a FIDO2 / CTAP2 credential where the
+	// AuthenticatorRef is the base64url credential ID.
+	AuthenticatorFIDO2 AuthenticatorType = "fido2"
+)
+
+// Normalized returns the canonical AuthenticatorType, mapping the empty
+// value to AuthenticatorSoftware and otherwise returning the type
+// unchanged.
+func (a AuthenticatorType) Normalized() AuthenticatorType {
+	if a == "" {
+		return AuthenticatorSoftware
+	}
+	return a
+}
+
+// Validate reports whether the AuthenticatorType is one of the known
+// values. The empty value is valid and defaults to software. Unknown
+// values return ErrInvalidAuthenticatorType.
+func (a AuthenticatorType) Validate() error {
+	switch a {
+	case "", AuthenticatorSoftware, AuthenticatorPIV, AuthenticatorFIDO2:
+		return nil
+	default:
+		return ErrInvalidAuthenticatorType
+	}
+}
+
 // OfficerConfig holds the configuration for a single ceremony officer.
 type OfficerConfig struct {
 	// Username is the unique identifier for the officer.
@@ -43,6 +84,17 @@ type OfficerConfig struct {
 
 	// CSRPEM is the PEM-encoded certificate signing request from the officer.
 	CSRPEM []byte
+
+	// AuthenticatorType identifies which hardware or software backs the
+	// officer's signing credential. An empty value defaults to
+	// AuthenticatorSoftware.
+	AuthenticatorType AuthenticatorType
+
+	// AuthenticatorRef is an opaque reference to the credential within
+	// the backing authenticator. For PIV this is the slot identifier
+	// (e.g. "9a"); for FIDO2 it is the credential ID (base64url); for
+	// software credentials it is unused.
+	AuthenticatorRef string
 }
 
 // CeremonyConfig holds the configuration for an initialization ceremony.
@@ -73,6 +125,23 @@ type CeremonyConfig struct {
 	DataDir string
 }
 
+// InitializeOptions carries per-request parameters for an initialization
+// ceremony. It exists so callers can supply the Security Officer and user
+// PINs on the Initialize call itself rather than mutating the shared
+// CeremonyConfig — mutating shared config is not concurrency-safe.
+//
+// Per-request values take precedence over the corresponding CeremonyConfig
+// fields when non-empty; empty fields fall back to the configured value.
+type InitializeOptions struct {
+	// SOPin is the Security Officer PIN supplied for this ceremony. When
+	// empty the configured CeremonyConfig.SOPin is used.
+	SOPin string
+
+	// UserPin is the user-level PIN supplied for this ceremony. When empty
+	// the configured CeremonyConfig.UserPin is used.
+	UserPin string
+}
+
 // PendingCert holds a certificate that has been issued but not yet
 // claimed by its officer.
 type PendingCert struct {
@@ -88,6 +157,17 @@ type PendingCert struct {
 
 	// Claimed indicates whether the officer has claimed this certificate.
 	Claimed bool
+
+	// AuthenticatorType identifies the authenticator that the officer
+	// will use to sign the claim challenge nonce. Preserved from the
+	// OfficerConfig used at ceremony initialization.
+	AuthenticatorType AuthenticatorType
+
+	// AuthenticatorRef is the opaque credential reference within the
+	// authenticator (PIV slot, FIDO2 credential ID, or unused for
+	// software). Preserved from the OfficerConfig used at ceremony
+	// initialization.
+	AuthenticatorRef string
 }
 
 // ChallengeResponse holds the challenge nonce issued during the

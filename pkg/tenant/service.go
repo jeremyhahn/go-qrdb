@@ -26,7 +26,12 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
-const metadataPrefix = "tenants/"
+// metadataPrefix is the key prefix for all tenant metadata in the KV store.
+// The "__sys:" prefix ensures these keys are excluded from user-facing KV list
+// and scan operations by the store's internal-key filter (pkg/store/constants.go).
+// Legacy deployments with keys stored under the old "tenants/" prefix would
+// need a one-time migration; no in-place migration is performed here.
+const metadataPrefix = "__sys:tenants/"
 
 // IsolationType controls the data isolation strategy for a tenant.
 // Both modes provide separate keyspaces; the difference is whether
@@ -34,15 +39,16 @@ const metadataPrefix = "tenants/"
 type IsolationType string
 
 const (
-	// IsolationBarrier isolates tenant data with both namespace prefixing
-	// and an optional per-tenant cryptographic barrier. When the seal
-	// subsystem is not configured, isolation is still enforced via the
-	// namespace prefix. This is the default for all new tenants.
+	// IsolationBarrier routes a tenant's IAM data through a per-tenant
+	// cryptographic barrier: its own DEK and a "{tenantID}/" storage
+	// namespace in an independent backend. Barrier isolation is strictly
+	// opt-in; the system tenant may not use it (it must stay reachable
+	// during bootstrap while tenant barriers are sealed).
 	IsolationBarrier IsolationType = "barrier"
 
-	// IsolationPrefix isolates tenant data using only namespace prefixing.
-	// No cryptographic barrier is applied. Suitable for tenants that do
-	// not require encryption at rest but still need logical separation.
+	// IsolationPrefix isolates tenant data using only logical key
+	// prefixing against the shared system store. No per-tenant barrier is
+	// applied. This is the default when no isolation type is specified.
 	IsolationPrefix IsolationType = "prefix"
 )
 
@@ -57,10 +63,14 @@ type TenantInfo struct {
 }
 
 // EffectiveIsolationType returns the tenant's isolation type, defaulting
-// to IsolationBarrier for tenants created before this field existed.
+// to IsolationPrefix for tenants created before this field existed (and
+// for tenants created with an unspecified isolation type). Barrier
+// isolation is strictly opt-in: a legacy/empty isolation type routes IAM
+// data to the shared system store, matching the StoreResolver's
+// fail-open-to-shared migration behaviour for prefix tenants.
 func (t *TenantInfo) EffectiveIsolationType() IsolationType {
 	if t.IsolationType == "" {
-		return IsolationBarrier
+		return IsolationPrefix
 	}
 	return t.IsolationType
 }
@@ -106,22 +116,102 @@ type TenantServicer interface {
 	// persists the change to the metadata store.
 	UpdateQuotas(ctx context.Context, tenantID string, quotas *quota.Quotas) (*TenantInfo, error)
 
-	// TenantBarrierInit initializes the per-tenant barrier with the
-	// given threshold and shares configuration.
-	TenantBarrierInit(ctx context.Context, tenantID string, threshold, shares int) error
+	// IncrementQuotaUsage increments the current-usage counter for the given
+	// resource by delta (must be > 0) and persists the change. It returns
+	// QuotaExceededError when the resulting usage would exceed the configured
+	// limit for that resource. Callers should call this before creating a
+	// resource and roll back on error.
+	IncrementQuotaUsage(ctx context.Context, tenantID string, resource quota.Resource, delta int64) (*TenantInfo, error)
+
+	// DecrementQuotaUsage decrements the current-usage counter for the given
+	// resource by delta (must be > 0) and persists the change. The counter
+	// is clamped to zero (never negative). Callers should call this after
+	// successfully deleting a resource.
+	DecrementQuotaUsage(ctx context.Context, tenantID string, resource quota.Resource, delta int64) (*TenantInfo, error)
+
+	// GetQuotaUsage returns the current-usage value for the given resource
+	// and tenant without modifying any state.
+	GetQuotaUsage(ctx context.Context, tenantID string, resource quota.Resource) (int64, error)
+
+	// TenantBarrierInit initializes the per-tenant barrier with a
+	// caller-supplied passphrase using the default passphrase strategy.
+	// It is equivalent to calling TenantBarrierInitWithStrategy with
+	// seal.StrategyPassphrase. The threshold and shares parameters are
+	// reserved for Shamir secret-sharing configuration. An empty
+	// passphrase is rejected; there is no derived credential fallback.
+	TenantBarrierInit(ctx context.Context, tenantID, passphrase string, threshold, shares int) error
+
+	// TenantBarrierInitWithStrategy initializes the per-tenant barrier
+	// using an explicitly selected seal strategy resolved from the
+	// injected StrategyRegistry. When strategyID is empty or equals
+	// seal.StrategyPassphrase the behaviour is identical to
+	// TenantBarrierInit. Hardware and cloud-KMS strategies (tpm2,
+	// pkcs11, aws-kms, gcp-kms, azure-kv, vault) are resolved at call
+	// time from the registry; if the strategy is not registered,
+	// InvalidStrategyError is returned. When no StrategyRegistry was
+	// injected, only the built-in software strategies (passphrase, none,
+	// shamir) are accepted and hardware/cloud strategy requests return
+	// InvalidStrategyError.
+	TenantBarrierInitWithStrategy(ctx context.Context, tenantID, passphrase string, threshold, shares int, strategyID seal.StrategyID) error
 
 	// TenantBarrierUnseal unseals the per-tenant barrier using the
-	// provided key material.
+	// caller-supplied key material. There is no derived credential
+	// fallback: empty key material is rejected.
 	TenantBarrierUnseal(ctx context.Context, tenantID string, key []byte) error
+
+	// TenantBarrierSeal seals the per-tenant barrier, returning it to the
+	// sealed state. Subsequent reads and writes against the tenant's
+	// namespace fail until the barrier is unsealed again.
+	TenantBarrierSeal(ctx context.Context, tenantID string) error
+
+	// TenantBarrierStatus returns the current state of the per-tenant
+	// barrier (sealed/initialized flags, active strategy, hardware-backing).
+	TenantBarrierStatus(ctx context.Context, tenantID string) (*TenantBarrierStatus, error)
+}
+
+// TenantBarrierStatus reports the current state of a per-tenant barrier.
+// It mirrors seal.BarrierStatus while adding the tenant identifier and an
+// Initialized flag for callers that distinguish "never initialized" from
+// "initialized and sealed".
+type TenantBarrierStatus struct {
+	// TenantID is the tenant whose barrier is being reported on.
+	TenantID string `json:"tenant_id"`
+
+	// Sealed is true when the tenant barrier is in sealed state.
+	Sealed bool `json:"sealed"`
+
+	// Initialized is true when the tenant barrier has been registered and
+	// initialized at least once.
+	Initialized bool `json:"initialized"`
+
+	// Strategy identifies the active sealing strategy (e.g. "software",
+	// "shamir", "pkcs11").
+	Strategy string `json:"strategy"`
+
+	// HardwareBacked is true when the active strategy uses dedicated
+	// cryptographic hardware.
+	HardwareBacked bool `json:"hardware_backed"`
 }
 
 // TenantService manages multi-tenant lifecycle including metadata CRUD
 // and per-tenant barrier operations. It delegates barrier lifecycle to
 // the BarrierRegistry and persists tenant metadata in a StorageBackend.
 type TenantService struct {
-	store    seal.StorageBackend
-	registry *seal.BarrierRegistry
-	logger   *slog.Logger
+	store            seal.StorageBackend
+	registry         *seal.BarrierRegistry
+	strategyRegistry seal.StrategyRegistry
+	logger           *slog.Logger
+}
+
+// TenantServiceOption configures optional TenantService dependencies.
+type TenantServiceOption func(*TenantService)
+
+// WithStrategyRegistry injects a StrategyRegistry so that
+// TenantBarrierInitWithStrategy can resolve hardware/cloud seal strategies
+// by name. When no registry is injected, only the built-in software-only
+// strategies (passphrase, none) are accepted for per-tenant barriers.
+func WithStrategyRegistry(reg seal.StrategyRegistry) TenantServiceOption {
+	return func(s *TenantService) { s.strategyRegistry = reg }
 }
 
 // Compile-time interface checks.
@@ -132,11 +222,13 @@ var (
 
 // NewTenantService creates a new TenantService. The store parameter is
 // used for persisting tenant metadata, and the registry manages the
-// per-tenant barrier lifecycle.
+// per-tenant barrier lifecycle. Optional TenantServiceOptions may be
+// supplied; see WithStrategyRegistry.
 func NewTenantService(
 	store seal.StorageBackend,
 	registry *seal.BarrierRegistry,
 	logger *slog.Logger,
+	opts ...TenantServiceOption,
 ) (*TenantService, error) {
 	if store == nil {
 		return nil, ErrNilStore
@@ -147,11 +239,15 @@ func NewTenantService(
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &TenantService{
+	svc := &TenantService{
 		store:    store,
 		registry: registry,
 		logger:   logger,
-	}, nil
+	}
+	for _, o := range opts {
+		o(svc)
+	}
+	return svc, nil
 }
 
 // CreateTenant creates a new tenant with the given ID, name, and isolation
@@ -165,8 +261,21 @@ func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isola
 	if name == "" {
 		return nil, ErrEmptyTenantName
 	}
+	if err := validateReservedTenantID(ctx, id); err != nil {
+		return nil, err
+	}
+	// Barrier isolation is strictly opt-in: an unspecified isolation type
+	// defaults to logical-prefix isolation against the shared system store.
 	if isolationType == "" {
-		isolationType = IsolationBarrier
+		isolationType = IsolationPrefix
+	}
+	// The system tenant is structurally a prefix tenant: its IAM data must
+	// remain in the shared store so bootstrap works while every tenant
+	// barrier is still sealed. Reject barrier isolation for it. (External
+	// creation of the system tenant is already blocked by the reserved-id
+	// check above; this guards the internal-call bootstrap path too.)
+	if id == SystemTenantID && isolationType == IsolationBarrier {
+		return nil, ErrSystemTenantMustBePrefix
 	}
 
 	// Check for existing tenant metadata.
@@ -179,14 +288,26 @@ func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isola
 		return nil, &StoreError{Op: "check-exists", Err: err}
 	}
 
-	// Register tenant in barrier registry with default configuration.
-	_, err = s.registry.RegisterTenantDefault(id)
-	if err != nil {
-		// If the registry already has this tenant, surface our typed error.
-		if errors.Is(err, seal.ErrTenantAlreadyExists) {
-			return nil, ErrTenantAlreadyExists
+	// Register a per-tenant barrier only for barrier-isolated tenants.
+	// Prefix tenants share the system KVStore and need no barrier
+	// registration — their IAM records are separated logically by the
+	// tenant-scoped key segments the IAM stores already embed. A
+	// barrier-isolated tenant gets a durable, independent backend from the
+	// volume pool (RegisterTenantPooled) and is initialized immediately so
+	// its DEK exists; the barrier is unsealed and ready to serve IAM data.
+	if isolationType == IsolationBarrier {
+		if _, regErr := s.registry.RegisterTenantPooled(ctx, id); regErr != nil {
+			if errors.Is(regErr, seal.ErrTenantAlreadyExists) {
+				return nil, ErrTenantAlreadyExists
+			}
+			return nil, &BarrierError{TenantID: id, Op: "register", Err: regErr}
 		}
-		return nil, &BarrierError{TenantID: id, Op: "register", Err: err}
+		if initErr := s.registry.InitializeTenant(ctx, id, seal.Credentials{}); initErr != nil {
+			// Roll back the registration so a failed init does not leave a
+			// dangling, uninitialized barrier behind.
+			_ = s.registry.UnregisterTenant(id)
+			return nil, &BarrierError{TenantID: id, Op: "initialize", Err: initErr}
+		}
 	}
 
 	now := time.Now().UTC()
@@ -396,12 +517,166 @@ func (s *TenantService) Quotas(ctx context.Context, tenantID string) (*quota.Quo
 	return info.Quotas, nil
 }
 
-// TenantBarrierInit initializes the per-tenant barrier. The tenant must
-// exist. The threshold and shares parameters configure Shamir secret
-// sharing; when both are zero, default credentials are used.
-func (s *TenantService) TenantBarrierInit(ctx context.Context, tenantID string, threshold, shares int) error {
+// IncrementQuotaUsage increments the current-usage counter for the given
+// resource by delta and persists the change. Returns QuotaExceededError
+// when the resulting usage would exceed the configured limit. delta must
+// be positive; a zero or negative delta returns an error.
+func (s *TenantService) IncrementQuotaUsage(ctx context.Context, tenantID string, resource quota.Resource, delta int64) (*TenantInfo, error) {
+	if tenantID == "" {
+		return nil, ErrEmptyTenantID
+	}
+	if delta <= 0 {
+		return nil, &StoreError{Op: "increment-quota", Err: errors.New("delta must be positive")}
+	}
+	info, err := s.GetTenant(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	if info.Quotas == nil {
+		info.Quotas = &quota.Quotas{}
+	}
+	current, err := info.Quotas.CurrentUsage(resource)
+	if err != nil {
+		return nil, &StoreError{Op: "increment-quota", Err: err}
+	}
+	limit, err := info.Quotas.Limit(resource)
+	if err != nil {
+		return nil, &StoreError{Op: "increment-quota", Err: err}
+	}
+	if limit > 0 && current+delta > limit {
+		return nil, &QuotaExceededError{
+			TenantID: tenantID,
+			Resource: resource.String(),
+			Current:  current,
+			Delta:    delta,
+			Limit:    limit,
+		}
+	}
+	if err := info.Quotas.SetCurrentUsage(resource, current+delta); err != nil {
+		return nil, &StoreError{Op: "increment-quota", Err: err}
+	}
+	info.UpdatedAt = time.Now().UTC()
+	data, err := json.Marshal(info)
+	if err != nil {
+		return nil, &StoreError{Op: "marshal", Err: err}
+	}
+	key := metadataPrefix + tenantID
+	if err := s.store.Put(ctx, key, data); err != nil {
+		return nil, &StoreError{Op: "put", Err: err}
+	}
+	s.logger.Debug("quota usage incremented",
+		slog.String("tenant_id", tenantID),
+		slog.String("resource", resource.String()),
+		slog.Int64("delta", delta),
+		slog.Int64("current", current+delta))
+	return info, nil
+}
+
+// DecrementQuotaUsage decrements the current-usage counter for the given
+// resource by delta. The counter is clamped to zero. delta must be
+// positive; a zero or negative delta returns an error.
+func (s *TenantService) DecrementQuotaUsage(ctx context.Context, tenantID string, resource quota.Resource, delta int64) (*TenantInfo, error) {
+	if tenantID == "" {
+		return nil, ErrEmptyTenantID
+	}
+	if delta <= 0 {
+		return nil, &StoreError{Op: "decrement-quota", Err: errors.New("delta must be positive")}
+	}
+	info, err := s.GetTenant(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	if info.Quotas == nil {
+		info.Quotas = &quota.Quotas{}
+	}
+	current, err := info.Quotas.CurrentUsage(resource)
+	if err != nil {
+		return nil, &StoreError{Op: "decrement-quota", Err: err}
+	}
+	next := current - delta
+	if next < 0 {
+		next = 0
+	}
+	if err := info.Quotas.SetCurrentUsage(resource, next); err != nil {
+		return nil, &StoreError{Op: "decrement-quota", Err: err}
+	}
+	info.UpdatedAt = time.Now().UTC()
+	data, err := json.Marshal(info)
+	if err != nil {
+		return nil, &StoreError{Op: "marshal", Err: err}
+	}
+	key := metadataPrefix + tenantID
+	if err := s.store.Put(ctx, key, data); err != nil {
+		return nil, &StoreError{Op: "put", Err: err}
+	}
+	s.logger.Debug("quota usage decremented",
+		slog.String("tenant_id", tenantID),
+		slog.String("resource", resource.String()),
+		slog.Int64("delta", delta),
+		slog.Int64("current", next))
+	return info, nil
+}
+
+// GetQuotaUsage returns the current-usage value for the given resource
+// and tenant without modifying any state.
+func (s *TenantService) GetQuotaUsage(ctx context.Context, tenantID string, resource quota.Resource) (int64, error) {
+	if tenantID == "" {
+		return 0, ErrEmptyTenantID
+	}
+	info, err := s.GetTenant(ctx, tenantID)
+	if err != nil {
+		return 0, err
+	}
+	if info.Quotas == nil {
+		return 0, nil
+	}
+	usage, err := info.Quotas.CurrentUsage(resource)
+	if err != nil {
+		return 0, &StoreError{Op: "get-quota-usage", Err: err}
+	}
+	return usage, nil
+}
+
+// TenantBarrierInit initializes the per-tenant barrier using the default
+// passphrase (software) seal strategy. It delegates to
+// TenantBarrierInitWithStrategy with seal.StrategyPassphrase for
+// backward compatibility with all existing callers.
+//
+// Authorization — who may call this — is enforced at the API/transport
+// layer, not here.
+func (s *TenantService) TenantBarrierInit(ctx context.Context, tenantID, passphrase string, threshold, shares int) error {
+	return s.TenantBarrierInitWithStrategy(ctx, tenantID, passphrase, threshold, shares, seal.StrategyPassphrase)
+}
+
+// TenantBarrierInitWithStrategy initializes the per-tenant barrier using the
+// explicitly requested seal strategy. When strategyID is empty it defaults to
+// seal.StrategyPassphrase. The strategy is resolved from the injected
+// StrategyRegistry when one is present; otherwise a built-in default factory
+// is used for the software-only strategies (passphrase, none).
+//
+// The passphrase field is required for the passphrase strategy; for all other
+// strategies (none, hardware/cloud KMS) it is ignored. The tenant must exist.
+//
+// Authorization — who may call this — is enforced at the API/transport
+// layer, not here.
+func (s *TenantService) TenantBarrierInitWithStrategy(
+	ctx context.Context,
+	tenantID, passphrase string,
+	threshold, shares int,
+	strategyID seal.StrategyID,
+) error {
+	if strategyID == "" {
+		strategyID = seal.StrategyPassphrase
+	}
 	if tenantID == "" {
 		return ErrEmptyTenantID
+	}
+
+	// The passphrase strategy requires caller-supplied key material.
+	// Hardware/cloud strategies wrap the root key via their own KEK;
+	// no passphrase is needed.
+	if seal.IsPassphraseStrategy(strategyID) && passphrase == "" {
+		return ErrEmptyPassphrase
 	}
 
 	// Verify the tenant exists in metadata.
@@ -409,27 +684,101 @@ func (s *TenantService) TenantBarrierInit(ctx context.Context, tenantID string, 
 		return err
 	}
 
-	// Build credentials. For now, use a deterministic credential derived
-	// from the tenant ID. A production system would use Shamir shares or
-	// an external KMS. The threshold/shares params are reserved for
-	// future Shamir integration at the tenant barrier level.
-	creds := seal.Credentials{Secret: "tenant-init-" + tenantID}
+	// Resolve the sealing strategy from the injected registry when one is
+	// present, or fall back to the built-in software factories for the
+	// strategies qrdb owns directly (passphrase, none). Hardware/cloud
+	// strategies must be registered via WithStrategyRegistry.
+	strategy, err := s.resolveStrategy(strategyID)
+	if err != nil {
+		return err
+	}
+
+	// Build credentials. For the passphrase strategy the Secret carries
+	// the tenant admin's passphrase; for all other strategies the
+	// Credentials struct is empty (the strategy's KEK handles wrapping).
+	creds := seal.Credentials{}
+	if seal.IsPassphraseStrategy(strategyID) {
+		creds.Secret = passphrase
+	}
+
+	// Register a sealed shell when the tenant barrier is not yet
+	// registered. An already-registered tenant is reused. (We inline
+	// register-shell+init against the registry rather than importing
+	// pkg/bootstrap, which depends on pkg/tenant and would form an import
+	// cycle.)
+	if _, err := s.registry.GetTenant(tenantID); err != nil {
+		// Register a durable, barrier-isolated tenant that honors the
+		// caller-supplied strategy. RegisterTenantPooledWithStrategy uses
+		// the same Pebble volume-pool backend as the inherit-the-system
+		// default (RegisterTenantPooled) so the per-tenant barrier survives
+		// a restart; the only difference is that the tenant's DEK is sealed
+		// with the resolved per-tenant strategy instead of the system's.
+		if _, regErr := s.registry.RegisterTenantPooledWithStrategy(ctx, tenantID, strategy); regErr != nil {
+			return &BarrierError{TenantID: tenantID, Op: "register", Err: regErr}
+		}
+		s.logger.Info("tenant barrier registered",
+			slog.String("tenant_id", tenantID),
+			slog.String("strategy", string(strategyID)))
+	}
 
 	if err := s.registry.InitializeTenant(ctx, tenantID, creds); err != nil {
 		return &BarrierError{TenantID: tenantID, Op: "initialize", Err: err}
 	}
 
-	s.logger.Info("tenant barrier initialized", slog.String("tenant_id", tenantID))
+	s.logger.Info("tenant barrier initialized",
+		slog.String("tenant_id", tenantID),
+		slog.String("strategy", string(strategyID)))
 
 	return nil
 }
 
-// TenantBarrierUnseal unseals the per-tenant barrier using the provided
-// key material. The tenant must exist and its barrier must have been
-// previously initialized.
+// resolveStrategy returns the SealingStrategy for the given ID.
+//
+// Resolution order:
+//  1. When a StrategyRegistry is injected, always consult it first. This
+//     allows callers to override even the built-in software strategies.
+//  2. When no registry is present, fall back to the built-in factories for
+//     the software-only strategies qrdb owns (passphrase, none).
+//  3. All other strategy IDs require an injected registry; their absence
+//     returns InvalidStrategyError.
+func (s *TenantService) resolveStrategy(id seal.StrategyID) (seal.SealingStrategy, error) {
+	if s.strategyRegistry != nil {
+		factory, err := s.strategyRegistry.LookupFactory(id)
+		if err != nil {
+			// Surface a user-friendly error with the list of registered names.
+			available := s.strategyRegistry.ListAvailable()
+			names := make([]string, len(available))
+			for i, n := range available {
+				names[i] = string(n)
+			}
+			return nil, &InvalidStrategyError{Strategy: string(id), Available: names}
+		}
+		return factory()
+	}
+
+	// No registry injected: accept only the built-in software strategies.
+	switch id {
+	case seal.StrategyPassphrase:
+		return seal.NewDeferredSoftwareStrategy(), nil
+	case seal.StrategyNone:
+		return seal.NewNoneStrategy(), nil
+	default:
+		return nil, &InvalidStrategyError{Strategy: string(id)}
+	}
+}
+
+// TenantBarrierUnseal unseals the per-tenant barrier using the
+// caller-supplied key material. The tenant must exist and its barrier must
+// have been previously initialized. There is no derived credential
+// fallback: empty key material is rejected.
 func (s *TenantService) TenantBarrierUnseal(ctx context.Context, tenantID string, key []byte) error {
 	if tenantID == "" {
 		return ErrEmptyTenantID
+	}
+
+	// Require caller-supplied key material. There is no derived fallback.
+	if len(key) == 0 {
+		return ErrEmptyPassphrase
 	}
 
 	// Verify the tenant exists in metadata.
@@ -437,13 +786,7 @@ func (s *TenantService) TenantBarrierUnseal(ctx context.Context, tenantID string
 		return err
 	}
 
-	// Build credentials from the provided key material. When key is nil
-	// or empty, fall back to the deterministic credential used during init.
-	secret := "tenant-init-" + tenantID
-	if len(key) > 0 {
-		secret = string(key)
-	}
-	creds := seal.Credentials{Secret: secret}
+	creds := seal.Credentials{Secret: string(key)}
 
 	if err := s.registry.UnsealTenant(ctx, tenantID, creds); err != nil {
 		return &BarrierError{TenantID: tenantID, Op: "unseal", Err: err}
@@ -452,6 +795,61 @@ func (s *TenantService) TenantBarrierUnseal(ctx context.Context, tenantID string
 	s.logger.Info("tenant barrier unsealed", slog.String("tenant_id", tenantID))
 
 	return nil
+}
+
+// TenantBarrierSeal seals the per-tenant barrier, refusing further reads
+// and writes against the tenant namespace until unsealed again. The tenant
+// must exist and its barrier must have been previously initialized.
+func (s *TenantService) TenantBarrierSeal(ctx context.Context, tenantID string) error {
+	if tenantID == "" {
+		return ErrEmptyTenantID
+	}
+
+	if _, err := s.GetTenant(ctx, tenantID); err != nil {
+		return err
+	}
+
+	if err := s.registry.SealTenant(tenantID); err != nil {
+		return &BarrierError{TenantID: tenantID, Op: "seal", Err: err}
+	}
+
+	s.logger.Info("tenant barrier sealed", slog.String("tenant_id", tenantID))
+
+	return nil
+}
+
+// TenantBarrierStatus reports the current sealed/initialized state and
+// active strategy metadata of a per-tenant barrier. The tenant must exist;
+// when the barrier has never been registered the response carries Sealed=
+// true, Initialized=false, and an empty Strategy.
+func (s *TenantService) TenantBarrierStatus(ctx context.Context, tenantID string) (*TenantBarrierStatus, error) {
+	if tenantID == "" {
+		return nil, ErrEmptyTenantID
+	}
+
+	if _, err := s.GetTenant(ctx, tenantID); err != nil {
+		return nil, err
+	}
+
+	st, err := s.registry.TenantStatus(tenantID)
+	if err != nil {
+		// Not registered yet — report a sealed, uninitialized barrier
+		// rather than treating absence as an error. Callers can decide
+		// whether to call TenantBarrierInit based on the Initialized flag.
+		return &TenantBarrierStatus{
+			TenantID:    tenantID,
+			Sealed:      true,
+			Initialized: false,
+		}, nil
+	}
+
+	return &TenantBarrierStatus{
+		TenantID:       tenantID,
+		Sealed:         st.Sealed,
+		Initialized:    true,
+		Strategy:       string(st.Strategy),
+		HardwareBacked: st.HardwareBacked,
+	}, nil
 }
 
 // TenantIDFromKey extracts the tenant ID from a metadata storage key.

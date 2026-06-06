@@ -1063,7 +1063,7 @@ func TestGoKindToIndexType(t *testing.T) {
 		{reflect.Float32, "string"}, // default
 		{reflect.Uint32, "string"},  // default
 		{reflect.Struct, "string"},  // default
-		{reflect.Ptr, "string"},     // default
+		{reflect.Pointer, "string"}, // default
 	}
 
 	for _, tt := range tests {

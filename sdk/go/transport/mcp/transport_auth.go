@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"strconv"
 	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -48,7 +49,7 @@ var (
 // struct has json tags matching the SDK type. User's CreatedAt and
 // UpdatedAt are time.Time (marshaled as RFC 3339 strings).
 type serverUser struct {
-	ID        string   `json:"id"`
+	ID        uint64   `json:"id"`
 	Username  string   `json:"username"`
 	TenantID  string   `json:"tenantID"`
 	RoleIDs   []string `json:"roleIDs"`
@@ -195,17 +196,17 @@ func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserReq
 
 // GetUser retrieves a user by its globally unique ID. Calls the
 // qrdb_user_get MCP tool.
-func (t *Transport) GetUser(ctx context.Context, id string) (*transport.User, error) {
+func (t *Transport) GetUser(ctx context.Context, id uint64) (*transport.User, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
 
 	text, err := t.callTool(ctx, "qrdb_user_get", map[string]any{
-		"id": id,
+		"id": strconv.FormatUint(id, 10),
 	})
 	if err != nil {
 		if isNotFoundError(err) {
-			return nil, &transport.KeyNotFoundError{Key: id}
+			return nil, &transport.KeyNotFoundError{Key: strconv.FormatUint(id, 10)}
 		}
 		return nil, err
 	}
@@ -213,6 +214,81 @@ func (t *Transport) GetUser(ctx context.Context, id string) (*transport.User, er
 	var raw serverUser
 	if jsonErr := json.Unmarshal([]byte(text), &raw); jsonErr != nil {
 		return nil, &transport.RequestError{Method: "GetUser", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+
+	return serverUserToTransport(&raw), nil
+}
+
+// GetUserByUsername retrieves a user by tenant-scoped username. Calls
+// the qrdb_user_get_by_username MCP tool.
+func (t *Transport) GetUserByUsername(ctx context.Context, tenantID, username string) (*transport.User, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	text, err := t.callTool(ctx, "qrdb_user_get_by_username", map[string]any{
+		"tenant_id": tenantID,
+		"username":  username,
+	})
+	if err != nil {
+		if isNotFoundError(err) {
+			return nil, &transport.KeyNotFoundError{Key: username}
+		}
+		return nil, err
+	}
+
+	var raw serverUser
+	if jsonErr := json.Unmarshal([]byte(text), &raw); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "GetUserByUsername", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+
+	return serverUserToTransport(&raw), nil
+}
+
+// GetUserByCertThumbprint resolves a user by mTLS SPKI thumbprint. Calls
+// the qrdb_user_get_by_cert_thumbprint MCP tool.
+func (t *Transport) GetUserByCertThumbprint(ctx context.Context, thumbprint string) (*transport.User, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	text, err := t.callTool(ctx, "qrdb_user_get_by_cert_thumbprint", map[string]any{
+		"thumbprint": thumbprint,
+	})
+	if err != nil {
+		if isNotFoundError(err) {
+			return nil, &transport.KeyNotFoundError{Key: "cert_spki/" + thumbprint}
+		}
+		return nil, err
+	}
+
+	var raw serverUser
+	if jsonErr := json.Unmarshal([]byte(text), &raw); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "GetUserByCertThumbprint", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+
+	return serverUserToTransport(&raw), nil
+}
+
+// AddCertBinding binds an mTLS SPKI thumbprint to a user. Calls the
+// qrdb_user_add_cert_binding MCP tool.
+func (t *Transport) AddCertBinding(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*transport.User, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	text, err := t.callTool(ctx, "qrdb_user_add_cert_binding", map[string]any{
+		"user_id":        strconv.FormatUint(userID, 10),
+		"thumbprint":     thumbprint,
+		"not_after_unix": notAfterUnix,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var raw serverUser
+	if jsonErr := json.Unmarshal([]byte(text), &raw); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "AddCertBinding", Err: &jsonDecodeError{Err: jsonErr}}
 	}
 
 	return serverUserToTransport(&raw), nil
@@ -226,7 +302,7 @@ func (t *Transport) UpdateUser(ctx context.Context, req *transport.UpdateUserReq
 	}
 
 	args := map[string]any{
-		"id": req.ID,
+		"id": strconv.FormatUint(req.ID, 10),
 	}
 	if req.Username != "" {
 		args["username"] = req.Username
@@ -250,13 +326,13 @@ func (t *Transport) UpdateUser(ctx context.Context, req *transport.UpdateUserReq
 
 // DeleteUser removes a non-system user by ID. Calls the qrdb_user_delete
 // MCP tool.
-func (t *Transport) DeleteUser(ctx context.Context, id string) error {
+func (t *Transport) DeleteUser(ctx context.Context, id uint64) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
 
 	_, err := t.callTool(ctx, "qrdb_user_delete", map[string]any{
-		"id": id,
+		"id": strconv.FormatUint(id, 10),
 	})
 	return err
 }
@@ -303,26 +379,26 @@ func (t *Transport) ListUsers(ctx context.Context, req *transport.ListUsersReque
 
 // EnableUser activates a user account. Calls the qrdb_user_enable
 // MCP tool.
-func (t *Transport) EnableUser(ctx context.Context, id string) error {
+func (t *Transport) EnableUser(ctx context.Context, id uint64) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
 
 	_, err := t.callTool(ctx, "qrdb_user_enable", map[string]any{
-		"id": id,
+		"id": strconv.FormatUint(id, 10),
 	})
 	return err
 }
 
 // DisableUser deactivates a user account. Calls the qrdb_user_disable
 // MCP tool.
-func (t *Transport) DisableUser(ctx context.Context, id string) error {
+func (t *Transport) DisableUser(ctx context.Context, id uint64) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
 
 	_, err := t.callTool(ctx, "qrdb_user_disable", map[string]any{
-		"id": id,
+		"id": strconv.FormatUint(id, 10),
 	})
 	return err
 }
@@ -470,13 +546,13 @@ func (t *Transport) ListRoles(ctx context.Context, req *transport.ListRolesReque
 
 // AssignRole assigns a role to a user. Calls the qrdb_role_assign
 // MCP tool.
-func (t *Transport) AssignRole(ctx context.Context, userID, roleID string) error {
+func (t *Transport) AssignRole(ctx context.Context, userID uint64, roleID string) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
 
 	_, err := t.callTool(ctx, "qrdb_role_assign", map[string]any{
-		"user_id": userID,
+		"user_id": strconv.FormatUint(userID, 10),
 		"role_id": roleID,
 	})
 	return err
@@ -484,13 +560,13 @@ func (t *Transport) AssignRole(ctx context.Context, userID, roleID string) error
 
 // UnassignRole removes a role assignment from a user. Calls the
 // qrdb_role_unassign MCP tool.
-func (t *Transport) UnassignRole(ctx context.Context, userID, roleID string) error {
+func (t *Transport) UnassignRole(ctx context.Context, userID uint64, roleID string) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
 
 	_, err := t.callTool(ctx, "qrdb_role_unassign", map[string]any{
-		"user_id": userID,
+		"user_id": strconv.FormatUint(userID, 10),
 		"role_id": roleID,
 	})
 	return err

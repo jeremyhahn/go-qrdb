@@ -17,6 +17,8 @@ package main
 import (
 	"errors"
 	"strconv"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 )
 
 // errNoCertsInPEM is returned when a PEM file contains no valid
@@ -24,15 +26,21 @@ import (
 var errNoCertsInPEM = errors.New("no certificates found in PEM data")
 
 // PeerParseError is returned when a peer specification string cannot be
-// parsed. The expected format is "id=address".
-type PeerParseError struct {
-	Input string
-}
+// parsed. The canonical type lives in pkg/cluster; the daemon aliases it so
+// CLI callers and tests share the cluster package's error contract.
+type PeerParseError = cluster.PeerParseError
 
-// Error returns a human-readable description of the parse failure.
-func (e *PeerParseError) Error() string {
-	return "cli: invalid peer format " + strconv.Quote(e.Input) + ", expected id=address"
-}
+// UnknownDiscoveryError is returned when the --discovery flag specifies an
+// unknown discovery method. Aliased from pkg/cluster.
+type UnknownDiscoveryError = cluster.UnknownDiscoveryError
+
+// MissingFlagError is returned when a required discovery input is not set.
+// Aliased from pkg/cluster.
+type MissingFlagError = cluster.MissingFlagError
+
+// NoPeersError is returned when no peers are configured for static
+// discovery. Aliased from pkg/cluster.
+type NoPeersError = cluster.NoPeersError
 
 // UnknownSMError is returned when the --sm flag specifies an unknown
 // state machine type.
@@ -43,36 +51,6 @@ type UnknownSMError struct {
 // Error returns a human-readable description.
 func (e *UnknownSMError) Error() string {
 	return "cli: unknown state machine type " + strconv.Quote(e.Name)
-}
-
-// UnknownDiscoveryError is returned when the --discovery flag specifies
-// an unknown discovery method.
-type UnknownDiscoveryError struct {
-	Name string
-}
-
-// Error returns a human-readable description.
-func (e *UnknownDiscoveryError) Error() string {
-	return "cli: unknown discovery method " + strconv.Quote(e.Name)
-}
-
-// MissingFlagError is returned when a required flag is not set.
-type MissingFlagError struct {
-	Flag string
-}
-
-// Error returns a human-readable description.
-func (e *MissingFlagError) Error() string {
-	return "cli: required flag --" + e.Flag + " is not set"
-}
-
-// NoPeersError is returned when no peers are specified for static
-// discovery.
-type NoPeersError struct{}
-
-// Error returns a human-readable description.
-func (e *NoPeersError) Error() string {
-	return "cli: no peers specified, use --peers flag with static discovery"
 }
 
 // AdminFetchError is returned when an HTTP request to the admin server
@@ -522,3 +500,143 @@ func (e *TenantServiceError) Error() string {
 func (e *TenantServiceError) Unwrap() error {
 	return e.Err
 }
+
+// LegacyDataDirError is returned when the daemon refuses to start
+// because the data dir was created by a pre-encfs build whose seal
+// sub-store lacks a format-version sentinel. There is no in-place
+// upgrade path; operators must export their data through the
+// application API and re-import it on a fresh install.
+type LegacyDataDirError struct {
+	DataDir string
+	Err     error
+}
+
+// Error returns a human-readable description.
+func (e *LegacyDataDirError) Error() string {
+	return "cli: refusing to start on legacy data dir " + e.DataDir +
+		" (pre-encfs format detected): " + e.Err.Error()
+}
+
+// Unwrap returns the underlying seal package sentinel error so
+// callers can match with errors.Is(err, seal.ErrLegacyDataDir).
+func (e *LegacyDataDirError) Unwrap() error {
+	return e.Err
+}
+
+// SealedListenerStartupError is returned when the daemon fails to
+// bring up its sealed-window API listeners (REST, gRPC) before the
+// barrier is unsealed.
+type SealedListenerStartupError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *SealedListenerStartupError) Error() string {
+	return "cli: sealed-window listener startup failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *SealedListenerStartupError) Unwrap() error {
+	return e.Err
+}
+
+// DataPlaneStartupError is returned when post-unseal data-plane
+// initialization fails (state machine factory, host construction,
+// or lifecycle.BuildServices).
+type DataPlaneStartupError struct {
+	Phase string
+	Err   error
+}
+
+// Error returns a human-readable description.
+func (e *DataPlaneStartupError) Error() string {
+	return "cli: data-plane startup failed during " + e.Phase + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *DataPlaneStartupError) Unwrap() error {
+	return e.Err
+}
+
+// UnsealWaitError is returned when the daemon's unseal-wait loop
+// terminates abnormally (context cancellation other than clean
+// shutdown).
+type UnsealWaitError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *UnsealWaitError) Error() string {
+	return "cli: unseal wait aborted: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *UnsealWaitError) Unwrap() error {
+	return e.Err
+}
+
+// VolumePoolStorageError is returned when the volume-pool state
+// store (the dedicated Pebble that persists round-robin cursors)
+// fails to open.
+type VolumePoolStorageError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *VolumePoolStorageError) Error() string {
+	return "cli: volume pool state store: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *VolumePoolStorageError) Unwrap() error { return e.Err }
+
+// VolumePoolRegisterError is returned when objstore's pool.Manager
+// rejects a Register call (typically duplicate name or empty
+// candidates).
+type VolumePoolRegisterError struct {
+	Name string
+	Err  error
+}
+
+// Error returns a human-readable description.
+func (e *VolumePoolRegisterError) Error() string {
+	return "cli: volume pool register " + strconv.Quote(e.Name) + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *VolumePoolRegisterError) Unwrap() error { return e.Err }
+
+// VolumePoolStrategyError is returned when a volume-pool YAML config
+// references an unknown strategy name.
+type VolumePoolStrategyError struct {
+	Strategy string
+	Err      error
+}
+
+// Error returns a human-readable description.
+func (e *VolumePoolStrategyError) Error() string {
+	if e.Err != nil {
+		return "cli: volume pool strategy " + strconv.Quote(e.Strategy) + ": " + e.Err.Error()
+	}
+	return "cli: volume pool strategy " + strconv.Quote(e.Strategy) + ": unsupported"
+}
+
+// Unwrap returns the underlying error.
+func (e *VolumePoolStrategyError) Unwrap() error { return e.Err }
+
+// VolumePoolPathError is returned when one of the configured local
+// paths cannot be created or wrapped as an objstore Backend.
+type VolumePoolPathError struct {
+	Pool string
+	Path string
+	Err  error
+}
+
+// Error returns a human-readable description.
+func (e *VolumePoolPathError) Error() string {
+	return "cli: volume pool " + strconv.Quote(e.Pool) + " path " +
+		strconv.Quote(e.Path) + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *VolumePoolPathError) Unwrap() error { return e.Err }

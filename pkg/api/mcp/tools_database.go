@@ -65,6 +65,18 @@ func databaseTools(dbSvc service.DatabaseServicer) []mcpserver.ServerTool {
 			Tool:    toolDatabaseUpdateConnection(),
 			Handler: handleDatabaseUpdateConnection(dbSvc),
 		},
+		{
+			Tool:    toolDatabaseSeal(),
+			Handler: handleDatabaseSeal(dbSvc),
+		},
+		{
+			Tool:    toolDatabaseUnseal(),
+			Handler: handleDatabaseUnseal(dbSvc),
+		},
+		{
+			Tool:    toolDatabaseBarrierStatus(),
+			Handler: handleDatabaseBarrierStatus(dbSvc),
+		},
 	}
 }
 
@@ -148,7 +160,7 @@ func toolDatabaseCreate() mcp.Tool {
 // handleDatabaseCreate returns a tool handler that delegates to
 // dbSvc.Create.
 func handleDatabaseCreate(dbSvc service.DatabaseServicer) mcpserver.ToolHandlerFunc {
-	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		name := mcp.ParseString(req, "name", "")
 		if name == "" {
 			return mcp.NewToolResultError("name is required"), nil
@@ -180,7 +192,7 @@ func handleDatabaseCreate(dbSvc service.DatabaseServicer) mcpserver.ToolHandlerF
 			cfg.Raft = raftCfg
 		}
 
-		info, err := dbSvc.Create(cfg)
+		info, err := dbSvc.CreateForTenant(ctx, cfg)
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_database_create", Err: err}
 		}
@@ -203,8 +215,8 @@ func toolDatabaseList() mcp.Tool {
 
 // handleDatabaseList returns a tool handler that delegates to dbSvc.List.
 func handleDatabaseList(dbSvc service.DatabaseServicer) mcpserver.ToolHandlerFunc {
-	return func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		infos, err := dbSvc.List()
+	return func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		infos, err := dbSvc.ListForTenant(ctx)
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_database_list", Err: err}
 		}
@@ -231,13 +243,13 @@ func toolDatabaseGet() mcp.Tool {
 
 // handleDatabaseGet returns a tool handler that delegates to dbSvc.Get.
 func handleDatabaseGet(dbSvc service.DatabaseServicer) mcpserver.ToolHandlerFunc {
-	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		name := mcp.ParseString(req, "name", "")
 		if name == "" {
 			return mcp.NewToolResultError("name is required"), nil
 		}
 
-		info, err := dbSvc.Get(name)
+		info, err := dbSvc.GetForTenant(ctx, name)
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_database_get", Err: err}
 		}
@@ -264,13 +276,13 @@ func toolDatabaseDrop() mcp.Tool {
 
 // handleDatabaseDrop returns a tool handler that delegates to dbSvc.Drop.
 func handleDatabaseDrop(dbSvc service.DatabaseServicer) mcpserver.ToolHandlerFunc {
-	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		name := mcp.ParseString(req, "name", "")
 		if name == "" {
 			return mcp.NewToolResultError("name is required"), nil
 		}
 
-		if err := dbSvc.Drop(name); err != nil {
+		if err := dbSvc.DropForTenant(ctx, name); err != nil {
 			return nil, &ToolError{Tool: "qrdb_database_drop", Err: err}
 		}
 
@@ -298,7 +310,7 @@ func toolDatabaseUpdateProtocol() mcp.Tool {
 // handleDatabaseUpdateProtocol returns a tool handler that delegates to
 // dbSvc.UpdateProtocol.
 func handleDatabaseUpdateProtocol(dbSvc service.DatabaseServicer) mcpserver.ToolHandlerFunc {
-	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		name := mcp.ParseString(req, "name", "")
 		if name == "" {
 			return mcp.NewToolResultError("name is required"), nil
@@ -309,7 +321,7 @@ func handleDatabaseUpdateProtocol(dbSvc service.DatabaseServicer) mcpserver.Tool
 			PostgreSQL: mcp.ParseBoolean(req, "postgresql", false),
 		}
 
-		info, err := dbSvc.UpdateProtocol(name, protocolCfg)
+		info, err := dbSvc.UpdateProtocolForTenant(ctx, name, protocolCfg)
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_database_update_protocol", Err: err}
 		}
@@ -343,7 +355,7 @@ func toolDatabaseUpdateEtcd() mcp.Tool {
 // handleDatabaseUpdateEtcd returns a tool handler that delegates to
 // dbSvc.UpdateEtcd.
 func handleDatabaseUpdateEtcd(dbSvc service.DatabaseServicer) mcpserver.ToolHandlerFunc {
-	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		name := mcp.ParseString(req, "name", "")
 		if name == "" {
 			return mcp.NewToolResultError("name is required"), nil
@@ -354,7 +366,7 @@ func handleDatabaseUpdateEtcd(dbSvc service.DatabaseServicer) mcpserver.ToolHand
 			ListenAddr: mcp.ParseString(req, "listen_addr", ""),
 		}
 
-		info, err := dbSvc.UpdateEtcd(name, etcdCfg)
+		info, err := dbSvc.UpdateEtcdForTenant(ctx, name, etcdCfg)
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_database_update_etcd", Err: err}
 		}
@@ -434,7 +446,7 @@ func toolDatabaseUpdateRaft() mcp.Tool {
 // handleDatabaseUpdateRaft returns a tool handler that delegates to
 // dbSvc.UpdateRaft.
 func handleDatabaseUpdateRaft(dbSvc service.DatabaseServicer) mcpserver.ToolHandlerFunc {
-	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		name := mcp.ParseString(req, "name", "")
 		if name == "" {
 			return mcp.NewToolResultError("name is required"), nil
@@ -443,7 +455,7 @@ func handleDatabaseUpdateRaft(dbSvc service.DatabaseServicer) mcpserver.ToolHand
 		clusterMode := mcp.ParseString(req, "cluster_mode", "")
 		raftCfg := buildRaftConfigFromUpdateRequest(req, clusterMode)
 
-		info, err := dbSvc.UpdateRaft(name, raftCfg)
+		info, err := dbSvc.UpdateRaftForTenant(ctx, name, raftCfg)
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_database_update_raft", Err: err}
 		}
@@ -474,7 +486,7 @@ func toolDatabaseUpdateBarrier() mcp.Tool {
 // handleDatabaseUpdateBarrier returns a tool handler that delegates to
 // dbSvc.UpdateBarrier.
 func handleDatabaseUpdateBarrier(dbSvc service.DatabaseServicer) mcpserver.ToolHandlerFunc {
-	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		name := mcp.ParseString(req, "name", "")
 		if name == "" {
 			return mcp.NewToolResultError("name is required"), nil
@@ -484,7 +496,7 @@ func handleDatabaseUpdateBarrier(dbSvc service.DatabaseServicer) mcpserver.ToolH
 			Enabled: mcp.ParseBoolean(req, "enabled", false),
 		}
 
-		info, err := dbSvc.UpdateBarrier(name, barrierCfg)
+		info, err := dbSvc.UpdateBarrierForTenant(ctx, name, barrierCfg)
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_database_update_barrier", Err: err}
 		}
@@ -528,7 +540,7 @@ func toolDatabaseUpdateConnection() mcp.Tool {
 // handleDatabaseUpdateConnection returns a tool handler that delegates to
 // dbSvc.UpdateConnection.
 func handleDatabaseUpdateConnection(dbSvc service.DatabaseServicer) mcpserver.ToolHandlerFunc {
-	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		name := mcp.ParseString(req, "name", "")
 		if name == "" {
 			return mcp.NewToolResultError("name is required"), nil
@@ -542,7 +554,7 @@ func handleDatabaseUpdateConnection(dbSvc service.DatabaseServicer) mcpserver.To
 			KeyFile:   mcp.ParseString(req, "key_file", ""),
 		}
 
-		info, err := dbSvc.UpdateConnection(name, connCfg)
+		info, err := dbSvc.UpdateConnectionForTenant(ctx, name, connCfg)
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_database_update_connection", Err: err}
 		}

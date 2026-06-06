@@ -12,7 +12,7 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/awnumar/memguard"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir"
 )
 
@@ -50,7 +50,7 @@ func (b *StorageBarrier) GenerateRecoveryKeys(ctx context.Context, threshold, to
 	if err != nil {
 		return nil, err
 	}
-	defer memguard.WipeBytes(rootKey)
+	defer secure.Wipe(rootKey)
 
 	shares, err := shamir.Split(rootKey, threshold, total)
 	if err != nil {
@@ -133,7 +133,7 @@ func (b *StorageBarrier) RecoverWithKeys(ctx context.Context, shareValues []stri
 	if err != nil {
 		return ErrShamirCombineFailed
 	}
-	defer memguard.WipeBytes(rootKey)
+	defer secure.Wipe(rootKey)
 
 	// Use unsealDirect to initialize/unseal the EpochBarrier with
 	// the recovered root key.
@@ -226,7 +226,7 @@ func newRecoveryStrategy(rootKey []byte, delegate SealingStrategy) *recoveryStra
 func (r *recoveryStrategy) ID() StrategyID       { return StrategyID("recovery") }
 func (r *recoveryStrategy) Available() bool      { return true }
 func (r *recoveryStrategy) HardwareBacked() bool { return false }
-func (r *recoveryStrategy) Close() error         { memguard.WipeBytes(r.rootKey); return nil }
+func (r *recoveryStrategy) Close() error         { secure.Wipe(r.rootKey); return nil }
 
 func (r *recoveryStrategy) SealRootKey(_ context.Context, _ []byte, _ Credentials) (*SealedRootKey, error) {
 	return nil, ErrAlreadyInitialized

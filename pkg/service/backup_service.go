@@ -134,6 +134,33 @@ type ShardSnapshotProvider interface {
 }
 
 // ---------------------------------------------------------------------------
+// Backup sink (durable repository)
+// ---------------------------------------------------------------------------
+
+// BackupSink is a durable repository for backups. When a BackupService is
+// configured with a sink, backup shard data is persisted to (and restored from)
+// the sink instead of being held in process memory — the sink is the source of
+// truth and survives restarts. Implementations include an object-store-backed
+// sink (see pkg/service/backupsink). When no sink is configured the service
+// keeps backups in memory only (non-durable; suitable for tests).
+type BackupSink interface {
+	// Write persists a backup's metadata and shard data.
+	Write(ctx context.Context, info BackupInfo, shards map[uint64][]byte) error
+
+	// ReadInfo returns a backup's metadata without loading its shard data.
+	ReadInfo(ctx context.Context, id string) (*BackupInfo, error)
+
+	// ReadShards loads a backup's shard data.
+	ReadShards(ctx context.Context, id string) (map[uint64][]byte, error)
+
+	// List returns metadata for all persisted backups.
+	List(ctx context.Context) ([]BackupInfo, error)
+
+	// Delete removes a persisted backup.
+	Delete(ctx context.Context, id string) error
+}
+
+// ---------------------------------------------------------------------------
 // BackupServicer interface
 // ---------------------------------------------------------------------------
 
@@ -173,6 +200,7 @@ type backupEntry struct {
 // for shard data access and an in-memory backup registry.
 type BackupService struct {
 	provider ShardSnapshotProvider
+	sink     BackupSink
 	mu       sync.RWMutex
 	backups  map[string]*backupEntry
 	idGen    func() string
@@ -188,6 +216,14 @@ type BackupServiceOption func(*BackupService)
 func WithIDGenerator(gen func() string) BackupServiceOption {
 	return func(s *BackupService) {
 		s.idGen = gen
+	}
+}
+
+// WithBackupSink configures a durable backup repository. When set, shard data is
+// persisted to the sink rather than held in process memory.
+func WithBackupSink(sink BackupSink) BackupServiceOption {
+	return func(s *BackupService) {
+		s.sink = sink
 	}
 }
 
@@ -309,13 +345,65 @@ func (s *BackupService) CreateBackup(ctx context.Context, opts BackupOptions) (*
 	info.Status = BackupStatusComplete
 	info.Duration = time.Since(start)
 
+	// With a durable sink, persist shard data to the repository and keep only
+	// metadata resident — the dataset is never pinned in process memory.
+	if s.sink != nil {
+		if err := s.sink.Write(ctx, info, shardData); err != nil {
+			info.Status = BackupStatusFailed
+			info.ErrorMessage = err.Error()
+			info.Duration = time.Since(start)
+			s.storeBackup(id, &backupEntry{info: info})
+			return &info, &BackupCreateError{Err: err}
+		}
+		s.storeBackup(id, &backupEntry{info: info})
+		return &info, nil
+	}
+
 	s.storeBackup(id, &backupEntry{info: info, shards: shardData})
 	return &info, nil
 }
 
+// loadEntry returns a backup entry with its shard data populated. When the
+// in-memory entry holds metadata only (sink-backed mode), the shard data is
+// read from the sink on demand.
+func (s *BackupService) loadEntry(ctx context.Context, id string) (*backupEntry, error) {
+	s.mu.RLock()
+	entry, ok := s.backups[id]
+	s.mu.RUnlock()
+
+	if ok && entry.shards != nil {
+		return entry, nil
+	}
+	if s.sink == nil {
+		if !ok {
+			return nil, &BackupNotFoundError{ID: id}
+		}
+		return entry, nil
+	}
+
+	info := BackupInfo{}
+	if ok {
+		info = entry.info
+	} else {
+		pInfo, err := s.sink.ReadInfo(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		info = *pInfo
+	}
+	shards, err := s.sink.ReadShards(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return &backupEntry{info: info, shards: shards}, nil
+}
+
 // ListBackups returns metadata for all available backups sorted by
 // timestamp descending (newest first).
-func (s *BackupService) ListBackups(_ context.Context) ([]BackupInfo, error) {
+func (s *BackupService) ListBackups(ctx context.Context) ([]BackupInfo, error) {
+	if s.sink != nil {
+		return s.sink.List(ctx)
+	}
 	s.mu.RLock()
 	result := make([]BackupInfo, 0, len(s.backups))
 	for _, entry := range s.backups {
@@ -330,24 +418,33 @@ func (s *BackupService) ListBackups(_ context.Context) ([]BackupInfo, error) {
 }
 
 // GetBackup returns metadata for a specific backup by ID.
-func (s *BackupService) GetBackup(_ context.Context, id string) (*BackupInfo, error) {
+func (s *BackupService) GetBackup(ctx context.Context, id string) (*BackupInfo, error) {
 	if id == "" {
 		return nil, &BackupEmptyIDError{}
 	}
 	s.mu.RLock()
 	entry, ok := s.backups[id]
 	s.mu.RUnlock()
-	if !ok {
-		return nil, &BackupNotFoundError{ID: id}
+	if ok {
+		info := entry.info
+		return &info, nil
 	}
-	info := entry.info
-	return &info, nil
+	if s.sink != nil {
+		return s.sink.ReadInfo(ctx, id)
+	}
+	return nil, &BackupNotFoundError{ID: id}
 }
 
 // DeleteBackup removes a backup by ID.
-func (s *BackupService) DeleteBackup(_ context.Context, id string) error {
+func (s *BackupService) DeleteBackup(ctx context.Context, id string) error {
 	if id == "" {
 		return &BackupEmptyIDError{}
+	}
+	if s.sink != nil {
+		s.mu.Lock()
+		delete(s.backups, id)
+		s.mu.Unlock()
+		return s.sink.Delete(ctx, id)
 	}
 	s.mu.Lock()
 	_, ok := s.backups[id]
@@ -367,11 +464,9 @@ func (s *BackupService) RestoreBackup(ctx context.Context, opts RestoreOptions) 
 		return nil, &BackupEmptyIDError{}
 	}
 
-	s.mu.RLock()
-	entry, ok := s.backups[opts.BackupID]
-	s.mu.RUnlock()
-	if !ok {
-		return nil, &BackupNotFoundError{ID: opts.BackupID}
+	entry, err := s.loadEntry(ctx, opts.BackupID)
+	if err != nil {
+		return nil, err
 	}
 
 	// Check if decryption key is needed.
@@ -456,16 +551,14 @@ func (s *BackupService) RestoreBackup(ctx context.Context, opts RestoreOptions) 
 
 // VerifyBackup verifies the integrity of a backup by recomputing the
 // checksum and comparing it to the stored value.
-func (s *BackupService) VerifyBackup(_ context.Context, id string) (*VerifyResult, error) {
+func (s *BackupService) VerifyBackup(ctx context.Context, id string) (*VerifyResult, error) {
 	if id == "" {
 		return nil, &BackupEmptyIDError{}
 	}
 
-	s.mu.RLock()
-	entry, ok := s.backups[id]
-	s.mu.RUnlock()
-	if !ok {
-		return nil, &BackupNotFoundError{ID: id}
+	entry, err := s.loadEntry(ctx, id)
+	if err != nil {
+		return nil, err
 	}
 
 	return s.verifyEntry(entry)

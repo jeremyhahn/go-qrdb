@@ -419,7 +419,7 @@ func TestKVTenantBarrierInit_NotEnabled(t *testing.T) {
 	ctx := context.Background()
 	svc := newKVService(t)
 
-	err := svc.TenantBarrierInit(ctx, "acme", 2, 3)
+	err := svc.TenantBarrierInit(ctx, "acme", "pw", 2, 3)
 	if !errors.Is(err, ErrBarrierNotEnabled) {
 		t.Fatalf("want ErrBarrierNotEnabled, got %v", err)
 	}
@@ -435,6 +435,81 @@ func TestKVTenantBarrierUnseal_NotEnabled(t *testing.T) {
 	}
 }
 
+// TestKVTenantService_CreateTenant_BarrierIsolationRejected verifies that the
+// no-seal KV-backed tenant service fails closed when barrier isolation is
+// requested: it has no barrier registry, so accepting the request would
+// persist a barrier-isolated tenant whose barrier never exists.
+func TestKVTenantService_CreateTenant_BarrierIsolationRejected(t *testing.T) {
+	ctx := context.Background()
+	store := newMemKVStore()
+	svc, err := NewKVTenantService(store, slog.Default())
+	if err != nil {
+		t.Fatalf("NewKVTenantService: %v", err)
+	}
+
+	info, err := svc.CreateTenant(ctx, "vault", "Vault", IsolationBarrier)
+	if !errors.Is(err, ErrBarrierIsolationUnavailable) {
+		t.Fatalf("want ErrBarrierIsolationUnavailable, got %v", err)
+	}
+	if info != nil {
+		t.Fatalf("expected nil TenantInfo on rejection, got %+v", info)
+	}
+
+	// Fail-closed contract: nothing must be persisted for the rejected tenant.
+	key := metadataPrefix + "vault"
+	data, getErr := store.Get(ctx, key)
+	if getErr != nil {
+		t.Fatalf("store.Get: %v", getErr)
+	}
+	if data != nil {
+		t.Fatalf("barrier-isolated tenant must not be persisted in no-seal mode")
+	}
+}
+
+// TestKVTenantService_CreateTenant_BarrierIsolationLeavesPrefixUnaffected
+// confirms the rejection is scoped to barrier isolation only: prefix and
+// default (empty) isolation continue to succeed.
+func TestKVTenantService_CreateTenant_BarrierIsolationLeavesPrefixUnaffected(t *testing.T) {
+	ctx := context.Background()
+	svc := newKVService(t)
+
+	if _, err := svc.CreateTenant(ctx, "p1", "Prefix One", IsolationPrefix); err != nil {
+		t.Fatalf("CreateTenant(prefix): %v", err)
+	}
+	if _, err := svc.CreateTenant(ctx, "p2", "Default", ""); err != nil {
+		t.Fatalf("CreateTenant(default): %v", err)
+	}
+}
+
+// TestKVTenantService_UpdateTenant_BarrierIsolationRejected verifies the
+// symmetric guard: an existing tenant cannot be upgraded to barrier isolation
+// in no-seal mode, and the upgrade attempt does not mutate stored metadata.
+func TestKVTenantService_UpdateTenant_BarrierIsolationRejected(t *testing.T) {
+	ctx := context.Background()
+	svc := newKVService(t)
+
+	if _, err := svc.CreateTenant(ctx, "upg", "Upgrade", IsolationPrefix); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+
+	info, err := svc.UpdateTenant(ctx, "upg", TenantPatch{IsolationType: IsolationBarrier})
+	if !errors.Is(err, ErrBarrierIsolationUnavailable) {
+		t.Fatalf("want ErrBarrierIsolationUnavailable, got %v", err)
+	}
+	if info != nil {
+		t.Fatalf("expected nil TenantInfo on rejection, got %+v", info)
+	}
+
+	// The stored tenant must still be prefix-isolated (unchanged).
+	stored, getErr := svc.GetTenant(ctx, "upg")
+	if getErr != nil {
+		t.Fatalf("GetTenant: %v", getErr)
+	}
+	if stored.IsolationType != IsolationPrefix {
+		t.Fatalf("isolation type = %q, want %q (unchanged)", stored.IsolationType, IsolationPrefix)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // IsolationType defaults and persistence
 // ---------------------------------------------------------------------------
@@ -443,13 +518,13 @@ func TestKVCreateTenant_DefaultIsolationType(t *testing.T) {
 	ctx := context.Background()
 	svc := newKVService(t)
 
-	// Empty isolation type should default to IsolationBarrier.
+	// Empty isolation type should default to IsolationPrefix (barrier is opt-in).
 	info, err := svc.CreateTenant(ctx, "iso-default", "Default ISO", "")
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
-	if info.EffectiveIsolationType() != IsolationBarrier {
-		t.Fatalf("isolation type = %q, want %q", info.EffectiveIsolationType(), IsolationBarrier)
+	if info.EffectiveIsolationType() != IsolationPrefix {
+		t.Fatalf("isolation type = %q, want %q", info.EffectiveIsolationType(), IsolationPrefix)
 	}
 }
 
@@ -489,8 +564,8 @@ func TestKVCreateTenant_MissingIsolationTypeBackCompat(t *testing.T) {
 	// Simulate an old tenant record with no isolation_type field by
 	// unmarshalling a minimal JSON blob and verifying the default.
 	info := &TenantInfo{ID: "old", Name: "Old Tenant"}
-	if info.EffectiveIsolationType() != IsolationBarrier {
-		t.Fatalf("EffectiveIsolationType() = %q, want %q for zero value", info.EffectiveIsolationType(), IsolationBarrier)
+	if info.EffectiveIsolationType() != IsolationPrefix {
+		t.Fatalf("EffectiveIsolationType() = %q, want %q for zero value (legacy -> shared store)", info.EffectiveIsolationType(), IsolationPrefix)
 	}
 }
 
@@ -519,7 +594,10 @@ func TestKVUpdateTenant_IsolationType(t *testing.T) {
 	ctx := context.Background()
 	svc := newKVService(t)
 
-	if _, err := svc.CreateTenant(ctx, "iso-upd", "ISO Update", IsolationBarrier); err != nil {
+	// Barrier creation is rejected in no-seal mode (see
+	// TestKVCreateTenant_BarrierIsolationRejected); create a prefix tenant
+	// and verify a prefix->prefix patch round-trips through UpdateTenant.
+	if _, err := svc.CreateTenant(ctx, "iso-upd", "ISO Update", IsolationPrefix); err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
 
@@ -549,5 +627,66 @@ func TestKVUpdateTenant_EmptyID(t *testing.T) {
 	_, err := svc.UpdateTenant(ctx, "", TenantPatch{Name: "No ID"})
 	if !errors.Is(err, ErrEmptyTenantID) {
 		t.Fatalf("want ErrEmptyTenantID, got %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Reserved tenant id rejection (kv-service path)
+// ---------------------------------------------------------------------------
+
+func TestKVCreateTenant_RejectsSystemID(t *testing.T) {
+	ctx := context.Background()
+	svc := newKVService(t)
+
+	_, err := svc.CreateTenant(ctx, SystemTenantID, "System", "")
+	var rerr *ReservedTenantIDError
+	if !errors.As(err, &rerr) {
+		t.Fatalf("expected *ReservedTenantIDError, got %T: %v", err, err)
+	}
+}
+
+func TestKVCreateTenant_RejectsLegacyDefaultID(t *testing.T) {
+	ctx := context.Background()
+	svc := newKVService(t)
+
+	_, err := svc.CreateTenant(ctx, "default", "Default", "")
+	var rerr *ReservedTenantIDError
+	if !errors.As(err, &rerr) {
+		t.Fatalf("expected *ReservedTenantIDError, got %T: %v", err, err)
+	}
+}
+
+func TestKVCreateTenant_RejectsUnderscorePrefix(t *testing.T) {
+	ctx := context.Background()
+	svc := newKVService(t)
+
+	_, err := svc.CreateTenant(ctx, "_special", "Underscore", "")
+	var rerr *ReservedTenantIDError
+	if !errors.As(err, &rerr) {
+		t.Fatalf("expected *ReservedTenantIDError, got %T: %v", err, err)
+	}
+}
+
+func TestKVCreateTenant_RejectsColonInfix(t *testing.T) {
+	ctx := context.Background()
+	svc := newKVService(t)
+
+	_, err := svc.CreateTenant(ctx, "acme:prod", "Colon", "")
+	var rerr *ReservedTenantIDError
+	if !errors.As(err, &rerr) {
+		t.Fatalf("expected *ReservedTenantIDError, got %T: %v", err, err)
+	}
+}
+
+func TestKVCreateTenant_InternalCallAllowsSystemID(t *testing.T) {
+	ctx := WithInternalCall(context.Background())
+	svc := newKVService(t)
+
+	info, err := svc.CreateTenant(ctx, SystemTenantID, "System", "")
+	if err != nil {
+		t.Fatalf("internal-call CreateTenant(system): %v", err)
+	}
+	if info.ID != SystemTenantID {
+		t.Errorf("ID = %q, want %q", info.ID, SystemTenantID)
 	}
 }

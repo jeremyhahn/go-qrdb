@@ -21,6 +21,7 @@ import (
 	"github.com/cockroachdb/pebble/v2"
 	"github.com/cockroachdb/pebble/v2/bloom"
 	"github.com/cockroachdb/pebble/v2/sstable"
+	"github.com/cockroachdb/pebble/v2/vfs"
 )
 
 // CompressionType represents the compression algorithm used by PebbleDB.
@@ -121,6 +122,14 @@ type Config struct {
 
 	// WALMinSyncInterval is the minimum time between WAL syncs. Default: 0.
 	WALMinSyncInterval time.Duration
+
+	// FS is an optional Pebble vfs.FS used to back all on-disk I/O. When
+	// non-nil it is threaded into pebble.Options.FS unchanged. The
+	// canonical use case is wrapping vfs.Default with the encrypting
+	// FS from pkg/seal/encfs so the underlying sstables, WAL, manifest
+	// and snapshot files are transparently encrypted at rest. When nil
+	// PebbleDB falls back to its default OS-backed FS.
+	FS vfs.FS
 }
 
 // Validate checks the configuration for invalid values.
@@ -290,6 +299,10 @@ func (c *Config) ToPebbleOptions() *pebble.Options {
 
 	if c.WALDir != "" {
 		opts.WALDir = c.WALDir
+	}
+
+	if c.FS != nil {
+		opts.FS = c.FS
 	}
 
 	for i := range opts.Levels {

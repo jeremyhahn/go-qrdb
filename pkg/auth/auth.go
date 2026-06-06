@@ -24,7 +24,12 @@ type Identity struct {
 	// Subject identifies the authenticated principal (e.g., CN from cert, JWT sub).
 	Subject string
 
-	// TenantID identifies the tenant namespace. Empty for system-level access.
+	// TenantID identifies the tenant namespace. Always non-empty for a
+	// well-formed identity — the bootstrap flow guarantees every user is
+	// created inside a real tenant (system or otherwise). Cross-tenant
+	// scope is granted by the system-tenant rule (a role grant in the
+	// reserved `system` tenant carries cross-tenant power); no identity
+	// uses an empty TenantID as a sentinel.
 	TenantID string
 
 	// Roles contains the roles assigned to this identity.
@@ -32,12 +37,6 @@ type Identity struct {
 
 	// Metadata holds additional identity attributes.
 	Metadata map[string]string
-}
-
-// IsCrossTenant reports whether this identity has cross-tenant access
-// (system-level identity with no specific tenant binding).
-func (id *Identity) IsCrossTenant() bool {
-	return id.TenantID == ""
 }
 
 // HasRole reports whether this identity has the specified role.

@@ -254,6 +254,9 @@ func (s *DatabaseService) DatabaseBarrierStatus(name string) (*seal.BarrierStatu
 // CreateForTenant creates a new database scoped to the context's tenant
 // and returns its runtime information.
 func (s *DatabaseService) CreateForTenant(ctx context.Context, cfg database.DatabaseConfig) (*database.DatabaseInfo, error) {
+	if tenant.FromContext(ctx) == tenant.SystemTenantID {
+		return s.Create(cfg)
+	}
 	if s.quotaChecker != nil {
 		tenantID := tenant.FromContext(ctx)
 		if err := s.quotaChecker.Check(ctx, tenantID, quota.ResourceDatabases); err != nil {
@@ -271,6 +274,9 @@ func (s *DatabaseService) CreateForTenant(ctx context.Context, cfg database.Data
 // GetForTenant returns runtime information about a database after verifying
 // tenant ownership via the context.
 func (s *DatabaseService) GetForTenant(ctx context.Context, name string) (*database.DatabaseInfo, error) {
+	if tenant.FromContext(ctx) == tenant.SystemTenantID {
+		return s.Get(name)
+	}
 	db, err := s.manager.GetForTenant(ctx, name)
 	if err != nil {
 		return nil, err
@@ -282,17 +288,26 @@ func (s *DatabaseService) GetForTenant(ctx context.Context, name string) (*datab
 // ListForTenant returns runtime information about databases owned by the
 // context's tenant, sorted by name.
 func (s *DatabaseService) ListForTenant(ctx context.Context) ([]database.DatabaseInfo, error) {
+	if tenant.FromContext(ctx) == tenant.SystemTenantID {
+		return s.List()
+	}
 	return s.manager.ListForTenant(ctx)
 }
 
 // DropForTenant drops a database after verifying tenant ownership via the context.
 func (s *DatabaseService) DropForTenant(ctx context.Context, name string) error {
+	if tenant.FromContext(ctx) == tenant.SystemTenantID {
+		return s.Drop(name)
+	}
 	return s.manager.DropForTenant(ctx, name)
 }
 
 // UpdateProtocolForTenant updates the wire protocol configuration for the named
 // database with tenant enforcement and returns the updated runtime information.
 func (s *DatabaseService) UpdateProtocolForTenant(ctx context.Context, name string, protocol database.ProtocolConfig) (*database.DatabaseInfo, error) {
+	if tenant.FromContext(ctx) == tenant.SystemTenantID {
+		return s.UpdateProtocol(name, protocol)
+	}
 	if err := s.manager.UpdateProtocolForTenant(ctx, name, protocol); err != nil {
 		return nil, err
 	}
@@ -302,6 +317,9 @@ func (s *DatabaseService) UpdateProtocolForTenant(ctx context.Context, name stri
 // UpdateEtcdForTenant updates the etcd wire protocol configuration for the named
 // database with tenant enforcement and returns the updated runtime information.
 func (s *DatabaseService) UpdateEtcdForTenant(ctx context.Context, name string, etcd *database.EtcdConfig) (*database.DatabaseInfo, error) {
+	if tenant.FromContext(ctx) == tenant.SystemTenantID {
+		return s.UpdateEtcd(name, etcd)
+	}
 	if err := s.manager.UpdateEtcdForTenant(ctx, name, etcd); err != nil {
 		return nil, err
 	}
@@ -311,6 +329,9 @@ func (s *DatabaseService) UpdateEtcdForTenant(ctx context.Context, name string, 
 // UpdateRaftForTenant updates the Raft consensus configuration for the named
 // database with tenant enforcement and returns the updated runtime information.
 func (s *DatabaseService) UpdateRaftForTenant(ctx context.Context, name string, raft *database.DatabaseRaftConfig) (*database.DatabaseInfo, error) {
+	if tenant.FromContext(ctx) == tenant.SystemTenantID {
+		return s.UpdateRaft(name, raft)
+	}
 	if err := s.manager.UpdateRaftForTenant(ctx, name, raft); err != nil {
 		return nil, err
 	}
@@ -320,6 +341,9 @@ func (s *DatabaseService) UpdateRaftForTenant(ctx context.Context, name string, 
 // UpdateBarrierForTenant updates the encryption barrier configuration for the named
 // database with tenant enforcement and returns the updated runtime information.
 func (s *DatabaseService) UpdateBarrierForTenant(ctx context.Context, name string, barrier *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
+	if tenant.FromContext(ctx) == tenant.SystemTenantID {
+		return s.UpdateBarrier(name, barrier)
+	}
 	if err := s.manager.UpdateBarrierForTenant(ctx, name, barrier); err != nil {
 		return nil, err
 	}
@@ -329,6 +353,9 @@ func (s *DatabaseService) UpdateBarrierForTenant(ctx context.Context, name strin
 // UpdateConnectionForTenant updates the remote connection configuration for the named
 // database with tenant enforcement and returns the updated runtime information.
 func (s *DatabaseService) UpdateConnectionForTenant(ctx context.Context, name string, conn *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
+	if tenant.FromContext(ctx) == tenant.SystemTenantID {
+		return s.UpdateConnection(name, conn)
+	}
 	if err := s.manager.UpdateConnectionForTenant(ctx, name, conn); err != nil {
 		return nil, err
 	}

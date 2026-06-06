@@ -459,9 +459,24 @@ func TestUnregisteredPermissionError_As(t *testing.T) {
 
 func TestAll_TotalCount(t *testing.T) {
 	// 6 KV + 6 MVCC + 1 Transaction + 1 Batch + 2 Watch + 5 Lease +
-	// 4 Index + 10 TimeSeries + 20 Vector + 8 Admin + 7 Users + 8 Roles +
-	// 4 Certs + 4 Seal + 5 Tenants = 91
-	const expectedTotal = 91
+	// 4 Index + 10 TimeSeries + 20 Vector + 8 Admin + 9 Users + 8 Roles +
+	// 4 Certs + 5 Tenants = 89 existing non-compliance perms
+	// (Users: create/read/update/delete/list/enable/disable +
+	//  get_by_cert_thumbprint/add_cert_binding)
+	// + 11 Keys + 10 Seal (4 existing + 6 new) + 8 Ceremony + 3 Audit
+	// + 5 AuthFactor = 126 self-scope perms.
+	// + 11 cross-scope perms (3 Tenants:*:cross + 1 AuditReadCross
+	//   + 5 VolumePool + 2 RegistrationConfig) = 137.
+	// + 4 tenant-only perms (tenant_barrier:init/unseal/seal/status) = 141.
+	// + 43 authorization-hardening perms = 184 total:
+	//   5 Databases + 7 Collections + 5 Locks + 8 Credentials + 4 Shard-control
+	//   (admin:start_shard/stop_shard/shard_state/topology) + 7 UserAuthFactors
+	//   + 1 IndexList + 2 Embedding + 4 RAG.
+	// + 10 cluster-ops perms (6 Backup + 4 Rebalance) = 194.
+	// + 3 database barrier perms (Seal/Unseal/BarrierStatus) = 197.
+	// + 2 credential perms (Store/Retrieve) = 199.
+	// + 1 permissions:resolve perm = 200 total.
+	const expectedTotal = 200
 	all := All()
 	if len(all) != expectedTotal {
 		t.Fatalf("All() count: got %d, want %d", len(all), expectedTotal)

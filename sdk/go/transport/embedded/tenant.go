@@ -18,6 +18,7 @@ import (
 	"context"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -194,7 +195,8 @@ func (t *Transport) DeleteTenant(ctx context.Context, tenantID string) error {
 }
 
 // TenantBarrierInit initializes a per-tenant barrier by delegating to
-// the TenantServicer.
+// the TenantServicer using the strategy field from the request. When
+// Strategy is empty the passphrase (software) strategy is used.
 func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.TenantBarrierInitRequest) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
@@ -203,7 +205,7 @@ func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.Tenant
 		return &NilServiceError{Service: "TenantServicer"}
 	}
 
-	return t.tenantSvc.TenantBarrierInit(ctx, req.TenantID, req.Threshold, req.Shares)
+	return t.tenantSvc.TenantBarrierInitWithStrategy(ctx, req.TenantID, req.Passphrase, req.Threshold, req.Shares, seal.StrategyID(req.Strategy))
 }
 
 // TenantBarrierUnseal unseals a per-tenant barrier by delegating to

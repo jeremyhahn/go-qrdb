@@ -202,3 +202,21 @@ plan, err := client.Rebalance().CreateRebalancePlan(ctx, &transport.RebalancePla
 })
 // Inspect plan.Moves without executing
 ```
+
+## Transport Exposure & Authorization
+
+The Rebalance Service is exposed on **every** API transport. Each operation is
+guarded by a dedicated permission (default-deny: an unmapped route/method/tool
+is rejected). The `Owner` role holds all permissions and therefore all rebalance
+operations.
+
+| Operation | Permission | gRPC RPC (`qrdb.v1.QRDBService/`) | REST | QUIC method | MCP tool |
+|-----------|-----------|-----------------------------------|------|-------------|----------|
+| Shard stats | `rebalance:stats` | `RebalanceGetShardStats` | `GET /v1/rebalance/shards/{id}` | `rebalance.GetShardStats` | `qrdb_rebalance_shard_stats` |
+| Create plan | `rebalance:plan` | `RebalanceCreatePlan` | `POST /v1/rebalance/plan` | `rebalance.CreatePlan` | `qrdb_rebalance_plan` |
+| Execute | `rebalance:execute` | `RebalanceExecute` | `POST /v1/rebalance/execute` | `rebalance.Execute` | `qrdb_rebalance_execute` |
+| Imbalance report | `rebalance:report` | `RebalanceGetImbalanceReport` | `GET /v1/rebalance/report` | `rebalance.GetImbalanceReport` | `qrdb_rebalance_report` |
+
+The Unix-domain-socket transport inherits the full gRPC surface (gRPC over UDS).
+The execute operation takes the full plan returned by the create-plan operation;
+on the MCP transport the plan is passed as a JSON object string.

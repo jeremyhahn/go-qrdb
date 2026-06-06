@@ -1,0 +1,377 @@
+// Copyright (c) 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package auth
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"os"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
+	"golang.org/x/crypto/argon2"
+	"golang.org/x/crypto/pbkdf2"
+)
+
+const (
+	// soPINCommitPrefix is the KV key prefix for hash-committed SO PINs.
+	// Full key: __sys:so-pin-commit/{tenantID}
+	soPINCommitPrefix = "__sys:so-pin-commit/"
+
+	// envGOFIPS140 is the environment variable that controls FIPS mode.
+	envGOFIPS140 = "GOFIPS140"
+
+	// argon2idTime is the Argon2id iteration count.
+	argon2idTime = 3
+
+	// argon2idMemory is the Argon2id memory in KiB (64 MiB).
+	argon2idMemory = 64 * 1024
+
+	// argon2idThreads is the Argon2id parallelism.
+	argon2idThreads = 4
+
+	// argon2idKeyLen is the derived key length in bytes.
+	argon2idKeyLen = 32
+
+	// pbkdf2Iterations is the PBKDF2-SHA256 iteration count per NIST SP 800-132.
+	pbkdf2Iterations = 600_000
+
+	// pbkdf2KeyLen is the PBKDF2 derived key length in bytes.
+	pbkdf2KeyLen = 32
+
+	// pinHashRecordLen is the total length of the stored hash record:
+	// kdfTag (1 byte) + ':' + saltHex (64 bytes) + ':' + hashHex (64 bytes) = 131 bytes.
+	//
+	// kdfTags:
+	//   'A' = Argon2id
+	//   'P' = PBKDF2-SHA256
+)
+
+var (
+	// ErrSOPINNotSet is returned when VerifySOPIN is called before SetSOPIN.
+	ErrSOPINNotSet = errors.New("auth: SO PIN not set for tenant")
+
+	// ErrSOPINInvalid is returned when the presented PIN does not match.
+	ErrSOPINInvalid = errors.New("auth: SO PIN verification failed")
+
+	// ErrSOPINEmptyTenant is returned when the tenantID is empty.
+	ErrSOPINEmptyTenant = errors.New("auth: tenant ID is required for SO PIN operations")
+
+	// ErrSOPINEmptyPIN is returned when the PIN bytes are empty.
+	ErrSOPINEmptyPIN = errors.New("auth: SO PIN must not be empty")
+
+	// ErrSOPINAlreadySet is returned when SetSOPIN is called for a tenant
+	// that already has a PIN committed.
+	ErrSOPINAlreadySet = errors.New("auth: SO PIN already set for tenant; use RotateSOPIN to change it")
+
+	// ErrNilStore is returned when a nil KVStore is provided.
+	ErrNilStore = errors.New("auth: nil kv store provided")
+)
+
+// SOAuthenticator verifies SO dual-factor authentication:
+// mTLS identity (established externally) + in-band PIN on every request.
+//
+// The PIN is hash-committed at SO bootstrap via SetSOPIN using Argon2id
+// (standard mode) or PBKDF2-SHA256 (GOFIPS140=1). The hash record is
+// persisted at __sys:so-pin-commit/{tenantID} via Raft so all nodes can
+// verify. Verification is constant-time.
+//
+// PIN material is held in *secure.Buffer instances and destroyed
+// immediately after hashing.
+type SOAuthenticator struct {
+	store  kvstore.KVStore
+	audit  audit.AuditLogger
+	logger *slog.Logger
+}
+
+// NewSOAuthenticator constructs an SOAuthenticator. Both store and logger
+// must be non-nil.
+func NewSOAuthenticator(store kvstore.KVStore, auditLogger audit.AuditLogger, logger *slog.Logger) (*SOAuthenticator, error) {
+	if store == nil {
+		return nil, ErrNilStore
+	}
+	if auditLogger == nil {
+		return nil, ErrNilAuditLogger
+	}
+	if logger == nil {
+		return nil, ErrNilLogger
+	}
+	return &SOAuthenticator{store: store, audit: auditLogger, logger: logger}, nil
+}
+
+var (
+	// ErrNilAuditLogger is returned when a nil audit logger is provided to auth constructors.
+	ErrNilAuditLogger = errors.New("auth: nil audit logger provided")
+
+	// ErrNilLogger is returned when a nil slog logger is provided to auth constructors.
+	ErrNilLogger = errors.New("auth: nil logger provided")
+)
+
+// SetSOPIN commits the hash of newPIN for the given tenant. It uses Argon2id
+// in standard mode or PBKDF2-SHA256 in FIPS mode (GOFIPS140 env var set).
+//
+// newPIN is wrapped in a *secure.Buffer and destroyed after hashing.
+// Returns ErrSOPINAlreadySet if a PIN is already committed for the tenant.
+func (a *SOAuthenticator) SetSOPIN(ctx context.Context, tenantID string, newPIN []byte) error {
+	if tenantID == "" {
+		return ErrSOPINEmptyTenant
+	}
+	if len(newPIN) == 0 {
+		return ErrSOPINEmptyPIN
+	}
+
+	// Wrap PIN in a secure.Buffer; NewBufferFromBytes wipes newPIN on
+	// entry so the caller's slice is zeroed.
+	pinBuf, err := secure.NewBufferFromBytes(newPIN)
+	if err != nil {
+		return err
+	}
+	defer pinBuf.Destroy()
+
+	// Reject if already committed.
+	key := soPINCommitPrefix + tenantID
+	existing, err := a.store.Get(ctx, key)
+	if err != nil {
+		return fmt.Errorf("auth: store get: %w", err)
+	}
+	if existing != nil {
+		return ErrSOPINAlreadySet
+	}
+
+	record, err := hashPIN(pinBuf.Bytes())
+	if err != nil {
+		a.audit.Emit(ctx, audit.AuditEvent{
+			TenantID: tenantID,
+			Resource: "so-pin",
+			Action:   "set",
+			Outcome:  audit.OutcomeFailure + ":hash",
+		})
+		return err
+	}
+
+	if err := a.store.Put(ctx, key, []byte(record)); err != nil {
+		a.audit.Emit(ctx, audit.AuditEvent{
+			TenantID: tenantID,
+			Resource: "so-pin",
+			Action:   "set",
+			Outcome:  audit.OutcomeFailure + ":store",
+		})
+		return fmt.Errorf("auth: store put: %w", err)
+	}
+
+	a.logger.Info("SO PIN committed", slog.String("tenantID", tenantID))
+	a.audit.Emit(ctx, audit.AuditEvent{
+		TenantID: tenantID,
+		Resource: "so-pin",
+		Action:   "set",
+		Outcome:  audit.OutcomeSuccess,
+	})
+	return nil
+}
+
+// VerifySOPIN checks whether presentedPIN matches the committed hash for the
+// tenant. Verification is constant-time to prevent timing attacks. The PIN
+// material is wrapped in a *secure.Buffer and destroyed after use.
+func (a *SOAuthenticator) VerifySOPIN(ctx context.Context, tenantID string, presentedPIN []byte) error {
+	if tenantID == "" {
+		return ErrSOPINEmptyTenant
+	}
+	if len(presentedPIN) == 0 {
+		return ErrSOPINEmptyPIN
+	}
+
+	pinBuf, err := secure.NewBufferFromBytes(presentedPIN)
+	if err != nil {
+		return err
+	}
+	defer pinBuf.Destroy()
+
+	key := soPINCommitPrefix + tenantID
+	record, err := a.store.Get(ctx, key)
+	if err != nil {
+		return fmt.Errorf("auth: store get: %w", err)
+	}
+	if record == nil {
+		a.audit.Emit(ctx, audit.AuditEvent{
+			TenantID: tenantID,
+			Resource: "so-pin",
+			Action:   "verify",
+			Outcome:  audit.OutcomeFailure + ":not-set",
+		})
+		return ErrSOPINNotSet
+	}
+
+	if err := verifyPIN(pinBuf.Bytes(), string(record)); err != nil {
+		a.audit.Emit(ctx, audit.AuditEvent{
+			TenantID: tenantID,
+			Resource: "so-pin",
+			Action:   "verify",
+			Outcome:  audit.OutcomeFailure + ":invalid",
+		})
+		return ErrSOPINInvalid
+	}
+
+	a.audit.Emit(ctx, audit.AuditEvent{
+		TenantID: tenantID,
+		Resource: "so-pin",
+		Action:   "verify",
+		Outcome:  audit.OutcomeSuccess,
+	})
+	return nil
+}
+
+// RotateSOPIN replaces the committed SO PIN hash for the tenant. It verifies
+// the old PIN before accepting the new one.
+func (a *SOAuthenticator) RotateSOPIN(ctx context.Context, tenantID string, oldPIN, newPIN []byte) error {
+	if tenantID == "" {
+		return ErrSOPINEmptyTenant
+	}
+	if len(newPIN) == 0 {
+		return ErrSOPINEmptyPIN
+	}
+
+	// Verify the old PIN first.
+	if err := a.VerifySOPIN(ctx, tenantID, oldPIN); err != nil {
+		return err
+	}
+
+	newBuf, err := secure.NewBufferFromBytes(newPIN)
+	if err != nil {
+		return err
+	}
+	defer newBuf.Destroy()
+
+	record, err := hashPIN(newBuf.Bytes())
+	if err != nil {
+		return err
+	}
+
+	key := soPINCommitPrefix + tenantID
+	if err := a.store.Put(ctx, key, []byte(record)); err != nil {
+		return fmt.Errorf("auth: store put: %w", err)
+	}
+
+	a.logger.Info("SO PIN rotated", slog.String("tenantID", tenantID))
+	a.audit.Emit(ctx, audit.AuditEvent{
+		TenantID: tenantID,
+		Resource: "so-pin",
+		Action:   "rotate",
+		Outcome:  audit.OutcomeSuccess,
+	})
+	return nil
+}
+
+// fipsEnabled returns true when the GOFIPS140 environment variable is non-empty.
+func fipsEnabled() bool {
+	return os.Getenv(envGOFIPS140) != ""
+}
+
+// hashPIN derives a hash record from the PIN bytes. The record format is:
+//
+//	kdfTag:saltHex:hashHex
+//
+// where kdfTag is 'A' (Argon2id) or 'P' (PBKDF2-SHA256).
+// A 32-byte random salt is generated for each call.
+func hashPIN(pin []byte) (string, error) {
+	salt := make([]byte, 32)
+	if _, err := cryptoRandRead(salt); err != nil {
+		return "", fmt.Errorf("auth: generate salt: %w", err)
+	}
+
+	var (
+		hash   []byte
+		kdfTag byte
+	)
+
+	if fipsEnabled() {
+		// PBKDF2-SHA256 per NIST SP 800-132.
+		hash = pbkdf2.Key(pin, salt, pbkdf2Iterations, pbkdf2KeyLen, sha256.New)
+		kdfTag = 'P'
+	} else {
+		// Argon2id: 3 iterations, 64 MiB, 4 threads.
+		hash = argon2.IDKey(pin, salt, argon2idTime, argon2idMemory, argon2idThreads, argon2idKeyLen)
+		kdfTag = 'A'
+	}
+
+	return fmt.Sprintf("%c:%s:%s",
+		kdfTag,
+		hex.EncodeToString(salt),
+		hex.EncodeToString(hash),
+	), nil
+}
+
+// verifyPIN checks presentedPIN against the stored hash record using
+// constant-time comparison.
+func verifyPIN(presentedPIN []byte, record string) error {
+	if len(record) < 3 {
+		return ErrSOPINInvalid
+	}
+	kdfTag := record[0]
+	rest := record[2:] // skip "X:"
+
+	// Split "saltHex:hashHex".
+	colonIdx := -1
+	for i, c := range rest {
+		if c == ':' {
+			colonIdx = i
+			break
+		}
+	}
+	if colonIdx < 0 {
+		return ErrSOPINInvalid
+	}
+
+	saltHex := rest[:colonIdx]
+	hashHex := rest[colonIdx+1:]
+
+	salt, err := hex.DecodeString(saltHex)
+	if err != nil {
+		return ErrSOPINInvalid
+	}
+	storedHash, err := hex.DecodeString(hashHex)
+	if err != nil {
+		return ErrSOPINInvalid
+	}
+
+	var derived []byte
+	switch kdfTag {
+	case 'P':
+		derived = pbkdf2.Key(presentedPIN, salt, pbkdf2Iterations, pbkdf2KeyLen, sha256.New)
+	case 'A':
+		derived = argon2.IDKey(presentedPIN, salt, argon2idTime, argon2idMemory, argon2idThreads, argon2idKeyLen)
+	default:
+		return ErrSOPINInvalid
+	}
+
+	// Constant-time comparison.
+	if subtle.ConstantTimeCompare(derived, storedHash) != 1 {
+		return ErrSOPINInvalid
+	}
+	return nil
+}
+
+// cryptoRandRead is the package-level randomness source. It can be replaced
+// in tests to simulate read failures.
+var cryptoRandRead = func(b []byte) (int, error) {
+	return io.ReadFull(rand.Reader, b)
+}

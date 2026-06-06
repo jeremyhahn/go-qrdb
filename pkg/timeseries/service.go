@@ -17,6 +17,8 @@ package timeseries
 import (
 	"context"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 )
 
 // TimeSeriesServicer provides time-series data storage and aggregation
@@ -33,16 +35,27 @@ type TimeSeriesServicer interface {
 	// range [start, end).
 	Query(ctx context.Context, metric string, start, end time.Time, opts ...TSQueryOption) ([]DataPoint, error)
 
+	// QueryWithConsistency is Query with an explicit read-consistency level.
+	QueryWithConsistency(ctx context.Context, metric string, start, end time.Time, ropts consistency.ReadOptions, opts ...TSQueryOption) ([]DataPoint, error)
+
 	// Aggregate computes an aggregation function over data points for
 	// a metric within the given time range, grouped by the specified
 	// interval.
 	Aggregate(ctx context.Context, metric string, start, end time.Time, fn AggFunc, interval time.Duration) ([]AggResult, error)
+
+	// AggregateWithConsistency is Aggregate with an explicit read-consistency
+	// level.
+	AggregateWithConsistency(ctx context.Context, metric string, start, end time.Time, fn AggFunc, interval time.Duration, ropts consistency.ReadOptions) ([]AggResult, error)
 
 	// WritePoint stores a single validated DataPoint.
 	WritePoint(ctx context.Context, point *DataPoint) error
 
 	// QueryRich performs a rich query with filtering, aggregation, downsampling, and grouping.
 	QueryRich(ctx context.Context, req *QueryRequest) (*QueryResult, error)
+
+	// QueryRichWithConsistency is QueryRich with an explicit read-consistency
+	// level.
+	QueryRichWithConsistency(ctx context.Context, req *QueryRequest, ropts consistency.ReadOptions) (*QueryResult, error)
 
 	// DeleteSeries deletes data points matching the request criteria.
 	DeleteSeries(ctx context.Context, req *DeleteRequest) error
@@ -55,4 +68,8 @@ type TimeSeriesServicer interface {
 
 	// ListMetrics returns metric names matching the optional prefix.
 	ListMetrics(prefix string, limit int) ([]string, error)
+
+	// ListMetricsWithConsistency is ListMetrics with an explicit
+	// read-consistency level.
+	ListMetricsWithConsistency(ctx context.Context, prefix string, limit int, ropts consistency.ReadOptions) ([]string, error)
 }

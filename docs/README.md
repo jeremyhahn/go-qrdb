@@ -27,6 +27,8 @@ from the test suite.
 
 | Document | Description |
 |---|---|
+| [bootstrap.md](bootstrap.md) | First-run initialization: TLS generation, barrier setup, role/user bootstrap, cluster join, single-admin vs M-of-N modes |
+| [discovery.md](discovery.md) | Peer discovery (static/multicast/dns/token), cluster bootstrap orchestration (`pkg/cluster`), opt-in dynamic membership, and the SDK `Cluster()` client |
 | [api.md](api.md) | REST, gRPC, Unix socket, and MCP API reference with endpoint specifications and error codes |
 | [01-architecture.md](01-architecture.md) | System overview, three-layer store architecture (storage backends, store engines, state machines), package structure, data flow, dependency graph, and key design decisions |
 | [02-mvcc.md](02-mvcc.md) | MVCC engine internals, revision tracking, key encoding scheme, compaction, and historical reads |
@@ -46,6 +48,7 @@ from the test suite.
 | [16-query-planner.md](16-query-planner.md) | Query planner & fluent query API: cost-based index selection, DAO query builder, security model, and legacy index escape hatches |
 | [17-entity-sql-bridge.md](17-entity-sql-bridge.md) | Entity-SQL bridge: ORM-style query interface, schema generation from entity types, SQL integration |
 | [18-distributed-locking.md](18-distributed-locking.md) | Distributed lock service: fencing tokens, blocking/non-blocking acquisition, reentrant locks, lease-based TTL, watch-based blocking, REST/gRPC APIs |
+| [scoping.md](scoping.md) | Tenant & database scoping: tenant from the authenticated mTLS identity, X-QRDB-Database for multi-database isolation, keyspace + vector-namespace tenant-partitioning |
 | [embedding/README.md](embedding/README.md) | Embedding service: OpenAI-compatible providers (Ollama, OpenAI, vLLM), caching, batch processing |
 | [rag/README.md](rag/README.md) | Retrieval-Augmented Generation: document chunking, ingestion pipeline, semantic retrieval |
 | [sql/README.md](sql/README.md) | SQL wire protocol: MySQL and PostgreSQL compatibility, mTLS auth, PG syntax translation, multi-tenancy, index-accelerated WHERE clauses, and query optimization |
@@ -55,9 +58,13 @@ from the test suite.
 
 | Document | Description |
 |---|---|
-| [seal/README.md](seal/README.md) | ExtendedBarrier: three-layer architecture, dual-mode operation, storage wrapping |
+| [seal/README.md](seal/README.md) | StorageBarrier: three-layer architecture, Software / Shamir / None strategies, hardware via `WithStrategyRegistry`, DEK management |
 | [seal/shamir.md](seal/shamir.md) | Shamir threshold unsealing, recovery keys, rekey, root token generation |
-| [seal/multi-tenant.md](seal/multi-tenant.md) | BarrierRegistry, TenantBarrier, per-tenant DEK isolation |
+| [seal/auth-factors.md](seal/auth-factors.md) | `Factor` framework + `FactorRegistry`; hardware factor implementations injected from go-xkms |
+| [seal/multi-tenant.md](seal/multi-tenant.md) | BarrierRegistry, TenantBarrier, per-tenant DEK isolation, IsolationType (barrier vs prefix) |
+| [pin/README.md](pin/README.md) | Canonical PIN management (`PINBackend`, `SoftwareBackend`, Argon2id / PBKDF2 with FIPS auto-detect, `LockoutStatus`, FIDO2 PIN hash interop) |
+| [credentials/README.md](credentials/README.md) | Versioned credential rotation: `RotateCredential` / `ListCredentialVersions` / `RetrieveCredentialVersion` / `GCExpiredVersions`, grace periods, storage layout |
+| [ceremony/README.md](ceremony/README.md) | Barrier-only initialization ceremony, three-state machine, PIN delegation to `pkg/pin.PINBackend`, relationship to `firstboot` |
 | [storage/README.md](storage/README.md) | Canonical storage engine layer: file, memory, pebble, namespace |
 | [auth/README.md](auth/README.md) | Pluggable authentication interfaces, default mTLS authenticator |
 | [sdk/README.md](sdk/README.md) | Go SDK with 5 transports: REST, gRPC, Unix, MCP, embedded |

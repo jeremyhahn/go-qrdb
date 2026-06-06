@@ -198,16 +198,14 @@ func TestFSM_MVCCPut_NotConfigured(t *testing.T) {
 	results := make([]sm.Result, 1)
 
 	err := fsm.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected ServiceNotConfiguredError, got nil")
+	if err != nil {
+		t.Fatalf("expected nil error (SNC encoded in result.Data), got %v", err)
 	}
-
-	var svcErr *ServiceNotConfiguredError
-	if !errors.As(err, &svcErr) {
-		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
+	if len(results[0].Data) == 0 {
+		t.Fatal("expected ServiceNotConfiguredError encoded in result.Data")
 	}
-	if svcErr.Service != "mvcc" {
-		t.Fatalf("expected service 'mvcc', got %q", svcErr.Service)
+	if !bytes.Contains(results[0].Data, []byte("mvcc")) {
+		t.Fatalf("expected Data to mention %q, got %q", "mvcc", results[0].Data)
 	}
 }
 
@@ -282,16 +280,14 @@ func TestFSM_MVCCDelete_NotConfigured(t *testing.T) {
 	results := make([]sm.Result, 1)
 
 	err := fsm.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected ServiceNotConfiguredError, got nil")
+	if err != nil {
+		t.Fatalf("expected nil error (SNC encoded in result.Data), got %v", err)
 	}
-
-	var svcErr *ServiceNotConfiguredError
-	if !errors.As(err, &svcErr) {
-		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
+	if len(results[0].Data) == 0 {
+		t.Fatal("expected ServiceNotConfiguredError encoded in result.Data")
 	}
-	if svcErr.Service != "mvcc" {
-		t.Fatalf("expected service 'mvcc', got %q", svcErr.Service)
+	if !bytes.Contains(results[0].Data, []byte("mvcc")) {
+		t.Fatalf("expected Data to mention %q, got %q", "mvcc", results[0].Data)
 	}
 }
 
@@ -381,16 +377,14 @@ func TestFSM_MVCCRange_NotConfigured(t *testing.T) {
 	results := make([]sm.Result, 1)
 
 	err := fsm.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected ServiceNotConfiguredError, got nil")
+	if err != nil {
+		t.Fatalf("expected nil error (SNC encoded in result.Data), got %v", err)
 	}
-
-	var svcErr *ServiceNotConfiguredError
-	if !errors.As(err, &svcErr) {
-		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
+	if len(results[0].Data) == 0 {
+		t.Fatal("expected ServiceNotConfiguredError encoded in result.Data")
 	}
-	if svcErr.Service != "mvcc" {
-		t.Fatalf("expected service 'mvcc', got %q", svcErr.Service)
+	if !bytes.Contains(results[0].Data, []byte("mvcc")) {
+		t.Fatalf("expected Data to mention %q, got %q", "mvcc", results[0].Data)
 	}
 }
 
@@ -457,16 +451,14 @@ func TestFSM_MVCCCompact_NotConfigured(t *testing.T) {
 	results := make([]sm.Result, 1)
 
 	err := fsm.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected ServiceNotConfiguredError, got nil")
+	if err != nil {
+		t.Fatalf("expected nil error (SNC encoded in result.Data), got %v", err)
 	}
-
-	var svcErr *ServiceNotConfiguredError
-	if !errors.As(err, &svcErr) {
-		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
+	if len(results[0].Data) == 0 {
+		t.Fatal("expected ServiceNotConfiguredError encoded in result.Data")
 	}
-	if svcErr.Service != "mvcc" {
-		t.Fatalf("expected service 'mvcc', got %q", svcErr.Service)
+	if !bytes.Contains(results[0].Data, []byte("mvcc")) {
+		t.Fatalf("expected Data to mention %q, got %q", "mvcc", results[0].Data)
 	}
 }
 
@@ -644,16 +636,14 @@ func TestFSM_Transaction_NotConfigured(t *testing.T) {
 	results := make([]sm.Result, 1)
 
 	err := fsm.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected ServiceNotConfiguredError, got nil")
+	if err != nil {
+		t.Fatalf("expected nil error (SNC encoded in result.Data), got %v", err)
 	}
-
-	var svcErr *ServiceNotConfiguredError
-	if !errors.As(err, &svcErr) {
-		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
+	if len(results[0].Data) == 0 {
+		t.Fatal("expected ServiceNotConfiguredError encoded in result.Data")
 	}
-	if svcErr.Service != "mvcc" {
-		t.Fatalf("expected service 'mvcc', got %q", svcErr.Service)
+	if !bytes.Contains(results[0].Data, []byte("mvcc")) {
+		t.Fatalf("expected Data to mention %q, got %q", "mvcc", results[0].Data)
 	}
 }
 

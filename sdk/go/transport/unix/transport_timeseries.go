@@ -65,14 +65,20 @@ func (t *Transport) TSQuery(ctx context.Context, req *transport.TSQueryRequest) 
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	if req.Consistency != "" {
+		if _, perr := transport.ParseConsistencyLevel(req.Consistency); perr != nil {
+			return nil, &transport.RequestError{Method: "TSQuery", Err: perr}
+		}
+	}
 
 	resp, err := t.client.TSQuery(ctx, &pb.TSQueryRequest{
-		Metric:     req.Metric,
-		StartNs:    req.StartNs,
-		EndNs:      req.EndNs,
-		Tags:       sdkTagsToProto(req.Tags),
-		Limit:      req.Limit,
-		Descending: req.Descending,
+		Metric:      req.Metric,
+		StartNs:     req.StartNs,
+		EndNs:       req.EndNs,
+		Tags:        sdkTagsToProto(req.Tags),
+		Limit:       req.Limit,
+		Descending:  req.Descending,
+		Consistency: protoConsistencyFromString(req.Consistency),
 	})
 	if err != nil {
 		return nil, mapGRPCError("TSQuery", err)
@@ -91,13 +97,19 @@ func (t *Transport) TSAggregate(ctx context.Context, req *transport.TSAggregateR
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	if req.Consistency != "" {
+		if _, perr := transport.ParseConsistencyLevel(req.Consistency); perr != nil {
+			return nil, &transport.RequestError{Method: "TSAggregate", Err: perr}
+		}
+	}
 
 	resp, err := t.client.TSAggregate(ctx, &pb.TSAggregateRequest{
-		Metric:     req.Metric,
-		StartNs:    req.StartNs,
-		EndNs:      req.EndNs,
-		Function:   sdkAggFuncToProto(req.Function),
-		IntervalNs: req.IntervalNs,
+		Metric:      req.Metric,
+		StartNs:     req.StartNs,
+		EndNs:       req.EndNs,
+		Function:    sdkAggFuncToProto(req.Function),
+		IntervalNs:  req.IntervalNs,
+		Consistency: protoConsistencyFromString(req.Consistency),
 	})
 	if err != nil {
 		return nil, mapGRPCError("TSAggregate", err)
@@ -135,6 +147,11 @@ func (t *Transport) TSRichQuery(ctx context.Context, req *transport.TSRichQueryR
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	if req.Consistency != "" {
+		if _, perr := transport.ParseConsistencyLevel(req.Consistency); perr != nil {
+			return nil, &transport.RequestError{Method: "TSRichQuery", Err: perr}
+		}
+	}
 
 	resp, err := t.client.TSRichQuery(ctx, &pb.TSRichQueryRequest{
 		Metric:      req.Metric,
@@ -146,6 +163,7 @@ func (t *Transport) TSRichQuery(ctx context.Context, req *transport.TSRichQueryR
 		GroupBy:     req.GroupBy,
 		Limit:       int32(req.Limit),
 		Percentile:  req.Percentile,
+		Consistency: protoConsistencyFromString(req.Consistency),
 	})
 	if err != nil {
 		return nil, mapGRPCError("TSRichQuery", err)
@@ -258,10 +276,16 @@ func (t *Transport) TSListMetrics(ctx context.Context, req *transport.TSListMetr
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	if req.Consistency != "" {
+		if _, perr := transport.ParseConsistencyLevel(req.Consistency); perr != nil {
+			return nil, &transport.RequestError{Method: "TSListMetrics", Err: perr}
+		}
+	}
 
 	resp, err := t.client.TSListMetrics(ctx, &pb.TSListMetricsRequest{
-		Prefix: req.Prefix,
-		Limit:  req.Limit,
+		Prefix:      req.Prefix,
+		Limit:       req.Limit,
+		Consistency: protoConsistencyFromString(req.Consistency),
 	})
 	if err != nil {
 		return nil, mapGRPCError("TSListMetrics", err)
@@ -275,6 +299,22 @@ func (t *Transport) TSListMetrics(ctx context.Context, req *transport.TSListMetr
 // ---------------------------------------------------------------------------
 // Conversion helpers
 // ---------------------------------------------------------------------------
+
+// protoConsistencyFromString maps an SDK consistency string to its protobuf
+// ConsistencyLevel. An empty string maps to UNSPECIFIED, which tells the
+// server to use its default (linearizable) read path.
+func protoConsistencyFromString(s string) pb.ConsistencyLevel {
+	switch s {
+	case "strong":
+		return pb.ConsistencyLevel_CONSISTENCY_LEVEL_STRONG
+	case "linearizable":
+		return pb.ConsistencyLevel_CONSISTENCY_LEVEL_LINEARIZABLE
+	case "eventual", "stale":
+		return pb.ConsistencyLevel_CONSISTENCY_LEVEL_EVENTUAL
+	default:
+		return pb.ConsistencyLevel_CONSISTENCY_LEVEL_UNSPECIFIED
+	}
+}
 
 // sdkPointToProto converts an SDK TSDataPoint to a proto TSDataPoint.
 func sdkPointToProto(p *transport.TSDataPoint) *pb.TSDataPoint {

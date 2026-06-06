@@ -57,6 +57,7 @@ type compactRequest struct {
 //   - keys-only: return keys without values (true/false)
 //   - sort-order: none, ascend, descend
 //   - sort-target: key, version, create_revision, mod_revision, value
+//   - consistency: strong|linearizable|eventual (optional; absent = default)
 func (s *Server) handleRange(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	mvccSvc := s.mvccSvcFor(w, ctx)
@@ -115,7 +116,19 @@ func (s *Server) handleRange(w http.ResponseWriter, r *http.Request) {
 		opts = append(opts, service.WithSort(sortOrder, sortTarget))
 	}
 
-	kvs, count, err := mvccSvc.Range(ctx, start, end, opts...)
+	consistOpts, consistSpecified, consistOK := parseConsistencyParam(w, q)
+	if !consistOK {
+		return
+	}
+
+	var kvs []*service.KeyValue
+	var count int64
+	var err error
+	if consistSpecified {
+		kvs, count, err = mvccSvc.RangeWithConsistency(ctx, start, end, consistOpts, opts...)
+	} else {
+		kvs, count, err = mvccSvc.Range(ctx, start, end, opts...)
+	}
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return

@@ -299,6 +299,20 @@ func generateCATLS() (*TLSBundle, error) {
 // for peer verification; certFile and keyFile provide the leaf cert and
 // key for this node.
 func loadTLSFromFiles(caFile, certFile, keyFile string) (*TLSBundle, error) {
+	return loadTLSFromFilesWithExtra(caFile, certFile, keyFile, nil, nil)
+}
+
+// loadTLSFromFilesWithExtra loads TLS certificate material from the
+// supplied file paths and merges any additional CA pools into the
+// returned bundle's CACertPool. additionalCAs is layered onto the
+// server CA pool used for peer verification (e.g.,
+// cfg.TLS.AdditionalCAs); clientCAFiles is reserved for client
+// certificate verification (e.g., cfg.MTLS.ClientCAFiles) and is
+// merged into the same pool because the bundle currently exposes a
+// single CertPool consumed by both peer and client verification paths.
+// All paths flow through loadCAFilesUnion which deduplicates by
+// canonical filename.
+func loadTLSFromFilesWithExtra(caFile, certFile, keyFile string, additionalCAs, clientCAFiles []string) (*TLSBundle, error) {
 	caCertPEM, err := os.ReadFile(caFile)
 	if err != nil {
 		return nil, &TLSLoadError{Path: caFile, Err: err}
@@ -324,6 +338,22 @@ func loadTLSFromFiles(caFile, certFile, keyFile string) (*TLSBundle, error) {
 		return nil, &TLSLoadError{Path: caFile, Err: errNoCertsInPEM}
 	}
 
+	// Layer in the union of additional and mTLS client CAs. The helper
+	// canonicalizes each path so the primary CA (already loaded above)
+	// and any duplicates across the two slices are de-duped.
+	union := append([]string{caFile}, additionalCAs...)
+	union = append(union, clientCAFiles...)
+	extra, err := loadCAFilesUnion(union)
+	if err != nil {
+		return nil, err
+	}
+	if extra != nil {
+		// Re-build the pool from the union so that all certs are
+		// present in a single deduplicated pool. The primary CA is
+		// included in the union list so its trust survives.
+		pool = extra
+	}
+
 	return &TLSBundle{
 		CACertPEM:  caCertPEM,
 		CertPEM:    certPEM,
@@ -335,6 +365,75 @@ func loadTLSFromFiles(caFile, certFile, keyFile string) (*TLSBundle, error) {
 			NextProtos:   []string{"h3", "h2", "http/1.1"},
 		},
 	}, nil
+}
+
+// loadCAFilesUnion loads the union of CA PEM files from the supplied
+// paths into a single x509.CertPool. Paths are deduplicated by their
+// canonical (absolute, symlink-evaluated) filename so that the same CA
+// referenced from multiple input slices is parsed only once. An empty
+// or nil paths slice yields a nil pool with no error so callers can
+// distinguish "no additional trust" from a hard failure. Each PEM file
+// must contain at least one CERTIFICATE block; missing files and
+// malformed PEM data return a *TLSLoadError.
+func loadCAFilesUnion(paths []string) (*x509.CertPool, error) {
+	if len(paths) == 0 {
+		return nil, nil
+	}
+
+	pool := x509.NewCertPool()
+	seen := make(map[string]struct{}, len(paths))
+	added := false
+
+	for _, raw := range paths {
+		if raw == "" {
+			continue
+		}
+		canonical, err := canonicalizePath(raw)
+		if err != nil {
+			return nil, &TLSLoadError{Path: raw, Err: err}
+		}
+		if _, dup := seen[canonical]; dup {
+			continue
+		}
+		seen[canonical] = struct{}{}
+
+		// #nosec G304 - CA paths come from validated configuration.
+		data, err := os.ReadFile(canonical)
+		if err != nil {
+			return nil, &TLSLoadError{Path: canonical, Err: err}
+		}
+		if !pool.AppendCertsFromPEM(data) {
+			return nil, &TLSLoadError{Path: canonical, Err: errNoCertsInPEM}
+		}
+		added = true
+	}
+
+	if !added {
+		return nil, nil
+	}
+	return pool, nil
+}
+
+// canonicalizePath converts a CA file path into a stable identifier
+// suitable for filename-based deduplication. It evaluates symlinks
+// when possible and falls back to filepath.Abs when the path is not
+// yet present on disk so that callers receive a deterministic key
+// even before the read attempt fails.
+func canonicalizePath(path string) (string, error) {
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		// EvalSymlinks fails on missing files; surface the absolute
+		// path so deduplication still works and the subsequent
+		// os.ReadFile call reports the underlying I/O error.
+		if errors.Is(err, os.ErrNotExist) {
+			return path, nil
+		}
+		return "", err
+	}
+	return resolved, nil
 }
 
 // loadCACertPool loads a CA certificate pool from the given PEM file

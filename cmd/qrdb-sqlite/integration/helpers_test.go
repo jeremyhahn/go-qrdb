@@ -261,7 +261,8 @@ func (ca *testCA) generateNodeCert(dir string) (certPath, keyPath string, err er
 
 // generateClientCert creates a client mTLS certificate signed by this CA with
 // CN=admin and OU=default. This matches the admin user bootstrapped by qrdbd
-// so the mTLS authenticator grants superadmin access. The cert and key are
+// so the mTLS authenticator grants Admin@system access (the system-tenant
+// rule lifts that to platform-wide authority). The cert and key are
 // written to dir/client-cert.pem and dir/client-key.pem.
 func (ca *testCA) generateClientCert(dir string) (certPath, keyPath string, err error) {
 	clientKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)

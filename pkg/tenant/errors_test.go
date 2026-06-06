@@ -57,3 +57,22 @@ func TestInvalidTenantIDErrorFormat(t *testing.T) {
 		t.Errorf("Error() = %q, want %q", got, want)
 	}
 }
+
+func TestInvalidTenantIDCharError_NonEmpty(t *testing.T) {
+	err := &InvalidTenantIDCharError{TenantID: "bad\x1f", Byte: 0x1f}
+	if err.Error() == "" {
+		t.Fatal("Error() must not be empty")
+	}
+}
+
+func TestInvalidTenantIDCharError_ContainsHex(t *testing.T) {
+	err := &InvalidTenantIDCharError{TenantID: "b", Byte: 0x1f}
+	got := err.Error()
+	if !strings.Contains(got, "1f") {
+		t.Errorf("Error() = %q, want it to contain hex representation of byte", got)
+	}
+}
+
+func TestInvalidTenantIDCharError_ImplementsError(t *testing.T) {
+	var _ error = &InvalidTenantIDCharError{TenantID: "x", Byte: 0x00}
+}

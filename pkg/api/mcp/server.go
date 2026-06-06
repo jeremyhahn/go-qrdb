@@ -27,10 +27,14 @@ import (
 
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -39,33 +43,41 @@ import (
 // role, and certificate operations as MCP tools and serves them over
 // HTTP using the Streamable HTTP transport.
 type Server struct {
-	kvSvc         service.KVServicer
-	adminSvc      service.AdminServicer
-	mvccSvc       service.MVCCKVServicer
-	txSvc         service.TransactionServicer
-	batchSvc      service.BatchServicer
-	watchSvc      service.WatchServicer
-	leaseSvc      service.LeaseServicer
-	lockSvc       service.LockServicer
-	indexSvc      service.IndexServicer
-	tsSvc         service.TimeSeriesServicer
-	vectorSvc     service.VectorServicer
-	embeddingSvc  service.EmbeddingServicer
-	ragSvc        service.RAGServicer
-	userSvc       user.UserServicer
-	roleSvc       role.RoleServicer
-	certProv      cert.CertProvider
-	collectionSvc service.CollectionServicer
-	dbSvc         service.DatabaseServicer
-	barrierSvc    service.BarrierServicer
-	ceremonySvc   service.CeremonyServicer
-	credentialSvc service.CredentialServicer
-	ceremonyCA    ceremony.CeremonyCA
-	addr          string
-	tlsConfig     *tls.Config
-	mcpSrv        *mcpserver.MCPServer
-	httpSrv       *http.Server
-	listener      net.Listener
+	kvSvc             service.KVServicer
+	adminSvc          service.AdminServicer
+	mvccSvc           service.MVCCKVServicer
+	txSvc             service.TransactionServicer
+	batchSvc          service.BatchServicer
+	watchSvc          service.WatchServicer
+	leaseSvc          service.LeaseServicer
+	lockSvc           service.LockServicer
+	indexSvc          service.IndexServicer
+	tsSvc             service.TimeSeriesServicer
+	vectorSvc         service.VectorServicer
+	embeddingSvc      service.EmbeddingServicer
+	ragSvc            service.RAGServicer
+	userSvc           user.UserServicer
+	roleSvc           role.RoleServicer
+	certProv          cert.CertProvider
+	collectionSvc     service.CollectionServicer
+	dbSvc             service.DatabaseServicer
+	barrierSvc        service.BarrierServicer
+	pinBackend        pin.PINBackend
+	ceremonySvc       service.CeremonyServicer
+	credentialSvc     service.CredentialServicer
+	tenantSvc         tenant.TenantServicer
+	backupSvc         service.BackupServicer
+	rebalanceSvc      service.RebalanceServicer
+	ceremonyCA        ceremony.CeremonyCA
+	authFactorSvc     service.AuthFactorServicer
+	userAuthFactorSvc service.UserAuthFactorServicer
+	auditLogger       audit.AuditLogger
+	addr              string
+	tlsConfig         *tls.Config
+	authMW            *authmw.AuthMiddleware
+	mcpSrv            *mcpserver.MCPServer
+	httpSrv           *http.Server
+	listener          net.Listener
 }
 
 // ServerOption configures optional Server dependencies.
@@ -75,6 +87,18 @@ type ServerOption func(*Server)
 func WithTLS(cfg *tls.Config) ServerOption {
 	return func(s *Server) {
 		s.tlsConfig = cfg
+	}
+}
+
+// WithAuthMiddleware configures authentication and per-tool authorization for
+// the MCP server. When set, every tool call is authenticated (mTLS peer
+// identity, injected by the HTTP context func) and authorized against the
+// tool's required permission (mcpPermissions, DEFAULT-DENY). When nil, the
+// server runs unauthenticated — matching the other transports' behavior when
+// no middleware is supplied.
+func WithAuthMiddleware(mw *authmw.AuthMiddleware) ServerOption {
+	return func(s *Server) {
+		s.authMW = mw
 	}
 }
 
@@ -198,6 +222,15 @@ func WithBarrierService(svc service.BarrierServicer) ServerOption {
 	}
 }
 
+// WithPINBackend attaches the canonical pin.PINBackend used for the
+// optional SO PIN / User PIN compliance-gating layer on barrier
+// administrative operations.
+func WithPINBackend(backend pin.PINBackend) ServerOption {
+	return func(s *Server) {
+		s.pinBackend = backend
+	}
+}
+
 // WithCeremonyService registers ceremony lifecycle tools on the MCP server.
 func WithCeremonyService(svc service.CeremonyServicer) ServerOption {
 	return func(s *Server) {
@@ -217,6 +250,40 @@ func WithCeremonyCA(ca ceremony.CeremonyCA) ServerOption {
 	return func(s *Server) {
 		s.ceremonyCA = ca
 	}
+}
+
+// WithTenantService registers tenant management tools on the MCP server.
+func WithTenantService(svc tenant.TenantServicer) ServerOption {
+	return func(s *Server) { s.tenantSvc = svc }
+}
+
+// WithBackupService registers backup management tools on the MCP server.
+func WithBackupService(svc service.BackupServicer) ServerOption {
+	return func(s *Server) { s.backupSvc = svc }
+}
+
+// WithRebalanceService registers cluster rebalance tools on the MCP server.
+func WithRebalanceService(svc service.RebalanceServicer) ServerOption {
+	return func(s *Server) { s.rebalanceSvc = svc }
+}
+
+// WithAuthFactorService registers auth factor tools on the MCP server.
+// When set, the five qrdb_authfactor_* tools are available.
+func WithAuthFactorService(svc service.AuthFactorServicer) ServerOption {
+	return func(s *Server) { s.authFactorSvc = svc }
+}
+
+// WithUserAuthFactorService registers user-side auth factor tools on the
+// MCP server (M14). When set, the qrdb_user_authfactor_* tools are
+// available.
+func WithUserAuthFactorService(svc service.UserAuthFactorServicer) ServerOption {
+	return func(s *Server) { s.userAuthFactorSvc = svc }
+}
+
+// WithAuditLogger registers audit query tools on the MCP server.
+// When set, the qrdb_audit_query tool is available.
+func WithAuditLogger(l audit.AuditLogger) ServerOption {
+	return func(s *Server) { s.auditLogger = l }
 }
 
 // WithKVService registers KV tools on the MCP server. This is an alternative
@@ -248,11 +315,19 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 		opt(s)
 	}
 
-	// Create the underlying MCP server with tool capabilities.
+	// Create the underlying MCP server with tool capabilities. When auth is
+	// configured, install the per-tool authorization middleware so EVERY tool
+	// call is authorized (default-deny) before its handler runs.
+	mcpOpts := []mcpserver.ServerOption{
+		mcpserver.WithToolCapabilities(false),
+	}
+	if s.authMW != nil {
+		mcpOpts = append(mcpOpts, mcpserver.WithToolHandlerMiddleware(s.toolAuthzMiddleware()))
+	}
 	s.mcpSrv = mcpserver.NewMCPServer(
 		"qrdb",
 		"1.0.0",
-		mcpserver.WithToolCapabilities(false),
+		mcpOpts...,
 	)
 
 	// Register KV and admin tools only when the respective service is provided.
@@ -313,13 +388,35 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 		s.mcpSrv.AddTools(databaseTools(s.dbSvc)...)
 	}
 	if s.barrierSvc != nil {
-		s.mcpSrv.AddTools(barrierTools(s.barrierSvc)...)
+		s.mcpSrv.AddTools(barrierTools(s.barrierSvc, s.pinBackend)...)
 	}
 	if s.ceremonySvc != nil {
 		s.mcpSrv.AddTools(ceremonyTools(s.ceremonySvc, s.ceremonyCA)...)
 	}
 	if s.credentialSvc != nil {
 		s.mcpSrv.AddTools(credentialTools(s.credentialSvc)...)
+	}
+	if s.tenantSvc != nil {
+		s.mcpSrv.AddTools(tenantTools(s.tenantSvc)...)
+		s.mcpSrv.AddTools(tenantBarrierTools(s.tenantSvc)...)
+	}
+	if s.backupSvc != nil {
+		s.mcpSrv.AddTools(backupTools(s.backupSvc)...)
+	}
+	if s.rebalanceSvc != nil {
+		s.mcpSrv.AddTools(rebalanceTools(s.rebalanceSvc)...)
+	}
+	if s.authFactorSvc != nil {
+		s.mcpSrv.AddTools(authFactorTools(s.authFactorSvc)...)
+	}
+	if s.userAuthFactorSvc != nil {
+		s.mcpSrv.AddTools(userAuthFactorTools(s.userAuthFactorSvc)...)
+	}
+	// Audit query tool.
+	// Authorization: requires "audit:query" permission.
+	// TODO: switch to permission.AuditQuery constant once Phase 2 lands.
+	if s.auditLogger != nil {
+		s.mcpSrv.AddTools(auditTools(s.auditLogger)...)
 	}
 
 	return s
@@ -339,8 +436,15 @@ func (s *Server) Start() error {
 	}
 	s.listener = ln
 
-	// Create the Streamable HTTP handler from the MCP server.
-	streamHandler := mcpserver.NewStreamableHTTPServer(s.mcpSrv)
+	// Create the Streamable HTTP handler from the MCP server. When auth is
+	// configured, install the HTTP context func that authenticates the mTLS
+	// peer and injects the resulting identity into the per-request context so
+	// the tool-handler authorization middleware can enforce permissions.
+	var streamOpts []mcpserver.StreamableHTTPOption
+	if s.authMW != nil {
+		streamOpts = append(streamOpts, mcpserver.WithHTTPContextFunc(s.authHTTPContext))
+	}
+	streamHandler := mcpserver.NewStreamableHTTPServer(s.mcpSrv, streamOpts...)
 
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", streamHandler)

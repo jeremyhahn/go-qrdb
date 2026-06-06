@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package sdk
+package sdk_test
 
 import (
 	"context"
@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
 )
@@ -89,7 +90,7 @@ func (m *mockRebalanceServiceSDK) GetImbalanceReport(ctx context.Context) (*serv
 
 // newRebalanceClient creates an SDK client with embedded transport and
 // rebalance service wired in.
-func newRebalanceClient(t *testing.T) *Client {
+func newRebalanceClient(t *testing.T) *sdk.Client {
 	t.Helper()
 	kvSvc := newMockKVService()
 	adminSvc := &mockAdminService{}
@@ -100,7 +101,7 @@ func newRebalanceClient(t *testing.T) *Client {
 		t.Fatalf("New transport: %v", err)
 	}
 
-	client, err := NewClient(tr)
+	client, err := sdk.NewClient(tr)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}

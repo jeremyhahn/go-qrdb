@@ -26,7 +26,6 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/codec"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
@@ -1689,176 +1688,78 @@ func TestKVService_NilCodec_PutGetPassthrough(t *testing.T) {
 	}
 }
 
-func TestKVService_WithCodec_PutEncodesForStorage(t *testing.T) {
-	var capturedCmd []byte
+// TestKVService_PutGetRoundTripsRawBytes verifies that KVService passes values
+// through verbatim. Previously, attaching a codec manager caused silent data
+// corruption by re-encoding opaque []byte payloads, breaking all callers that
+// stored pre-serialized structs (tenants, users, roles, certs).
+func TestKVService_PutGetRoundTripsRawBytes(t *testing.T) {
+	tests := []struct {
+		name  string
+		value []byte
+	}{
+		{"json struct bytes", []byte(`{"arbitrary":"json","nested":{"x":1}}`)},
+		{"raw binary bytes", []byte{0x00, 0x01, 0xff, 0xfe, 0x80}},
+		{"plain string bytes", []byte("hello world")},
+		{"empty bytes", []byte{}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stored := make([]byte, len(tt.value))
+			copy(stored, tt.value)
+
+			host := &mockHost{
+				syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
+					return sm.Result{Value: 1}, nil
+				},
+				syncReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
+					return stored, nil
+				},
+			}
+
+			svc := NewKVService(host, 1)
+
+			if err := svc.Put(context.Background(), "key", tt.value); err != nil {
+				t.Fatalf("Put: %v", err)
+			}
+
+			got, err := svc.Get(context.Background(), "key")
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			if string(got) != string(stored) {
+				t.Errorf("round-trip mismatch: got %q, want %q", got, stored)
+			}
+		})
+	}
+}
+
+// TestKVService_PutGetStaleRoundTripsRawBytes verifies GetStale also passes
+// values through verbatim without any codec transformation.
+func TestKVService_PutGetStaleRoundTripsRawBytes(t *testing.T) {
+	payload := []byte(`{"id":"t1","name":"T1","isolation_type":"prefix"}`)
+
 	host := &mockHost{
-		syncProposeFn: func(_ context.Context, _ uint64, cmd []byte) (sm.Result, error) {
-			capturedCmd = make([]byte, len(cmd))
-			copy(capturedCmd, cmd)
+		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
 			return sm.Result{Value: 1}, nil
 		},
+		staleReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
+			return payload, nil
+		},
 	}
 
-	// Use JSON for both storage and wire (so we can verify encoding).
-	cm := codec.NewManager(&codec.JSONCodec{}, &codec.JSONCodec{})
-	svc := NewKVService(host, 1, WithCodecManager(cm))
+	svc := NewKVService(host, 1)
 
-	// Put raw bytes - the codec should encode them.
-	if err := svc.Put(context.Background(), "key", []byte("hello")); err != nil {
-		t.Fatalf("Put: unexpected error: %v", err)
+	if err := svc.Put(context.Background(), "key", payload); err != nil {
+		t.Fatalf("Put: %v", err)
 	}
 
-	// The captured command should contain the JSON-encoded form of
-	// the value (the bytes "hello" JSON-marshaled = "aGVsbG8=" base64).
-	if capturedCmd == nil {
-		t.Fatal("Put: no command was proposed")
-	}
-}
-
-func TestKVService_WithCodec_GetTranscodesFromStorage(t *testing.T) {
-	// Store a JSON-encoded value and verify transcode works.
-	cm := codec.NewManager(&codec.JSONCodec{}, &codec.JSONCodec{})
-
-	// Encode a test value using the storage codec.
-	testMap := map[string]string{"name": "alice"}
-	encoded, err := cm.EncodeForStorage(testMap)
+	got, err := svc.GetStale(context.Background(), "key")
 	if err != nil {
-		t.Fatalf("EncodeForStorage: %v", err)
+		t.Fatalf("GetStale: %v", err)
 	}
-
-	host := &mockHost{
-		syncReadFn: func(_ context.Context, _ uint64, query interface{}) (interface{}, error) {
-			return encoded, nil
-		},
-	}
-
-	svc := NewKVService(host, 1, WithCodecManager(cm))
-	got, getErr := svc.Get(context.Background(), "key")
-	if getErr != nil {
-		t.Fatalf("Get: unexpected error: %v", getErr)
-	}
-	if got == nil {
-		t.Fatal("Get: got nil")
-	}
-	// The transcoded result should be valid JSON.
-	if len(got) == 0 {
-		t.Fatal("Get: got empty result after transcode")
-	}
-}
-
-func TestKVService_WithCodec_GetStaleTranscodes(t *testing.T) {
-	cm := codec.NewManager(&codec.JSONCodec{}, &codec.JSONCodec{})
-
-	testData := map[string]int{"count": 42}
-	encoded, err := cm.EncodeForStorage(testData)
-	if err != nil {
-		t.Fatalf("EncodeForStorage: %v", err)
-	}
-
-	host := &mockHost{
-		staleReadFn: func(_ context.Context, _ uint64, query interface{}) (interface{}, error) {
-			return encoded, nil
-		},
-	}
-
-	svc := NewKVService(host, 1, WithCodecManager(cm))
-	got, getErr := svc.GetStale(context.Background(), "key")
-	if getErr != nil {
-		t.Fatalf("GetStale: unexpected error: %v", getErr)
-	}
-	if len(got) == 0 {
-		t.Fatal("GetStale: got empty result after transcode")
-	}
-}
-
-func TestKVService_WithCodec_PutEncodeError(t *testing.T) {
-	host := &mockHost{}
-
-	// Use a failing codec to trigger encode errors.
-	failCodec := &failingCodec{marshalErr: errors.New("encode failed")}
-	cm := codec.NewManager(failCodec, &codec.JSONCodec{})
-	svc := NewKVService(host, 1, WithCodecManager(cm))
-
-	err := svc.Put(context.Background(), "key", []byte("value"))
-	if err == nil {
-		t.Fatal("expected error from codec encode, got nil")
-	}
-	var cee *CodecEncodeError
-	if !errors.As(err, &cee) {
-		t.Fatalf("expected *CodecEncodeError, got %T: %v", err, err)
-	}
-	if cee.Op != "put" {
-		t.Errorf("expected op %q, got %q", "put", cee.Op)
-	}
-}
-
-// failingCodec is a test codec that returns configurable errors.
-type failingCodec struct {
-	marshalErr   error
-	unmarshalErr error
-}
-
-func (c *failingCodec) Marshal(_ any) ([]byte, error) {
-	if c.marshalErr != nil {
-		return nil, c.marshalErr
-	}
-	return []byte("ok"), nil
-}
-
-func (c *failingCodec) Unmarshal(_ []byte, _ any) error {
-	return c.unmarshalErr
-}
-
-func (c *failingCodec) Type() string {
-	return "failing"
-}
-
-func TestKVService_WithCodec_GetTranscodeError(t *testing.T) {
-	// Use a storage codec that fails on unmarshal to trigger transcode error.
-	failStorage := &failingCodec{unmarshalErr: errors.New("unmarshal failed")}
-	cm := codec.NewManager(failStorage, &codec.JSONCodec{})
-
-	host := &mockHost{
-		syncReadFn: func(_ context.Context, _ uint64, query interface{}) (interface{}, error) {
-			return []byte("stored-data"), nil
-		},
-	}
-
-	svc := NewKVService(host, 1, WithCodecManager(cm))
-	_, err := svc.Get(context.Background(), "key")
-	if err == nil {
-		t.Fatal("expected error from transcode, got nil")
-	}
-	var cde *CodecDecodeError
-	if !errors.As(err, &cde) {
-		t.Fatalf("expected *CodecDecodeError, got %T: %v", err, err)
-	}
-	if cde.Op != "get" {
-		t.Errorf("expected op %q, got %q", "get", cde.Op)
-	}
-}
-
-func TestKVService_WithCodec_GetStaleTranscodeError(t *testing.T) {
-	failStorage := &failingCodec{unmarshalErr: errors.New("unmarshal failed")}
-	cm := codec.NewManager(failStorage, &codec.JSONCodec{})
-
-	host := &mockHost{
-		staleReadFn: func(_ context.Context, _ uint64, query interface{}) (interface{}, error) {
-			return []byte("stored-data"), nil
-		},
-	}
-
-	svc := NewKVService(host, 1, WithCodecManager(cm))
-	_, err := svc.GetStale(context.Background(), "key")
-	if err == nil {
-		t.Fatal("expected error from transcode, got nil")
-	}
-	var cde *CodecDecodeError
-	if !errors.As(err, &cde) {
-		t.Fatalf("expected *CodecDecodeError, got %T: %v", err, err)
-	}
-	if cde.Op != "get_stale" {
-		t.Errorf("expected op %q, got %q", "get_stale", cde.Op)
+	if string(got) != string(payload) {
+		t.Errorf("stale round-trip mismatch: got %q, want %q", got, payload)
 	}
 }
 

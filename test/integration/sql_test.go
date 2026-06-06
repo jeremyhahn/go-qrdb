@@ -248,7 +248,7 @@ func waitForPgSQL(t *testing.T, ca *testCA, certPath, keyPath string, port int, 
 func TestSQL_MySQL_InsertAndSelect(t *testing.T) {
 	_, mysqlPort, _, ca := startSingleNodeWithSQL(t)
 
-	certPath, keyPath := generateClientCert(t, ca, "admin", "default")
+	certPath, keyPath := generateClientCert(t, ca, "admin", "system")
 	db := waitForMySQL(t, ca, certPath, keyPath, mysqlPort, "admin")
 
 	// INSERT a key-value pair.
@@ -275,7 +275,7 @@ func TestSQL_MySQL_InsertAndSelect(t *testing.T) {
 func TestSQL_MySQL_UpdateAndDelete(t *testing.T) {
 	_, mysqlPort, _, ca := startSingleNodeWithSQL(t)
 
-	certPath, keyPath := generateClientCert(t, ca, "admin", "default")
+	certPath, keyPath := generateClientCert(t, ca, "admin", "system")
 	db := waitForMySQL(t, ca, certPath, keyPath, mysqlPort, "admin")
 
 	// INSERT initial value.
@@ -330,7 +330,7 @@ func TestSQL_MySQL_UpdateAndDelete(t *testing.T) {
 func TestSQL_MySQL_SelectAll(t *testing.T) {
 	_, mysqlPort, _, ca := startSingleNodeWithSQL(t)
 
-	certPath, keyPath := generateClientCert(t, ca, "admin", "default")
+	certPath, keyPath := generateClientCert(t, ca, "admin", "system")
 	db := waitForMySQL(t, ca, certPath, keyPath, mysqlPort, "admin")
 
 	// INSERT multiple keys.
@@ -383,7 +383,7 @@ func TestSQL_MySQL_SelectAll(t *testing.T) {
 func TestSQL_PgSQL_InsertAndSelect(t *testing.T) {
 	_, _, pgsqlPort, ca := startSingleNodeWithSQL(t)
 
-	certPath, keyPath := generateClientCert(t, ca, "admin", "default")
+	certPath, keyPath := generateClientCert(t, ca, "admin", "system")
 	conn := waitForPgSQL(t, ca, certPath, keyPath, pgsqlPort, "admin")
 	ctx := context.Background()
 
@@ -411,7 +411,7 @@ func TestSQL_PgSQL_InsertAndSelect(t *testing.T) {
 func TestSQL_PgSQL_UpdateAndDelete(t *testing.T) {
 	_, _, pgsqlPort, ca := startSingleNodeWithSQL(t)
 
-	certPath, keyPath := generateClientCert(t, ca, "admin", "default")
+	certPath, keyPath := generateClientCert(t, ca, "admin", "system")
 	conn := waitForPgSQL(t, ca, certPath, keyPath, pgsqlPort, "admin")
 	ctx := context.Background()
 
@@ -459,7 +459,7 @@ func TestSQL_PgSQL_UpdateAndDelete(t *testing.T) {
 func TestSQL_PgSQL_SelectAll(t *testing.T) {
 	_, _, pgsqlPort, ca := startSingleNodeWithSQL(t)
 
-	certPath, keyPath := generateClientCert(t, ca, "admin", "default")
+	certPath, keyPath := generateClientCert(t, ca, "admin", "system")
 	conn := waitForPgSQL(t, ca, certPath, keyPath, pgsqlPort, "admin")
 	ctx := context.Background()
 

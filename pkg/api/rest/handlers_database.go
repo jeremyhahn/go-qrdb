@@ -275,7 +275,7 @@ func (s *Server) handleCreateDatabase(w http.ResponseWriter, r *http.Request) {
 		cfg.Raft = raftConfigFromRequest(req.Raft)
 	}
 
-	info, err := s.databaseSvc.Create(cfg)
+	info, err := s.databaseSvc.CreateForTenant(r.Context(), cfg)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
@@ -294,7 +294,7 @@ func (s *Server) handleListDatabases(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dbs, err := s.databaseSvc.List()
+	dbs, err := s.databaseSvc.ListForTenant(r.Context())
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
@@ -356,6 +356,18 @@ func (s *Server) handleDatabaseByName(w http.ResponseWriter, r *http.Request) {
 		s.handleUpdateDatabaseConnection(w, r, name)
 		return
 	}
+	if subPath == "seal" && r.Method == http.MethodPost {
+		s.handleSealDatabase(w, r, name)
+		return
+	}
+	if subPath == "unseal" && r.Method == http.MethodPost {
+		s.handleUnsealDatabase(w, r, name)
+		return
+	}
+	if subPath == "barrier/status" && r.Method == http.MethodGet {
+		s.handleDatabaseBarrierStatus(w, r, name)
+		return
+	}
 
 	switch r.Method {
 	case http.MethodGet:
@@ -371,7 +383,7 @@ func (s *Server) handleDatabaseByName(w http.ResponseWriter, r *http.Request) {
 // handleGetDatabase handles GET /v1/databases/{name} -- returns information
 // about a specific database.
 func (s *Server) handleGetDatabase(w http.ResponseWriter, r *http.Request, name string) {
-	info, err := s.databaseSvc.Get(name)
+	info, err := s.databaseSvc.GetForTenant(r.Context(), name)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
@@ -383,7 +395,7 @@ func (s *Server) handleGetDatabase(w http.ResponseWriter, r *http.Request, name 
 // handleDropDatabase handles DELETE /v1/databases/{name} -- closes and
 // removes a database, deleting its data.
 func (s *Server) handleDropDatabase(w http.ResponseWriter, r *http.Request, name string) {
-	if err := s.databaseSvc.Drop(name); err != nil {
+	if err := s.databaseSvc.DropForTenant(r.Context(), name); err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
@@ -400,7 +412,7 @@ func (s *Server) handleUpdateDatabaseProtocol(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	info, err := s.databaseSvc.UpdateProtocol(name, database.ProtocolConfig{
+	info, err := s.databaseSvc.UpdateProtocolForTenant(r.Context(), name, database.ProtocolConfig{
 		MySQL:      req.MySQL,
 		PostgreSQL: req.PostgreSQL,
 	})
@@ -427,7 +439,7 @@ func (s *Server) handleUpdateDatabaseEtcd(w http.ResponseWriter, r *http.Request
 		AdvertiseClientURLs: req.AdvertiseClientURLs,
 	}
 
-	info, err := s.databaseSvc.UpdateEtcd(name, cfg)
+	info, err := s.databaseSvc.UpdateEtcdForTenant(r.Context(), name, cfg)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
@@ -466,7 +478,7 @@ func (s *Server) handleUpdateDatabaseRaft(w http.ResponseWriter, r *http.Request
 		Token:          req.Token,
 	})
 
-	info, err := s.databaseSvc.UpdateRaft(name, raftCfg)
+	info, err := s.databaseSvc.UpdateRaftForTenant(r.Context(), name, raftCfg)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
@@ -491,7 +503,7 @@ func (s *Server) handleUpdateDatabaseBarrier(w http.ResponseWriter, r *http.Requ
 		SharesTotal:    req.SharesTotal,
 	}
 
-	info, err := s.databaseSvc.UpdateBarrier(name, cfg)
+	info, err := s.databaseSvc.UpdateBarrierForTenant(r.Context(), name, cfg)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
@@ -517,7 +529,7 @@ func (s *Server) handleUpdateDatabaseConnection(w http.ResponseWriter, r *http.R
 		KeyFile:   req.KeyFile,
 	}
 
-	info, err := s.databaseSvc.UpdateConnection(name, cfg)
+	info, err := s.databaseSvc.UpdateConnectionForTenant(r.Context(), name, cfg)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return

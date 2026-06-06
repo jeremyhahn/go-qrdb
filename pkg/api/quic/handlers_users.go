@@ -35,19 +35,39 @@ type createUserWireRequest struct {
 
 // getUserWireRequest is the JSON wire payload for user.Get.
 type getUserWireRequest struct {
-	ID string `json:"id"`
+	ID uint64 `json:"id"`
+}
+
+// getUserByUsernameWireRequest is the JSON wire payload for
+// user.GetByUsername.
+type getUserByUsernameWireRequest struct {
+	TenantID string `json:"tenantID"`
+	Username string `json:"username"`
+}
+
+// getUserByCertThumbprintWireRequest is the JSON wire payload for
+// user.GetByCertThumbprint.
+type getUserByCertThumbprintWireRequest struct {
+	Thumbprint string `json:"thumbprint"`
+}
+
+// addCertBindingWireRequest is the JSON wire payload for user.AddCertBinding.
+type addCertBindingWireRequest struct {
+	UserID       uint64 `json:"userID"`
+	Thumbprint   string `json:"thumbprint"`
+	NotAfterUnix int64  `json:"notAfterUnix"`
 }
 
 // updateUserWireRequest is the JSON wire payload for user.Update.
 type updateUserWireRequest struct {
-	ID       string   `json:"id"`
+	ID       uint64   `json:"id"`
 	Username string   `json:"username"`
 	RoleIDs  []string `json:"roleIDs"`
 }
 
 // deleteUserWireRequest is the JSON wire payload for user.Delete.
 type deleteUserWireRequest struct {
-	ID string `json:"id"`
+	ID uint64 `json:"id"`
 }
 
 // listUsersWireRequest is the JSON wire payload for user.List.
@@ -59,17 +79,17 @@ type listUsersWireRequest struct {
 
 // enableUserWireRequest is the JSON wire payload for user.Enable.
 type enableUserWireRequest struct {
-	ID string `json:"id"`
+	ID uint64 `json:"id"`
 }
 
 // disableUserWireRequest is the JSON wire payload for user.Disable.
 type disableUserWireRequest struct {
-	ID string `json:"id"`
+	ID uint64 `json:"id"`
 }
 
 // userWireResponse is the JSON wire representation of a user entity.
 type userWireResponse struct {
-	ID        string   `json:"id"`
+	ID        uint64   `json:"id"`
 	Username  string   `json:"username"`
 	TenantID  string   `json:"tenantID"`
 	RoleIDs   []string `json:"roleIDs"`
@@ -137,6 +157,81 @@ func (s *Server) handleGetUser(ctx context.Context, payload []byte) ([]byte, err
 	}
 
 	u, err := s.userSvc.GetUser(ctx, req.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	out, err := json.Marshal(userToWireResponse(u))
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return out, nil
+}
+
+// handleGetUserByUsername unmarshals a JSON get-by-username request,
+// resolves the user via the service layer, and returns a JSON user
+// response.
+func (s *Server) handleGetUserByUsername(ctx context.Context, payload []byte) ([]byte, error) {
+	if s.userSvc == nil {
+		return nil, &ServiceNotConfiguredError{Service: "user"}
+	}
+
+	var req getUserByUsernameWireRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+
+	u, err := s.userSvc.GetUserByUsername(ctx, req.TenantID, req.Username)
+	if err != nil {
+		return nil, err
+	}
+
+	out, err := json.Marshal(userToWireResponse(u))
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return out, nil
+}
+
+// handleGetUserByCertThumbprint unmarshals a JSON get-by-cert-thumbprint
+// request, resolves the user via the service layer's secondary index, and
+// returns a JSON user response (the mTLS-auth hot path).
+func (s *Server) handleGetUserByCertThumbprint(ctx context.Context, payload []byte) ([]byte, error) {
+	if s.userSvc == nil {
+		return nil, &ServiceNotConfiguredError{Service: "user"}
+	}
+
+	var req getUserByCertThumbprintWireRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+
+	u, err := s.userSvc.UserByCertThumbprint(ctx, req.Thumbprint)
+	if err != nil {
+		return nil, err
+	}
+
+	out, err := json.Marshal(userToWireResponse(u))
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return out, nil
+}
+
+// handleAddCertBinding unmarshals a JSON add-cert-binding request, binds the
+// mTLS SPKI thumbprint to the user via the service layer, and returns a JSON
+// user response (the enrollment seam).
+func (s *Server) handleAddCertBinding(ctx context.Context, payload []byte) ([]byte, error) {
+	if s.userSvc == nil {
+		return nil, &ServiceNotConfiguredError{Service: "user"}
+	}
+
+	var req addCertBindingWireRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+
+	u, err := s.userSvc.AddCertBinding(ctx, req.UserID, req.Thumbprint, req.NotAfterUnix)
 	if err != nil {
 		return nil, err
 	}

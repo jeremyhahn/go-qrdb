@@ -31,20 +31,20 @@ import (
 // mockUserService is a configurable mock for user.UserServicer.
 type mockUserService struct {
 	createUserFn        func(ctx context.Context, req *user.CreateUserRequest) (*user.User, error)
-	getUserFn           func(ctx context.Context, id string) (*user.User, error)
+	getUserFn           func(ctx context.Context, id uint64) (*user.User, error)
 	getUserByUsernameFn func(ctx context.Context, tenantID, username string) (*user.User, error)
 	updateUserFn        func(ctx context.Context, req *user.UpdateUserRequest) (*user.User, error)
-	deleteUserFn        func(ctx context.Context, id string) error
+	deleteUserFn        func(ctx context.Context, id uint64) error
 	listUsersFn         func(ctx context.Context, req *user.ListUsersRequest) (*user.ListUsersResponse, error)
-	enableUserFn        func(ctx context.Context, id string) error
-	disableUserFn       func(ctx context.Context, id string) error
+	enableUserFn        func(ctx context.Context, id uint64) error
+	disableUserFn       func(ctx context.Context, id uint64) error
 }
 
 func (m *mockUserService) CreateUser(ctx context.Context, req *user.CreateUserRequest) (*user.User, error) {
 	return m.createUserFn(ctx, req)
 }
 
-func (m *mockUserService) GetUser(ctx context.Context, id string) (*user.User, error) {
+func (m *mockUserService) GetUser(ctx context.Context, id uint64) (*user.User, error) {
 	return m.getUserFn(ctx, id)
 }
 
@@ -56,7 +56,7 @@ func (m *mockUserService) UpdateUser(ctx context.Context, req *user.UpdateUserRe
 	return m.updateUserFn(ctx, req)
 }
 
-func (m *mockUserService) DeleteUser(ctx context.Context, id string) error {
+func (m *mockUserService) DeleteUser(ctx context.Context, id uint64) error {
 	return m.deleteUserFn(ctx, id)
 }
 
@@ -64,12 +64,20 @@ func (m *mockUserService) ListUsers(ctx context.Context, req *user.ListUsersRequ
 	return m.listUsersFn(ctx, req)
 }
 
-func (m *mockUserService) EnableUser(ctx context.Context, id string) error {
+func (m *mockUserService) EnableUser(ctx context.Context, id uint64) error {
 	return m.enableUserFn(ctx, id)
 }
 
-func (m *mockUserService) DisableUser(ctx context.Context, id string) error {
+func (m *mockUserService) DisableUser(ctx context.Context, id uint64) error {
 	return m.disableUserFn(ctx, id)
+}
+
+func (m *mockUserService) UserByCertThumbprint(_ context.Context, _ string) (*user.User, error) {
+	return nil, nil
+}
+
+func (m *mockUserService) AddCertBinding(_ context.Context, _ uint64, _ string, _ int64) (*user.User, error) {
+	return nil, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -158,7 +166,7 @@ func (m *mockCertProvider) CACertPEM() []byte {
 // ---------------------------------------------------------------------------
 
 // testUser returns a fully populated user for test assertions.
-func testUser(id, username, tenantID string) *user.User {
+func testUser(id uint64, username, tenantID string) *user.User {
 	now := time.Date(2026, 1, 15, 10, 30, 0, 0, time.UTC)
 	return &user.User{
 		ID:        id,

@@ -14,6 +14,8 @@
 
 package sdk
 
+import "strconv"
+
 // ClientError is returned when a client-level operation fails.
 type ClientError struct {
 	Op  string
@@ -46,4 +48,15 @@ type NilTransportError struct{}
 // Error returns a human-readable description.
 func (e *NilTransportError) Error() string {
 	return "sdk: transport must not be nil"
+}
+
+// ShardNotFoundError is returned by Cluster() operations when the requested
+// shard is not present in the node's membership view.
+type ShardNotFoundError struct {
+	ShardID uint64
+}
+
+// Error returns a human-readable description.
+func (e *ShardNotFoundError) Error() string {
+	return "sdk: shard not found in membership view: " + strconv.FormatUint(e.ShardID, 10)
 }

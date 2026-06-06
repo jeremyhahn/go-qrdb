@@ -269,7 +269,7 @@ defer client.Close()
 // Generate a certificate for a new user
 bundle, err := client.Certs().Generate(ctx, &transport.GenerateCertRequest{
     Username: "alice",
-    TenantID: "default",
+    TenantID: "system",
     TTL:      "720h",
 })
 

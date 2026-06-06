@@ -116,7 +116,7 @@ func TestGenerateClientCert_AutoInitViaGetCAMaterial(t *testing.T) {
 	p.caCertPEM = nil
 	p.mu.Unlock()
 
-	req := &GenerateRequest{Username: "auto-init-user", TenantID: "default"}
+	req := &GenerateRequest{Username: "auto-init-user", TenantID: "system"}
 	bundle, err := p.GenerateClientCert(context.Background(), req)
 	if err != nil {
 		t.Fatalf("GenerateClientCert with auto-init: %v", err)

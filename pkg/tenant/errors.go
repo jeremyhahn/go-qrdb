@@ -14,7 +14,10 @@
 
 package tenant
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 var (
 	// ErrTenantNotFound is returned when a requested tenant does not exist
@@ -36,6 +39,12 @@ var (
 	// ErrEmptyTenantName is returned when an empty tenant name is provided.
 	ErrEmptyTenantName = errors.New("tenant: empty tenant name")
 
+	// ErrEmptyPassphrase is returned when a passphrase-strategy barrier
+	// operation (init/unseal) is invoked without a caller-supplied
+	// passphrase. There is no derived fallback: the tenant admin must
+	// supply the secret.
+	ErrEmptyPassphrase = errors.New("tenant: empty passphrase")
+
 	// ErrNilStore is returned when a nil storage backend is provided
 	// to the tenant service constructor.
 	ErrNilStore = errors.New("tenant: nil storage backend")
@@ -44,9 +53,25 @@ var (
 	// to the tenant service constructor.
 	ErrNilRegistry = errors.New("tenant: nil barrier registry")
 
+	// ErrNilTenantServicer is returned when a nil TenantServicer is
+	// provided to the store resolver constructor.
+	ErrNilTenantServicer = errors.New("tenant: nil tenant servicer")
+
 	// ErrNilQuotas is returned when a nil quotas pointer is provided
 	// to UpdateQuotas.
 	ErrNilQuotas = errors.New("tenant: nil quotas")
+
+	// ErrTenantSealed is returned by the store resolver when a
+	// barrier-isolated tenant's barrier is sealed. IAM routing fails
+	// closed on this error: a barrier tenant's data is NEVER served from
+	// the shared system store while its barrier is sealed.
+	ErrTenantSealed = errors.New("tenant: barrier is sealed")
+
+	// ErrSystemTenantMustBePrefix is returned when barrier isolation is
+	// requested for the reserved system tenant. The system tenant must be
+	// a logical-prefix tenant so its IAM data lives in the shared store and
+	// remains reachable during bootstrap while tenant barriers are sealed.
+	ErrSystemTenantMustBePrefix = errors.New("tenant: system tenant must use prefix isolation")
 )
 
 // InvalidTenantIDError is returned when a tenant ID is empty or malformed.
@@ -57,6 +82,53 @@ type InvalidTenantIDError struct {
 
 func (e *InvalidTenantIDError) Error() string {
 	return "invalid tenant ID " + e.TenantID + ": " + e.Reason
+}
+
+// InvalidTenantIDCharError is returned when a tenant ID contains a character
+// that is not permitted. Tenant IDs must not contain control characters (bytes
+// < 0x20) or the unit-separator byte (0x1f) used as the scoped-key separator.
+type InvalidTenantIDCharError struct {
+	TenantID string
+	Byte     byte
+}
+
+func (e *InvalidTenantIDCharError) Error() string {
+	return fmt.Sprintf("tenant: id %q contains illegal character 0x%02x", e.TenantID, e.Byte)
+}
+
+// ReservedTenantIDError is returned when a caller attempts to create a
+// tenant whose id is reserved by the platform. The set of reserved ids is:
+//
+//   - "system"        — the structurally privileged platform tenant.
+//   - "default"       — legacy id; permanently reserved so it can never be
+//     accidentally re-created.
+//   - any id starting with "_"  — reserved for internal future use.
+//   - any id containing ":"     — reserved for compound-id schemes.
+//
+// Trusted internal callers (first-boot bootstrap) bypass the check by
+// passing a context marked with tenant.WithInternalCall.
+type ReservedTenantIDError struct {
+	TenantID string
+	Reason   string
+}
+
+func (e *ReservedTenantIDError) Error() string {
+	return "tenant: id " + e.TenantID + " is reserved: " + e.Reason
+}
+
+// QuotaExceededError is returned by IncrementQuotaUsage when adding delta
+// would cause the tenant's current usage to exceed the configured limit.
+type QuotaExceededError struct {
+	TenantID string
+	Resource string
+	Current  int64
+	Delta    int64
+	Limit    int64
+}
+
+func (e *QuotaExceededError) Error() string {
+	return fmt.Sprintf("tenant: quota exceeded for %s: %s current=%d delta=%d limit=%d",
+		e.TenantID, e.Resource, e.Current, e.Delta, e.Limit)
 }
 
 // StoreError is returned when a storage operation fails within the
@@ -88,4 +160,23 @@ func (e *BarrierError) Error() string {
 
 func (e *BarrierError) Unwrap() error {
 	return e.Err
+}
+
+// InvalidStrategyError is returned when the caller requests a seal strategy
+// that is not registered in the injected StrategyRegistry, or when an empty
+// strategy ID is supplied to TenantBarrierInitWithStrategy.
+type InvalidStrategyError struct {
+	Strategy  string
+	Available []string
+}
+
+func (e *InvalidStrategyError) Error() string {
+	if len(e.Available) == 0 {
+		return "tenant: invalid seal strategy: " + e.Strategy
+	}
+	avail := e.Available[0]
+	for _, a := range e.Available[1:] {
+		avail += ", " + a
+	}
+	return "tenant: invalid seal strategy: " + e.Strategy + " (available: " + avail + ")"
 }

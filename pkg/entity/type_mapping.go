@@ -29,7 +29,7 @@ var timeType = reflect.TypeOf(time.Time{})
 // Falls back to GoKindToSQLType for all other types.
 func GoTypeToSQLType(t reflect.Type) string {
 	// Dereference pointer types.
-	for t.Kind() == reflect.Ptr {
+	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 

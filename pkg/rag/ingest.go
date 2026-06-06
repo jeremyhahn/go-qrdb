@@ -120,6 +120,16 @@ func (ing *Ingestor) Ingest(ctx context.Context, req *IngestRequest) (*IngestRes
 		return nil, &EmbeddingError{Cause: err}
 	}
 
+	// Ensure the target namespace exists under the caller's tenant before
+	// writing any vectors. The dimension is taken from the first embedding.
+	// This is idempotent: if the namespace already exists the call succeeds.
+	if len(embedResp.Embeddings) > 0 {
+		dim := len(embedResp.Embeddings[0])
+		if err := ing.vectorStore.EnsureNamespace(ctx, req.Namespace, dim, "cosine"); err != nil {
+			return nil, &EmbeddingError{Cause: err}
+		}
+	}
+
 	// Store each chunk's vector and text.
 	for i, c := range chunks {
 		vecID := chunkVectorID(req.Namespace, req.Document.ID, i)

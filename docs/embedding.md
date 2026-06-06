@@ -1,0 +1,200 @@
+# Embedding QRDB
+
+QRDB can be embedded directly into Go applications via the `sdk/go/node` package. Two builder functions cover the most common deployment shapes:
+
+| Builder | Description |
+|---|---|
+| `NewStandaloneNode` | Engine-direct (no Raft). Suitable for single-process apps, edge deployments, CLI tools, and unit tests. Uses `pkg/backend.LocalBackend`. |
+| `NewClusteredNode` | Full Raft consensus via `go-quicraft`. Suitable for multi-node HA clusters. Uses `pkg/backend/raft.HostAdapter`. |
+
+Both builders return a `*node.Node` that exposes:
+
+```go
+type Node struct { ... }
+
+// Server returns the started multi-protocol server.
+func (n *Node) Server() *server.Server
+
+// Client returns an in-process SDK client connected to this node.
+func (n *Node) Client() *sdk.Client
+
+// Services returns the lifecycle.Node aggregating all service instances.
+func (n *Node) Services() *lifecycle.Node
+
+// KVService returns the node's KVServicer.
+func (n *Node) KVService() service.KVServicer
+
+// AdminService returns the node's AdminServicer.
+func (n *Node) AdminService() service.AdminServicer
+
+// Close tears down all resources in reverse order.
+func (n *Node) Close() error
+```
+
+---
+
+## Standalone node
+
+A standalone node is engine-direct: writes are applied immediately to an in-memory or on-disk MVCC/KV engine under a `LocalBackend`. No quicraft host is created, no `StartShard` is called, and no Raft WAL or nodehost directory is written.
+
+### Minimal (memory backend)
+
+```go
+import (
+    qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
+    "github.com/jeremyhahn/go-qrdb/sdk/go/node"
+)
+
+cfg := qrdbconfig.DefaultConfig()
+cfg.Raft.DataDir = ""          // empty → memory backend
+cfg.Protocols.REST = false      // disable listeners if not needed
+cfg.Protocols.GRPC = false
+
+n, err := node.NewStandaloneNode(ctx, cfg, nil)
+if err != nil { ... }
+defer n.Close()
+
+client := n.Client()
+if err := client.Put(ctx, "key", []byte("value")); err != nil { ... }
+```
+
+### On-disk (PebbleDB backend)
+
+```go
+cfg := qrdbconfig.DefaultConfig()
+cfg.Raft.DataDir = "/var/lib/myapp/data"
+cfg.Protocols.REST = true
+cfg.Server.AdminPort = 9000
+
+n, err := node.NewStandaloneNode(ctx, cfg, nil)
+```
+
+### Injecting hardware crypto options
+
+`serverOpts` is forwarded verbatim to `server.New`. Pass
+`server.WithStrategyRegistry`, `server.WithPINBackend`, and
+`server.WithFactorRegistry` here so hardware-backed seal strategies and
+authentication factors from go-xkms are wired in at composition time.
+
+```go
+n, err := node.NewStandaloneNode(ctx, cfg,
+    []server.ServerOption{
+        server.WithStrategyRegistry(myStrategyRegistry),
+        server.WithPINBackend(myTPMPINBackend),
+        server.WithFactorRegistry(myFactorRegistry),
+    },
+    node.WithSealPassphrase(passphrase),
+)
+```
+
+### Seal barrier (encryption at rest)
+
+Enable the barrier in the config and supply the passphrase via `WithSealPassphrase`:
+
+```go
+cfg.Seal.Enabled  = true
+cfg.Seal.Strategy = "passphrase"
+
+n, err := node.NewStandaloneNode(ctx, cfg, nil,
+    node.WithSealPassphrase([]byte("admin-secret")),
+)
+```
+
+The barrier is auto-unsealed during construction. The data-plane PebbleDB is opened on top of `pkg/seal/encfs` so all on-disk data is encrypted at rest.
+
+---
+
+## Clustered node
+
+A clustered node creates a `quicraft.Host`, starts the system KV shard with a subsystem-aware MVCC state machine factory (lessor + watch hub + time-series), and wraps the host with `pkg/backend/raft.HostAdapter` to satisfy `service.Host`.
+
+### Single-node cluster (no transport)
+
+A single-entry `members` map automatically selects `quicraft.WithoutTransport()` so no QUIC port is needed:
+
+```go
+cfg := qrdbconfig.DefaultConfig()
+cfg.Raft.DataDir  = "/var/lib/myapp/raft"
+cfg.Raft.ReplicaID = 1
+cfg.Protocols.REST = true
+
+n, err := node.NewClusteredNode(ctx, cfg,
+    map[uint64]string{1: "127.0.0.1:63001"},
+    nil,
+)
+```
+
+### Multi-node cluster
+
+```go
+members := map[uint64]string{
+    1: "10.0.0.1:63001",
+    2: "10.0.0.2:63001",
+    3: "10.0.0.3:63001",
+}
+cfg.Raft.RaftAddress  = "10.0.0.1:63001"
+cfg.Raft.ListenAddress = "0.0.0.0:63001"
+cfg.Raft.ReplicaID     = 1
+
+n, err := node.NewClusteredNode(ctx, cfg, members, nil)
+```
+
+For multi-node deployments configure mTLS in `cfg.TLS` before calling the builder.
+
+---
+
+## Daemon-only concerns
+
+The following concerns are **not** provided by the builders. They remain in `cmd/qrdbd` and are passed in as `server.ServerOption` or callbacks by the daemon:
+
+| Concern | How the daemon handles it |
+|---|---|
+| Leader forwarding | `server.WithLeaderForwarding(registry)` |
+| SIGHUP TLS reload | `signal.Notify` goroutine calling `bundle.Reloader.Reload()` |
+| Sealed-window listener | `lifecycle.BuildSealServicesOnly` + `awaitUnseal` before `initializeNode` |
+| Prometheus gatherer | `server.WithGatherer(reg)` |
+| Audit file logger | `server.WithAuditLogger(...)` |
+| Auth middleware | `server.WithAuthMiddleware(...)` |
+
+Embedders that need these features pass the corresponding `server.ServerOption` values in the `serverOpts` slice.
+
+---
+
+## Exported HostAdapter
+
+`pkg/backend/raft.HostAdapter` wraps `*quicraft.Host` to satisfy `service.Host`. Embedders that build their own quicraft host (e.g. for custom shard topologies) can use it directly:
+
+```go
+import raftbackend "github.com/jeremyhahn/go-qrdb/pkg/backend/raft"
+
+adapter := raftbackend.New(myQuicraftHost)
+// adapter satisfies service.Host and can be passed to lifecycle.BuildServices
+```
+
+A `BootstrapAdapter` is also exported for the pre-ReadIndex bootstrap phase:
+
+```go
+boot := raftbackend.NewBootstrapAdapter(adapter)
+bootKVSvc := service.NewKVService(boot, shard.ShardKV)
+```
+
+---
+
+## Tenant quota usage tracking
+
+`tenant.TenantServicer` includes three methods for tracking per-tenant resource usage alongside the configured limits:
+
+```go
+// Increment current usage (enforces limit; returns QuotaExceededError).
+IncrementQuotaUsage(ctx, tenantID, quota.ResourceKeys, 1)
+
+// Decrement current usage (clamped to zero, never errors on underflow).
+DecrementQuotaUsage(ctx, tenantID, quota.ResourceKeys, 1)
+
+// Read current usage without side effects.
+GetQuotaUsage(ctx, tenantID, quota.ResourceKeys)
+```
+
+Usage counters are stored in `TenantInfo.Quotas` (the `Current*` fields on `quota.Quotas`) and persisted with each `UpdateQuotas` / `IncrementQuotaUsage` / `DecrementQuotaUsage` call. Enforcement happens inside `IncrementQuotaUsage`: when `current + delta > max` and `max > 0`, a `*tenant.QuotaExceededError` is returned and the counter is not written.
+
+A `max` of `-1` means unlimited; `0` means use system default (treated as unlimited today).

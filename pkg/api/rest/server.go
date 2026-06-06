@@ -32,10 +32,12 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/quic-go/quic-go/http3"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -73,51 +75,69 @@ type route struct {
 // Server is the HTTP/2+HTTP/3 REST server for QRDB. It routes requests
 // to the service layer using map-based dispatch for O(1) routing.
 type Server struct {
-	kvSvc           service.KVServicer
-	adminSvc        service.AdminServicer
-	mvccSvc         service.MVCCKVServicer
-	txSvc           service.TransactionServicer
-	batchSvc        service.BatchServicer
-	watchSvc        service.WatchServicer
-	leaseSvc        service.LeaseServicer
-	indexSvc        service.IndexServicer
-	tsSvc           service.TimeSeriesServicer
-	vectorSvc       service.VectorServicer
-	embeddingSvc    service.EmbeddingServicer
-	ragSvc          service.RAGServicer
-	databaseSvc     service.DatabaseServicer
-	collectionSvc   service.CollectionServicer
-	lockSvc         service.LockServicer
-	barrierSvc      service.BarrierServicer
-	ceremonySvc     service.CeremonyServicer
-	credentialSvc   service.CredentialServicer
-	ceremonyCA      ceremony.CeremonyCA
-	userSvc         user.UserServicer
-	roleSvc         role.RoleServicer
-	tenantSvc       tenant.TenantServicer
-	certProv        cert.CertProvider
-	authMW          *authmw.AuthMiddleware
-	corsConfig      *CORSConfig
-	gatherer        prometheus.Gatherer
-	resolver        LeaderAdminResolver
-	forwardClient   *http.Client
-	addr            string
-	server          *http.Server
-	listener        net.Listener
-	routes          map[string]route
-	tlsConfig       *tls.Config
-	caCertPool      *x509.CertPool
-	http3Server     *http3.Server
-	host            Host
-	caBootstrapCert []byte // PEM-encoded CA cert for bootstrap endpoint
-	caBootstrapKey  []byte // PEM-encoded CA private key for bootstrap endpoint
-	onEtcdUpdated   func(dbName string, cfg *database.EtcdConfig) error
-	webUI           http.Handler // optional embedded web UI file server
+	kvSvc             service.KVServicer
+	adminSvc          service.AdminServicer
+	mvccSvc           service.MVCCKVServicer
+	txSvc             service.TransactionServicer
+	batchSvc          service.BatchServicer
+	watchSvc          service.WatchServicer
+	leaseSvc          service.LeaseServicer
+	indexSvc          service.IndexServicer
+	tsSvc             service.TimeSeriesServicer
+	vectorSvc         service.VectorServicer
+	embeddingSvc      service.EmbeddingServicer
+	ragSvc            service.RAGServicer
+	databaseSvc       service.DatabaseServicer
+	collectionSvc     service.CollectionServicer
+	lockSvc           service.LockServicer
+	barrierSvc        service.BarrierServicer
+	pinBackend        pin.PINBackend
+	ceremonySvc       service.CeremonyServicer
+	credentialSvc     service.CredentialServicer
+	ceremonyCA        ceremony.CeremonyCA
+	userSvc           user.UserServicer
+	roleSvc           role.RoleServicer
+	tenantSvc         tenant.TenantServicer
+	backupSvc         service.BackupServicer
+	rebalanceSvc      service.RebalanceServicer
+	authFactorSvc     service.AuthFactorServicer
+	userAuthFactorSvc service.UserAuthFactorServicer
+	certProv          cert.CertProvider
+	authMW            *authmw.AuthMiddleware
+	corsConfig        *CORSConfig
+	gatherer          prometheus.Gatherer
+	resolver          LeaderAdminResolver
+	forwardClient     *http.Client
+	addr              string
+	server            *http.Server
+	listener          net.Listener
+	routes            map[string]route
+	tlsConfig         *tls.Config
+	caCertPool        *x509.CertPool
+	http3Server       *http3.Server
+	host              Host
+	caBootstrapCert   []byte // PEM-encoded CA cert for bootstrap endpoint
+	caBootstrapKey    []byte // PEM-encoded CA private key for bootstrap endpoint
+	onEtcdUpdated     func(dbName string, cfg *database.EtcdConfig) error
+	webUI             http.Handler      // optional embedded web UI file server
+	auditLogger       audit.AuditLogger // optional compliance-grade audit logger
+
+	// custodianSvc handles custodian registration, listing, and revocation.
+	custodianSvc custodianServicer
+
+	// soPINVerifier handles SO PIN verification for dual-factor auth.
+	soPINVerifier soPINVerifier
 
 	// serviceRegistry provides per-(tenant, database) service resolution.
 	// When nil, all handlers fall back to the singleton service fields above,
 	// preserving backward compatibility for single-DB/single-tenant deployments.
 	serviceRegistry ServiceRegistry
+
+	// sealedWindowProbe controls the sealed-window middleware. When set
+	// and IsSealed() returns true, every request whose path is not on
+	// SealedWindowAllowlist is rejected with 503. When nil, the
+	// middleware is not installed and the server behaves as before.
+	sealedWindowProbe sealedWindowProbe
 }
 
 // ServerOption configures optional Server dependencies.
@@ -278,6 +298,15 @@ func WithBarrierService(svc service.BarrierServicer) ServerOption {
 	return func(s *Server) { s.barrierSvc = svc }
 }
 
+// WithPINBackend attaches the canonical pin.PINBackend used for the
+// optional SO PIN / User PIN compliance-gating layer on barrier
+// administrative operations (initialize/rekey/seal). When nil, PIN
+// fields supplied in barrier requests are ignored — preserving
+// dev-mode and unconfigured-deployment flows.
+func WithPINBackend(backend pin.PINBackend) ServerOption {
+	return func(s *Server) { s.pinBackend = backend }
+}
+
 // WithCeremonyService attaches a CeremonyServicer for ceremony lifecycle
 // operations including initialization, certificate claiming, share
 // distribution, CSR signing, and status queries.
@@ -312,6 +341,45 @@ func WithRoleService(svc role.RoleServicer) ServerOption {
 // operations including create, get, list, delete, and quota updates.
 func WithTenantService(svc tenant.TenantServicer) ServerOption {
 	return func(s *Server) { s.tenantSvc = svc }
+}
+
+// WithBackupService attaches a BackupServicer for backup lifecycle operations
+// including create, list, get, delete, restore, and verify.
+func WithBackupService(svc service.BackupServicer) ServerOption {
+	return func(s *Server) { s.backupSvc = svc }
+}
+
+// WithRebalanceService attaches a RebalanceServicer for cluster rebalance
+// operations including shard statistics, plan generation, execution, and
+// imbalance reporting.
+func WithRebalanceService(svc service.RebalanceServicer) ServerOption {
+	return func(s *Server) { s.rebalanceSvc = svc }
+}
+
+// WithAuthFactorService attaches an AuthFactorServicer for custodian auth
+// factor management (enroll, challenge, verify, list, revoke).
+// Handlers return 501 when this service is nil.
+func WithAuthFactorService(svc service.AuthFactorServicer) ServerOption {
+	return func(s *Server) { s.authFactorSvc = svc }
+}
+
+// WithUserAuthFactorService attaches a UserAuthFactorServicer for the
+// user-side 1-to-many auth factor model (M14). Handlers return 501 when
+// this service is nil.
+func WithUserAuthFactorService(svc service.UserAuthFactorServicer) ServerOption {
+	return func(s *Server) { s.userAuthFactorSvc = svc }
+}
+
+// WithCustodianService attaches a custodianServicer for custodian lifecycle
+// management (register, list, revoke). Handlers return 501 when nil.
+func WithCustodianService(svc custodianServicer) ServerOption {
+	return func(s *Server) { s.custodianSvc = svc }
+}
+
+// WithSOAuthenticator attaches an soPINVerifier for SO dual-factor PIN
+// verification on SO-permissioned routes.
+func WithSOAuthenticator(verifier soPINVerifier) ServerOption {
+	return func(s *Server) { s.soPINVerifier = verifier }
 }
 
 // WithCertProvider attaches a CertProvider for certificate management
@@ -365,12 +433,33 @@ func WithWebUI(h http.Handler) ServerOption {
 	return func(s *Server) { s.webUI = h }
 }
 
+// WithAuditLogger attaches a compliance-grade AuditLogger to the REST server.
+// When set, GET /v1/audit/events is registered and delegates to the logger.
+func WithAuditLogger(l audit.AuditLogger) ServerOption {
+	return func(s *Server) { s.auditLogger = l }
+}
+
 // WithServiceRegistry attaches a ServiceRegistry for per-(tenant, database)
 // request scoping. When set, every data-plane handler resolves its service
 // via the registry rather than the singleton service fields. Backward compat:
 // when nil, handlers use the singleton fields (single-DB/single-tenant mode).
 func WithServiceRegistry(reg ServiceRegistry) ServerOption {
 	return func(s *Server) { s.serviceRegistry = reg }
+}
+
+// WithSealedWindowProbe installs the sealed-window middleware backed by
+// the supplied probe. While probe.IsSealed() returns true, every request
+// whose path is not on SealedWindowAllowlist is rejected with 503.
+// Once unsealed the middleware is a passthrough; on re-seal it engages
+// again.
+//
+// The middleware is wrapped just outside the per-request mux but inside
+// any auth middleware, so allowlisted endpoints (notably /v1/barrier/*)
+// remain reachable without authentication during the sealed window —
+// the Vault model where possession of the unseal credential is itself
+// the authorization to drive unseal.
+func WithSealedWindowProbe(probe sealedWindowProbe) ServerOption {
+	return func(s *Server) { s.sealedWindowProbe = probe }
 }
 
 // NewServer creates a new REST server that listens on the given address
@@ -420,6 +509,8 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 		s.routes["/membership/add"] = route{method: http.MethodPost, handler: s.handleMembershipAdd}
 		s.routes["/membership/remove"] = route{method: http.MethodPost, handler: s.handleMembershipRemove}
 		s.routes["/snapshot"] = route{method: http.MethodPost, handler: s.handleSnapshot}
+		s.routes["/admin/shards"] = route{method: http.MethodPost, handler: s.handleStartShard}
+		s.routes["/admin/topology"] = route{method: http.MethodGet, handler: s.handleGetTopology}
 	}
 
 	// Register /metrics when a Prometheus gatherer is provided.
@@ -450,20 +541,26 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	// Watch route (Server-Sent Events).
 	s.routes["/watch"] = route{method: http.MethodGet, handler: s.handleWatch}
 
-	// Lease routes.
-	s.routes["/lease/grant"] = route{method: http.MethodPost, handler: s.handleLeaseGrant}
-	s.routes["/lease/revoke"] = route{method: http.MethodPost, handler: s.handleLeaseRevoke}
-	s.routes["/lease/keepalive"] = route{method: http.MethodPost, handler: s.handleLeaseKeepAlive}
-	s.routes["/lease/ttl"] = route{method: http.MethodGet, handler: s.handleLeaseTimeToLive}
-	s.routes["/lease/list"] = route{method: http.MethodGet, handler: s.handleLeaseList}
+	// Lease routes: only registered when a lease service is wired. Without
+	// gating, proposals would reach a SM instance that has no lease subsystem,
+	// causing SM.Apply to fail and blocking all subsequent linearizable reads.
+	if s.leaseSvc != nil || s.serviceRegistry != nil {
+		s.routes["/lease/grant"] = route{method: http.MethodPost, handler: s.handleLeaseGrant}
+		s.routes["/lease/revoke"] = route{method: http.MethodPost, handler: s.handleLeaseRevoke}
+		s.routes["/lease/keepalive"] = route{method: http.MethodPost, handler: s.handleLeaseKeepAlive}
+		s.routes["/lease/ttl"] = route{method: http.MethodGet, handler: s.handleLeaseTimeToLive}
+		s.routes["/lease/list"] = route{method: http.MethodGet, handler: s.handleLeaseList}
+	}
 
-	// Lock routes.
-	s.routes["/lock/acquire"] = route{method: http.MethodPost, handler: s.handleLockAcquire}
-	s.routes["/lock/trylock"] = route{method: http.MethodPost, handler: s.handleLockTryLock}
-	s.routes["/lock/release"] = route{method: http.MethodPost, handler: s.handleLockRelease}
-	s.routes["/lock/extend"] = route{method: http.MethodPost, handler: s.handleLockExtend}
-	s.routes["/lock/status"] = route{method: http.MethodGet, handler: s.handleLockStatus}
-	s.routes["/lock/list"] = route{method: http.MethodGet, handler: s.handleLockList}
+	// Lock routes: only registered when a lock service is wired.
+	if s.lockSvc != nil || s.serviceRegistry != nil {
+		s.routes["/lock/acquire"] = route{method: http.MethodPost, handler: s.handleLockAcquire}
+		s.routes["/lock/trylock"] = route{method: http.MethodPost, handler: s.handleLockTryLock}
+		s.routes["/lock/release"] = route{method: http.MethodPost, handler: s.handleLockRelease}
+		s.routes["/lock/extend"] = route{method: http.MethodPost, handler: s.handleLockExtend}
+		s.routes["/lock/status"] = route{method: http.MethodGet, handler: s.handleLockStatus}
+		s.routes["/lock/list"] = route{method: http.MethodGet, handler: s.handleLockList}
+	}
 
 	// Index routes.
 	s.routes["/index/create"] = route{method: http.MethodPost, handler: s.handleIndexCreate}
@@ -545,6 +642,8 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	if s.roleSvc != nil {
 		s.routes["/roles"] = route{method: http.MethodPost, handler: s.handleCreateRole}
 		s.routes["/roles/list"] = route{method: http.MethodGet, handler: s.handleListRoles}
+		s.routes["/roles/by-name"] = route{method: http.MethodGet, handler: s.handleGetRoleByName}
+		s.routes["/roles/resolve-permissions"] = route{method: http.MethodPost, handler: s.handleResolvePermissions}
 		s.routes["/roles/assign"] = route{method: http.MethodPost, handler: s.handleAssignRole}
 		s.routes["/roles/unassign"] = route{method: http.MethodPost, handler: s.handleUnassignRole}
 		s.routes["/permissions"] = route{method: http.MethodGet, handler: s.handleListPermissions}
@@ -555,6 +654,31 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	// Handlers return 501 when tenantSvc is nil (seal barrier not configured).
 	s.routes["/v1/tenants"] = route{method: http.MethodPost, handler: s.handleCreateTenant}
 	s.routes["/v1/tenants/list"] = route{method: http.MethodGet, handler: s.handleListTenants}
+
+	// Backup management routes.
+	if s.backupSvc != nil {
+		s.routes["/v1/backups"] = route{method: http.MethodPost, handler: s.handleCreateBackup}
+		s.routes["/v1/backups/list"] = route{method: http.MethodGet, handler: s.handleListBackups}
+		s.routes["/v1/backups/restore"] = route{method: http.MethodPost, handler: s.handleRestoreBackup}
+	}
+
+	// Cluster rebalance routes.
+	if s.rebalanceSvc != nil {
+		s.routes["/v1/rebalance/plan"] = route{method: http.MethodPost, handler: s.handleRebalancePlan}
+		s.routes["/v1/rebalance/execute"] = route{method: http.MethodPost, handler: s.handleRebalanceExecute}
+		s.routes["/v1/rebalance/report"] = route{method: http.MethodGet, handler: s.handleImbalanceReport}
+	}
+
+	// Auth factor routes. Registered unconditionally; handlers return 501 when
+	// authFactorSvc is nil (service not configured).
+	s.routes["/v1/authfactors/list"] = route{method: http.MethodGet, handler: s.handleAuthFactorList}
+
+	// User auth factor routes (M14). Registered unconditionally; handlers
+	// return 501 when userAuthFactorSvc is nil.
+	s.routes["/v1/users/factors"] = route{method: http.MethodPost, handler: s.handleUserAuthFactorAdd}
+	s.routes["/v1/users/factors/list"] = route{method: http.MethodGet, handler: s.handleUserAuthFactorList}
+	s.routes["/v1/users/factors/login"] = route{method: http.MethodPost, handler: s.handleUserAuthFactorLogin}
+	s.routes["/v1/users/factors/rotate"] = route{method: http.MethodPost, handler: s.handleUserAuthFactorRotate}
 
 	// Certificate management routes.
 	if s.certProv != nil {
@@ -578,7 +702,6 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 		s.routes["/v1/barrier/shamir/initialize"] = route{method: http.MethodPost, handler: s.handleBarrierShamirInitialize}
 		s.routes["/v1/barrier/shamir/unseal-share"] = route{method: http.MethodPost, handler: s.handleBarrierShamirUnsealShare}
 		s.routes["/v1/barrier/shamir/unseal-shares"] = route{method: http.MethodPost, handler: s.handleBarrierShamirUnsealShares}
-		s.routes["/v1/barrier/shamir/verify"] = route{method: http.MethodPost, handler: s.handleBarrierShamirVerify}
 		s.routes["/v1/barrier/rekey"] = route{method: http.MethodPost, handler: s.handleBarrierRekey}
 		s.routes["/v1/barrier/recovery/generate"] = route{method: http.MethodPost, handler: s.handleBarrierRecoveryGenerate}
 		s.routes["/v1/barrier/recovery/recover"] = route{method: http.MethodPost, handler: s.handleBarrierRecoveryRecover}
@@ -595,26 +718,51 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 		s.routes["/v1/ceremony/claim-cert/complete"] = route{method: http.MethodPost, handler: s.handleCeremonyClaimCertComplete}
 		s.routes["/v1/ceremony/claim-share"] = route{method: http.MethodPost, handler: s.handleCeremonyClaimShare}
 		s.routes["/v1/ceremony/sign-csr"] = route{method: http.MethodPost, handler: s.handleCeremonySignCSR}
+		s.routes["/v1/init/enroll-external-officer"] = route{method: http.MethodPost, handler: s.handleCeremonyEnrollExternalOfficer}
+	}
+
+	// Custodian lifecycle routes (Phase 4).
+	if s.custodianSvc != nil {
+		s.routes["/v1/ceremony/enroll-custodian"] = route{method: http.MethodPost, handler: s.handleEnrollCustodian}
+		s.routes["/v1/ceremony/revoke-custodian"] = route{method: http.MethodPost, handler: s.handleRevokeCustodian}
+		s.routes["/v1/ceremony/claim-share/begin"] = route{method: http.MethodPost, handler: s.handleCustodianClaimShareBegin}
+		s.routes["/v1/ceremony/claim-share/complete"] = route{method: http.MethodPost, handler: s.handleCustodianClaimShareComplete}
+		s.routes["/v1/barrier/unseal-share"] = route{method: http.MethodPost, handler: s.handleUnsealShare}
 	}
 
 	// Credential management routes.
 	if s.credentialSvc != nil {
 		s.routes["/v1/credentials/submit"] = route{method: http.MethodPost, handler: s.handleCredentialSubmit}
+		s.routes["/v1/credentials/store"] = route{method: http.MethodPost, handler: s.handleCredentialStore}
 		s.routes["/v1/credentials/strategy"] = route{method: http.MethodGet, handler: s.handleCredentialStrategy}
+		s.routes["/v1/credentials"] = route{method: http.MethodGet, handler: s.handleCredentialList}
+	}
+
+	// Audit event retrieval route.
+	// Authorization: requires "audit:query" permission.
+	// TODO: switch to permission.AuditQuery constant once Phase 2 lands.
+	if s.auditLogger != nil {
+		s.routes["/v1/audit/events"] = route{method: http.MethodGet, handler: s.handleAuditQuery}
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.dispatch)
 
 	// Build the middleware chain from innermost to outermost:
-	//   mux → auth → scope → CORS
+	//   mux → auth → sealed-window → scope → CORS
 	// scopeMiddleware runs before auth so that auth middleware can read the
 	// tenant/database from context if it needs to (future-proof). CORS is the
 	// outermost layer so that preflight OPTIONS requests are handled before any
-	// other processing.
+	// other processing. The sealed-window middleware sits between auth and
+	// scope so that allowlisted endpoints (e.g. /v1/barrier/unseal) bypass
+	// auth — possession of the unseal credential is the authorization, per
+	// the Vault model.
 	var handler http.Handler = mux
 	if s.authMW != nil {
-		handler = s.authMW.RESTMiddleware(mux)
+		handler = s.authMW.RESTMiddleware(handler)
+	}
+	if s.sealedWindowProbe != nil {
+		handler = SealedWindowMiddleware(s.sealedWindowProbe, nil)(handler)
 	}
 	handler = scopeMiddleware(handler)
 	if s.corsConfig != nil {
@@ -743,6 +891,14 @@ func (s *Server) dispatch(w http.ResponseWriter, r *http.Request) {
 			s.handleRole(w, r)
 			return
 		}
+		// Admin per-shard routes with path params:
+		//   DELETE /admin/shards/{id}       -> stop shard
+		//   GET    /admin/shards/{id}/state -> shard Raft state
+		const adminShardsPrefix = "/admin/shards/"
+		if len(r.URL.Path) > len(adminShardsPrefix) && r.URL.Path[:len(adminShardsPrefix)] == adminShardsPrefix {
+			s.handleAdminShardByID(w, r)
+			return
+		}
 		// TimeSeries series routes with path params
 		// (DELETE /ts/series/{metric}, GET/PUT /ts/series/{metric}/retention).
 		if len(r.URL.Path) > 11 && r.URL.Path[:11] == "/ts/series/" {
@@ -763,12 +919,6 @@ func (s *Server) dispatch(w http.ResponseWriter, r *http.Request) {
 			s.handleCollectionByPath(w, r)
 			return
 		}
-		// Barrier Shamir shares routes with optional path param
-		// (GET/DELETE /v1/barrier/shamir/shares, DELETE /v1/barrier/shamir/shares/{index}).
-		if len(r.URL.Path) >= 25 && r.URL.Path[:25] == "/v1/barrier/shamir/shares" {
-			s.handleBarrierShamirSharesByPath(w, r)
-			return
-		}
 		// Tenant routes with path params
 		// (GET /v1/tenants/{id}, DELETE /v1/tenants/{id},
 		// POST /v1/tenants/{id}/quotas).
@@ -776,10 +926,53 @@ func (s *Server) dispatch(w http.ResponseWriter, r *http.Request) {
 			s.handleTenantByID(w, r)
 			return
 		}
-		// Credential delete route: DELETE /v1/credentials/{name}.
-		if len(r.URL.Path) > 17 && r.URL.Path[:17] == "/v1/credentials/" && r.Method == http.MethodDelete {
-			s.handleCredentialDelete(w, r)
+		// Backup routes with path params:
+		//   GET    /v1/backups/{id}        -> get backup
+		//   DELETE /v1/backups/{id}        -> delete backup
+		//   POST   /v1/backups/{id}/verify -> verify backup
+		// The keyword routes (list, restore) are matched earlier via s.routes.
+		if len(r.URL.Path) > 12 && r.URL.Path[:12] == "/v1/backups/" {
+			s.handleBackupByID(w, r)
 			return
+		}
+		// Rebalance shard-stats route with path param:
+		//   GET /v1/rebalance/shards/{id} -> shard statistics
+		const rebalanceShardsPrefix = "/v1/rebalance/shards/"
+		if len(r.URL.Path) > len(rebalanceShardsPrefix) && r.URL.Path[:len(rebalanceShardsPrefix)] == rebalanceShardsPrefix {
+			s.handleRebalanceShardStats(w, r)
+			return
+		}
+		// Credential routes with path params:
+		//   DELETE /v1/credentials/{name}
+		//   POST   /v1/credentials/{name}/rotate
+		//   POST   /v1/credentials/{name}/gc
+		//   GET    /v1/credentials/{name}/versions
+		//   GET    /v1/credentials/{name}/versions/{version}.
+		if len(r.URL.Path) > 16 && r.URL.Path[:16] == "/v1/credentials/" {
+			s.handleCredentialByPath(w, r)
+			return
+		}
+		// Auth factor routes with path params:
+		//   POST /v1/authfactors/{factor}/enroll
+		//   POST /v1/authfactors/{enrollment_id}/challenge
+		//   POST /v1/authfactors/{enrollment_id}/verify
+		//   DELETE /v1/authfactors/{enrollment_id}
+		if len(r.URL.Path) > 16 && r.URL.Path[:16] == "/v1/authfactors/" {
+			s.handleAuthFactorByPath(w, r)
+			return
+		}
+		// User auth factor routes with path params (M14):
+		//   GET    /v1/users/factors/{id}
+		//   DELETE /v1/users/factors/{id}
+		//   PUT    /v1/users/factors/{id}/label
+		const userFactorPrefix = "/v1/users/factors/"
+		if len(r.URL.Path) > len(userFactorPrefix) && r.URL.Path[:len(userFactorPrefix)] == userFactorPrefix {
+			// Skip the keyword routes already in s.routes (list, login, rotate).
+			suffix := r.URL.Path[len(userFactorPrefix):]
+			if suffix != "list" && suffix != "login" && suffix != "rotate" {
+				s.handleUserAuthFactorByPath(w, r)
+				return
+			}
 		}
 		// Fall through to embedded web UI if configured.
 		if s.webUI != nil {

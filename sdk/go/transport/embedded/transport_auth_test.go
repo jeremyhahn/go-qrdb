@@ -34,21 +34,22 @@ import (
 
 // mockUserServicer implements user.UserServicer with function-field injection.
 type mockUserServicer struct {
-	createUserFn    func(ctx context.Context, req *user.CreateUserRequest) (*user.User, error)
-	getUserFn       func(ctx context.Context, id string) (*user.User, error)
-	getUserByUserFn func(ctx context.Context, tenantID, username string) (*user.User, error)
-	updateUserFn    func(ctx context.Context, req *user.UpdateUserRequest) (*user.User, error)
-	deleteUserFn    func(ctx context.Context, id string) error
-	listUsersFn     func(ctx context.Context, req *user.ListUsersRequest) (*user.ListUsersResponse, error)
-	enableUserFn    func(ctx context.Context, id string) error
-	disableUserFn   func(ctx context.Context, id string) error
+	createUserFn      func(ctx context.Context, req *user.CreateUserRequest) (*user.User, error)
+	getUserFn         func(ctx context.Context, id uint64) (*user.User, error)
+	getUserByUserFn   func(ctx context.Context, tenantID, username string) (*user.User, error)
+	updateUserFn      func(ctx context.Context, req *user.UpdateUserRequest) (*user.User, error)
+	deleteUserFn      func(ctx context.Context, id uint64) error
+	listUsersFn       func(ctx context.Context, req *user.ListUsersRequest) (*user.ListUsersResponse, error)
+	enableUserFn      func(ctx context.Context, id uint64) error
+	disableUserFn     func(ctx context.Context, id uint64) error
+	userByCertThumbFn func(ctx context.Context, thumbprint string) (*user.User, error)
 }
 
 func (m *mockUserServicer) CreateUser(ctx context.Context, req *user.CreateUserRequest) (*user.User, error) {
 	return m.createUserFn(ctx, req)
 }
 
-func (m *mockUserServicer) GetUser(ctx context.Context, id string) (*user.User, error) {
+func (m *mockUserServicer) GetUser(ctx context.Context, id uint64) (*user.User, error) {
 	return m.getUserFn(ctx, id)
 }
 
@@ -60,7 +61,7 @@ func (m *mockUserServicer) UpdateUser(ctx context.Context, req *user.UpdateUserR
 	return m.updateUserFn(ctx, req)
 }
 
-func (m *mockUserServicer) DeleteUser(ctx context.Context, id string) error {
+func (m *mockUserServicer) DeleteUser(ctx context.Context, id uint64) error {
 	return m.deleteUserFn(ctx, id)
 }
 
@@ -68,12 +69,23 @@ func (m *mockUserServicer) ListUsers(ctx context.Context, req *user.ListUsersReq
 	return m.listUsersFn(ctx, req)
 }
 
-func (m *mockUserServicer) EnableUser(ctx context.Context, id string) error {
+func (m *mockUserServicer) EnableUser(ctx context.Context, id uint64) error {
 	return m.enableUserFn(ctx, id)
 }
 
-func (m *mockUserServicer) DisableUser(ctx context.Context, id string) error {
+func (m *mockUserServicer) DisableUser(ctx context.Context, id uint64) error {
 	return m.disableUserFn(ctx, id)
+}
+
+func (m *mockUserServicer) UserByCertThumbprint(ctx context.Context, thumbprint string) (*user.User, error) {
+	if m.userByCertThumbFn != nil {
+		return m.userByCertThumbFn(ctx, thumbprint)
+	}
+	return nil, nil
+}
+
+func (m *mockUserServicer) AddCertBinding(_ context.Context, _ uint64, _ string, _ int64) (*user.User, error) {
+	return nil, nil
 }
 
 // mockRoleServicer implements role.RoleServicer with function-field injection.
@@ -161,7 +173,7 @@ func testTime() time.Time {
 // testUser returns a standard user for test assertions.
 func testUser() *user.User {
 	return &user.User{
-		ID:        "user-001",
+		ID:        1001,
 		Username:  "alice",
 		TenantID:  "tenant-a",
 		RoleIDs:   []string{"role-admin"},
@@ -237,8 +249,8 @@ func TestCreateUser_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if u.ID != "user-001" {
-		t.Errorf("expected ID 'user-001', got %q", u.ID)
+	if u.ID != 1001 {
+		t.Errorf("expected ID 1001, got %d", u.ID)
 	}
 	if u.Username != "alice" {
 		t.Errorf("expected username 'alice', got %q", u.Username)
@@ -278,23 +290,48 @@ func TestCreateUser_ServiceError(t *testing.T) {
 	}
 }
 
+// TestGetUser_Uint64IDRoundTrip proves a large uint64 user id passes through
+// the in-process embedded transport unchanged on both request and response.
+func TestGetUser_Uint64IDRoundTrip(t *testing.T) {
+	const wantID uint64 = 1<<63 + 31415
+	var got uint64
+	mock := &mockUserServicer{
+		getUserFn: func(_ context.Context, id uint64) (*user.User, error) {
+			got = id
+			return &user.User{ID: id, Username: "snowflake", Enabled: true}, nil
+		},
+	}
+	tr := newAuthTransport(t, WithUserService(mock))
+
+	u, err := tr.GetUser(context.Background(), wantID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != wantID {
+		t.Fatalf("request id lost: got %d, want %d", got, wantID)
+	}
+	if u.ID != wantID {
+		t.Fatalf("response id lost: got %d, want %d", u.ID, wantID)
+	}
+}
+
 func TestGetUser_Success(t *testing.T) {
 	mock := &mockUserServicer{
-		getUserFn: func(_ context.Context, id string) (*user.User, error) {
-			if id != "user-001" {
-				t.Errorf("expected id 'user-001', got %q", id)
+		getUserFn: func(_ context.Context, id uint64) (*user.User, error) {
+			if id != 1001 {
+				t.Errorf("expected id 1001, got %d", id)
 			}
 			return testUser(), nil
 		},
 	}
 	tr := newAuthTransport(t, WithUserService(mock))
 
-	u, err := tr.GetUser(context.Background(), "user-001")
+	u, err := tr.GetUser(context.Background(), 1001)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if u.ID != "user-001" {
-		t.Errorf("expected ID 'user-001', got %q", u.ID)
+	if u.ID != 1001 {
+		t.Errorf("expected ID 1001, got %d", u.ID)
 	}
 	if u.TenantID != "tenant-a" {
 		t.Errorf("expected tenantID 'tenant-a', got %q", u.TenantID)
@@ -303,19 +340,19 @@ func TestGetUser_Success(t *testing.T) {
 
 func TestGetUser_NilService(t *testing.T) {
 	tr := newAuthTransport(t)
-	_, err := tr.GetUser(context.Background(), "user-001")
+	_, err := tr.GetUser(context.Background(), 1001)
 	assertNotImplementedError(t, err, "GetUser")
 }
 
 func TestGetUser_NotFound(t *testing.T) {
 	mock := &mockUserServicer{
-		getUserFn: func(_ context.Context, id string) (*user.User, error) {
+		getUserFn: func(_ context.Context, id uint64) (*user.User, error) {
 			return nil, &user.UserNotFoundError{ID: id}
 		},
 	}
 	tr := newAuthTransport(t, WithUserService(mock))
 
-	_, err := tr.GetUser(context.Background(), "user-missing")
+	_, err := tr.GetUser(context.Background(), 9999)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -323,16 +360,69 @@ func TestGetUser_NotFound(t *testing.T) {
 	if !errors.As(err, &unf) {
 		t.Errorf("expected *user.UserNotFoundError, got %T", err)
 	}
-	if unf.ID != "user-missing" {
-		t.Errorf("expected ID 'user-missing', got %q", unf.ID)
+	if unf.ID != 9999 {
+		t.Errorf("expected ID 9999, got %d", unf.ID)
+	}
+}
+
+func TestGetUserByUsername_Success(t *testing.T) {
+	mock := &mockUserServicer{
+		getUserByUserFn: func(_ context.Context, tenantID, username string) (*user.User, error) {
+			if tenantID != "tenant-a" {
+				t.Errorf("expected tenantID 'tenant-a', got %q", tenantID)
+			}
+			if username != "alice" {
+				t.Errorf("expected username 'alice', got %q", username)
+			}
+			return testUser(), nil
+		},
+	}
+	tr := newAuthTransport(t, WithUserService(mock))
+
+	u, err := tr.GetUserByUsername(context.Background(), "tenant-a", "alice")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if u.ID != 1001 {
+		t.Errorf("expected ID 1001, got %d", u.ID)
+	}
+	if u.TenantID != "tenant-a" {
+		t.Errorf("expected tenantID 'tenant-a', got %q", u.TenantID)
+	}
+}
+
+func TestGetUserByUsername_NilService(t *testing.T) {
+	tr := newAuthTransport(t)
+	_, err := tr.GetUserByUsername(context.Background(), "tenant-a", "alice")
+	assertNotImplementedError(t, err, "GetUserByUsername")
+}
+
+func TestGetUserByUsername_NotFound(t *testing.T) {
+	mock := &mockUserServicer{
+		getUserByUserFn: func(_ context.Context, _, username string) (*user.User, error) {
+			return nil, &user.UserNotFoundError{Lookup: username}
+		},
+	}
+	tr := newAuthTransport(t, WithUserService(mock))
+
+	_, err := tr.GetUserByUsername(context.Background(), "tenant-a", "missing")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var unf *user.UserNotFoundError
+	if !errors.As(err, &unf) {
+		t.Errorf("expected *user.UserNotFoundError, got %T", err)
+	}
+	if unf.Lookup != "missing" {
+		t.Errorf("expected Lookup 'missing', got %q", unf.Lookup)
 	}
 }
 
 func TestUpdateUser_Success(t *testing.T) {
 	mock := &mockUserServicer{
 		updateUserFn: func(_ context.Context, req *user.UpdateUserRequest) (*user.User, error) {
-			if req.ID != "user-001" {
-				t.Errorf("expected ID 'user-001', got %q", req.ID)
+			if req.ID != 1001 {
+				t.Errorf("expected ID 'user-001', got %d", req.ID)
 			}
 			if req.Username != "alice-updated" {
 				t.Errorf("expected username 'alice-updated', got %q", req.Username)
@@ -345,7 +435,7 @@ func TestUpdateUser_Success(t *testing.T) {
 	tr := newAuthTransport(t, WithUserService(mock))
 
 	u, err := tr.UpdateUser(context.Background(), &transport.UpdateUserRequest{
-		ID:       "user-001",
+		ID:       1001,
 		Username: "alice-updated",
 	})
 	if err != nil {
@@ -359,7 +449,7 @@ func TestUpdateUser_Success(t *testing.T) {
 func TestUpdateUser_NilService(t *testing.T) {
 	tr := newAuthTransport(t)
 	_, err := tr.UpdateUser(context.Background(), &transport.UpdateUserRequest{
-		ID:       "user-001",
+		ID:       1001,
 		Username: "alice-updated",
 	})
 	assertNotImplementedError(t, err, "UpdateUser")
@@ -368,13 +458,13 @@ func TestUpdateUser_NilService(t *testing.T) {
 func TestUpdateUser_ServiceError(t *testing.T) {
 	mock := &mockUserServicer{
 		updateUserFn: func(_ context.Context, _ *user.UpdateUserRequest) (*user.User, error) {
-			return nil, &user.UserNotFoundError{ID: "user-missing"}
+			return nil, &user.UserNotFoundError{ID: 9999}
 		},
 	}
 	tr := newAuthTransport(t, WithUserService(mock))
 
 	_, err := tr.UpdateUser(context.Background(), &transport.UpdateUserRequest{
-		ID: "user-missing",
+		ID: 9999,
 	})
 	if err == nil {
 		t.Fatal("expected error, got nil")
@@ -388,9 +478,9 @@ func TestUpdateUser_ServiceError(t *testing.T) {
 func TestDeleteUser_Success(t *testing.T) {
 	called := false
 	mock := &mockUserServicer{
-		deleteUserFn: func(_ context.Context, id string) error {
-			if id != "user-001" {
-				t.Errorf("expected id 'user-001', got %q", id)
+		deleteUserFn: func(_ context.Context, id uint64) error {
+			if id != 1001 {
+				t.Errorf("expected id 1001, got %d", id)
 			}
 			called = true
 			return nil
@@ -398,7 +488,7 @@ func TestDeleteUser_Success(t *testing.T) {
 	}
 	tr := newAuthTransport(t, WithUserService(mock))
 
-	if err := tr.DeleteUser(context.Background(), "user-001"); err != nil {
+	if err := tr.DeleteUser(context.Background(), 1001); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !called {
@@ -408,19 +498,19 @@ func TestDeleteUser_Success(t *testing.T) {
 
 func TestDeleteUser_NilService(t *testing.T) {
 	tr := newAuthTransport(t)
-	err := tr.DeleteUser(context.Background(), "user-001")
+	err := tr.DeleteUser(context.Background(), 1001)
 	assertNotImplementedError(t, err, "DeleteUser")
 }
 
 func TestDeleteUser_SystemUser(t *testing.T) {
 	mock := &mockUserServicer{
-		deleteUserFn: func(_ context.Context, id string) error {
+		deleteUserFn: func(_ context.Context, id uint64) error {
 			return &user.SystemUserImmutableError{ID: id}
 		},
 	}
 	tr := newAuthTransport(t, WithUserService(mock))
 
-	err := tr.DeleteUser(context.Background(), "system-user")
+	err := tr.DeleteUser(context.Background(), 9001)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -462,8 +552,8 @@ func TestListUsers_Success(t *testing.T) {
 	if len(resp.Users) != 1 {
 		t.Fatalf("expected 1 user, got %d", len(resp.Users))
 	}
-	if resp.Users[0].ID != "user-001" {
-		t.Errorf("expected user ID 'user-001', got %q", resp.Users[0].ID)
+	if resp.Users[0].ID != 1001 {
+		t.Errorf("expected user ID 'user-001', got %d", resp.Users[0].ID)
 	}
 	if resp.Total != 1 {
 		t.Errorf("expected total 1, got %d", resp.Total)
@@ -486,7 +576,7 @@ func TestListUsers_Pagination(t *testing.T) {
 		listUsersFn: func(_ context.Context, req *user.ListUsersRequest) (*user.ListUsersResponse, error) {
 			u1 := testUser()
 			u2 := testUser()
-			u2.ID = "user-002"
+			u2.ID = 1002
 			u2.Username = "bob"
 			return &user.ListUsersResponse{
 				Users:   []*user.User{u1, u2},
@@ -539,9 +629,9 @@ func TestListUsers_ServiceError(t *testing.T) {
 func TestEnableUser_Success(t *testing.T) {
 	called := false
 	mock := &mockUserServicer{
-		enableUserFn: func(_ context.Context, id string) error {
-			if id != "user-001" {
-				t.Errorf("expected id 'user-001', got %q", id)
+		enableUserFn: func(_ context.Context, id uint64) error {
+			if id != 1001 {
+				t.Errorf("expected id 1001, got %d", id)
 			}
 			called = true
 			return nil
@@ -549,7 +639,7 @@ func TestEnableUser_Success(t *testing.T) {
 	}
 	tr := newAuthTransport(t, WithUserService(mock))
 
-	if err := tr.EnableUser(context.Background(), "user-001"); err != nil {
+	if err := tr.EnableUser(context.Background(), 1001); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !called {
@@ -559,19 +649,19 @@ func TestEnableUser_Success(t *testing.T) {
 
 func TestEnableUser_NilService(t *testing.T) {
 	tr := newAuthTransport(t)
-	err := tr.EnableUser(context.Background(), "user-001")
+	err := tr.EnableUser(context.Background(), 1001)
 	assertNotImplementedError(t, err, "EnableUser")
 }
 
 func TestEnableUser_ServiceError(t *testing.T) {
 	mock := &mockUserServicer{
-		enableUserFn: func(_ context.Context, id string) error {
+		enableUserFn: func(_ context.Context, id uint64) error {
 			return &user.UserNotFoundError{ID: id}
 		},
 	}
 	tr := newAuthTransport(t, WithUserService(mock))
 
-	err := tr.EnableUser(context.Background(), "user-missing")
+	err := tr.EnableUser(context.Background(), 9999)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -584,9 +674,9 @@ func TestEnableUser_ServiceError(t *testing.T) {
 func TestDisableUser_Success(t *testing.T) {
 	called := false
 	mock := &mockUserServicer{
-		disableUserFn: func(_ context.Context, id string) error {
-			if id != "user-001" {
-				t.Errorf("expected id 'user-001', got %q", id)
+		disableUserFn: func(_ context.Context, id uint64) error {
+			if id != 1001 {
+				t.Errorf("expected id 1001, got %d", id)
 			}
 			called = true
 			return nil
@@ -594,7 +684,7 @@ func TestDisableUser_Success(t *testing.T) {
 	}
 	tr := newAuthTransport(t, WithUserService(mock))
 
-	if err := tr.DisableUser(context.Background(), "user-001"); err != nil {
+	if err := tr.DisableUser(context.Background(), 1001); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !called {
@@ -604,19 +694,19 @@ func TestDisableUser_Success(t *testing.T) {
 
 func TestDisableUser_NilService(t *testing.T) {
 	tr := newAuthTransport(t)
-	err := tr.DisableUser(context.Background(), "user-001")
+	err := tr.DisableUser(context.Background(), 1001)
 	assertNotImplementedError(t, err, "DisableUser")
 }
 
 func TestDisableUser_ServiceError(t *testing.T) {
 	mock := &mockUserServicer{
-		disableUserFn: func(_ context.Context, id string) error {
+		disableUserFn: func(_ context.Context, id uint64) error {
 			return &user.UserNotFoundError{ID: id}
 		},
 	}
 	tr := newAuthTransport(t, WithUserService(mock))
 
-	err := tr.DisableUser(context.Background(), "user-missing")
+	err := tr.DisableUser(context.Background(), 9999)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -963,7 +1053,7 @@ func TestAssignRole_Success(t *testing.T) {
 		},
 	}
 	userMock := &mockUserServicer{
-		getUserFn: func(_ context.Context, _ string) (*user.User, error) {
+		getUserFn: func(_ context.Context, _ uint64) (*user.User, error) {
 			u := testUser()
 			u.RoleIDs = []string{"role-existing"}
 			return u, nil
@@ -987,7 +1077,7 @@ func TestAssignRole_Success(t *testing.T) {
 	}
 	tr := newAuthTransport(t, WithRoleService(roleMock), WithUserService(userMock))
 
-	if err := tr.AssignRole(context.Background(), "user-001", "role-001"); err != nil {
+	if err := tr.AssignRole(context.Background(), 1001, "role-001"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !updateCalled {
@@ -1002,7 +1092,7 @@ func TestAssignRole_AlreadyAssigned(t *testing.T) {
 		},
 	}
 	userMock := &mockUserServicer{
-		getUserFn: func(_ context.Context, _ string) (*user.User, error) {
+		getUserFn: func(_ context.Context, _ uint64) (*user.User, error) {
 			u := testUser()
 			u.RoleIDs = []string{"role-001"} // already has the role
 			return u, nil
@@ -1015,7 +1105,7 @@ func TestAssignRole_AlreadyAssigned(t *testing.T) {
 	tr := newAuthTransport(t, WithRoleService(roleMock), WithUserService(userMock))
 
 	// Should succeed silently (idempotent).
-	if err := tr.AssignRole(context.Background(), "user-001", "role-001"); err != nil {
+	if err := tr.AssignRole(context.Background(), 1001, "role-001"); err != nil {
 		t.Fatalf("expected nil error for already-assigned role, got: %v", err)
 	}
 }
@@ -1023,14 +1113,14 @@ func TestAssignRole_AlreadyAssigned(t *testing.T) {
 func TestAssignRole_NilRoleService(t *testing.T) {
 	userMock := &mockUserServicer{}
 	tr := newAuthTransport(t, WithUserService(userMock))
-	err := tr.AssignRole(context.Background(), "user-001", "role-001")
+	err := tr.AssignRole(context.Background(), 1001, "role-001")
 	assertNotImplementedError(t, err, "AssignRole")
 }
 
 func TestAssignRole_NilUserService(t *testing.T) {
 	roleMock := &mockRoleServicer{}
 	tr := newAuthTransport(t, WithRoleService(roleMock))
-	err := tr.AssignRole(context.Background(), "user-001", "role-001")
+	err := tr.AssignRole(context.Background(), 1001, "role-001")
 	assertNotImplementedError(t, err, "AssignRole")
 }
 
@@ -1043,7 +1133,7 @@ func TestAssignRole_RoleNotFound(t *testing.T) {
 	userMock := &mockUserServicer{}
 	tr := newAuthTransport(t, WithRoleService(roleMock), WithUserService(userMock))
 
-	err := tr.AssignRole(context.Background(), "user-001", "role-missing")
+	err := tr.AssignRole(context.Background(), 1001, "role-missing")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -1060,13 +1150,13 @@ func TestAssignRole_UserNotFound(t *testing.T) {
 		},
 	}
 	userMock := &mockUserServicer{
-		getUserFn: func(_ context.Context, id string) (*user.User, error) {
+		getUserFn: func(_ context.Context, id uint64) (*user.User, error) {
 			return nil, &user.UserNotFoundError{ID: id}
 		},
 	}
 	tr := newAuthTransport(t, WithRoleService(roleMock), WithUserService(userMock))
 
-	err := tr.AssignRole(context.Background(), "user-missing", "role-001")
+	err := tr.AssignRole(context.Background(), 9999, "role-001")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -1080,7 +1170,7 @@ func TestUnassignRole_Success(t *testing.T) {
 	updateCalled := false
 	roleMock := &mockRoleServicer{}
 	userMock := &mockUserServicer{
-		getUserFn: func(_ context.Context, _ string) (*user.User, error) {
+		getUserFn: func(_ context.Context, _ uint64) (*user.User, error) {
 			u := testUser()
 			u.RoleIDs = []string{"role-001", "role-002"}
 			return u, nil
@@ -1098,7 +1188,7 @@ func TestUnassignRole_Success(t *testing.T) {
 	}
 	tr := newAuthTransport(t, WithRoleService(roleMock), WithUserService(userMock))
 
-	if err := tr.UnassignRole(context.Background(), "user-001", "role-001"); err != nil {
+	if err := tr.UnassignRole(context.Background(), 1001, "role-001"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !updateCalled {
@@ -1110,7 +1200,7 @@ func TestUnassignRole_RoleNotInUserRoles(t *testing.T) {
 	updateCalled := false
 	roleMock := &mockRoleServicer{}
 	userMock := &mockUserServicer{
-		getUserFn: func(_ context.Context, _ string) (*user.User, error) {
+		getUserFn: func(_ context.Context, _ uint64) (*user.User, error) {
 			u := testUser()
 			u.RoleIDs = []string{"role-002", "role-003"}
 			return u, nil
@@ -1126,7 +1216,7 @@ func TestUnassignRole_RoleNotInUserRoles(t *testing.T) {
 	}
 	tr := newAuthTransport(t, WithRoleService(roleMock), WithUserService(userMock))
 
-	if err := tr.UnassignRole(context.Background(), "user-001", "role-001"); err != nil {
+	if err := tr.UnassignRole(context.Background(), 1001, "role-001"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !updateCalled {
@@ -1137,27 +1227,27 @@ func TestUnassignRole_RoleNotInUserRoles(t *testing.T) {
 func TestUnassignRole_NilRoleService(t *testing.T) {
 	userMock := &mockUserServicer{}
 	tr := newAuthTransport(t, WithUserService(userMock))
-	err := tr.UnassignRole(context.Background(), "user-001", "role-001")
+	err := tr.UnassignRole(context.Background(), 1001, "role-001")
 	assertNotImplementedError(t, err, "UnassignRole")
 }
 
 func TestUnassignRole_NilUserService(t *testing.T) {
 	roleMock := &mockRoleServicer{}
 	tr := newAuthTransport(t, WithRoleService(roleMock))
-	err := tr.UnassignRole(context.Background(), "user-001", "role-001")
+	err := tr.UnassignRole(context.Background(), 1001, "role-001")
 	assertNotImplementedError(t, err, "UnassignRole")
 }
 
 func TestUnassignRole_UserNotFound(t *testing.T) {
 	roleMock := &mockRoleServicer{}
 	userMock := &mockUserServicer{
-		getUserFn: func(_ context.Context, id string) (*user.User, error) {
+		getUserFn: func(_ context.Context, id uint64) (*user.User, error) {
 			return nil, &user.UserNotFoundError{ID: id}
 		},
 	}
 	tr := newAuthTransport(t, WithRoleService(roleMock), WithUserService(userMock))
 
-	err := tr.UnassignRole(context.Background(), "user-missing", "role-001")
+	err := tr.UnassignRole(context.Background(), 9999, "role-001")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -1605,7 +1695,7 @@ func TestUserToTransport_FullConversion(t *testing.T) {
 	result := userToTransport(u)
 
 	if result.ID != u.ID {
-		t.Errorf("expected ID %q, got %q", u.ID, result.ID)
+		t.Errorf("expected ID %d, got %d", u.ID, result.ID)
 	}
 	if result.Username != u.Username {
 		t.Errorf("expected Username %q, got %q", u.Username, result.Username)
@@ -1720,18 +1810,18 @@ func TestStringsToPermissions_EmptySlice(t *testing.T) {
 
 func TestWithUserService_Option(t *testing.T) {
 	mock := &mockUserServicer{
-		getUserFn: func(_ context.Context, _ string) (*user.User, error) {
+		getUserFn: func(_ context.Context, _ uint64) (*user.User, error) {
 			return testUser(), nil
 		},
 	}
 	tr := newAuthTransport(t, WithUserService(mock))
 
-	u, err := tr.GetUser(context.Background(), "user-001")
+	u, err := tr.GetUser(context.Background(), 1001)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if u.ID != "user-001" {
-		t.Errorf("expected ID 'user-001', got %q", u.ID)
+	if u.ID != 1001 {
+		t.Errorf("expected ID 1001, got %d", u.ID)
 	}
 }
 

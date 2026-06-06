@@ -36,7 +36,9 @@ func (t *Transport) BarrierInitialize(ctx context.Context, req *transport.Barrie
 		return &transport.ClosedError{}
 	}
 	_, err := t.client.BarrierInitialize(ctx, &pb.BarrierInitializeRequest{
-		Secret: req.Secret,
+		Secret:  req.Secret,
+		SoPin:   req.SOPin,
+		UserPin: req.UserPin,
 	})
 	if err != nil {
 		return mapGRPCError("BarrierInitialize", err)
@@ -98,6 +100,8 @@ func (t *Transport) BarrierInitializeShamir(ctx context.Context, req *transport.
 		Secret:      req.Secret,
 		Threshold:   int32(req.Threshold),
 		TotalShares: int32(req.TotalShares),
+		SoPin:       req.SOPin,
+		UserPin:     req.UserPin,
 	})
 	if err != nil {
 		return nil, mapGRPCError("BarrierInitializeShamir", err)
@@ -143,60 +147,6 @@ func (t *Transport) BarrierUnsealWithShares(ctx context.Context, req *transport.
 	return nil
 }
 
-// BarrierShamirListShares returns metadata about stored Shamir shares.
-func (t *Transport) BarrierShamirListShares(ctx context.Context) (*transport.BarrierShamirSharesResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	resp, err := t.client.BarrierShamirListShares(ctx, &emptypb.Empty{})
-	if err != nil {
-		return nil, mapGRPCError("BarrierShamirListShares", err)
-	}
-	return &transport.BarrierShamirSharesResponse{
-		Count:     int(resp.GetCount()),
-		Threshold: int(resp.GetThreshold()),
-		Total:     int(resp.GetTotal()),
-	}, nil
-}
-
-// BarrierShamirDeleteShare deletes a single Shamir share by index.
-func (t *Transport) BarrierShamirDeleteShare(ctx context.Context, req *transport.BarrierShamirDeleteShareRequest) error {
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
-	_, err := t.client.BarrierShamirDeleteShare(ctx, &pb.BarrierShamirDeleteShareRequest{
-		Index: int32(req.Index),
-	})
-	if err != nil {
-		return mapGRPCError("BarrierShamirDeleteShare", err)
-	}
-	return nil
-}
-
-// BarrierShamirDeleteAllShares deletes all stored Shamir shares.
-func (t *Transport) BarrierShamirDeleteAllShares(ctx context.Context) error {
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
-	_, err := t.client.BarrierShamirDeleteAllShares(ctx, &emptypb.Empty{})
-	if err != nil {
-		return mapGRPCError("BarrierShamirDeleteAllShares", err)
-	}
-	return nil
-}
-
-// BarrierShamirVerify verifies the integrity of stored Shamir shares.
-func (t *Transport) BarrierShamirVerify(ctx context.Context) error {
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
-	_, err := t.client.BarrierShamirVerify(ctx, &emptypb.Empty{})
-	if err != nil {
-		return mapGRPCError("BarrierShamirVerify", err)
-	}
-	return nil
-}
-
 // BarrierRekey generates new Shamir shares with the specified threshold and
 // total count, replacing the existing shares.
 func (t *Transport) BarrierRekey(ctx context.Context, req *transport.BarrierRekeyRequest) (*transport.BarrierRekeyResponse, error) {
@@ -206,6 +156,7 @@ func (t *Transport) BarrierRekey(ctx context.Context, req *transport.BarrierReke
 	resp, err := t.client.BarrierRekey(ctx, &pb.BarrierRekeyRequest{
 		Threshold: int32(req.Threshold),
 		Total:     int32(req.Total),
+		SoPin:     req.SOPin,
 	})
 	if err != nil {
 		return nil, mapGRPCError("BarrierRekey", err)
@@ -226,6 +177,7 @@ func (t *Transport) BarrierGenerateRecoveryKeys(ctx context.Context, req *transp
 	resp, err := t.client.BarrierRecoveryGenerate(ctx, &pb.BarrierRecoveryGenerateRequest{
 		Threshold: int32(req.Threshold),
 		Total:     int32(req.Total),
+		SoPin:     req.SOPin,
 	})
 	if err != nil {
 		return nil, mapGRPCError("BarrierGenerateRecoveryKeys", err)

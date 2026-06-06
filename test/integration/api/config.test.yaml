@@ -64,3 +64,28 @@ unix:
 mcp:
   port: 63005
   endpoint: /mcp
+
+# Embedding configuration. The OpenAI-compatible provider points at the Ollama
+# sidecar supplied by the docker-compose.embedding.yml overlay. Providers are
+# constructed lazily (no connection at startup), so this block is harmless in
+# the default stack where Ollama is absent — the embedding endpoints simply go
+# unused. The ollama-backed e2e suite (make integration-test-embedding) brings
+# the sidecar up and exercises them.
+embedding:
+  default_provider: "ollama"
+  cache_capacity: 1000
+  providers:
+    - name: "ollama"
+      base_url: "http://ollama:11434/v1"
+      model: "nomic-embed-text"
+      timeout: "60s"
+      max_retries: 3
+
+# RAG configuration: chunking + retrieval defaults for the ingest/query pipeline
+# which embeds via the provider above and stores vectors in the HNSW index.
+rag:
+  default_chunk_strategy: "fixed"
+  default_chunk_size: 512
+  default_overlap: 50
+  max_document_size: 0
+  default_top_k: 5

@@ -233,13 +233,15 @@ func TestBuildHandlers_RegistersAllMethods_NoExtras(t *testing.T) {
 		"vector.GetIndexStats":    true,
 		"vector.CompactNamespace": true, "vector.GetCompactionProgress": true,
 		// User management
-		"user.Create": true, "user.Get": true, "user.Update": true,
+		"user.Create": true, "user.Get": true, "user.GetByUsername": true,
+		"user.GetByCertThumbprint": true, "user.AddCertBinding": true, "user.Update": true,
 		"user.Delete": true, "user.List": true, "user.Enable": true,
 		"user.Disable": true,
 		// Role management
-		"role.Create": true, "role.Get": true, "role.Update": true,
-		"role.Delete": true, "role.List": true, "role.Assign": true,
-		"role.Unassign": true, "role.ListPermissions": true,
+		"role.Create": true, "role.Get": true, "role.GetByName": true,
+		"role.Update": true, "role.Delete": true, "role.List": true,
+		"role.Assign": true, "role.Unassign": true,
+		"role.ListPermissions": true, "role.ResolvePermissions": true,
 		// Certificate management
 		"cert.Generate": true, "cert.Export": true,
 		"cert.Revoke": true, "cert.List": true,
@@ -254,6 +256,7 @@ func TestBuildHandlers_RegistersAllMethods_NoExtras(t *testing.T) {
 		"db.Drop": true, "db.UpdateProtocol": true,
 		"db.UpdateEtcd": true, "db.UpdateRaft": true,
 		"db.UpdateBarrier": true, "db.UpdateConnection": true,
+		"db.Seal": true, "db.Unseal": true, "db.BarrierStatus": true,
 		// Barrier
 		"barrier.Initialize": true, "barrier.Unseal": true,
 		"barrier.Seal": true, "barrier.Status": true,
@@ -268,6 +271,11 @@ func TestBuildHandlers_RegistersAllMethods_NoExtras(t *testing.T) {
 		"ceremony.Initialize": true, "ceremony.Status": true,
 		"ceremony.ClaimCertBegin": true, "ceremony.ClaimCertComplete": true,
 		"ceremony.ClaimShare": true, "ceremony.SignCSR": true,
+		"ceremony.ClaimShareBegin": true, "ceremony.ClaimShareComplete": true,
+		"ceremony.SubmitUnsealShare": true,
+		// Tenant management
+		"tenant.Create": true, "tenant.Get": true, "tenant.List": true,
+		"tenant.Update": true, "tenant.Delete": true, "tenant.UpdateQuotas": true,
 	}
 
 	for method := range srv.handlers {
@@ -464,7 +472,7 @@ func TestBuildHandlers_VectorMethods(t *testing.T) {
 func TestBuildHandlers_UserMethods(t *testing.T) {
 	srv := NewServer(&mockKVService{}, &mockAdminService{}, "127.0.0.1:0")
 	userMethods := []string{
-		"user.Create", "user.Get", "user.Update", "user.Delete",
+		"user.Create", "user.Get", "user.GetByUsername", "user.Update", "user.Delete",
 		"user.List", "user.Enable", "user.Disable",
 	}
 	for _, m := range userMethods {
@@ -477,8 +485,9 @@ func TestBuildHandlers_UserMethods(t *testing.T) {
 func TestBuildHandlers_RoleMethods(t *testing.T) {
 	srv := NewServer(&mockKVService{}, &mockAdminService{}, "127.0.0.1:0")
 	roleMethods := []string{
-		"role.Create", "role.Get", "role.Update", "role.Delete",
+		"role.Create", "role.Get", "role.GetByName", "role.Update", "role.Delete",
 		"role.List", "role.Assign", "role.Unassign", "role.ListPermissions",
+		"role.ResolvePermissions",
 	}
 	for _, m := range roleMethods {
 		if _, ok := srv.handlers[m]; !ok {
@@ -537,13 +546,15 @@ func TestBuildHandlers_TimeSeriesMethods(t *testing.T) {
 }
 
 func TestBuildHandlers_WatchMethods(t *testing.T) {
+	// Watch is server-streaming and served by handleWatchStream on the stream
+	// dispatch path, so it must NOT be registered in the unary handler table.
 	srv := NewServer(&mockKVService{}, &mockAdminService{}, "127.0.0.1:0")
 	watchMethods := []string{
 		"watch.Watch", "watch.WatchPrefix",
 	}
 	for _, m := range watchMethods {
-		if _, ok := srv.handlers[m]; !ok {
-			t.Errorf("missing Watch handler: %q", m)
+		if _, ok := srv.handlers[m]; ok {
+			t.Errorf("watch method %q must NOT be in the unary dispatch table (it is server-streaming)", m)
 		}
 	}
 }

@@ -60,8 +60,7 @@ func (b *ExponentialBackoff) Next(attempt int) time.Duration {
 	if b.Jitter > 0 {
 		// Jitter factor between (1 - jitter) and 1.0
 		// This reduces the delay by up to jitter percentage
-		//nolint:gosec // G404: math/rand is acceptable for jitter, not security-sensitive
-		jitterFactor := 1.0 - (b.Jitter * rand.Float64())
+		jitterFactor := 1.0 - (b.Jitter * rand.Float64()) //#nosec G404 -- math/rand is acceptable for jitter, not security-sensitive
 		delay *= jitterFactor
 	}
 
@@ -100,8 +99,7 @@ func (b *LinearBackoff) Next(attempt int) time.Duration {
 
 	// Apply jitter if configured
 	if b.Jitter > 0 {
-		//nolint:gosec // G404: math/rand is acceptable for jitter, not security-sensitive
-		jitterFactor := 1.0 - (b.Jitter * rand.Float64())
+		jitterFactor := 1.0 - (b.Jitter * rand.Float64()) //#nosec G404 -- math/rand is acceptable for jitter, not security-sensitive
 		delay = time.Duration(float64(delay) * jitterFactor)
 	}
 
@@ -124,8 +122,7 @@ func (b *ConstantBackoff) Next(attempt int) time.Duration {
 
 	// Apply jitter if configured
 	if b.Jitter > 0 {
-		//nolint:gosec // G404: math/rand is acceptable for jitter, not security-sensitive
-		jitterFactor := 1.0 - (b.Jitter * rand.Float64())
+		jitterFactor := 1.0 - (b.Jitter * rand.Float64()) //#nosec G404 -- math/rand is acceptable for jitter, not security-sensitive
 		delay = time.Duration(float64(delay) * jitterFactor)
 	}
 

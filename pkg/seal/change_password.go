@@ -15,7 +15,8 @@ import (
 )
 
 // ChangePassword re-wraps the root key with a new password-derived wrapping
-// key. The barrier must be unsealed and have a SoftwareStrategy registered.
+// key. The barrier must be unsealed and have a passphrase (software) strategy
+// registered under StrategyPassphrase.
 //
 // For hardware-backed strategies (TPM2, PKCS#11, cloud KMS), this operation
 // is not applicable since they do not use password-derived keys.
@@ -31,8 +32,10 @@ func (b *StorageBarrier) ChangePassword(ctx context.Context, newCreds Credential
 		return ErrInvalidPassphrase
 	}
 
-	// Verify that a software strategy is registered.
-	oldStrat, ok := b.strategies[StrategySoftware]
+	// Verify that a passphrase (software) strategy is registered under
+	// StrategyPassphrase.
+	strategyKey := StrategyPassphrase
+	oldStrat, ok := b.strategies[strategyKey]
 	if !ok {
 		return ErrStrategyNotFound
 	}
@@ -89,15 +92,16 @@ func (b *StorageBarrier) ChangePassword(ctx context.Context, newCreds Credential
 		return err
 	}
 
-	// Close the old strategy to release its enclave, then swap.
+	// Close the old strategy to release its enclave, then swap under the same
+	// registry key it was found under.
 	_ = oldStrat.Close()
-	b.strategies[StrategySoftware] = newStrat
+	b.strategies[strategyKey] = newStrat
 
 	emitAudit(b.config.AuditLogger, "change_password", "barrier",
 		b.config.RootKeyPath, "allow", nil)
 
 	b.logger.Info("barrier password changed",
-		slog.String("strategy", string(StrategySoftware)))
+		slog.String("strategy", string(strategyKey)))
 
 	return nil
 }

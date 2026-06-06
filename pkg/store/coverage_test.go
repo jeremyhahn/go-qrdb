@@ -593,9 +593,16 @@ func TestPebbleHandleLeaseKeepAlive_NonexistentLease(t *testing.T) {
 	cmd := protocol.EncodeLeaseKeepAlive(99999)
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for nonexistent lease")
+	// Keep-alive on a nonexistent lease is an idempotent no-op success: a
+	// non-nil error from Update() would stall the Raft group.
+	if err := s.Update(context.Background(), entries, results); err != nil {
+		t.Fatalf("Update must not return a fatal error for nonexistent lease: %v", err)
+	}
+	if _, ok := protocol.DecodeAppError(results[0].Data); ok {
+		t.Fatal("expected no app-error for idempotent keep-alive of nonexistent lease")
+	}
+	if results[0].Value != 0 {
+		t.Fatalf("expected idempotent result Value 0, got %d", results[0].Value)
 	}
 }
 
@@ -621,9 +628,16 @@ func TestPebbleHandleLeaseRevoke_NonexistentLease(t *testing.T) {
 	cmd := protocol.EncodeLeaseRevoke(99999)
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for nonexistent lease revoke")
+	// Revoke of a nonexistent lease is an idempotent no-op success: a non-nil
+	// error from Update() would stall the Raft group.
+	if err := s.Update(context.Background(), entries, results); err != nil {
+		t.Fatalf("Update must not return a fatal error for nonexistent lease revoke: %v", err)
+	}
+	if _, ok := protocol.DecodeAppError(results[0].Data); ok {
+		t.Fatal("expected no app-error for idempotent revoke of nonexistent lease")
+	}
+	if results[0].Value != 0 {
+		t.Fatalf("expected idempotent result Value 0, got %d", results[0].Value)
 	}
 }
 
@@ -1750,9 +1764,11 @@ func TestMVCCHandleLeaseGrant_NoLessor(t *testing.T) {
 	cmd := protocol.EncodeLeaseGrant(10)
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error when lessor not configured")
+	if err := s.Update(context.Background(), entries, results); err != nil {
+		t.Fatalf("Update must not return a fatal error when lessor not configured: %v", err)
+	}
+	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
+		t.Fatal("expected app-error payload when lessor not configured")
 	}
 }
 
@@ -1762,9 +1778,11 @@ func TestMVCCHandleLeaseRevoke_NoLessor(t *testing.T) {
 	cmd := protocol.EncodeLeaseRevoke(1)
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error when lessor not configured")
+	if err := s.Update(context.Background(), entries, results); err != nil {
+		t.Fatalf("Update must not return a fatal error when lessor not configured: %v", err)
+	}
+	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
+		t.Fatal("expected app-error payload when lessor not configured")
 	}
 }
 
@@ -1774,9 +1792,11 @@ func TestMVCCHandleLeaseKeepAlive_NoLessor(t *testing.T) {
 	cmd := protocol.EncodeLeaseKeepAlive(1)
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error when lessor not configured")
+	if err := s.Update(context.Background(), entries, results); err != nil {
+		t.Fatalf("Update must not return a fatal error when lessor not configured: %v", err)
+	}
+	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
+		t.Fatal("expected app-error payload when lessor not configured")
 	}
 }
 

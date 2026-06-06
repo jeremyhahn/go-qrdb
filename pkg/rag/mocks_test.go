@@ -70,10 +70,12 @@ func (m *mockEmbProvider) BatchEmbed(ctx context.Context, req *BatchEmbedRequest
 // ---------------------------------------------------------------------------
 
 type mockVecStore struct {
-	upsertErr error
-	searchErr error
-	upsertFn  func(context.Context, *UpsertVecRequest) (*UpsertVecResponse, error)
-	searchFn  func(context.Context, *SearchVecRequest) (*SearchVecResponse, error)
+	upsertErr         error
+	searchErr         error
+	ensureNSErr       error
+	upsertFn          func(context.Context, *UpsertVecRequest) (*UpsertVecResponse, error)
+	searchFn          func(context.Context, *SearchVecRequest) (*SearchVecResponse, error)
+	ensureNamespaceFn func(context.Context, string, int, string) error
 }
 
 var _ VectorStore = (*mockVecStore)(nil)
@@ -100,6 +102,13 @@ func (m *mockVecStore) SearchSimilar(ctx context.Context, req *SearchVecRequest)
 		return nil, m.searchErr
 	}
 	return &SearchVecResponse{}, nil
+}
+
+func (m *mockVecStore) EnsureNamespace(ctx context.Context, name string, dim int, metric string) error {
+	if m.ensureNamespaceFn != nil {
+		return m.ensureNamespaceFn(ctx, name, dim, metric)
+	}
+	return m.ensureNSErr
 }
 
 // ---------------------------------------------------------------------------

@@ -40,6 +40,10 @@ func roleTools(roleSvc role.RoleServicer, userSvc user.UserServicer) []mcpserver
 			Handler: handleRoleGet(roleSvc),
 		},
 		{
+			Tool:    toolRoleGetByName(),
+			Handler: handleRoleGetByName(roleSvc),
+		},
+		{
 			Tool:    toolRoleUpdate(),
 			Handler: handleRoleUpdate(roleSvc),
 		},
@@ -53,7 +57,7 @@ func roleTools(roleSvc role.RoleServicer, userSvc user.UserServicer) []mcpserver
 		},
 		{
 			Tool:    toolRoleAssign(),
-			Handler: handleRoleAssign(userSvc),
+			Handler: handleRoleAssign(roleSvc, userSvc),
 		},
 		{
 			Tool:    toolRoleUnassign(),
@@ -62,6 +66,10 @@ func roleTools(roleSvc role.RoleServicer, userSvc user.UserServicer) []mcpserver
 		{
 			Tool:    toolPermissionsList(),
 			Handler: handlePermissionsList(),
+		},
+		{
+			Tool:    toolPermissionsResolve(),
+			Handler: handlePermissionsResolve(roleSvc),
 		},
 	}
 }
@@ -147,6 +155,43 @@ func handleRoleGet(roleSvc role.RoleServicer) mcpserver.ToolHandlerFunc {
 		data, jsonErr := json.Marshal(r)
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_role_get", Err: jsonErr}
+		}
+
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// toolRoleGetByName defines the qrdb_role_get_by_name tool schema.
+func toolRoleGetByName() mcp.Tool {
+	return mcp.NewTool("qrdb_role_get_by_name",
+		mcp.WithDescription("Retrieve a role by its tenant-scoped name."),
+		mcp.WithString("name",
+			mcp.Required(),
+			mcp.Description("The role name, unique within the tenant."),
+		),
+		mcp.WithString("tenant_id",
+			mcp.Description("The tenant ID. Defaults to the system default tenant when empty."),
+		),
+	)
+}
+
+// handleRoleGetByName returns a tool handler that delegates to
+// roleSvc.GetRoleByName.
+func handleRoleGetByName(roleSvc role.RoleServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		name := mcp.ParseString(req, "name", "")
+		if name == "" {
+			return mcp.NewToolResultError("name is required"), nil
+		}
+
+		r, err := roleSvc.GetRoleByName(ctx, mcp.ParseString(req, "tenant_id", ""), name)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_role_get_by_name", Err: err}
+		}
+
+		data, jsonErr := json.Marshal(r)
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_role_get_by_name", Err: jsonErr}
 		}
 
 		return mcp.NewToolResultText(string(data)), nil
@@ -289,15 +334,25 @@ func toolRoleAssign() mcp.Tool {
 
 // handleRoleAssign returns a tool handler that fetches the user, appends the
 // role ID if not already present, and updates the user.
-func handleRoleAssign(userSvc user.UserServicer) mcpserver.ToolHandlerFunc {
+func handleRoleAssign(roleSvc role.RoleServicer, userSvc user.UserServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		userID := mcp.ParseString(req, "user_id", "")
-		if userID == "" {
+		userIDStr := mcp.ParseString(req, "user_id", "")
+		if userIDStr == "" {
 			return mcp.NewToolResultError("user_id is required"), nil
+		}
+		userID, parseErr := parseUint64(userIDStr)
+		if parseErr != nil {
+			return mcp.NewToolResultError("user_id must be a uint64: " + parseErr.Error()), nil
 		}
 		roleID := mcp.ParseString(req, "role_id", "")
 		if roleID == "" {
 			return mcp.NewToolResultError("role_id is required"), nil
+		}
+
+		// Validate the role exists (and is visible to the caller's tenant)
+		// before assigning it, matching the REST/QUIC/gRPC handlers.
+		if _, err := roleSvc.GetRole(ctx, roleID); err != nil {
+			return nil, &ToolError{Tool: "qrdb_role_assign", Err: err}
 		}
 
 		u, err := userSvc.GetUser(ctx, userID)
@@ -346,9 +401,13 @@ func toolRoleUnassign() mcp.Tool {
 // role ID from the user's role set, and updates the user.
 func handleRoleUnassign(userSvc user.UserServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		userID := mcp.ParseString(req, "user_id", "")
-		if userID == "" {
+		userIDStr := mcp.ParseString(req, "user_id", "")
+		if userIDStr == "" {
 			return mcp.NewToolResultError("user_id is required"), nil
+		}
+		userID, parseErr := parseUint64(userIDStr)
+		if parseErr != nil {
+			return mcp.NewToolResultError("user_id must be a uint64: " + parseErr.Error()), nil
 		}
 		roleID := mcp.ParseString(req, "role_id", "")
 		if roleID == "" {
@@ -394,6 +453,45 @@ func handlePermissionsList() mcpserver.ToolHandlerFunc {
 		data, jsonErr := json.Marshal(categories)
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_permissions_list", Err: jsonErr}
+		}
+
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// toolPermissionsResolve defines the qrdb_permissions_resolve tool schema.
+func toolPermissionsResolve() mcp.Tool {
+	return mcp.NewTool("qrdb_permissions_resolve",
+		mcp.WithDescription("Resolve the union of effective permissions for a set of roles (sorted, deduplicated)."),
+		mcp.WithString("role_ids",
+			mcp.Required(),
+			mcp.Description("Comma-separated list of role UUIDs to resolve."),
+		),
+	)
+}
+
+// handlePermissionsResolve returns a tool handler that delegates to
+// roleSvc.ResolvePermissions.
+func handlePermissionsResolve(roleSvc role.RoleServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		roleIDs := parseCSV(mcp.ParseString(req, "role_ids", ""))
+		if len(roleIDs) == 0 {
+			return mcp.NewToolResultError("role_ids is required"), nil
+		}
+
+		perms, err := roleSvc.ResolvePermissions(ctx, roleIDs)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_permissions_resolve", Err: err}
+		}
+
+		out := make([]string, len(perms))
+		for i, p := range perms {
+			out[i] = p.String()
+		}
+
+		data, jsonErr := json.Marshal(map[string][]string{"permissions": out})
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_permissions_resolve", Err: jsonErr}
 		}
 
 		return mcp.NewToolResultText(string(data)), nil

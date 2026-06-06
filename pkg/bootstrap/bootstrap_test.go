@@ -1,0 +1,1066 @@
+// Copyright (c) 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package bootstrap
+
+import (
+	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"errors"
+	"io"
+	"log/slog"
+	"math/big"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
+)
+
+// ---------------------------------------------------------------------------
+// Test helpers
+// ---------------------------------------------------------------------------
+
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// realCertPEM generates a valid self-signed certificate PEM for cert-binding
+// tests.
+func realCertPEM(t *testing.T) []byte {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "admin"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("CreateCertificate: %v", err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+}
+
+// newRegistry builds a BarrierRegistry whose system barrier is sealed with the
+// supplied strategies (already constructed, sealed, ready for Initialize).
+func newRegistry(t *testing.T, strategies ...seal.SealingStrategy) *seal.BarrierRegistry {
+	t.Helper()
+	system, err := seal.NewStorageBarrier(discardLogger(), seal.NewMemoryBackend(),
+		seal.BarrierConfig{RootKeyPath: "system/root-key"}, strategies...)
+	if err != nil {
+		t.Fatalf("NewStorageBarrier: %v", err)
+	}
+	reg, err := seal.NewBarrierRegistry(discardLogger(), system)
+	if err != nil {
+		t.Fatalf("NewBarrierRegistry: %v", err)
+	}
+	return reg
+}
+
+// ---------------------------------------------------------------------------
+// In-memory store doubles (mirror pkg/firstboot/firstboot_test.go)
+// ---------------------------------------------------------------------------
+
+type fakeTenants struct {
+	createCalls      []createTenantCall
+	createErr        error
+	createAlreadyErr bool
+}
+
+type createTenantCall struct {
+	id            string
+	name          string
+	isolationType tenant.IsolationType
+}
+
+func (f *fakeTenants) CreateTenant(_ context.Context, id, name string, isolationType tenant.IsolationType) (*tenant.TenantInfo, error) {
+	f.createCalls = append(f.createCalls, createTenantCall{id: id, name: name, isolationType: isolationType})
+	if f.createAlreadyErr {
+		return nil, tenant.ErrTenantAlreadyExists
+	}
+	if f.createErr != nil {
+		return nil, f.createErr
+	}
+	return &tenant.TenantInfo{ID: id, Name: name, IsolationType: isolationType}, nil
+}
+
+type fakeUsers struct {
+	createCalls []user.CreateUserRequest
+	createErr   error
+	exists      bool
+	nextID      uint64
+}
+
+func (f *fakeUsers) CreateUser(_ context.Context, req *user.CreateUserRequest) (*user.User, error) {
+	f.createCalls = append(f.createCalls, *req)
+	if f.exists {
+		return nil, &user.UsernameExistsError{Username: req.Username, TenantID: req.TenantID}
+	}
+	if f.createErr != nil {
+		return nil, f.createErr
+	}
+	f.nextID++
+	return &user.User{ID: f.nextID, Username: req.Username, TenantID: req.TenantID, RoleIDs: req.RoleIDs}, nil
+}
+
+type fakeRoles struct {
+	createCount  atomic.Int32
+	createErr    error
+	existsByName map[string]bool
+	createCalls  []role.CreateRoleRequest
+}
+
+func (f *fakeRoles) CreateRole(_ context.Context, req *role.CreateRoleRequest) (*role.Role, error) {
+	f.createCalls = append(f.createCalls, *req)
+	if f.existsByName[req.Name] {
+		return nil, &role.RoleNameExistsError{Name: req.Name, TenantID: req.TenantID}
+	}
+	if f.createErr != nil {
+		return nil, f.createErr
+	}
+	f.createCount.Add(1)
+	return &role.Role{ID: req.ID, Name: req.Name, TenantID: req.TenantID, Permissions: req.Permissions}, nil
+}
+
+type fakeCA struct {
+	called   atomic.Int32
+	cert     []byte
+	key      []byte
+	err      error
+	lastID   string
+	lastSubj string
+}
+
+func (f *fakeCA) GenerateAdminCert(_ context.Context, tenantID, subject string) ([]byte, []byte, error) {
+	f.called.Add(1)
+	f.lastID, f.lastSubj = tenantID, subject
+	if f.err != nil {
+		return nil, nil, f.err
+	}
+	return f.cert, f.key, nil
+}
+
+type fakeSigner struct {
+	called  atomic.Int32
+	cert    []byte
+	lastCSR []byte
+}
+
+func (s *fakeSigner) SignAdminCSR(_ context.Context, _, _ string, csrPEM []byte) ([]byte, error) {
+	s.called.Add(1)
+	s.lastCSR = csrPEM
+	return s.cert, nil
+}
+
+type fakeBinder struct {
+	tenantID, thumbprint string
+	userID               uint64
+	calls                int
+	err                  error
+}
+
+func (b *fakeBinder) BindAdminCert(_ context.Context, tenantID string, userID uint64, thumbprint string) error {
+	b.calls++
+	b.tenantID, b.userID, b.thumbprint = tenantID, userID, thumbprint
+	return b.err
+}
+
+// ---------------------------------------------------------------------------
+// BootstrapSystem
+// ---------------------------------------------------------------------------
+
+func TestBootstrapSystem_NoneStrategy(t *testing.T) {
+	reg := newRegistry(t, seal.NewNoneStrategy())
+	tenants, users, roles := &fakeTenants{}, &fakeUsers{}, &fakeRoles{}
+
+	result, err := BootstrapSystem(context.Background(), SystemConfig{Strategy: StrategyNone}, Dependencies{
+		Tenants: tenants, Users: users, Roles: roles,
+		Barriers: reg, Logger: discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("BootstrapSystem: %v", err)
+	}
+	if result.BarrierStrategy != StrategyNone {
+		t.Errorf("BarrierStrategy = %q, want none", result.BarrierStrategy)
+	}
+	if reg.SystemBarrier().IsSealed() {
+		t.Error("system barrier still sealed after bootstrap")
+	}
+	if result.FirstBoot == nil || !result.FirstBoot.SystemTenantCreated {
+		t.Error("first-boot did not create the system tenant")
+	}
+	if len(tenants.createCalls) != 1 || tenants.createCalls[0].id != tenant.SystemTenantID {
+		t.Errorf("system tenant not created via first-boot: %+v", tenants.createCalls)
+	}
+}
+
+func TestBootstrapSystem_PassphraseStrategy(t *testing.T) {
+	reg := newRegistry(t, seal.NewDeferredSoftwareStrategy())
+	tenants, users, roles := &fakeTenants{}, &fakeUsers{}, &fakeRoles{}
+
+	result, err := BootstrapSystem(context.Background(), SystemConfig{
+		Strategy:   StrategyPassphrase,
+		Passphrase: "correct horse battery staple",
+	}, Dependencies{
+		Tenants: tenants, Users: users, Roles: roles,
+		Barriers: reg, Logger: discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("BootstrapSystem: %v", err)
+	}
+	if result.BarrierStrategy != StrategyPassphrase {
+		t.Errorf("BarrierStrategy = %q, want passphrase/software", result.BarrierStrategy)
+	}
+	if reg.SystemBarrier().IsSealed() {
+		t.Error("system barrier still sealed after passphrase bootstrap")
+	}
+}
+
+func TestBootstrapSystem_PassphraseStrategy_EmptyPassphraseRejected(t *testing.T) {
+	reg := newRegistry(t, seal.NewDeferredSoftwareStrategy())
+
+	_, err := BootstrapSystem(context.Background(), SystemConfig{
+		Strategy:   StrategyPassphrase,
+		Passphrase: "",
+	}, Dependencies{
+		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		Barriers: reg, Logger: discardLogger(),
+	})
+	var want *MissingPassphraseError
+	if !errors.As(err, &want) {
+		t.Fatalf("err = %v, want *MissingPassphraseError", err)
+	}
+	if !reg.SystemBarrier().IsSealed() {
+		t.Error("system barrier must remain sealed when passphrase is rejected")
+	}
+}
+
+// TestBootstrapSystem_PassphraseEmptyButAlreadyUnsealed exercises the locked
+// deferred-init flow: for the passphrase strategy the system barrier is
+// initialized+unsealed out-of-band via the admin barrier API BEFORE
+// BootstrapSystem runs (during awaitUnseal). By that point cmd/qrdbd passes an
+// EMPTY passphrase to BootstrapSystem because the barrier is already live.
+// BootstrapSystem must NOT demand a passphrase in that case — it must detect
+// the unsealed barrier, set BarrierAlreadyInitialized, and proceed to
+// first-boot. This is the regression guard for the P4-2 wiring.
+func TestBootstrapSystem_PassphraseEmptyButAlreadyUnsealed(t *testing.T) {
+	reg := newRegistry(t, seal.NewDeferredSoftwareStrategy())
+	// Simulate awaitUnseal: the admin initialized+unsealed the barrier with
+	// their passphrase out-of-band before daemon first-boot is reachable.
+	if err := reg.SystemBarrier().Initialize(context.Background(),
+		seal.Credentials{Secret: "operator-passphrase"}); err != nil {
+		t.Fatalf("pre-initialize passphrase barrier: %v", err)
+	}
+	if reg.SystemBarrier().IsSealed() {
+		t.Fatal("setup: passphrase barrier should be unsealed after Initialize")
+	}
+
+	// Empty passphrase — exactly what cmd/qrdbd supplies post-unseal.
+	result, err := BootstrapSystem(context.Background(), SystemConfig{
+		Strategy:   StrategyPassphrase,
+		Passphrase: "",
+	}, Dependencies{
+		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		Barriers: reg, Logger: discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("BootstrapSystem with empty passphrase + unsealed barrier: %v", err)
+	}
+	if !result.BarrierAlreadyInitialized {
+		t.Error("BarrierAlreadyInitialized = false, want true for an already-unsealed passphrase barrier")
+	}
+	if result.FirstBoot == nil || !result.FirstBoot.SystemTenantCreated {
+		t.Error("first-boot did not run on the post-unseal passphrase path")
+	}
+}
+
+// TestBootstrapSystem_ShamirSealedDefersToCeremony asserts the locked
+// deferred-init architecture for shamir: a still-SEALED shamir system barrier
+// is NOT initialized inline by BootstrapSystem (initialization is the
+// ceremony's job, driven by multiple SOs out-of-band). BootstrapSystem must
+// neither demand a passphrase nor initialize the barrier; it proceeds to
+// first-boot and leaves the barrier untouched (sealed, no strategy recorded).
+func TestBootstrapSystem_ShamirSealedDefersToCeremony(t *testing.T) {
+	shamir, err := seal.NewShamirStrategy(2, 3)
+	if err != nil {
+		t.Fatalf("NewShamirStrategy: %v", err)
+	}
+	reg := newRegistry(t, shamir)
+	tenants, users, roles := &fakeTenants{}, &fakeUsers{}, &fakeRoles{}
+
+	result, err := BootstrapSystem(context.Background(), SystemConfig{Strategy: StrategyShamir}, Dependencies{
+		Tenants: tenants, Users: users, Roles: roles,
+		Barriers: reg, Logger: discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("BootstrapSystem (shamir): %v", err)
+	}
+	// Barrier init is deferred to the ceremony: not initialized here.
+	if result.BarrierStrategy != "" {
+		t.Errorf("BarrierStrategy = %q, want empty (deferred to ceremony)", result.BarrierStrategy)
+	}
+	if result.BarrierAlreadyInitialized {
+		t.Error("BarrierAlreadyInitialized = true, want false for a sealed shamir barrier")
+	}
+	if !reg.SystemBarrier().IsSealed() {
+		t.Error("shamir system barrier must remain sealed; BootstrapSystem must not inline-initialize it")
+	}
+	// First-boot still runs once reachable.
+	if result.FirstBoot == nil || !result.FirstBoot.SystemTenantCreated {
+		t.Error("first-boot did not run for the shamir deferred path")
+	}
+}
+
+// TestBootstrapSystem_ShamirAlreadyUnsealed asserts that once the ceremony has
+// unsealed the shamir barrier out-of-band, BootstrapSystem treats it as
+// already-initialized (BarrierAlreadyInitialized) and proceeds to first-boot
+// without demanding any credential.
+func TestBootstrapSystem_ShamirAlreadyUnsealed(t *testing.T) {
+	shamir, err := seal.NewShamirStrategy(2, 3)
+	if err != nil {
+		t.Fatalf("NewShamirStrategy: %v", err)
+	}
+	reg := newRegistry(t, shamir)
+	// Simulate the ceremony having initialized+unsealed the barrier already.
+	if err := reg.SystemBarrier().Initialize(context.Background(), seal.Credentials{}); err != nil {
+		t.Fatalf("pre-initialize shamir barrier: %v", err)
+	}
+	if reg.SystemBarrier().IsSealed() {
+		t.Fatal("setup: shamir barrier should be unsealed after Initialize")
+	}
+
+	result, err := BootstrapSystem(context.Background(), SystemConfig{Strategy: StrategyShamir}, Dependencies{
+		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		Barriers: reg, Logger: discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("BootstrapSystem (shamir, already unsealed): %v", err)
+	}
+	if !result.BarrierAlreadyInitialized {
+		t.Error("BarrierAlreadyInitialized = false, want true for an already-unsealed shamir barrier")
+	}
+	if result.FirstBoot == nil || !result.FirstBoot.SystemTenantCreated {
+		t.Error("first-boot did not run for the already-unsealed shamir path")
+	}
+}
+
+func TestBootstrapSystem_AdminCertViaCA(t *testing.T) {
+	reg := newRegistry(t, seal.NewNoneStrategy())
+	certPEM := realCertPEM(t)
+	ca := &fakeCA{cert: certPEM, key: []byte("KEY")}
+	binder := &fakeBinder{}
+
+	result, err := BootstrapSystem(context.Background(), SystemConfig{Strategy: StrategyNone}, Dependencies{
+		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		CA: ca, Binder: binder, Barriers: reg, Logger: discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("BootstrapSystem: %v", err)
+	}
+	if ca.called.Load() != 1 {
+		t.Errorf("CA called %d times, want 1", ca.called.Load())
+	}
+	if result.FirstBoot.AdminCertThumbprint == "" || binder.thumbprint != result.FirstBoot.AdminCertThumbprint {
+		t.Error("admin cert thumbprint not bound through first-boot")
+	}
+}
+
+func TestBootstrapSystem_AlreadyInitializedIsIdempotent(t *testing.T) {
+	reg := newRegistry(t, seal.NewNoneStrategy())
+	deps := Dependencies{
+		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		Barriers: reg, Logger: discardLogger(),
+	}
+	if _, err := BootstrapSystem(context.Background(), SystemConfig{Strategy: StrategyNone}, deps); err != nil {
+		t.Fatalf("first BootstrapSystem: %v", err)
+	}
+
+	// Second run: barrier already initialized, first-boot idempotent.
+	result, err := BootstrapSystem(context.Background(), SystemConfig{Strategy: StrategyNone}, Dependencies{
+		Tenants: &fakeTenants{createAlreadyErr: true},
+		Users:   &fakeUsers{exists: true},
+		Roles: &fakeRoles{existsByName: map[string]bool{
+			role.RoleNameSO: true, role.RoleNameAdmin: true, role.RoleNameOperator: true,
+			role.RoleNameUser: true, role.RoleNameAuditor: true, role.RoleNameCustodian: true,
+			role.RoleNameOwner: true,
+		}},
+		Barriers: reg, Logger: discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("second BootstrapSystem: %v", err)
+	}
+	if !result.BarrierAlreadyInitialized {
+		t.Error("BarrierAlreadyInitialized = false, want true on re-run")
+	}
+}
+
+func TestBootstrapSystem_MissingBarriersRejected(t *testing.T) {
+	_, err := BootstrapSystem(context.Background(), SystemConfig{}, Dependencies{
+		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		Logger: discardLogger(),
+	})
+	var want *MissingBarriersError
+	if !errors.As(err, &want) {
+		t.Fatalf("err = %v, want *MissingBarriersError", err)
+	}
+}
+
+func TestBootstrapSystem_UnsupportedStrategyRejected(t *testing.T) {
+	reg := newRegistry(t, seal.NewNoneStrategy())
+	_, err := BootstrapSystem(context.Background(), SystemConfig{Strategy: seal.StrategyID("tpm2")}, Dependencies{
+		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		Barriers: reg, Logger: discardLogger(),
+	})
+	var want *UnsupportedStrategyError
+	if !errors.As(err, &want) {
+		t.Fatalf("err = %v, want *UnsupportedStrategyError", err)
+	}
+}
+
+func TestBootstrapSystem_FirstBootErrorWrapped(t *testing.T) {
+	reg := newRegistry(t, seal.NewNoneStrategy())
+	sentinel := errors.New("backend down")
+	_, err := BootstrapSystem(context.Background(), SystemConfig{Strategy: StrategyNone}, Dependencies{
+		Tenants: &fakeTenants{createErr: sentinel}, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		Barriers: reg, Logger: discardLogger(),
+	})
+	var want *FirstBootError
+	if !errors.As(err, &want) {
+		t.Fatalf("err = %v, want *FirstBootError", err)
+	}
+	if !errors.Is(err, sentinel) {
+		t.Errorf("err does not unwrap to sentinel: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ProvisionTenant
+// ---------------------------------------------------------------------------
+
+func TestProvisionTenant_CreatesTenantAdminAndBindsCert(t *testing.T) {
+	tenants, users, roles := &fakeTenants{}, &fakeUsers{}, &fakeRoles{}
+	certPEM := realCertPEM(t)
+	ca := &fakeCA{cert: certPEM, key: []byte("KEY")}
+	binder := &fakeBinder{}
+
+	result, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
+		TenantID:    "acme",
+		DisplayName: "Acme Corp",
+	}, Dependencies{
+		Tenants: tenants, Users: users, Roles: roles,
+		CA: ca, Binder: binder, Logger: discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("ProvisionTenant: %v", err)
+	}
+
+	// Tenant record created with barrier isolation default.
+	if len(tenants.createCalls) != 1 {
+		t.Fatalf("tenant createCalls = %d, want 1", len(tenants.createCalls))
+	}
+	tc := tenants.createCalls[0]
+	if tc.id != "acme" || tc.name != "Acme Corp" || tc.isolationType != tenant.IsolationBarrier {
+		t.Errorf("tenant create = %+v, want acme/Acme Corp/barrier", tc)
+	}
+
+	// Tenant-scoped roles seeded.
+	if roles.createCount.Load() != int32(len(role.BuiltInRoles("acme"))) {
+		t.Errorf("roles created = %d, want %d", roles.createCount.Load(), len(role.BuiltInRoles("acme")))
+	}
+	for _, r := range roles.createCalls {
+		if r.TenantID != "acme" {
+			t.Errorf("role %q seeded for tenant %q, want acme", r.Name, r.TenantID)
+		}
+	}
+
+	// Tenant-admin user bound to the tenant-scoped admin role.
+	if len(users.createCalls) != 1 {
+		t.Fatalf("user createCalls = %d, want 1", len(users.createCalls))
+	}
+	adminReq := users.createCalls[0]
+	wantRoleID := role.SystemRoleID("acme", role.RoleNameAdmin)
+	if adminReq.Username != "admin" || adminReq.TenantID != "acme" {
+		t.Errorf("admin user = %+v, want admin@acme", adminReq)
+	}
+	if len(adminReq.RoleIDs) != 1 || adminReq.RoleIDs[0] != wantRoleID {
+		t.Errorf("admin RoleIDs = %v, want [%q]", adminReq.RoleIDs, wantRoleID)
+	}
+
+	// Cert enrolled + bound.
+	if ca.lastID != "acme" || ca.lastSubj != "admin" {
+		t.Errorf("CA invoked with (%q,%q), want (acme,admin)", ca.lastID, ca.lastSubj)
+	}
+	if result.AdminCertThumbprint == "" || binder.thumbprint != result.AdminCertThumbprint {
+		t.Error("tenant-admin cert thumbprint not bound")
+	}
+	if binder.userID == 0 {
+		t.Errorf("bound userID = %d, want non-zero", binder.userID)
+	}
+	if result.AdminUserID == 0 {
+		t.Errorf("AdminUserID = %d, want non-zero", result.AdminUserID)
+	}
+}
+
+// TestProvisionTenant_DoesNotInitTenantBarrier asserts the system-admin
+// provisioning path never touches the barrier registry: no tenant barrier is
+// registered and none is initialized.
+func TestProvisionTenant_DoesNotInitTenantBarrier(t *testing.T) {
+	reg := newRegistry(t, seal.NewNoneStrategy())
+
+	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{TenantID: "acme"}, Dependencies{
+		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		Barriers: reg, Logger: discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("ProvisionTenant: %v", err)
+	}
+	if got := reg.ListTenants(); len(got) != 0 {
+		t.Errorf("tenant barriers registered = %v, want none (system admin holds no tenant key)", got)
+	}
+	if _, err := reg.GetTenant("acme"); !errors.Is(err, seal.ErrTenantNotFound) {
+		t.Errorf("GetTenant(acme) err = %v, want ErrTenantNotFound", err)
+	}
+}
+
+func TestProvisionTenant_CSRSignPathKeepsAdminKey(t *testing.T) {
+	certPEM := realCertPEM(t)
+	signer := &fakeSigner{cert: certPEM}
+	ca := &fakeCA{cert: realCertPEM(t), key: []byte("CA-KEY")}
+	binder := &fakeBinder{}
+
+	result, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
+		TenantID:    "acme",
+		AdminCSRPEM: []byte("THE-CSR"),
+	}, Dependencies{
+		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		CA: ca, Signer: signer, Binder: binder, Logger: discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("ProvisionTenant: %v", err)
+	}
+	if signer.called.Load() != 1 {
+		t.Errorf("SignAdminCSR called %d times, want 1", signer.called.Load())
+	}
+	if ca.called.Load() != 0 {
+		t.Errorf("CA called %d times, want 0 (CSR path wins)", ca.called.Load())
+	}
+	if result.AdminKeyPEM != nil {
+		t.Error("AdminKeyPEM must be nil on CSR-sign path (admin keeps key)")
+	}
+	if result.AdminCertThumbprint == "" || binder.thumbprint != result.AdminCertThumbprint {
+		t.Error("CSR-signed cert not bound by thumbprint")
+	}
+}
+
+func TestProvisionTenant_NoCAOrSignerSkipsCert(t *testing.T) {
+	result, err := ProvisionTenant(context.Background(), TenantProvisionConfig{TenantID: "acme"}, Dependencies{
+		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		Logger: discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("ProvisionTenant: %v", err)
+	}
+	if result.AdminCertPEM != nil || result.AdminCertThumbprint != "" {
+		t.Error("cert enrolled without a CA/Signer; want skipped")
+	}
+}
+
+func TestProvisionTenant_EmptyTenantIDRejected(t *testing.T) {
+	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{TenantID: ""}, Dependencies{
+		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		Logger: discardLogger(),
+	})
+	var want *EmptyTenantIDError
+	if !errors.As(err, &want) {
+		t.Fatalf("err = %v, want *EmptyTenantIDError", err)
+	}
+}
+
+func TestProvisionTenant_TenantCreateErrorWrapped(t *testing.T) {
+	sentinel := errors.New("not leader")
+	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{TenantID: "acme"}, Dependencies{
+		Tenants: &fakeTenants{createErr: sentinel}, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		Logger: discardLogger(),
+	})
+	var want *TenantRecordCreationError
+	if !errors.As(err, &want) {
+		t.Fatalf("err = %v, want *TenantRecordCreationError", err)
+	}
+	if !errors.Is(err, sentinel) {
+		t.Errorf("err does not unwrap to sentinel: %v", err)
+	}
+}
+
+func TestProvisionTenant_IdempotentReRun(t *testing.T) {
+	tenants := &fakeTenants{createAlreadyErr: true}
+	roles := &fakeRoles{existsByName: map[string]bool{
+		role.RoleNameSO: true, role.RoleNameAdmin: true, role.RoleNameOperator: true,
+		role.RoleNameUser: true, role.RoleNameAuditor: true, role.RoleNameCustodian: true,
+	}}
+	users := &fakeUsers{exists: true}
+	ca := &fakeCA{cert: realCertPEM(t), key: []byte("KEY")}
+
+	result, err := ProvisionTenant(context.Background(), TenantProvisionConfig{TenantID: "acme"}, Dependencies{
+		Tenants: tenants, Users: users, Roles: roles, CA: ca, Logger: discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("ProvisionTenant (idempotent): %v", err)
+	}
+	// Admin already existed -> no cert rotation.
+	if ca.called.Load() != 0 {
+		t.Errorf("CA called %d times on idempotent re-run, want 0", ca.called.Load())
+	}
+	if result.AdminCertPEM != nil {
+		t.Error("AdminCertPEM set on idempotent re-run; want nil (no rotation)")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// InitializeTenantBarrier
+// ---------------------------------------------------------------------------
+
+func TestInitializeTenantBarrier_None(t *testing.T) {
+	reg := newRegistry(t, seal.NewNoneStrategy())
+
+	err := InitializeTenantBarrier(context.Background(), "acme", StrategyNone, seal.Credentials{}, Dependencies{
+		Barriers: reg, Logger: discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("InitializeTenantBarrier: %v", err)
+	}
+	tb, err := reg.GetTenant("acme")
+	if err != nil {
+		t.Fatalf("GetTenant(acme): %v", err)
+	}
+	if tb.IsSealed() {
+		t.Error("tenant barrier still sealed after init")
+	}
+}
+
+func TestInitializeTenantBarrier_Passphrase(t *testing.T) {
+	reg := newRegistry(t, seal.NewNoneStrategy())
+
+	err := InitializeTenantBarrier(context.Background(), "acme", StrategyPassphrase,
+		seal.Credentials{Secret: "tenant-passphrase"}, Dependencies{
+			Barriers: reg, Logger: discardLogger(),
+		})
+	if err != nil {
+		t.Fatalf("InitializeTenantBarrier (passphrase): %v", err)
+	}
+	tb, err := reg.GetTenant("acme")
+	if err != nil {
+		t.Fatalf("GetTenant(acme): %v", err)
+	}
+	if tb.IsSealed() {
+		t.Error("tenant barrier still sealed after passphrase init")
+	}
+
+	// Round-trip: seal then unseal with the same passphrase proves the
+	// passphrase strategy actually protects the root key.
+	if err := reg.SealTenant("acme"); err != nil {
+		t.Fatalf("SealTenant: %v", err)
+	}
+	if err := reg.UnsealTenant(context.Background(), "acme", seal.Credentials{Secret: "tenant-passphrase"}); err != nil {
+		t.Fatalf("UnsealTenant with correct passphrase: %v", err)
+	}
+}
+
+func TestInitializeTenantBarrier_PassphraseEmptyRejected(t *testing.T) {
+	reg := newRegistry(t, seal.NewNoneStrategy())
+
+	err := InitializeTenantBarrier(context.Background(), "acme", StrategyPassphrase, seal.Credentials{}, Dependencies{
+		Barriers: reg, Logger: discardLogger(),
+	})
+	var want *MissingPassphraseError
+	if !errors.As(err, &want) {
+		t.Fatalf("err = %v, want *MissingPassphraseError", err)
+	}
+	if got := reg.ListTenants(); len(got) != 0 {
+		t.Errorf("tenant barrier registered despite rejected passphrase: %v", got)
+	}
+}
+
+func TestInitializeTenantBarrier_EmptyTenantIDRejected(t *testing.T) {
+	reg := newRegistry(t, seal.NewNoneStrategy())
+	err := InitializeTenantBarrier(context.Background(), "", StrategyNone, seal.Credentials{}, Dependencies{
+		Barriers: reg, Logger: discardLogger(),
+	})
+	var want *EmptyTenantIDError
+	if !errors.As(err, &want) {
+		t.Fatalf("err = %v, want *EmptyTenantIDError", err)
+	}
+}
+
+func TestInitializeTenantBarrier_MissingBarriersRejected(t *testing.T) {
+	err := InitializeTenantBarrier(context.Background(), "acme", StrategyNone, seal.Credentials{}, Dependencies{
+		Logger: discardLogger(),
+	})
+	var want *MissingBarriersError
+	if !errors.As(err, &want) {
+		t.Fatalf("err = %v, want *MissingBarriersError", err)
+	}
+}
+
+func TestInitializeTenantBarrier_ShamirRequiresPreRegistration(t *testing.T) {
+	reg := newRegistry(t, seal.NewNoneStrategy())
+	// Without a pre-registered shamir tenant barrier, the Credentials-only
+	// self-service signature cannot express threshold/total.
+	err := InitializeTenantBarrier(context.Background(), "acme", StrategyShamir, seal.Credentials{}, Dependencies{
+		Barriers: reg, Logger: discardLogger(),
+	})
+	var want *MissingShamirConfigError
+	if !errors.As(err, &want) {
+		t.Fatalf("err = %v, want *MissingShamirConfigError", err)
+	}
+}
+
+// TestInitializeTenantBarrier_UsesPreRegisteredStrategy verifies that when a
+// tenant barrier is already registered (e.g. with an explicit shamir
+// strategy), InitializeTenantBarrier initializes the existing barrier rather
+// than building a new strategy.
+func TestInitializeTenantBarrier_UsesPreRegisteredStrategy(t *testing.T) {
+	reg := newRegistry(t, seal.NewNoneStrategy())
+	shamir, err := seal.NewShamirStrategy(2, 3)
+	if err != nil {
+		t.Fatalf("NewShamirStrategy: %v", err)
+	}
+	if _, err := reg.RegisterTenant(context.Background(), "acme", seal.NewMemoryBackend(),
+		seal.BarrierConfig{RootKeyPath: "tenant/acme/root-key"}, shamir); err != nil {
+		t.Fatalf("RegisterTenant: %v", err)
+	}
+
+	// Strategy arg is shamir but the barrier is already registered, so no new
+	// strategy is built; the pre-registered shamir barrier is initialized.
+	if err := InitializeTenantBarrier(context.Background(), "acme", StrategyShamir, seal.Credentials{}, Dependencies{
+		Barriers: reg, Logger: discardLogger(),
+	}); err != nil {
+		t.Fatalf("InitializeTenantBarrier (pre-registered shamir): %v", err)
+	}
+	tb, err := reg.GetTenant("acme")
+	if err != nil {
+		t.Fatalf("GetTenant(acme): %v", err)
+	}
+	if tb.IsSealed() {
+		t.Error("pre-registered tenant barrier still sealed after init")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// BootstrapSystem – additional branch coverage
+// ---------------------------------------------------------------------------
+
+// TestBootstrapSystem_MissingLoggerRejected covers the logger nil-guard on
+// the BootstrapSystem entry point.
+func TestBootstrapSystem_MissingLoggerRejected(t *testing.T) {
+	reg := newRegistry(t, seal.NewNoneStrategy())
+	_, err := BootstrapSystem(context.Background(), SystemConfig{Strategy: StrategyNone}, Dependencies{
+		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		Barriers: reg,
+	})
+	var want *MissingLoggerError
+	if !errors.As(err, &want) {
+		t.Fatalf("err = %v, want *MissingLoggerError", err)
+	}
+}
+
+// TestBootstrapSystem_EmptyStrategyDefaultsToNone exercises the empty-strategy
+// → StrategyNone default in BootstrapSystem.
+func TestBootstrapSystem_EmptyStrategyDefaultsToNone(t *testing.T) {
+	reg := newRegistry(t, seal.NewNoneStrategy())
+	result, err := BootstrapSystem(context.Background(), SystemConfig{
+		// Strategy deliberately left empty; should default to none.
+	}, Dependencies{
+		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		Barriers: reg, Logger: discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("BootstrapSystem (empty strategy): %v", err)
+	}
+	if result.BarrierStrategy != StrategyNone {
+		t.Errorf("BarrierStrategy = %q, want %q", result.BarrierStrategy, StrategyNone)
+	}
+	if reg.SystemBarrier().IsSealed() {
+		t.Error("system barrier still sealed after empty-strategy bootstrap")
+	}
+}
+
+// TestBootstrapSystem_InitializeReturnsAlreadyInitialized exercises the
+// errors.Is(initErr, seal.ErrAlreadyInitialized) branch inside the
+// system.Initialize error path. This can occur when two concurrent
+// BootstrapSystem calls race on the same sealed barrier: the second caller
+// sees ErrAlreadyInitialized and must treat it as idempotent success.
+func TestBootstrapSystem_InitializeReturnsAlreadyInitialized(t *testing.T) {
+	// Pre-initialize the system barrier so Initialize returns ErrAlreadyInitialized,
+	// then re-seal it so IsSealed() is true when BootstrapSystem is called —
+	// this is the only way to reach the Initialize error branch without a race.
+	none := seal.NewNoneStrategy()
+	system, err := seal.NewStorageBarrier(discardLogger(), seal.NewMemoryBackend(),
+		seal.BarrierConfig{RootKeyPath: "system/root-key"}, none)
+	if err != nil {
+		t.Fatalf("NewStorageBarrier: %v", err)
+	}
+	// Initialize once so the barrier has persistent root-key state.
+	if err := system.Initialize(context.Background(), seal.Credentials{}); err != nil {
+		t.Fatalf("pre-initialize: %v", err)
+	}
+	// Seal the barrier: now IsSealed() == true but the root key exists in
+	// storage — Initialize will return ErrAlreadyInitialized on the next call.
+	if err := system.Seal(); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	if !system.IsSealed() {
+		t.Fatal("setup: barrier must be sealed after Seal()")
+	}
+
+	reg, err := seal.NewBarrierRegistry(discardLogger(), system)
+	if err != nil {
+		t.Fatalf("NewBarrierRegistry: %v", err)
+	}
+
+	// BootstrapSystem sees a sealed barrier for StrategyNone → calls
+	// credentialsForStrategy (empty creds OK) → calls system.Initialize →
+	// receives ErrAlreadyInitialized → sets BarrierAlreadyInitialized = true.
+	result, err := BootstrapSystem(context.Background(), SystemConfig{Strategy: StrategyNone}, Dependencies{
+		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		Barriers: reg, Logger: discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("BootstrapSystem (ErrAlreadyInitialized path): %v", err)
+	}
+	if !result.BarrierAlreadyInitialized {
+		t.Error("BarrierAlreadyInitialized = false, want true when Initialize returns ErrAlreadyInitialized")
+	}
+	if result.FirstBoot == nil || !result.FirstBoot.SystemTenantCreated {
+		t.Error("first-boot did not run after ErrAlreadyInitialized barrier path")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ProvisionTenant – nil deps guards
+// ---------------------------------------------------------------------------
+
+// TestProvisionTenant_NilTenantsRejected covers the Tenants == nil guard.
+func TestProvisionTenant_NilTenantsRejected(t *testing.T) {
+	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{TenantID: "acme"}, Dependencies{
+		Users: &fakeUsers{}, Roles: &fakeRoles{}, Logger: discardLogger(),
+	})
+	var want *firstboot.MissingTenantsError
+	if !errors.As(err, &want) {
+		t.Fatalf("err = %v, want *firstboot.MissingTenantsError", err)
+	}
+}
+
+// TestProvisionTenant_NilUsersRejected covers the Users == nil guard.
+func TestProvisionTenant_NilUsersRejected(t *testing.T) {
+	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{TenantID: "acme"}, Dependencies{
+		Tenants: &fakeTenants{}, Roles: &fakeRoles{}, Logger: discardLogger(),
+	})
+	var want *firstboot.MissingUsersError
+	if !errors.As(err, &want) {
+		t.Fatalf("err = %v, want *firstboot.MissingUsersError", err)
+	}
+}
+
+// TestProvisionTenant_NilRolesRejected covers the Roles == nil guard.
+func TestProvisionTenant_NilRolesRejected(t *testing.T) {
+	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{TenantID: "acme"}, Dependencies{
+		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Logger: discardLogger(),
+	})
+	var want *firstboot.MissingRolesError
+	if !errors.As(err, &want) {
+		t.Fatalf("err = %v, want *firstboot.MissingRolesError", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// InitializeTenantBarrier – additional branch coverage
+// ---------------------------------------------------------------------------
+
+// TestInitializeTenantBarrier_MissingLoggerRejected covers the logger nil-guard.
+func TestInitializeTenantBarrier_MissingLoggerRejected(t *testing.T) {
+	reg := newRegistry(t, seal.NewNoneStrategy())
+	err := InitializeTenantBarrier(context.Background(), "acme", StrategyNone, seal.Credentials{}, Dependencies{
+		Barriers: reg,
+	})
+	var want *MissingLoggerError
+	if !errors.As(err, &want) {
+		t.Fatalf("err = %v, want *MissingLoggerError", err)
+	}
+}
+
+// TestInitializeTenantBarrier_EmptyStrategyDefaultsToNone covers the empty
+// strategy → StrategyNone default in InitializeTenantBarrier.
+func TestInitializeTenantBarrier_EmptyStrategyDefaultsToNone(t *testing.T) {
+	reg := newRegistry(t, seal.NewNoneStrategy())
+	err := InitializeTenantBarrier(context.Background(), "acme", "", seal.Credentials{}, Dependencies{
+		Barriers: reg, Logger: discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("InitializeTenantBarrier (empty strategy): %v", err)
+	}
+	tb, err := reg.GetTenant("acme")
+	if err != nil {
+		t.Fatalf("GetTenant(acme): %v", err)
+	}
+	if tb.IsSealed() {
+		t.Error("tenant barrier still sealed after empty-strategy init")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// enrollAdminCert – additional branch coverage
+// ---------------------------------------------------------------------------
+
+// TestEnrollAdminCert_SignerError covers the SignAdminCSR error path.
+func TestEnrollAdminCert_SignerError(t *testing.T) {
+	sentinel := errors.New("signer unavailable")
+	signer := &fakeSignerErr{err: sentinel}
+	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
+		TenantID:    "acme",
+		AdminCSRPEM: []byte("THE-CSR"),
+	}, Dependencies{
+		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		Signer: signer, Logger: discardLogger(),
+	})
+	var want *TenantAdminCertError
+	if !errors.As(err, &want) {
+		t.Fatalf("err = %v, want *TenantAdminCertError", err)
+	}
+	if !errors.Is(err, sentinel) {
+		t.Errorf("err does not unwrap to sentinel: %v", err)
+	}
+}
+
+// TestEnrollAdminCert_SignerReturnsEmptyCert covers the len(certPEM)==0 guard
+// after SignAdminCSR returns an empty slice.
+func TestEnrollAdminCert_SignerReturnsEmptyCert(t *testing.T) {
+	// Signer returns empty cert bytes — should be a no-op (return nil).
+	signer := &fakeSignerEmpty{}
+	result, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
+		TenantID:    "acme",
+		AdminCSRPEM: []byte("THE-CSR"),
+	}, Dependencies{
+		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		Signer: signer, Logger: discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("ProvisionTenant (empty cert from signer): %v", err)
+	}
+	if result.AdminCertPEM != nil || result.AdminCertThumbprint != "" {
+		t.Error("cert data set despite signer returning empty cert; want no-op")
+	}
+}
+
+// TestEnrollAdminCert_BinderError covers the BindAdminCert error path.
+func TestEnrollAdminCert_BinderError(t *testing.T) {
+	sentinel := errors.New("bind store down")
+	certPEM := realCertPEM(t)
+	ca := &fakeCA{cert: certPEM, key: []byte("KEY")}
+	binder := &fakeBinder{err: sentinel}
+
+	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{TenantID: "acme"}, Dependencies{
+		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		CA: ca, Binder: binder, Logger: discardLogger(),
+	})
+	var want *TenantAdminCertError
+	if !errors.As(err, &want) {
+		t.Fatalf("err = %v, want *TenantAdminCertError", err)
+	}
+	if !errors.Is(err, sentinel) {
+		t.Errorf("err does not unwrap to sentinel: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// spkiThumbprintFromCertPEM – bad DER path
+// ---------------------------------------------------------------------------
+
+// TestSPKIThumbprintFromCertPEM_BadDER covers the x509.ParseCertificate error
+// path in spkiThumbprintFromCertPEM: a valid CERTIFICATE PEM block whose DER
+// bytes are syntactically invalid.
+func TestSPKIThumbprintFromCertPEM_BadDER(t *testing.T) {
+	badDER := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("not valid DER")})
+	ca := &fakeCA{cert: badDER, key: []byte("KEY")}
+
+	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{TenantID: "acme"}, Dependencies{
+		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		CA: ca, Logger: discardLogger(),
+	})
+	var want *TenantAdminCertError
+	if !errors.As(err, &want) {
+		t.Fatalf("err = %v, want *TenantAdminCertError", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Additional fake helpers needed by the new tests
+// ---------------------------------------------------------------------------
+
+// fakeSignerErr is a CertSigner whose SignAdminCSR always returns an error.
+type fakeSignerErr struct {
+	err error
+}
+
+func (s *fakeSignerErr) SignAdminCSR(_ context.Context, _, _ string, _ []byte) ([]byte, error) {
+	return nil, s.err
+}
+
+// fakeSignerEmpty is a CertSigner whose SignAdminCSR returns an empty cert slice.
+type fakeSignerEmpty struct{}
+
+func (s *fakeSignerEmpty) SignAdminCSR(_ context.Context, _, _ string, _ []byte) ([]byte, error) {
+	return []byte{}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Internal function branch coverage (same package — white-box tests)
+// ---------------------------------------------------------------------------
+
+// TestCredentialsForStrategy_InvalidStrategyReturnsError exercises the
+// validateStrategy error guard inside credentialsForStrategy directly. This
+// branch is unreachable through the public API (BootstrapSystem calls
+// validateStrategy first), but it is a defensive check that must be covered.
+func TestCredentialsForStrategy_InvalidStrategyReturnsError(t *testing.T) {
+	_, err := credentialsForStrategy(seal.StrategyID("tpm2"), "ignored")
+	var want *UnsupportedStrategyError
+	if !errors.As(err, &want) {
+		t.Fatalf("err = %v, want *UnsupportedStrategyError", err)
+	}
+}
+
+// TestBuildTenantStrategy_DefaultCaseReturnsError exercises the default
+// (unknown strategy) branch of buildTenantStrategy directly. This is a
+// defensive branch unreachable through the public API because
+// InitializeTenantBarrier calls validateStrategy first.
+func TestBuildTenantStrategy_DefaultCaseReturnsError(t *testing.T) {
+	_, err := buildTenantStrategy(seal.StrategyID("vault"))
+	var want *UnsupportedStrategyError
+	if !errors.As(err, &want) {
+		t.Fatalf("err = %v, want *UnsupportedStrategyError", err)
+	}
+}

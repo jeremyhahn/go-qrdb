@@ -76,6 +76,12 @@ func (s *TransactionService) Execute(ctx context.Context, compares []Compare, su
 	if err != nil {
 		return nil, s.translateProposeError(err)
 	}
+	// A state-machine-encoded application error (e.g. a unique-index violation
+	// that rejected the transaction without stalling consensus) must be
+	// surfaced before the result.Data success flag is interpreted.
+	if resultErr := checkResultError(result); resultErr != nil {
+		return nil, resultErr
+	}
 
 	return s.buildTransactionResponse(result, successOps, failureOps), nil
 }
@@ -89,6 +95,9 @@ func (s *TransactionService) ExecuteWithMode(ctx context.Context, compares []Com
 	result, err := s.host.ProposeWithMode(ctx, s.shardID, cmd, mode)
 	if err != nil {
 		return nil, s.translateProposeError(err)
+	}
+	if resultErr := checkResultError(result); resultErr != nil {
+		return nil, resultErr
 	}
 
 	return s.buildTransactionResponse(result, successOps, failureOps), nil

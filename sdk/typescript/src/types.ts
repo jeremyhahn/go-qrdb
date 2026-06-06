@@ -454,16 +454,16 @@ export interface WatchResponse {
 // Lease types
 // ---------------------------------------------------------------------------
 
-/** Describes a distributed TTL lease. Field names match the server's JSON wire format. */
+/** Describes a distributed TTL lease. */
 export interface LeaseInfo {
     /** Lease identifier. */
     readonly id: number;
     /** Current TTL in seconds. */
     readonly ttl: number;
     /** Originally granted TTL in seconds. */
-    readonly granted_ttl: number;
+    readonly grantedTtl: number;
     /** Remaining TTL in seconds. */
-    readonly remaining_ttl: number;
+    readonly remainingTtl: number;
     /** Keys attached to this lease. */
     readonly keys?: readonly string[];
 }
@@ -478,24 +478,24 @@ export interface LeaseListResponse {
 // Lock types
 // ---------------------------------------------------------------------------
 
-/** Describes an acquired distributed lock. Field names match the server's JSON wire format. */
+/** Describes an acquired distributed lock. */
 export interface LockInfo {
     /** User-provided lock key. */
     readonly key: string;
     /** MVCC ModRevision at acquisition. Monotonically increasing fencing token. */
-    readonly fencing_token: number;
+    readonly fencingToken: number;
     /** Underlying lease ID that controls the TTL. */
-    readonly lease_id: number;
+    readonly leaseId: number;
     /** Unique identifier for the lock holder. */
-    readonly holder_id: string;
+    readonly holderId: string;
     /** Whether re-acquisition by the same holder is permitted. */
     readonly reentrant: boolean;
     /** Number of times the reentrant holder has acquired the lock. Always 1 for non-reentrant locks. */
-    readonly acquire_count: number;
+    readonly acquireCount: number;
     /** Lock TTL in seconds. */
     readonly ttl: number;
     /** Unix timestamp in seconds when the lock was first acquired. */
-    readonly acquired_at: number;
+    readonly acquiredAt: number;
 }
 
 /** Parameters for acquiring a distributed lock. */
@@ -1289,6 +1289,16 @@ export interface UpdateUserRequest {
     readonly roleIds?: readonly string[];
 }
 
+/** Parameters for binding an mTLS certificate thumbprint to a user. */
+export interface AddCertBindingRequest {
+    /** User ID to bind the certificate thumbprint to. */
+    readonly id: string;
+    /** Base64url SHA-256 SPKI thumbprint of the certificate. */
+    readonly thumbprint: string;
+    /** Optional unix-seconds expiry; 0 or omitted means the binding never expires. */
+    readonly notAfterUnix?: number;
+}
+
 /** Parameters for listing users. */
 export interface ListUsersRequest {
     /** Filter by tenant ID. */
@@ -1658,8 +1668,10 @@ export interface DatabaseInfo {
     readonly backend: string;
     /** Current status (open, closed, error). */
     readonly status: string;
-    /** SQL wire protocol configuration. */
-    readonly sql?: DatabaseSQLConfig;
+    /** Wire protocol configuration (mysql/postgresql/etc). Wire field name
+     * is `protocol` to match the Go transport type; this is the canonical
+     * field. The legacy `sql` alias is no longer accepted. */
+    readonly protocol?: DatabaseSQLConfig;
     /** Data directory path, if applicable. */
     readonly data_dir?: string;
     /** Shard ID, if applicable. */
@@ -1682,8 +1694,9 @@ export interface CreateDatabaseRequest {
     readonly engine: string;
     /** Storage backend (memory, file, pebble, raft). */
     readonly backend: string;
-    /** SQL wire protocol configuration. */
-    readonly sql?: DatabaseSQLConfig;
+    /** Wire protocol configuration (mysql/postgresql). The wire field name
+     * is `protocol` to match the Go transport type. */
+    readonly protocol?: DatabaseSQLConfig;
     /** Custom data directory for file/pebble backends. */
     readonly dataDir?: string;
     /** Database mode (e.g. "embedded", "remote"). */
@@ -1909,10 +1922,14 @@ export interface ListTenantsResponse {
 export interface TenantBarrierInitRequest {
     /** Target tenant identifier. */
     readonly tenantId: string;
+    /** Optional passphrase used to derive the barrier root key. */
+    readonly passphrase?: string;
     /** Minimum number of shares required to unseal. */
     readonly threshold: number;
     /** Total number of key shares to generate. */
     readonly shares: number;
+    /** Optional seal strategy identifier (e.g. "passphrase", "shamir", or a hardware id). */
+    readonly strategy?: string;
 }
 
 /** Request to contribute an unseal share for a tenant barrier. */

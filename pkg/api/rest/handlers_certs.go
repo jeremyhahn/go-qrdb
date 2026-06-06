@@ -15,6 +15,7 @@
 package rest
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -113,7 +114,10 @@ func (s *Server) handleGenerateCert(w http.ResponseWriter, r *http.Request) {
 		genReq.TTL = ttl
 	}
 
-	bundle, err := s.certProv.GenerateClientCert(r.Context(), genReq)
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
+	bundle, err := s.certProv.GenerateClientCert(ctx, genReq)
 	if err != nil {
 		writeErrorJSON(w, mapCertError(err), err)
 		return
@@ -144,8 +148,11 @@ func (s *Server) handleExportCert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
 	p12Bytes, err := s.certProv.ExportPKCS12(
-		r.Context(),
+		ctx,
 		[]byte(req.CertPEM),
 		[]byte(req.KeyPEM),
 		req.Passphrase,
@@ -175,7 +182,10 @@ func (s *Server) handleRevokeCert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.certProv.RevokeCert(r.Context(), req.Serial); err != nil {
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
+	if err := s.certProv.RevokeCert(ctx, req.Serial); err != nil {
 		writeErrorJSON(w, mapCertError(err), err)
 		return
 	}
@@ -198,7 +208,10 @@ func (s *Server) handleListCerts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	records, err := s.certProv.ListCerts(r.Context(), tenantID)
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
+	records, err := s.certProv.ListCerts(ctx, tenantID)
 	if err != nil {
 		writeErrorJSON(w, mapCertError(err), err)
 		return

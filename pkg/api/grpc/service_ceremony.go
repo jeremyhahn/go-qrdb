@@ -24,6 +24,7 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // ---------------------------------------------------------------------------
@@ -32,14 +33,17 @@ import (
 
 // CeremonyInitialize performs the initialization ceremony. The gRPC transport
 // does not carry a CeremonyCA reference; nil is passed to the service layer
-// which uses its internally configured CA. Callers requiring explicit CA
-// injection should use the REST API.
-func (s *qrdbServiceServer) CeremonyInitialize(ctx context.Context, _ *pb.CeremonyInitializeRequest) (*pb.CeremonyInitializeResponse, error) {
+// which uses its internally configured CA. The per-request SO and user PINs
+// are forwarded so callers can supply credentials on the call itself.
+func (s *qrdbServiceServer) CeremonyInitialize(ctx context.Context, req *pb.CeremonyInitializeRequest) (*pb.CeremonyInitializeResponse, error) {
 	if s.ceremonySvc == nil {
 		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "ceremony"}).Error())
 	}
 
-	result, err := s.ceremonySvc.CeremonyInitialize(ctx, nil)
+	result, err := s.ceremonySvc.CeremonyInitialize(ctx, nil, &service.CeremonyInitializeOptions{
+		SOPin:   req.GetSoPin(),
+		UserPin: req.GetUserPin(),
+	})
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -126,6 +130,31 @@ func (s *qrdbServiceServer) CeremonyClaimShare(ctx context.Context, req *pb.Cere
 
 	return &pb.CeremonyClaimShareResponse{
 		Share: string(shareBytes),
+	}, nil
+}
+
+// CeremonyEnrollExternalOfficer enrols an officer whose key material lives
+// outside go-qrdb. Either CertPEM (validated against the configured CA pools)
+// or PubKeyPEM (admin-asserted trust) MUST be supplied, but not both.
+func (s *qrdbServiceServer) CeremonyEnrollExternalOfficer(ctx context.Context, req *pb.CeremonyEnrollExternalOfficerRequest) (*pb.CeremonyEnrollExternalOfficerResponse, error) {
+	if s.ceremonySvc == nil {
+		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "ceremony"}).Error())
+	}
+
+	resp, err := s.ceremonySvc.CeremonyEnrollExternalOfficer(ctx, &service.CeremonyEnrollExternalOfficerRequest{
+		Username:   req.GetUsername(),
+		CertPEM:    req.GetCertPem(),
+		PubKeyPEM:  req.GetPubkeyPem(),
+		ShareIndex: int(req.GetShareIndex()),
+		AuthFactor: req.GetAuthFactor(),
+		ShareBytes: req.GetShareBytes(),
+	})
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+
+	return &pb.CeremonyEnrollExternalOfficerResponse{
+		SealedShare: resp.SealedShare,
 	}, nil
 }
 

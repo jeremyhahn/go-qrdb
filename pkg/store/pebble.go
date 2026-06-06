@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"io"
 	"sort"
 	"strings"
@@ -839,6 +840,18 @@ func (s *PebbleStateMachine) GetHash() (uint64, error) {
 // Base KV update handlers
 // ---------------------------------------------------------------------------
 
+// pebbleAppErrResult builds a non-fatal application-error result payload. A
+// Raft state machine must not return a Go error from Update() for a
+// deterministic consequence of valid client input (an invalid lease TTL, a
+// time-series validation failure, or an operation against a subsystem not
+// configured on this SM): that halts lastApplied and stalls the group. Such
+// outcomes are encoded into sm.Result.Data and surfaced to the client by the
+// service layer (service.checkResultError); only genuine non-deterministic
+// faults (decode/IO) are returned as Go errors.
+func pebbleAppErrResult(msg string) sm.Result {
+	return sm.Result{Data: protocol.EncodeAppError(msg)}
+}
+
 // pebbleHandlePut processes a base KV Put command (OpPut=1). The payload
 // is the full encoded command including the op byte.
 func pebbleHandlePut(s *PebbleStateMachine, batch *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
@@ -1209,12 +1222,15 @@ func pebbleHandleLeaseGrant(s *PebbleStateMachine, _ *pebble.Batch, payload []by
 	}
 
 	if s.lessor == nil {
-		return sm.Result{}, nil, &NotOpenError{}
+		return pebbleAppErrResult((&NotOpenError{}).Error()), nil, nil
 	}
 
 	info, grantErr := s.lessor.Grant(ttl)
 	if grantErr != nil {
-		return sm.Result{}, nil, grantErr
+		// Invalid TTL (and similar input-shaped grant failures) are
+		// deterministic application errors: surface via the result payload
+		// rather than stalling consensus.
+		return pebbleAppErrResult(grantErr.Error()), nil, nil
 	}
 
 	return sm.Result{Value: uint64(info.ID)}, nil, nil
@@ -1228,11 +1244,18 @@ func pebbleHandleLeaseRevoke(s *PebbleStateMachine, batch *pebble.Batch, payload
 	}
 
 	if s.lessor == nil {
-		return sm.Result{}, nil, &NotOpenError{}
+		return pebbleAppErrResult((&NotOpenError{}).Error()), nil, nil
 	}
 
 	keys, revokeErr := s.lessor.Revoke(leaseID)
 	if revokeErr != nil {
+		var nfe *lease.NotFoundError
+		if errors.As(revokeErr, &nfe) {
+			// Lease already gone — idempotent success so Raft Apply does not
+			// stall on duplicate/replayed revoke proposals (e.g. the leader-side
+			// expiry sweeper or deferred teardown).
+			return sm.Result{Value: 0}, nil, nil
+		}
 		return sm.Result{}, nil, revokeErr
 	}
 
@@ -1271,11 +1294,17 @@ func pebbleHandleLeaseKeepAlive(s *PebbleStateMachine, _ *pebble.Batch, payload 
 	}
 
 	if s.lessor == nil {
-		return sm.Result{}, nil, &NotOpenError{}
+		return pebbleAppErrResult((&NotOpenError{}).Error()), nil, nil
 	}
 
 	_, kaErr := s.lessor.KeepAlive(leaseID)
 	if kaErr != nil {
+		var nfe *lease.NotFoundError
+		if errors.As(kaErr, &nfe) {
+			// Lease already gone — idempotent success so Raft Apply does not
+			// stall on duplicate/replayed keepalive proposals.
+			return sm.Result{Value: 0}, nil, nil
+		}
 		return sm.Result{}, nil, kaErr
 	}
 
@@ -1296,7 +1325,11 @@ func (s *PebbleStateMachine) pebbleHandleIndexCreate(_ *PebbleStateMachine, _ *p
 	_ = sparse // reserved for future use
 
 	if _, exists := s.indexes[name]; exists {
-		return sm.Result{}, nil, &InvalidQueryError{Reason: "index already exists: " + name}
+		// Index already present — idempotent success so Raft Apply does not
+		// stall on duplicate create proposals. Existence is keyed by name only;
+		// a re-create with a divergent definition is a no-op (original wins) and
+		// must be rejected at the service layer before the proposal if desired.
+		return sm.Result{Value: 1}, nil, nil
 	}
 
 	valueType := index.IndexValueTypeString
@@ -1314,6 +1347,9 @@ func (s *PebbleStateMachine) pebbleHandleIndexCreate(_ *PebbleStateMachine, _ *p
 }
 
 // pebbleHandleIndexDrop removes a secondary index and clears all its entries.
+// If the index does not exist the operation is a no-op; Raft state machine
+// handlers must be idempotent so that cleanup proposals (e.g. deferred test
+// teardown) do not return a fatal Apply error that would stall consensus.
 func (s *PebbleStateMachine) pebbleHandleIndexDrop(_ *PebbleStateMachine, _ *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
 	name, err := protocol.DecodeIndexDrop(payload)
 	if err != nil {
@@ -1322,7 +1358,8 @@ func (s *PebbleStateMachine) pebbleHandleIndexDrop(_ *PebbleStateMachine, _ *peb
 
 	idx, ok := s.indexes[name]
 	if !ok {
-		return sm.Result{}, nil, &InvalidQueryError{Reason: "index not found: " + name}
+		// Index already gone — idempotent success.
+		return sm.Result{Value: 1}, nil, nil
 	}
 
 	if err := idx.Clear(); err != nil {
@@ -1343,7 +1380,7 @@ func (s *PebbleStateMachine) pebbleHandleIndexDrop(_ *PebbleStateMachine, _ *peb
 // pebbleHandleTSWrite stores a single time-series data point.
 func (s *PebbleStateMachine) pebbleHandleTSWrite(_ *PebbleStateMachine, _ *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
 	if s.ts == nil {
-		return sm.Result{}, nil, &NotOpenError{}
+		return pebbleAppErrResult((&NotOpenError{}).Error()), nil, nil
 	}
 
 	params, err := protocol.DecodeTSWrite(payload)
@@ -1352,7 +1389,7 @@ func (s *PebbleStateMachine) pebbleHandleTSWrite(_ *PebbleStateMachine, _ *pebbl
 	}
 
 	if err := s.ts.Write(params.Metric, params.Value, time.Unix(0, params.Timestamp), params.Tags); err != nil {
-		return sm.Result{}, nil, err
+		return pebbleAppErrResult(err.Error()), nil, nil
 	}
 
 	return sm.Result{Value: 1}, nil, nil
@@ -1361,7 +1398,7 @@ func (s *PebbleStateMachine) pebbleHandleTSWrite(_ *PebbleStateMachine, _ *pebbl
 // pebbleHandleTSWriteBatch stores multiple time-series data points.
 func (s *PebbleStateMachine) pebbleHandleTSWriteBatch(_ *PebbleStateMachine, _ *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
 	if s.ts == nil {
-		return sm.Result{}, nil, &NotOpenError{}
+		return pebbleAppErrResult((&NotOpenError{}).Error()), nil, nil
 	}
 
 	params, err := protocol.DecodeTSWriteBatch(payload)
@@ -1380,7 +1417,7 @@ func (s *PebbleStateMachine) pebbleHandleTSWriteBatch(_ *PebbleStateMachine, _ *
 	}
 
 	if err := s.ts.WriteBatch(points); err != nil {
-		return sm.Result{}, nil, err
+		return pebbleAppErrResult(err.Error()), nil, nil
 	}
 
 	return sm.Result{Value: uint64(len(points))}, nil, nil
@@ -1389,7 +1426,7 @@ func (s *PebbleStateMachine) pebbleHandleTSWriteBatch(_ *PebbleStateMachine, _ *
 // pebbleHandleTSWritePoint stores a single validated time-series data point.
 func (s *PebbleStateMachine) pebbleHandleTSWritePoint(_ *PebbleStateMachine, _ *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
 	if s.ts == nil {
-		return sm.Result{}, nil, &NotOpenError{}
+		return pebbleAppErrResult((&NotOpenError{}).Error()), nil, nil
 	}
 
 	params, err := protocol.DecodeTSWrite(payload)
@@ -1404,7 +1441,7 @@ func (s *PebbleStateMachine) pebbleHandleTSWritePoint(_ *PebbleStateMachine, _ *
 		Tags:      params.Tags,
 	}
 	if err := s.ts.WritePoint(context.Background(), dp); err != nil {
-		return sm.Result{}, nil, err
+		return pebbleAppErrResult(err.Error()), nil, nil
 	}
 
 	return sm.Result{Value: 1}, nil, nil
@@ -1413,7 +1450,7 @@ func (s *PebbleStateMachine) pebbleHandleTSWritePoint(_ *PebbleStateMachine, _ *
 // pebbleHandleTSDeleteSeries deletes time-series data matching criteria.
 func (s *PebbleStateMachine) pebbleHandleTSDeleteSeries(_ *PebbleStateMachine, _ *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
 	if s.ts == nil {
-		return sm.Result{}, nil, &NotOpenError{}
+		return pebbleAppErrResult((&NotOpenError{}).Error()), nil, nil
 	}
 
 	params, err := protocol.DecodeTSDeleteSeries(payload)
@@ -1433,7 +1470,7 @@ func (s *PebbleStateMachine) pebbleHandleTSDeleteSeries(_ *PebbleStateMachine, _
 	}
 
 	if err := s.ts.DeleteSeries(context.Background(), req); err != nil {
-		return sm.Result{}, nil, err
+		return pebbleAppErrResult(err.Error()), nil, nil
 	}
 
 	return sm.Result{Value: 1}, nil, nil
@@ -1442,7 +1479,7 @@ func (s *PebbleStateMachine) pebbleHandleTSDeleteSeries(_ *PebbleStateMachine, _
 // pebbleHandleTSSetRetention sets the retention policy for a metric.
 func (s *PebbleStateMachine) pebbleHandleTSSetRetention(_ *PebbleStateMachine, _ *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
 	if s.ts == nil {
-		return sm.Result{}, nil, &NotOpenError{}
+		return pebbleAppErrResult((&NotOpenError{}).Error()), nil, nil
 	}
 
 	params, err := protocol.DecodeTSSetRetention(payload)
@@ -1457,7 +1494,7 @@ func (s *PebbleStateMachine) pebbleHandleTSSetRetention(_ *PebbleStateMachine, _
 	}
 
 	if err := s.ts.SetRetentionPolicy(params.Metric, policy); err != nil {
-		return sm.Result{}, nil, err
+		return pebbleAppErrResult(err.Error()), nil, nil
 	}
 
 	return sm.Result{Value: 1}, nil, nil

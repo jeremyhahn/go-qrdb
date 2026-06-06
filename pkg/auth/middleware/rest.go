@@ -42,12 +42,15 @@ func (m *AuthMiddleware) RESTMiddleware(next http.Handler) http.Handler {
 			ctx = auth.WithTLSState(ctx, r.TLS)
 		}
 
-		// Health probes and CA bootstrap are public -- skip authentication
-		// entirely. Load balancers, Kubernetes probes, and monitoring systems
-		// must reach /health without presenting client certificates. The
-		// /v1/ca/bootstrap endpoint is public so joining nodes without TLS
-		// credentials can bootstrap their trust store.
-		if r.URL.Path == "/health" || r.URL.Path == "/v1/ca/bootstrap" {
+		// A small set of endpoints is public -- skip authentication entirely.
+		// Load balancers and probes must reach /health without a client
+		// certificate; /v1/ca/bootstrap lets joining nodes fetch the trust
+		// anchor before they have credentials; /v1/config/initialized lets the
+		// first-boot setup wizard check provisioning state before any user or
+		// certificate exists.
+		if r.URL.Path == "/health" ||
+			r.URL.Path == "/v1/ca/bootstrap" ||
+			r.URL.Path == "/v1/config/initialized" {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -66,10 +69,19 @@ func (m *AuthMiddleware) RESTMiddleware(next http.Handler) http.Handler {
 		// dispatch.
 		path := normalizePath(r.URL.Path)
 
-		// Look up the required permission for this route.
+		// Look up the required permission for this route. DEFAULT-DENY: an
+		// unmapped route that lands on the REST API surface is rejected rather
+		// than treated as public. Requests outside the API surface (the
+		// embedded web UI / static assets served as the router's fallback) and
+		// a small authenticated-but-unprivileged allowlist (e.g. /metrics) pass
+		// through so the SPA and monitoring keep working.
 		perm, ok := LookupREST(r.Method, path)
 		if !ok {
-			// No mapping means no authorization required (public route).
+			if isRESTAPISurface(path) && !isRESTAuthzPublic(path) {
+				code := mapHTTPAuthError(&auth.AuthError{Code: "unauthorized"})
+				writeJSONError(w, code, "route not authorized (no permission mapping): "+r.Method+" "+path)
+				return
+			}
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
@@ -102,6 +114,42 @@ func normalizePath(path string) string {
 		return "/kv"
 	}
 	return path
+}
+
+// restAPIPrefixes enumerates the path prefixes that make up the REST API
+// surface. Under DEFAULT-DENY, a request whose path is under one of these
+// prefixes but has no permission mapping is rejected. Paths outside these
+// prefixes (the embedded web UI / static assets served as the router fallback,
+// favicon, etc.) are not part of the protected API surface and pass through.
+var restAPIPrefixes = []string{
+	"/kv", "/tx", "/batch", "/watch", "/lease", "/index", "/ts", "/vector",
+	"/lock", "/status", "/peers", "/membership", "/snapshot", "/drain",
+	"/capabilities", "/users", "/roles", "/permissions", "/certs", "/v1/",
+}
+
+// restAuthzPublicPaths are API-surface paths that require authentication but no
+// specific permission (e.g. Prometheus metrics scraping by any authenticated
+// peer). Pre-authentication-exempt paths (/health, /v1/ca/bootstrap,
+// /v1/config/initialized) are handled earlier and never reach here.
+var restAuthzPublicPaths = map[string]struct{}{
+	"/metrics": {},
+}
+
+// isRESTAPISurface reports whether path is part of the protected REST API.
+func isRESTAPISurface(path string) bool {
+	for _, p := range restAPIPrefixes {
+		if path == p || strings.HasPrefix(path, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// isRESTAuthzPublic reports whether an (authenticated) caller may reach path
+// without holding a specific permission.
+func isRESTAuthzPublic(path string) bool {
+	_, ok := restAuthzPublicPaths[path]
+	return ok
 }
 
 // mapHTTPAuthError maps auth errors to HTTP status codes.

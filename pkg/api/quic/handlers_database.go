@@ -48,7 +48,7 @@ func (s *Server) handleDatabaseCreate(ctx context.Context, payload []byte) ([]by
 		cfg.Connection = req.Connection
 	}
 
-	info, err := s.databaseSvc.Create(cfg)
+	info, err := s.databaseSvc.CreateForTenant(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -75,7 +75,7 @@ func (s *Server) handleDatabaseGet(ctx context.Context, payload []byte) ([]byte,
 		return nil, &InvalidArgumentError{Reason: "database name is required"}
 	}
 
-	info, err := s.databaseSvc.Get(req.Name)
+	info, err := s.databaseSvc.GetForTenant(ctx, req.Name)
 	if err != nil {
 		return nil, err
 	}
@@ -93,7 +93,7 @@ func (s *Server) handleDatabaseList(ctx context.Context, payload []byte) ([]byte
 		return nil, &ServiceNotConfiguredError{Service: "database"}
 	}
 
-	infos, err := s.databaseSvc.List()
+	infos, err := s.databaseSvc.ListForTenant(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -120,7 +120,7 @@ func (s *Server) handleDatabaseDrop(ctx context.Context, payload []byte) ([]byte
 		return nil, &InvalidArgumentError{Reason: "database name is required"}
 	}
 
-	if err := s.databaseSvc.Drop(req.Name); err != nil {
+	if err := s.databaseSvc.DropForTenant(ctx, req.Name); err != nil {
 		return nil, err
 	}
 
@@ -142,7 +142,7 @@ func (s *Server) handleDatabaseUpdateProtocol(ctx context.Context, payload []byt
 		return nil, &InvalidArgumentError{Reason: "database name is required"}
 	}
 
-	info, err := s.databaseSvc.UpdateProtocol(req.Name, database.ProtocolConfig{
+	info, err := s.databaseSvc.UpdateProtocolForTenant(ctx, req.Name, database.ProtocolConfig{
 		MySQL:      req.MySQL,
 		PostgreSQL: req.PostgreSQL,
 	})
@@ -172,7 +172,7 @@ func (s *Server) handleDatabaseUpdateEtcd(ctx context.Context, payload []byte) (
 		return nil, &InvalidArgumentError{Reason: "database name is required"}
 	}
 
-	info, err := s.databaseSvc.UpdateEtcd(req.Name, &database.EtcdConfig{
+	info, err := s.databaseSvc.UpdateEtcdForTenant(ctx, req.Name, &database.EtcdConfig{
 		Enabled:             req.Enabled,
 		ListenAddr:          req.ListenAddr,
 		AdvertiseClientURLs: req.AdvertiseClientURLs,
@@ -206,7 +206,7 @@ func (s *Server) handleDatabaseUpdateRaft(ctx context.Context, payload []byte) (
 		return nil, &InvalidArgumentError{Reason: "raft configuration is required"}
 	}
 
-	info, err := s.databaseSvc.UpdateRaft(req.Name, req.Raft)
+	info, err := s.databaseSvc.UpdateRaftForTenant(ctx, req.Name, req.Raft)
 	if err != nil {
 		return nil, err
 	}
@@ -236,7 +236,7 @@ func (s *Server) handleDatabaseUpdateBarrier(ctx context.Context, payload []byte
 		return nil, &InvalidArgumentError{Reason: "barrier configuration is required"}
 	}
 
-	info, err := s.databaseSvc.UpdateBarrier(req.Name, req.Barrier)
+	info, err := s.databaseSvc.UpdateBarrierForTenant(ctx, req.Name, req.Barrier)
 	if err != nil {
 		return nil, err
 	}
@@ -266,7 +266,7 @@ func (s *Server) handleDatabaseUpdateConnection(ctx context.Context, payload []b
 		return nil, &InvalidArgumentError{Reason: "connection configuration is required"}
 	}
 
-	info, err := s.databaseSvc.UpdateConnection(req.Name, req.Connection)
+	info, err := s.databaseSvc.UpdateConnectionForTenant(ctx, req.Name, req.Connection)
 	if err != nil {
 		return nil, err
 	}

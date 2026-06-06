@@ -60,10 +60,10 @@ type voyageRequest struct {
 
 // voyageResponse is the Voyage AI embeddings response body.
 type voyageResponse struct {
-	Object string             `json:"object"`
-	Data   []voyageEmbedding  `json:"data"`
-	Model  string             `json:"model"`
-	Usage  voyageUsage        `json:"usage"`
+	Object string            `json:"object"`
+	Data   []voyageEmbedding `json:"data"`
+	Model  string            `json:"model"`
+	Usage  voyageUsage       `json:"usage"`
 }
 
 // voyageEmbedding is a single embedding entry in a voyageResponse.

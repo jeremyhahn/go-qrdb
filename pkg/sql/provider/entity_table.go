@@ -162,7 +162,7 @@ func (t *EntityTable) indexedPartitionRows(ctx *sqle.Context, ip *indexedPartiti
 // JSON-serialized to a string value.
 func (t *EntityTable) entityToRow(e any) sqle.Row {
 	rv := reflect.ValueOf(e)
-	for rv.Kind() == reflect.Ptr {
+	for rv.Kind() == reflect.Pointer {
 		rv = rv.Elem()
 	}
 
@@ -226,7 +226,7 @@ func coerceReflectToSQL(fv reflect.Value) any {
 			return nil
 		}
 		return string(data)
-	case reflect.Ptr:
+	case reflect.Pointer:
 		if fv.IsNil() {
 			return nil
 		}
@@ -484,7 +484,7 @@ func (w *entityWriter) Insert(ctx *sqle.Context, row sqle.Row) error {
 
 	e := w.reg.NewFunc()
 	ev := reflect.ValueOf(e)
-	for ev.Kind() == reflect.Ptr {
+	for ev.Kind() == reflect.Pointer {
 		ev = ev.Elem()
 	}
 

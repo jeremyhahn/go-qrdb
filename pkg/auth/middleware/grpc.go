@@ -17,6 +17,7 @@ package middleware
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -47,11 +48,20 @@ func (m *AuthMiddleware) UnaryInterceptor() grpc.UnaryServerInterceptor {
 			return nil, mapGRPCAuthError(authnErr)
 		}
 
-		// Look up the required permission for this method.
+		// Look up the required permission for this method. DEFAULT-DENY: an
+		// unmapped method that reaches a service handler is rejected rather
+		// than treated as public, so a newly-added RPC cannot silently become
+		// unauthorized. Only infrastructure services (health/reflection) are
+		// exempt.
 		perm, ok := LookupGRPC(info.FullMethod)
 		if !ok {
-			// No mapping means no authorization required (public method).
-			return handler(ctx, req)
+			if isPublicGRPCMethod(info.FullMethod) {
+				return handler(ctx, req)
+			}
+			return nil, mapGRPCAuthError(&auth.AuthError{
+				Code:    "unauthorized",
+				Message: "grpc: method not authorized (no permission mapping): " + info.FullMethod,
+			})
 		}
 
 		// Authorize the action.
@@ -60,6 +70,22 @@ func (m *AuthMiddleware) UnaryInterceptor() grpc.UnaryServerInterceptor {
 		}
 
 		return handler(ctx, req)
+	}
+}
+
+// isPublicGRPCMethod reports whether a gRPC full method belongs to an
+// infrastructure service (health checking, server reflection) that is
+// intentionally reachable without an application permission. Application
+// services (QRDBService, TenantBarrierService) are NOT public — every method
+// must carry a permission mapping or it is denied.
+func isPublicGRPCMethod(fullMethod string) bool {
+	switch {
+	case strings.HasPrefix(fullMethod, "/grpc.health.v1.Health/"):
+		return true
+	case strings.HasPrefix(fullMethod, "/grpc.reflection."):
+		return true
+	default:
+		return false
 	}
 }
 
@@ -86,10 +112,18 @@ func (m *AuthMiddleware) StreamInterceptor() grpc.StreamServerInterceptor {
 			return mapGRPCAuthError(authnErr)
 		}
 
-		// Look up the required permission for this stream method.
+		// Look up the required permission for this stream method. DEFAULT-DENY
+		// (see UnaryInterceptor): an unmapped non-infrastructure method is
+		// rejected rather than treated as public.
 		perm, ok := LookupGRPC(info.FullMethod)
 		if !ok {
-			return handler(srv, &wrappedStream{ServerStream: ss, ctx: ctx})
+			if isPublicGRPCMethod(info.FullMethod) {
+				return handler(srv, &wrappedStream{ServerStream: ss, ctx: ctx})
+			}
+			return mapGRPCAuthError(&auth.AuthError{
+				Code:    "unauthorized",
+				Message: "grpc: method not authorized (no permission mapping): " + info.FullMethod,
+			})
 		}
 
 		// Authorize the action.

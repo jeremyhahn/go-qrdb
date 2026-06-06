@@ -17,6 +17,7 @@ package engine
 import (
 	"bytes"
 	"encoding/json"
+	"log/slog"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	qkv "github.com/jeremyhahn/go-qrdb/pkg/kv"
@@ -56,6 +57,129 @@ type EntityIndex struct {
 // IsCompound reports whether this is a compound (multi-field) index.
 func (ei EntityIndex) IsCompound() bool {
 	return len(ei.FieldNames) > 1
+}
+
+// uniqueIndexChecker is the optional capability an index exposes to report
+// whether it enforces a unique constraint. MemoryIndex and PebbleIndex (the
+// only index types the engine creates) implement it; an index that does not is
+// treated as non-unique and cannot raise a unique-constraint conflict.
+type uniqueIndexChecker interface {
+	IsUnique() bool
+}
+
+// CheckUniqueViolation reports the unique-constraint conflict that writing
+// value under key would cause, WITHOUT modifying any index. It mirrors the
+// constraint UpdateIndexes enforces but as a read-only pre-check, so an update
+// handler can reject the write via an application-error result instead of
+// letting idx.Put return a fatal error from the Raft apply path (which would
+// stall consensus). It returns a *UniqueConstraintError on conflict, a
+// non-typed error if an index read fails (a genuine IO fault the caller may
+// treat as fatal), or nil when the write is admissible.
+func CheckUniqueViolation(indexes map[string]index.Index, indexFields map[string]string, key, value []byte) error {
+	if len(indexes) == 0 {
+		return nil
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(value, &fields) != nil {
+		return nil // not JSON; nothing to index, nothing to violate
+	}
+	for idxName, idx := range indexes {
+		u, ok := idx.(uniqueIndexChecker)
+		if !ok || !u.IsUnique() {
+			continue
+		}
+		fieldName, ok := indexFields[idxName]
+		if !ok {
+			continue
+		}
+		raw, exists := fields[fieldName]
+		if !exists {
+			continue
+		}
+		fieldVal := UnquoteJSON(raw)
+		existing, err := idx.Get(fieldVal)
+		if err != nil {
+			return err
+		}
+		for _, k := range existing {
+			if !bytes.Equal(k, key) {
+				return &UniqueConstraintError{Index: idxName, Field: fieldName}
+			}
+		}
+	}
+	return nil
+}
+
+// indexedPut is a (key, value) write evaluated for unique-constraint
+// admissibility by CheckUniqueViolationsBatch.
+type indexedPut struct {
+	Key   []byte
+	Value []byte
+}
+
+// CheckUniqueViolationsBatch validates a batch of writes against the unique
+// secondary indexes WITHOUT modifying any index. It accounts for two things a
+// naive per-put check cannot: (1) keys DELETED in the same batch free the
+// unique values they hold (so a delete-then-reinsert of the same value is
+// admissible, matching ordered execution), and (2) conflicts BETWEEN puts in
+// the batch (two puts mapping different keys to the same unique value).
+//
+// It lets transaction/batch handlers reject the whole operation set atomically
+// — before any state is written — so a unique violation never reaches idx.Put
+// on the apply path and never stalls consensus. Returns a *UniqueConstraintError
+// on the first conflict, a non-typed error on an index read failure, or nil
+// when every write is admissible.
+func CheckUniqueViolationsBatch(indexes map[string]index.Index, indexFields map[string]string, puts []indexedPut, deletedKeys [][]byte) error {
+	if len(indexes) == 0 || len(puts) == 0 {
+		return nil
+	}
+	deleted := make(map[string]struct{}, len(deletedKeys))
+	for _, k := range deletedKeys {
+		deleted[string(k)] = struct{}{}
+	}
+	// pending records the key each (index, value) is claimed by within this
+	// batch, so an intra-batch duplicate is caught too.
+	pending := make(map[string][]byte)
+	for _, p := range puts {
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(p.Value, &fields) != nil {
+			continue // not JSON; nothing to index
+		}
+		for idxName, idx := range indexes {
+			u, ok := idx.(uniqueIndexChecker)
+			if !ok || !u.IsUnique() {
+				continue
+			}
+			fieldName, ok := indexFields[idxName]
+			if !ok {
+				continue
+			}
+			raw, exists := fields[fieldName]
+			if !exists {
+				continue
+			}
+			fieldVal := UnquoteJSON(raw)
+			existing, err := idx.Get(fieldVal)
+			if err != nil {
+				return err
+			}
+			for _, k := range existing {
+				if bytes.Equal(k, p.Key) {
+					continue // the key updating its own entry
+				}
+				if _, isDeleted := deleted[string(k)]; isDeleted {
+					continue // the conflicting key is removed in this batch
+				}
+				return &UniqueConstraintError{Index: idxName, Field: fieldName}
+			}
+			mapKey := idxName + "\x00" + string(fieldVal)
+			if prev, seen := pending[mapKey]; seen && !bytes.Equal(prev, p.Key) {
+				return &UniqueConstraintError{Index: idxName, Field: fieldName}
+			}
+			pending[mapKey] = p.Key
+		}
+	}
+	return nil
 }
 
 // UpdateIndexes extracts JSON field values from the written value and updates
@@ -235,6 +359,11 @@ func RemoveIndexesBatch(batch storage.Batch, indexes map[string]index.Index, ind
 func BackfillIndex(scanner func() ([]*service.KeyValue, error), idx index.Index, fieldName string) {
 	kvs, err := scanner()
 	if err != nil {
+		// The scan must not fail an index-create apply (returning an error
+		// there would stall consensus), but a silently-incomplete backfill is
+		// an operability hazard — log it so it is observable.
+		slog.Warn("engine: index backfill scan failed; index created without backfill",
+			"field", fieldName, "error", err)
 		return
 	}
 

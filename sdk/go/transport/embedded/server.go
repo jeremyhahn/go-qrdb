@@ -16,20 +16,23 @@ package embedded
 
 import (
 	"context"
-	"encoding/binary"
+	"errors"
 	"log/slog"
 	"path/filepath"
 	"strings"
 
 	"github.com/cockroachdb/pebble/v2"
+	"github.com/cockroachdb/pebble/v2/vfs"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
+	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/encfs"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/file"
@@ -139,6 +142,60 @@ func (e *ShutdownError) Error() string {
 // Unwrap returns the underlying error.
 func (e *ShutdownError) Unwrap() error { return e.Err }
 
+// BarrierSealedError indicates that the encrypted-at-rest data plane
+// could not be opened because the seal barrier was not unsealed before
+// the underlying PebbleDB was constructed. It always wraps
+// seal.ErrSealed so callers can match via errors.Is.
+type BarrierSealedError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *BarrierSealedError) Error() string {
+	if e.Err == nil {
+		return "embedded: data-plane barrier is sealed"
+	}
+	return "embedded: data-plane barrier is sealed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying seal error so errors.Is(err, seal.ErrSealed)
+// matches.
+func (e *BarrierSealedError) Unwrap() error {
+	if e.Err == nil {
+		return seal.ErrSealed
+	}
+	return e.Err
+}
+
+// BarrierUnsealError indicates that the seal barrier failed to
+// initialize or unseal during embedded server construction.
+type BarrierUnsealError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *BarrierUnsealError) Error() string {
+	return "embedded: failed to unseal barrier: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *BarrierUnsealError) Unwrap() error { return e.Err }
+
+// SealSentinelError indicates that the format-version sentinel could
+// not be read or written on the seal sub-store. This typically means
+// the data dir was created by a pre-encfs build.
+type SealSentinelError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *SealSentinelError) Error() string {
+	return "embedded: seal sentinel: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *SealSentinelError) Unwrap() error { return e.Err }
+
 // ---------------------------------------------------------------------------
 // Configuration types
 // ---------------------------------------------------------------------------
@@ -164,13 +221,39 @@ type ServerConfig struct {
 
 // BarrierConfig controls the encryption barrier.
 type BarrierConfig struct {
-	// Strategy selects the sealing strategy. Defaults to StrategySoftware
+	// Strategy selects the sealing strategy. Defaults to StrategyPassphrase
 	// if the zero value is provided.
 	Strategy seal.StrategyID
 
 	// Shamir configures M-of-N secret sharing. Required when Strategy is
 	// seal.StrategyShamir.
 	Shamir *ShamirConfig
+
+	// AutoUnseal, when true, instructs NewServer to initialize (on a
+	// fresh data dir) or unseal (on an existing one) the barrier
+	// during construction so the data-plane PebbleDB can be opened
+	// behind the encrypting FS. When the disk-backed Pebble backend
+	// is selected with a Barrier, AutoUnseal must be true: encfs
+	// requires an unsealed barrier before the database can be
+	// opened. The memory backend ignores this field.
+	//
+	// For StrategyPassphrase the credential is the passphrase below.
+	// For StrategyShamir the credential is the M-of-N share set in
+	// ShamirShares; the embedded server reconstructs the secret and
+	// unseals via the Shamir strategy.
+	AutoUnseal bool
+
+	// Passphrase is the secret used by software / passphrase-style
+	// strategies during AutoUnseal. When AutoUnseal is true, Strategy
+	// is StrategyPassphrase (or empty), and Passphrase is empty,
+	// NewServer falls back to the deterministic bootstrap passphrase
+	// keyed by deployment ID 0 (matching the behavior of the daemon's
+	// bootstrap path).
+	Passphrase []byte
+
+	// ShamirShares supplies the unseal shares when AutoUnseal is true
+	// and Strategy is StrategyShamir.
+	ShamirShares []string
 }
 
 // ShamirConfig controls M-of-N secret sharing.
@@ -223,9 +306,33 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 
 	srv := &Server{logger: logger}
 
-	// Create storage backend.
-	stg, pdb, err := createServerStorage(backendType, config.DataDir)
+	// Sequence the boot so the seal barrier is constructed and unsealed
+	// before the data-plane PebbleDB is opened. This is required because
+	// the encrypting FS in pkg/seal/encfs uses the barrier as a KEK to
+	// wrap each file's per-file DEK; opening the database against a
+	// sealed barrier would surface seal.ErrSealed during sstable
+	// loading. The memory and file backends are unaffected because they
+	// do not interact with vfs.FS at all.
+	var (
+		barrierSvc      service.BarrierServicer
+		dataPlaneFS     vfs.FS
+		barrierConfigOK = config.Barrier != nil
+	)
+	if barrierConfigOK {
+		svc, fs, err := srv.setupBarrier(ctx, config, backendType, logger)
+		if err != nil {
+			return nil, err
+		}
+		barrierSvc = svc
+		dataPlaneFS = fs
+	}
+
+	// Create storage backend. dataPlaneFS is non-nil only for the
+	// pebble backend with an unsealed barrier; in every other case the
+	// pebble open path falls back to vfs.Default.
+	stg, pdb, err := createServerStorage(backendType, config.DataDir, dataPlaneFS)
 	if err != nil {
+		srv.closeSeal()
 		return nil, err
 	}
 	srv.stg = stg
@@ -235,6 +342,7 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 	sm, err := createServerEngine(backendType, stg, pdb)
 	if err != nil {
 		srv.closeStorage()
+		srv.closeSeal()
 		return nil, err
 	}
 
@@ -261,23 +369,21 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 		WithTimeSeriesService(tsSvc),
 	}
 
-	// Wire auth services (user, role) backed by KV storage.
+	// Wire auth services (user, role) backed by KV storage. The embedded
+	// server is single-node, so user IDs are Snowflake-assigned from node 1.
 	authStore := newServerKVAdapter(kvSvc)
-	if userSvc, err := user.NewStore(authStore); err == nil {
+	userIDGen, idGenErr := dao.NewSnowflakeGenerator(1)
+	if idGenErr != nil {
+		return nil, idGenErr
+	}
+	if userSvc, err := user.NewStore(authStore, userIDGen); err == nil {
 		opts = append(opts, WithUserService(userSvc))
 	}
 	if roleSvc, err := role.NewStore(authStore); err == nil {
 		opts = append(opts, WithRoleService(roleSvc))
 	}
 
-	// Set up barrier if configured.
-	if config.Barrier != nil {
-		barrierSvc, err := srv.createBarrier(config, logger)
-		if err != nil {
-			srv.closeBackend()
-			srv.closeStorage()
-			return nil, err
-		}
+	if barrierSvc != nil {
 		opts = append(opts, WithBarrierService(barrierSvc))
 	}
 
@@ -384,6 +490,9 @@ func validateServerConfig(config *ServerConfig, backendType database.BackendType
 			if config.Barrier.Shamir.Total < config.Barrier.Shamir.Threshold {
 				return &ServerConfigError{Field: "Barrier.Shamir.Total", Message: "must be >= threshold"}
 			}
+			if config.Barrier.AutoUnseal && len(config.Barrier.ShamirShares) < config.Barrier.Shamir.Threshold {
+				return &ServerConfigError{Field: "Barrier.ShamirShares", Message: "auto-unseal needs at least Threshold shares"}
+			}
 		}
 
 		// Barrier requires a data directory for its PebbleDB seal store.
@@ -397,8 +506,11 @@ func validateServerConfig(config *ServerConfig, backendType database.BackendType
 
 // createServerStorage creates the appropriate storage backend and returns
 // the storage interface along with an optional *pebble.DB handle (non-nil
-// for pebble backends).
-func createServerStorage(backendType database.BackendType, dataDir string) (storage.Storage, *pebble.DB, error) {
+// for pebble backends). When dataPlaneFS is non-nil it is wired into the
+// pebble backend's vfs.FS so all on-disk I/O is proxied through it. The
+// memory and file backends ignore dataPlaneFS — encfs is a no-op for an
+// in-memory store, and the file backend does not run through Pebble.
+func createServerStorage(backendType database.BackendType, dataDir string, dataPlaneFS vfs.FS) (storage.Storage, *pebble.DB, error) {
 	switch backendType {
 	case database.BackendMemory:
 		return memory.NewStorage(), nil, nil
@@ -412,7 +524,11 @@ func createServerStorage(backendType database.BackendType, dataDir string) (stor
 
 	case database.BackendPebble:
 		pebbleDir := filepath.Join(dataDir, "pebble")
-		stg, err := pebbleStorage.New(pebbleStorage.DefaultConfig(pebbleDir))
+		cfg := pebbleStorage.DefaultConfig(pebbleDir)
+		if dataPlaneFS != nil {
+			cfg.FS = dataPlaneFS
+		}
+		stg, err := pebbleStorage.New(cfg)
 		if err != nil {
 			return nil, nil, &StorageCreateError{Backend: backendType, Err: err}
 		}
@@ -452,12 +568,25 @@ func createServerEngine(backendType database.BackendType, stg storage.Storage, p
 	return eng, nil
 }
 
-// createBarrier sets up the encryption barrier with the configured strategy.
-func (s *Server) createBarrier(config *ServerConfig, logger *slog.Logger) (service.BarrierServicer, error) {
+// setupBarrier opens the seal sub-store, builds the seal barrier with
+// the configured strategy chain, writes / validates the format-version
+// sentinel, and (when AutoUnseal is requested) initializes or unseals
+// the barrier so the data-plane PebbleDB can be opened behind the
+// encrypting FS. The returned vfs.FS is non-nil only when the disk
+// backend is selected and the barrier ended in the unsealed state.
+//
+// On error the seal sub-store is closed before returning so the caller
+// does not need to invoke closeSeal.
+func (s *Server) setupBarrier(
+	ctx context.Context,
+	config *ServerConfig,
+	backendType database.BackendType,
+	logger *slog.Logger,
+) (service.BarrierServicer, vfs.FS, error) {
 	sealDir := filepath.Join(config.DataDir, "seal")
 	sealStore, err := pebbleStorage.New(pebbleStorage.DefaultConfig(sealDir))
 	if err != nil {
-		return nil, &BarrierCreateError{Err: err}
+		return nil, nil, &BarrierCreateError{Err: err}
 	}
 	s.sealStore = sealStore
 
@@ -465,16 +594,34 @@ func (s *Server) createBarrier(config *ServerConfig, logger *slog.Logger) (servi
 
 	strategy := config.Barrier.Strategy
 	if strategy == "" {
-		strategy = seal.StrategySoftware
+		strategy = seal.StrategyPassphrase
 	}
 
 	barrierCfg := seal.BarrierConfig{
 		RootKeyPath: "root-key",
 	}
 
+	// Resolve the effective strategy. The canonical options are none /
+	// passphrase (software) / shamir. A passphrase barrier REQUIRES an explicit
+	// passphrase supplied by the admin; when the software/default strategy is
+	// selected with no passphrase, the embedded transport runs WITHOUT a barrier
+	// (none) — there is no deployment-derived passphrase. The passphrase, when
+	// present, is supplied to the deferred software strategy at init/unseal and
+	// run through the KDF.
+	effStrategy := strategy
+	var softwareSecret []byte
+	if effStrategy == seal.StrategyPassphrase || effStrategy == "" {
+		if len(config.Barrier.Passphrase) > 0 {
+			effStrategy = seal.StrategyPassphrase
+			softwareSecret = config.Barrier.Passphrase
+		} else {
+			effStrategy = seal.StrategyNone
+		}
+	}
+
 	var strategies []seal.SealingStrategy
 
-	switch strategy {
+	switch effStrategy {
 	case seal.StrategyShamir:
 		barrierCfg.Shamir = &seal.ShamirConfig{
 			Threshold:   config.Barrier.Shamir.Threshold,
@@ -482,52 +629,157 @@ func (s *Server) createBarrier(config *ServerConfig, logger *slog.Logger) (servi
 		}
 
 		shamirStrat, err := seal.NewShamirStrategy(
-			sealBackend,
 			config.Barrier.Shamir.Threshold,
 			config.Barrier.Shamir.Total,
 		)
 		if err != nil {
 			_ = sealStore.Close()
 			s.sealStore = nil
-			return nil, &BarrierCreateError{Err: err}
+			return nil, nil, &BarrierCreateError{Err: err}
 		}
 		strategies = append(strategies, shamirStrat)
 
+	case seal.StrategyNone:
+		strategies = append(strategies, seal.NewNoneStrategy())
+
 	default:
-		// StrategySoftware (and any future passphrase-based strategies).
-		// Use a deterministic bootstrap passphrase derived from a fixed
-		// prefix. The caller must invoke BarrierInitialize via the SDK
-		// with this passphrase to complete initialization.
-		bootstrapPass := deriveBootstrapPassphrase(0)
-		softStrat, err := seal.NewSoftwareStrategy(bootstrapPass)
-		if err != nil {
-			_ = sealStore.Close()
-			s.sealStore = nil
-			return nil, &BarrierCreateError{Err: err}
-		}
-		strategies = append(strategies, softStrat)
+		// Passphrase strategy (deferred software): the passphrase is supplied to
+		// the barrier at init/unseal time and run through the KDF.
+		strategies = append(strategies, seal.NewDeferredSoftwareStrategy())
 	}
 
 	barrier, err := seal.NewStorageBarrier(logger, sealBackend, barrierCfg, strategies...)
 	if err != nil {
 		_ = sealStore.Close()
 		s.sealStore = nil
-		return nil, &BarrierCreateError{Err: err}
+		return nil, nil, &BarrierCreateError{Err: err}
 	}
 	s.barrier = barrier
 
-	return service.NewBarrierService(barrier), nil
+	// Format-version sentinel guards against running this build against
+	// a data dir produced by a pre-encfs version that wrote plaintext
+	// sstables. Writes the current version on a genuinely empty seal
+	// sub-store, validates it on subsequent boots, and rejects
+	// non-empty stores that lack the sentinel.
+	sentinelKeys, listErr := sealBackend.List(ctx, "")
+	if listErr != nil {
+		_ = sealStore.Close()
+		s.sealStore = nil
+		s.barrier = nil
+		return nil, nil, &SealSentinelError{Err: listErr}
+	}
+	if sentinelErr := seal.EnsureFormatSentinel(ctx, sealBackend, len(sentinelKeys) == 0); sentinelErr != nil {
+		_ = sealStore.Close()
+		s.sealStore = nil
+		s.barrier = nil
+		return nil, nil, &SealSentinelError{Err: sentinelErr}
+	}
+
+	// Auto-unseal so the data-plane PebbleDB can be opened with the
+	// encrypting FS. Skipping this step is only valid when the data
+	// backend does not depend on the barrier being unsealed (memory,
+	// file). For the disk-backed pebble backend with a barrier, an
+	// unsealed state is required and a sealed barrier surfaces
+	// BarrierSealedError to the caller.
+	if config.Barrier.AutoUnseal {
+		if err := s.runAutoUnseal(ctx, barrier, effStrategy, config.Barrier, softwareSecret); err != nil {
+			_ = sealStore.Close()
+			s.sealStore = nil
+			s.barrier = nil
+			return nil, nil, err
+		}
+	}
+
+	// Build the data-plane FS only when the pebble backend is in use
+	// and the barrier reached the unsealed state. For memory / file
+	// backends the wrap is a no-op; we return nil so the storage
+	// constructor takes the default path.
+	var dataPlaneFS vfs.FS
+	if backendType == database.BackendPebble {
+		if barrier.IsSealed() {
+			_ = sealStore.Close()
+			s.sealStore = nil
+			s.barrier = nil
+			return nil, nil, &BarrierSealedError{Err: seal.ErrSealed}
+		}
+		dataPlaneFS = encfs.New(vfs.Default, barrier)
+		if dataPlaneFS == nil {
+			// encfs.New returns nil when the barrier is nil, which can
+			// only happen here on a programming error; surface it as
+			// a typed barrier-create failure rather than panicking on
+			// a downstream nil FS.
+			_ = sealStore.Close()
+			s.sealStore = nil
+			s.barrier = nil
+			return nil, nil, &BarrierCreateError{Err: errors.New("encfs.New returned nil")}
+		}
+	}
+
+	return service.NewBarrierService(barrier), dataPlaneFS, nil
 }
 
-// deriveBootstrapPassphrase creates a deterministic passphrase from a
-// deployment ID. This matches the pattern used by cmd/qrdbd/start.go.
-func deriveBootstrapPassphrase(deploymentID uint64) []byte {
-	buf := make([]byte, 8)
-	binary.BigEndian.PutUint64(buf, deploymentID)
-	passphrase := make([]byte, 0, 32)
-	passphrase = append(passphrase, []byte("qrdb-seal-bootstrap:")...)
-	passphrase = append(passphrase, buf...)
-	return passphrase
+// runAutoUnseal initializes (on a fresh seal sub-store) or unseals (on
+// an existing one) the barrier using the configured credentials. The
+// software strategy uses the shared softwareSecret; the Shamir strategy
+// reconstructs from the configured share set.
+func (s *Server) runAutoUnseal(
+	ctx context.Context,
+	barrier *seal.StorageBarrier,
+	strategy seal.StrategyID,
+	cfg *BarrierConfig,
+	softwareSecret []byte,
+) error {
+	switch strategy {
+	case seal.StrategyShamir:
+		if len(cfg.ShamirShares) == 0 {
+			return &BarrierUnsealError{Err: errors.New("auto-unseal requires Barrier.ShamirShares for shamir strategy")}
+		}
+		// Shamir initialization requires a seed secret on a fresh
+		// barrier. Try Unseal first; on ErrNotInitialized fall back
+		// to InitializeShamir + UnsealWithShares.
+		err := barrier.Unseal(ctx, seal.Credentials{})
+		if err == nil {
+			// The barrier was already unsealed; nothing more to do.
+			return nil
+		}
+		if errors.Is(err, seal.ErrAlreadyUnsealed) {
+			return nil
+		}
+		if !errors.Is(err, seal.ErrNotInitialized) {
+			// Either ErrInvalidCredentials, missing strategy, or a
+			// real error — let it bubble up.
+			return &BarrierUnsealError{Err: err}
+		}
+		// Fresh barrier: initialize Shamir, then unseal with the
+		// supplied shares. The seed credential is the bootstrap
+		// passphrase to keep parity with the embedded software path.
+		if _, initErr := barrier.InitializeShamir(ctx, seal.Credentials{Secret: string(softwareSecret)}); initErr != nil {
+			return &BarrierUnsealError{Err: initErr}
+		}
+		if unsealErr := barrier.UnsealWithShares(ctx, cfg.ShamirShares); unsealErr != nil {
+			return &BarrierUnsealError{Err: unsealErr}
+		}
+		return nil
+
+	default:
+		// StrategyPassphrase (or zero value).
+		creds := seal.Credentials{Secret: string(softwareSecret)}
+		// Initialize on the very first boot; subsequent boots Unseal.
+		err := barrier.Initialize(ctx, creds)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, seal.ErrAlreadyInitialized) {
+			return &BarrierUnsealError{Err: err}
+		}
+		if unsealErr := barrier.Unseal(ctx, creds); unsealErr != nil {
+			if errors.Is(unsealErr, seal.ErrAlreadyUnsealed) {
+				return nil
+			}
+			return &BarrierUnsealError{Err: unsealErr}
+		}
+		return nil
+	}
 }
 
 // closeStorage closes the main storage backend.
@@ -544,6 +796,19 @@ func (s *Server) closeBackend() {
 	if s.localBackend != nil {
 		_ = s.localBackend.Close()
 		s.localBackend = nil
+	}
+}
+
+// closeSeal releases the seal sub-store and clears the barrier
+// reference. Used by NewServer error paths after the barrier has been
+// constructed but before the data-plane storage is up.
+func (s *Server) closeSeal() {
+	if s.barrier != nil {
+		s.barrier = nil
+	}
+	if s.sealStore != nil {
+		_ = s.sealStore.Close()
+		s.sealStore = nil
 	}
 }
 

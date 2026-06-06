@@ -11,6 +11,8 @@ package seal
 import (
 	"errors"
 	"fmt"
+
+	quicraftseal "github.com/jeremyhahn/go-quicraft/pkg/seal"
 )
 
 var (
@@ -37,6 +39,11 @@ var (
 	// reports itself as available.
 	ErrNoAvailableStrategy = errors.New("qrdb/seal: no available sealing strategy")
 
+	// ErrNoStrategySpecified is returned when strategy selection is attempted
+	// but no PreferenceOrder was configured. There is no implicit default —
+	// the caller must explicitly specify which strategy to use.
+	ErrNoStrategySpecified = errors.New("qrdb/seal: no sealing strategy specified (explicit selection required)")
+
 	// ErrStrategyNotFound is returned when a requested strategy ID is not
 	// registered with the barrier.
 	ErrStrategyNotFound = errors.New("qrdb/seal: requested strategy not registered")
@@ -51,7 +58,7 @@ var (
 
 	// ErrNilSealedData is returned when a nil SealedData pointer is passed
 	// to an unseal operation.
-	ErrNilSealedData = errors.New("qrdb/seal: sealed data is nil")
+	ErrNilSealedData = quicraftseal.ErrNilSealedData
 
 	// ErrEncryptorNotAvailable is returned when the barrier's encryptor
 	// is not available (barrier not unsealed or encryptor not initialized).
@@ -65,9 +72,18 @@ var (
 	// on a barrier that does not have Shamir secret sharing configured.
 	ErrShamirNotConfigured = errors.New("qrdb/seal: shamir not configured")
 
+	// ErrShamirUnsealRequiresQuorum is returned by the Shamir strategy's
+	// credential-style UnsealRootKey. Shamir shares are NEVER persisted
+	// server-side: they are returned to the Security Officers once at
+	// init/rekey and held only in memory during the unseal quorum. A Shamir
+	// barrier must therefore be unsealed via the share quorum
+	// (UnsealWithShare), not the sealing strategy; there is no disk
+	// auto-unseal path.
+	ErrShamirUnsealRequiresQuorum = errors.New("qrdb/seal: shamir barrier must be unsealed via the share quorum (UnsealWithShare), not the sealing strategy")
+
 	// ErrShamirThresholdInvalid is returned when the Shamir threshold is less
 	// than 2 or greater than the total number of shares.
-	ErrShamirThresholdInvalid = errors.New("qrdb/seal: shamir threshold must be >= 2 and <= total shares")
+	ErrShamirThresholdInvalid = quicraftseal.ErrShamirThresholdInvalid
 
 	// ErrShamirDuplicateShare is returned when a share that has already been
 	// submitted is submitted again to the quorum accumulator.
@@ -79,40 +95,40 @@ var (
 
 	// ErrShamirQuorumIncomplete is returned when not enough shares have been
 	// provided to meet the reconstruction threshold.
-	ErrShamirQuorumIncomplete = errors.New("qrdb/seal: quorum not yet complete, need more shares")
+	ErrShamirQuorumIncomplete = quicraftseal.ErrShamirQuorumIncomplete
 
 	// ErrShamirNoQuorum is returned when no active quorum accumulator exists.
 	ErrShamirNoQuorum = errors.New("qrdb/seal: no active quorum")
 
 	// ErrShamirCombineFailed is returned when the Shamir combine operation
 	// fails to reconstruct the secret from the provided shares.
-	ErrShamirCombineFailed = errors.New("qrdb/seal: failed to combine shares")
+	ErrShamirCombineFailed = quicraftseal.ErrShamirCombineFailed
 
 	// ErrShamirShareNotFound is returned when a requested Shamir share does
 	// not exist in storage.
-	ErrShamirShareNotFound = errors.New("qrdb/seal: shamir share not found")
+	ErrShamirShareNotFound = quicraftseal.ErrShamirShareNotFound
 
 	// ErrShamirVerificationFailed is returned when share verification detects
 	// inconsistent or corrupted shares.
-	ErrShamirVerificationFailed = errors.New("qrdb/seal: shamir share verification failed")
+	ErrShamirVerificationFailed = quicraftseal.ErrShamirVerificationFailed
 
 	// ErrShamirNoSharesFound is returned when no shares exist in storage.
-	ErrShamirNoSharesFound = errors.New("qrdb/seal: no shamir shares found")
+	ErrShamirNoSharesFound = quicraftseal.ErrShamirNoSharesFound
 
 	// ErrShamirStorageFailed is returned when a share storage operation fails.
-	ErrShamirStorageFailed = errors.New("qrdb/seal: shamir storage operation failed")
+	ErrShamirStorageFailed = quicraftseal.ErrShamirStorageFailed
 
 	// ErrShamirNilStorage is returned when a nil storage backend is provided
 	// to the Shamir strategy constructor.
-	ErrShamirNilStorage = errors.New("qrdb/seal: shamir storage backend must not be nil")
+	ErrShamirNilStorage = quicraftseal.ErrShamirNilStorage
 
 	// ErrShamirSplitFailed is returned when the Shamir secret splitting
 	// operation fails.
-	ErrShamirSplitFailed = errors.New("qrdb/seal: shamir split failed")
+	ErrShamirSplitFailed = quicraftseal.ErrShamirSplitFailed
 
 	// ErrShamirSerializationFailed is returned when JSON serialization or
 	// deserialization of a Shamir share fails.
-	ErrShamirSerializationFailed = errors.New("qrdb/seal: shamir serialization failed")
+	ErrShamirSerializationFailed = quicraftseal.ErrShamirSerializationFailed
 
 	// ErrNilSealedBackend is returned when a nil sealed backend is provided.
 	ErrNilSealedBackend = errors.New("qrdb/seal: sealed backend must not be nil")
@@ -174,6 +190,10 @@ var (
 	// provided to the tenant barrier constructor.
 	ErrNilStorageBackend = errors.New("qrdb/seal: storage backend must not be nil")
 
+	// ErrNilTenantBarrier is returned when a nil tenant barrier is provided
+	// to NewTenantBarrierKVStore.
+	ErrNilTenantBarrier = errors.New("qrdb/seal: tenant barrier must not be nil")
+
 	// ErrInvalidPassphrase is returned when an empty password is provided
 	// to ChangePassword.
 	ErrInvalidPassphrase = errors.New("qrdb/seal: passphrase must not be empty")
@@ -185,6 +205,25 @@ var (
 	// ErrSealStoreBarrierSealed is returned when a seal store operation
 	// is attempted while the underlying barrier is sealed.
 	ErrSealStoreBarrierSealed = errors.New("qrdb/seal: sealstore barrier is sealed")
+
+	// ErrPoolNotConfigured is returned by RegisterTenant when called
+	// with a nil StorageBackend on a registry that has no volume pool
+	// attached. Callers must either supply a backend explicitly or
+	// configure the registry with WithVolumePool.
+	ErrPoolNotConfigured = errors.New("qrdb/seal: volume pool not configured on barrier registry")
+
+	// ErrPoolBackendNotLocal is returned by RegisterTenant when the
+	// volume pool returns a backend that does not satisfy the
+	// common.PathAccessor interface. Per-tenant Pebble instances must
+	// run on a real local filesystem path; cloud backends are rejected
+	// here (or earlier by the LocalOnly wrapper).
+	ErrPoolBackendNotLocal = errors.New("qrdb/seal: volume pool returned a non-local backend")
+
+	// ErrPerTenantRegistryNotConfigured is returned by RegisterTenant
+	// when called with a nil StorageBackend on a registry that has a
+	// volume pool but no PerTenantRegistry attached. Both must be
+	// configured for the pooled-tenant flow to work.
+	ErrPerTenantRegistryNotConfigured = errors.New("qrdb/seal: per-tenant pebble registry not configured")
 )
 
 // GetError is returned when a barrier Get operation fails during decryption.

@@ -16,7 +16,6 @@ package mcp
 
 import (
 	"context"
-	"strconv"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
@@ -97,7 +96,7 @@ func handleEmbedText(svc service.EmbeddingServicer) mcpserver.ToolHandlerFunc {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 
-		return mcp.NewToolResultText(formatEmbedResponse(resp.Embeddings, resp.Model, resp.Cached)), nil
+		return marshalToolResult("qrdb_embed_text", resp)
 	}
 }
 
@@ -161,7 +160,7 @@ func handleBatchEmbed(svc service.EmbeddingServicer) mcpserver.ToolHandlerFunc {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 
-		return mcp.NewToolResultText(formatEmbedResponse(resp.Embeddings, resp.Model, false)), nil
+		return marshalToolResult("qrdb_batch_embed", resp)
 	}
 }
 
@@ -192,44 +191,6 @@ func handleListEmbeddingModels(svc service.EmbeddingServicer) mcpserver.ToolHand
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 
-		if len(resp.Models) == 0 {
-			return mcp.NewToolResultText("no models available"), nil
-		}
-
-		result := "Available embedding models:\n"
-		for _, m := range resp.Models {
-			result += "  - " + m.Name
-			if m.Dimensions > 0 {
-				result += " (dimensions: " + strconv.Itoa(m.Dimensions) + ")"
-			}
-			if m.MaxTokens > 0 {
-				result += " (max_tokens: " + strconv.Itoa(m.MaxTokens) + ")"
-			}
-			result += "\n"
-		}
-		return mcp.NewToolResultText(result), nil
+		return marshalToolResult("qrdb_list_embedding_models", resp)
 	}
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-// formatEmbedResponse formats an embedding response as a human-readable
-// summary suitable for MCP tool output.
-func formatEmbedResponse(embeddings [][]float32, model string, cached bool) string {
-	count := len(embeddings)
-	dim := 0
-	if count > 0 {
-		dim = len(embeddings[0])
-	}
-
-	result := "Embeddings generated:\n"
-	result += "  model:  " + model + "\n"
-	result += "  count:  " + strconv.Itoa(count) + "\n"
-	result += "  dims:   " + strconv.Itoa(dim) + "\n"
-	if cached {
-		result += "  cached: true\n"
-	}
-	return result
 }

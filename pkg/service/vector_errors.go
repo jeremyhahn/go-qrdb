@@ -73,3 +73,29 @@ type InvalidVectorError struct {
 func (e *InvalidVectorError) Error() string {
 	return "service: invalid vector: " + e.Reason
 }
+
+// TenantRequiredError is returned when strict tenant isolation is enabled and
+// an operation is attempted without a tenant ID in the request context.
+type TenantRequiredError struct {
+	// Op is the service operation that was rejected.
+	Op string
+}
+
+// Error returns a human-readable description of the missing tenant.
+func (e *TenantRequiredError) Error() string {
+	return "service: tenant required for " + e.Op + ": strict tenant isolation is enabled"
+}
+
+// InvalidNamespaceNameError is returned when a namespace name is empty, exceeds
+// the maximum length, or contains a control character or the \x1f separator byte
+// used to partition scoped storage keys.
+type InvalidNamespaceNameError struct {
+	// Name is the invalid namespace name that was rejected.
+	Name   string
+	Reason string
+}
+
+// Error returns a human-readable description of the invalid namespace name.
+func (e *InvalidNamespaceNameError) Error() string {
+	return "service: invalid namespace name " + strconv.Quote(e.Name) + ": " + e.Reason
+}

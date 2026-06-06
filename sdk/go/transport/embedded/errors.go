@@ -54,6 +54,17 @@ func (e *InvalidRequestError) Error() string {
 	return "embedded: invalid request type for method: " + e.Method
 }
 
+// NilRequestError is returned when a typed request pointer required by an
+// embedded transport method is nil.
+type NilRequestError struct {
+	Method string
+}
+
+// Error returns a human-readable description.
+func (e *NilRequestError) Error() string {
+	return "embedded: " + e.Method + " request must not be nil"
+}
+
 // translateError converts service-layer errors to transport-layer errors
 // so callers can use errors.As with transport.KeyNotFoundError,
 // transport.NotLeaderError, etc.

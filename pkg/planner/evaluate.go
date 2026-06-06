@@ -36,7 +36,7 @@ type EntityEvaluator struct {
 // Returns FieldNotFoundError if entityType is not a struct or pointer-to-struct.
 func NewEntityEvaluator(entityType reflect.Type) (*EntityEvaluator, error) {
 	// Unwrap a single level of pointer.
-	if entityType.Kind() == reflect.Ptr {
+	if entityType.Kind() == reflect.Pointer {
 		entityType = entityType.Elem()
 	}
 	if entityType.Kind() != reflect.Struct {
@@ -67,7 +67,7 @@ func (e *EntityEvaluator) Matches(entity interface{}, predicates []Predicate) bo
 	}
 
 	v := reflect.ValueOf(entity)
-	if v.Kind() == reflect.Ptr {
+	if v.Kind() == reflect.Pointer {
 		if v.IsNil() {
 			return false
 		}

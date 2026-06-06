@@ -16,6 +16,7 @@ package main
 
 import (
 	"context"
+	"crypto/fips140"
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/binary"
@@ -33,15 +34,22 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
+	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
-	"github.com/jeremyhahn/go-qrdb/pkg/codec"
+	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
+	"github.com/jeremyhahn/go-qrdb/pkg/bootstrap"
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
+	"github.com/jeremyhahn/go-qrdb/pkg/custodian"
+	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/dek"
+	"github.com/jeremyhahn/go-qrdb/pkg/discovery"
+	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/logger"
 	"github.com/jeremyhahn/go-qrdb/pkg/mvccadapter"
@@ -58,10 +66,10 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
+	sdkgo "github.com/jeremyhahn/go-qrdb/sdk/go"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
-	"github.com/jeremyhahn/go-quicraft/pkg/bootstrap"
 	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
-	"github.com/jeremyhahn/go-quicraft/pkg/discovery"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/spf13/cobra"
 )
@@ -79,49 +87,61 @@ type startFlags struct {
 	peers           []string
 	// shardID is deprecated. System services always use shard.ShardKV (1).
 	// Kept for backward compatibility with existing YAML configs and CLI scripts.
-	shardID              uint64
-	replicaID            uint64
-	multicastSecret      string
-	dnsDomain            string
-	adminPort            int
-	grpcPort             int
-	maxInMemLogSize      uint64
-	maxTotalInMemLogSize uint64
-	snapshotEntries      uint64
-	compactionOverhead   uint64
-	join                 bool
-	logFormat            string
-	logLevel             string
-	debugRaft            bool
-	enableREST           bool
-	enableGRPC           bool
-	enableQUIC           bool
-	quicPort             int
-	enableUnix           bool
-	unixSocketPath       string
-	enableMCP            bool
-	mcpPort              int
-	mcpEndpoint          string
-	enableMySQL          bool
-	mysqlPort            int
-	enablePgSQL          bool
-	pgsqlPort            int
-	authEnabled          bool
-	sqlDatabase          string
-	tlsCAFile            string
-	tlsCertFile          string
-	tlsKeyFile           string
-	tlsClientAuth        string
-	bootstrapNoiseKey    string
-	bootstrapNoiseAddr   string
-	bootstrapNoisePort   int
-	bootstrapSPKIPin     string
-	bootstrapDANEDNS     string
-	bootstrapDANEDoT     bool
-	bootstrapDirectURL   string
-	bootstrapAddr        string
-	leaseRead            bool
-	checkQuorum          bool
+	shardID               uint64
+	replicaID             uint64
+	multicastSecret       string
+	multicastGroup        string
+	dnsDomain             string
+	dnsService            string
+	dnsProto              string
+	discoveryEndpoint     string
+	discoveryToken        string
+	discoveryClusterSize  int
+	discoveryInsecure     bool
+	clusterMinPeers       int
+	dynamicMembership     bool
+	adminPort             int
+	grpcPort              int
+	maxInMemLogSize       uint64
+	maxTotalInMemLogSize  uint64
+	snapshotEntries       uint64
+	compactionOverhead    uint64
+	join                  bool
+	logFormat             string
+	logLevel              string
+	debugRaft             bool
+	enableREST            bool
+	enableGRPC            bool
+	enableQUIC            bool
+	quicPort              int
+	enableUnix            bool
+	unixSocketPath        string
+	enableMCP             bool
+	mcpPort               int
+	mcpEndpoint           string
+	enableMySQL           bool
+	mysqlPort             int
+	enablePgSQL           bool
+	pgsqlPort             int
+	authEnabled           bool
+	separationOfDuties    bool
+	spiffeTrustDomain     string
+	strictTenantIsolation bool
+	sqlDatabase           string
+	tlsCAFile             string
+	tlsCertFile           string
+	tlsKeyFile            string
+	tlsClientAuth         string
+	bootstrapNoiseKey     string
+	bootstrapNoiseAddr    string
+	bootstrapNoisePort    int
+	bootstrapSPKIPin      string
+	bootstrapDANEDNS      string
+	bootstrapDANEDoT      bool
+	bootstrapDirectURL    string
+	bootstrapAddr         string
+	leaseRead             bool
+	checkQuorum           bool
 
 	// databases holds the database configurations loaded from the YAML
 	// config file. When no config file is provided, this defaults to a
@@ -135,6 +155,21 @@ type startFlags struct {
 	// sealConfig holds the seal barrier configuration loaded from YAML.
 	// When no config file is provided, defaults from DefaultConfig are used.
 	sealConfig qrdbconfig.SealConfig
+
+	// storageConfig holds the storage subsystem configuration loaded
+	// from YAML — including volume pools that barrier-mode tenants
+	// draw from when allocating a per-tenant Pebble. When no config
+	// file is provided, the empty default applies (no pools).
+	storageConfig qrdbconfig.StorageConfig
+
+	// embeddingConfig holds the embedding provider configuration loaded from
+	// YAML. When no config file is provided, the empty default applies (no
+	// providers, embedding disabled).
+	embeddingConfig qrdbconfig.EmbeddingConfig
+
+	// ragConfig holds the RAG pipeline configuration loaded from YAML.
+	// When no config file is provided, defaults from DefaultConfig are used.
+	ragConfig qrdbconfig.RAGConfig
 
 	// createFn is an optional pre-built state machine factory. When set,
 	// initializeNode uses it instead of resolving from the SM registry.
@@ -242,29 +277,27 @@ func defaultMVCCFastLogger() *logger.Logger {
 	return log
 }
 
-// defaultVectorLogger creates a minimal logger for the vector service.
-// Production deployments should provide a properly configured logger.
-func defaultVectorLogger() *logger.Logger {
-	log, err := logger.New(logger.LogConfig{
-		Level:  "warn",
-		Format: "json",
-		Output: "stderr",
-	})
-	if err != nil {
-		panic("qrdbd: failed to create default vector logger: " + err.Error())
+// clusterOptions translates the parsed start flags into the transport-neutral
+// cluster.Options consumed by the discovery engine and bootstrap
+// orchestration in pkg/cluster.
+func (f *startFlags) clusterOptions() cluster.Options {
+	return cluster.Options{
+		Method:                 f.discoveryMethod,
+		NodeID:                 f.replicaID,
+		RaftAddress:            f.raftAddress,
+		MinPeers:               f.clusterMinPeers,
+		Peers:                  f.peers,
+		MulticastSecret:        f.multicastSecret,
+		MulticastGroup:         f.multicastGroup,
+		DeploymentID:           f.deploymentID,
+		DNSDomain:              f.dnsDomain,
+		DNSService:             f.dnsService,
+		DNSProto:               f.dnsProto,
+		TokenEndpoint:          f.discoveryEndpoint,
+		Token:                  f.discoveryToken,
+		TokenClusterSize:       f.discoveryClusterSize,
+		AllowInsecureTokenHTTP: f.discoveryInsecure,
 	}
-	return log
-}
-
-// discoveryBuilder is a function that builds a discovery.Method from the
-// start flags. Each discovery method has its own builder.
-type discoveryBuilder func(f *startFlags) (discovery.Method, error)
-
-// discoveryBuilders maps discovery method names to their builder functions.
-var discoveryBuilders = map[string]discoveryBuilder{
-	"static":    buildStaticDiscovery,
-	"multicast": buildMulticastDiscovery,
-	"dns":       buildDNSDiscovery,
 }
 
 func newStartCmd() *cobra.Command {
@@ -318,12 +351,21 @@ func newStartCmd() *cobra.Command {
 	cmd.Flags().Uint64Var(&f.deploymentID, "deployment-id", 1, "Deployment ID for cluster isolation")
 	cmd.Flags().StringVar(&f.smType, "sm", "pebble", "State machine type: pebble, memory, concurrent")
 	cmd.Flags().StringVar(&f.smBackend, "sm-backend", "", "State machine backend: standard, concurrent, fast, disk, cached-disk")
-	cmd.Flags().StringVar(&f.discoveryMethod, "discovery", "multicast", "Discovery method: multicast, static, dns")
+	cmd.Flags().StringVar(&f.discoveryMethod, "discovery", "static", "Discovery method: static (default, single-node), multicast, dns, token")
 	cmd.Flags().StringSliceVar(&f.peers, "peers", nil, "Static peers, format id=address (e.g., 1=127.0.0.1:63001)")
 	cmd.Flags().Uint64Var(&f.shardID, "shard-id", shard.ShardKV, "Shard ID (deprecated: system services always use the system shard)")
 	cmd.Flags().Uint64Var(&f.replicaID, "replica-id", 1, "Replica ID")
-	cmd.Flags().StringVar(&f.multicastSecret, "multicast-secret", "quicraft", "Shared secret for multicast authentication")
+	cmd.Flags().StringVar(&f.multicastSecret, "multicast-secret", "", "Shared secret (PSK) for multicast authentication; required when --discovery=multicast (no default — the protocol is authenticated-only)")
+	cmd.Flags().StringVar(&f.multicastGroup, "multicast-group", "", "Multicast group address host:port (default 239.255.77.77:63777)")
 	cmd.Flags().StringVar(&f.dnsDomain, "dns-domain", "", "DNS SRV domain for DNS discovery")
+	cmd.Flags().StringVar(&f.dnsService, "dns-service", "_raft", "DNS SRV service label")
+	cmd.Flags().StringVar(&f.dnsProto, "dns-proto", "_udp", "DNS SRV protocol label")
+	cmd.Flags().StringVar(&f.discoveryEndpoint, "discovery-endpoint", "", "Token discovery service URL (token method)")
+	cmd.Flags().StringVar(&f.discoveryToken, "discovery-token", "", "Shared bootstrap token (token method)")
+	cmd.Flags().IntVar(&f.discoveryClusterSize, "discovery-cluster-size", 0, "Expected cluster size for token discovery (0 = min peers)")
+	cmd.Flags().BoolVar(&f.discoveryInsecure, "discovery-insecure-http", false, "Allow http:// token discovery endpoint (dev/testing only)")
+	cmd.Flags().IntVar(&f.clusterMinPeers, "cluster-min-peers", 0, "Minimum cluster size for bootstrap quorum + dynamic-membership removal guard (0 = default 3)")
+	cmd.Flags().BoolVar(&f.dynamicMembership, "dynamic-membership", false, "Enable opt-in lease/watch dynamic Raft membership (off by default)")
 	cmd.Flags().IntVar(&f.adminPort, "admin-port", 63002, "Admin HTTP server port")
 	cmd.Flags().IntVar(&f.grpcPort, "grpc-port", 63003, "gRPC server port")
 	cmd.Flags().Uint64Var(&f.maxInMemLogSize, "max-in-mem-log-size", 0,
@@ -379,7 +421,16 @@ func newStartCmd() *cobra.Command {
 // precedence over YAML values.
 func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Config) {
 	if !cmd.Flags().Changed("listen") {
-		f.listen = cfg.Server.Host + ":" + strconv.Itoa(cfg.Server.AdminPort)
+		// f.listen is the Raft host bind address (HostConfig/RaftConfig
+		// ListenAddress), not the admin HTTP listener. Source it from the Raft
+		// config — the dedicated listen_address when set, else the advertised
+		// raft_address — rather than the admin port, which would bind the Raft
+		// transport to the wrong port.
+		if cfg.Raft.ListenAddress != "" {
+			f.listen = cfg.Raft.ListenAddress
+		} else {
+			f.listen = cfg.Raft.RaftAddress
+		}
 	}
 	if !cmd.Flags().Changed("raft-address") {
 		f.raftAddress = cfg.Raft.RaftAddress
@@ -411,8 +462,35 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 	if !cmd.Flags().Changed("multicast-secret") && cfg.Discovery.MulticastSecret != "" {
 		f.multicastSecret = cfg.Discovery.MulticastSecret
 	}
+	if !cmd.Flags().Changed("multicast-group") && cfg.Discovery.MulticastGroup != "" {
+		f.multicastGroup = cfg.Discovery.MulticastGroup
+	}
 	if !cmd.Flags().Changed("dns-domain") && cfg.Discovery.DNSDomain != "" {
 		f.dnsDomain = cfg.Discovery.DNSDomain
+	}
+	if !cmd.Flags().Changed("dns-service") && cfg.Discovery.DNSService != "" {
+		f.dnsService = cfg.Discovery.DNSService
+	}
+	if !cmd.Flags().Changed("dns-proto") && cfg.Discovery.DNSProto != "" {
+		f.dnsProto = cfg.Discovery.DNSProto
+	}
+	if !cmd.Flags().Changed("discovery-endpoint") && cfg.Discovery.TokenEndpoint != "" {
+		f.discoveryEndpoint = cfg.Discovery.TokenEndpoint
+	}
+	if !cmd.Flags().Changed("discovery-token") && cfg.Discovery.Token != "" {
+		f.discoveryToken = cfg.Discovery.Token
+	}
+	if !cmd.Flags().Changed("discovery-cluster-size") && cfg.Discovery.TokenClusterSize != 0 {
+		f.discoveryClusterSize = cfg.Discovery.TokenClusterSize
+	}
+	if !cmd.Flags().Changed("discovery-insecure-http") && cfg.Discovery.AllowInsecureTokenHTTP {
+		f.discoveryInsecure = cfg.Discovery.AllowInsecureTokenHTTP
+	}
+	if !cmd.Flags().Changed("cluster-min-peers") && cfg.Discovery.MinPeers != 0 {
+		f.clusterMinPeers = cfg.Discovery.MinPeers
+	}
+	if !cmd.Flags().Changed("dynamic-membership") && cfg.Discovery.DynamicMembership {
+		f.dynamicMembership = cfg.Discovery.DynamicMembership
 	}
 	if !cmd.Flags().Changed("admin-port") {
 		f.adminPort = cfg.Server.AdminPort
@@ -471,6 +549,13 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 	if !cmd.Flags().Changed("auth-enabled") {
 		f.authEnabled = cfg.Auth.Enabled
 	}
+	// RBAC posture: config can only raise strictness; a FIPS 140-3 build
+	// (crypto/fips140.Enabled()) is always strict regardless of config.
+	f.separationOfDuties = cfg.Auth.SeparationOfDuties
+	f.spiffeTrustDomain = cfg.Auth.SPIFFETrustDomain
+	// Tenant isolation posture mirrors RBAC: config can raise strictness;
+	// FIPS-140 always enforces it.
+	f.strictTenantIsolation = cfg.Tenant.StrictIsolation
 	if !cmd.Flags().Changed("enable-mysql") {
 		f.enableMySQL = cfg.Protocols.MySQL
 	}
@@ -540,6 +625,16 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 
 	// Seal config is always inherited from YAML (no CLI flag equivalent).
 	f.sealConfig = cfg.Seal
+
+	// Storage config (including volume_pools) is always inherited from
+	// YAML — there is no CLI flag equivalent for the multi-path pool
+	// definitions that barrier-mode tenants depend on.
+	f.storageConfig = cfg.Storage
+
+	// Embedding and RAG configs are always inherited from YAML — there are
+	// no CLI flag equivalents for the provider registry or chunking parameters.
+	f.embeddingConfig = cfg.Embedding
+	f.ragConfig = cfg.RAG
 }
 
 // resolveAutoConfig auto-generates replica-id, port, and data-dir for
@@ -673,6 +768,22 @@ func runStart(f *startFlags) error {
 		}
 	}
 
+	// Generate the admin client certificate immediately after TLS is
+	// resolved, before any seal/barrier boot phase. Only possible when the
+	// CA private key is available (auto-generated single-node TLS) and auth
+	// is enabled; with external TLS the operator supplies their own client
+	// certs (CAKeyPEM empty -> skipped). This MUST happen before the pre-host
+	// sealed-window listener blocks on unseal: on first boot the barrier is
+	// uninitialized and stays sealed until an operator drives
+	// POST /v1/barrier/initialize, and that operator needs the admin client
+	// cert to authenticate. Deferring cert generation until after unseal
+	// would deadlock that bootstrap.
+	if f.authEnabled && len(bundle.CAKeyPEM) > 0 {
+		if err := generateAdminClientCert(bundle, f.dataDir, "admin", tenant.SystemTenantID); err != nil {
+			return err
+		}
+	}
+
 	// Create subsystems that must be shared between the state machine
 	// and the service layer. The Lessor handles lease lifecycle inside
 	// the SM, the WatchHub delivers change events to watchers, and
@@ -753,34 +864,110 @@ func runStart(f *startFlags) error {
 		}
 	}
 
+	// Register the signal handler before any blocking initialization
+	// (seal subsystem build, optional pre-host unseal wait, host
+	// construction) so that SIGINT/SIGTERM during these phases triggers
+	// a clean cancellation rather than an abrupt process exit.
+	sigCtx, sigStop := signal.NotifyContext(
+		context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer sigStop()
+
+	// Build the seal subsystem BEFORE the state machine factory and
+	// before host construction. The data-plane Pebble instance is opened
+	// on top of seal/encfs which requires the barrier to be unsealed;
+	// we therefore (1) build the barrier+credential+registry up front,
+	// (2) thread store.WithEncryptingFS into the SM factory, and (3)
+	// run a pre-host sealed-window listener that holds the boot until
+	// the operator drives unseal via the public API.
+	var sealSub *sealSubsystem
+	if f.sealConfig.Enabled {
+		var subErr error
+		sealSub, subErr = initSealSubsystem(f, sigCtx)
+		if subErr != nil {
+			return subErr
+		}
+		defer func() { _ = sealSub.Close() }()
+	}
+
+	// Build the volume-pool subsystem when the YAML config declares
+	// pools. Barrier-mode tenants registered via RegisterTenant(ctx,
+	// id, nil, ...) draw their per-tenant Pebble path from this pool.
+	// When no pools are configured the subsystem is nil and the seal
+	// registry rejects pooled RegisterTenant calls with
+	// ErrPoolNotConfigured — keyspace-mode tenants are unaffected.
+	volumePool, err := initVolumePoolSubsystem(f.dataDir, f.storageConfig.VolumePools, slog.Default())
+	if err != nil {
+		return err
+	}
+	if volumePool != nil {
+		defer func() { _ = volumePool.Close() }()
+		// Attach the pool resources to the barrier registry built in
+		// initSealSubsystem so RegisterTenant can satisfy nil-backend
+		// calls for barrier-mode tenants. When sealSub is nil (seal
+		// disabled) the pool subsystem still tracks per-tenant Pebble
+		// lifecycle for direct callers that build their own registry.
+		if sealSub != nil && sealSub.BarrierRegistry != nil {
+			sealSub.BarrierRegistry.Attach(
+				seal.WithVolumePool(volumePool.Manager, volumePool.StateStore, volumePool.DefaultPoolName),
+				seal.WithPerTenantRegistry(volumePool.PerTenantRegistry),
+			)
+		}
+	}
+
+	// Build the single at-rest Encryptor for this node. Every Pebble store
+	// opened by the daemon (MVCC state machine, vector storage) routes through
+	// this one instance so the barrier-driven encfs wiring lives in one place.
+	// A nil sealSub produces a no-op Encryptor; plaintext deployments and tests
+	// are unaffected.
+	var sealBarrierForEnc *seal.StorageBarrier
+	if sealSub != nil {
+		sealBarrierForEnc = sealSub.SealBarrier
+	}
+	enc := atrest.New(sealBarrierForEnc)
+
 	// Build a subsystem-aware state machine factory for "mvcc" and
 	// "pebble" SM types. Other types fall back to the registry default.
+	// When the seal subsystem is enabled, store.WithEncryptor wraps every
+	// Pebble file the SM creates (sstables, WAL, manifest, snapshots) with
+	// the barrier-driven encfs via the shared Encryptor above.
+	pebbleOpts := []store.Option{store.WithEncryptor(enc)}
 	switch f.smType {
 	case "mvcc":
-		f.createFn = store.NewMVCCCreateFuncWith(nil,
+		f.createFn = store.NewMVCCCreateFuncWith(pebbleOpts,
 			store.WithLessor(lr),
 			store.WithWatchHub(watchHub),
 			store.WithTimeSeriesEnabled(),
 		)
 	case "pebble":
-		f.createFn = sm.NewDiskCreateFunc(func(_, _ uint64) sm.DiskStateMachine {
-			s := store.NewPebbleStateMachine(nil)
-			s.SetLessor(lr)
-			s.SetWatchHub(watchHub)
-			s.SetTimeSeriesEnabled(true)
-			return s
-		})
+		f.createFn = store.NewPebbleCreateFuncWith(pebbleOpts,
+			func(s *store.PebbleStateMachine) {
+				s.SetLessor(lr)
+				s.SetWatchHub(watchHub)
+				s.SetTimeSeriesEnabled(true)
+			},
+		)
 	}
 
-	// Register the signal handler before node initialization so that
-	// SIGINT/SIGTERM during shard startup (which may block on leader
-	// election) triggers a clean cancellation rather than an abrupt
-	// process exit.
-	sigCtx, sigStop := signal.NotifyContext(
-		context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer sigStop()
+	// Pre-host sealed-window listener. While the barrier is sealed the
+	// data plane cannot start (Pebble.Open would fail with ErrSealed
+	// because every file open is encfs-wrapped). We bring up an
+	// API-only server with the seal services and the sealed-window
+	// probe installed, then poll the barrier until the operator drives
+	// the public unseal API. Once IsSealed flips false we tear the
+	// listener down and let the regular boot continue.
+	if sealSub != nil && sealSub.SealBarrier.IsSealed() {
+		err := awaitUnseal(sigCtx, f, bundle, sealSub)
+		var canceled *awaitUnsealCanceledError
+		if errors.As(err, &canceled) {
+			slog.Info("daemon shutdown during sealed boot")
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
 
-	host, err := initializeNode(f, bundle)
+	host, err := initializeNode(sigCtx, f, bundle)
 	if err != nil {
 		return err
 	}
@@ -798,117 +985,25 @@ func runStart(f *startFlags) error {
 	// Build the service layer.
 	adapter := newHostAdapter(host)
 
-	// Create the codec manager from configuration. When the codec config
-	// has non-empty values, the manager is created and injected into the
-	// KV service for storage encoding and wire transcoding.
-	var kvServiceOpts []service.KVServiceOption
-	if f.codecConfig.StorageCodec != "" && f.codecConfig.WireCodec != "" {
-		codecMgr, err := codec.NewManagerFromConfig(&codec.Config{
-			StorageCodec: f.codecConfig.StorageCodec,
-			WireCodec:    f.codecConfig.WireCodec,
-			UseOptimized: f.codecConfig.UseOptimized,
-		})
-		if err != nil {
-			return err
-		}
-		kvServiceOpts = append(kvServiceOpts, service.WithCodecManager(codecMgr))
-	}
-
 	// Use a bootstrap-specific adapter that reads from the local SM
 	// (StaleRead) instead of going through ReadIndex. This avoids
 	// a startup deadlock where the Raft ReadIndex pipeline is not
 	// yet warmed up after leader election.
-	bootAdapter := &bootstrapHostAdapter{hostAdapter: adapter}
+	bootAdapter := newBootstrapHostAdapter(adapter)
 	bootKVSvc := service.NewKVService(bootAdapter, shard.ShardKV)
 
-	// Build barrier and ceremony services when seal is enabled. The barrier
-	// wraps a dedicated PebbleDB storage backend with transparent AES-GCM
-	// encryption. The credential and ceremony services are layered on top.
+	// The seal subsystem (barrier, credential service, barrier registry)
+	// was constructed earlier, before host initialization, so the data
+	// plane could be opened on top of seal/encfs once the operator drove
+	// unseal. Pull the references out here for use in DEK construction
+	// and the lifecycle service graph.
 	var sealBarrier *seal.StorageBarrier
 	var credCoreSvc *credentials.CredentialService
 	var barrierRegistry *seal.BarrierRegistry
-	if f.sealConfig.Enabled {
-		sealDataDir := filepath.Join(f.dataDir, "seal")
-		if err := os.MkdirAll(sealDataDir, 0o700); err != nil {
-			_ = shutdownNode(host)
-			return &SealStorageError{Err: err}
-		}
-		sealStore, err := pebblestore.New(&pebblestore.Config{DataDir: sealDataDir})
-		if err != nil {
-			_ = shutdownNode(host)
-			return &SealStorageError{Err: err}
-		}
-		defer func() { _ = sealStore.Close() }()
-
-		sealBackend := seal.NewStorageAdapter(sealStore)
-		barrierCfg := seal.BarrierConfig{
-			RootKeyPath:  f.sealConfig.RootKeyPath,
-			DeploymentID: f.deploymentID,
-		}
-
-		var strategies []seal.SealingStrategy
-		switch f.sealConfig.Strategy {
-		case "shamir":
-			shamirStrat, shamirErr := seal.NewShamirStrategy(
-				sealBackend, f.sealConfig.ShamirThreshold, f.sealConfig.ShamirTotal)
-			if shamirErr != nil {
-				_ = shutdownNode(host)
-				return &SealStrategyError{Strategy: "shamir", Err: shamirErr}
-			}
-			strategies = append(strategies, shamirStrat)
-			barrierCfg.Shamir = &seal.ShamirConfig{
-				Threshold:   f.sealConfig.ShamirThreshold,
-				TotalShares: f.sealConfig.ShamirTotal,
-			}
-		default: // "software"
-			// The SoftwareStrategy requires a passphrase at construction
-			// time. Use a bootstrap passphrase derived from the deployment
-			// ID to create the strategy. The actual passphrase for
-			// barrier initialization is provided via the BarrierInitialize
-			// API and must match this bootstrap passphrase.
-			bootstrapPass := deriveBootstrapPassphrase(f.deploymentID)
-			softStrat, softErr := seal.NewSoftwareStrategy(bootstrapPass)
-			if softErr != nil {
-				_ = shutdownNode(host)
-				return &SealStrategyError{Strategy: "software", Err: softErr}
-			}
-			strategies = append(strategies, softStrat)
-		}
-
-		var barrierErr error
-		sealBarrier, barrierErr = seal.NewStorageBarrier(
-			slog.Default(), sealBackend, barrierCfg, strategies...)
-		if barrierErr != nil {
-			_ = shutdownNode(host)
-			return &SealBarrierError{Err: barrierErr}
-		}
-
-		// Build credential service for ceremony support.
-		credStrategy := f.sealConfig.CredentialStrategy
-		if credStrategy == "" {
-			credStrategy = "barrier"
-		}
-		var credErr error
-		credCoreSvc, credErr = credentials.NewCredentialService(
-			&credentials.Config{Strategy: credStrategy}, sealBarrier, slog.Default())
-		if credErr != nil {
-			_ = shutdownNode(host)
-			return &CredentialServiceError{Err: credErr}
-		}
-
-		// Initialize barrier registry for multi-tenant encryption isolation.
-		// The system barrier is the root; tenant barriers are created on demand
-		// when tenants are provisioned via the TenantService API.
-		reg, regErr := seal.NewBarrierRegistry(slog.Default(), sealBarrier)
-		if regErr != nil {
-			_ = shutdownNode(host)
-			return &BarrierRegistryError{Err: regErr}
-		}
-		barrierRegistry = reg
-
-		slog.Info("seal barrier initialized",
-			slog.String("strategy", f.sealConfig.Strategy),
-			slog.String("data_dir", sealDataDir))
+	if sealSub != nil {
+		sealBarrier = sealSub.SealBarrier
+		credCoreSvc = sealSub.CredCoreSvc
+		barrierRegistry = sealSub.BarrierRegistry
 	}
 
 	// Initialize tenant DEK manager for per-tenant data encryption key
@@ -945,18 +1040,36 @@ func runStart(f *startFlags) error {
 
 	// Construct all services via the shared lifecycle package. Seal-gated
 	// services (barrier, ceremony, credential, tenant, cert) are wired when
-	// sealBarrier and barrierRegistry are non-nil.
+	// sealBarrier and barrierRegistry are non-nil. The barrier/credential/
+	// registry instances reused here are the same ones constructed earlier
+	// for the pre-host sealed-window listener; the listener was stopped
+	// before initializeNode, so this BuildServices call is the single
+	// owner of the barrier services for the rest of the daemon's lifetime.
+	// Strict tenant isolation: FIPS-140 always enforces it; operators opt in
+	// via config.Tenant.StrictIsolation (stored in f.strictTenantIsolation by
+	// applyConfigToFlags). Mirrors the strictSoD resolution pattern above.
+	strictTenant := fips140.Enabled() || f.strictTenantIsolation
+	if !strictTenant {
+		slog.Warn("tenant isolation: standard mode active — un-tenanted vector namespace creation is NOT refused; " +
+			"identities with no explicit tenant pool into the 'system' tenant. " +
+			"Set tenant.strict_isolation: true (or build with FIPS-140) to enforce per-tenant isolation.")
+	}
+
 	svcNode, err := lifecycle.BuildServices(sigCtx, lifecycle.Infra{
-		Host:              adapter,
-		WatchHub:          watchHub,
-		DataDir:           f.dataDir,
-		DatabaseManager:   dbManager,
-		KVOptions:         kvServiceOpts,
-		SealBarrier:       sealBarrier,
-		BarrierRegistry:   barrierRegistry,
-		CredentialCoreSvc: credCoreSvc,
-		CeremonyDataDir:   filepath.Join(f.dataDir, "seal"),
-		Logger:            slog.Default(),
+		Host:                  adapter,
+		WatchHub:              watchHub,
+		DataDir:               f.dataDir,
+		DatabaseManager:       dbManager,
+		KVOptions:             nil,
+		SealBarrier:           sealBarrier,
+		BarrierRegistry:       barrierRegistry,
+		CredentialCoreSvc:     credCoreSvc,
+		CeremonyDataDir:       filepath.Join(f.dataDir, "seal"),
+		Logger:                slog.Default(),
+		EmbeddingConfig:       f.embeddingConfig,
+		RAGConfig:             f.ragConfig,
+		StrictTenantIsolation: strictTenant,
+		Encryptor:             enc,
 	})
 	if err != nil {
 		_ = shutdownNode(host)
@@ -1000,7 +1113,36 @@ func runStart(f *startFlags) error {
 	//     ReadIndex is not yet warmed up.
 	//   - authKVSvc (SyncRead, no codec) for runtime store operations,
 	//     ensuring linearizable reads for user/role CRUD.
-	mgmtResult, err := bootstrapUserRoleStores(sigCtx, bootKVSvc, authKVSvc, host, shard.ShardKV)
+	//
+	// Resolve the RBAC posture once: a FIPS 140-3 build forces strict
+	// separation of duties; otherwise the config flag selects it. The
+	// value flows into both the first-boot role provisioning and the RBAC
+	// authorizer so seeding and enforcement agree.
+	strictSoD := fips140.Enabled() || f.separationOfDuties
+	slog.Info("RBAC posture resolved",
+		slog.Bool("separation_of_duties", strictSoD),
+		slog.Bool("fips140", fips140.Enabled()),
+		slog.Bool("config_separation_of_duties", f.separationOfDuties),
+	)
+	// When seal is enabled the system barrier has already been
+	// initialized+unsealed out-of-band (admin barrier API for passphrase, the
+	// SO ceremony for shamir) during awaitUnseal above. Route first-boot
+	// through the seal-aware bootstrap.BootstrapSystem so the orchestrator
+	// observes the already-unsealed barrier (BarrierAlreadyInitialized) and
+	// runs first-boot without demanding any credential. The strategy mapping
+	// mirrors initSealSubsystem: "shamir" → shamir, everything else (the
+	// daemon's deferred-software default) → passphrase. When seal is disabled
+	// sealSub is nil and bootstrapUserRoleStores keeps the direct
+	// firstboot.Initialize path (BootstrapSystem requires a barrier registry).
+	var bootBarriers *seal.BarrierRegistry
+	bootStrategy := bootstrap.StrategyPassphrase
+	if sealSub != nil {
+		bootBarriers = sealSub.BarrierRegistry
+		if f.sealConfig.Strategy == "shamir" {
+			bootStrategy = bootstrap.StrategyShamir
+		}
+	}
+	mgmtResult, err := bootstrapUserRoleStores(sigCtx, bootKVSvc, authKVSvc, host, shard.ShardKV, f.replicaID, tenantSvcInst, strictSoD, bootBarriers, bootStrategy)
 	if err != nil {
 		_ = shutdownNode(host)
 		if sigCtx.Err() != nil {
@@ -1010,12 +1152,32 @@ func runStart(f *startFlags) error {
 		return err
 	}
 
-	// Bootstrap authentication enforcement (RBAC, audit logger, auth
-	// middleware). Only enabled when --auth-enabled=true. The user and
-	// role stores are already initialized above and reused here.
+	// Compliance-grade AuditLogger is always constructed, regardless of
+	// --auth-enabled, because FIPS/FedRAMP/PCI-DSS/HIPAA require an audit
+	// trail even in environments where RBAC is disabled. The AuditLogger is
+	// injected into all protocol servers so the /v1/audit/events endpoint
+	// is available and seal/ceremony/custodian operations emit events.
+	runtimeKVAdapter := newKVServiceAdapter(authKVSvc, nil, nil)
+	chainFile, err := audit.NewFileLogger(filepath.Join(f.dataDir, "audit-events.ndjson"))
+	if err != nil {
+		_ = shutdownNode(host)
+		return &AuthBootstrapError{Step: "compliance audit file", Err: err}
+	}
+	complianceAudit := audit.NewAggregateLogger(
+		chainFile,
+		audit.NewRingBuffer(10000),
+		audit.NewSlogSink(),
+	)
+	defer func() { _ = complianceAudit.Close() }()
+	_ = runtimeKVAdapter // used below when auth is enabled
+
+	// Bootstrap authentication enforcement (RBAC, legacy audit logger, auth
+	// middleware, custodian service, SO authenticator, auth factor service).
+	// Only enabled when --auth-enabled=true. The user and role stores are
+	// already initialized above and reused here.
 	var authResult *authBootstrapResult
 	if f.authEnabled {
-		authResult, err = bootstrapAuthEnforcement(sigCtx, mgmtResult, authKVSvc, f.dataDir, host)
+		authResult, err = bootstrapAuthEnforcement(sigCtx, mgmtResult, authKVSvc, f.dataDir, host, complianceAudit, strictSoD, f.spiffeTrustDomain)
 		if err != nil {
 			_ = shutdownNode(host)
 			// Context cancellation from signal is a clean shutdown, not an error.
@@ -1036,17 +1198,6 @@ func runStart(f *startFlags) error {
 	// the auth middleware's SyncRead-backed user store lookups would
 	// fail until the pipeline is ready, returning 503 to early clients.
 	warmupReadIndex(sigCtx, kvSvc)
-
-	// Generate admin client certificate for mTLS authentication with the
-	// status and peers CLI commands. Only possible when the CA private key
-	// is available (auto-generated TLS) and auth is enabled. When external
-	// TLS is provided, the operator must supply their own client certificates.
-	if f.authEnabled && len(bundle.CAKeyPEM) > 0 {
-		if err := generateAdminClientCert(bundle, f.dataDir, "admin", tenant.DefaultTenantID); err != nil {
-			_ = shutdownNode(host)
-			return err
-		}
-	}
 
 	// Build leader forwarding resolver so writes on non-leader nodes
 	// are transparently proxied to the current leader. Uses HTTPS scheme
@@ -1100,10 +1251,31 @@ func runStart(f *startFlags) error {
 		server.WithUserService(mgmtResult.userSvc),
 		server.WithRoleService(mgmtResult.roleSvc),
 	)
+	// Compliance audit logger is always wired so the /v1/audit/events
+	// endpoint is available regardless of auth-enabled state.
+	serverOpts = append(serverOpts, server.WithAuditLogger(complianceAudit))
+
+	// Auth factor service is always constructed (factor implementations
+	// return ErrFactorDisabled for absent hardware, which handlers map to
+	// HTTP 501 -- the correct response for "feature not available in this
+	// deployment"). Exposed via /v1/authfactors/* for consumers like xkms.
+	if svc, err := service.NewAuthFactorService(service.AuthFactorServiceConfig{
+		Factors: defaultAuthFactors(),
+		KV:      authKVSvc,
+	}); err == nil {
+		serverOpts = append(serverOpts, server.WithAuthFactorService(svc))
+	}
+
 	if authResult != nil {
 		serverOpts = append(serverOpts,
 			server.WithAuthMiddleware(authResult.authMW),
 		)
+		if authResult.custodianSvc != nil {
+			serverOpts = append(serverOpts, server.WithCustodianService(authResult.custodianSvc))
+		}
+		if authResult.soAuthenticator != nil {
+			serverOpts = append(serverOpts, server.WithSOAuthenticator(authResult.soAuthenticator))
+		}
 	}
 	if barrierSvc != nil {
 		serverOpts = append(serverOpts, server.WithBarrierService(barrierSvc))
@@ -1120,22 +1292,40 @@ func runStart(f *startFlags) error {
 	if barrierRegistry != nil {
 		serverOpts = append(serverOpts, server.WithBarrierRegistry(barrierRegistry))
 	}
+	// When the storage barrier is enabled, install the sealed-window
+	// middleware on REST and the equivalent interceptors on gRPC.
+	// While the barrier is sealed every endpoint not on the allowlist
+	// returns 503 / Unavailable; once unsealed both wrappers become
+	// passthrough. See pkg/api/rest/middleware_sealed.go and
+	// pkg/api/grpc/sealed_window_interceptor.go for the canonical
+	// allowlists.
+	if sealBarrier != nil {
+		serverOpts = append(serverOpts, server.WithSealedWindowProbe(sealBarrier))
+	}
 	if tenantDEKMgr != nil {
 		serverOpts = append(serverOpts, server.WithTenantDEKManager(tenantDEKMgr))
 	}
 	if tenantSvcInst != nil {
 		serverOpts = append(serverOpts, server.WithTenantService(tenantSvcInst))
-		// Ensure the default tenant exists with IsolationType=barrier.
-		// This is idempotent: if the tenant already exists the error is ignored.
-		if _, err := tenantSvcInst.CreateTenant(sigCtx, tenant.DefaultTenantID, "Default", tenant.IsolationBarrier); err != nil {
-			if !errors.Is(err, tenant.ErrTenantAlreadyExists) {
-				_ = shutdownNode(host)
-				return err
-			}
-		}
+		// The structurally-privileged system tenant is created earlier in
+		// startup by pkg/firstboot.Initialize (called from
+		// bootstrapUserRoleStores). No additional CreateTenant call is
+		// needed here; first-boot is idempotent across daemon restarts.
+	}
+	if svcNode.Backup != nil {
+		serverOpts = append(serverOpts, server.WithBackupService(svcNode.Backup))
+	}
+	if svcNode.Rebalance != nil {
+		serverOpts = append(serverOpts, server.WithRebalanceService(svcNode.Rebalance))
 	}
 	if bootServers != nil {
 		serverOpts = append(serverOpts, server.WithCABootstrap(bundle.CACertPEM, bundle.CAKeyPEM))
+	}
+	if svcNode.Embedding != nil {
+		serverOpts = append(serverOpts, server.WithEmbedding(svcNode.Embedding))
+	}
+	if svcNode.RAG != nil {
+		serverOpts = append(serverOpts, server.WithRAG(svcNode.RAG))
 	}
 	if h := webUIHandler(); h != nil {
 		serverOpts = append(serverOpts, server.WithWebUI(h))
@@ -1158,6 +1348,7 @@ func runStart(f *startFlags) error {
 		Index:       indexSvc,
 		Watch:       watchSvc,
 		Collection:  collectionSvc,
+		Vector:      vectorSvc,
 	})
 	serverOpts = append(serverOpts, server.WithDatabaseServiceRegistry(dbRegistry))
 
@@ -1167,11 +1358,49 @@ func runStart(f *startFlags) error {
 		return err
 	}
 
+	// Leader-side lease-expiry sweeper. Leases granted with a TTL must be
+	// auto-revoked when they elapse so their attached keys are deleted and
+	// watchers receive the DELETE notification. Only the Raft leader proposes
+	// the revoke (routed through consensus via leaseSvc.Revoke); every replica
+	// applies it. The leadership gate is re-evaluated each tick, so the loop is
+	// correct across elections and a no-op on followers. Skipped when the lease
+	// service is absent (embeddable deployments without lease support).
+	if leaseSvc != nil {
+		go lr.RunExpiry(sigCtx, lease.DefaultExpiryInterval,
+			func() bool {
+				leaderID, ok, lerr := host.GetLeaderID(shard.ShardKV)
+				return lerr == nil && ok && leaderID == f.replicaID
+			},
+			leaseSvc.Revoke,
+			slog.Default(),
+		)
+	}
+
+	// Opt-in dynamic Raft membership: register self under a lease and, on the
+	// leader, reconcile the Raft group as nodes join and leave. OFF by default.
+	var membershipMgr *cluster.MembershipManager
+	if f.dynamicMembership {
+		membershipMgr, err = startDynamicMembership(sigCtx, f, kvSvc, adminSvc, mvccSvc, leaseSvc, watchSvc)
+		if err != nil {
+			srv.Stop()
+			_ = shutdownNode(host)
+			return err
+		}
+		slog.Info("dynamic membership manager started",
+			"shard_id", f.shardID, "node_id", f.replicaID)
+	}
+
 	slog.Info("qrdbd node started, waiting for signals")
 
 	// Block until SIGINT or SIGTERM (already captured by sigCtx).
 	<-sigCtx.Done()
 	slog.Info("received signal, shutting down")
+
+	if membershipMgr != nil {
+		if err := membershipMgr.Close(); err != nil {
+			slog.Error("membership manager close failed", slog.Any("error", err))
+		}
+	}
 
 	// Clean up bootstrap servers and cert reloader.
 	if bootServers != nil {
@@ -1179,6 +1408,21 @@ func runStart(f *startFlags) error {
 	}
 	if bundle.Reloader != nil {
 		_ = bundle.Reloader.Stop()
+	}
+
+	// Close all per-tenant Pebbles allocated through the volume pool.
+	// We use a short-lived background context here because sigCtx is
+	// already cancelled by the time we reach this point.
+	if volumePool != nil && volumePool.PerTenantRegistry != nil {
+		closed := volumePool.PerTenantRegistry.List()
+		if err := volumePool.PerTenantRegistry.CloseAll(context.Background()); err != nil {
+			slog.Error("per-tenant pebble close-all failed",
+				slog.Any("error", err),
+				slog.Int("count", len(closed)))
+		} else {
+			slog.Info("closed per-tenant pebbles on shutdown",
+				slog.Int("count", len(closed)))
+		}
 	}
 
 	srv.Stop()
@@ -1246,33 +1490,27 @@ func buildServerConfig(f *startFlags) *qrdbconfig.Config {
 			Format: f.logFormat,
 		},
 		Discovery: qrdbconfig.DiscoveryConfig{
-			Method:          f.discoveryMethod,
-			MulticastSecret: f.multicastSecret,
-			DNSDomain:       f.dnsDomain,
+			Method:                 f.discoveryMethod,
+			MulticastSecret:        f.multicastSecret,
+			MulticastGroup:         f.multicastGroup,
+			DNSDomain:              f.dnsDomain,
+			DNSService:             f.dnsService,
+			DNSProto:               f.dnsProto,
+			TokenEndpoint:          f.discoveryEndpoint,
+			Token:                  f.discoveryToken,
+			TokenClusterSize:       f.discoveryClusterSize,
+			AllowInsecureTokenHTTP: f.discoveryInsecure,
+			MinPeers:               f.clusterMinPeers,
+			DynamicMembership:      f.dynamicMembership,
 		},
 	}
-}
-
-// deriveBootstrapPassphrase generates a deterministic passphrase from the
-// deployment ID for sealing the barrier's root key. The passphrase is used
-// to construct the SoftwareStrategy at startup. Users must provide this
-// same passphrase via the BarrierInitialize API to initialize the barrier.
-func deriveBootstrapPassphrase(deploymentID uint64) []byte {
-	buf := make([]byte, 8)
-	binary.BigEndian.PutUint64(buf, deploymentID)
-	// Use a fixed prefix + deployment ID as the bootstrap passphrase.
-	// The user must call barrier init with this passphrase to initialize.
-	passphrase := make([]byte, 0, 32)
-	passphrase = append(passphrase, []byte("qrdb-seal-bootstrap:")...)
-	passphrase = append(passphrase, buf...)
-	return passphrase
 }
 
 // initializeNode performs all initialization: validates flags, creates the
 // host, and starts the shard. Returns the running host or an error.
 // The bundle is used to configure mTLS on the QUIC transport for
 // multi-node clusters (nil for single-node which uses WithoutTransport).
-func initializeNode(f *startFlags, bundle *TLSBundle) (*quicraft.Host, error) {
+func initializeNode(ctx context.Context, f *startFlags, bundle *TLSBundle) (*quicraft.Host, error) {
 	slog.Info("starting qrdbd node",
 		"listen", f.listen,
 		"raft_address", f.raftAddress,
@@ -1336,12 +1574,57 @@ func initializeNode(f *startFlags, bundle *TLSBundle) (*quicraft.Host, error) {
 	shardCfg := buildShardConfig(f)
 
 	// Start the shard using the selected discovery method.
-	if err := startShard(f, host, createFn, shardCfg); err != nil {
+	if err := startShard(ctx, f, host, createFn, shardCfg); err != nil {
 		_ = host.Close()
 		return nil, err
 	}
 
 	return host, nil
+}
+
+// startDynamicMembership builds an in-process (embedded) qrdb SDK client over
+// the live service layer and starts the opt-in dynamic membership manager.
+// The same embedded client serves data and drives membership, so there is one
+// lessor and one watch subsystem behind both. The auto-removal quorum guard is
+// derived from cluster-min-peers.
+func startDynamicMembership(
+	ctx context.Context,
+	f *startFlags,
+	kvSvc service.KVServicer,
+	adminSvc service.AdminServicer,
+	mvccSvc service.MVCCKVServicer,
+	leaseSvc service.LeaseServicer,
+	watchSvc service.WatchServicer,
+) (*cluster.MembershipManager, error) {
+	tr, err := embedded.New(kvSvc, adminSvc,
+		embedded.WithMVCCService(mvccSvc),
+		embedded.WithLeaseService(leaseSvc),
+		embedded.WithWatchService(watchSvc),
+	)
+	if err != nil {
+		return nil, err
+	}
+	client, err := sdkgo.NewClient(tr)
+	if err != nil {
+		return nil, err
+	}
+
+	minPeers := f.clusterMinPeers
+	if minPeers <= 0 {
+		minPeers = 3
+	}
+	mgr, err := client.NewMembershipManager(
+		cluster.Member{NodeID: f.replicaID, Address: f.raftAddress},
+		f.shardID,
+		cluster.MembershipConfig{MinQuorum: cluster.QuorumSize(minPeers)},
+	)
+	if err != nil {
+		return nil, err
+	}
+	if err := mgr.Start(ctx); err != nil {
+		return nil, err
+	}
+	return mgr, nil
 }
 
 // waitForSignal blocks until SIGINT or SIGTERM is received.
@@ -1419,11 +1702,11 @@ func buildShardConfig(f *startFlags) quicraftconfig.Config {
 }
 
 // startShard starts the Raft shard using the configured discovery method.
-func startShard(f *startFlags, node raftNode, createFn sm.CreateFunc, shardCfg quicraftconfig.Config) error {
+func startShard(ctx context.Context, f *startFlags, node raftNode, createFn sm.CreateFunc, shardCfg quicraftconfig.Config) error {
 	if f.discoveryMethod == "static" {
 		return startShardStatic(f, node, createFn, shardCfg)
 	}
-	return startShardWithBootstrap(f, node, createFn, shardCfg)
+	return startShardWithBootstrap(ctx, f, node, createFn, shardCfg)
 }
 
 // startShardStatic starts a shard with static discovery by parsing the
@@ -1446,137 +1729,56 @@ func startShardStatic(f *startFlags, node raftNode, createFn sm.CreateFunc, shar
 	return node.StartShard(members, f.join, createFn, shardCfg)
 }
 
-// startShardWithBootstrap starts a shard using the bootstrapper with the
-// configured discovery method.
-func startShardWithBootstrap(f *startFlags, node raftNode, createFn sm.CreateFunc, shardCfg quicraftconfig.Config) error {
-	builder, ok := discoveryBuilders[f.discoveryMethod]
-	if !ok {
-		return &UnknownDiscoveryError{Name: f.discoveryMethod}
-	}
-
-	disc, err := builder(f)
-	if err != nil {
-		return err
-	}
-
-	bootstrapCfg := bootstrap.Config{
-		NodeID:      f.replicaID,
-		Address:     f.raftAddress,
-		ShardID:     f.shardID,
-		ReplicaID:   f.replicaID,
-		Discovery:   disc,
-		CreateFn:    createFn,
-		ShardConfig: shardCfg,
-	}
-
-	b := bootstrap.NewBootstrapper(bootstrapCfg, node)
-
+// startShardWithBootstrap starts a shard using the cluster bootstrap
+// orchestration with the configured discovery method. The discovery engine,
+// quorum logic, and member-map construction all live in pkg/cluster; the
+// daemon only supplies its flags as cluster.Options.
+func startShardWithBootstrap(ctx context.Context, f *startFlags, node raftNode, createFn sm.CreateFunc, shardCfg quicraftconfig.Config) error {
 	slog.Info("bootstrapping shard",
 		"shard_id", f.shardID,
 		"discovery", f.discoveryMethod,
 	)
 
-	return b.Bootstrap(context.Background())
+	return cluster.BootstrapShard(ctx, node, f.clusterOptions(), f.shardID, createFn, shardCfg)
 }
 
-// buildStaticDiscovery creates a StaticDiscovery from the parsed peers.
-func buildStaticDiscovery(f *startFlags) (discovery.Method, error) {
-	members, err := parsePeers(f.peers)
-	if err != nil {
-		return nil, err
-	}
-
-	peers := make([]discovery.Peer, 0, len(members))
-	for id, addr := range members {
-		peers = append(peers, discovery.Peer{NodeID: id, Address: addr})
-	}
-
-	return discovery.NewStaticDiscovery(discovery.StaticConfig{Peers: peers}), nil
-}
-
-// buildMulticastDiscovery creates a MulticastDiscovery from the flags.
-func buildMulticastDiscovery(f *startFlags) (discovery.Method, error) {
-	if f.multicastSecret == "" {
-		return nil, &MissingFlagError{Flag: "multicast-secret"}
-	}
-
-	cfg := discovery.MulticastConfig{
-		NodeID:       f.replicaID,
-		Address:      f.raftAddress,
-		DeploymentID: f.deploymentID,
-		SharedSecret: []byte(f.multicastSecret),
-		MinPeers:     defaultMinPeers - 1, // other peers excluding self
-	}
-
-	md, err := discovery.NewMulticastDiscovery(cfg)
-	if err != nil {
-		return nil, err
-	}
-	md.Start()
-
-	return md, nil
-}
-
-// defaultMinPeers is the default minimum cluster size for bootstrap.
-const defaultMinPeers = 3
-
-// buildDNSDiscovery creates a DNSDiscovery from the flags.
-func buildDNSDiscovery(f *startFlags) (discovery.Method, error) {
-	if f.dnsDomain == "" {
-		return nil, &MissingFlagError{Flag: "dns-domain"}
-	}
-
-	cfg := discovery.DNSConfig{
-		Service: "_raft",
-		Proto:   "_udp",
-		Domain:  f.dnsDomain,
-	}
-
-	return discovery.NewDNSDiscovery(cfg), nil
-}
-
-// parsePeers parses a slice of "id=address" strings into a member map.
+// parsePeers parses a slice of "id=address" strings into a member map. It
+// delegates to the canonical cluster.ParsePeers so the daemon and embedders
+// share one parser and one PeerParseError contract.
 func parsePeers(peers []string) (map[uint64]string, error) {
-	members := make(map[uint64]string, len(peers))
-	for _, p := range peers {
-		idx := strings.IndexByte(p, '=')
-		if idx < 1 {
-			return nil, &PeerParseError{Input: p}
-		}
-
-		id, err := strconv.ParseUint(p[:idx], 10, 64)
-		if err != nil {
-			return nil, &PeerParseError{Input: p}
-		}
-
-		addr := p[idx+1:]
-		if addr == "" {
-			return nil, &PeerParseError{Input: p}
-		}
-
-		members[id] = addr
-	}
-	return members, nil
+	return cluster.ParsePeers(peers)
 }
 
 // isSingleNode returns true when the peer configuration describes a
-// single-node cluster (only the local node). Non-static discovery
-// methods always assume multi-node.
+// single-node cluster (only the local node). Non-static discovery methods
+// always assume multi-node.
 func isSingleNode(f *startFlags) bool {
-	if f.discoveryMethod != "static" {
-		return false
-	}
-	if len(f.peers) == 0 {
-		return true
-	}
-	if len(f.peers) == 1 {
-		members, err := parsePeers(f.peers)
-		if err != nil {
-			return false
-		}
-		return len(members) == 1
-	}
-	return false
+	return cluster.IsSingleNode(f.clusterOptions())
+}
+
+// buildStaticDiscovery is a daemon convenience wrapper that builds the
+// static discovery method from the start flags. The construction logic
+// lives in pkg/cluster; this only fixes the method and delegates.
+func buildStaticDiscovery(f *startFlags) (discovery.Method, error) {
+	opts := f.clusterOptions()
+	opts.Method = "static"
+	return cluster.BuildDiscovery(opts)
+}
+
+// buildMulticastDiscovery is a daemon convenience wrapper for the multicast
+// discovery method. See buildStaticDiscovery.
+func buildMulticastDiscovery(f *startFlags) (discovery.Method, error) {
+	opts := f.clusterOptions()
+	opts.Method = "multicast"
+	return cluster.BuildDiscovery(opts)
+}
+
+// buildDNSDiscovery is a daemon convenience wrapper for the DNS SRV
+// discovery method. See buildStaticDiscovery.
+func buildDNSDiscovery(f *startFlags) (discovery.Method, error) {
+	opts := f.clusterOptions()
+	opts.Method = "dns"
+	return cluster.BuildDiscovery(opts)
 }
 
 // ---------------------------------------------------------------------------
@@ -1589,13 +1791,16 @@ type mgmtBootstrapResult struct {
 	userSvc     user.UserServicer
 	roleSvc     role.RoleServicer
 	bootUserSvc user.UserServicer // StaleRead-backed fallback for auth middleware
+	bootRoleSvc role.RoleServicer // StaleRead-backed fallback for RBAC authorizer
 }
 
 // authBootstrapResult holds the auth enforcement middleware and audit logger
 // created only when --auth-enabled=true.
 type authBootstrapResult struct {
-	auditLogger audit.Logger
-	authMW      *middleware.AuthMiddleware
+	auditLogger     audit.Logger
+	authMW          *middleware.AuthMiddleware
+	custodianSvc    custodian.Servicer
+	soAuthenticator *auth.SOAuthenticator
 }
 
 // bootstrapUserRoleStores initializes the user and role stores unconditionally.
@@ -1607,10 +1812,27 @@ type authBootstrapResult struct {
 //     is not yet warmed up.
 //   - runtimeKVSvc (SyncRead, no codec) for runtime store operations,
 //     ensuring linearizable reads for user/role CRUD.
-func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc service.KVServicer, node raftNode, shardID uint64) (*mgmtBootstrapResult, error) {
+//
+// tenantSvc is the daemon's tenant servicer; first-boot uses it to create
+// the structurally-privileged system tenant. Required (non-nil): tests
+// supply a small in-memory tenant servicer; production startup wires
+// the real one from svcNode.Tenant.
+func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc service.KVServicer, node raftNode, shardID, replicaID uint64, tenantSvc tenant.TenantServicer, strictSoD bool, barriers *seal.BarrierRegistry, sealStrategy seal.StrategyID) (*mgmtBootstrapResult, error) {
+	// User IDs are Snowflake-assigned by the user store; map the Raft
+	// ReplicaID onto the Snowflake node field (zero maps to node 1 per the
+	// standalone convention).
+	idNode := replicaID
+	if idNode == 0 {
+		idNode = 1
+	}
+	userIDGen, err := dao.NewSnowflakeGenerator(idNode)
+	if err != nil {
+		return nil, &AuthBootstrapError{Step: "user id generator", Err: err}
+	}
+
 	// Create bootstrap stores backed by StaleRead for initial setup.
 	bootStore := newKVServiceAdapter(bootKVSvc, nil, nil)
-	bootUserSvc, err := user.NewStore(bootStore)
+	bootUserSvc, err := user.NewStore(bootStore, userIDGen)
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "boot user store", Err: err}
 	}
@@ -1619,10 +1841,11 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 		return nil, &AuthBootstrapError{Step: "boot role store", Err: err}
 	}
 
-	// Bootstrap: create built-in roles and admin user (idempotent).
-	// Uses StaleRead-backed stores since ReadIndex may not be available yet.
-	tenantID := tenant.DefaultTenantID
-	if err := bootstrapRolesAndAdmin(ctx, node, shardID, bootUserSvc, bootRoleSvc, tenantID); err != nil {
+	// First-boot: create the system tenant, register built-in roles, and
+	// create the admin user with the canonical Admin@system grant. The
+	// system-tenant rule in pkg/auth/rbac promotes that single grant to
+	// cross-tenant authority. Idempotent across daemon restarts.
+	if err := runFirstBoot(ctx, node, shardID, bootUserSvc, bootRoleSvc, tenantSvc, strictSoD, barriers, sealStrategy); err != nil {
 		return nil, err
 	}
 
@@ -1630,7 +1853,7 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 	// operations. This ensures CRUD handlers see the latest committed state.
 	runtimeStore := newKVServiceAdapter(runtimeKVSvc, nil, nil)
 
-	userSvc, err := user.NewStore(runtimeStore)
+	userSvc, err := user.NewStore(runtimeStore, userIDGen)
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "user store", Err: err}
 	}
@@ -1643,14 +1866,16 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 		userSvc:     userSvc,
 		roleSvc:     roleSvc,
 		bootUserSvc: bootUserSvc,
+		bootRoleSvc: bootRoleSvc,
 	}, nil
 }
 
 // bootstrapAuthEnforcement initializes the auth enforcement layer: RBAC
 // authorizer, audit logger, and auth middleware. It reuses the already-
 // initialized user and role stores from mgmtResult. Called only when
-// --auth-enabled=true.
-func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, runtimeKVSvc service.KVServicer, dataDir string, node raftNode) (*authBootstrapResult, error) {
+// --auth-enabled=true. The complianceAudit parameter is the compliance-grade
+// AuditLogger constructed earlier (always present regardless of auth flag).
+func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, runtimeKVSvc service.KVServicer, dataDir string, node raftNode, complianceAudit audit.AuditLogger, strictSoD bool, spiffeTrustDomain string) (*authBootstrapResult, error) {
 	_ = ctx
 	_ = node
 
@@ -1666,8 +1891,17 @@ func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, ru
 		return nil, &AuthBootstrapError{Step: "audit logger", Err: err}
 	}
 
-	// Create RBAC authorizer backed by the runtime role store.
-	rbacAuth := rbac.New(mgmt.roleSvc)
+	// Create RBAC authorizer backed by the runtime role store. The strict
+	// flag voids the Owner convenience role under FIPS 140-3 / configured
+	// separation of duties, so a strict binary enforces least-privilege
+	// even on a role store bootstrapped under the standard posture. The
+	// StaleRead fallback keeps authorization working when linearizable
+	// reads are unavailable (ReadIndex cold, or host draining) — e.g. so an
+	// authorized Drain request can still be admitted on a draining node.
+	rbacAuth := rbac.New(mgmt.roleSvc,
+		rbac.WithStrictSeparation(strictSoD),
+		rbac.WithRoleServiceFallback(mgmt.bootRoleSvc),
+	)
 
 	// Create auth middleware with mTLS authenticator, user-store
 	// enrichment, and audit logging. The fallback user service uses
@@ -1675,27 +1909,76 @@ func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, ru
 	// ensures user/role data is replicated before servers start. This
 	// handles the window after restart where SyncRead (ReadIndex) is
 	// not yet operational.
+	// Pin the operator-configured SPIFFE trust domain when set so the mTLS
+	// authenticator derives the tenant from the peer certificate's
+	// tenant-scoped SPIFFE SAN and rejects foreign trust domains (fail-closed).
+	mtlsAuthenticator := auth.NewMTLSAuthenticator()
+	if spiffeTrustDomain != "" {
+		mtlsAuthenticator = auth.NewMTLSAuthenticatorWithTrustDomain(spiffeTrustDomain)
+	}
 	authMW := middleware.New(rbacAuth,
-		middleware.WithAuthenticator(auth.NewMTLSAuthenticator()),
+		middleware.WithAuthenticator(mtlsAuthenticator),
 		middleware.WithUserService(mgmt.userSvc),
 		middleware.WithUserServiceFallback(mgmt.bootUserSvc),
 		middleware.WithAuditLogger(auditLogger),
 	)
 
+	// Custodian service: persists non-secret custodian metadata under
+	// __sys:custodian/<id>. Shares are never persisted -- they live in
+	// secure.Buffer only during enrollment delivery and unseal submission.
+	custodianSvc, err := custodian.NewService(runtimeStore, complianceAudit, slog.Default())
+	if err != nil {
+		return nil, &AuthBootstrapError{Step: "custodian service", Err: err}
+	}
+
+	// SO authenticator: hash-commits the SO PIN at bootstrap (Argon2id or
+	// PBKDF2-SHA256 depending on GOFIPS140), verifies via constant-time
+	// compare on each SO-permissioned request. PIN itself is never stored.
+	soAuthenticator, err := auth.NewSOAuthenticator(runtimeStore, complianceAudit, slog.Default())
+	if err != nil {
+		return nil, &AuthBootstrapError{Step: "SO authenticator", Err: err}
+	}
+
 	return &authBootstrapResult{
-		auditLogger: auditLogger,
-		authMW:      authMW,
+		auditLogger:     auditLogger,
+		authMW:          authMW,
+		custodianSvc:    custodianSvc,
+		soAuthenticator: soAuthenticator,
 	}, nil
 }
 
-// bootstrapRolesAndAdmin creates the built-in roles and admin user for
-// the given tenant. This is idempotent: if the admin user already exists,
-// the function returns immediately.
+// defaultAuthFactors returns the auth factor implementations to register
+// with the AuthFactorService when running qrdbd standalone.
 //
-// In multi-node clusters, only the leader can execute SyncPropose. This
-// function attempts creation on all nodes but gracefully falls back to
-// waiting for admin replication on followers that receive NotLeader errors.
-func bootstrapRolesAndAdmin(ctx context.Context, node raftNode, shardID uint64, userSvc user.UserServicer, roleSvc role.RoleServicer, tenantID string) error {
+// qrdb itself owns only software-only factors per the locked architecture
+// (hardware-coupled FIDO2 / PIV / PKCS#11 factors live in go-xkms and are
+// injected by higher-level binaries via WithFactorRegistry at composition
+// time). For a standalone qrdbd this returns an empty slice; the
+// AuthFactorService is constructed but holds no factors until something
+// is explicitly registered.
+func defaultAuthFactors() []authfactors.Factor {
+	return nil
+}
+
+// runFirstBoot orchestrates the daemon's first-boot path: it waits for
+// Raft leader election, checks whether the platform admin user is
+// already present (StaleRead via bootstrapHostAdapter), and otherwise
+// invokes pkg/firstboot.Initialize to create the system tenant +
+// built-in roles + admin user.
+//
+// Raft coordination stays in the daemon: in multi-node clusters only
+// the leader can execute SyncPropose. firstboot.Initialize itself is
+// transport-agnostic; when this node is a follower the underlying
+// SyncPropose returns NotLeader, this function detects the failure
+// and falls back to waitForAdminReplication so the follower waits for
+// the leader's writes to replicate.
+//
+// tenantSvc is required: firstboot.Initialize creates the system
+// tenant via this servicer using WithInternalCall(ctx) to bypass the
+// reserved-id rejection on CreateTenant. Production startup always
+// supplies a non-nil tenant servicer; tests do the same via a small
+// in-memory tenant servicer.
+func runFirstBoot(ctx context.Context, node raftNode, shardID uint64, userSvc user.UserServicer, roleSvc role.RoleServicer, tenantSvc tenant.TenantServicer, strictSoD bool, barriers *seal.BarrierRegistry, sealStrategy seal.StrategyID) error {
 	// Phase 1: Wait for leader election. All operations (reads on leader
 	// via SyncRead, writes via SyncPropose) require a leader.
 	if err := waitForLeaderElection(ctx, node, shardID); err != nil {
@@ -1705,22 +1988,69 @@ func bootstrapRolesAndAdmin(ctx context.Context, node raftNode, shardID uint64, 
 	// Phase 2: Check if admin user already exists using local state
 	// machine reads (StaleRead via bootstrapHostAdapter). This returns
 	// immediately without waiting for ReadIndex.
-	if adminExists(ctx, userSvc, tenantID) {
-		slog.Debug("auth bootstrap: admin user exists, skipping")
+	if adminExists(ctx, userSvc, tenant.SystemTenantID) {
+		slog.Debug("first-boot: admin user exists, skipping")
 		return nil
 	}
 
-	// Phase 3: Attempt to create built-in roles and admin user through
-	// Raft consensus. On the leader this succeeds. On followers,
-	// SyncPropose returns NotLeader — we catch that and fall back to
-	// waiting for the leader's writes to replicate.
-	slog.Info("bootstrapping built-in roles and admin user", "tenant", tenantID)
-	if err := tryCreateRolesAndAdmin(ctx, userSvc, roleSvc, tenantID); err != nil {
-		// Creation failed, likely because this node is a follower.
-		// Wait for the leader to create the admin and replicate it.
-		slog.Info("auth bootstrap: waiting for leader to replicate admin",
-			"reason", err)
-		return waitForAdminReplication(ctx, userSvc, tenantID)
+	// Phase 3: Run the canonical first-boot path. It creates the system
+	// tenant (WithInternalCall bypasses the reserved-id rejection), registers
+	// all built-in roles, and creates the admin user with the Admin@system
+	// grant. Idempotent.
+	slog.Info("first-boot: bootstrapping system tenant + roles + admin user",
+		slog.String("tenant", tenant.SystemTenantID))
+
+	var firstBootErr error
+	if barriers != nil {
+		// Seal enabled: route through the seal-aware orchestrator. By this
+		// point the system barrier has already been initialized+unsealed
+		// out-of-band (admin barrier API for passphrase, SO ceremony for
+		// shamir) during awaitUnseal, so we pass an EMPTY passphrase.
+		// BootstrapSystem observes the unsealed barrier
+		// (BarrierAlreadyInitialized), demands no credential, and runs
+		// first-boot. A still-sealed barrier here is an operator error (unseal
+		// not completed) surfaced as a SystemBarrierInitError, NOT routed to
+		// the follower-wait below.
+		_, bsErr := bootstrap.BootstrapSystem(ctx, bootstrap.SystemConfig{
+			Strategy:           sealStrategy,
+			SeparationOfDuties: strictSoD,
+		}, bootstrap.Dependencies{
+			Tenants:  tenantSvc,
+			Users:    userSvc,
+			Roles:    roleSvc,
+			Barriers: barriers,
+			Logger:   slog.Default(),
+		})
+		if bsErr != nil {
+			// Only the first-boot leg of BootstrapSystem is eligible for the
+			// follower NotLeader retry; barrier/credential failures are real
+			// errors and propagate unchanged.
+			var fbErr *bootstrap.FirstBootError
+			if !errors.As(bsErr, &fbErr) {
+				return bsErr
+			}
+			firstBootErr = fbErr
+		}
+	} else {
+		// Seal disabled (no barrier registry): keep the direct first-boot
+		// path. BootstrapSystem requires a non-nil barrier registry, so wiring
+		// it here would force a synthetic barrier with no benefit.
+		_, firstBootErr = firstboot.Initialize(ctx, firstboot.Dependencies{
+			Tenants:            tenantSvc,
+			Users:              userSvc,
+			Roles:              roleSvc,
+			Logger:             slog.Default(),
+			SeparationOfDuties: strictSoD,
+		})
+	}
+
+	if firstBootErr != nil {
+		// Creation failed, likely because this node is a follower whose
+		// SyncPropose returned NotLeader. Wait for the leader to create
+		// the admin and replicate it.
+		slog.Info("first-boot: waiting for leader to replicate admin",
+			slog.Any("reason", firstBootErr))
+		return waitForAdminReplication(ctx, userSvc, tenant.SystemTenantID)
 	}
 	return nil
 }
@@ -1799,67 +2129,6 @@ func warmupReadIndex(ctx context.Context, kvSvc service.KVServicer) {
 func adminExists(ctx context.Context, userSvc user.UserServicer, tenantID string) bool {
 	_, err := userSvc.GetUserByUsername(ctx, tenantID, "admin")
 	return err == nil
-}
-
-// tryCreateRolesAndAdmin creates built-in roles and the admin user.
-// Returns nil on success, or an error if any operation fails. Tolerates
-// role-already-exists and user-already-exists for idempotency.
-func tryCreateRolesAndAdmin(ctx context.Context, userSvc user.UserServicer, roleSvc role.RoleServicer, tenantID string) error {
-	const opTimeout = 5 * time.Second
-
-	builtins := role.BuiltInRoles(tenantID)
-	var superadminRoleID string
-
-	for _, r := range builtins {
-		opCtx, cancel := context.WithTimeout(ctx, opTimeout)
-		created, createErr := roleSvc.CreateRole(opCtx, &role.CreateRoleRequest{
-			ID:          r.ID,
-			Name:        r.Name,
-			TenantID:    r.TenantID,
-			Permissions: r.Permissions,
-		})
-		cancel()
-		if createErr != nil {
-			var nameExists *role.RoleNameExistsError
-			if errors.As(createErr, &nameExists) {
-				// Role already exists — use the deterministic ID
-				// from BuiltInRoles which all nodes share.
-				if r.Name == "superadmin" {
-					superadminRoleID = r.ID
-				}
-				slog.Debug("built-in role already exists", "name", r.Name)
-				continue
-			}
-			return &AuthBootstrapError{Step: "create role " + r.Name, Err: createErr}
-		}
-		if r.Name == "superadmin" {
-			superadminRoleID = created.ID
-		}
-		slog.Info("created built-in role", "name", r.Name, "id", created.ID)
-	}
-
-	opCtx, cancel := context.WithTimeout(ctx, opTimeout)
-	adminUser, createErr := userSvc.CreateUser(opCtx, &user.CreateUserRequest{
-		Username: "admin",
-		TenantID: tenantID,
-		RoleIDs:  []string{superadminRoleID},
-	})
-	cancel()
-	if createErr != nil {
-		var usernameExists *user.UsernameExistsError
-		if errors.As(createErr, &usernameExists) {
-			slog.Info("admin user already exists")
-			return nil
-		}
-		return &AuthBootstrapError{Step: "create admin user", Err: createErr}
-	}
-
-	slog.Info("created admin user",
-		"id", adminUser.ID,
-		"username", adminUser.Username,
-		"tenant", tenantID,
-	)
-	return nil
 }
 
 // waitForAdminReplication polls the local state machine until the admin

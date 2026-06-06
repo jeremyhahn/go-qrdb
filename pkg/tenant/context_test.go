@@ -29,16 +29,16 @@ func TestWithTenantIDAndFromContextRoundTrip(t *testing.T) {
 
 func TestFromContextNoTenantReturnsDefault(t *testing.T) {
 	got := FromContext(context.Background())
-	if got != DefaultTenantID {
-		t.Errorf("FromContext() = %q, want %q", got, DefaultTenantID)
+	if got != SystemTenantID {
+		t.Errorf("FromContext() = %q, want %q", got, SystemTenantID)
 	}
 }
 
 func TestFromContextEmptyStringReturnsDefault(t *testing.T) {
 	ctx := WithTenantID(context.Background(), "")
 	got := FromContext(ctx)
-	if got != DefaultTenantID {
-		t.Errorf("FromContext() = %q, want %q", got, DefaultTenantID)
+	if got != SystemTenantID {
+		t.Errorf("FromContext() = %q, want %q", got, SystemTenantID)
 	}
 }
 

@@ -215,7 +215,7 @@ func (t *Transport) GetVector(ctx context.Context, req *transport.GetVectorReque
 	resp, err := t.client.VectorGet(ctx, &pb.VectorGetRequest{
 		Namespace:   req.Namespace,
 		Id:          fmtVectorID(req.ID),
-		Consistency: int32(req.Consistency),
+		Consistency: vectorConsistencyToProto(req.Consistency),
 		ShardId:     req.ShardID,
 	})
 	if err != nil {
@@ -406,7 +406,7 @@ func (t *Transport) SearchSimilar(ctx context.Context, req *transport.SearchSimi
 		K:           int32(req.K),
 		EfSearch:    int32(req.EfSearch),
 		MinScore:    float64(req.MinScore),
-		Consistency: int32(req.Consistency),
+		Consistency: vectorConsistencyToProto(req.Consistency),
 		ShardId:     req.ShardID,
 	})
 	if err != nil {
@@ -441,7 +441,7 @@ func (t *Transport) SearchByMetadata(ctx context.Context, req *transport.SearchB
 		FiltersJson: filtersJSON,
 		Limit:       int32(req.Limit),
 		Offset:      int32(req.Offset),
-		Consistency: int32(req.Consistency),
+		Consistency: vectorConsistencyToProto(req.Consistency),
 		ShardId:     req.ShardID,
 	})
 	if err != nil {
@@ -481,7 +481,7 @@ func (t *Transport) HybridSearch(ctx context.Context, req *transport.HybridSearc
 		Vector:              req.QueryVector,
 		MetadataFiltersJson: metadataFiltersJSON,
 		K:                   int32(req.K),
-		Consistency:         int32(req.Consistency),
+		Consistency:         vectorConsistencyToProto(req.Consistency),
 		ShardId:             req.ShardID,
 	})
 	if err != nil {
@@ -510,7 +510,7 @@ func (t *Transport) SearchByID(ctx context.Context, req *transport.SearchByIDReq
 		Namespace:   req.Namespace,
 		Id:          fmtVectorID(req.ID),
 		K:           int32(req.K),
-		Consistency: int32(req.Consistency),
+		Consistency: vectorConsistencyToProto(req.Consistency),
 		ShardId:     req.ShardID,
 	})
 	if err != nil {

@@ -10,11 +10,15 @@ package seal
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 // Compile-time interface checks.
@@ -23,13 +27,20 @@ var (
 	_ ShareSplitter    = (*shamirShareSplitter)(nil)
 )
 
-// shamirShareAccumulator implements ShareAccumulator using go-qrdb's
-// Shamir secret sharing library. Shares are deduplicated by value and
-// maintained in insertion order.
+// shamirShareAccumulator implements ShareAccumulator using go-quicraft's
+// Shamir secret-sharing library.
+//
+// Security model: submitted share material is held only inside memguard
+// secure enclaves (never as raw, garbage-collected strings/bytes), and is
+// destroyed the instant the quorum is reset — which the unseal path triggers
+// immediately after a successful reconstruction. Deduplication uses a SHA-256
+// digest of each share, so the raw share value is never retained as a map
+// key. Plaintext is materialized only transiently, under the lock, during
+// Reconstruct.
 type shamirShareAccumulator struct {
 	mu        sync.Mutex
-	seen      map[string]struct{}
-	shares    []*shamir.Share
+	seen      map[string]struct{} // SHA-256 hex digests of submitted shares (one-way)
+	shares    []*secure.Secret    // enclave-sealed share values, in submission order
 	threshold int
 	total     int
 	ttl       time.Duration
@@ -41,7 +52,7 @@ type shamirShareAccumulator struct {
 func NewShamirShareAccumulator(threshold, total int, ttl time.Duration) ShareAccumulator {
 	return &shamirShareAccumulator{
 		seen:      make(map[string]struct{}),
-		shares:    make([]*shamir.Share, 0, threshold),
+		shares:    make([]*secure.Secret, 0, threshold),
 		threshold: threshold,
 		total:     total,
 		ttl:       ttl,
@@ -49,8 +60,9 @@ func NewShamirShareAccumulator(threshold, total int, ttl time.Duration) ShareAcc
 	}
 }
 
-// AddShare adds a share to the accumulator. It rejects expired accumulators
-// and duplicate shares (identified by their string value).
+// AddShare seals a share into a memguard enclave toward the quorum. It rejects
+// expired accumulators and duplicate shares (identified by a SHA-256 digest,
+// so the raw share value is never retained outside the enclave).
 func (a *shamirShareAccumulator) AddShare(_ context.Context, share string) (*QuorumProgress, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -59,17 +71,20 @@ func (a *shamirShareAccumulator) AddShare(_ context.Context, share string) (*Quo
 		return nil, ErrShamirQuorumExpired
 	}
 
-	if _, exists := a.seen[share]; exists {
+	digest := sha256.Sum256([]byte(share))
+	key := hex.EncodeToString(digest[:])
+	if _, exists := a.seen[key]; exists {
 		return nil, ErrShamirDuplicateShare
 	}
 
-	a.seen[share] = struct{}{}
-	a.shares = append(a.shares, &shamir.Share{
-		Index:     len(a.shares) + 1,
-		Threshold: a.threshold,
-		Total:     a.total,
-		Value:     share,
-	})
+	// Seal a copy of the share into an enclave; NewSecret wipes the copy.
+	sec, err := secure.NewSecret([]byte(share))
+	if err != nil {
+		return nil, fmt.Errorf("%w: seal share: %v", ErrShamirSplitFailed, err)
+	}
+
+	a.seen[key] = struct{}{}
+	a.shares = append(a.shares, sec)
 
 	submitted := len(a.shares)
 	return &QuorumProgress{
@@ -80,7 +95,9 @@ func (a *shamirShareAccumulator) AddShare(_ context.Context, share string) (*Quo
 }
 
 // Reconstruct attempts to reconstruct the secret from accumulated shares.
-// Returns an error if the threshold has not been met.
+// Returns an error if the threshold has not been met. Share plaintext is
+// materialized only transiently: each enclave is opened into a buffer that is
+// destroyed before return.
 func (a *shamirShareAccumulator) Reconstruct(_ context.Context) ([]byte, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -89,15 +106,42 @@ func (a *shamirShareAccumulator) Reconstruct(_ context.Context) ([]byte, error) 
 		return nil, ErrShamirQuorumIncomplete
 	}
 
-	return shamir.Combine(a.shares)
+	bufs := make([]*secure.Buffer, 0, len(a.shares))
+	defer func() {
+		for _, b := range bufs {
+			b.Destroy()
+		}
+	}()
+
+	combineShares := make([]*shamir.Share, 0, len(a.shares))
+	for i, sec := range a.shares {
+		buf, err := sec.Open()
+		if err != nil {
+			return nil, fmt.Errorf("%w: open share: %v", ErrShamirCombineFailed, err)
+		}
+		bufs = append(bufs, buf)
+		combineShares = append(combineShares, &shamir.Share{
+			Index:     i + 1,
+			Threshold: a.threshold,
+			Total:     a.total,
+			Value:     string(buf.Bytes()),
+		})
+	}
+
+	return shamir.Combine(combineShares)
 }
 
-// Reset clears all accumulated shares and resets the TTL timer.
+// Reset destroys every accumulated share enclave and resets the TTL timer.
+// The unseal path calls this immediately after a successful reconstruction,
+// so reconstructed-quorum shares never linger.
 func (a *shamirShareAccumulator) Reset() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	for _, sec := range a.shares {
+		sec.Destroy()
+	}
 	a.seen = make(map[string]struct{})
-	a.shares = make([]*shamir.Share, 0, a.threshold)
+	a.shares = make([]*secure.Secret, 0, a.threshold)
 	a.createdAt = time.Now()
 }
 

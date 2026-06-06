@@ -36,6 +36,9 @@ type TSQueryRequest struct {
 	Tags       []TSTag `json:"tags,omitempty"`
 	Limit      int32   `json:"limit,omitempty"`
 	Descending bool    `json:"descending,omitempty"`
+	// Consistency selects the read-consistency level
+	// ("strong"/"linearizable"/"eventual"). Empty uses the server default.
+	Consistency string `json:"consistency,omitempty"`
 }
 
 // TSQueryResponse returns matching data points.
@@ -82,6 +85,9 @@ type TSAggregateRequest struct {
 	EndNs      int64   `json:"end_ns"`
 	Function   AggFunc `json:"function"`
 	IntervalNs int64   `json:"interval_ns,omitempty"`
+	// Consistency selects the read-consistency level
+	// ("strong"/"linearizable"/"eventual"). Empty uses the server default.
+	Consistency string `json:"consistency,omitempty"`
 }
 
 // TSAggResult is an aggregation result for a single interval.
@@ -107,6 +113,9 @@ type TSRichQueryRequest struct {
 	GroupBy     []string `json:"group_by,omitempty"`
 	Limit       int      `json:"limit,omitempty"`
 	Percentile  float64  `json:"percentile,omitempty"`
+	// Consistency selects the read-consistency level
+	// ("strong"/"linearizable"/"eventual"). Empty uses the server default.
+	Consistency string `json:"consistency,omitempty"`
 }
 
 // TSRichQueryResponse returns the results of a rich query.
@@ -163,6 +172,9 @@ type TSSetRetentionRequest struct {
 type TSListMetricsRequest struct {
 	Prefix string `json:"prefix,omitempty"`
 	Limit  int32  `json:"limit,omitempty"`
+	// Consistency selects the read-consistency level
+	// ("strong"/"linearizable"/"eventual"). Empty uses the server default.
+	Consistency string `json:"consistency,omitempty"`
 }
 
 // TSListMetricsResponse returns metric names.

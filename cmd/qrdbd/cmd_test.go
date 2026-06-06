@@ -16,6 +16,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -679,7 +680,7 @@ func TestBuildServerConfig(t *testing.T) {
 
 func TestPeerParseError(t *testing.T) {
 	err := &PeerParseError{Input: "badpeer"}
-	want := `cli: invalid peer format "badpeer", expected id=address`
+	want := `cluster: invalid peer format "badpeer", expected id=address`
 	if err.Error() != want {
 		t.Fatalf("PeerParseError.Error() = %q, want %q", err.Error(), want)
 	}
@@ -687,7 +688,7 @@ func TestPeerParseError(t *testing.T) {
 
 func TestMissingFlagError(t *testing.T) {
 	err := &MissingFlagError{Flag: "multicast-secret"}
-	want := "cli: required flag --multicast-secret is not set"
+	want := "cluster: required discovery input not set: multicast-secret"
 	if err.Error() != want {
 		t.Fatalf("MissingFlagError.Error() = %q, want %q", err.Error(), want)
 	}
@@ -695,7 +696,7 @@ func TestMissingFlagError(t *testing.T) {
 
 func TestNoPeersError(t *testing.T) {
 	err := &NoPeersError{}
-	want := "cli: no peers specified, use --peers flag with static discovery"
+	want := "cluster: no peers configured for static discovery"
 	if err.Error() != want {
 		t.Fatalf("NoPeersError.Error() = %q, want %q", err.Error(), want)
 	}
@@ -711,7 +712,7 @@ func TestUnknownSMError(t *testing.T) {
 
 func TestUnknownDiscoveryError(t *testing.T) {
 	err := &UnknownDiscoveryError{Name: "consul"}
-	want := `cli: unknown discovery method "consul"`
+	want := `cluster: unknown discovery method "consul"`
 	if err.Error() != want {
 		t.Fatalf("UnknownDiscoveryError.Error() = %q, want %q", err.Error(), want)
 	}
@@ -928,27 +929,9 @@ func TestSMFactories_Keys(t *testing.T) {
 	}
 }
 
-func TestDiscoveryBuilders_Keys(t *testing.T) {
-	expected := []string{"static", "multicast", "dns"}
-	for _, key := range expected {
-		if _, ok := discoveryBuilders[key]; !ok {
-			t.Fatalf("discoveryBuilders missing key %q", key)
-		}
-	}
-	if len(discoveryBuilders) != len(expected) {
-		t.Fatalf("discoveryBuilders has %d entries, want %d", len(discoveryBuilders), len(expected))
-	}
-}
-
-// ---------------------------------------------------------------------------
-// defaultMinPeers constant test
-// ---------------------------------------------------------------------------
-
-func TestDefaultMinPeers(t *testing.T) {
-	if defaultMinPeers != 3 {
-		t.Fatalf("defaultMinPeers = %d, want 3", defaultMinPeers)
-	}
-}
+// Discovery method builders and the minimum-peers default now live in
+// pkg/cluster; their behavior is covered by that package's tests
+// (TestBuildDiscovery_* and TestBootstrapShard_*).
 
 // ---------------------------------------------------------------------------
 // version variables test
@@ -1069,6 +1052,7 @@ func TestApplyConfigToFlags_AllFieldsFromConfig(t *testing.T) {
 		},
 		Raft: qrdbconfig.RaftConfig{
 			RaftAddress:          "10.0.0.5:63001",
+			ListenAddress:        "0.0.0.0:63001",
 			DataDir:              "/var/data/qrdb",
 			DeploymentID:         42,
 			SMType:               "memory",
@@ -1095,8 +1079,10 @@ func TestApplyConfigToFlags_AllFieldsFromConfig(t *testing.T) {
 	f := &startFlags{}
 	applyConfigToFlags(cmd, f, cfg)
 
-	if f.listen != "10.0.0.5:9443" {
-		t.Fatalf("listen = %q, want %q", f.listen, "10.0.0.5:9443")
+	// f.listen is the Raft host bind address, sourced from Raft.ListenAddress
+	// (preferred) — NOT the admin HTTP port.
+	if f.listen != "0.0.0.0:63001" {
+		t.Fatalf("listen = %q, want %q", f.listen, "0.0.0.0:63001")
 	}
 	if f.raftAddress != "10.0.0.5:63001" {
 		t.Fatalf("raftAddress = %q, want %q", f.raftAddress, "10.0.0.5:63001")
@@ -1498,7 +1484,7 @@ func TestStartShard_StaticDelegation(t *testing.T) {
 		peers:           []string{"1=127.0.0.1:63001"},
 	}
 
-	err := startShard(f, node, nil, quicraftconfig.Config{})
+	err := startShard(context.Background(), f, node, nil, quicraftconfig.Config{})
 	if err != nil {
 		t.Fatalf("startShard() error = %v, want nil", err)
 	}
@@ -1515,7 +1501,7 @@ func TestStartShard_NonStaticDelegation(t *testing.T) {
 		discoveryMethod: "unknown-method",
 	}
 
-	err := startShard(f, &mockRaftNode{}, nil, quicraftconfig.Config{})
+	err := startShard(context.Background(), f, &mockRaftNode{}, nil, quicraftconfig.Config{})
 	if err == nil {
 		t.Fatal("startShard() error = nil, want UnknownDiscoveryError")
 	}
@@ -1617,7 +1603,7 @@ func TestStartShardWithBootstrap_UnknownDiscovery(t *testing.T) {
 	node := &mockRaftNode{}
 	f := &startFlags{discoveryMethod: "consul"}
 
-	err := startShardWithBootstrap(f, node, nil, quicraftconfig.Config{})
+	err := startShardWithBootstrap(context.Background(), f, node, nil, quicraftconfig.Config{})
 	if err == nil {
 		t.Fatal("startShardWithBootstrap() error = nil, want UnknownDiscoveryError")
 	}
@@ -1637,7 +1623,7 @@ func TestStartShardWithBootstrap_DNSMissingDomain(t *testing.T) {
 		dnsDomain:       "", // Missing required domain.
 	}
 
-	err := startShardWithBootstrap(f, node, nil, quicraftconfig.Config{})
+	err := startShardWithBootstrap(context.Background(), f, node, nil, quicraftconfig.Config{})
 	if err == nil {
 		t.Fatal("startShardWithBootstrap() error = nil, want MissingFlagError")
 	}
@@ -1657,7 +1643,7 @@ func TestStartShardWithBootstrap_MulticastMissingSecret(t *testing.T) {
 		multicastSecret: "", // Missing required secret.
 	}
 
-	err := startShardWithBootstrap(f, node, nil, quicraftconfig.Config{})
+	err := startShardWithBootstrap(context.Background(), f, node, nil, quicraftconfig.Config{})
 	if err == nil {
 		t.Fatal("startShardWithBootstrap() error = nil, want MissingFlagError")
 	}
@@ -2124,7 +2110,7 @@ func TestStartShard_StaticWithEmptyPeersReturnsNoPeersError(t *testing.T) {
 	}
 	node := &mockRaftNode{}
 
-	err := startShard(f, node, nil, quicraftconfig.Config{})
+	err := startShard(context.Background(), f, node, nil, quicraftconfig.Config{})
 	if err == nil {
 		t.Fatal("startShard() error = nil, want NoPeersError")
 	}
@@ -2487,7 +2473,7 @@ func TestStartShardWithBootstrap_StaticDiscovery(t *testing.T) {
 		shardID:         1,
 	}
 
-	err := startShardWithBootstrap(f, node, nil, quicraftconfig.Config{ShardID: 1, ReplicaID: 1})
+	err := startShardWithBootstrap(context.Background(), f, node, nil, quicraftconfig.Config{ShardID: 1, ReplicaID: 1})
 	if err != nil {
 		t.Fatalf("startShardWithBootstrap() error = %v, want nil", err)
 	}
@@ -2512,7 +2498,7 @@ func TestStartShardWithBootstrap_StaticDiscoveryNodeError(t *testing.T) {
 		shardID:         1,
 	}
 
-	err := startShardWithBootstrap(f, node, nil, quicraftconfig.Config{ShardID: 1, ReplicaID: 1})
+	err := startShardWithBootstrap(context.Background(), f, node, nil, quicraftconfig.Config{ShardID: 1, ReplicaID: 1})
 	if err == nil {
 		t.Fatal("startShardWithBootstrap() error = nil, want non-nil")
 	}

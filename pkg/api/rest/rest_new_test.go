@@ -306,10 +306,14 @@ func (m *mockIndexService) ListIndexes(ctx context.Context) ([]string, error) {
 // ---------------------------------------------------------------------------
 
 type mockTimeSeriesService struct {
-	writeFn      func(ctx context.Context, metric string, value float64, timestamp time.Time, tags map[string]string) error
-	writeBatchFn func(ctx context.Context, points []timeseries.DataPoint) error
-	queryFn      func(ctx context.Context, metric string, start, end time.Time, opts ...timeseries.TSQueryOption) ([]timeseries.DataPoint, error)
-	aggregateFn  func(ctx context.Context, metric string, start, end time.Time, fn timeseries.AggFunc, interval time.Duration) ([]timeseries.AggResult, error)
+	writeFn                      func(ctx context.Context, metric string, value float64, timestamp time.Time, tags map[string]string) error
+	writeBatchFn                 func(ctx context.Context, points []timeseries.DataPoint) error
+	queryFn                      func(ctx context.Context, metric string, start, end time.Time, opts ...timeseries.TSQueryOption) ([]timeseries.DataPoint, error)
+	queryWithConsistencyFn       func(ctx context.Context, metric string, start, end time.Time, ropts consistency.ReadOptions, opts ...timeseries.TSQueryOption) ([]timeseries.DataPoint, error)
+	aggregateFn                  func(ctx context.Context, metric string, start, end time.Time, fn timeseries.AggFunc, interval time.Duration) ([]timeseries.AggResult, error)
+	aggregateWithConsistencyFn   func(ctx context.Context, metric string, start, end time.Time, fn timeseries.AggFunc, interval time.Duration, ropts consistency.ReadOptions) ([]timeseries.AggResult, error)
+	listMetricsWithConsistencyFn func(ctx context.Context, prefix string, limit int, ropts consistency.ReadOptions) ([]string, error)
+	queryRichWithConsistencyFn   func(ctx context.Context, req *timeseries.QueryRequest, ropts consistency.ReadOptions) (*timeseries.QueryResult, error)
 }
 
 func (m *mockTimeSeriesService) Write(ctx context.Context, metric string, value float64, timestamp time.Time, tags map[string]string) error {
@@ -333,11 +337,25 @@ func (m *mockTimeSeriesService) Query(ctx context.Context, metric string, start,
 	return nil, nil
 }
 
+func (m *mockTimeSeriesService) QueryWithConsistency(ctx context.Context, metric string, start, end time.Time, ropts consistency.ReadOptions, opts ...timeseries.TSQueryOption) ([]timeseries.DataPoint, error) {
+	if m.queryWithConsistencyFn != nil {
+		return m.queryWithConsistencyFn(ctx, metric, start, end, ropts, opts...)
+	}
+	return m.Query(ctx, metric, start, end, opts...)
+}
+
 func (m *mockTimeSeriesService) Aggregate(ctx context.Context, metric string, start, end time.Time, fn timeseries.AggFunc, interval time.Duration) ([]timeseries.AggResult, error) {
 	if m.aggregateFn != nil {
 		return m.aggregateFn(ctx, metric, start, end, fn, interval)
 	}
 	return nil, nil
+}
+
+func (m *mockTimeSeriesService) AggregateWithConsistency(ctx context.Context, metric string, start, end time.Time, fn timeseries.AggFunc, interval time.Duration, ropts consistency.ReadOptions) ([]timeseries.AggResult, error) {
+	if m.aggregateWithConsistencyFn != nil {
+		return m.aggregateWithConsistencyFn(ctx, metric, start, end, fn, interval, ropts)
+	}
+	return m.Aggregate(ctx, metric, start, end, fn, interval)
 }
 
 func (m *mockTimeSeriesService) DeleteSeries(_ context.Context, _ *timeseries.DeleteRequest) error {
@@ -348,8 +366,15 @@ func (m *mockTimeSeriesService) WritePoint(_ context.Context, _ *timeseries.Data
 	return nil
 }
 
-func (m *mockTimeSeriesService) QueryRich(_ context.Context, _ *timeseries.QueryRequest) (*timeseries.QueryResult, error) {
+func (m *mockTimeSeriesService) QueryRich(ctx context.Context, req *timeseries.QueryRequest) (*timeseries.QueryResult, error) {
 	return nil, nil
+}
+
+func (m *mockTimeSeriesService) QueryRichWithConsistency(ctx context.Context, req *timeseries.QueryRequest, ropts consistency.ReadOptions) (*timeseries.QueryResult, error) {
+	if m.queryRichWithConsistencyFn != nil {
+		return m.queryRichWithConsistencyFn(ctx, req, ropts)
+	}
+	return m.QueryRich(ctx, req)
 }
 
 func (m *mockTimeSeriesService) GetRetentionPolicy(_ string) (*timeseries.RetentionPolicy, error) {
@@ -362,6 +387,13 @@ func (m *mockTimeSeriesService) SetRetentionPolicy(_ string, _ *timeseries.Reten
 
 func (m *mockTimeSeriesService) ListMetrics(_ string, _ int) ([]string, error) {
 	return nil, nil
+}
+
+func (m *mockTimeSeriesService) ListMetricsWithConsistency(ctx context.Context, prefix string, limit int, ropts consistency.ReadOptions) ([]string, error) {
+	if m.listMetricsWithConsistencyFn != nil {
+		return m.listMetricsWithConsistencyFn(ctx, prefix, limit, ropts)
+	}
+	return m.ListMetrics(prefix, limit)
 }
 
 // ---------------------------------------------------------------------------
@@ -378,27 +410,6 @@ func newFlushableRecorder() *flushableRecorder {
 }
 
 func (f *flushableRecorder) Flush() { f.flushed++ }
-
-// ---------------------------------------------------------------------------
-// helpers
-// ---------------------------------------------------------------------------
-
-func newDefaultKVSvc() *mockKVService       { return &mockKVService{} }
-func newDefaultAdminSvc() *mockAdminService { return &mockAdminService{} }
-
-func decodeJSON(t *testing.T, rec *httptest.ResponseRecorder, dst any) {
-	t.Helper()
-	if err := json.NewDecoder(rec.Body).Decode(dst); err != nil {
-		t.Fatalf("decode JSON response: %v", err)
-	}
-}
-
-func assertStatus(t *testing.T, rec *httptest.ResponseRecorder, want int) {
-	t.Helper()
-	if rec.Code != want {
-		t.Fatalf("status = %d, want %d; body = %s", rec.Code, want, rec.Body.String())
-	}
-}
 
 // ---------------------------------------------------------------------------
 // Server option tests
@@ -1477,13 +1488,16 @@ func TestHandleLeaseGrant_Success(t *testing.T) {
 }
 
 func TestHandleLeaseGrant_NilService(t *testing.T) {
+	// With route gating, /lease/grant is not registered without a lease service.
+	// The dispatcher returns 404 (route not found) rather than reaching a handler
+	// that would propose to a SM without a lease subsystem (which would stall reads).
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0")
 
 	req := httptest.NewRequest(http.MethodPost, "/lease/grant", strings.NewReader(`{"ttl":60}`))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
-	assertStatus(t, rec, http.StatusNotImplemented)
+	assertStatus(t, rec, http.StatusNotFound)
 }
 
 func TestHandleLeaseGrant_BadBody(t *testing.T) {
@@ -1531,13 +1545,14 @@ func TestHandleLeaseRevoke_Success(t *testing.T) {
 }
 
 func TestHandleLeaseRevoke_NilService(t *testing.T) {
+	// Route not registered without lease service — 404 from dispatcher.
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0")
 
 	req := httptest.NewRequest(http.MethodPost, "/lease/revoke", strings.NewReader(`{"lease_id":100}`))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
-	assertStatus(t, rec, http.StatusNotImplemented)
+	assertStatus(t, rec, http.StatusNotFound)
 }
 
 func TestHandleLeaseRevoke_BadBody(t *testing.T) {
@@ -1587,13 +1602,14 @@ func TestHandleLeaseKeepAlive_Success(t *testing.T) {
 }
 
 func TestHandleLeaseKeepAlive_NilService(t *testing.T) {
+	// Route not registered without lease service — 404 from dispatcher.
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0")
 
 	req := httptest.NewRequest(http.MethodPost, "/lease/keepalive", strings.NewReader(`{"lease_id":100}`))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
-	assertStatus(t, rec, http.StatusNotImplemented)
+	assertStatus(t, rec, http.StatusNotFound)
 }
 
 func TestHandleLeaseKeepAlive_BadBody(t *testing.T) {
@@ -1643,13 +1659,14 @@ func TestHandleLeaseTimeToLive_Success(t *testing.T) {
 }
 
 func TestHandleLeaseTimeToLive_NilService(t *testing.T) {
+	// Route not registered without lease service — 404 from dispatcher.
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0")
 
 	req := httptest.NewRequest(http.MethodGet, "/lease/ttl?lease_id=100", nil)
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
-	assertStatus(t, rec, http.StatusNotImplemented)
+	assertStatus(t, rec, http.StatusNotFound)
 }
 
 func TestHandleLeaseTimeToLive_MissingParam(t *testing.T) {
@@ -1713,13 +1730,14 @@ func TestHandleLeaseList_Success(t *testing.T) {
 }
 
 func TestHandleLeaseList_NilService(t *testing.T) {
+	// Route not registered without lease service — 404 from dispatcher.
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0")
 
 	req := httptest.NewRequest(http.MethodGet, "/lease/list", nil)
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
-	assertStatus(t, rec, http.StatusNotImplemented)
+	assertStatus(t, rec, http.StatusNotFound)
 }
 
 func TestHandleLeaseList_ServiceError(t *testing.T) {
@@ -3058,47 +3076,6 @@ func TestHandleKVPut_BodyReadError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Vector Get with valid consistency level
-// ---------------------------------------------------------------------------
-
-func TestHandleVectorGet_WithConsistency_Success(t *testing.T) {
-	var captured *service.GetVectorRequest
-	vecSvc := &mockVectorService{
-		getVectorFn: func(_ context.Context, req *service.GetVectorRequest) (*service.GetVectorResponse, error) {
-			captured = req
-			return &service.GetVectorResponse{
-				ID:     req.ID,
-				Vector: []float32{1.0, 2.0},
-				Found:  true,
-			}, nil
-		},
-	}
-	srv := newVectorServer(vecSvc)
-
-	req := httptest.NewRequest(http.MethodGet, "/vector/get?namespace=ns&id=1&consistency=2", nil)
-	rec := httptest.NewRecorder()
-	srv.dispatch(rec, req)
-
-	assertStatus(t, rec, http.StatusOK)
-	if captured == nil {
-		t.Fatal("GetVector was not called")
-	}
-	if captured.Consistency != 2 {
-		t.Fatalf("consistency = %d, want 2", captured.Consistency)
-	}
-}
-
-func TestHandleVectorGet_InvalidConsistency_NonNumeric(t *testing.T) {
-	srv := newVectorServer(&mockVectorService{})
-
-	req := httptest.NewRequest(http.MethodGet, "/vector/get?namespace=ns&id=1&consistency=abc", nil)
-	rec := httptest.NewRecorder()
-	srv.dispatch(rec, req)
-
-	assertStatus(t, rec, http.StatusBadRequest)
-}
-
-// ---------------------------------------------------------------------------
 // Direct handler calls with nil services (defensive guard coverage)
 // ---------------------------------------------------------------------------
 // These test the nil-service checks inside handlers that are normally
@@ -3130,7 +3107,7 @@ func TestHandleListUsers_NilService_Direct(t *testing.T) {
 func TestHandleUser_NilService_Direct(t *testing.T) {
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0")
 
-	req := httptest.NewRequest(http.MethodGet, "/users/user-001", nil)
+	req := httptest.NewRequest(http.MethodGet, "/users/9001", nil)
 	rec := httptest.NewRecorder()
 	srv.handleUser(rec, req)
 

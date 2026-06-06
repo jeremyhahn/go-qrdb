@@ -84,22 +84,6 @@ func (s *embeddableBarrierService) BarrierUnsealWithShares(_ context.Context, _ 
 	return nil
 }
 
-func (s *embeddableBarrierService) BarrierShamirListShares(_ context.Context) (*service.ShamirSharesInfo, error) {
-	return &service.ShamirSharesInfo{Count: 3, Threshold: 2, Total: 3}, nil
-}
-
-func (s *embeddableBarrierService) BarrierShamirDeleteShare(_ context.Context, _ int) error {
-	return nil
-}
-
-func (s *embeddableBarrierService) BarrierShamirDeleteAllShares(_ context.Context) error {
-	return nil
-}
-
-func (s *embeddableBarrierService) BarrierShamirVerify(_ context.Context) error {
-	return nil
-}
-
 func (s *embeddableBarrierService) BarrierRekey(_ context.Context, threshold, total int) (*service.ShamirInitInfo, error) {
 	shares := make([]string, total)
 	for i := range shares {

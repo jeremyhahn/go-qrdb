@@ -31,4 +31,21 @@ var (
 
 	// ErrCredentialAlreadySubmitted is returned when a manual credential has already been submitted.
 	ErrCredentialAlreadySubmitted = errors.New("credentials: credential already submitted")
+
+	// ErrEnumerationNotSupported is returned by ListCredentials when the
+	// active backend cannot enumerate stored credentials (e.g. an
+	// HSM-backed strategy that only supports get/set by name).
+	ErrEnumerationNotSupported = errors.New("credentials: enumeration not supported by backend")
+
+	// ErrVersionNotFound is returned when RetrieveCredentialVersion is
+	// asked for a version that was never written.
+	ErrVersionNotFound = errors.New("credentials: version not found")
+
+	// ErrVersionExpired is returned when RetrieveCredentialVersion is
+	// asked for a historical version whose grace period has elapsed.
+	ErrVersionExpired = errors.New("credentials: version grace period expired")
+
+	// ErrInvalidGracePeriod is returned when RotateCredential is called
+	// with a negative grace period.
+	ErrInvalidGracePeriod = errors.New("credentials: grace period must not be negative")
 )

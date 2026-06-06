@@ -14,6 +14,23 @@
 
 package transport
 
+import "context"
+
+// EmbeddingClient is the transport-agnostic interface for text embedding
+// operations. Each transport (embedded, gRPC, REST, QUIC, MCP) implements it.
+type EmbeddingClient interface {
+	// Embed generates embedding vectors for one or more texts.
+	Embed(ctx context.Context, req *EmbedRequest) (*EmbedResponse, error)
+
+	// BatchEmbed embeds a large set of texts, splitting them into provider
+	// sub-batches and aggregating the results in input order.
+	BatchEmbed(ctx context.Context, req *BatchEmbedRequest) (*BatchEmbedResponse, error)
+
+	// ListEmbeddingModels returns the embedding models available from a
+	// provider. An empty provider queries the service default.
+	ListEmbeddingModels(ctx context.Context, provider string) (*ListEmbeddingModelsResponse, error)
+}
+
 // EmbedRequest is the SDK request for generating text embeddings.
 type EmbedRequest struct {
 	// Texts is the list of strings to embed. Must contain at least one element.

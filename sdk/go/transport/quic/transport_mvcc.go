@@ -86,6 +86,61 @@ var sortTargetToProto = map[transport.SortTarget]pb.SortTarget{
 	transport.SortByValue:          pb.SortTarget_SORT_BY_VALUE,
 }
 
+// vectorConsistencyToProto maps a transport.ConsistencyLevel stored as a
+// uint8 in vector request types to its proto ConsistencyLevel equivalent.
+// The zero value (ConsistencyStrong) maps to STRONG so that the server
+// preserves the same behavior clients received when the field was int32.
+func vectorConsistencyToProto(level uint8) pb.ConsistencyLevel {
+	switch transport.ConsistencyLevel(level) {
+	case transport.ConsistencyLinearizable:
+		return pb.ConsistencyLevel_CONSISTENCY_LEVEL_LINEARIZABLE
+	case transport.ConsistencyEventual:
+		return pb.ConsistencyLevel_CONSISTENCY_LEVEL_EVENTUAL
+	default:
+		// ConsistencyStrong (0) and any unrecognized value → STRONG.
+		return pb.ConsistencyLevel_CONSISTENCY_LEVEL_STRONG
+	}
+}
+
+// protoConsistency resolves read options into the proto ConsistencyLevel
+// carried in the request body. UNSPECIFIED is returned when no consistency
+// was requested, letting the server apply its default. An explicit
+// WithAllowStale (without a level) maps to EVENTUAL.
+func protoConsistency(opts ...transport.ReadOption) pb.ConsistencyLevel {
+	ro := transport.ResolveReadOptions(opts...)
+	if ro.ConsistencySet {
+		switch ro.Consistency {
+		case transport.ConsistencyStrong:
+			return pb.ConsistencyLevel_CONSISTENCY_LEVEL_STRONG
+		case transport.ConsistencyLinearizable:
+			return pb.ConsistencyLevel_CONSISTENCY_LEVEL_LINEARIZABLE
+		case transport.ConsistencyEventual:
+			return pb.ConsistencyLevel_CONSISTENCY_LEVEL_EVENTUAL
+		}
+	}
+	if ro.AllowStale {
+		return pb.ConsistencyLevel_CONSISTENCY_LEVEL_EVENTUAL
+	}
+	return pb.ConsistencyLevel_CONSISTENCY_LEVEL_UNSPECIFIED
+}
+
+// protoWriteMode resolves write options into the proto WriteMode carried in
+// the request body. UNSPECIFIED is returned when no mode was requested.
+func protoWriteMode(opts ...transport.WriteOption) pb.WriteMode {
+	wo := transport.ResolveWriteOptions(opts...)
+	if wo.ModeSet {
+		switch wo.Mode {
+		case transport.WriteModeSync:
+			return pb.WriteMode_WRITE_MODE_SYNC
+		case transport.WriteModeWALDurable:
+			return pb.WriteMode_WRITE_MODE_WAL_DURABLE
+		case transport.WriteModeBatched:
+			return pb.WriteMode_WRITE_MODE_BATCHED
+		}
+	}
+	return pb.WriteMode_WRITE_MODE_UNSPECIFIED
+}
+
 // compareTargetToProto converts transport CompareTarget to proto CompareTarget.
 var compareTargetToProto = map[transport.CompareTarget]pb.CompareTarget{
 	transport.CompareVersion:        pb.CompareTarget_COMPARE_VERSION,
@@ -115,17 +170,19 @@ var opTypeToProto = map[transport.OpType]pb.OpType{
 // ---------------------------------------------------------------------------
 
 // PutWithLease stores a key-value pair with an attached lease through
-// the QUIC transport. When the lease expires, the key is automatically
-// deleted.
+// the QUIC transport. When opts specify a write mode, the WriteMode proto
+// field is set on the request so the server routes to the appropriate write
+// path. When the lease expires, the key is automatically deleted.
 func (t *Transport) PutWithLease(ctx context.Context, key string, value []byte, leaseID int64, opts ...transport.WriteOption) (*transport.MVCCKeyValue, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
 
 	payload, err := proto.Marshal(&pb.PutWithLeaseRequest{
-		Key:     key,
-		Value:   value,
-		LeaseId: leaseID,
+		Key:       key,
+		Value:     value,
+		LeaseId:   leaseID,
+		WriteMode: protoWriteMode(opts...),
 	})
 	if err != nil {
 		return nil, &marshalError{Err: err}
@@ -145,14 +202,17 @@ func (t *Transport) PutWithLease(ctx context.Context, key string, value []byte, 
 }
 
 // GetRevision retrieves a key-value pair with full MVCC revision metadata
-// at the latest committed revision through the QUIC transport.
+// at the latest committed revision through the QUIC transport. When opts
+// specify a consistency level, the ConsistencyLevel proto field is set on
+// the request.
 func (t *Transport) GetRevision(ctx context.Context, key string, opts ...transport.ReadOption) (*transport.MVCCKeyValue, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
 
 	payload, err := proto.Marshal(&pb.GetRevisionRequest{
-		Key: key,
+		Key:         key,
+		Consistency: protoConsistency(opts...),
 	})
 	if err != nil {
 		return nil, &marshalError{Err: err}
@@ -172,16 +232,18 @@ func (t *Transport) GetRevision(ctx context.Context, key string, opts ...transpo
 }
 
 // GetAtRevision retrieves a key-value pair at a historical MVCC revision
-// through the QUIC transport. Returns RevisionCompactedError when the
-// revision has been compacted.
+// through the QUIC transport. When opts specify a consistency level, the
+// ConsistencyLevel proto field is set on the request. Returns
+// RevisionCompactedError when the revision has been compacted.
 func (t *Transport) GetAtRevision(ctx context.Context, key string, revision int64, opts ...transport.ReadOption) (*transport.MVCCKeyValue, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
 
 	payload, err := proto.Marshal(&pb.GetAtRevisionRequest{
-		Key:      key,
-		Revision: revision,
+		Key:         key,
+		Revision:    revision,
+		Consistency: protoConsistency(opts...),
 	})
 	if err != nil {
 		return nil, &marshalError{Err: err}
@@ -201,22 +263,24 @@ func (t *Transport) GetAtRevision(ctx context.Context, key string, revision int6
 }
 
 // Range returns key-value pairs in the half-open interval [start, end)
-// through the QUIC transport. It supports limit, revision, count-only,
-// keys-only, and sort options.
+// through the QUIC transport. When opts specify a consistency level, the
+// ConsistencyLevel proto field is set on the request. It supports limit,
+// revision, count-only, keys-only, and sort options.
 func (t *Transport) Range(ctx context.Context, start, end []byte, rangeOpts transport.RangeOptions, opts ...transport.ReadOption) (*transport.RangeResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
 
 	payload, err := proto.Marshal(&pb.RangeRequest{
-		Start:      start,
-		End:        end,
-		Limit:      rangeOpts.Limit,
-		Revision:   rangeOpts.Revision,
-		CountOnly:  rangeOpts.CountOnly,
-		KeysOnly:   rangeOpts.KeysOnly,
-		SortOrder:  sortOrderToProto[rangeOpts.SortOrder],
-		SortTarget: sortTargetToProto[rangeOpts.SortTarget],
+		Start:       start,
+		End:         end,
+		Limit:       rangeOpts.Limit,
+		Revision:    rangeOpts.Revision,
+		CountOnly:   rangeOpts.CountOnly,
+		KeysOnly:    rangeOpts.KeysOnly,
+		SortOrder:   sortOrderToProto[rangeOpts.SortOrder],
+		SortTarget:  sortTargetToProto[rangeOpts.SortTarget],
+		Consistency: protoConsistency(opts...),
 	})
 	if err != nil {
 		return nil, &marshalError{Err: err}

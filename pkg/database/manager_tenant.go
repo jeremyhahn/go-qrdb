@@ -25,7 +25,7 @@ import (
 // It sets cfg.TenantID from the context and delegates to Create.
 func (m *Manager) CreateForTenant(ctx context.Context, cfg DatabaseConfig) (*Database, error) {
 	tenantID := tenant.FromContext(ctx)
-	if tenantID == tenant.DefaultTenantID {
+	if tenantID == tenant.SystemTenantID {
 		return nil, &TenantIDRequiredError{Operation: "CreateForTenant"}
 	}
 	cfg.TenantID = tenantID
@@ -36,7 +36,7 @@ func (m *Manager) CreateForTenant(ctx context.Context, cfg DatabaseConfig) (*Dat
 // Returns TenantAccessDeniedError if the database belongs to a different tenant.
 func (m *Manager) GetForTenant(ctx context.Context, name string) (*Database, error) {
 	tenantID := tenant.FromContext(ctx)
-	if tenantID == tenant.DefaultTenantID {
+	if tenantID == tenant.SystemTenantID {
 		return nil, &TenantIDRequiredError{Operation: "GetForTenant"}
 	}
 
@@ -59,7 +59,7 @@ func (m *Manager) GetForTenant(ctx context.Context, name string) (*Database, err
 // Results are sorted by name.
 func (m *Manager) ListForTenant(ctx context.Context) ([]DatabaseInfo, error) {
 	tenantID := tenant.FromContext(ctx)
-	if tenantID == tenant.DefaultTenantID {
+	if tenantID == tenant.SystemTenantID {
 		return nil, &TenantIDRequiredError{Operation: "ListForTenant"}
 	}
 
@@ -81,7 +81,7 @@ func (m *Manager) ListForTenant(ctx context.Context) ([]DatabaseInfo, error) {
 // Returns TenantAccessDeniedError if the database belongs to a different tenant.
 func (m *Manager) DropForTenant(ctx context.Context, name string) error {
 	tenantID := tenant.FromContext(ctx)
-	if tenantID == tenant.DefaultTenantID {
+	if tenantID == tenant.SystemTenantID {
 		return &TenantIDRequiredError{Operation: "DropForTenant"}
 	}
 
@@ -103,7 +103,7 @@ func (m *Manager) DropForTenant(ctx context.Context, name string) error {
 // UpdateProtocolForTenant updates protocol config after verifying tenant ownership.
 func (m *Manager) UpdateProtocolForTenant(ctx context.Context, name string, protocol ProtocolConfig) error {
 	tenantID := tenant.FromContext(ctx)
-	if tenantID == tenant.DefaultTenantID {
+	if tenantID == tenant.SystemTenantID {
 		return &TenantIDRequiredError{Operation: "UpdateProtocolForTenant"}
 	}
 
@@ -124,7 +124,7 @@ func (m *Manager) UpdateProtocolForTenant(ctx context.Context, name string, prot
 // UpdateEtcdForTenant updates etcd config after verifying tenant ownership.
 func (m *Manager) UpdateEtcdForTenant(ctx context.Context, name string, etcd *EtcdConfig) error {
 	tenantID := tenant.FromContext(ctx)
-	if tenantID == tenant.DefaultTenantID {
+	if tenantID == tenant.SystemTenantID {
 		return &TenantIDRequiredError{Operation: "UpdateEtcdForTenant"}
 	}
 
@@ -145,7 +145,7 @@ func (m *Manager) UpdateEtcdForTenant(ctx context.Context, name string, etcd *Et
 // UpdateRaftForTenant updates Raft config after verifying tenant ownership.
 func (m *Manager) UpdateRaftForTenant(ctx context.Context, name string, raft *DatabaseRaftConfig) error {
 	tenantID := tenant.FromContext(ctx)
-	if tenantID == tenant.DefaultTenantID {
+	if tenantID == tenant.SystemTenantID {
 		return &TenantIDRequiredError{Operation: "UpdateRaftForTenant"}
 	}
 
@@ -166,7 +166,7 @@ func (m *Manager) UpdateRaftForTenant(ctx context.Context, name string, raft *Da
 // UpdateBarrierForTenant updates barrier config after verifying tenant ownership.
 func (m *Manager) UpdateBarrierForTenant(ctx context.Context, name string, barrier *DatabaseBarrierConfig) error {
 	tenantID := tenant.FromContext(ctx)
-	if tenantID == tenant.DefaultTenantID {
+	if tenantID == tenant.SystemTenantID {
 		return &TenantIDRequiredError{Operation: "UpdateBarrierForTenant"}
 	}
 
@@ -187,7 +187,7 @@ func (m *Manager) UpdateBarrierForTenant(ctx context.Context, name string, barri
 // UpdateConnectionForTenant updates connection config after verifying tenant ownership.
 func (m *Manager) UpdateConnectionForTenant(ctx context.Context, name string, conn *DatabaseConnectionConfig) error {
 	tenantID := tenant.FromContext(ctx)
-	if tenantID == tenant.DefaultTenantID {
+	if tenantID == tenant.SystemTenantID {
 		return &TenantIDRequiredError{Operation: "UpdateConnectionForTenant"}
 	}
 

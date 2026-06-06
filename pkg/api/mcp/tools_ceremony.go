@@ -37,6 +37,9 @@ func ceremonyTools(svc service.CeremonyServicer, ca ceremony.CeremonyCA) []mcpse
 		{Tool: toolCeremonyClaimCertComplete(), Handler: handleCeremonyClaimCertComplete(svc)},
 		{Tool: toolCeremonyClaimShare(), Handler: handleCeremonyClaimShare(svc)},
 		{Tool: toolCeremonySignCSR(), Handler: handleCeremonySignCSR(svc)},
+		{Tool: toolCeremonyClaimShareBegin(), Handler: handleCeremonyClaimShareBegin(svc)},
+		{Tool: toolCeremonyClaimShareComplete(), Handler: handleCeremonyClaimShareComplete(svc)},
+		{Tool: toolCeremonySubmitUnsealShare(), Handler: handleCeremonySubmitUnsealShare(svc)},
 	}
 }
 
@@ -44,17 +47,27 @@ func ceremonyTools(svc service.CeremonyServicer, ca ceremony.CeremonyCA) []mcpse
 func toolCeremonyInitialize() mcp.Tool {
 	return mcp.NewTool("qrdb_ceremony_initialize",
 		mcp.WithDescription("Initialize the system ceremony, issuing TLS and SO certificates and optionally starting M-of-N enrollment."),
+		mcp.WithString("so_pin",
+			mcp.Description("The Security Officer PIN to seal at initialization. Takes precedence over server configuration when provided."),
+		),
+		mcp.WithString("user_pin",
+			mcp.Description("The user-level PIN to seal at initialization. Takes precedence over server configuration when provided."),
+		),
 	)
 }
 
 // handleCeremonyInitialize returns a tool handler that delegates to
 // svc.CeremonyInitialize with the pre-configured ceremony CA.
 func handleCeremonyInitialize(svc service.CeremonyServicer, ca ceremony.CeremonyCA) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		if ca == nil {
 			return nil, &ToolError{Tool: "qrdb_ceremony_initialize", Err: ErrCeremonyCANotConfigured}
 		}
-		result, err := svc.CeremonyInitialize(ctx, ca)
+		opts := &service.CeremonyInitializeOptions{
+			SOPin:   mcp.ParseString(req, "so_pin", ""),
+			UserPin: mcp.ParseString(req, "user_pin", ""),
+		}
+		result, err := svc.CeremonyInitialize(ctx, ca, opts)
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_ceremony_initialize", Err: err}
 		}

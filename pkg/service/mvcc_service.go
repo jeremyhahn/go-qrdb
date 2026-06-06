@@ -144,9 +144,14 @@ func NewMVCCKVService(host Host, shardID uint64) MVCCKVServicer {
 // tracking. The value is stored with a zero lease ID.
 func (s *MVCCKVService) Put(ctx context.Context, key string, value []byte) error {
 	cmd := protocol.EncodeMVCCPut([]byte(key), value, 0)
-	_, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
 		return s.translateProposeError(err)
+	}
+	// Surface a state-machine-encoded application error (e.g. a unique-index
+	// violation that rejected the write without stalling consensus).
+	if resultErr := checkResultError(result); resultErr != nil {
+		return resultErr
 	}
 	return nil
 }
@@ -327,9 +332,12 @@ func (s *MVCCKVService) ScanStale(ctx context.Context, prefix string) (map[strin
 // with a zero lease ID.
 func (s *MVCCKVService) PutWithMode(ctx context.Context, key string, value []byte, mode writemode.Mode) error {
 	cmd := protocol.EncodeMVCCPut([]byte(key), value, 0)
-	_, err := s.host.ProposeWithMode(ctx, s.shardID, cmd, mode)
+	result, err := s.host.ProposeWithMode(ctx, s.shardID, cmd, mode)
 	if err != nil {
 		return s.translateProposeError(err)
+	}
+	if resultErr := checkResultError(result); resultErr != nil {
+		return resultErr
 	}
 	return nil
 }
@@ -452,6 +460,9 @@ func (s *MVCCKVService) PutWithLease(ctx context.Context, key string, value []by
 	if err != nil {
 		return nil, s.translateProposeError(err)
 	}
+	if resultErr := checkResultError(result); resultErr != nil {
+		return nil, resultErr
+	}
 
 	// The state machine returns the assigned revision in Result.Value.
 	// Perform a follow-up read to get the full KeyValue with metadata.
@@ -481,6 +492,9 @@ func (s *MVCCKVService) PutWithLeaseAndMode(ctx context.Context, key string, val
 	result, err := s.host.ProposeWithMode(ctx, s.shardID, cmd, mode)
 	if err != nil {
 		return nil, s.translateProposeError(err)
+	}
+	if resultErr := checkResultError(result); resultErr != nil {
+		return nil, resultErr
 	}
 
 	// The state machine returns the assigned revision in Result.Value.

@@ -135,13 +135,16 @@ func TestMVCCLease_LeaseGrant_CreatesLease(t *testing.T) {
 func TestMVCCLease_LeaseGrant_InvalidTTL(t *testing.T) {
 	s, _ := newTestMVCCWithLessor(t)
 
-	// TTL of 0 should cause the lessor to reject the grant.
+	// TTL of 0 should cause the lessor to reject the grant as a non-fatal
+	// app-error (a Go error from Update() would stall the Raft group).
 	cmd := protocol.EncodeLeaseGrant(0)
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for TTL=0")
+	if err := s.Update(context.Background(), entries, results); err != nil {
+		t.Fatalf("Update must not return a fatal error for TTL=0: %v", err)
+	}
+	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
+		t.Fatal("expected app-error payload for TTL=0")
 	}
 }
 
@@ -172,14 +175,11 @@ func TestMVCCLease_LeaseGrant_NoLessor(t *testing.T) {
 	cmd := protocol.EncodeLeaseGrant(60)
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
-	err = s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error when granting lease without lessor")
+	if err = s.Update(context.Background(), entries, results); err != nil {
+		t.Fatalf("Update must not return a fatal error granting lease without lessor: %v", err)
 	}
-
-	var notOpen *engine.NotOpenError
-	if !errors.As(err, &notOpen) {
-		t.Fatalf("expected *engine.NotOpenError, got %T: %v", err, err)
+	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
+		t.Fatal("expected app-error payload when granting lease without lessor")
 	}
 }
 
@@ -200,14 +200,11 @@ func TestMVCCLease_LeaseRevoke_NoLessor(t *testing.T) {
 	cmd := protocol.EncodeLeaseRevoke(1)
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
-	err = s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error when revoking lease without lessor")
+	if err = s.Update(context.Background(), entries, results); err != nil {
+		t.Fatalf("Update must not return a fatal error revoking lease without lessor: %v", err)
 	}
-
-	var notOpen *engine.NotOpenError
-	if !errors.As(err, &notOpen) {
-		t.Fatalf("expected *engine.NotOpenError, got %T: %v", err, err)
+	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
+		t.Fatal("expected app-error payload when revoking lease without lessor")
 	}
 }
 
@@ -227,13 +224,18 @@ func TestMVCCLease_LeaseRevoke_InvalidPayload(t *testing.T) {
 func TestMVCCLease_LeaseRevoke_NonExistentLease(t *testing.T) {
 	s, _ := newTestMVCCWithLessor(t)
 
-	// Revoke a lease that does not exist should return an error.
+	// Revoking a non-existent lease is a no-op success (idempotent). A
+	// non-nil error from a Raft Update() handler permanently stalls the
+	// cluster, so revoke-not-found must succeed without error.
 	cmd := protocol.EncodeLeaseRevoke(99999)
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for revoking non-existent lease")
+	if err := s.Update(context.Background(), entries, results); err != nil {
+		t.Fatalf("revoke non-existent: expected no-op success, got error: %v", err)
+	}
+	// Value is 0: no attached keys were deleted.
+	if results[0].Value != 0 {
+		t.Fatalf("revoke non-existent: expected result 0, got %d", results[0].Value)
 	}
 }
 
@@ -350,13 +352,18 @@ func TestMVCCLease_LeaseKeepAlive_ResetsExpiry(t *testing.T) {
 func TestMVCCLease_LeaseKeepAlive_NonExistentLease(t *testing.T) {
 	s, _ := newTestMVCCWithLessor(t)
 
-	// KeepAlive on a lease that does not exist should return an error.
+	// KeepAlive on a non-existent lease is a no-op success (idempotent). A
+	// non-nil error from a Raft Update() handler permanently stalls the
+	// cluster, so keepalive-not-found must succeed without error.
 	cmd := protocol.EncodeLeaseKeepAlive(99999)
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for keep-alive on non-existent lease")
+	if err := s.Update(context.Background(), entries, results); err != nil {
+		t.Fatalf("keepalive non-existent: expected no-op success, got error: %v", err)
+	}
+	// Value is 0 when the lease is not found (no lease ID echoed back).
+	if results[0].Value != 0 {
+		t.Fatalf("keepalive non-existent: expected result 0, got %d", results[0].Value)
 	}
 }
 
@@ -386,14 +393,11 @@ func TestMVCCLease_LeaseKeepAlive_NoLessor(t *testing.T) {
 	cmd := protocol.EncodeLeaseKeepAlive(999)
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
-	err = s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error when keep-alive without lessor")
+	if err = s.Update(context.Background(), entries, results); err != nil {
+		t.Fatalf("Update must not return a fatal error on keep-alive without lessor: %v", err)
 	}
-
-	var notOpen *engine.NotOpenError
-	if !errors.As(err, &notOpen) {
-		t.Fatalf("expected *engine.NotOpenError, got %T: %v", err, err)
+	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
+		t.Fatal("expected app-error payload when keep-alive without lessor")
 	}
 }
 

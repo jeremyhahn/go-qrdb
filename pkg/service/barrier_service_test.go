@@ -40,7 +40,7 @@ func newTestSoftwareBarrier(t *testing.T) (*seal.StorageBarrier, seal.SealingStr
 	}
 	config := seal.BarrierConfig{
 		RootKeyPath:     "root-key",
-		PreferenceOrder: []seal.StrategyID{seal.StrategySoftware},
+		PreferenceOrder: []seal.StrategyID{seal.StrategyPassphrase},
 	}
 	barrier, err := seal.NewStorageBarrier(testLogger(), backend, config, sw)
 	if err != nil {
@@ -55,9 +55,8 @@ func newTestSoftwareBarrier(t *testing.T) (*seal.StorageBarrier, seal.SealingStr
 func newTestShamirBarrier(t *testing.T) *seal.StorageBarrier {
 	t.Helper()
 	backend := seal.NewMemoryBackend()
-	shamirStore := seal.NewMemoryBackend()
 
-	shamirStrat, err := seal.NewShamirStrategy(shamirStore, 2, 3)
+	shamirStrat, err := seal.NewShamirStrategy(2, 3)
 	if err != nil {
 		t.Fatalf("NewShamirStrategy: %v", err)
 	}
@@ -88,7 +87,7 @@ func newTestSoftwareBarrierWithShamir(t *testing.T) *seal.StorageBarrier {
 	}
 	config := seal.BarrierConfig{
 		RootKeyPath:     "root-key",
-		PreferenceOrder: []seal.StrategyID{seal.StrategySoftware},
+		PreferenceOrder: []seal.StrategyID{seal.StrategyPassphrase},
 		Shamir: &seal.ShamirConfig{
 			Threshold:   2,
 			TotalShares: 3,
@@ -148,8 +147,8 @@ func TestBarrierService_BarrierInitialize(t *testing.T) {
 	if status.Sealed {
 		t.Error("expected barrier to be unsealed after initialization")
 	}
-	if status.Strategy != string(seal.StrategySoftware) {
-		t.Errorf("strategy = %q, want %q", status.Strategy, seal.StrategySoftware)
+	if status.Strategy != string(seal.StrategyPassphrase) {
+		t.Errorf("strategy = %q, want %q", status.Strategy, seal.StrategyPassphrase)
 	}
 }
 
@@ -287,8 +286,8 @@ func TestBarrierService_BarrierStatus_AfterInitialize(t *testing.T) {
 	if status.Sealed {
 		t.Error("expected barrier to be unsealed after init")
 	}
-	if status.Strategy != string(seal.StrategySoftware) {
-		t.Errorf("strategy = %q, want %q", status.Strategy, seal.StrategySoftware)
+	if status.Strategy != string(seal.StrategyPassphrase) {
+		t.Errorf("strategy = %q, want %q", status.Strategy, seal.StrategyPassphrase)
 	}
 	if status.HardwareBacked {
 		t.Error("expected HardwareBacked = false for software strategy")
@@ -447,118 +446,6 @@ func TestBarrierService_BarrierUnsealWithShares_InsufficientShares(t *testing.T)
 	err := svc.BarrierUnsealWithShares(ctx, info.Shares[:1])
 	if !errors.Is(err, seal.ErrShamirQuorumIncomplete) {
 		t.Errorf("BarrierUnsealWithShares with 1 share = %v, want %v", err, seal.ErrShamirQuorumIncomplete)
-	}
-}
-
-func TestBarrierService_BarrierShamirListShares(t *testing.T) {
-	svc, _ := initShamirBarrier(t)
-	ctx := context.Background()
-
-	sharesInfo, err := svc.BarrierShamirListShares(ctx)
-	if err != nil {
-		t.Fatalf("BarrierShamirListShares returned unexpected error: %v", err)
-	}
-	if sharesInfo.Count != 3 {
-		t.Errorf("Count = %d, want 3", sharesInfo.Count)
-	}
-	if sharesInfo.Threshold != 2 {
-		t.Errorf("Threshold = %d, want 2", sharesInfo.Threshold)
-	}
-	if sharesInfo.Total != 3 {
-		t.Errorf("Total = %d, want 3", sharesInfo.Total)
-	}
-}
-
-func TestBarrierService_BarrierShamirListShares_NotConfigured(t *testing.T) {
-	barrier, _ := newTestSoftwareBarrier(t)
-	svc := NewBarrierService(barrier)
-	ctx := context.Background()
-
-	_, err := svc.BarrierShamirListShares(ctx)
-	if !errors.Is(err, seal.ErrShamirNotConfigured) {
-		t.Errorf("BarrierShamirListShares = %v, want %v", err, seal.ErrShamirNotConfigured)
-	}
-}
-
-func TestBarrierService_BarrierShamirDeleteShare(t *testing.T) {
-	svc, _ := initShamirBarrier(t)
-	ctx := context.Background()
-
-	// Delete share at index 1.
-	err := svc.BarrierShamirDeleteShare(ctx, 1)
-	if err != nil {
-		t.Fatalf("BarrierShamirDeleteShare returned unexpected error: %v", err)
-	}
-
-	// Verify count decreased.
-	sharesInfo, err := svc.BarrierShamirListShares(ctx)
-	if err != nil {
-		t.Fatalf("BarrierShamirListShares: %v", err)
-	}
-	if sharesInfo.Count != 2 {
-		t.Errorf("Count after delete = %d, want 2", sharesInfo.Count)
-	}
-}
-
-func TestBarrierService_BarrierShamirDeleteShare_NotConfigured(t *testing.T) {
-	barrier, _ := newTestSoftwareBarrier(t)
-	svc := NewBarrierService(barrier)
-	ctx := context.Background()
-
-	err := svc.BarrierShamirDeleteShare(ctx, 1)
-	if !errors.Is(err, seal.ErrShamirNotConfigured) {
-		t.Errorf("BarrierShamirDeleteShare = %v, want %v", err, seal.ErrShamirNotConfigured)
-	}
-}
-
-func TestBarrierService_BarrierShamirDeleteAllShares(t *testing.T) {
-	svc, _ := initShamirBarrier(t)
-	ctx := context.Background()
-
-	err := svc.BarrierShamirDeleteAllShares(ctx)
-	if err != nil {
-		t.Fatalf("BarrierShamirDeleteAllShares returned unexpected error: %v", err)
-	}
-
-	// Verify count is now 0.
-	sharesInfo, err := svc.BarrierShamirListShares(ctx)
-	if err != nil {
-		t.Fatalf("BarrierShamirListShares: %v", err)
-	}
-	if sharesInfo.Count != 0 {
-		t.Errorf("Count after delete all = %d, want 0", sharesInfo.Count)
-	}
-}
-
-func TestBarrierService_BarrierShamirDeleteAllShares_NotConfigured(t *testing.T) {
-	barrier, _ := newTestSoftwareBarrier(t)
-	svc := NewBarrierService(barrier)
-	ctx := context.Background()
-
-	err := svc.BarrierShamirDeleteAllShares(ctx)
-	if !errors.Is(err, seal.ErrShamirNotConfigured) {
-		t.Errorf("BarrierShamirDeleteAllShares = %v, want %v", err, seal.ErrShamirNotConfigured)
-	}
-}
-
-func TestBarrierService_BarrierShamirVerify(t *testing.T) {
-	svc, _ := initShamirBarrier(t)
-	ctx := context.Background()
-
-	err := svc.BarrierShamirVerify(ctx)
-	if err != nil {
-		t.Fatalf("BarrierShamirVerify returned unexpected error: %v", err)
-	}
-}
-
-func TestBarrierService_BarrierShamirVerify_NotConfigured(t *testing.T) {
-	barrier, _ := newTestSoftwareBarrier(t)
-	svc := NewBarrierService(barrier)
-	ctx := context.Background()
-
-	err := svc.BarrierShamirVerify(ctx)
-	if !errors.Is(err, seal.ErrShamirNotConfigured) {
-		t.Errorf("BarrierShamirVerify = %v, want %v", err, seal.ErrShamirNotConfigured)
 	}
 }
 

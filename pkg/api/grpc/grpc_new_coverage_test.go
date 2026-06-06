@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:build codec_json && raft && qrdb_ts && qrdb_vector && qrdb_mysql && qrdb_pgsql && qrdb_etcd
+//go:build codec_json && raft && qrdb_ts && qrdb_vector && qrdb_mysql && qrdb_pgsql && qrdb_etcd && !integration
 
 package grpc
 
@@ -28,6 +28,7 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -110,6 +111,22 @@ func (c *coverageGRPCCredentialService) CredentialStore(_ context.Context, _ str
 }
 func (c *coverageGRPCCredentialService) CredentialRetrieve(_ context.Context, _ string) ([]byte, error) {
 	return nil, nil
+}
+
+func (c *coverageGRPCCredentialService) CredentialList(_ context.Context) ([]string, error) {
+	return nil, nil
+}
+func (c *coverageGRPCCredentialService) CredentialRotate(_ context.Context, _ string, _ credentials.RotateOptions) (*credentials.RotateResult, error) {
+	return &credentials.RotateResult{}, nil
+}
+func (c *coverageGRPCCredentialService) CredentialRetrieveVersion(_ context.Context, _ string, _ uint64) ([]byte, error) {
+	return nil, nil
+}
+func (c *coverageGRPCCredentialService) CredentialListVersions(_ context.Context, _ string) ([]credentials.CredentialVersion, error) {
+	return nil, nil
+}
+func (c *coverageGRPCCredentialService) CredentialGCExpired(_ context.Context, _ string) (int, error) {
+	return 0, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -228,60 +245,6 @@ func TestGRPC_BarrierShamirUnsealShares_Error(t *testing.T) {
 	_, err := client.BarrierShamirUnsealShares(context.Background(), &pb.BarrierShamirUnsealSharesRequest{
 		Shares: []string{"s1", "s2"},
 	})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-}
-
-func TestGRPC_BarrierShamirListShares_Error(t *testing.T) {
-	barrierSvc := newMockBarrierService()
-	barrierSvc.listSharesErr = errors.New("list shares error")
-	client, cleanup := startTestServerWithAll(t, newMockKVService(), newMockAdminService(),
-		WithBarrierService(barrierSvc))
-	defer cleanup()
-
-	_, err := client.BarrierShamirListShares(context.Background(), &emptypb.Empty{})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-}
-
-func TestGRPC_BarrierShamirDeleteShare_Error(t *testing.T) {
-	barrierSvc := newMockBarrierService()
-	barrierSvc.deleteShareErr = errors.New("delete share error")
-	client, cleanup := startTestServerWithAll(t, newMockKVService(), newMockAdminService(),
-		WithBarrierService(barrierSvc))
-	defer cleanup()
-
-	_, err := client.BarrierShamirDeleteShare(context.Background(), &pb.BarrierShamirDeleteShareRequest{
-		Index: 0,
-	})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-}
-
-func TestGRPC_BarrierShamirDeleteAllShares_Error(t *testing.T) {
-	barrierSvc := newMockBarrierService()
-	barrierSvc.deleteAllSharesErr = errors.New("delete all shares error")
-	client, cleanup := startTestServerWithAll(t, newMockKVService(), newMockAdminService(),
-		WithBarrierService(barrierSvc))
-	defer cleanup()
-
-	_, err := client.BarrierShamirDeleteAllShares(context.Background(), &emptypb.Empty{})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-}
-
-func TestGRPC_BarrierShamirVerify_Error(t *testing.T) {
-	barrierSvc := newMockBarrierService()
-	barrierSvc.verifyErr = errors.New("verify error")
-	client, cleanup := startTestServerWithAll(t, newMockKVService(), newMockAdminService(),
-		WithBarrierService(barrierSvc))
-	defer cleanup()
-
-	_, err := client.BarrierShamirVerify(context.Background(), &emptypb.Empty{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -679,7 +642,7 @@ func TestGRPC_UnassignRole_Error(t *testing.T) {
 
 	// GetUser returns a user with role r1 so UpdateUser is called.
 	_, err := client.UnassignRole(context.Background(), &pb.UnassignRoleRequest{
-		RoleId: "r1", UserId: "u1",
+		RoleId: "r1", UserId: 1,
 	})
 	if err == nil {
 		t.Fatal("expected error from UnassignRole")
@@ -731,26 +694,33 @@ func newMockUserServiceForGRPC() *mockUserServiceForGRPC {
 }
 
 func (m *mockUserServiceForGRPC) CreateUser(_ context.Context, _ *user.CreateUserRequest) (*user.User, error) {
-	return &user.User{ID: "u1", Username: "alice"}, nil
+	return &user.User{ID: 1, Username: "alice"}, nil
 }
-func (m *mockUserServiceForGRPC) GetUser(_ context.Context, _ string) (*user.User, error) {
-	return &user.User{ID: "u1", Username: "alice", RoleIDs: []string{"r1"}}, nil
+func (m *mockUserServiceForGRPC) GetUser(_ context.Context, _ uint64) (*user.User, error) {
+	return &user.User{ID: 1, Username: "alice", RoleIDs: []string{"r1"}}, nil
 }
 func (m *mockUserServiceForGRPC) GetUserByUsername(_ context.Context, _, _ string) (*user.User, error) {
-	return &user.User{ID: "u1", Username: "alice"}, nil
+	return &user.User{ID: 1, Username: "alice"}, nil
 }
 func (m *mockUserServiceForGRPC) UpdateUser(_ context.Context, _ *user.UpdateUserRequest) (*user.User, error) {
 	if m.updateErr != nil {
 		return nil, m.updateErr
 	}
-	return &user.User{ID: "u1", Username: "alice"}, nil
+	return &user.User{ID: 1, Username: "alice"}, nil
 }
-func (m *mockUserServiceForGRPC) DeleteUser(_ context.Context, _ string) error { return nil }
+func (m *mockUserServiceForGRPC) DeleteUser(_ context.Context, _ uint64) error { return nil }
 func (m *mockUserServiceForGRPC) ListUsers(_ context.Context, _ *user.ListUsersRequest) (*user.ListUsersResponse, error) {
 	return &user.ListUsersResponse{}, nil
 }
-func (m *mockUserServiceForGRPC) EnableUser(_ context.Context, _ string) error  { return nil }
-func (m *mockUserServiceForGRPC) DisableUser(_ context.Context, _ string) error { return nil }
+func (m *mockUserServiceForGRPC) EnableUser(_ context.Context, _ uint64) error  { return nil }
+func (m *mockUserServiceForGRPC) DisableUser(_ context.Context, _ uint64) error { return nil }
+func (m *mockUserServiceForGRPC) UserByCertThumbprint(_ context.Context, _ string) (*user.User, error) {
+	return nil, nil
+}
+
+func (m *mockUserServiceForGRPC) AddCertBinding(_ context.Context, _ uint64, _ string, _ int64) (*user.User, error) {
+	return nil, nil
+}
 
 // ---------------------------------------------------------------------------
 // Collection error-path tests

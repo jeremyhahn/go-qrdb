@@ -20,6 +20,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
@@ -1465,4 +1466,23 @@ func TestGetTopology_OnClosedTransport(t *testing.T) {
 	if !errors.As(err, &closedErr) {
 		t.Fatalf("expected *transport.ClosedError, got %T: %v", err, err)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Network Connect path tests
+// ---------------------------------------------------------------------------
+
+func TestConnect_NetworkInvalidAddress(t *testing.T) {
+	tr, err := New(transport.WithAddress("http://127.0.0.1:1/mcp"))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// Attempt connect with very short timeout context
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	err = tr.Connect(ctx)
+	if err == nil {
+		t.Fatal("expected connection error")
+	}
+	_ = tr.Close()
 }

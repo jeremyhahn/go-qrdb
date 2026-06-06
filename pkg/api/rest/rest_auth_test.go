@@ -36,13 +36,13 @@ import (
 
 type mockUserService struct {
 	createUserFn        func(ctx context.Context, req *user.CreateUserRequest) (*user.User, error)
-	getUserFn           func(ctx context.Context, id string) (*user.User, error)
+	getUserFn           func(ctx context.Context, id uint64) (*user.User, error)
 	getUserByUsernameFn func(ctx context.Context, tenantID, username string) (*user.User, error)
 	updateUserFn        func(ctx context.Context, req *user.UpdateUserRequest) (*user.User, error)
-	deleteUserFn        func(ctx context.Context, id string) error
+	deleteUserFn        func(ctx context.Context, id uint64) error
 	listUsersFn         func(ctx context.Context, req *user.ListUsersRequest) (*user.ListUsersResponse, error)
-	enableUserFn        func(ctx context.Context, id string) error
-	disableUserFn       func(ctx context.Context, id string) error
+	enableUserFn        func(ctx context.Context, id uint64) error
+	disableUserFn       func(ctx context.Context, id uint64) error
 }
 
 func (m *mockUserService) CreateUser(ctx context.Context, req *user.CreateUserRequest) (*user.User, error) {
@@ -52,7 +52,7 @@ func (m *mockUserService) CreateUser(ctx context.Context, req *user.CreateUserRe
 	return nil, nil
 }
 
-func (m *mockUserService) GetUser(ctx context.Context, id string) (*user.User, error) {
+func (m *mockUserService) GetUser(ctx context.Context, id uint64) (*user.User, error) {
 	if m.getUserFn != nil {
 		return m.getUserFn(ctx, id)
 	}
@@ -73,7 +73,7 @@ func (m *mockUserService) UpdateUser(ctx context.Context, req *user.UpdateUserRe
 	return nil, nil
 }
 
-func (m *mockUserService) DeleteUser(ctx context.Context, id string) error {
+func (m *mockUserService) DeleteUser(ctx context.Context, id uint64) error {
 	if m.deleteUserFn != nil {
 		return m.deleteUserFn(ctx, id)
 	}
@@ -87,18 +87,26 @@ func (m *mockUserService) ListUsers(ctx context.Context, req *user.ListUsersRequ
 	return nil, nil
 }
 
-func (m *mockUserService) EnableUser(ctx context.Context, id string) error {
+func (m *mockUserService) EnableUser(ctx context.Context, id uint64) error {
 	if m.enableUserFn != nil {
 		return m.enableUserFn(ctx, id)
 	}
 	return nil
 }
 
-func (m *mockUserService) DisableUser(ctx context.Context, id string) error {
+func (m *mockUserService) DisableUser(ctx context.Context, id uint64) error {
 	if m.disableUserFn != nil {
 		return m.disableUserFn(ctx, id)
 	}
 	return nil
+}
+
+func (m *mockUserService) UserByCertThumbprint(_ context.Context, _ string) (*user.User, error) {
+	return nil, nil
+}
+
+func (m *mockUserService) AddCertBinding(_ context.Context, _ uint64, _ string, _ int64) (*user.User, error) {
+	return nil, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -228,7 +236,7 @@ var (
 
 func testUser() *user.User {
 	return &user.User{
-		ID:        "usr-001",
+		ID:        1001,
 		Username:  "alice",
 		TenantID:  "tenant-1",
 		RoleIDs:   []string{"role-admin"},
@@ -302,8 +310,8 @@ func TestHandleCreateUser_Success(t *testing.T) {
 
 	var resp userResponse
 	decodeJSON(t, rec, &resp)
-	if resp.ID != "usr-001" {
-		t.Fatalf("id = %q, want %q", resp.ID, "usr-001")
+	if resp.ID != 1001 {
+		t.Fatalf("id = %d, want %d", resp.ID, uint64(1001))
 	}
 	if resp.Username != "alice" {
 		t.Fatalf("username = %q, want %q", resp.Username, "alice")
@@ -512,16 +520,16 @@ func TestHandleListUsers_ServiceError(t *testing.T) {
 
 func TestHandleGetUser_Success(t *testing.T) {
 	svc := &mockUserService{
-		getUserFn: func(_ context.Context, id string) (*user.User, error) {
-			if id != "usr-001" {
-				t.Fatalf("id = %q, want %q", id, "usr-001")
+		getUserFn: func(_ context.Context, id uint64) (*user.User, error) {
+			if id != 1001 {
+				t.Fatalf("id = %d, want %d", id, uint64(1001))
 			}
 			return testUser(), nil
 		},
 	}
 	srv := newAuthServer(svc, nil, nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/users/usr-001", nil)
+	req := httptest.NewRequest(http.MethodGet, "/users/1001", nil)
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
@@ -529,8 +537,8 @@ func TestHandleGetUser_Success(t *testing.T) {
 
 	var resp userResponse
 	decodeJSON(t, rec, &resp)
-	if resp.ID != "usr-001" {
-		t.Fatalf("id = %q, want %q", resp.ID, "usr-001")
+	if resp.ID != 1001 {
+		t.Fatalf("id = %d, want %d", resp.ID, uint64(1001))
 	}
 	if resp.CreatedAt != testTimeStr {
 		t.Fatalf("createdAt = %q, want %q", resp.CreatedAt, testTimeStr)
@@ -542,13 +550,13 @@ func TestHandleGetUser_Success(t *testing.T) {
 
 func TestHandleGetUser_NotFound(t *testing.T) {
 	svc := &mockUserService{
-		getUserFn: func(_ context.Context, id string) (*user.User, error) {
+		getUserFn: func(_ context.Context, id uint64) (*user.User, error) {
 			return nil, &user.UserNotFoundError{ID: id}
 		},
 	}
 	srv := newAuthServer(svc, nil, nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/users/nonexistent", nil)
+	req := httptest.NewRequest(http.MethodGet, "/users/9999", nil)
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
@@ -558,13 +566,42 @@ func TestHandleGetUser_NotFound(t *testing.T) {
 func TestHandleGetUser_NilService(t *testing.T) {
 	srv := newAuthServer(nil, nil, nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/users/usr-001", nil)
+	req := httptest.NewRequest(http.MethodGet, "/users/1001", nil)
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
 	// dispatch prefix match "/users/" requires len > 7, which "usr-001" satisfies.
 	// handleUser checks nil service and returns 501.
 	assertStatus(t, rec, http.StatusNotImplemented)
+}
+
+// TestHandleGetUser_Uint64IDRoundTrip proves a large uint64 user id survives
+// the REST wire: it is parsed from the URL path into the uint64 service
+// argument and echoed back in the JSON UserResponse.id field.
+func TestHandleGetUser_Uint64IDRoundTrip(t *testing.T) {
+	const wantID uint64 = 1<<63 + 987654321
+	var got uint64
+	svc := &mockUserService{
+		getUserFn: func(_ context.Context, id uint64) (*user.User, error) {
+			got = id
+			return &user.User{ID: id, Username: "snowflake", Enabled: true}, nil
+		},
+	}
+	srv := newAuthServer(svc, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/users/9223372037842430129", nil)
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusOK)
+	if got != wantID {
+		t.Fatalf("path id lost: got %d, want %d", got, wantID)
+	}
+	var resp userResponse
+	decodeJSON(t, rec, &resp)
+	if resp.ID != wantID {
+		t.Fatalf("response id lost: got %d, want %d", resp.ID, wantID)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -574,8 +611,8 @@ func TestHandleGetUser_NilService(t *testing.T) {
 func TestHandleUpdateUser_Success(t *testing.T) {
 	svc := &mockUserService{
 		updateUserFn: func(_ context.Context, req *user.UpdateUserRequest) (*user.User, error) {
-			if req.ID != "usr-001" {
-				t.Fatalf("id = %q, want %q", req.ID, "usr-001")
+			if req.ID != 1001 {
+				t.Fatalf("id = %d, want %d", req.ID, uint64(1001))
 			}
 			if req.Username != "bob" {
 				t.Fatalf("username = %q, want %q", req.Username, "bob")
@@ -588,7 +625,7 @@ func TestHandleUpdateUser_Success(t *testing.T) {
 	srv := newAuthServer(svc, nil, nil)
 
 	body := `{"username":"bob","roleIDs":["role-admin"]}`
-	req := httptest.NewRequest(http.MethodPut, "/users/usr-001", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPut, "/users/1001", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
@@ -605,7 +642,7 @@ func TestHandleUpdateUser_InvalidJSON(t *testing.T) {
 	svc := &mockUserService{}
 	srv := newAuthServer(svc, nil, nil)
 
-	req := httptest.NewRequest(http.MethodPut, "/users/usr-001", strings.NewReader("not-json"))
+	req := httptest.NewRequest(http.MethodPut, "/users/1001", strings.NewReader("not-json"))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
@@ -615,13 +652,13 @@ func TestHandleUpdateUser_InvalidJSON(t *testing.T) {
 func TestHandleUpdateUser_ServiceError(t *testing.T) {
 	svc := &mockUserService{
 		updateUserFn: func(_ context.Context, _ *user.UpdateUserRequest) (*user.User, error) {
-			return nil, &user.UserNotFoundError{ID: "usr-001"}
+			return nil, &user.UserNotFoundError{ID: 1001}
 		},
 	}
 	srv := newAuthServer(svc, nil, nil)
 
 	body := `{"username":"bob"}`
-	req := httptest.NewRequest(http.MethodPut, "/users/usr-001", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPut, "/users/1001", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
@@ -634,16 +671,16 @@ func TestHandleUpdateUser_ServiceError(t *testing.T) {
 
 func TestHandleDeleteUser_Success(t *testing.T) {
 	svc := &mockUserService{
-		deleteUserFn: func(_ context.Context, id string) error {
-			if id != "usr-001" {
-				t.Fatalf("id = %q, want %q", id, "usr-001")
+		deleteUserFn: func(_ context.Context, id uint64) error {
+			if id != 1001 {
+				t.Fatalf("id = %d, want %d", id, uint64(1001))
 			}
 			return nil
 		},
 	}
 	srv := newAuthServer(svc, nil, nil)
 
-	req := httptest.NewRequest(http.MethodDelete, "/users/usr-001", nil)
+	req := httptest.NewRequest(http.MethodDelete, "/users/1001", nil)
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
@@ -652,13 +689,13 @@ func TestHandleDeleteUser_Success(t *testing.T) {
 
 func TestHandleDeleteUser_SystemUser(t *testing.T) {
 	svc := &mockUserService{
-		deleteUserFn: func(_ context.Context, id string) error {
+		deleteUserFn: func(_ context.Context, id uint64) error {
 			return &user.SystemUserImmutableError{ID: id}
 		},
 	}
 	srv := newAuthServer(svc, nil, nil)
 
-	req := httptest.NewRequest(http.MethodDelete, "/users/sys-root", nil)
+	req := httptest.NewRequest(http.MethodDelete, "/users/9001", nil)
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
@@ -667,13 +704,13 @@ func TestHandleDeleteUser_SystemUser(t *testing.T) {
 
 func TestHandleDeleteUser_NotFound(t *testing.T) {
 	svc := &mockUserService{
-		deleteUserFn: func(_ context.Context, id string) error {
+		deleteUserFn: func(_ context.Context, id uint64) error {
 			return &user.UserNotFoundError{ID: id}
 		},
 	}
 	srv := newAuthServer(svc, nil, nil)
 
-	req := httptest.NewRequest(http.MethodDelete, "/users/nonexistent", nil)
+	req := httptest.NewRequest(http.MethodDelete, "/users/9999", nil)
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
@@ -686,16 +723,16 @@ func TestHandleDeleteUser_NotFound(t *testing.T) {
 
 func TestHandleEnableUser_Success(t *testing.T) {
 	svc := &mockUserService{
-		enableUserFn: func(_ context.Context, id string) error {
-			if id != "usr-001" {
-				t.Fatalf("id = %q, want %q", id, "usr-001")
+		enableUserFn: func(_ context.Context, id uint64) error {
+			if id != 1001 {
+				t.Fatalf("id = %d, want %d", id, uint64(1001))
 			}
 			return nil
 		},
 	}
 	srv := newAuthServer(svc, nil, nil)
 
-	req := httptest.NewRequest(http.MethodPost, "/users/usr-001/enable", nil)
+	req := httptest.NewRequest(http.MethodPost, "/users/1001/enable", nil)
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
@@ -710,13 +747,13 @@ func TestHandleEnableUser_Success(t *testing.T) {
 
 func TestHandleEnableUser_ServiceError(t *testing.T) {
 	svc := &mockUserService{
-		enableUserFn: func(_ context.Context, id string) error {
+		enableUserFn: func(_ context.Context, id uint64) error {
 			return &user.UserNotFoundError{ID: id}
 		},
 	}
 	srv := newAuthServer(svc, nil, nil)
 
-	req := httptest.NewRequest(http.MethodPost, "/users/usr-001/enable", nil)
+	req := httptest.NewRequest(http.MethodPost, "/users/1001/enable", nil)
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
@@ -729,16 +766,16 @@ func TestHandleEnableUser_ServiceError(t *testing.T) {
 
 func TestHandleDisableUser_Success(t *testing.T) {
 	svc := &mockUserService{
-		disableUserFn: func(_ context.Context, id string) error {
-			if id != "usr-001" {
-				t.Fatalf("id = %q, want %q", id, "usr-001")
+		disableUserFn: func(_ context.Context, id uint64) error {
+			if id != 1001 {
+				t.Fatalf("id = %d, want %d", id, uint64(1001))
 			}
 			return nil
 		},
 	}
 	srv := newAuthServer(svc, nil, nil)
 
-	req := httptest.NewRequest(http.MethodPost, "/users/usr-001/disable", nil)
+	req := httptest.NewRequest(http.MethodPost, "/users/1001/disable", nil)
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
@@ -753,13 +790,13 @@ func TestHandleDisableUser_Success(t *testing.T) {
 
 func TestHandleDisableUser_ServiceError(t *testing.T) {
 	svc := &mockUserService{
-		disableUserFn: func(_ context.Context, id string) error {
+		disableUserFn: func(_ context.Context, id uint64) error {
 			return &user.SystemUserImmutableError{ID: id}
 		},
 	}
 	srv := newAuthServer(svc, nil, nil)
 
-	req := httptest.NewRequest(http.MethodPost, "/users/sys-root/disable", nil)
+	req := httptest.NewRequest(http.MethodPost, "/users/9001/disable", nil)
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
@@ -774,7 +811,7 @@ func TestHandleUser_MethodNotAllowed_PATCH(t *testing.T) {
 	svc := &mockUserService{}
 	srv := newAuthServer(svc, nil, nil)
 
-	req := httptest.NewRequest(http.MethodPatch, "/users/usr-001", nil)
+	req := httptest.NewRequest(http.MethodPatch, "/users/1001", nil)
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
@@ -786,7 +823,7 @@ func TestHandleUser_PostWithoutSuffix_MethodNotAllowed(t *testing.T) {
 	srv := newAuthServer(svc, nil, nil)
 
 	// POST /users/usr-001 (no /enable or /disable suffix)
-	req := httptest.NewRequest(http.MethodPost, "/users/usr-001", nil)
+	req := httptest.NewRequest(http.MethodPost, "/users/1001", nil)
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
@@ -1127,17 +1164,17 @@ func TestHandleUpdateRole_Success(t *testing.T) {
 			if req.ID != "role-001" {
 				t.Fatalf("id = %q, want %q", req.ID, "role-001")
 			}
-			if req.Name != "superadmin" {
-				t.Fatalf("name = %q, want %q", req.Name, "superadmin")
+			if req.Name != "role-x" {
+				t.Fatalf("name = %q, want %q", req.Name, "role-x")
 			}
 			r := testRole()
-			r.Name = "superadmin"
+			r.Name = "role-x"
 			return r, nil
 		},
 	}
 	srv := newAuthServer(nil, roleSvc, nil)
 
-	body := `{"name":"superadmin","permissions":["kv:put","kv:get"]}`
+	body := `{"name":"role-x","permissions":["kv:put","kv:get"]}`
 	req := httptest.NewRequest(http.MethodPut, "/roles/role-001", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
@@ -1146,8 +1183,8 @@ func TestHandleUpdateRole_Success(t *testing.T) {
 
 	var resp roleResponse
 	decodeJSON(t, rec, &resp)
-	if resp.Name != "superadmin" {
-		t.Fatalf("name = %q, want %q", resp.Name, "superadmin")
+	if resp.Name != "role-x" {
+		t.Fatalf("name = %q, want %q", resp.Name, "role-x")
 	}
 }
 
@@ -1170,7 +1207,7 @@ func TestHandleUpdateRole_ServiceError(t *testing.T) {
 	}
 	srv := newAuthServer(nil, roleSvc, nil)
 
-	body := `{"name":"superadmin"}`
+	body := `{"name":"role-x"}`
 	req := httptest.NewRequest(http.MethodPut, "/roles/role-001", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
@@ -1267,9 +1304,9 @@ func TestHandleRole_MissingID(t *testing.T) {
 
 func TestHandleAssignRole_Success(t *testing.T) {
 	userSvc := &mockUserService{
-		getUserFn: func(_ context.Context, id string) (*user.User, error) {
-			if id != "usr-001" {
-				t.Fatalf("id = %q, want %q", id, "usr-001")
+		getUserFn: func(_ context.Context, id uint64) (*user.User, error) {
+			if id != 1001 {
+				t.Fatalf("id = %d, want %d", id, uint64(1001))
 			}
 			u := testUser()
 			u.RoleIDs = []string{"role-old"}
@@ -1294,7 +1331,7 @@ func TestHandleAssignRole_Success(t *testing.T) {
 	}
 	srv := newAuthServer(userSvc, roleSvc, nil)
 
-	body := `{"userID":"usr-001","roleID":"role-new"}`
+	body := `{"userID":1001,"roleID":"role-new"}`
 	req := httptest.NewRequest(http.MethodPost, "/roles/assign", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
@@ -1310,7 +1347,7 @@ func TestHandleAssignRole_Success(t *testing.T) {
 
 func TestHandleAssignRole_AlreadyAssigned(t *testing.T) {
 	userSvc := &mockUserService{
-		getUserFn: func(_ context.Context, _ string) (*user.User, error) {
+		getUserFn: func(_ context.Context, _ uint64) (*user.User, error) {
 			u := testUser()
 			u.RoleIDs = []string{"role-admin"}
 			return u, nil
@@ -1324,7 +1361,7 @@ func TestHandleAssignRole_AlreadyAssigned(t *testing.T) {
 	srv := newAuthServer(userSvc, roleSvc, nil)
 
 	// Assign the role that is already assigned -- should be idempotent.
-	body := `{"userID":"usr-001","roleID":"role-admin"}`
+	body := `{"userID":1001,"roleID":"role-admin"}`
 	req := httptest.NewRequest(http.MethodPost, "/roles/assign", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
@@ -1341,7 +1378,7 @@ func TestHandleAssignRole_AlreadyAssigned(t *testing.T) {
 func TestHandleAssignRole_NilRoleService(t *testing.T) {
 	srv := newAuthServer(&mockUserService{}, nil, nil)
 
-	body := `{"userID":"usr-001","roleID":"role-001"}`
+	body := `{"userID":1001,"roleID":"role-001"}`
 	req := httptest.NewRequest(http.MethodPost, "/roles/assign", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
@@ -1356,7 +1393,7 @@ func TestHandleAssignRole_NilUserService(t *testing.T) {
 	roleSvc := &mockRoleService{}
 	srv := newAuthServer(nil, roleSvc, nil)
 
-	body := `{"userID":"usr-001","roleID":"role-001"}`
+	body := `{"userID":1001,"roleID":"role-001"}`
 	req := httptest.NewRequest(http.MethodPost, "/roles/assign", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
@@ -1382,7 +1419,7 @@ func TestHandleAssignRole_RoleNotFound(t *testing.T) {
 	}
 	srv := newAuthServer(&mockUserService{}, roleSvc, nil)
 
-	body := `{"userID":"usr-001","roleID":"nonexistent"}`
+	body := `{"userID":1001,"roleID":"nonexistent"}`
 	req := httptest.NewRequest(http.MethodPost, "/roles/assign", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
@@ -1397,13 +1434,13 @@ func TestHandleAssignRole_UserNotFound(t *testing.T) {
 		},
 	}
 	userSvc := &mockUserService{
-		getUserFn: func(_ context.Context, id string) (*user.User, error) {
+		getUserFn: func(_ context.Context, id uint64) (*user.User, error) {
 			return nil, &user.UserNotFoundError{ID: id}
 		},
 	}
 	srv := newAuthServer(userSvc, roleSvc, nil)
 
-	body := `{"userID":"nonexistent","roleID":"role-001"}`
+	body := `{"userID":9999,"roleID":"role-001"}`
 	req := httptest.NewRequest(http.MethodPost, "/roles/assign", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
@@ -1413,7 +1450,7 @@ func TestHandleAssignRole_UserNotFound(t *testing.T) {
 
 func TestHandleAssignRole_UpdateError(t *testing.T) {
 	userSvc := &mockUserService{
-		getUserFn: func(_ context.Context, _ string) (*user.User, error) {
+		getUserFn: func(_ context.Context, _ uint64) (*user.User, error) {
 			return testUser(), nil
 		},
 		updateUserFn: func(_ context.Context, _ *user.UpdateUserRequest) (*user.User, error) {
@@ -1428,7 +1465,7 @@ func TestHandleAssignRole_UpdateError(t *testing.T) {
 	srv := newAuthServer(userSvc, roleSvc, nil)
 
 	// Assign a role that is NOT already in the user's RoleIDs to trigger the update path.
-	body := `{"userID":"usr-001","roleID":"role-new"}`
+	body := `{"userID":1001,"roleID":"role-new"}`
 	req := httptest.NewRequest(http.MethodPost, "/roles/assign", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
@@ -1442,7 +1479,7 @@ func TestHandleAssignRole_UpdateError(t *testing.T) {
 
 func TestHandleUnassignRole_Success(t *testing.T) {
 	userSvc := &mockUserService{
-		getUserFn: func(_ context.Context, _ string) (*user.User, error) {
+		getUserFn: func(_ context.Context, _ uint64) (*user.User, error) {
 			u := testUser()
 			u.RoleIDs = []string{"role-admin", "role-editor"}
 			return u, nil
@@ -1462,7 +1499,7 @@ func TestHandleUnassignRole_Success(t *testing.T) {
 	roleSvc := &mockRoleService{}
 	srv := newAuthServer(userSvc, roleSvc, nil)
 
-	body := `{"userID":"usr-001","roleID":"role-admin"}`
+	body := `{"userID":1001,"roleID":"role-admin"}`
 	req := httptest.NewRequest(http.MethodPost, "/roles/unassign", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
@@ -1479,7 +1516,7 @@ func TestHandleUnassignRole_Success(t *testing.T) {
 func TestHandleUnassignRole_NilRoleService(t *testing.T) {
 	srv := newAuthServer(&mockUserService{}, nil, nil)
 
-	body := `{"userID":"usr-001","roleID":"role-001"}`
+	body := `{"userID":1001,"roleID":"role-001"}`
 	req := httptest.NewRequest(http.MethodPost, "/roles/unassign", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
@@ -1494,7 +1531,7 @@ func TestHandleUnassignRole_NilUserService(t *testing.T) {
 	roleSvc := &mockRoleService{}
 	srv := newAuthServer(nil, roleSvc, nil)
 
-	body := `{"userID":"usr-001","roleID":"role-001"}`
+	body := `{"userID":1001,"roleID":"role-001"}`
 	req := httptest.NewRequest(http.MethodPost, "/roles/unassign", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
@@ -1514,14 +1551,14 @@ func TestHandleUnassignRole_InvalidJSON(t *testing.T) {
 
 func TestHandleUnassignRole_UserNotFound(t *testing.T) {
 	userSvc := &mockUserService{
-		getUserFn: func(_ context.Context, id string) (*user.User, error) {
+		getUserFn: func(_ context.Context, id uint64) (*user.User, error) {
 			return nil, &user.UserNotFoundError{ID: id}
 		},
 	}
 	roleSvc := &mockRoleService{}
 	srv := newAuthServer(userSvc, roleSvc, nil)
 
-	body := `{"userID":"nonexistent","roleID":"role-001"}`
+	body := `{"userID":9999,"roleID":"role-001"}`
 	req := httptest.NewRequest(http.MethodPost, "/roles/unassign", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
@@ -1531,7 +1568,7 @@ func TestHandleUnassignRole_UserNotFound(t *testing.T) {
 
 func TestHandleUnassignRole_UpdateError(t *testing.T) {
 	userSvc := &mockUserService{
-		getUserFn: func(_ context.Context, _ string) (*user.User, error) {
+		getUserFn: func(_ context.Context, _ uint64) (*user.User, error) {
 			return testUser(), nil
 		},
 		updateUserFn: func(_ context.Context, _ *user.UpdateUserRequest) (*user.User, error) {
@@ -1541,7 +1578,7 @@ func TestHandleUnassignRole_UpdateError(t *testing.T) {
 	roleSvc := &mockRoleService{}
 	srv := newAuthServer(userSvc, roleSvc, nil)
 
-	body := `{"userID":"usr-001","roleID":"role-admin"}`
+	body := `{"userID":1001,"roleID":"role-admin"}`
 	req := httptest.NewRequest(http.MethodPost, "/roles/unassign", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
@@ -1640,6 +1677,148 @@ func TestStringsToPermissions_Values(t *testing.T) {
 	}
 	if result[1] != permission.KVGet {
 		t.Fatalf("result[1] = %q, want %q", result[1], permission.KVGet)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GET /roles/by-name (GetRoleByName)
+// ---------------------------------------------------------------------------
+
+func TestHandleGetRoleByName_Success(t *testing.T) {
+	roleSvc := &mockRoleService{
+		getRoleByNameFn: func(_ context.Context, tenantID, name string) (*role.Role, error) {
+			if tenantID != "tenant-1" {
+				t.Fatalf("tenantID = %q, want %q", tenantID, "tenant-1")
+			}
+			if name != "auditor" {
+				t.Fatalf("name = %q, want %q", name, "auditor")
+			}
+			r := testRole()
+			r.Name = "auditor"
+			return r, nil
+		},
+	}
+	srv := newAuthServer(nil, roleSvc, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/roles/by-name?tenant_id=tenant-1&name=auditor", nil)
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusOK)
+	assertContentType(t, rec, "application/json")
+
+	var resp roleResponse
+	decodeJSON(t, rec, &resp)
+	if resp.ID != "role-001" {
+		t.Fatalf("id = %q, want %q", resp.ID, "role-001")
+	}
+	if resp.Name != "auditor" {
+		t.Fatalf("name = %q, want %q", resp.Name, "auditor")
+	}
+}
+
+func TestHandleGetRoleByName_MissingName(t *testing.T) {
+	roleSvc := &mockRoleService{}
+	srv := newAuthServer(nil, roleSvc, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/roles/by-name?tenant_id=tenant-1", nil)
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusBadRequest)
+}
+
+func TestHandleGetRoleByName_NotFound(t *testing.T) {
+	roleSvc := &mockRoleService{
+		getRoleByNameFn: func(_ context.Context, _, name string) (*role.Role, error) {
+			return nil, &role.RoleNotFoundError{ID: name}
+		},
+	}
+	srv := newAuthServer(nil, roleSvc, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/roles/by-name?tenant_id=tenant-1&name=nonexistent", nil)
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusNotFound)
+}
+
+// ---------------------------------------------------------------------------
+// POST /roles/resolve-permissions (ResolvePermissions)
+// ---------------------------------------------------------------------------
+
+func TestHandleResolvePermissions_Success(t *testing.T) {
+	roleSvc := &mockRoleService{
+		resolvePermissionsFn: func(_ context.Context, roleIDs []string) ([]permission.Permission, error) {
+			if len(roleIDs) != 2 {
+				t.Fatalf("roleIDs length = %d, want 2", len(roleIDs))
+			}
+			return []permission.Permission{permission.KVPut, permission.KVGet}, nil
+		},
+	}
+	srv := newAuthServer(nil, roleSvc, nil)
+
+	body := `{"role_ids":["role-001","role-002"]}`
+	req := httptest.NewRequest(http.MethodPost, "/roles/resolve-permissions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusOK)
+	assertContentType(t, rec, "application/json")
+
+	var resp resolvePermissionsResponse
+	decodeJSON(t, rec, &resp)
+	if len(resp.Permissions) != 2 {
+		t.Fatalf("permissions length = %d, want 2", len(resp.Permissions))
+	}
+}
+
+func TestHandleResolvePermissions_ServiceError(t *testing.T) {
+	roleSvc := &mockRoleService{
+		resolvePermissionsFn: func(_ context.Context, _ []string) ([]permission.Permission, error) {
+			return nil, &role.StoreError{Op: "resolve", Err: errors.New("storage failure")}
+		},
+	}
+	srv := newAuthServer(nil, roleSvc, nil)
+
+	body := `{"role_ids":["role-001"]}`
+	req := httptest.NewRequest(http.MethodPost, "/roles/resolve-permissions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusInternalServerError)
+}
+
+func TestHandleResolvePermissions_InvalidJSON(t *testing.T) {
+	roleSvc := &mockRoleService{}
+	srv := newAuthServer(nil, roleSvc, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/roles/resolve-permissions", strings.NewReader("{bad"))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusBadRequest)
+}
+
+func TestHandleResolvePermissions_EmptyRoleIDs(t *testing.T) {
+	roleSvc := &mockRoleService{
+		resolvePermissionsFn: func(_ context.Context, roleIDs []string) ([]permission.Permission, error) {
+			return []permission.Permission{}, nil
+		},
+	}
+	srv := newAuthServer(nil, roleSvc, nil)
+
+	body := `{"role_ids":[]}`
+	req := httptest.NewRequest(http.MethodPost, "/roles/resolve-permissions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusOK)
+
+	var resp resolvePermissionsResponse
+	decodeJSON(t, rec, &resp)
+	if len(resp.Permissions) != 0 {
+		t.Fatalf("permissions length = %d, want 0", len(resp.Permissions))
 	}
 }
 
@@ -2125,7 +2304,7 @@ func TestMapUserError_AllTypes(t *testing.T) {
 		},
 		{
 			name:     "UserNotFoundError",
-			err:      &user.UserNotFoundError{ID: "123"},
+			err:      &user.UserNotFoundError{ID: 123},
 			wantCode: http.StatusNotFound,
 		},
 		{
@@ -2135,7 +2314,7 @@ func TestMapUserError_AllTypes(t *testing.T) {
 		},
 		{
 			name:     "SystemUserImmutableError",
-			err:      &user.SystemUserImmutableError{ID: "root"},
+			err:      &user.SystemUserImmutableError{ID: 9001},
 			wantCode: http.StatusForbidden,
 		},
 		{

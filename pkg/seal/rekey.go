@@ -11,17 +11,22 @@ package seal
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
-	"github.com/awnumar/memguard"
-	"github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
-// Rekey generates a new set of Shamir shares for the existing root key.
-// The old shares are deleted and replaced with new shares split using the
-// provided threshold and total parameters. The sealed root key blob is
-// updated with the new Shamir parameters.
+// Rekey re-splits the existing root key into a fresh set of M-of-N Shamir
+// shares (new threshold/total), returning them to the Security Officers. No
+// shares are persisted, and none are read from storage.
 //
-// The barrier must be unsealed and have a ShamirStrategy registered.
+// The barrier MUST already be unsealed: the SOs re-convene and submit a quorum
+// of their *current* shares via UnsealWithShare to unseal the barrier, after
+// which the root key is held in memory. Rekey reads that in-memory root key
+// (GetMasterKey), splits it under the new parameters, and updates the
+// key-material-free sealed envelope. The new shares are distributed to the SOs;
+// once the envelope's threshold/total are updated, future unseals require the
+// new share set.
 func (b *StorageBarrier) Rekey(ctx context.Context, newThreshold, newTotal int) (*ShamirInitResult, error) {
 	if b.IsSealed() {
 		return nil, ErrSealed
@@ -36,35 +41,27 @@ func (b *StorageBarrier) Rekey(ctx context.Context, newThreshold, newTotal int) 
 		return nil, ErrShamirThresholdInvalid
 	}
 
-	// Load existing shares and reconstruct the root key.
-	existingShares, err := shamirStrat.LoadAllShares(ctx)
+	// The barrier is unsealed, so the root key is available in memory. Read it
+	// and re-split it; nothing is loaded from or written to storage.
+	rootKey, err := b.GetMasterKey()
+	if err != nil {
+		return nil, err
+	}
+	defer secure.Wipe(rootKey)
+
+	newShareVals, err := NewShamirShareSplitter().Split(rootKey, newThreshold, newTotal)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrShamirSplitFailed, err)
+	}
+
+	// Create a new ShamirStrategy carrying the new parameters so the barrier's
+	// ShamirStrategy() accessor reports the updated threshold/total.
+	newStrat, err := NewShamirStrategy(newThreshold, newTotal)
 	if err != nil {
 		return nil, err
 	}
 
-	rootKey, err := shamir.Combine(existingShares)
-	if err != nil {
-		return nil, ErrShamirCombineFailed
-	}
-	defer memguard.WipeBytes(rootKey)
-
-	// Delete old shares from storage.
-	for i := 1; i <= shamirStrat.total; i++ {
-		_ = shamirStrat.Storage().Delete(ctx, shamirShareKey(i))
-	}
-
-	// Create a new ShamirStrategy with the same storage but new parameters.
-	newStrat, err := NewShamirStrategy(shamirStrat.Storage(), newThreshold, newTotal)
-	if err != nil {
-		return nil, err
-	}
-
-	// Re-seal the root key with the new strategy.
-	if _, err := newStrat.SealRootKey(ctx, rootKey, Credentials{}); err != nil {
-		return nil, err
-	}
-
-	// Update the sealed root key blob with new Shamir parameters.
+	// Update the (key-material-free) sealed envelope with the new parameters.
 	blob, err := b.base.Get(ctx, b.config.RootKeyPath)
 	if err != nil {
 		return nil, err
@@ -92,19 +89,10 @@ func (b *StorageBarrier) Rekey(ctx context.Context, newThreshold, newTotal int) 
 		b.config.Shamir.TotalShares = newTotal
 	}
 
-	// Load the new shares and build the result.
-	newShares, err := newStrat.LoadAllShares(ctx)
-	if err != nil {
-		return nil, err
-	}
-
 	result := &ShamirInitResult{
-		Shares:      make([]string, len(newShares)),
+		Shares:      newShareVals,
 		Threshold:   newThreshold,
 		TotalShares: newTotal,
-	}
-	for i, share := range newShares {
-		result.Shares[i] = share.Value
 	}
 
 	emitAudit(b.config.AuditLogger, "rekey", "barrier",

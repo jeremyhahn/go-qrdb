@@ -44,19 +44,12 @@ services:
         echo "Starting qrdbd server..."
         exec /app/build/bin/qrdbd start --config /etc/qrdb/qrdbd.yaml
 
-  # GPU-enabled Ollama: extends the base ollama service with NVIDIA GPU access
-  # so that inference-based embedding models can leverage the GPU.
-  ollama:
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+  # NOTE: Ollama is not part of this overlay. It lives in the opt-in
+  # docker-compose.embedding.yml overlay (no integration test uses embeddings).
+  # For GPU-accelerated embedding e2e tests, stack the overlays:
+  #   docker compose -f docker-compose.yml -f docker-compose.embedding.yml \
+  #                  -f docker-compose.gpu.yml up
+  # and add the NVIDIA device reservation to ollama in the embedding overlay.
 
   integration-tests:
     build:

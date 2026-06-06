@@ -22,6 +22,7 @@ import (
 
 	grpcserver "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -113,6 +114,22 @@ func (m *mockTSService) ListMetrics(_ string, _ int) ([]string, error) {
 		return nil, m.listMetricsErr
 	}
 	return m.listMetricsRes, nil
+}
+
+func (m *mockTSService) QueryWithConsistency(ctx context.Context, metric string, start, end time.Time, _ consistency.ReadOptions, opts ...timeseries.TSQueryOption) ([]timeseries.DataPoint, error) {
+	return m.Query(ctx, metric, start, end, opts...)
+}
+
+func (m *mockTSService) AggregateWithConsistency(ctx context.Context, metric string, start, end time.Time, fn timeseries.AggFunc, interval time.Duration, _ consistency.ReadOptions) ([]timeseries.AggResult, error) {
+	return m.Aggregate(ctx, metric, start, end, fn, interval)
+}
+
+func (m *mockTSService) QueryRichWithConsistency(ctx context.Context, req *timeseries.QueryRequest, _ consistency.ReadOptions) (*timeseries.QueryResult, error) {
+	return m.QueryRich(ctx, req)
+}
+
+func (m *mockTSService) ListMetricsWithConsistency(_ context.Context, prefix string, limit int, _ consistency.ReadOptions) ([]string, error) {
+	return m.ListMetrics(prefix, limit)
 }
 
 // Compile-time assertion.

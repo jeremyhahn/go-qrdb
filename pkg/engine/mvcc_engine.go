@@ -18,8 +18,10 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"log/slog"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cockroachdb/pebble/v2"
@@ -64,13 +66,16 @@ type mvccHandler func(s *mvcc.Store, lr *lease.Lessor, batch storage.Batch, payl
 // watches, time-series) behind the Engine interface. It handles binary
 // protocol decoding and dispatches to the appropriate store methods.
 //
-// Thread safety: Update() does not require a mutex because LocalBackend
-// serializes calls via proposeMu. Lookup() can be called concurrently
-// with Update() because mvcc.Store and storage.Storage handle their own
-// synchronization.
+// Thread safety: Update() does not require a mutex for the MVCC store because
+// LocalBackend (and the Raft apply loop) serialize Update() calls, and
+// mvcc.Store and storage.Storage handle their own synchronization. The
+// indexes/indexFields maps, however, are owned by the engine itself and are
+// read by Lookup() concurrently with index create/drop in Update(); those two
+// maps are therefore guarded by indexMu (single-writer/multi-reader).
 type MVCCEngine struct {
 	store       *mvcc.Store
 	stg         storage.Storage
+	indexMu     sync.RWMutex
 	indexes     map[string]index.Index
 	indexFields map[string]string
 	lessor      *lease.Lessor
@@ -301,24 +306,30 @@ func (e *MVCCEngine) Lookup(_ context.Context, query interface{}) (interface{}, 
 		return e.lessor.Leases(), nil
 
 	case service.IndexQueryRequest:
+		e.indexMu.RLock()
 		idx, ok := e.indexes[q.IndexName]
+		e.indexMu.RUnlock()
 		if !ok {
 			return nil, &InvalidQueryError{Reason: "index not found: " + q.IndexName}
 		}
 		return idx.Get(q.Value)
 
 	case service.IndexScanRequest:
+		e.indexMu.RLock()
 		idx, ok := e.indexes[q.IndexName]
+		e.indexMu.RUnlock()
 		if !ok {
 			return nil, &InvalidQueryError{Reason: "index not found: " + q.IndexName}
 		}
 		return idx.Scan(q.Start, q.End)
 
 	case service.IndexListRequest:
+		e.indexMu.RLock()
 		names := make([]string, 0, len(e.indexes))
 		for name := range e.indexes {
 			names = append(names, name)
 		}
+		e.indexMu.RUnlock()
 		return names, nil
 
 	case service.TSQueryRequest:
@@ -473,6 +484,8 @@ func (e *MVCCEngine) lookupPrefix(q *statemachine.PrefixQuery) (map[string][]byt
 // are closed. The underlying storage is not owned by the engine and must
 // be closed by the caller.
 func (e *MVCCEngine) Close(_ context.Context) error {
+	e.indexMu.Lock()
+	defer e.indexMu.Unlock()
 	for _, idx := range e.indexes {
 		_ = idx.Close()
 	}
@@ -507,6 +520,60 @@ func (e *MVCCEngine) buildUpdateHandlers() map[byte]mvccHandler {
 }
 
 // ---------------------------------------------------------------------------
+// Application-error helpers
+//
+// A Raft state machine must never return a Go error from Update() for an
+// outcome that is a deterministic consequence of valid client input (e.g. a
+// unique-index violation, an invalid lease TTL, or an operation against a
+// subsystem not configured on this SM): doing so halts lastApplied and stalls
+// the whole group. Such outcomes are encoded into sm.Result.Data via
+// protocol.EncodeAppError and surfaced to the client by the service layer
+// (service.checkResultError). Only genuine non-deterministic faults (decode of
+// a committed entry, storage IO) are returned as Go errors.
+// ---------------------------------------------------------------------------
+
+// appErrResult builds a non-fatal application-error result payload.
+func appErrResult(msg string) sm.Result {
+	return sm.Result{Data: protocol.EncodeAppError(msg)}
+}
+
+// asAppErrResult converts a unique-constraint violation into a non-fatal
+// application-error result. It returns (result, true, nil) when err is a
+// *UniqueConstraintError, and (zero, false, err) for any other (genuinely
+// fatal) error so the caller can return it to the Raft layer unchanged.
+func asAppErrResult(err error) (sm.Result, bool, error) {
+	var uce *UniqueConstraintError
+	if errors.As(err, &uce) {
+		return appErrResult(uce.Error()), true, nil
+	}
+	return sm.Result{}, false, err
+}
+
+// putsFromOps extracts the indexable puts from a decoded operation set for
+// batch unique-constraint pre-validation.
+func putsFromOps(ops []protocol.DecodedOp) []indexedPut {
+	var puts []indexedPut
+	for _, op := range ops {
+		if op.Type == protocol.OpMVCCPut {
+			puts = append(puts, indexedPut{Key: op.Key, Value: op.Value})
+		}
+	}
+	return puts
+}
+
+// deleteKeysFromOps extracts the keys an operation set deletes, so batch
+// pre-validation can treat the unique values they hold as freed.
+func deleteKeysFromOps(ops []protocol.DecodedOp) [][]byte {
+	var keys [][]byte
+	for _, op := range ops {
+		if op.Type == protocol.OpMVCCDelete {
+			keys = append(keys, op.Key)
+		}
+	}
+	return keys
+}
+
+// ---------------------------------------------------------------------------
 // Base KV handlers
 // ---------------------------------------------------------------------------
 
@@ -526,8 +593,18 @@ func (e *MVCCEngine) handleBaseKVPut(s *mvcc.Store, _ *lease.Lessor, batch stora
 
 	prevKv, _ := s.Get(key)
 
-	// Validate index constraints before writing to the batch so that a unique
-	// violation aborts the operation without leaving partial state.
+	// Read-only pre-check: reject a unique-index violation as a non-fatal
+	// application error (no state written) rather than letting idx.Put return a
+	// fatal error from the apply path, which would stall consensus.
+	if verr := CheckUniqueViolation(e.indexes, e.indexFields, key, value); verr != nil {
+		if res, handled, err := asAppErrResult(verr); handled {
+			return res, nil, err
+		}
+		return sm.Result{}, nil, verr
+	}
+
+	// Apply index updates. Uniqueness was pre-validated above, so any error
+	// here is a genuine storage fault and is correctly fatal.
 	if err := UpdateIndexes(e.indexes, e.indexFields, key, value, prevKv); err != nil {
 		return sm.Result{}, nil, err
 	}
@@ -604,8 +681,18 @@ func (e *MVCCEngine) handleMVCCPut(s *mvcc.Store, lr *lease.Lessor, batch storag
 
 	prevKv, _ := s.Get(key)
 
-	// Validate index constraints before writing to the batch so that a unique
-	// violation aborts the operation without leaving partial state.
+	// Read-only pre-check: reject a unique-index violation as a non-fatal
+	// application error (no state written) rather than letting idx.Put return a
+	// fatal error from the apply path, which would stall consensus.
+	if verr := CheckUniqueViolation(e.indexes, e.indexFields, key, value); verr != nil {
+		if res, handled, err := asAppErrResult(verr); handled {
+			return res, nil, err
+		}
+		return sm.Result{}, nil, verr
+	}
+
+	// Apply index updates. Uniqueness was pre-validated above, so any error
+	// here is a genuine storage fault and is correctly fatal.
 	if err := UpdateIndexes(e.indexes, e.indexFields, key, value, prevKv); err != nil {
 		return sm.Result{}, nil, err
 	}
@@ -714,6 +801,17 @@ func (e *MVCCEngine) handleTransaction(s *mvcc.Store, lr *lease.Lessor, batch st
 		ops = txn.FailureOps
 	}
 
+	// Pre-validate unique-index constraints for the whole selected op set
+	// (read-only, delete-aware) so a violation rejects the transaction
+	// atomically via a non-fatal application error — no partial writes, no
+	// consensus stall.
+	if verr := CheckUniqueViolationsBatch(e.indexes, e.indexFields, putsFromOps(ops), deleteKeysFromOps(ops)); verr != nil {
+		if res, handled, err := asAppErrResult(verr); handled {
+			return res, nil, err
+		}
+		return sm.Result{}, nil, verr
+	}
+
 	rev := s.CurrentRevision() + 1
 	var notifs []Notification
 	for _, op := range ops {
@@ -740,6 +838,16 @@ func (e *MVCCEngine) handleBatch(s *mvcc.Store, lr *lease.Lessor, batch storage.
 	ops, err := protocol.DecodeBatch(payload)
 	if err != nil {
 		return sm.Result{}, nil, err
+	}
+
+	// Pre-validate unique-index constraints for the whole batch (read-only,
+	// delete-aware) so a violation rejects the batch atomically via a non-fatal
+	// application error rather than stalling consensus mid-apply.
+	if verr := CheckUniqueViolationsBatch(e.indexes, e.indexFields, putsFromOps(ops), deleteKeysFromOps(ops)); verr != nil {
+		if res, handled, err := asAppErrResult(verr); handled {
+			return res, nil, err
+		}
+		return sm.Result{}, nil, verr
 	}
 
 	rev := s.CurrentRevision() + 1
@@ -838,19 +946,27 @@ func handleLeaseGrant(_ *mvcc.Store, lr *lease.Lessor, _ storage.Batch, payload 
 	}
 
 	if lr == nil {
-		return sm.Result{}, nil, &NotOpenError{}
+		// Lease subsystem not configured on this SM: surface as a non-fatal
+		// application error so the apply loop keeps advancing.
+		return appErrResult((&NotOpenError{}).Error()), nil, nil
 	}
 
 	info, err := lr.Grant(ttl)
 	if err != nil {
-		return sm.Result{}, nil, err
+		// Invalid TTL (and similar input-shaped grant failures) are
+		// deterministic application errors, not corruption: surface via the
+		// result payload rather than stalling consensus.
+		return appErrResult(err.Error()), nil, nil
 	}
 
 	return sm.Result{Value: uint64(info.ID)}, nil, nil
 }
 
 // handleLeaseRevoke expires a lease and deletes all attached keys at a new
-// revision.
+// revision. If the lease does not exist the operation is a no-op; Raft
+// state machine handlers must be idempotent so cleanup proposals (e.g.
+// deferred test teardown or duplicate revoke) do not produce a fatal Apply
+// error that would stall consensus.
 func handleLeaseRevoke(s *mvcc.Store, lr *lease.Lessor, batch storage.Batch, payload []byte) (sm.Result, []Notification, error) {
 	leaseID, err := protocol.DecodeLeaseRevoke(payload)
 	if err != nil {
@@ -858,11 +974,16 @@ func handleLeaseRevoke(s *mvcc.Store, lr *lease.Lessor, batch storage.Batch, pay
 	}
 
 	if lr == nil {
-		return sm.Result{}, nil, &NotOpenError{}
+		return appErrResult((&NotOpenError{}).Error()), nil, nil
 	}
 
 	keys, err := lr.Revoke(leaseID)
 	if err != nil {
+		var nfe *lease.NotFoundError
+		if errors.As(err, &nfe) {
+			// Lease already gone — idempotent success.
+			return sm.Result{Value: 0}, nil, nil
+		}
 		return sm.Result{}, nil, err
 	}
 
@@ -872,6 +993,12 @@ func handleLeaseRevoke(s *mvcc.Store, lr *lease.Lessor, batch storage.Batch, pay
 		for _, key := range keys {
 			prevKv, delErr := s.DeleteInBatch(batch, key, rev)
 			if delErr != nil {
+				// A lease-attached key that is already absent is expected (it
+				// was deleted independently); a genuine storage write failure is
+				// not. Log it so a silent durability fault is observable rather
+				// than swallowed. The op stays deterministic across replicas.
+				slog.Warn("engine: lease revoke could not delete attached key",
+					"lease_id", leaseID, "error", delErr)
 				continue
 			}
 			deleteKv := &service.KeyValue{
@@ -901,11 +1028,16 @@ func handleLeaseKeepAlive(_ *mvcc.Store, lr *lease.Lessor, _ storage.Batch, payl
 	}
 
 	if lr == nil {
-		return sm.Result{}, nil, &NotOpenError{}
+		return appErrResult((&NotOpenError{}).Error()), nil, nil
 	}
 
 	_, err = lr.KeepAlive(leaseID)
 	if err != nil {
+		var nfe *lease.NotFoundError
+		if errors.As(err, &nfe) {
+			// Lease already gone — idempotent success.
+			return sm.Result{Value: 0}, nil, nil
+		}
 		return sm.Result{}, nil, err
 	}
 
@@ -926,8 +1058,17 @@ func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, _ sto
 	}
 	_ = sparse // reserved for future use
 
+	e.indexMu.Lock()
 	if _, exists := e.indexes[name]; exists {
-		return sm.Result{}, nil, &InvalidQueryError{Reason: "index already exists: " + name}
+		// Index already present — idempotent success so Raft Apply does not
+		// stall on duplicate create proposals. NOTE: existence is keyed by name
+		// only; a re-create that reuses the name with a DIVERGENT definition
+		// (different field/uniqueness) is a no-op and the original definition
+		// wins. Reconciling a divergent re-create must be rejected at the
+		// service layer before the proposal (returning an error here would
+		// stall consensus).
+		e.indexMu.Unlock()
+		return sm.Result{Value: 1}, nil, nil
 	}
 
 	valueType := index.IndexValueTypeString
@@ -939,6 +1080,7 @@ func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, _ sto
 	if e.pebbleDB != nil {
 		pebbleIdx, pebbleErr := index.NewPebbleIndex(e.pebbleDB, name, unique, valueType)
 		if pebbleErr != nil {
+			e.indexMu.Unlock()
 			return sm.Result{}, nil, pebbleErr
 		}
 		idx = pebbleIdx
@@ -948,6 +1090,7 @@ func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, _ sto
 
 	e.indexes[name] = idx
 	e.indexFields[name] = fieldName
+	e.indexMu.Unlock()
 
 	// Backfill: scan all existing keys and index values that contain
 	// the target field.
@@ -960,16 +1103,25 @@ func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, _ sto
 }
 
 // handleIndexDrop removes a secondary index and clears all its entries.
+// If the index does not exist the operation is a no-op; Raft state machine
+// handlers must be idempotent so that cleanup proposals (e.g. deferred test
+// teardown) do not return a fatal Apply error that would stall consensus.
 func (e *MVCCEngine) handleIndexDrop(_ *mvcc.Store, _ *lease.Lessor, _ storage.Batch, payload []byte) (sm.Result, []Notification, error) {
 	name, err := protocol.DecodeIndexDrop(payload)
 	if err != nil {
 		return sm.Result{}, nil, err
 	}
 
+	e.indexMu.Lock()
 	idx, ok := e.indexes[name]
 	if !ok {
-		return sm.Result{}, nil, &InvalidQueryError{Reason: "index not found: " + name}
+		// Index already gone — idempotent success.
+		e.indexMu.Unlock()
+		return sm.Result{Value: 1}, nil, nil
 	}
+	delete(e.indexes, name)
+	delete(e.indexFields, name)
+	e.indexMu.Unlock()
 
 	if err := idx.Clear(); err != nil {
 		return sm.Result{}, nil, err
@@ -977,8 +1129,6 @@ func (e *MVCCEngine) handleIndexDrop(_ *mvcc.Store, _ *lease.Lessor, _ storage.B
 	if err := idx.Close(); err != nil {
 		return sm.Result{}, nil, err
 	}
-	delete(e.indexes, name)
-	delete(e.indexFields, name)
 
 	return sm.Result{Value: 1}, nil, nil
 }
@@ -990,7 +1140,9 @@ func (e *MVCCEngine) handleIndexDrop(_ *mvcc.Store, _ *lease.Lessor, _ storage.B
 // handleTSWrite stores a single time-series data point.
 func (e *MVCCEngine) handleTSWrite(_ *mvcc.Store, _ *lease.Lessor, _ storage.Batch, payload []byte) (sm.Result, []Notification, error) {
 	if e.ts == nil {
-		return sm.Result{}, nil, &NotOpenError{}
+		// Time-series subsystem not configured on this SM: non-fatal
+		// application error so the apply loop keeps advancing.
+		return appErrResult((&NotOpenError{}).Error()), nil, nil
 	}
 
 	params, err := protocol.DecodeTSWrite(payload)
@@ -1008,7 +1160,9 @@ func (e *MVCCEngine) handleTSWrite(_ *mvcc.Store, _ *lease.Lessor, _ storage.Bat
 // handleTSWriteBatch stores multiple time-series data points atomically.
 func (e *MVCCEngine) handleTSWriteBatch(_ *mvcc.Store, _ *lease.Lessor, _ storage.Batch, payload []byte) (sm.Result, []Notification, error) {
 	if e.ts == nil {
-		return sm.Result{}, nil, &NotOpenError{}
+		// Time-series subsystem not configured on this SM: non-fatal
+		// application error so the apply loop keeps advancing.
+		return appErrResult((&NotOpenError{}).Error()), nil, nil
 	}
 
 	params, err := protocol.DecodeTSWriteBatch(payload)
@@ -1036,7 +1190,9 @@ func (e *MVCCEngine) handleTSWriteBatch(_ *mvcc.Store, _ *lease.Lessor, _ storag
 // handleTSWritePoint stores a single validated time-series data point.
 func (e *MVCCEngine) handleTSWritePoint(_ *mvcc.Store, _ *lease.Lessor, _ storage.Batch, payload []byte) (sm.Result, []Notification, error) {
 	if e.ts == nil {
-		return sm.Result{}, nil, &NotOpenError{}
+		// Time-series subsystem not configured on this SM: non-fatal
+		// application error so the apply loop keeps advancing.
+		return appErrResult((&NotOpenError{}).Error()), nil, nil
 	}
 
 	params, err := protocol.DecodeTSWrite(payload)
@@ -1060,7 +1216,9 @@ func (e *MVCCEngine) handleTSWritePoint(_ *mvcc.Store, _ *lease.Lessor, _ storag
 // handleTSDeleteSeries deletes time-series data matching the request criteria.
 func (e *MVCCEngine) handleTSDeleteSeries(_ *mvcc.Store, _ *lease.Lessor, _ storage.Batch, payload []byte) (sm.Result, []Notification, error) {
 	if e.ts == nil {
-		return sm.Result{}, nil, &NotOpenError{}
+		// Time-series subsystem not configured on this SM: non-fatal
+		// application error so the apply loop keeps advancing.
+		return appErrResult((&NotOpenError{}).Error()), nil, nil
 	}
 
 	params, err := protocol.DecodeTSDeleteSeries(payload)
@@ -1089,7 +1247,9 @@ func (e *MVCCEngine) handleTSDeleteSeries(_ *mvcc.Store, _ *lease.Lessor, _ stor
 // handleTSSetRetention sets the retention policy for a metric.
 func (e *MVCCEngine) handleTSSetRetention(_ *mvcc.Store, _ *lease.Lessor, _ storage.Batch, payload []byte) (sm.Result, []Notification, error) {
 	if e.ts == nil {
-		return sm.Result{}, nil, &NotOpenError{}
+		// Time-series subsystem not configured on this SM: non-fatal
+		// application error so the apply loop keeps advancing.
+		return appErrResult((&NotOpenError{}).Error()), nil, nil
 	}
 
 	params, err := protocol.DecodeTSSetRetention(payload)

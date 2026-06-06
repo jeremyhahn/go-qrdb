@@ -145,6 +145,8 @@ All permissions are registered automatically via the `init()` function in `const
 | `UsersList` | `users:list` |
 | `UsersEnable` | `users:enable` |
 | `UsersDisable` | `users:disable` |
+| `UsersGetByCertThumbprint` | `users:get_by_cert_thumbprint` |
+| `UsersAddCertBinding` | `users:add_cert_binding` |
 | `RolesCreate` | `roles:create` |
 | `RolesRead` | `roles:read` |
 | `RolesUpdate` | `roles:update` |
@@ -160,6 +162,84 @@ All permissions are registered automatically via the `init()` function in `const
 | `TenantsUpdate` | `tenants:update` |
 | `TenantsDelete` | `tenants:delete` |
 | `TenantsList` | `tenants:list` |
+| `DatabasesCreate` | `databases:create` |
+| `DatabasesRead` | `databases:read` |
+| `DatabasesList` | `databases:list` |
+| `DatabasesDelete` | `databases:delete` |
+| `DatabasesUpdate` | `databases:update` |
+| `CollectionsCreate` | `collections:create` |
+| `CollectionsRead` | `collections:read` |
+| `CollectionsList` | `collections:list` |
+| `CollectionsDrop` | `collections:drop` |
+| `CollectionsInsert` | `collections:insert` |
+| `CollectionsUpdate` | `collections:update` |
+| `CollectionsDelete` | `collections:delete` |
+| `CredentialsSubmit` | `credentials:submit` |
+| `CredentialsStrategy` | `credentials:strategy` |
+| `CredentialsList` | `credentials:list` |
+| `CredentialsDelete` | `credentials:delete` |
+| `CredentialsRotate` | `credentials:rotate` |
+| `CredentialsGCExpired` | `credentials:gc_expired` |
+| `CredentialsRetrieveVersion` | `credentials:retrieve_version` |
+| `CredentialsListVersions` | `credentials:list_versions` |
+| `UserAuthFactorsAdd` | `user_authfactors:add` |
+| `UserAuthFactorsGet` | `user_authfactors:get` |
+| `UserAuthFactorsList` | `user_authfactors:list` |
+| `UserAuthFactorsRemove` | `user_authfactors:remove` |
+| `UserAuthFactorsRotate` | `user_authfactors:rotate` |
+| `UserAuthFactorsRelabel` | `user_authfactors:relabel` |
+| `UserAuthFactorsLogin` | `user_authfactors:login` |
+
+### Data Services (locks, index list, AI)
+
+| Constant | Permission String |
+|----------|-------------------|
+| `LocksAcquire` | `locks:acquire` |
+| `LocksRelease` | `locks:release` |
+| `LocksExtend` | `locks:extend` |
+| `LocksStatus` | `locks:status` |
+| `LocksList` | `locks:list` |
+| `IndexList` | `index:list` |
+| `EmbeddingEmbed` | `embedding:embed` |
+| `EmbeddingListModels` | `embedding:list_models` |
+| `RAGIngest` | `rag:ingest` |
+| `RAGQuery` | `rag:query` |
+| `RAGListDocuments` | `rag:list_documents` |
+| `RAGDeleteDocument` | `rag:delete_document` |
+
+### Admin Services (shard control)
+
+| Constant | Permission String |
+|----------|-------------------|
+| `AdminStartShard` | `admin:start_shard` |
+| `AdminStopShard` | `admin:stop_shard` |
+| `AdminShardState` | `admin:shard_state` |
+| `AdminTopology` | `admin:topology` |
+
+## Authorization posture (DEFAULT-DENY)
+
+Every protocol transport enforces authorization with a **default-deny** posture:
+a request that reaches a service handler/tool with **no permission mapping** is
+**rejected**, never treated as public. This holds for REST, gRPC, QUIC, and MCP.
+
+- **gRPC** (`UnaryInterceptor`/`StreamInterceptor`): an unmapped `QRDBService`
+  method is denied with `PermissionDenied`; only infrastructure services
+  (`grpc.health.v1.Health`, `grpc.reflection.*`) are exempt.
+- **QUIC** (`AuthorizeQUIC`): an unmapped dispatch method is denied.
+- **REST** (`RESTMiddleware`): an unmapped route on the API surface (paths under
+  `/kv`, `/v1/`, `/users`, `/certs`, … — see `restAPIPrefixes`) is denied.
+  Pre-authentication-exempt public endpoints are `/health`, `/v1/ca/bootstrap`,
+  and `/v1/config/initialized`; `/metrics` requires authentication but no
+  specific permission; the embedded web UI / static assets (outside the API
+  prefixes) pass through.
+- **MCP**: every tool call is authenticated (mTLS peer identity) and authorized
+  against the tool's permission via `mcpPermissions` — also default-deny (an
+  unmapped tool is rejected). The MCP surface exposes the full administrative
+  API, so it must never be reachable without an authorized identity.
+
+The mappings are validated by `TestGRPCPermissions_EveryMethodMapped` (every
+generated `QRDBService` RPC must have a permission) so a newly-added endpoint
+cannot silently ship unauthorized.
 
 ## Category Groups
 
@@ -167,9 +247,11 @@ Categories organize permissions into logical groups for UI rendering (e.g., a pe
 
 | Group | Categories |
 |-------|------------|
-| Data Services | KV Service, MVCC Service, Transaction Service, Batch Service, Watch Service, Lease Service, Index Service, TimeSeries Service, Vector Service |
-| Admin Services | Admin Service, Seal Management |
-| Management Services | User Management, Role Management, Certificate Management, Tenant Management |
+| Data Services | KV, MVCC, Transaction, Batch, Watch, Lease, Index Service, Secondary Index (list), TimeSeries, Vector, Lock Management |
+| Admin Services | Admin Service, Seal Management, Shard Control, Cross-Tenant Audit |
+| Management Services | User Management, Role Management, Certificate Management, Tenant Management, Database Management, Collection Management, Volume Pool Management, Registration Configuration |
+| Security Services | Credential Management, User Authentication Factors |
+| AI Services | Embedding, RAG |
 
 ## Global Registry
 
@@ -183,10 +265,21 @@ All permissions are registered into a global `sync.RWMutex`-protected map during
 
 ## Protocol Endpoints
 
-| Protocol | Endpoint | Response |
-|----------|----------|----------|
-| REST | `GET /v1/permissions` | All permissions grouped by category |
-| MCP | `qrdb_permissions_list` tool | Same structure as REST |
+Two distinct operations are exposed:
+
+- **Catalog** — lists every *registered* permission grouped by category (for UI
+  rendering). It is static and identity-independent.
+- **Resolve** — computes the *effective* permission set (sorted, deduplicated
+  union) for a given set of role IDs, delegating to the role service's
+  `ResolvePermissions`. Requires `permissions:resolve`.
+
+| Operation | REST | gRPC | QUIC | MCP |
+|-----------|------|------|------|-----|
+| Catalog | `GET /permissions` | `ListPermissions` | `role.ListPermissions` | `qrdb_permissions_list` |
+| Resolve | `POST /roles/resolve-permissions` | `ResolveRolePermissions` | `role.ResolvePermissions` | `qrdb_permissions_resolve` |
+
+Both are also available on the Unix and embedded transports and via the
+`qrdb roles permissions` / `qrdb roles resolve-permissions` CLI commands.
 
 ## Error Types
 

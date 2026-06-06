@@ -79,7 +79,7 @@ func TestLoadCA_NilCertPEM(t *testing.T) {
 	ctx := context.Background()
 
 	// Delete only the cert PEM entry so loadCA finds the key but not the cert.
-	if err := kv.Delete(ctx, "__sys:cert_ca/default/cert_pem"); err != nil {
+	if err := kv.Delete(ctx, "__sys:cert_ca/system/cert_pem"); err != nil {
 		t.Fatalf("Delete cert_pem: %v", err)
 	}
 
@@ -90,7 +90,7 @@ func TestLoadCA_NilCertPEM(t *testing.T) {
 	p.caCertPEM = nil
 	p.mu.Unlock()
 
-	err := p.loadCA(ctx, "default")
+	err := p.loadCA(ctx, "system")
 	if err == nil {
 		t.Fatal("expected error when cert PEM is missing")
 	}
@@ -107,7 +107,7 @@ func TestLoadCA_InvalidCertPEM(t *testing.T) {
 	ctx := context.Background()
 
 	// Overwrite cert_pem with invalid data so pem.Decode returns nil.
-	if err := kv.Put(ctx, "__sys:cert_ca/default/cert_pem", []byte("not-pem")); err != nil {
+	if err := kv.Put(ctx, "__sys:cert_ca/system/cert_pem", []byte("not-pem")); err != nil {
 		t.Fatalf("Put invalid cert_pem: %v", err)
 	}
 
@@ -118,7 +118,7 @@ func TestLoadCA_InvalidCertPEM(t *testing.T) {
 	p.caCertPEM = nil
 	p.mu.Unlock()
 
-	err := p.loadCA(ctx, "default")
+	err := p.loadCA(ctx, "system")
 	if err == nil {
 		t.Fatal("expected error for invalid cert PEM")
 	}
@@ -192,7 +192,7 @@ func TestGenerateClientCert_PutRecordError(t *testing.T) {
 	// be persisted.
 	p.kvStore = &errorKVStore{err: errors.New("disk full")}
 
-	req := &GenerateRequest{Username: "record-fail-user", TenantID: "default"}
+	req := &GenerateRequest{Username: "record-fail-user", TenantID: "system"}
 	_, err := p.GenerateClientCert(context.Background(), req)
 	if err == nil {
 		t.Fatal("expected error when persisting cert record fails")
@@ -238,7 +238,7 @@ func TestEncodePKCS12_InvalidCACert(t *testing.T) {
 	ctx := context.Background()
 
 	// Generate a valid client cert bundle.
-	req := &GenerateRequest{Username: "pkcs12-ca-bad", TenantID: "default"}
+	req := &GenerateRequest{Username: "pkcs12-ca-bad", TenantID: "system"}
 	bundle, err := p.GenerateClientCert(ctx, req)
 	if err != nil {
 		t.Fatalf("GenerateClientCert: %v", err)
@@ -285,7 +285,7 @@ func TestLoadCA_WipesExistingKey(t *testing.T) {
 	}
 
 	// Call loadCA again — it should wipe the old key and reload.
-	if err := p.loadCA(ctx, "default"); err != nil {
+	if err := p.loadCA(ctx, "system"); err != nil {
 		t.Fatalf("second loadCA: %v", err)
 	}
 

@@ -189,6 +189,9 @@ func (t *Transport) TSQuery(ctx context.Context, req *transport.TSQueryRequest) 
 	if req.Descending {
 		params.Set("descending", "true")
 	}
+	if req.Consistency != "" {
+		params.Set("consistency", req.Consistency)
+	}
 
 	reqURL := t.baseURL + "/ts/query?" + params.Encode()
 
@@ -234,6 +237,9 @@ func (t *Transport) TSAggregate(ctx context.Context, req *transport.TSAggregateR
 	params.Set("function", aggFuncToString(req.Function))
 	if req.IntervalNs > 0 {
 		params.Set("interval_ns", strconv.FormatInt(req.IntervalNs, 10))
+	}
+	if req.Consistency != "" {
+		params.Set("consistency", req.Consistency)
 	}
 
 	reqURL := t.baseURL + "/ts/aggregate?" + params.Encode()
@@ -340,7 +346,14 @@ func (t *Transport) TSRichQuery(ctx context.Context, req *transport.TSRichQueryR
 		return nil, &transport.RequestError{Method: "TSRichQuery", Err: &jsonEncodeError{Err: err}}
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, t.baseURL+"/ts/query-rich", bytes.NewReader(data))
+	richQueryURL := t.baseURL + "/ts/query-rich"
+	if req.Consistency != "" {
+		params := url.Values{}
+		params.Set("consistency", req.Consistency)
+		richQueryURL += "?" + params.Encode()
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, richQueryURL, bytes.NewReader(data))
 	if err != nil {
 		return nil, &transport.RequestError{Method: "TSRichQuery", Err: err}
 	}
@@ -535,6 +548,9 @@ func (t *Transport) TSListMetrics(ctx context.Context, req *transport.TSListMetr
 	}
 	if req.Limit > 0 {
 		params.Set("limit", strconv.FormatInt(int64(req.Limit), 10))
+	}
+	if req.Consistency != "" {
+		params.Set("consistency", req.Consistency)
 	}
 
 	reqURL := t.baseURL + "/ts/metrics"

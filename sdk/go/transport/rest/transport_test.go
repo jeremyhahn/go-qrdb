@@ -423,6 +423,34 @@ func TestConnect_HealthCheckFailure(t *testing.T) {
 	}
 }
 
+// TestConnect_SealedServerIsReachable verifies that a server returning 503
+// from /health (a sealed barrier / not-ready node) is still connectable, so
+// the CLI can run allowlisted barrier/seal commands (status, unseal,
+// shamir/*) over REST. Gating Connect on 200 would lock operators out of a
+// sealed node entirely.
+func TestConnect_SealedServerIsReachable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Mimic the sealed-window middleware: /health -> 503.
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":"barrier sealed","code":"SEALED"}`))
+	}))
+	defer srv.Close()
+
+	rt, err := New(transport.WithAddress(srv.URL))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer rt.Close()
+
+	if err := rt.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect to a sealed (503) server should succeed, got: %v", err)
+	}
+	// Healthy() must still report false for a sealed server.
+	if rt.Healthy(context.Background()) {
+		t.Error("Healthy() should be false for a sealed (503) server")
+	}
+}
+
 func TestConnect_AfterClose(t *testing.T) {
 	srv := newTestServer(t)
 	defer srv.Close()

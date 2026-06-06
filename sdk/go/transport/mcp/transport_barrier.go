@@ -36,9 +36,16 @@ func (t *Transport) BarrierInitialize(ctx context.Context, req *transport.Barrie
 		return &transport.ClosedError{}
 	}
 
-	if _, err := t.callTool(ctx, "qrdb_barrier_initialize", map[string]any{
+	args := map[string]any{
 		"secret": req.Secret,
-	}); err != nil {
+	}
+	if req.SOPin != "" {
+		args["so_pin"] = req.SOPin
+	}
+	if req.UserPin != "" {
+		args["user_pin"] = req.UserPin
+	}
+	if _, err := t.callTool(ctx, "qrdb_barrier_initialize", args); err != nil {
 		return &transport.RequestError{Method: "BarrierInitialize", Err: err}
 	}
 
@@ -103,11 +110,18 @@ func (t *Transport) BarrierInitializeShamir(ctx context.Context, req *transport.
 		return nil, &transport.ClosedError{}
 	}
 
-	text, err := t.callTool(ctx, "qrdb_barrier_shamir_initialize", map[string]any{
+	args := map[string]any{
 		"secret":       req.Secret,
 		"threshold":    req.Threshold,
 		"total_shares": req.TotalShares,
-	})
+	}
+	if req.SOPin != "" {
+		args["so_pin"] = req.SOPin
+	}
+	if req.UserPin != "" {
+		args["user_pin"] = req.UserPin
+	}
+	text, err := t.callTool(ctx, "qrdb_barrier_shamir_initialize", args)
 	if err != nil {
 		return nil, &transport.RequestError{Method: "BarrierInitializeShamir", Err: err}
 	}
@@ -159,70 +173,6 @@ func (t *Transport) BarrierUnsealWithShares(ctx context.Context, req *transport.
 	return nil
 }
 
-// BarrierShamirListShares returns metadata about stored Shamir shares by
-// calling the qrdb_barrier_shamir_list_shares MCP tool.
-func (t *Transport) BarrierShamirListShares(ctx context.Context) (*transport.BarrierShamirSharesResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-
-	text, err := t.callTool(ctx, "qrdb_barrier_shamir_list_shares", nil)
-	if err != nil {
-		return nil, &transport.RequestError{Method: "BarrierShamirListShares", Err: err}
-	}
-
-	var resp transport.BarrierShamirSharesResponse
-	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
-		return nil, &transport.RequestError{Method: "BarrierShamirListShares", Err: &jsonDecodeError{Err: jsonErr}}
-	}
-
-	return &resp, nil
-}
-
-// BarrierShamirDeleteShare deletes a single Shamir share by index. Calls the
-// qrdb_barrier_shamir_delete_share MCP tool.
-func (t *Transport) BarrierShamirDeleteShare(ctx context.Context, req *transport.BarrierShamirDeleteShareRequest) error {
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
-
-	if _, err := t.callTool(ctx, "qrdb_barrier_shamir_delete_share", map[string]any{
-		"index": req.Index,
-	}); err != nil {
-		return &transport.RequestError{Method: "BarrierShamirDeleteShare", Err: err}
-	}
-
-	return nil
-}
-
-// BarrierShamirDeleteAllShares deletes all stored Shamir shares by calling
-// the qrdb_barrier_shamir_delete_all_shares MCP tool.
-func (t *Transport) BarrierShamirDeleteAllShares(ctx context.Context) error {
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
-
-	if _, err := t.callTool(ctx, "qrdb_barrier_shamir_delete_all_shares", nil); err != nil {
-		return &transport.RequestError{Method: "BarrierShamirDeleteAllShares", Err: err}
-	}
-
-	return nil
-}
-
-// BarrierShamirVerify verifies the integrity of stored Shamir shares by
-// calling the qrdb_barrier_shamir_verify MCP tool.
-func (t *Transport) BarrierShamirVerify(ctx context.Context) error {
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
-
-	if _, err := t.callTool(ctx, "qrdb_barrier_shamir_verify", nil); err != nil {
-		return &transport.RequestError{Method: "BarrierShamirVerify", Err: err}
-	}
-
-	return nil
-}
-
 // BarrierRekey generates new Shamir shares with the specified threshold and
 // total count, replacing the existing shares. Calls the qrdb_barrier_rekey
 // MCP tool.
@@ -231,10 +181,14 @@ func (t *Transport) BarrierRekey(ctx context.Context, req *transport.BarrierReke
 		return nil, &transport.ClosedError{}
 	}
 
-	text, err := t.callTool(ctx, "qrdb_barrier_rekey", map[string]any{
+	args := map[string]any{
 		"threshold": req.Threshold,
 		"total":     req.Total,
-	})
+	}
+	if req.SOPin != "" {
+		args["so_pin"] = req.SOPin
+	}
+	text, err := t.callTool(ctx, "qrdb_barrier_rekey", args)
 	if err != nil {
 		return nil, &transport.RequestError{Method: "BarrierRekey", Err: err}
 	}
@@ -254,10 +208,14 @@ func (t *Transport) BarrierGenerateRecoveryKeys(ctx context.Context, req *transp
 		return nil, &transport.ClosedError{}
 	}
 
-	text, err := t.callTool(ctx, "qrdb_barrier_recovery_generate", map[string]any{
+	args := map[string]any{
 		"threshold": req.Threshold,
 		"total":     req.Total,
-	})
+	}
+	if req.SOPin != "" {
+		args["so_pin"] = req.SOPin
+	}
+	text, err := t.callTool(ctx, "qrdb_barrier_recovery_generate", args)
 	if err != nil {
 		return nil, &transport.RequestError{Method: "BarrierGenerateRecoveryKeys", Err: err}
 	}

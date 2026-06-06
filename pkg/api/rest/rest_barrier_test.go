@@ -41,10 +41,6 @@ type mockBarrierService struct {
 	initializeShamirFn   func(ctx context.Context, secret string, threshold, totalShares int) (*service.ShamirInitInfo, error)
 	unsealWithShareFn    func(ctx context.Context, share string) (*service.UnsealShareProgress, error)
 	unsealWithSharesFn   func(ctx context.Context, shares []string) error
-	shamirListSharesFn   func(ctx context.Context) (*service.ShamirSharesInfo, error)
-	shamirDeleteShareFn  func(ctx context.Context, index int) error
-	shamirDeleteAllFn    func(ctx context.Context) error
-	shamirVerifyFn       func(ctx context.Context) error
 	rekeyFn              func(ctx context.Context, threshold, total int) (*service.ShamirInitInfo, error)
 	generateRecoveryFn   func(ctx context.Context, threshold, total int) (*service.RecoveryKeysInfo, error)
 	recoverWithKeysFn    func(ctx context.Context, keys []string) error
@@ -114,38 +110,6 @@ func (m *mockBarrierService) BarrierUnsealWithShare(ctx context.Context, share s
 func (m *mockBarrierService) BarrierUnsealWithShares(ctx context.Context, shares []string) error {
 	if m.unsealWithSharesFn != nil {
 		return m.unsealWithSharesFn(ctx, shares)
-	}
-	return nil
-}
-
-func (m *mockBarrierService) BarrierShamirListShares(ctx context.Context) (*service.ShamirSharesInfo, error) {
-	if m.shamirListSharesFn != nil {
-		return m.shamirListSharesFn(ctx)
-	}
-	return &service.ShamirSharesInfo{
-		Count:     3,
-		Threshold: 2,
-		Total:     3,
-	}, nil
-}
-
-func (m *mockBarrierService) BarrierShamirDeleteShare(ctx context.Context, index int) error {
-	if m.shamirDeleteShareFn != nil {
-		return m.shamirDeleteShareFn(ctx, index)
-	}
-	return nil
-}
-
-func (m *mockBarrierService) BarrierShamirDeleteAllShares(ctx context.Context) error {
-	if m.shamirDeleteAllFn != nil {
-		return m.shamirDeleteAllFn(ctx)
-	}
-	return nil
-}
-
-func (m *mockBarrierService) BarrierShamirVerify(ctx context.Context) error {
-	if m.shamirVerifyFn != nil {
-		return m.shamirVerifyFn(ctx)
 	}
 	return nil
 }
@@ -241,9 +205,6 @@ func TestBarrierHandlers_NilService(t *testing.T) {
 		{"ShamirInitialize", http.MethodPost, "/v1/barrier/shamir/initialize", `{"secret":"s","threshold":2,"total_shares":3}`, srv.handleBarrierShamirInitialize},
 		{"ShamirUnsealShare", http.MethodPost, "/v1/barrier/shamir/unseal-share", `{"share":"abc"}`, srv.handleBarrierShamirUnsealShare},
 		{"ShamirUnsealShares", http.MethodPost, "/v1/barrier/shamir/unseal-shares", `{"shares":["a","b"]}`, srv.handleBarrierShamirUnsealShares},
-		{"ShamirListShares", http.MethodGet, "/v1/barrier/shamir/shares", "", srv.handleBarrierShamirListShares},
-		{"ShamirDeleteAllShares", http.MethodDelete, "/v1/barrier/shamir/shares", "", srv.handleBarrierShamirDeleteAllShares},
-		{"ShamirVerify", http.MethodPost, "/v1/barrier/shamir/verify", "", srv.handleBarrierShamirVerify},
 		{"Rekey", http.MethodPost, "/v1/barrier/rekey", `{"threshold":2,"total":3}`, srv.handleBarrierRekey},
 		{"RecoveryGenerate", http.MethodPost, "/v1/barrier/recovery/generate", `{"threshold":2,"total":3}`, srv.handleBarrierRecoveryGenerate},
 		{"RecoveryRecover", http.MethodPost, "/v1/barrier/recovery/recover", `{"keys":["k1"]}`, srv.handleBarrierRecoveryRecover},
@@ -263,30 +224,6 @@ func TestBarrierHandlers_NilService(t *testing.T) {
 			req := httptest.NewRequest(tc.method, tc.path, body)
 			rec := httptest.NewRecorder()
 			tc.handler(rec, req)
-			assertStatus(t, rec, http.StatusNotImplemented)
-		})
-	}
-}
-
-// Also test the handleBarrierShamirSharesByPath dispatcher with nil service.
-func TestBarrierHandlers_ShamirSharesByPath_NilService(t *testing.T) {
-	srv := &Server{barrierSvc: nil}
-
-	tests := []struct {
-		name   string
-		method string
-		path   string
-	}{
-		{"ListShares", http.MethodGet, "/v1/barrier/shamir/shares"},
-		{"DeleteAll", http.MethodDelete, "/v1/barrier/shamir/shares"},
-		{"DeleteByIndex", http.MethodDelete, "/v1/barrier/shamir/shares/0"},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(tc.method, tc.path, nil)
-			rec := httptest.NewRecorder()
-			srv.handleBarrierShamirSharesByPath(rec, req)
 			assertStatus(t, rec, http.StatusNotImplemented)
 		})
 	}
@@ -497,7 +434,7 @@ func TestBarrierHandlers_Status_ZeroInitTime(t *testing.T) {
 		statusFn: func(_ context.Context) (*service.BarrierStatusInfo, error) {
 			return &service.BarrierStatusInfo{
 				Sealed:   false,
-				Strategy: "software",
+				Strategy: "passphrase",
 			}, nil
 		},
 	}
@@ -745,213 +682,21 @@ func TestBarrierHandlers_ShamirUnsealShares_ServiceError(t *testing.T) {
 // Shamir: ListShares (via dispatch path fallback)
 // ---------------------------------------------------------------------------
 
-func TestBarrierHandlers_ShamirListShares(t *testing.T) {
-	svc := &mockBarrierService{
-		shamirListSharesFn: func(_ context.Context) (*service.ShamirSharesInfo, error) {
-			return &service.ShamirSharesInfo{
-				Count:     5,
-				Threshold: 3,
-				Total:     5,
-			}, nil
-		},
-	}
-	srv := newBarrierTestServer(t, svc)
-
-	req := httptest.NewRequest(http.MethodGet, "/v1/barrier/shamir/shares", nil)
-	rec := httptest.NewRecorder()
-	srv.dispatch(rec, req)
-
-	assertStatus(t, rec, http.StatusOK)
-
-	var resp map[string]interface{}
-	decodeJSON(t, rec, &resp)
-
-	if count, ok := resp["count"].(float64); !ok || int(count) != 5 {
-		t.Fatalf("count = %v, want 5", resp["count"])
-	}
-	if thresh, ok := resp["threshold"].(float64); !ok || int(thresh) != 3 {
-		t.Fatalf("threshold = %v, want 3", resp["threshold"])
-	}
-	if total, ok := resp["total"].(float64); !ok || int(total) != 5 {
-		t.Fatalf("total = %v, want 5", resp["total"])
-	}
-}
-
-func TestBarrierHandlers_ShamirListShares_ServiceError(t *testing.T) {
-	svc := &mockBarrierService{
-		shamirListSharesFn: func(_ context.Context) (*service.ShamirSharesInfo, error) {
-			return nil, errors.New("list failed")
-		},
-	}
-	srv := newBarrierTestServer(t, svc)
-
-	req := httptest.NewRequest(http.MethodGet, "/v1/barrier/shamir/shares", nil)
-	rec := httptest.NewRecorder()
-	srv.dispatch(rec, req)
-
-	if rec.Code == http.StatusOK {
-		t.Fatal("expected error status, got 200")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Shamir: DeleteShare by index (via dispatch path fallback)
 // ---------------------------------------------------------------------------
-
-func TestBarrierHandlers_ShamirDeleteShare(t *testing.T) {
-	deletedIndex := -1
-	svc := &mockBarrierService{
-		shamirDeleteShareFn: func(_ context.Context, index int) error {
-			deletedIndex = index
-			return nil
-		},
-	}
-	srv := newBarrierTestServer(t, svc)
-
-	req := httptest.NewRequest(http.MethodDelete, "/v1/barrier/shamir/shares/0", nil)
-	rec := httptest.NewRecorder()
-	srv.dispatch(rec, req)
-
-	assertStatus(t, rec, http.StatusNoContent)
-	if deletedIndex != 0 {
-		t.Fatalf("deleted index = %d, want 0", deletedIndex)
-	}
-}
-
-func TestBarrierHandlers_ShamirDeleteShare_ServiceError(t *testing.T) {
-	svc := &mockBarrierService{
-		shamirDeleteShareFn: func(_ context.Context, _ int) error {
-			return errors.New("index out of range")
-		},
-	}
-	srv := newBarrierTestServer(t, svc)
-
-	req := httptest.NewRequest(http.MethodDelete, "/v1/barrier/shamir/shares/2", nil)
-	rec := httptest.NewRecorder()
-	srv.dispatch(rec, req)
-
-	if rec.Code == http.StatusNoContent {
-		t.Fatal("expected error status, got 204")
-	}
-}
-
-func TestBarrierHandlers_ShamirDeleteShare_InvalidIndex(t *testing.T) {
-	srv := newBarrierTestServer(t, &mockBarrierService{})
-
-	req := httptest.NewRequest(http.MethodDelete, "/v1/barrier/shamir/shares/abc", nil)
-	rec := httptest.NewRecorder()
-	srv.dispatch(rec, req)
-
-	assertStatus(t, rec, http.StatusBadRequest)
-}
-
-func TestBarrierHandlers_ShamirDeleteShare_MethodNotAllowed(t *testing.T) {
-	srv := newBarrierTestServer(t, &mockBarrierService{})
-
-	// PUT on a path with an index should be method not allowed.
-	req := httptest.NewRequest(http.MethodPut, "/v1/barrier/shamir/shares/0", nil)
-	rec := httptest.NewRecorder()
-	srv.dispatch(rec, req)
-
-	assertStatus(t, rec, http.StatusMethodNotAllowed)
-}
 
 // ---------------------------------------------------------------------------
 // Shamir: DeleteAllShares (via dispatch path fallback)
 // ---------------------------------------------------------------------------
 
-func TestBarrierHandlers_ShamirDeleteAllShares(t *testing.T) {
-	called := false
-	svc := &mockBarrierService{
-		shamirDeleteAllFn: func(_ context.Context) error {
-			called = true
-			return nil
-		},
-	}
-	srv := newBarrierTestServer(t, svc)
-
-	req := httptest.NewRequest(http.MethodDelete, "/v1/barrier/shamir/shares", nil)
-	rec := httptest.NewRecorder()
-	srv.dispatch(rec, req)
-
-	assertStatus(t, rec, http.StatusNoContent)
-	if !called {
-		t.Fatal("BarrierShamirDeleteAllShares was not called")
-	}
-}
-
-func TestBarrierHandlers_ShamirDeleteAllShares_ServiceError(t *testing.T) {
-	svc := &mockBarrierService{
-		shamirDeleteAllFn: func(_ context.Context) error {
-			return errors.New("delete all failed")
-		},
-	}
-	srv := newBarrierTestServer(t, svc)
-
-	req := httptest.NewRequest(http.MethodDelete, "/v1/barrier/shamir/shares", nil)
-	rec := httptest.NewRecorder()
-	srv.dispatch(rec, req)
-
-	if rec.Code == http.StatusNoContent {
-		t.Fatal("expected error status, got 204")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Shamir: Shares method not allowed (via dispatch path fallback)
 // ---------------------------------------------------------------------------
 
-func TestBarrierHandlers_ShamirShares_MethodNotAllowed(t *testing.T) {
-	srv := newBarrierTestServer(t, &mockBarrierService{})
-
-	// POST on the shares collection is not allowed.
-	req := httptest.NewRequest(http.MethodPost, "/v1/barrier/shamir/shares", nil)
-	rec := httptest.NewRecorder()
-	srv.dispatch(rec, req)
-
-	assertStatus(t, rec, http.StatusMethodNotAllowed)
-}
-
 // ---------------------------------------------------------------------------
 // Shamir: Verify
 // ---------------------------------------------------------------------------
-
-func TestBarrierHandlers_ShamirVerify(t *testing.T) {
-	called := false
-	svc := &mockBarrierService{
-		shamirVerifyFn: func(_ context.Context) error {
-			called = true
-			return nil
-		},
-	}
-	srv := newBarrierTestServer(t, svc)
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/barrier/shamir/verify", nil)
-	rec := httptest.NewRecorder()
-	srv.dispatch(rec, req)
-
-	assertStatus(t, rec, http.StatusNoContent)
-	if !called {
-		t.Fatal("BarrierShamirVerify was not called")
-	}
-}
-
-func TestBarrierHandlers_ShamirVerify_ServiceError(t *testing.T) {
-	svc := &mockBarrierService{
-		shamirVerifyFn: func(_ context.Context) error {
-			return errors.New("verify failed")
-		},
-	}
-	srv := newBarrierTestServer(t, svc)
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/barrier/shamir/verify", nil)
-	rec := httptest.NewRecorder()
-	srv.dispatch(rec, req)
-
-	if rec.Code == http.StatusNoContent {
-		t.Fatal("expected error status, got 204")
-	}
-}
 
 // ---------------------------------------------------------------------------
 // Rekey
@@ -1345,7 +1090,6 @@ func TestBarrierHandlers_MethodNotAllowed(t *testing.T) {
 		{"ShamirInit_GET", http.MethodGet, "/v1/barrier/shamir/initialize"},
 		{"UnsealShare_GET", http.MethodGet, "/v1/barrier/shamir/unseal-share"},
 		{"UnsealShares_GET", http.MethodGet, "/v1/barrier/shamir/unseal-shares"},
-		{"Verify_GET", http.MethodGet, "/v1/barrier/shamir/verify"},
 		{"Rekey_GET", http.MethodGet, "/v1/barrier/rekey"},
 		{"RecoveryGenerate_GET", http.MethodGet, "/v1/barrier/recovery/generate"},
 		{"RecoveryRecover_GET", http.MethodGet, "/v1/barrier/recovery/recover"},
@@ -1372,7 +1116,7 @@ func TestBarrierStatusToResponse_WithInitTime(t *testing.T) {
 	initTime := time.Date(2026, 6, 15, 8, 30, 0, 0, time.UTC)
 	info := &service.BarrierStatusInfo{
 		Sealed:         false,
-		Strategy:       "software",
+		Strategy:       "passphrase",
 		HardwareBacked: true,
 		InitializedAt:  initTime,
 	}
@@ -1382,8 +1126,8 @@ func TestBarrierStatusToResponse_WithInitTime(t *testing.T) {
 	if sealed, ok := resp["sealed"].(bool); !ok || sealed {
 		t.Fatalf("sealed = %v, want false", resp["sealed"])
 	}
-	if strategy, ok := resp["strategy"].(string); !ok || strategy != "software" {
-		t.Fatalf("strategy = %v, want %q", resp["strategy"], "software")
+	if strategy, ok := resp["strategy"].(string); !ok || strategy != "passphrase" {
+		t.Fatalf("strategy = %v, want %q", resp["strategy"], "passphrase")
 	}
 	if hw, ok := resp["hardware_backed"].(bool); !ok || !hw {
 		t.Fatalf("hardware_backed = %v, want true", resp["hardware_backed"])
@@ -1447,26 +1191,6 @@ func TestUnsealShareProgressToResponse(t *testing.T) {
 	}
 }
 
-func TestShamirSharesToResponse(t *testing.T) {
-	info := &service.ShamirSharesInfo{
-		Count:     5,
-		Threshold: 3,
-		Total:     5,
-	}
-
-	resp := shamirSharesToResponse(info)
-
-	if count, ok := resp["count"].(int); !ok || count != 5 {
-		t.Fatalf("count = %v, want 5", resp["count"])
-	}
-	if thresh, ok := resp["threshold"].(int); !ok || thresh != 3 {
-		t.Fatalf("threshold = %v, want 3", resp["threshold"])
-	}
-	if total, ok := resp["total"].(int); !ok || total != 5 {
-		t.Fatalf("total = %v, want 5", resp["total"])
-	}
-}
-
 func TestRecoveryKeysToResponse(t *testing.T) {
 	info := &service.RecoveryKeysInfo{
 		Keys:      []string{"k1", "k2"},
@@ -1508,25 +1232,6 @@ func TestRootTokenToResponse(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Shamir shares: trailing slash normalization
 // ---------------------------------------------------------------------------
-
-func TestBarrierHandlers_ShamirSharesTrailingSlash(t *testing.T) {
-	// Requesting /v1/barrier/shamir/shares/ (trailing slash, empty remainder)
-	// should dispatch to list or delete based on method, not parse an empty index.
-	svc := &mockBarrierService{
-		shamirListSharesFn: func(_ context.Context) (*service.ShamirSharesInfo, error) {
-			return &service.ShamirSharesInfo{Count: 2, Threshold: 2, Total: 3}, nil
-		},
-	}
-	srv := newBarrierTestServer(t, svc)
-
-	req := httptest.NewRequest(http.MethodGet, "/v1/barrier/shamir/shares/", nil)
-	rec := httptest.NewRecorder()
-	srv.dispatch(rec, req)
-
-	// The path "/v1/barrier/shamir/shares/" has remainder "" after TrimPrefix,
-	// so it dispatches to list. Verify we get a valid response.
-	assertStatus(t, rec, http.StatusOK)
-}
 
 // ---------------------------------------------------------------------------
 // WithBarrierService option test

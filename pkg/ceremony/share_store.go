@@ -17,47 +17,51 @@ package ceremony
 import (
 	"sync"
 
-	"github.com/awnumar/memguard"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
-// memguardShareStore provides secure in-memory storage for Shamir key
-// shares using memguard locked buffers. Shares are NEVER persisted to
-// disk. Once claimed, the locked buffer is destroyed and the share
-// bytes are wiped from memory.
-type memguardShareStore struct {
+// sealedShareStore provides secure in-memory storage for Shamir key
+// shares using *secure.Secret enclaves. Shares are NEVER persisted to
+// disk. Once claimed, the Secret is destroyed and the share bytes are
+// wiped from memory.
+type sealedShareStore struct {
 	mu      sync.Mutex
-	shares  map[string]*memguard.LockedBuffer
+	shares  map[string]*secure.Secret
 	claimed map[string]bool
 }
 
-// newMemguardShareStore creates a new in-memory share store backed
-// by memguard locked buffers.
-func newMemguardShareStore() *memguardShareStore {
-	return &memguardShareStore{
-		shares:  make(map[string]*memguard.LockedBuffer),
+// newSealedShareStore creates a new in-memory share store backed by
+// *secure.Secret enclaves.
+func newSealedShareStore() *sealedShareStore {
+	return &sealedShareStore{
+		shares:  make(map[string]*secure.Secret),
 		claimed: make(map[string]bool),
 	}
 }
 
-// Store securely stores share bytes for the given username in a
-// memguard LockedBuffer. The input bytes are copied into the locked
-// buffer and the original bytes are wiped.
-func (s *memguardShareStore) Store(username string, shareJSON []byte) error {
+// Store securely stores share bytes for the given username. The input
+// slice is consumed — shareJSON is wiped before this function returns.
+func (s *sealedShareStore) Store(username string, shareJSON []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	buf := memguard.NewBufferFromBytes(shareJSON)
-	memguard.WipeBytes(shareJSON)
-	s.shares[username] = buf
+	sec, err := secure.NewSecret(shareJSON)
+	if err != nil {
+		// NewSecret wipes shareJSON only on success; defensively wipe on
+		// the error path so callers never leak bytes.
+		secure.Wipe(shareJSON)
+		return err
+	}
+	s.shares[username] = sec
 	return nil
 }
 
 // Claim retrieves and returns a copy of the share bytes for the given
-// username, then destroys the locked buffer. After claiming, the share
-// is no longer available. Returns ErrShareAlreadyClaimed if the share
-// was previously claimed, or ErrShareNotFound if no share was ever
-// stored for the username.
-func (s *memguardShareStore) Claim(username string) ([]byte, error) {
+// username, then destroys the sealed material. After claiming, the
+// share is no longer available. Returns ErrShareAlreadyClaimed if the
+// share was previously claimed, or ErrShareNotFound if no share was
+// ever stored for the username.
+func (s *sealedShareStore) Claim(username string) ([]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -65,17 +69,22 @@ func (s *memguardShareStore) Claim(username string) ([]byte, error) {
 		return nil, ErrShareAlreadyClaimed
 	}
 
-	buf, ok := s.shares[username]
+	sec, ok := s.shares[username]
 	if !ok {
 		return nil, ErrShareNotFound
 	}
 
-	// Copy the bytes out before destroying the buffer.
+	buf, err := sec.Open()
+	if err != nil {
+		return nil, err
+	}
+	// Copy out before we destroy the buffer & secret.
 	src := buf.Bytes()
 	out := make([]byte, len(src))
 	copy(out, src)
-
 	buf.Destroy()
+
+	sec.Destroy()
 	delete(s.shares, username)
 	s.claimed[username] = true
 
@@ -84,7 +93,7 @@ func (s *memguardShareStore) Claim(username string) ([]byte, error) {
 
 // Exists reports whether a share is currently stored (not yet claimed)
 // for the given username.
-func (s *memguardShareStore) Exists(username string) bool {
+func (s *sealedShareStore) Exists(username string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, ok := s.shares[username]
@@ -94,20 +103,20 @@ func (s *memguardShareStore) Exists(username string) bool {
 // Claimed reports whether a share was previously stored and has been
 // claimed for the given username. Returns true only if the share was
 // stored and subsequently claimed.
-func (s *memguardShareStore) Claimed(username string) bool {
+func (s *sealedShareStore) Claimed(username string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.claimed[username]
 }
 
-// DestroyAll destroys all remaining locked buffers, wiping share data
+// DestroyAll destroys all remaining sealed shares, wiping share data
 // from memory. This should be called during cleanup or when the
 // ceremony is abandoned.
-func (s *memguardShareStore) DestroyAll() {
+func (s *sealedShareStore) DestroyAll() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for username, buf := range s.shares {
-		buf.Destroy()
+	for username, sec := range s.shares {
+		sec.Destroy()
 		delete(s.shares, username)
 	}
 }

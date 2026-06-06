@@ -21,7 +21,7 @@ func TestEnableUser_PutFails_Coverage(t *testing.T) {
 		putFailAt: 4, // first 3 Puts are CreateUser (primary, tenant index, username index)
 		putErr:    errors.New("disk full"),
 	}
-	svc, err := NewStore(fkv)
+	svc, err := NewStore(fkv, newTestIDGen(t))
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
@@ -56,7 +56,7 @@ func TestDisableUser_PutFails_Coverage(t *testing.T) {
 		putFailAt: 4, // first 3 Puts are CreateUser (primary, tenant index, username index)
 		putErr:    errors.New("disk full"),
 	}
-	svc, err := NewStore(fkv)
+	svc, err := NewStore(fkv, newTestIDGen(t))
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestListUsers_ScanError(t *testing.T) {
 		inner:   newMemKVStore(),
 		scanErr: errors.New("scan failed"),
 	}
-	svc, err := NewStore(fkv)
+	svc, err := NewStore(fkv, newTestIDGen(t))
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestCreateUser_UsernameIndexPutFails(t *testing.T) {
 		putFailAt: 3, // primary(1), tenant index(2), username index(3) — fail 3rd
 		putErr:    errors.New("disk full"),
 	}
-	svc, err := NewStore(fkv)
+	svc, err := NewStore(fkv, newTestIDGen(t))
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestUpdateUser_PutPrimaryFails_Coverage(t *testing.T) {
 		inner:     inner,
 		putFailAt: 0, // no put failures during create
 	}
-	svc, err := NewStore(fkv)
+	svc, err := NewStore(fkv, newTestIDGen(t))
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}

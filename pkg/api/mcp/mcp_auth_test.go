@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"testing"
 	"time"
 
@@ -32,14 +33,15 @@ import (
 // ---------------------------------------------------------------------------
 
 type mockUserService struct {
-	createUserFn        func(ctx context.Context, req *user.CreateUserRequest) (*user.User, error)
-	getUserFn           func(ctx context.Context, id string) (*user.User, error)
-	getUserByUsernameFn func(ctx context.Context, tenantID, username string) (*user.User, error)
-	updateUserFn        func(ctx context.Context, req *user.UpdateUserRequest) (*user.User, error)
-	deleteUserFn        func(ctx context.Context, id string) error
-	listUsersFn         func(ctx context.Context, req *user.ListUsersRequest) (*user.ListUsersResponse, error)
-	enableUserFn        func(ctx context.Context, id string) error
-	disableUserFn       func(ctx context.Context, id string) error
+	createUserFn              func(ctx context.Context, req *user.CreateUserRequest) (*user.User, error)
+	getUserFn                 func(ctx context.Context, id uint64) (*user.User, error)
+	getUserByUsernameFn       func(ctx context.Context, tenantID, username string) (*user.User, error)
+	getUserByCertThumbprintFn func(ctx context.Context, thumbprint string) (*user.User, error)
+	updateUserFn              func(ctx context.Context, req *user.UpdateUserRequest) (*user.User, error)
+	deleteUserFn              func(ctx context.Context, id uint64) error
+	listUsersFn               func(ctx context.Context, req *user.ListUsersRequest) (*user.ListUsersResponse, error)
+	enableUserFn              func(ctx context.Context, id uint64) error
+	disableUserFn             func(ctx context.Context, id uint64) error
 }
 
 func (m *mockUserService) CreateUser(ctx context.Context, req *user.CreateUserRequest) (*user.User, error) {
@@ -47,7 +49,7 @@ func (m *mockUserService) CreateUser(ctx context.Context, req *user.CreateUserRe
 		return m.createUserFn(ctx, req)
 	}
 	return &user.User{
-		ID:        "u-001",
+		ID:        1001,
 		Username:  req.Username,
 		TenantID:  req.TenantID,
 		RoleIDs:   req.RoleIDs,
@@ -57,14 +59,14 @@ func (m *mockUserService) CreateUser(ctx context.Context, req *user.CreateUserRe
 	}, nil
 }
 
-func (m *mockUserService) GetUser(ctx context.Context, id string) (*user.User, error) {
+func (m *mockUserService) GetUser(ctx context.Context, id uint64) (*user.User, error) {
 	if m.getUserFn != nil {
 		return m.getUserFn(ctx, id)
 	}
 	return &user.User{
 		ID:        id,
 		Username:  "alice",
-		TenantID:  "default",
+		TenantID:  "system",
 		RoleIDs:   []string{"r-001"},
 		Enabled:   true,
 		CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -77,7 +79,7 @@ func (m *mockUserService) GetUserByUsername(ctx context.Context, tenantID, usern
 		return m.getUserByUsernameFn(ctx, tenantID, username)
 	}
 	return &user.User{
-		ID:       "u-001",
+		ID:       1001,
 		Username: username,
 		TenantID: tenantID,
 		Enabled:  true,
@@ -91,7 +93,7 @@ func (m *mockUserService) UpdateUser(ctx context.Context, req *user.UpdateUserRe
 	u := &user.User{
 		ID:        req.ID,
 		Username:  req.Username,
-		TenantID:  "default",
+		TenantID:  "system",
 		RoleIDs:   req.RoleIDs,
 		Enabled:   true,
 		CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -103,7 +105,7 @@ func (m *mockUserService) UpdateUser(ctx context.Context, req *user.UpdateUserRe
 	return u, nil
 }
 
-func (m *mockUserService) DeleteUser(ctx context.Context, id string) error {
+func (m *mockUserService) DeleteUser(ctx context.Context, id uint64) error {
 	if m.deleteUserFn != nil {
 		return m.deleteUserFn(ctx, id)
 	}
@@ -116,26 +118,37 @@ func (m *mockUserService) ListUsers(ctx context.Context, req *user.ListUsersRequ
 	}
 	return &user.ListUsersResponse{
 		Users: []*user.User{
-			{ID: "u-001", Username: "alice", TenantID: "default", Enabled: true},
-			{ID: "u-002", Username: "bob", TenantID: "default", Enabled: true},
+			{ID: 1001, Username: "alice", TenantID: "system", Enabled: true},
+			{ID: 1002, Username: "bob", TenantID: "system", Enabled: true},
 		},
 		Total:   2,
 		HasMore: false,
 	}, nil
 }
 
-func (m *mockUserService) EnableUser(ctx context.Context, id string) error {
+func (m *mockUserService) EnableUser(ctx context.Context, id uint64) error {
 	if m.enableUserFn != nil {
 		return m.enableUserFn(ctx, id)
 	}
 	return nil
 }
 
-func (m *mockUserService) DisableUser(ctx context.Context, id string) error {
+func (m *mockUserService) DisableUser(ctx context.Context, id uint64) error {
 	if m.disableUserFn != nil {
 		return m.disableUserFn(ctx, id)
 	}
 	return nil
+}
+
+func (m *mockUserService) UserByCertThumbprint(ctx context.Context, thumbprint string) (*user.User, error) {
+	if m.getUserByCertThumbprintFn != nil {
+		return m.getUserByCertThumbprintFn(ctx, thumbprint)
+	}
+	return nil, nil
+}
+
+func (m *mockUserService) AddCertBinding(_ context.Context, _ uint64, _ string, _ int64) (*user.User, error) {
+	return nil, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -173,7 +186,7 @@ func (m *mockRoleService) GetRole(ctx context.Context, id string) (*role.Role, e
 	return &role.Role{
 		ID:          id,
 		Name:        "admin",
-		TenantID:    "default",
+		TenantID:    "system",
 		Permissions: []permission.Permission{"kv:put", "kv:get"},
 		CreatedAt:   time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		UpdatedAt:   time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -198,7 +211,7 @@ func (m *mockRoleService) UpdateRole(ctx context.Context, req *role.UpdateRoleRe
 	r := &role.Role{
 		ID:          req.ID,
 		Name:        req.Name,
-		TenantID:    "default",
+		TenantID:    "system",
 		Permissions: req.Permissions,
 		CreatedAt:   time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		UpdatedAt:   time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
@@ -222,8 +235,8 @@ func (m *mockRoleService) ListRoles(ctx context.Context, req *role.ListRolesRequ
 	}
 	return &role.ListRolesResponse{
 		Roles: []*role.Role{
-			{ID: "r-001", Name: "admin", TenantID: "default"},
-			{ID: "r-002", Name: "viewer", TenantID: "default"},
+			{ID: "r-001", Name: "admin", TenantID: "system"},
+			{ID: "r-002", Name: "viewer", TenantID: "system"},
 		},
 		Total:   2,
 		HasMore: false,
@@ -344,8 +357,8 @@ func TestUserCreateTool_Success(t *testing.T) {
 	if u.Username != "alice" {
 		t.Errorf("expected username 'alice', got %q", u.Username)
 	}
-	if u.ID != "u-001" {
-		t.Errorf("expected ID 'u-001', got %q", u.ID)
+	if u.ID != 1001 {
+		t.Errorf("expected ID 1001, got %d", u.ID)
 	}
 	if !u.Enabled {
 		t.Error("expected user to be enabled")
@@ -358,7 +371,7 @@ func TestUserCreateTool_WithTenantID(t *testing.T) {
 		createUserFn: func(_ context.Context, req *user.CreateUserRequest) (*user.User, error) {
 			captured = req
 			return &user.User{
-				ID:       "u-002",
+				ID:       1002,
 				Username: req.Username,
 				TenantID: req.TenantID,
 				RoleIDs:  req.RoleIDs,
@@ -431,7 +444,7 @@ func TestUserGetTool_Success(t *testing.T) {
 	handler := handleUserGet(svc)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
-		"id": "u-001",
+		"id": "1001",
 	}))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -441,24 +454,56 @@ func TestUserGetTool_Success(t *testing.T) {
 	if jsonErr := json.Unmarshal([]byte(text), &u); jsonErr != nil {
 		t.Fatalf("unmarshal: %v", jsonErr)
 	}
-	if u.ID != "u-001" {
-		t.Errorf("expected ID 'u-001', got %q", u.ID)
+	if u.ID != 1001 {
+		t.Errorf("expected ID 1001, got %d", u.ID)
 	}
 	if u.Username != "alice" {
 		t.Errorf("expected username 'alice', got %q", u.Username)
 	}
 }
 
+// TestUserGetTool_Uint64IDRoundTrip proves a large uint64 user id supplied as
+// the MCP string "id" arg is parsed to uint64, passed to the service, and
+// echoed back unchanged in the marshaled user JSON.
+func TestUserGetTool_Uint64IDRoundTrip(t *testing.T) {
+	const wantID uint64 = 1<<63 + 7777
+	var got uint64
+	svc := &mockUserService{
+		getUserFn: func(_ context.Context, id uint64) (*user.User, error) {
+			got = id
+			return &user.User{ID: id, Username: "snowflake", Enabled: true}, nil
+		},
+	}
+	handler := handleUserGet(svc)
+
+	result, err := handler(context.Background(), makeReq(map[string]any{
+		"id": "9223372036854783585",
+	}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != wantID {
+		t.Fatalf("arg id lost: got %d, want %d", got, wantID)
+	}
+	var u user.User
+	if jsonErr := json.Unmarshal([]byte(resultText(t, result)), &u); jsonErr != nil {
+		t.Fatalf("unmarshal: %v", jsonErr)
+	}
+	if u.ID != wantID {
+		t.Fatalf("response id lost: got %d, want %d", u.ID, wantID)
+	}
+}
+
 func TestUserGetTool_NotFound(t *testing.T) {
 	svc := &mockUserService{
-		getUserFn: func(_ context.Context, id string) (*user.User, error) {
-			return nil, &errUserNotFound{ID: id}
+		getUserFn: func(_ context.Context, id uint64) (*user.User, error) {
+			return nil, &errUserNotFound{ID: strconv.FormatUint(id, 10)}
 		},
 	}
 	handler := handleUserGet(svc)
 
 	_, err := handler(context.Background(), makeReq(map[string]any{
-		"id": "u-999",
+		"id": "9999",
 	}))
 	if err == nil {
 		t.Fatal("expected error from service")
@@ -487,7 +532,7 @@ func TestUserUpdateTool_Success(t *testing.T) {
 	handler := handleUserUpdate(svc)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
-		"id":       "u-001",
+		"id":       "1001",
 		"username": "alice-updated",
 		"role_ids": "r-002, r-003",
 	}))
@@ -499,8 +544,8 @@ func TestUserUpdateTool_Success(t *testing.T) {
 	if jsonErr := json.Unmarshal([]byte(text), &u); jsonErr != nil {
 		t.Fatalf("unmarshal: %v", jsonErr)
 	}
-	if u.ID != "u-001" {
-		t.Errorf("expected ID 'u-001', got %q", u.ID)
+	if u.ID != 1001 {
+		t.Errorf("expected ID 1001, got %d", u.ID)
 	}
 	if u.Username != "alice-updated" {
 		t.Errorf("expected username 'alice-updated', got %q", u.Username)
@@ -531,7 +576,7 @@ func TestUserUpdateTool_ServiceError(t *testing.T) {
 	handler := handleUserUpdate(svc)
 
 	_, err := handler(context.Background(), makeReq(map[string]any{
-		"id":       "u-001",
+		"id":       "1001",
 		"username": "new-name",
 	}))
 	if err == nil {
@@ -554,7 +599,7 @@ func TestUserUpdateTool_NoRoleIDsPreservesNil(t *testing.T) {
 	handler := handleUserUpdate(svc)
 
 	_, err := handler(context.Background(), makeReq(map[string]any{
-		"id":       "u-001",
+		"id":       "1001",
 		"username": "bob",
 	}))
 	if err != nil {
@@ -573,7 +618,7 @@ func TestUserDeleteTool_Success(t *testing.T) {
 	handler := handleUserDelete(svc)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
-		"id": "u-001",
+		"id": "1001",
 	}))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -599,14 +644,14 @@ func TestUserDeleteTool_MissingID(t *testing.T) {
 
 func TestUserDeleteTool_ServiceError(t *testing.T) {
 	svc := &mockUserService{
-		deleteUserFn: func(_ context.Context, _ string) error {
+		deleteUserFn: func(_ context.Context, _ uint64) error {
 			return errors.New("system user cannot be deleted")
 		},
 	}
 	handler := handleUserDelete(svc)
 
 	_, err := handler(context.Background(), makeReq(map[string]any{
-		"id": "u-system",
+		"id": "9001",
 	}))
 	if err == nil {
 		t.Fatal("expected error from service")
@@ -644,7 +689,7 @@ func TestUserListTool_WithPagination(t *testing.T) {
 		listUsersFn: func(_ context.Context, req *user.ListUsersRequest) (*user.ListUsersResponse, error) {
 			captured = req
 			return &user.ListUsersResponse{
-				Users:   []*user.User{{ID: "u-003", Username: "charlie"}},
+				Users:   []*user.User{{ID: 1003, Username: "charlie"}},
 				Total:   5,
 				HasMore: true,
 			}, nil
@@ -708,7 +753,7 @@ func TestUserEnableTool_Success(t *testing.T) {
 	handler := handleUserEnable(svc)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
-		"id": "u-001",
+		"id": "1001",
 	}))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -734,14 +779,14 @@ func TestUserEnableTool_MissingID(t *testing.T) {
 
 func TestUserEnableTool_ServiceError(t *testing.T) {
 	svc := &mockUserService{
-		enableUserFn: func(_ context.Context, _ string) error {
+		enableUserFn: func(_ context.Context, _ uint64) error {
 			return errors.New("enable failed")
 		},
 	}
 	handler := handleUserEnable(svc)
 
 	_, err := handler(context.Background(), makeReq(map[string]any{
-		"id": "u-001",
+		"id": "1001",
 	}))
 	if err == nil {
 		t.Fatal("expected error from service")
@@ -757,7 +802,7 @@ func TestUserDisableTool_Success(t *testing.T) {
 	handler := handleUserDisable(svc)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
-		"id": "u-001",
+		"id": "1001",
 	}))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -783,14 +828,14 @@ func TestUserDisableTool_MissingID(t *testing.T) {
 
 func TestUserDisableTool_ServiceError(t *testing.T) {
 	svc := &mockUserService{
-		disableUserFn: func(_ context.Context, _ string) error {
+		disableUserFn: func(_ context.Context, _ uint64) error {
 			return errors.New("disable failed")
 		},
 	}
 	handler := handleUserDisable(svc)
 
 	_, err := handler(context.Background(), makeReq(map[string]any{
-		"id": "u-001",
+		"id": "1001",
 	}))
 	if err == nil {
 		t.Fatal("expected error from service")
@@ -812,6 +857,9 @@ func TestUserTools_Registration(t *testing.T) {
 	expectedNames := []string{
 		"qrdb_user_create",
 		"qrdb_user_get",
+		"qrdb_user_get_by_username",
+		"qrdb_user_get_by_cert_thumbprint",
+		"qrdb_user_add_cert_binding",
 		"qrdb_user_update",
 		"qrdb_user_delete",
 		"qrdb_user_list",
@@ -1256,10 +1304,10 @@ func TestRoleListTool_ServiceError(t *testing.T) {
 
 func TestRoleAssignTool_Success(t *testing.T) {
 	userSvc := &mockUserService{}
-	handler := handleRoleAssign(userSvc)
+	handler := handleRoleAssign(&mockRoleService{}, userSvc)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
-		"user_id": "u-001",
+		"user_id": "1001",
 		"role_id": "r-002",
 	}))
 	if err != nil {
@@ -1271,19 +1319,41 @@ func TestRoleAssignTool_Success(t *testing.T) {
 	}
 }
 
+func TestRoleAssignTool_RoleNotFound(t *testing.T) {
+	roleSvc := &mockRoleService{
+		getRoleFn: func(_ context.Context, id string) (*role.Role, error) {
+			return nil, &role.RoleNotFoundError{ID: id}
+		},
+	}
+	userSvc := &mockUserService{}
+	handler := handleRoleAssign(roleSvc, userSvc)
+
+	_, err := handler(context.Background(), makeReq(map[string]any{
+		"user_id": "1001",
+		"role_id": "missing",
+	}))
+	if err == nil {
+		t.Fatal("expected error when assigning a nonexistent role")
+	}
+	var toolErr *ToolError
+	if !errors.As(err, &toolErr) {
+		t.Errorf("expected *ToolError, got %T", err)
+	}
+}
+
 func TestRoleAssignTool_AlreadyAssigned(t *testing.T) {
 	userSvc := &mockUserService{
-		getUserFn: func(_ context.Context, _ string) (*user.User, error) {
+		getUserFn: func(_ context.Context, _ uint64) (*user.User, error) {
 			return &user.User{
-				ID:      "u-001",
+				ID:      1001,
 				RoleIDs: []string{"r-001", "r-002"},
 			}, nil
 		},
 	}
-	handler := handleRoleAssign(userSvc)
+	handler := handleRoleAssign(&mockRoleService{}, userSvc)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
-		"user_id": "u-001",
+		"user_id": "1001",
 		"role_id": "r-002",
 	}))
 	if err != nil {
@@ -1297,7 +1367,7 @@ func TestRoleAssignTool_AlreadyAssigned(t *testing.T) {
 
 func TestRoleAssignTool_MissingUserID(t *testing.T) {
 	userSvc := &mockUserService{}
-	handler := handleRoleAssign(userSvc)
+	handler := handleRoleAssign(&mockRoleService{}, userSvc)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
 		"role_id": "r-001",
@@ -1312,10 +1382,10 @@ func TestRoleAssignTool_MissingUserID(t *testing.T) {
 
 func TestRoleAssignTool_MissingRoleID(t *testing.T) {
 	userSvc := &mockUserService{}
-	handler := handleRoleAssign(userSvc)
+	handler := handleRoleAssign(&mockRoleService{}, userSvc)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
-		"user_id": "u-001",
+		"user_id": "1001",
 	}))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1327,14 +1397,14 @@ func TestRoleAssignTool_MissingRoleID(t *testing.T) {
 
 func TestRoleAssignTool_GetUserError(t *testing.T) {
 	userSvc := &mockUserService{
-		getUserFn: func(_ context.Context, _ string) (*user.User, error) {
+		getUserFn: func(_ context.Context, _ uint64) (*user.User, error) {
 			return nil, &errUserNotFound{ID: "u-999"}
 		},
 	}
-	handler := handleRoleAssign(userSvc)
+	handler := handleRoleAssign(&mockRoleService{}, userSvc)
 
 	_, err := handler(context.Background(), makeReq(map[string]any{
-		"user_id": "u-999",
+		"user_id": "9999",
 		"role_id": "r-001",
 	}))
 	if err == nil {
@@ -1348,17 +1418,17 @@ func TestRoleAssignTool_GetUserError(t *testing.T) {
 
 func TestRoleAssignTool_UpdateUserError(t *testing.T) {
 	userSvc := &mockUserService{
-		getUserFn: func(_ context.Context, _ string) (*user.User, error) {
-			return &user.User{ID: "u-001", RoleIDs: []string{}}, nil
+		getUserFn: func(_ context.Context, _ uint64) (*user.User, error) {
+			return &user.User{ID: 1001, RoleIDs: []string{}}, nil
 		},
 		updateUserFn: func(_ context.Context, _ *user.UpdateUserRequest) (*user.User, error) {
 			return nil, errors.New("update failed")
 		},
 	}
-	handler := handleRoleAssign(userSvc)
+	handler := handleRoleAssign(&mockRoleService{}, userSvc)
 
 	_, err := handler(context.Background(), makeReq(map[string]any{
-		"user_id": "u-001",
+		"user_id": "1001",
 		"role_id": "r-001",
 	}))
 	if err == nil {
@@ -1373,9 +1443,9 @@ func TestRoleAssignTool_UpdateUserError(t *testing.T) {
 func TestRoleUnassignTool_Success(t *testing.T) {
 	var captured *user.UpdateUserRequest
 	userSvc := &mockUserService{
-		getUserFn: func(_ context.Context, _ string) (*user.User, error) {
+		getUserFn: func(_ context.Context, _ uint64) (*user.User, error) {
 			return &user.User{
-				ID:      "u-001",
+				ID:      1001,
 				RoleIDs: []string{"r-001", "r-002", "r-003"},
 			}, nil
 		},
@@ -1387,7 +1457,7 @@ func TestRoleUnassignTool_Success(t *testing.T) {
 	handler := handleRoleUnassign(userSvc)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
-		"user_id": "u-001",
+		"user_id": "1001",
 		"role_id": "r-002",
 	}))
 	if err != nil {
@@ -1430,7 +1500,7 @@ func TestRoleUnassignTool_MissingRoleID(t *testing.T) {
 	handler := handleRoleUnassign(userSvc)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
-		"user_id": "u-001",
+		"user_id": "1001",
 	}))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1442,14 +1512,14 @@ func TestRoleUnassignTool_MissingRoleID(t *testing.T) {
 
 func TestRoleUnassignTool_GetUserError(t *testing.T) {
 	userSvc := &mockUserService{
-		getUserFn: func(_ context.Context, _ string) (*user.User, error) {
+		getUserFn: func(_ context.Context, _ uint64) (*user.User, error) {
 			return nil, &errUserNotFound{ID: "u-999"}
 		},
 	}
 	handler := handleRoleUnassign(userSvc)
 
 	_, err := handler(context.Background(), makeReq(map[string]any{
-		"user_id": "u-999",
+		"user_id": "9999",
 		"role_id": "r-001",
 	}))
 	if err == nil {
@@ -1463,8 +1533,8 @@ func TestRoleUnassignTool_GetUserError(t *testing.T) {
 
 func TestRoleUnassignTool_UpdateUserError(t *testing.T) {
 	userSvc := &mockUserService{
-		getUserFn: func(_ context.Context, _ string) (*user.User, error) {
-			return &user.User{ID: "u-001", RoleIDs: []string{"r-001"}}, nil
+		getUserFn: func(_ context.Context, _ uint64) (*user.User, error) {
+			return &user.User{ID: 1001, RoleIDs: []string{"r-001"}}, nil
 		},
 		updateUserFn: func(_ context.Context, _ *user.UpdateUserRequest) (*user.User, error) {
 			return nil, errors.New("update failed")
@@ -1473,7 +1543,7 @@ func TestRoleUnassignTool_UpdateUserError(t *testing.T) {
 	handler := handleRoleUnassign(userSvc)
 
 	_, err := handler(context.Background(), makeReq(map[string]any{
-		"user_id": "u-001",
+		"user_id": "1001",
 		"role_id": "r-001",
 	}))
 	if err == nil {
@@ -1529,12 +1599,14 @@ func TestRoleTools_Registration(t *testing.T) {
 	expectedNames := []string{
 		"qrdb_role_create",
 		"qrdb_role_get",
+		"qrdb_role_get_by_name",
 		"qrdb_role_update",
 		"qrdb_role_delete",
 		"qrdb_role_list",
 		"qrdb_role_assign",
 		"qrdb_role_unassign",
 		"qrdb_permissions_list",
+		"qrdb_permissions_resolve",
 	}
 
 	if len(tools) != len(expectedNames) {
@@ -1550,6 +1622,213 @@ func TestRoleTools_Registration(t *testing.T) {
 		if !nameSet[name] {
 			t.Errorf("missing tool %q", name)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handleRoleGetByName tool tests
+// ---------------------------------------------------------------------------
+
+func TestRoleGetByNameTool_Success(t *testing.T) {
+	svc := &mockRoleService{
+		getRoleByNameFn: func(_ context.Context, tenantID, name string) (*role.Role, error) {
+			if tenantID != "tenant-1" {
+				t.Fatalf("expected tenantID 'tenant-1', got %q", tenantID)
+			}
+			if name != "auditor" {
+				t.Fatalf("expected name 'auditor', got %q", name)
+			}
+			return &role.Role{
+				ID:          "r-audit",
+				Name:        "auditor",
+				TenantID:    "tenant-1",
+				Permissions: []permission.Permission{"kv:get"},
+			}, nil
+		},
+	}
+	handler := handleRoleGetByName(svc)
+
+	result, err := handler(context.Background(), makeReq(map[string]any{
+		"name":      "auditor",
+		"tenant_id": "tenant-1",
+	}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	text := resultText(t, result)
+	var r role.Role
+	if jsonErr := json.Unmarshal([]byte(text), &r); jsonErr != nil {
+		t.Fatalf("unmarshal: %v", jsonErr)
+	}
+	if r.ID != "r-audit" {
+		t.Errorf("expected ID 'r-audit', got %q", r.ID)
+	}
+	if r.Name != "auditor" {
+		t.Errorf("expected name 'auditor', got %q", r.Name)
+	}
+	if r.TenantID != "tenant-1" {
+		t.Errorf("expected tenantID 'tenant-1', got %q", r.TenantID)
+	}
+}
+
+func TestRoleGetByNameTool_MissingName(t *testing.T) {
+	svc := &mockRoleService{}
+	handler := handleRoleGetByName(svc)
+
+	result, err := handler(context.Background(), makeReq(map[string]any{
+		"tenant_id": "tenant-1",
+	}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected error result for missing name")
+	}
+}
+
+func TestRoleGetByNameTool_ServiceError(t *testing.T) {
+	svc := &mockRoleService{
+		getRoleByNameFn: func(_ context.Context, _, _ string) (*role.Role, error) {
+			return nil, errors.New("role not found")
+		},
+	}
+	handler := handleRoleGetByName(svc)
+
+	_, err := handler(context.Background(), makeReq(map[string]any{
+		"name":      "nonexistent",
+		"tenant_id": "tenant-1",
+	}))
+	if err == nil {
+		t.Fatal("expected error from service")
+	}
+	var toolErr *ToolError
+	if !errors.As(err, &toolErr) {
+		t.Errorf("expected *ToolError, got %T", err)
+	}
+	if toolErr.Tool != "qrdb_role_get_by_name" {
+		t.Errorf("expected tool 'qrdb_role_get_by_name', got %q", toolErr.Tool)
+	}
+}
+
+func TestRoleGetByNameTool_NoTenantID(t *testing.T) {
+	var capturedTenantID string
+	svc := &mockRoleService{
+		getRoleByNameFn: func(_ context.Context, tenantID, _ string) (*role.Role, error) {
+			capturedTenantID = tenantID
+			return &role.Role{ID: "r-001", Name: "admin", TenantID: tenantID}, nil
+		},
+	}
+	handler := handleRoleGetByName(svc)
+
+	result, err := handler(context.Background(), makeReq(map[string]any{
+		"name": "admin",
+	}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Error("expected success result with empty tenant_id")
+	}
+	if capturedTenantID != "" {
+		t.Errorf("expected empty tenantID when not provided, got %q", capturedTenantID)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handlePermissionsResolve tool tests
+// ---------------------------------------------------------------------------
+
+func TestPermissionsResolveTool_Success(t *testing.T) {
+	svc := &mockRoleService{
+		resolvePermissionsFn: func(_ context.Context, roleIDs []string) ([]permission.Permission, error) {
+			if len(roleIDs) != 2 {
+				t.Fatalf("expected 2 roleIDs, got %d", len(roleIDs))
+			}
+			return []permission.Permission{"kv:put", "kv:get"}, nil
+		},
+	}
+	handler := handlePermissionsResolve(svc)
+
+	result, err := handler(context.Background(), makeReq(map[string]any{
+		"role_ids": "r-001,r-002",
+	}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	text := resultText(t, result)
+
+	var out map[string][]string
+	if jsonErr := json.Unmarshal([]byte(text), &out); jsonErr != nil {
+		t.Fatalf("unmarshal: %v", jsonErr)
+	}
+	perms, ok := out["permissions"]
+	if !ok {
+		t.Fatal("expected 'permissions' key in response")
+	}
+	if len(perms) != 2 {
+		t.Fatalf("expected 2 permissions, got %d", len(perms))
+	}
+}
+
+func TestPermissionsResolveTool_MissingRoleIDs(t *testing.T) {
+	svc := &mockRoleService{}
+	handler := handlePermissionsResolve(svc)
+
+	result, err := handler(context.Background(), makeReq(map[string]any{}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected error result for missing role_ids")
+	}
+}
+
+func TestPermissionsResolveTool_ServiceError(t *testing.T) {
+	svc := &mockRoleService{
+		resolvePermissionsFn: func(_ context.Context, _ []string) ([]permission.Permission, error) {
+			return nil, errors.New("storage unavailable")
+		},
+	}
+	handler := handlePermissionsResolve(svc)
+
+	_, err := handler(context.Background(), makeReq(map[string]any{
+		"role_ids": "r-001",
+	}))
+	if err == nil {
+		t.Fatal("expected error from service")
+	}
+	var toolErr *ToolError
+	if !errors.As(err, &toolErr) {
+		t.Errorf("expected *ToolError, got %T", err)
+	}
+	if toolErr.Tool != "qrdb_permissions_resolve" {
+		t.Errorf("expected tool 'qrdb_permissions_resolve', got %q", toolErr.Tool)
+	}
+}
+
+func TestPermissionsResolveTool_EmptyPermissionsResult(t *testing.T) {
+	svc := &mockRoleService{
+		resolvePermissionsFn: func(_ context.Context, _ []string) ([]permission.Permission, error) {
+			return []permission.Permission{}, nil
+		},
+	}
+	handler := handlePermissionsResolve(svc)
+
+	result, err := handler(context.Background(), makeReq(map[string]any{
+		"role_ids": "r-empty",
+	}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	text := resultText(t, result)
+
+	var out map[string][]string
+	if jsonErr := json.Unmarshal([]byte(text), &out); jsonErr != nil {
+		t.Fatalf("unmarshal: %v", jsonErr)
+	}
+	perms := out["permissions"]
+	if len(perms) != 0 {
+		t.Fatalf("expected 0 permissions, got %d", len(perms))
 	}
 }
 
@@ -1849,7 +2128,7 @@ func TestCertListTool_WithTenantID(t *testing.T) {
 	}
 }
 
-func TestCertListTool_DefaultTenantID(t *testing.T) {
+func TestCertListTool_SystemTenantID(t *testing.T) {
 	var capturedTenantID string
 	svc := &mockCertProvider{
 		listCertsFn: func(_ context.Context, tenantID string) ([]*cert.CertRecord, error) {
@@ -1863,8 +2142,8 @@ func TestCertListTool_DefaultTenantID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if capturedTenantID != "default" {
-		t.Errorf("expected default tenant_id 'default', got %q", capturedTenantID)
+	if capturedTenantID != "system" {
+		t.Errorf("expected default tenant_id 'system', got %q", capturedTenantID)
 	}
 }
 

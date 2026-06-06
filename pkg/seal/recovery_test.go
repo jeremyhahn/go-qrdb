@@ -31,14 +31,14 @@ func newRecoveryBarrier(t *testing.T) (*Barrier, *MemoryBackend) {
 func newRecoveryBarrierWithShamir(t *testing.T) (*Barrier, *MemoryBackend) {
 	t.Helper()
 	backend := NewMemoryBackend()
-	shamirStore := NewMemoryBackend()
-	shamirStrat, err := NewShamirStrategy(shamirStore, 3, 5)
+	shamirStrat, err := NewShamirStrategy(3, 5)
 	if err != nil {
 		t.Fatal(err)
 	}
 	b, err := NewBarrier(slog.Default(), backend, BarrierConfig{
-		RootKeyPath: "test/root-key",
-		Shamir:      &ShamirConfig{Threshold: 3, TotalShares: 5},
+		RootKeyPath:     "test/root-key",
+		Shamir:          &ShamirConfig{Threshold: 3, TotalShares: 5},
+		PreferenceOrder: []StrategyID{StrategyShamir},
 	}, testSoftwareStrategy(t), shamirStrat)
 	if err != nil {
 		t.Fatal(err)

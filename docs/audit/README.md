@@ -3,12 +3,11 @@ Copyright 2026 Jeremy Hahn
 Licensed under the Apache License, Version 2.0
 -->
 
-# Audit Logging
+# Audit Package — Compliance-Grade Event Logging & Tamper Evidence
 
-The `pkg/audit/` package provides configurable dual-backend audit logging
-with support for internal KVStore database and/or filesystem JSON log
-output. All security-relevant operations in QRDB emit structured audit
-entries that record the who, what, where, and outcome of each action.
+The `pkg/audit/` package provides compliance-grade structured event logging with tamper-detection. Every barrier operation, ceremony step, RBAC decision, key operation, and tenant change is logged with actor, resource, action, and outcome. Audit trail is append-only, hash-chained for integrity (SHA-256 per event), and queryable via REST/gRPC/MCP/QUIC/Unix protocols.
+
+All security-relevant operations in QRDB emit structured audit entries that record the who, what, where, and outcome of each action. Phase 1 extends the existing Entry schema with hash-chain tamper evidence and phase 6 adds query API, retention policy, and multi-protocol retrieval.
 
 ## Interface
 
@@ -25,40 +24,67 @@ The `Logger` interface is the single abstraction consumed by all QRDB
 subsystems. Callers construct an `Entry` and pass it to `Log()`. The
 concrete implementation determines where the entry is persisted.
 
-## Entry Structure
+## Event Schema (Phase 6 Target)
 
 Source: `pkg/audit/types.go`
 
+Phase 1 documents the target schema for full compliance-grade audit events. Phased implementation extends existing `Entry` with new fields:
+
 ```go
-type Entry struct {
-    Timestamp time.Time         `json:"timestamp"`
-    TenantID  string            `json:"tenantID"`
-    Subject   string            `json:"subject"`
-    Action    string            `json:"action"`
-    Resource  string            `json:"resource"`
-    Result    string            `json:"result"`
-    Metadata  map[string]string `json:"metadata,omitempty"`
+type AuditEvent struct {
+    // Timestamp of the event (UTC).
+    Timestamp       time.Time
+
+    // Actor identity (from mTLS cert CN, JWT sub).
+    Actor           string
+
+    // Tenant ID (for multi-tenant deployments).
+    TenantID        string
+
+    // Role of the actor at the time of the event.
+    Role            string
+
+    // Resource being accessed (barrier, ceremony, keys, user, role, etc.).
+    Resource        string
+
+    // Action performed (initialize, unseal, sign, create, delete, etc.).
+    Action          string
+
+    // Outcome: "success", "failure:<reason>", "denied:<reason>".
+    Outcome         string
+
+    // Custom attributes (JSON-serializable).
+    Attributes      map[string]any
+
+    // Client IP (from X-Forwarded-For header or remote address).
+    ClientIP        string
+
+    // Request ID (for tracing across logs).
+    RequestID       string
+
+    // Hash of the previous audit event (for tamper-detection chain).
+    // Format: "sha256:<hex-digest>"
+    PrevHash        string
 }
 ```
 
-| Field       | Description                                             | Example                   |
-|-------------|---------------------------------------------------------|---------------------------|
-| `Timestamp` | UTC time of the event; auto-set to `time.Now()` if zero | `2026-02-26T12:00:00Z`   |
-| `TenantID`  | Tenant that owns the resource                           | `default`                 |
-| `Subject`   | Username extracted from the caller's identity           | `admin`                   |
-| `Action`    | Dotted action identifier                                | `user.create`             |
-| `Resource`  | Resource type and identifier                            | `user:operator`           |
-| `Result`    | Outcome: `"success"` or `"denied"`                      | `success`                 |
-| `Metadata`  | Optional key-value pairs with additional context        | `{"ip": "10.0.0.1"}`     |
+**Phase 1 (this phase)**: Documented target schema. Entry structure remains unchanged.
 
-Result constants are defined for consistency:
+**Phase 6**: Extended `Entry` with `Role`, `Outcome` (with reasons), `Attributes` (map), `ClientIP`, `RequestID`, `PrevHash` fields. Hash-chain computation and verification implemented. Query API added.
 
-```go
-const (
-    ResultSuccess = "success"
-    ResultDenied  = "denied"
-)
-```
+| Field | Description | Example |
+|---|---|---|
+| `Timestamp` | UTC time of the event; auto-set to `time.Now()` if zero | `2026-02-26T12:00:00Z` |
+| `Actor` | Username/identity (from cert CN, JWT, API key) | `custodian_a`, `admin` |
+| `TenantID` | Tenant that owns the resource | `default` |
+| `Role` | Role of actor at event time (so, admin, operator, user, auditor, custodian) | `custodian` |
+| `Resource` | Resource type and identifier (barrier, ceremony, key:id, user:id, role:name) | `barrier`, `custodian:a` |
+| `Action` | Action identifier (initialize, unseal, sign, enroll-custodian, create) | `unseal-share-complete` |
+| `Outcome` | Result: "success", "failure:<reason>", "denied:<reason>" | `success`, `failure:invalid signature`, `denied:insufficient privilege` |
+| `Attributes` | Optional context map (share_index, algorithm, threshold, etc.) | `{"share_index": 0, "algorithm": "ECDSA"}` |
+| `ClientIP` | Client IP address | `192.168.1.100` |
+| `RequestID` | Request trace ID (for correlation) | `req-abc123` |
+| `PrevHash` | SHA-256 hash of previous event JSON (for tamper-detection chain) | `sha256:e5f6a7b8c9d0e1f2...` |
 
 ## Implementations
 
@@ -89,13 +115,13 @@ concurrent writes.
 Output format (one JSON object per line):
 
 ```json
-{"time":"2026-02-26T12:00:00Z","level":"INFO","msg":"audit","tenant_id":"default","subject":"admin","action":"user.create","resource":"user:operator","result":"success","event_time":"2026-02-26T12:00:00Z"}
+{"time":"2026-02-26T12:00:00Z","level":"INFO","msg":"audit","tenant_id":"system","subject":"admin","action":"user.create","resource":"user:operator","result":"success","event_time":"2026-02-26T12:00:00Z"}
 ```
 
 When entries include metadata, it appears as a nested JSON group:
 
 ```json
-{"time":"2026-02-26T12:00:00Z","level":"INFO","msg":"audit","tenant_id":"default","subject":"admin","action":"cert.revoke","resource":"cert:serial123","result":"success","event_time":"2026-02-26T12:00:00Z","metadata":{"reason":"key compromise"}}
+{"time":"2026-02-26T12:00:00Z","level":"INFO","msg":"audit","tenant_id":"system","subject":"admin","action":"cert.revoke","resource":"cert:serial123","result":"success","event_time":"2026-02-26T12:00:00Z","metadata":{"reason":"key compromise"}}
 ```
 
 ### multiLogger

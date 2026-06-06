@@ -54,6 +54,13 @@ func (s *LeaseService) Grant(ctx context.Context, ttl int64) (*Lease, error) {
 		return nil, s.translateProposeError(err)
 	}
 
+	// Check for an SM-encoded application error (e.g. lease subsystem not
+	// configured on the target SM). The SM encodes these in result.Data
+	// rather than returning an Update error that would stall Raft reads.
+	if resultErr := checkResultError(result); resultErr != nil {
+		return nil, &ProposeError{Err: resultErr}
+	}
+
 	return &Lease{
 		ID:         int64(result.Value),
 		TTL:        ttl,
@@ -64,9 +71,12 @@ func (s *LeaseService) Grant(ctx context.Context, ttl int64) (*Lease, error) {
 // Revoke immediately expires a lease and deletes all attached keys.
 func (s *LeaseService) Revoke(ctx context.Context, leaseID int64) error {
 	cmd := protocol.EncodeLeaseRevoke(leaseID)
-	_, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
 		return s.translateProposeError(err)
+	}
+	if resultErr := checkResultError(result); resultErr != nil {
+		return &ProposeError{Err: resultErr}
 	}
 	return nil
 }
@@ -75,9 +85,12 @@ func (s *LeaseService) Revoke(ctx context.Context, leaseID int64) error {
 // expiring. Returns the refreshed lease with updated TTL.
 func (s *LeaseService) KeepAlive(ctx context.Context, leaseID int64) (*Lease, error) {
 	cmd := protocol.EncodeLeaseKeepAlive(leaseID)
-	_, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
 		return nil, s.translateProposeError(err)
+	}
+	if resultErr := checkResultError(result); resultErr != nil {
+		return nil, &ProposeError{Err: resultErr}
 	}
 
 	// Read back the lease to get current state.

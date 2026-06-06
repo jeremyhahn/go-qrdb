@@ -27,6 +27,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -41,6 +42,13 @@ type AuthMiddleware struct {
 	usersFallback  user.UserServicer
 	audit          audit.Logger
 }
+
+// authLookupSyncTimeout bounds the per-request linearizable user lookup. A
+// healthy ReadIndex answers far faster; on a transient consensus slowdown the
+// lookup fails over to the StaleRead fallback within this budget rather than
+// stalling the request. Kept sub-second so a brief blip cannot cascade into
+// multi-second per-request latency.
+const authLookupSyncTimeout = 500 * time.Millisecond
 
 // Option configures an AuthMiddleware.
 type Option func(*AuthMiddleware)
@@ -164,6 +172,17 @@ func (m *AuthMiddleware) authenticate(ctx context.Context) (context.Context, *au
 	}
 
 	ctx = auth.WithIdentity(ctx, identity)
+
+	// Bind the canonical tenant context from the authenticated identity so
+	// that tenant.FromContext(ctx) returns the authenticated tenant for every
+	// downstream service on every transport. Fall back to SystemTenantID for
+	// system/admin identities where TenantID is empty (no regression).
+	tenantID := identity.TenantID
+	if tenantID == "" {
+		tenantID = tenant.SystemTenantID
+	}
+	ctx = tenant.WithTenantID(ctx, tenantID)
+
 	return ctx, identity, nil
 }
 
@@ -173,9 +192,15 @@ func (m *AuthMiddleware) authenticate(ctx context.Context) (context.Context, *au
 // primary fails with a transient error. The fallback is safe because
 // bootstrap ensures user/role data is replicated before servers start.
 func (m *AuthMiddleware) lookupUser(ctx context.Context, tenantID, subject string) (*user.User, error) {
-	// Use a short timeout so the lookup fails fast when the Raft
-	// ReadIndex pipeline is not yet operational.
-	lookupCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	// Bound the linearizable (SyncRead) lookup tightly so a transient
+	// ReadIndex slowdown fails over to the StaleRead fallback in well under a
+	// second instead of stalling every authenticated request for seconds. A
+	// healthy ReadIndex answers in microseconds; the only cost of a short
+	// budget is a marginally-staler read on a blip, which is safe for
+	// auth (user/role data is replicated before servers start and changes
+	// rarely). This is the key guard against a brief consensus blip
+	// cascading into per-request latency that trips client/connect timeouts.
+	lookupCtx, cancel := context.WithTimeout(ctx, authLookupSyncTimeout)
 	u, err := m.users.GetUserByUsername(lookupCtx, tenantID, subject)
 	cancel()
 	if err == nil {
@@ -243,4 +268,27 @@ func (m *AuthMiddleware) authorize(ctx context.Context, identity *auth.Identity,
 	}
 
 	return err
+}
+
+// AuthorizeTenant authorizes the authenticated identity in ctx to perform a
+// tenant-scoped operation against an explicit target tenant. It is intended
+// for handlers where the true target tenant is carried in the request body
+// or URL (for example the per-tenant barrier {id}) rather than implied by
+// the identity's own tenant.
+//
+// The identity is read from the context (it must have been authenticated by
+// the surrounding middleware). The target tenant is injected into the
+// context so the RBAC authorizer's scope rule evaluates against the request
+// target, not the ambient tenant. For a ScopeTenantOnly permission this
+// denies the system tenant and any cross-tenant access; the decision is
+// audited like any other authorize call.
+//
+// Returns auth.ErrUnauthenticated when no identity is present in ctx.
+func (m *AuthMiddleware) AuthorizeTenant(ctx context.Context, targetTenantID string, perm permission.Permission) error {
+	identity := auth.IdentityFromContext(ctx)
+	if identity == nil {
+		return auth.ErrUnauthenticated
+	}
+	ctx = tenant.WithTenantID(ctx, targetTenantID)
+	return m.authorize(ctx, identity, perm)
 }

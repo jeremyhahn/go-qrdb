@@ -338,13 +338,17 @@ func TestDatabaseService_CreateForTenant_Success(t *testing.T) {
 	}
 }
 
-func TestDatabaseService_CreateForTenant_NoTenant(t *testing.T) {
+func TestDatabaseService_CreateForTenant_SystemTenantRoutesToAdmin(t *testing.T) {
 	svc := newTestDatabaseService(t)
 
-	// Empty context has no tenant ID - manager should error.
-	_, err := svc.CreateForTenant(context.Background(), testDBConfig("fail-db"))
-	if err == nil {
-		t.Fatal("CreateForTenant() with no tenant returned nil, want error")
+	// A system/no-tenant context routes to the admin (cross-tenant) path,
+	// which is not ownership-restricted, so the create succeeds.
+	info, err := svc.CreateForTenant(context.Background(), testDBConfig("sys-create-db"))
+	if err != nil {
+		t.Fatalf("CreateForTenant() as system error: %v", err)
+	}
+	if info.Name != "sys-create-db" {
+		t.Errorf("Name = %q, want %q", info.Name, "sys-create-db")
 	}
 }
 
@@ -365,12 +369,19 @@ func TestDatabaseService_GetForTenant_Success(t *testing.T) {
 	}
 }
 
-func TestDatabaseService_GetForTenant_NoTenant(t *testing.T) {
+func TestDatabaseService_GetForTenant_SystemTenantRoutesToAdmin(t *testing.T) {
 	svc := newTestDatabaseService(t)
 
-	_, err := svc.GetForTenant(context.Background(), "any-db")
-	if err == nil {
-		t.Fatal("GetForTenant() with no tenant returned nil, want error")
+	// System context routes to the admin path: create then get succeed.
+	if _, err := svc.CreateForTenant(context.Background(), testDBConfig("sys-get-db")); err != nil {
+		t.Fatalf("CreateForTenant() as system error: %v", err)
+	}
+	info, err := svc.GetForTenant(context.Background(), "sys-get-db")
+	if err != nil {
+		t.Fatalf("GetForTenant() as system error: %v", err)
+	}
+	if info.Name != "sys-get-db" {
+		t.Errorf("Name = %q, want %q", info.Name, "sys-get-db")
 	}
 }
 
@@ -394,12 +405,19 @@ func TestDatabaseService_ListForTenant_Success(t *testing.T) {
 	}
 }
 
-func TestDatabaseService_ListForTenant_NoTenant(t *testing.T) {
+func TestDatabaseService_ListForTenant_SystemTenantRoutesToAdmin(t *testing.T) {
 	svc := newTestDatabaseService(t)
 
-	_, err := svc.ListForTenant(context.Background())
-	if err == nil {
-		t.Fatal("ListForTenant() with no tenant returned nil, want error")
+	// System context routes to the admin (cross-tenant) list, which succeeds.
+	if _, err := svc.CreateForTenant(context.Background(), testDBConfig("sys-list-db")); err != nil {
+		t.Fatalf("CreateForTenant() as system error: %v", err)
+	}
+	list, err := svc.ListForTenant(context.Background())
+	if err != nil {
+		t.Fatalf("ListForTenant() as system error: %v", err)
+	}
+	if len(list) == 0 {
+		t.Fatal("ListForTenant() as system returned no databases, want >= 1")
 	}
 }
 
@@ -416,12 +434,15 @@ func TestDatabaseService_DropForTenant_Success(t *testing.T) {
 	}
 }
 
-func TestDatabaseService_DropForTenant_NoTenant(t *testing.T) {
+func TestDatabaseService_DropForTenant_SystemTenantRoutesToAdmin(t *testing.T) {
 	svc := newTestDatabaseService(t)
 
-	err := svc.DropForTenant(context.Background(), "any-db")
-	if err == nil {
-		t.Fatal("DropForTenant() with no tenant returned nil, want error")
+	// System context routes to the admin path: create then drop succeed.
+	if _, err := svc.CreateForTenant(context.Background(), testDBConfig("sys-drop-db")); err != nil {
+		t.Fatalf("CreateForTenant() as system error: %v", err)
+	}
+	if err := svc.DropForTenant(context.Background(), "sys-drop-db"); err != nil {
+		t.Fatalf("DropForTenant() as system error: %v", err)
 	}
 }
 
@@ -445,12 +466,18 @@ func TestDatabaseService_UpdateProtocolForTenant_Success(t *testing.T) {
 	}
 }
 
-func TestDatabaseService_UpdateProtocolForTenant_NoTenant(t *testing.T) {
+func TestDatabaseService_UpdateProtocolForTenant_SystemTenantRoutesToAdmin(t *testing.T) {
 	svc := newTestDatabaseService(t)
 
-	_, err := svc.UpdateProtocolForTenant(context.Background(), "any-db", database.ProtocolConfig{})
-	if err == nil {
-		t.Fatal("UpdateProtocolForTenant() with no tenant returned nil, want error")
+	if _, err := svc.CreateForTenant(context.Background(), testDBConfig("sys-proto-db")); err != nil {
+		t.Fatalf("CreateForTenant() as system error: %v", err)
+	}
+	info, err := svc.UpdateProtocolForTenant(context.Background(), "sys-proto-db", database.ProtocolConfig{MySQL: true})
+	if err != nil {
+		t.Fatalf("UpdateProtocolForTenant() as system error: %v", err)
+	}
+	if !info.Protocol.MySQL {
+		t.Error("Protocol.MySQL = false, want true")
 	}
 }
 
@@ -475,12 +502,21 @@ func TestDatabaseService_UpdateEtcdForTenant_Success(t *testing.T) {
 	}
 }
 
-func TestDatabaseService_UpdateEtcdForTenant_NoTenant(t *testing.T) {
+func TestDatabaseService_UpdateEtcdForTenant_SystemTenantRoutesToAdmin(t *testing.T) {
 	svc := newTestDatabaseService(t)
 
-	_, err := svc.UpdateEtcdForTenant(context.Background(), "any-db", &database.EtcdConfig{})
-	if err == nil {
-		t.Fatal("UpdateEtcdForTenant() with no tenant returned nil, want error")
+	if _, err := svc.CreateForTenant(context.Background(), testDBConfig("sys-etcd-db")); err != nil {
+		t.Fatalf("CreateForTenant() as system error: %v", err)
+	}
+	info, err := svc.UpdateEtcdForTenant(context.Background(), "sys-etcd-db", &database.EtcdConfig{
+		Enabled:    true,
+		ListenAddr: "localhost:2379",
+	})
+	if err != nil {
+		t.Fatalf("UpdateEtcdForTenant() as system error: %v", err)
+	}
+	if info.Name != "sys-etcd-db" {
+		t.Errorf("Name = %q, want %q", info.Name, "sys-etcd-db")
 	}
 }
 
@@ -506,12 +542,22 @@ func TestDatabaseService_UpdateRaftForTenant_Success(t *testing.T) {
 	}
 }
 
-func TestDatabaseService_UpdateRaftForTenant_NoTenant(t *testing.T) {
+func TestDatabaseService_UpdateRaftForTenant_SystemTenantRoutesToAdmin(t *testing.T) {
 	svc := newTestDatabaseService(t)
 
-	_, err := svc.UpdateRaftForTenant(context.Background(), "any-db", &database.DatabaseRaftConfig{})
-	if err == nil {
-		t.Fatal("UpdateRaftForTenant() with no tenant returned nil, want error")
+	if _, err := svc.CreateForTenant(context.Background(), testDBConfig("sys-raft-db")); err != nil {
+		t.Fatalf("CreateForTenant() as system error: %v", err)
+	}
+	info, err := svc.UpdateRaftForTenant(context.Background(), "sys-raft-db", &database.DatabaseRaftConfig{
+		ClusterMode: database.RaftLocal,
+		ShardID:     1,
+		ReplicaID:   1,
+	})
+	if err != nil {
+		t.Fatalf("UpdateRaftForTenant() as system error: %v", err)
+	}
+	if info.Name != "sys-raft-db" {
+		t.Errorf("Name = %q, want %q", info.Name, "sys-raft-db")
 	}
 }
 
@@ -541,12 +587,23 @@ func TestDatabaseService_UpdateBarrierForTenant_Success(t *testing.T) {
 	}
 }
 
-func TestDatabaseService_UpdateBarrierForTenant_NoTenant(t *testing.T) {
+func TestDatabaseService_UpdateBarrierForTenant_SystemTenantRoutesToAdmin(t *testing.T) {
 	svc := newTestDatabaseService(t)
 
-	_, err := svc.UpdateBarrierForTenant(context.Background(), "any-db", &database.DatabaseBarrierConfig{})
-	if err == nil {
-		t.Fatal("UpdateBarrierForTenant() with no tenant returned nil, want error")
+	if _, err := svc.CreateForTenant(context.Background(), testDBConfig("sys-barrier-db")); err != nil {
+		t.Fatalf("CreateForTenant() as system error: %v", err)
+	}
+	info, err := svc.UpdateBarrierForTenant(context.Background(), "sys-barrier-db", &database.DatabaseBarrierConfig{
+		Enabled:        true,
+		Mode:           "shamir",
+		SharesRequired: 2,
+		SharesTotal:    3,
+	})
+	if err != nil {
+		t.Fatalf("UpdateBarrierForTenant() as system error: %v", err)
+	}
+	if info.Barrier == nil || !info.Barrier.Enabled {
+		t.Error("Barrier.Enabled = false, want true")
 	}
 }
 
@@ -575,15 +632,21 @@ func TestDatabaseService_UpdateConnectionForTenant_Success(t *testing.T) {
 	}
 }
 
-func TestDatabaseService_UpdateConnectionForTenant_NoTenant(t *testing.T) {
+func TestDatabaseService_UpdateConnectionForTenant_SystemTenantRoutesToAdmin(t *testing.T) {
 	svc := newTestDatabaseService(t)
 
-	_, err := svc.UpdateConnectionForTenant(context.Background(), "any-db", &database.DatabaseConnectionConfig{
+	if _, err := svc.CreateForTenant(context.Background(), testDBConfig("sys-conn-db")); err != nil {
+		t.Fatalf("CreateForTenant() as system error: %v", err)
+	}
+	info, err := svc.UpdateConnectionForTenant(context.Background(), "sys-conn-db", &database.DatabaseConnectionConfig{
 		Transport: "grpc",
 		Address:   "localhost:9090",
 	})
-	if err == nil {
-		t.Fatal("UpdateConnectionForTenant() with no tenant returned nil, want error")
+	if err != nil {
+		t.Fatalf("UpdateConnectionForTenant() as system error: %v", err)
+	}
+	if info.Connection == nil || info.Connection.Transport != "grpc" {
+		t.Error("Connection.Transport != grpc")
 	}
 }
 

@@ -20,27 +20,40 @@ import "context"
 // must be safe for concurrent use.
 type UserServicer interface {
 	// CreateUser creates a new passwordless user. The username must be
-	// unique within the tenant.
+	// unique within the tenant. The ID is assigned by the store.
 	CreateUser(ctx context.Context, req *CreateUserRequest) (*User, error)
 
 	// GetUser retrieves a user by its globally unique ID.
-	GetUser(ctx context.Context, id string) (*User, error)
+	GetUser(ctx context.Context, id uint64) (*User, error)
 
 	// GetUserByUsername retrieves a user by tenant-scoped username.
 	GetUserByUsername(ctx context.Context, tenantID, username string) (*User, error)
+
+	// UserByCertThumbprint resolves a user by an mTLS certificate's SPKI
+	// thumbprint via the secondary index. This is the mTLS-auth lookup:
+	// given a presented client cert, compute ComputeSPKIThumbprint and
+	// resolve the bound user. Returns UserNotFoundError when no user is
+	// bound to the thumbprint.
+	UserByCertThumbprint(ctx context.Context, thumbprint string) (*User, error)
+
+	// AddCertBinding binds an mTLS certificate's SPKI thumbprint to the user
+	// so UserByCertThumbprint resolves it. A notAfterUnix > 0 sets the
+	// binding's expiry; otherwise the binding never expires. This is the
+	// server-side enrollment seam used to bind an admin's cert to a user.
+	AddCertBinding(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*User, error)
 
 	// UpdateUser applies partial updates to an existing user.
 	UpdateUser(ctx context.Context, req *UpdateUserRequest) (*User, error)
 
 	// DeleteUser removes a non-system user by ID.
-	DeleteUser(ctx context.Context, id string) error
+	DeleteUser(ctx context.Context, id uint64) error
 
 	// ListUsers returns a paginated list of users for the given tenant.
 	ListUsers(ctx context.Context, req *ListUsersRequest) (*ListUsersResponse, error)
 
 	// EnableUser activates a user account.
-	EnableUser(ctx context.Context, id string) error
+	EnableUser(ctx context.Context, id uint64) error
 
 	// DisableUser deactivates a user account.
-	DisableUser(ctx context.Context, id string) error
+	DisableUser(ctx context.Context, id uint64) error
 }

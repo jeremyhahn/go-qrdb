@@ -25,6 +25,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // ---------------------------------------------------------------------------
@@ -32,6 +33,13 @@ import (
 // ---------------------------------------------------------------------------
 
 var _ auth.Authorizer = (*RBACAuthorizer)(nil)
+
+// ctxFor returns a context bound to the given target tenant. Tests use
+// this helper to align the request's target tenant with the identity's
+// tenant when exercising ScopeSelf permissions on a single tenant.
+func ctxFor(targetTenantID string) context.Context {
+	return tenant.WithTenantID(context.Background(), targetTenantID)
+}
 
 // ---------------------------------------------------------------------------
 // Mock RoleServicer
@@ -121,7 +129,7 @@ func TestNew_WithCustomTTL(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Authorize tests
+// Authorize tests — basic admission
 // ---------------------------------------------------------------------------
 
 func TestAuthorize_NilIdentity(t *testing.T) {
@@ -147,39 +155,7 @@ func TestAuthorize_NilIdentity_NoResolveCall(t *testing.T) {
 	}
 }
 
-func TestAuthorize_SuperadminBypass(t *testing.T) {
-	svc := newMockRoleService(nil) // no permissions configured
-	authz := New(svc)
-
-	identity := &auth.Identity{
-		Subject:  "root",
-		TenantID: "tenant-1",
-		Roles:    []string{"superadmin"},
-	}
-
-	err := authz.Authorize(context.Background(), identity, "kv", "delete")
-	if err != nil {
-		t.Fatalf("expected superadmin to bypass, got error: %v", err)
-	}
-}
-
-func TestAuthorize_SuperadminBypass_NoRoleResolution(t *testing.T) {
-	svc := newMockRoleService(nil)
-	authz := New(svc)
-
-	identity := &auth.Identity{
-		Subject:  "root",
-		TenantID: "tenant-1",
-		Roles:    []string{"viewer", "superadmin"},
-	}
-
-	_ = authz.Authorize(context.Background(), identity, "admin", "shutdown")
-	if svc.callCount.Load() != 0 {
-		t.Fatal("ResolvePermissions should not be called for superadmin")
-	}
-}
-
-func TestAuthorize_Allowed(t *testing.T) {
+func TestAuthorize_Allowed_SelfScope_OwnTenant(t *testing.T) {
 	svc := newMockRoleService(map[string][]permission.Permission{
 		"writer": {"kv:put", "kv:get"},
 	})
@@ -191,9 +167,67 @@ func TestAuthorize_Allowed(t *testing.T) {
 		Roles:    []string{"writer"},
 	}
 
-	err := authz.Authorize(context.Background(), identity, "kv", "put")
+	err := authz.Authorize(ctxFor("tenant-1"), identity, "kv", "put")
 	if err != nil {
 		t.Fatalf("expected authorization to succeed, got error: %v", err)
+	}
+}
+
+func TestAuthorize_RoleResolveFallbackOnTransientError(t *testing.T) {
+	// Primary role store fails as if the host were draining / ReadIndex cold.
+	primary := newMockRoleService(nil)
+	primary.err = errors.New("service: read failed: quicraft: host is draining")
+	// Fallback (StaleRead) resolves the permission from replicated state.
+	fallback := newMockRoleService(map[string][]permission.Permission{
+		"admin": {"admin:drain"},
+	})
+	identity := &auth.Identity{Subject: "admin", TenantID: "tenant-1", Roles: []string{"admin"}}
+
+	// With a fallback, authorization succeeds despite the primary failure —
+	// this is what keeps an authorized Drain admissible on a draining node.
+	if err := New(primary, WithRoleServiceFallback(fallback)).
+		Authorize(ctxFor("tenant-1"), identity, "admin", "drain"); err != nil {
+		t.Fatalf("expected fallback to authorize, got %v", err)
+	}
+
+	// Without a fallback, the primary failure surfaces as ResolveError.
+	err := New(primary).Authorize(ctxFor("tenant-1"), identity, "admin", "drain")
+	if err == nil {
+		t.Fatal("expected ResolveError when primary fails and no fallback is set")
+	}
+	var re *ResolveError
+	if !errors.As(err, &re) {
+		t.Fatalf("expected *ResolveError, got %T", err)
+	}
+}
+
+func TestAuthorize_OwnerRoleVoidedUnderStrictSeparation(t *testing.T) {
+	ownerID := role.SystemRoleID("tenant-1", role.RoleNameOwner)
+	adminID := role.SystemRoleID("tenant-1", role.RoleNameAdmin)
+	// Owner grants the data-plane permission; the admin role does not.
+	svc := newMockRoleService(map[string][]permission.Permission{
+		ownerID: {"kv:put"},
+		adminID: {"tenants:read"},
+	})
+	identity := &auth.Identity{
+		Subject:  "admin",
+		TenantID: "tenant-1",
+		Roles:    []string{adminID, ownerID},
+	}
+
+	// Standard posture: the Owner grant is honored, so kv:put is allowed.
+	if err := New(svc).Authorize(ctxFor("tenant-1"), identity, "kv", "put"); err != nil {
+		t.Fatalf("standard posture: expected kv:put allowed via Owner role, got %v", err)
+	}
+
+	// Strict posture: the Owner grant is voided, so kv:put is denied even
+	// though the role store still assigns Owner to the identity.
+	err := New(svc, WithStrictSeparation(true)).Authorize(ctxFor("tenant-1"), identity, "kv", "put")
+	if err == nil {
+		t.Fatal("strict posture: expected kv:put denied (Owner role voided)")
+	}
+	if !errors.Is(err, auth.ErrUnauthorized) {
+		t.Fatalf("strict posture: expected ErrUnauthorized, got %v", err)
 	}
 }
 
@@ -209,7 +243,7 @@ func TestAuthorize_Denied(t *testing.T) {
 		Roles:    []string{"reader"},
 	}
 
-	err := authz.Authorize(context.Background(), identity, "kv", "put")
+	err := authz.Authorize(ctxFor("tenant-1"), identity, "kv", "put")
 	if err == nil {
 		t.Fatal("expected authorization to be denied")
 	}
@@ -241,7 +275,7 @@ func TestAuthorize_MultipleRoles(t *testing.T) {
 
 	// Should have union of both roles' permissions.
 	for _, action := range []string{"get", "put"} {
-		err := authz.Authorize(context.Background(), identity, "kv", action)
+		err := authz.Authorize(ctxFor("tenant-1"), identity, "kv", action)
 		if err != nil {
 			t.Fatalf("expected kv:%s to be allowed for multi-role user, got: %v", action, err)
 		}
@@ -261,9 +295,9 @@ func TestAuthorize_CacheHit(t *testing.T) {
 	}
 
 	// First call: cache miss.
-	_ = authz.Authorize(context.Background(), identity, "kv", "get")
+	_ = authz.Authorize(ctxFor("tenant-1"), identity, "kv", "get")
 	// Second call: should hit cache.
-	_ = authz.Authorize(context.Background(), identity, "kv", "get")
+	_ = authz.Authorize(ctxFor("tenant-1"), identity, "kv", "get")
 
 	if svc.callCount.Load() != 1 {
 		t.Fatalf("expected ResolvePermissions to be called once, got %d", svc.callCount.Load())
@@ -283,7 +317,7 @@ func TestAuthorize_CacheExpiry(t *testing.T) {
 	}
 
 	// First call: cache miss.
-	_ = authz.Authorize(context.Background(), identity, "kv", "get")
+	_ = authz.Authorize(ctxFor("tenant-1"), identity, "kv", "get")
 	if svc.callCount.Load() != 1 {
 		t.Fatalf("expected 1 call after first authorize, got %d", svc.callCount.Load())
 	}
@@ -292,7 +326,7 @@ func TestAuthorize_CacheExpiry(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 
 	// Second call: cache expired, should resolve again.
-	_ = authz.Authorize(context.Background(), identity, "kv", "get")
+	_ = authz.Authorize(ctxFor("tenant-1"), identity, "kv", "get")
 	if svc.callCount.Load() != 2 {
 		t.Fatalf("expected 2 calls after cache expiry, got %d", svc.callCount.Load())
 	}
@@ -310,7 +344,7 @@ func TestAuthorize_CacheMiss_ResolveError(t *testing.T) {
 		Roles:    []string{"reader"},
 	}
 
-	err := authz.Authorize(context.Background(), identity, "kv", "get")
+	err := authz.Authorize(ctxFor("tenant-1"), identity, "kv", "get")
 	if err == nil {
 		t.Fatal("expected error from role service")
 	}
@@ -343,13 +377,13 @@ func TestAuthorize_DifferentTenants(t *testing.T) {
 	}
 
 	// Tenant A: admin permissions.
-	err := authz.Authorize(context.Background(), tenant1, "admin", "health")
+	err := authz.Authorize(ctxFor("tenant-a"), tenant1, "admin", "health")
 	if err != nil {
 		t.Fatalf("expected tenant-a to have admin:health, got: %v", err)
 	}
 
 	// Tenant B: only reader permissions - should not inherit tenant A's cache.
-	err = authz.Authorize(context.Background(), tenant2, "admin", "health")
+	err = authz.Authorize(ctxFor("tenant-b"), tenant2, "admin", "health")
 	if err == nil {
 		t.Fatal("expected tenant-b to be denied admin:health")
 	}
@@ -370,7 +404,7 @@ func TestAuthorize_EmptyRoles(t *testing.T) {
 		Roles:    []string{},
 	}
 
-	err := authz.Authorize(context.Background(), identity, "kv", "get")
+	err := authz.Authorize(ctxFor("tenant-1"), identity, "kv", "get")
 	if err == nil {
 		t.Fatal("expected denial for identity with no roles")
 	}
@@ -389,9 +423,174 @@ func TestAuthorize_EmptyRoles_ResolveCalled(t *testing.T) {
 		Roles:    []string{},
 	}
 
-	_ = authz.Authorize(context.Background(), identity, "kv", "get")
+	_ = authz.Authorize(ctxFor("tenant-1"), identity, "kv", "get")
 	if svc.callCount.Load() != 1 {
 		t.Fatalf("expected ResolvePermissions to be called for empty roles, got %d", svc.callCount.Load())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// System-tenant rule tests
+// ---------------------------------------------------------------------------
+
+// TestAuthorize_SystemTenantRule_AdminAtSystem_CanCrossScope verifies that
+// an identity in the system tenant carrying a ScopeCross permission may
+// exercise it on any target tenant — the canonical replacement for the
+// canonical platform-admin pattern (Admin@system).
+func TestAuthorize_SystemTenantRule_AdminAtSystem_CanCrossScope(t *testing.T) {
+	svc := newMockRoleService(map[string][]permission.Permission{
+		"admin-role": {permission.TenantsListCross},
+	})
+	authz := New(svc)
+
+	identity := &auth.Identity{
+		Subject:  "platform-admin",
+		TenantID: tenant.SystemTenantID,
+		Roles:    []string{"admin-role"},
+	}
+
+	for _, target := range []string{"acme", "bob-corp", tenant.SystemTenantID, "anything"} {
+		err := authz.Authorize(ctxFor(target), identity, "tenants", "list:cross")
+		if err != nil {
+			t.Errorf("Admin@system should be allowed tenants:list:cross on target %q, got: %v", target, err)
+		}
+	}
+}
+
+// TestAuthorize_SystemTenantRule_AdminAtTenant_CannotCrossScope verifies
+// that a tenant-local Admin holding a ScopeCross permission is rejected —
+// cross-scope authority requires membership in the system tenant.
+func TestAuthorize_SystemTenantRule_AdminAtTenant_CannotCrossScope(t *testing.T) {
+	svc := newMockRoleService(map[string][]permission.Permission{
+		"admin-role": {permission.TenantsListCross},
+	})
+	authz := New(svc)
+
+	identity := &auth.Identity{
+		Subject:  "acme-admin",
+		TenantID: "acme",
+		Roles:    []string{"admin-role"},
+	}
+
+	for _, target := range []string{"acme", "bob-corp"} {
+		err := authz.Authorize(ctxFor(target), identity, "tenants", "list:cross")
+		if err == nil {
+			t.Errorf("Admin@acme must NOT be allowed tenants:list:cross on target %q", target)
+			continue
+		}
+		var denied *PermissionDeniedError
+		if !errors.As(err, &denied) {
+			t.Errorf("expected *PermissionDeniedError on target %q, got %T: %v", target, err, err)
+			continue
+		}
+		if !strings.Contains(denied.Reason, "cross-scope") {
+			t.Errorf("expected cross-scope denial reason on target %q, got %q", target, denied.Reason)
+		}
+	}
+}
+
+// TestAuthorize_SystemTenantRule_AdminAtAcme_CanReadOwnTenant verifies
+// that a tenant-local Admin can exercise ScopeSelf permissions on its
+// own tenant.
+func TestAuthorize_SystemTenantRule_AdminAtAcme_CanReadOwnTenant(t *testing.T) {
+	svc := newMockRoleService(map[string][]permission.Permission{
+		"admin-role": {permission.TenantsRead},
+	})
+	authz := New(svc)
+
+	identity := &auth.Identity{
+		Subject:  "acme-admin",
+		TenantID: "acme",
+		Roles:    []string{"admin-role"},
+	}
+
+	err := authz.Authorize(ctxFor("acme"), identity, "tenants", "read")
+	if err != nil {
+		t.Fatalf("Admin@acme should be allowed tenants:read on own tenant, got: %v", err)
+	}
+}
+
+// TestAuthorize_SystemTenantRule_AdminAtAcme_CannotReadOtherTenant
+// verifies that a tenant-local Admin cannot exercise ScopeSelf permissions
+// on a foreign tenant — the self-scope filter is the per-tenant
+// boundary for non-system identities.
+func TestAuthorize_SystemTenantRule_AdminAtAcme_CannotReadOtherTenant(t *testing.T) {
+	svc := newMockRoleService(map[string][]permission.Permission{
+		"admin-role": {permission.TenantsRead},
+	})
+	authz := New(svc)
+
+	identity := &auth.Identity{
+		Subject:  "acme-admin",
+		TenantID: "acme",
+		Roles:    []string{"admin-role"},
+	}
+
+	err := authz.Authorize(ctxFor("bob-corp"), identity, "tenants", "read")
+	if err == nil {
+		t.Fatal("Admin@acme must NOT be allowed tenants:read on bob-corp")
+	}
+	var denied *PermissionDeniedError
+	if !errors.As(err, &denied) {
+		t.Fatalf("expected *PermissionDeniedError, got %T: %v", err, err)
+	}
+	if !strings.Contains(denied.Reason, "self-scope") {
+		t.Errorf("expected self-scope denial reason, got %q", denied.Reason)
+	}
+}
+
+// TestAuthorize_SystemTenantRule_AdminAtSystem_CanReadAnyTenant verifies
+// the system-tenant rule's self-scope lift: a system-tenant identity may
+// exercise ScopeSelf permissions on any target tenant.
+func TestAuthorize_SystemTenantRule_AdminAtSystem_CanReadAnyTenant(t *testing.T) {
+	svc := newMockRoleService(map[string][]permission.Permission{
+		"admin-role": {permission.TenantsRead},
+	})
+	authz := New(svc)
+
+	identity := &auth.Identity{
+		Subject:  "platform-admin",
+		TenantID: tenant.SystemTenantID,
+		Roles:    []string{"admin-role"},
+	}
+
+	for _, target := range []string{"acme", "bob-corp", tenant.SystemTenantID} {
+		err := authz.Authorize(ctxFor(target), identity, "tenants", "read")
+		if err != nil {
+			t.Errorf("Admin@system should be allowed tenants:read on target %q, got: %v", target, err)
+		}
+	}
+}
+
+// TestAuthorize_SystemTenantRule_UserAtTenant_CannotManageTenants
+// verifies that a User role identity (no tenant management perms) cannot
+// run any tenant management permission, regardless of scope.
+func TestAuthorize_SystemTenantRule_UserAtTenant_CannotManageTenants(t *testing.T) {
+	svc := newMockRoleService(map[string][]permission.Permission{
+		"user-role": {permission.KeysSign, permission.KeysVerify},
+	})
+	authz := New(svc)
+
+	identity := &auth.Identity{
+		Subject:  "acme-user",
+		TenantID: "acme",
+		Roles:    []string{"user-role"},
+	}
+
+	deniedActions := []struct {
+		resource, action string
+	}{
+		{"tenants", "read"},
+		{"tenants", "update"},
+		{"tenants", "list:cross"},
+		{"volumepool", "create"},
+		{"registration_config", "read"},
+	}
+	for _, tc := range deniedActions {
+		err := authz.Authorize(ctxFor("acme"), identity, tc.resource, tc.action)
+		if err == nil {
+			t.Errorf("User@acme must NOT be allowed %s:%s", tc.resource, tc.action)
+		}
 	}
 }
 
@@ -412,14 +611,14 @@ func TestInvalidate_RemovesEntry(t *testing.T) {
 	}
 
 	// First call: populates cache.
-	_ = authz.Authorize(context.Background(), identity, "kv", "get")
+	_ = authz.Authorize(ctxFor("tenant-1"), identity, "kv", "get")
 	if svc.callCount.Load() != 1 {
 		t.Fatalf("expected 1 call, got %d", svc.callCount.Load())
 	}
 
 	// Invalidate and authorize again.
 	authz.Invalidate("tenant-1", "user-7")
-	_ = authz.Authorize(context.Background(), identity, "kv", "get")
+	_ = authz.Authorize(ctxFor("tenant-1"), identity, "kv", "get")
 	if svc.callCount.Load() != 2 {
 		t.Fatalf("expected 2 calls after invalidation, got %d", svc.callCount.Load())
 	}
@@ -434,8 +633,8 @@ func TestInvalidate_OtherEntriesUnaffected(t *testing.T) {
 	user1 := &auth.Identity{Subject: "user-a", TenantID: "t1", Roles: []string{"reader"}}
 	user2 := &auth.Identity{Subject: "user-b", TenantID: "t1", Roles: []string{"reader"}}
 
-	_ = authz.Authorize(context.Background(), user1, "kv", "get")
-	_ = authz.Authorize(context.Background(), user2, "kv", "get")
+	_ = authz.Authorize(ctxFor("t1"), user1, "kv", "get")
+	_ = authz.Authorize(ctxFor("t1"), user2, "kv", "get")
 	if svc.callCount.Load() != 2 {
 		t.Fatalf("expected 2 initial calls, got %d", svc.callCount.Load())
 	}
@@ -444,13 +643,13 @@ func TestInvalidate_OtherEntriesUnaffected(t *testing.T) {
 	authz.Invalidate("t1", "user-a")
 
 	// user-b should still be cached.
-	_ = authz.Authorize(context.Background(), user2, "kv", "get")
+	_ = authz.Authorize(ctxFor("t1"), user2, "kv", "get")
 	if svc.callCount.Load() != 2 {
 		t.Fatalf("expected user-b to be cached (2 calls), got %d", svc.callCount.Load())
 	}
 
 	// user-a should resolve again.
-	_ = authz.Authorize(context.Background(), user1, "kv", "get")
+	_ = authz.Authorize(ctxFor("t1"), user1, "kv", "get")
 	if svc.callCount.Load() != 3 {
 		t.Fatalf("expected user-a to re-resolve (3 calls), got %d", svc.callCount.Load())
 	}
@@ -465,8 +664,8 @@ func TestInvalidateAll_ClearsEverything(t *testing.T) {
 	user1 := &auth.Identity{Subject: "user-a", TenantID: "t1", Roles: []string{"reader"}}
 	user2 := &auth.Identity{Subject: "user-b", TenantID: "t2", Roles: []string{"reader"}}
 
-	_ = authz.Authorize(context.Background(), user1, "kv", "get")
-	_ = authz.Authorize(context.Background(), user2, "kv", "get")
+	_ = authz.Authorize(ctxFor("t1"), user1, "kv", "get")
+	_ = authz.Authorize(ctxFor("t2"), user2, "kv", "get")
 	if svc.callCount.Load() != 2 {
 		t.Fatalf("expected 2 initial calls, got %d", svc.callCount.Load())
 	}
@@ -474,8 +673,8 @@ func TestInvalidateAll_ClearsEverything(t *testing.T) {
 	authz.InvalidateAll()
 
 	// Both should resolve again.
-	_ = authz.Authorize(context.Background(), user1, "kv", "get")
-	_ = authz.Authorize(context.Background(), user2, "kv", "get")
+	_ = authz.Authorize(ctxFor("t1"), user1, "kv", "get")
+	_ = authz.Authorize(ctxFor("t2"), user2, "kv", "get")
 	if svc.callCount.Load() != 4 {
 		t.Fatalf("expected 4 total calls after InvalidateAll, got %d", svc.callCount.Load())
 	}
@@ -487,15 +686,20 @@ func TestInvalidateAll_ClearsEverything(t *testing.T) {
 
 func TestAuthorize_CompileTimeInterface(t *testing.T) {
 	// The var _ auth.Authorizer = (*RBACAuthorizer)(nil) declaration above
-	// handles compile-time checking. This test ensures it is exercised
-	// at runtime as well.
-	var authz auth.Authorizer = New(newMockRoleService(nil))
-	err := authz.Authorize(context.Background(), &auth.Identity{
-		Subject: "test",
-		Roles:   []string{"superadmin"},
-	}, "any", "action")
+	// handles compile-time checking. This test ensures the interface
+	// dispatch path is exercised at runtime as well, using the canonical
+	// Admin@system pattern.
+	svc := newMockRoleService(map[string][]permission.Permission{
+		"admin-role": {permission.AdminHealth},
+	})
+	var authz auth.Authorizer = New(svc)
+	err := authz.Authorize(ctxFor("any-target"), &auth.Identity{
+		Subject:  "platform-admin",
+		TenantID: tenant.SystemTenantID,
+		Roles:    []string{"admin-role"},
+	}, "admin", "health")
 	if err != nil {
-		t.Fatalf("expected superadmin pass-through via interface, got: %v", err)
+		t.Fatalf("expected Admin@system to pass via interface, got: %v", err)
 	}
 }
 
@@ -657,5 +861,396 @@ func TestCacheKey_EmptyTenant(t *testing.T) {
 	expected := ":user-a"
 	if key != expected {
 		t.Fatalf("expected %q, got %q", expected, key)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SO deny-list tests (FIPS 140-3 AS10.03)
+// ---------------------------------------------------------------------------
+
+func TestAuthorize_SO_CryptoActionsDenied(t *testing.T) {
+	// Crypto actions that must be denied for SO regardless of permissions.
+	deniedActions := []struct {
+		resource string
+		action   string
+	}{
+		{"keys", "sign"},
+		{"keys", "encrypt"},
+		{"keys", "decrypt"},
+		{"keys", "verify"},
+		{"keys", "wrap"},
+		{"keys", "unwrap"},
+	}
+
+	for _, tc := range deniedActions {
+		t.Run(tc.resource+":"+tc.action, func(t *testing.T) {
+			// Intentionally grant the SO role the crypto permission (malicious grant).
+			svc := newMockRoleService(map[string][]permission.Permission{
+				"so-role": {permission.Permission(tc.resource + ":" + tc.action)},
+			})
+			authz := New(svc)
+
+			identity := &auth.Identity{
+				Subject:  "so-user",
+				TenantID: "tenant-1",
+				Roles:    []string{"so-role", "so"}, // role name matches SO
+			}
+
+			err := authz.Authorize(ctxFor("tenant-1"), identity, tc.resource, tc.action)
+			if err == nil {
+				t.Fatalf("expected SO to be denied %s:%s even with explicit permission grant", tc.resource, tc.action)
+			}
+			if !errors.Is(err, auth.ErrUnauthorized) {
+				t.Fatalf("expected ErrUnauthorized, got %v", err)
+			}
+			var denied *PermissionDeniedError
+			if !errors.As(err, &denied) {
+				t.Fatalf("expected *PermissionDeniedError, got %T", err)
+			}
+			if !strings.Contains(denied.Reason, "FIPS 140-3 AS10.03") {
+				t.Errorf("expected FIPS 140-3 AS10.03 in denial reason, got: %q", denied.Reason)
+			}
+		})
+	}
+}
+
+func TestAuthorize_SO_MaliciousGrant_StillDenied(t *testing.T) {
+	// The most critical test: SO is erroneously granted keys:sign but must
+	// still be denied (FIPS 140-3 AS10.03 defense-in-depth).
+	svc := newMockRoleService(map[string][]permission.Permission{
+		"so-role": {permission.KeysSign},
+	})
+	authz := New(svc)
+
+	identity := &auth.Identity{
+		Subject:  "so-user",
+		TenantID: "tenant-1",
+		Roles:    []string{"so"}, // SO role by name
+	}
+
+	err := authz.Authorize(ctxFor("tenant-1"), identity, "keys", "sign")
+	if err == nil {
+		t.Fatal("SO with erroneously granted keys:sign must still be denied")
+	}
+	if !errors.Is(err, auth.ErrUnauthorized) {
+		t.Fatalf("expected ErrUnauthorized, got: %v", err)
+	}
+}
+
+func TestAuthorize_SO_GovernanceActionsAllowed(t *testing.T) {
+	// SO must be able to perform governance operations (barrier:initialize, etc.)
+	allowedActions := []struct {
+		resource string
+		action   string
+		perm     permission.Permission
+	}{
+		{"seal", "bootstrap", permission.SealBootstrap},
+		{"ceremony", "initialize", permission.CeremonyInitialize},
+		{"roles", "create", permission.RolesCreate},
+		{"users", "create", permission.UsersCreate},
+		{"audit", "read", permission.AuditRead},
+	}
+
+	for _, tc := range allowedActions {
+		t.Run(tc.resource+":"+tc.action, func(t *testing.T) {
+			svc := newMockRoleService(map[string][]permission.Permission{
+				"so-role": {tc.perm},
+			})
+			authz := New(svc)
+
+			identity := &auth.Identity{
+				Subject:  "so-user",
+				TenantID: "tenant-1",
+				Roles:    []string{"so-role", "so"},
+			}
+
+			err := authz.Authorize(ctxFor("tenant-1"), identity, tc.resource, tc.action)
+			if err != nil {
+				t.Fatalf("SO should be allowed %s:%s, got error: %v", tc.resource, tc.action, err)
+			}
+		})
+	}
+}
+
+func TestAuthorize_SO_DenyListByDeterministicID(t *testing.T) {
+	// SO deny-list must also trigger when the role is identified by its
+	// deterministic UUID (not just the "so" string).
+	svc := newMockRoleService(map[string][]permission.Permission{})
+	authz := New(svc)
+
+	soRoleID := role.SystemRoleID("tenant-x", role.RoleNameSO)
+
+	identity := &auth.Identity{
+		Subject:  "so-by-id",
+		TenantID: "tenant-x",
+		Roles:    []string{soRoleID}, // referenced by deterministic UUID
+	}
+
+	err := authz.Authorize(ctxFor("tenant-x"), identity, "keys", "sign")
+	if err == nil {
+		t.Fatal("SO deny-list must trigger when role is identified by deterministic UUID")
+	}
+	if !errors.Is(err, auth.ErrUnauthorized) {
+		t.Fatalf("expected ErrUnauthorized, got: %v", err)
+	}
+}
+
+func TestAuthorize_Custodian_UnsealShareAllowed(t *testing.T) {
+	// Custodian has exactly one permission: barrier:unseal-share.
+	svc := newMockRoleService(map[string][]permission.Permission{
+		"custodian-role": {permission.BarrierUnsealShare},
+	})
+	authz := New(svc)
+
+	identity := &auth.Identity{
+		Subject:  "custodian-1",
+		TenantID: "tenant-1",
+		Roles:    []string{"custodian-role"},
+	}
+
+	err := authz.Authorize(ctxFor("tenant-1"), identity, "barrier", "unseal-share")
+	if err != nil {
+		t.Fatalf("custodian should be allowed barrier:unseal-share, got: %v", err)
+	}
+}
+
+func TestAuthorize_Custodian_OtherActionsDenied(t *testing.T) {
+	// Custodian must be denied all operations except unseal-share.
+	deniedActions := []struct {
+		resource, action string
+	}{
+		{"kv", "put"},
+		{"kv", "get"},
+		{"keys", "sign"},
+		{"keys", "get"},
+		{"seal", "status"},
+		{"audit", "read"},
+		{"users", "list"},
+		{"admin", "health"},
+	}
+
+	for _, tc := range deniedActions {
+		t.Run(tc.resource+":"+tc.action, func(t *testing.T) {
+			svc := newMockRoleService(map[string][]permission.Permission{
+				"custodian-role": {permission.BarrierUnsealShare},
+			})
+			authz := New(svc)
+
+			identity := &auth.Identity{
+				Subject:  "custodian-1",
+				TenantID: "tenant-1",
+				Roles:    []string{"custodian-role"},
+			}
+
+			err := authz.Authorize(ctxFor("tenant-1"), identity, tc.resource, tc.action)
+			if err == nil {
+				t.Fatalf("custodian should be denied %s:%s", tc.resource, tc.action)
+			}
+		})
+	}
+}
+
+func TestAuthorize_User_KeysSignAllowed(t *testing.T) {
+	// User role must be allowed keys:sign (unlike SO).
+	svc := newMockRoleService(map[string][]permission.Permission{
+		"user-role": {permission.KeysSign, permission.KeysVerify, permission.KeysEncrypt, permission.KeysDecrypt},
+	})
+	authz := New(svc)
+
+	identity := &auth.Identity{
+		Subject:  "user-1",
+		TenantID: "tenant-1",
+		Roles:    []string{"user-role"},
+	}
+
+	err := authz.Authorize(ctxFor("tenant-1"), identity, "keys", "sign")
+	if err != nil {
+		t.Fatalf("user should be allowed keys:sign, got: %v", err)
+	}
+}
+
+func TestAuthorize_Auditor_AuditReadAllowed(t *testing.T) {
+	svc := newMockRoleService(map[string][]permission.Permission{
+		"auditor-role": {permission.AuditRead, permission.AuditQuery},
+	})
+	authz := New(svc)
+
+	identity := &auth.Identity{
+		Subject:  "auditor-1",
+		TenantID: "tenant-1",
+		Roles:    []string{"auditor-role"},
+	}
+
+	err := authz.Authorize(ctxFor("tenant-1"), identity, "audit", "read")
+	if err != nil {
+		t.Fatalf("auditor should be allowed audit:read, got: %v", err)
+	}
+}
+
+func TestAuthorize_Auditor_UsersCreateDenied(t *testing.T) {
+	svc := newMockRoleService(map[string][]permission.Permission{
+		"auditor-role": {permission.AuditRead, permission.AuditQuery, permission.UsersList},
+	})
+	authz := New(svc)
+
+	identity := &auth.Identity{
+		Subject:  "auditor-1",
+		TenantID: "tenant-1",
+		Roles:    []string{"auditor-role"},
+	}
+
+	err := authz.Authorize(ctxFor("tenant-1"), identity, "users", "create")
+	if err == nil {
+		t.Fatal("auditor should be denied users:create")
+	}
+	if !errors.Is(err, auth.ErrUnauthorized) {
+		t.Fatalf("expected ErrUnauthorized, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// isSODenied helper tests
+// ---------------------------------------------------------------------------
+
+func TestIsSODenied_DeniedActions(t *testing.T) {
+	tests := []struct {
+		resource, action string
+		want             bool
+	}{
+		{"keys", "sign", true},
+		{"keys", "encrypt", true},
+		{"keys", "decrypt", true},
+		{"keys", "verify", true},
+		{"keys", "wrap", true},
+		{"keys", "unwrap", true},
+		{"keys", "create", false},
+		{"keys", "list", false},
+		{"keys", "get", false},
+		{"seal", "bootstrap", false},
+		{"audit", "read", false},
+		{"kv", "put", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.resource+":"+tc.action, func(t *testing.T) {
+			got := isSODenied(tc.resource, tc.action)
+			if got != tc.want {
+				t.Errorf("isSODenied(%q, %q) = %v, want %v", tc.resource, tc.action, got, tc.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ScopeTenantOnly — per-tenant barrier authorization
+//
+// The tenant_barrier:* permissions are tagged ScopeTenantOnly: a tenant
+// admin may operate only on their OWN tenant's barrier, the system tenant is
+// structurally denied, and cross-tenant access is denied.
+// ---------------------------------------------------------------------------
+
+// TestAuthorize_TenantOnly_AdminAtAcme_CanInitOwnBarrier verifies that a
+// tenant-local Admin holding tenant_barrier:init may initialize their own
+// tenant's barrier.
+func TestAuthorize_TenantOnly_AdminAtAcme_CanInitOwnBarrier(t *testing.T) {
+	svc := newMockRoleService(map[string][]permission.Permission{
+		"admin-role": {permission.TenantBarrierInit},
+	})
+	authz := New(svc)
+
+	identity := &auth.Identity{
+		Subject:  "acme-admin",
+		TenantID: "acme",
+		Roles:    []string{"admin-role"},
+	}
+
+	if err := authz.Authorize(ctxFor("acme"), identity, "tenant_barrier", "init"); err != nil {
+		t.Fatalf("Admin@acme should init own barrier, got: %v", err)
+	}
+}
+
+// TestAuthorize_TenantOnly_AdminAtAcme_CannotInitOtherBarrier verifies the
+// cross-tenant denial: a tenant-local Admin cannot init another tenant's
+// barrier even though it holds the permission.
+func TestAuthorize_TenantOnly_AdminAtAcme_CannotInitOtherBarrier(t *testing.T) {
+	svc := newMockRoleService(map[string][]permission.Permission{
+		"admin-role": {permission.TenantBarrierInit},
+	})
+	authz := New(svc)
+
+	identity := &auth.Identity{
+		Subject:  "acme-admin",
+		TenantID: "acme",
+		Roles:    []string{"admin-role"},
+	}
+
+	err := authz.Authorize(ctxFor("bob-corp"), identity, "tenant_barrier", "init")
+	if err == nil {
+		t.Fatal("Admin@acme must NOT init bob-corp's barrier")
+	}
+	var denied *PermissionDeniedError
+	if !errors.As(err, &denied) {
+		t.Fatalf("expected *PermissionDeniedError, got %T: %v", err, err)
+	}
+	if !strings.Contains(denied.Reason, "tenant-only") {
+		t.Errorf("expected tenant-only denial reason, got %q", denied.Reason)
+	}
+}
+
+// TestAuthorize_TenantOnly_AdminAtSystem_CannotInitAnyBarrier verifies that
+// the system tenant is structurally denied — even on its own tenant id and
+// even though the role grants the permission, the platform operator must not
+// hold tenant barrier key material.
+func TestAuthorize_TenantOnly_AdminAtSystem_CannotInitAnyBarrier(t *testing.T) {
+	svc := newMockRoleService(map[string][]permission.Permission{
+		"admin-role": {permission.TenantBarrierInit},
+	})
+	authz := New(svc)
+
+	identity := &auth.Identity{
+		Subject:  "platform-admin",
+		TenantID: tenant.SystemTenantID,
+		Roles:    []string{"admin-role"},
+	}
+
+	for _, target := range []string{"acme", "bob-corp", tenant.SystemTenantID} {
+		err := authz.Authorize(ctxFor(target), identity, "tenant_barrier", "init")
+		if err == nil {
+			t.Fatalf("Admin@system must NOT init barrier on target %q", target)
+		}
+		var denied *PermissionDeniedError
+		if !errors.As(err, &denied) {
+			t.Fatalf("target %q: expected *PermissionDeniedError, got %T: %v", target, err, err)
+		}
+		if !strings.Contains(denied.Reason, "system tenant") {
+			t.Errorf("target %q: expected system-tenant denial reason, got %q", target, denied.Reason)
+		}
+	}
+}
+
+// TestAuthorize_TenantOnly_UnsealAndSeal verifies the seal/unseal
+// tenant_barrier permissions carry the same ScopeTenantOnly semantics.
+func TestAuthorize_TenantOnly_UnsealAndSeal(t *testing.T) {
+	svc := newMockRoleService(map[string][]permission.Permission{
+		"admin-role": {permission.TenantBarrierUnseal, permission.TenantBarrierSeal},
+	})
+	authz := New(svc)
+
+	acmeAdmin := &auth.Identity{Subject: "acme-admin", TenantID: "acme", Roles: []string{"admin-role"}}
+	sysAdmin := &auth.Identity{Subject: "sys-admin", TenantID: tenant.SystemTenantID, Roles: []string{"admin-role"}}
+
+	// Own-tenant unseal/seal allowed for tenant admin.
+	if err := authz.Authorize(ctxFor("acme"), acmeAdmin, "tenant_barrier", "unseal"); err != nil {
+		t.Errorf("acme admin unseal own barrier: %v", err)
+	}
+	if err := authz.Authorize(ctxFor("acme"), acmeAdmin, "tenant_barrier", "seal"); err != nil {
+		t.Errorf("acme admin seal own barrier: %v", err)
+	}
+	// Cross-tenant denied.
+	if err := authz.Authorize(ctxFor("bob-corp"), acmeAdmin, "tenant_barrier", "unseal"); err == nil {
+		t.Error("acme admin must not unseal bob-corp barrier")
+	}
+	// System tenant denied.
+	if err := authz.Authorize(ctxFor("acme"), sysAdmin, "tenant_barrier", "seal"); err == nil {
+		t.Error("system admin must not seal acme barrier")
 	}
 }

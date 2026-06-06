@@ -215,7 +215,7 @@ func TestGetTableNames_WithCollectionService(t *testing.T) {
 
 // TestKVWriter_StatementBegin_ExtraCoverage verifies StatementBegin is a no-op.
 func TestKVWriter_StatementBegin_ExtraCoverage(t *testing.T) {
-	w := &kvWriter{kvSvc: &mockKVService{}, tenantID: "default"}
+	w := &kvWriter{kvSvc: &mockKVService{}, tenantID: "system"}
 	ctx := sqle.NewEmptyContext()
 	w.StatementBegin(ctx)
 }
@@ -233,7 +233,7 @@ func TestKVTable_LookupPartitions_WithIndex(t *testing.T) {
 		},
 	}
 
-	tbl := NewKVTable(&mockKVService{}, "default", idxSvc)
+	tbl := NewKVTable(&mockKVService{}, "system", idxSvc)
 	ctx := newTestContext()
 
 	qIdx := newQRDBIndex("qrdb", "kv", "key", "string", false)
@@ -263,7 +263,7 @@ func TestEntityTable_LookupPartitions_WithIndex(t *testing.T) {
 	}
 
 	reg := testRegistration()
-	tbl := NewEntityTable(&mockKVService{}, "default", reg, idxSvc)
+	tbl := NewEntityTable(&mockKVService{}, "system", reg, idxSvc)
 	ctx := newTestContext()
 
 	qIdx := newQRDBIndex("testdb", "users", "name", "string", false)
@@ -317,7 +317,7 @@ func TestCollectionTable_LookupPartitions_WithIndex(t *testing.T) {
 // a fieldOrder entry that is not found in metaByJSON.
 func TestEntityToRow_MissingMetaField(t *testing.T) {
 	reg := testRegistration()
-	tbl := NewEntityTable(&mockKVService{}, "default", reg, nil)
+	tbl := NewEntityTable(&mockKVService{}, "system", reg, nil)
 
 	// Manually inject an extra field into fieldOrder that has no FieldMeta.
 	tbl.fieldOrder = append(tbl.fieldOrder, "nonexistent_json_field")
@@ -409,7 +409,7 @@ func TestEntityWriter_Insert_MarshalError(t *testing.T) {
 
 	w := &entityWriter{
 		kvSvc:      &mockKVService{},
-		tenantID:   "default",
+		tenantID:   "system",
 		reg:        reg,
 		fieldOrder: []string{"name", "email", "age", "score", "active"},
 	}

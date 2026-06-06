@@ -20,7 +20,9 @@ package service
 
 import (
 	"context"
+	"errors"
 
+	qrdbErrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
 	"github.com/jeremyhahn/go-qrdb/pkg/rag"
 )
 
@@ -101,6 +103,31 @@ func (a *VectorStoreAdapter) UpsertVector(ctx context.Context, req *rag.UpsertVe
 		return nil, err
 	}
 	return &rag.UpsertVecResponse{Success: resp.Success}, nil
+}
+
+// EnsureNamespace implements rag.VectorStore by creating the namespace when it
+// does not yet exist. An AlreadyExists error from the underlying service is
+// treated as a success (idempotent). The context carries the tenant ID so the
+// scoped namespace is created under the correct tenant automatically.
+func (a *VectorStoreAdapter) EnsureNamespace(ctx context.Context, name string, dimension int, metric string) error {
+	if metric == "" {
+		metric = "cosine"
+	}
+	_, err := a.svc.CreateNamespace(ctx, &CreateNamespaceRequest{
+		Namespace:      name,
+		Dimension:      uint32(dimension), //nolint:gosec // G115: dimension is a small positive int from embedding output
+		DistanceMetric: metric,
+		IndexType:      "HNSW",
+	})
+	if err == nil {
+		return nil
+	}
+	// AlreadyExists is not an error — namespace was created by a previous call.
+	var qErr *qrdbErrors.QRDBError
+	if errors.As(err, &qErr) && qErr.Code == qrdbErrors.ErrAlreadyExists {
+		return nil
+	}
+	return err
 }
 
 // SearchSimilar implements rag.VectorStore by delegating to the underlying service.

@@ -89,8 +89,9 @@ var sortTargetStringMap = map[transport.SortTarget]string{
 // ---------------------------------------------------------------------------
 
 // PutWithLease stores a key-value pair with an attached lease. Maps to
-// PUT /kv/{key}?lease-id=N. When the lease expires, the key is
-// automatically deleted.
+// PUT /kv/{key}?lease-id=N. When the lease expires, the key is automatically
+// deleted. An optional ?write_mode= query parameter is appended when a write
+// mode was explicitly set.
 func (t *Transport) PutWithLease(ctx context.Context, key string, value []byte, leaseID int64, opts ...transport.WriteOption) (*transport.MVCCKeyValue, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
@@ -102,10 +103,7 @@ func (t *Transport) PutWithLease(ctx context.Context, key string, value []byte, 
 		return nil, &transport.RequestError{Method: "PutWithLease", Err: err}
 	}
 
-	wo := transport.ResolveWriteOptions(opts...)
-	if wo.ModeSet {
-		req.Header.Set("X-QRDB-Write-Mode", wo.Mode.String())
-	}
+	applyWriteModeQueryParam(req, opts...)
 
 	resp, err := t.client.Do(req)
 	if err != nil {
@@ -127,7 +125,8 @@ func (t *Transport) PutWithLease(ctx context.Context, key string, value []byte, 
 
 // GetRevision retrieves a key-value pair with full MVCC revision metadata.
 // Maps to GET /kv/{key}?revision=true. Returns KeyNotFoundError when the
-// key does not exist.
+// key does not exist. An optional ?consistency= query parameter is appended
+// when a consistency level was set.
 func (t *Transport) GetRevision(ctx context.Context, key string, opts ...transport.ReadOption) (*transport.MVCCKeyValue, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
@@ -139,7 +138,7 @@ func (t *Transport) GetRevision(ctx context.Context, key string, opts ...transpo
 		return nil, &transport.RequestError{Method: "GetRevision", Err: err}
 	}
 
-	applyReadHeaders(req, opts...)
+	applyReadQueryParams(req, opts...)
 
 	resp, err := t.client.Do(req)
 	if err != nil {
@@ -164,8 +163,9 @@ func (t *Transport) GetRevision(ctx context.Context, key string, opts ...transpo
 }
 
 // GetAtRevision retrieves a key-value pair at a historical MVCC revision.
-// Maps to GET /kv/{key}?at-revision=N. Returns RevisionCompactedError
-// when the revision has been compacted.
+// Maps to GET /kv/{key}?at-revision=N. Returns RevisionCompactedError when
+// the revision has been compacted. An optional ?consistency= query parameter
+// is appended when a consistency level was set.
 func (t *Transport) GetAtRevision(ctx context.Context, key string, revision int64, opts ...transport.ReadOption) (*transport.MVCCKeyValue, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
@@ -177,7 +177,7 @@ func (t *Transport) GetAtRevision(ctx context.Context, key string, revision int6
 		return nil, &transport.RequestError{Method: "GetAtRevision", Err: err}
 	}
 
-	applyReadHeaders(req, opts...)
+	applyReadQueryParams(req, opts...)
 
 	resp, err := t.client.Do(req)
 	if err != nil {
@@ -244,7 +244,7 @@ func (t *Transport) Range(ctx context.Context, start, end []byte, rangeOpts tran
 		return nil, &transport.RequestError{Method: "Range", Err: err}
 	}
 
-	applyReadHeaders(req, opts...)
+	applyReadQueryParams(req, opts...)
 
 	resp, err := t.client.Do(req)
 	if err != nil {

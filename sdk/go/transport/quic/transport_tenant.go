@@ -1,0 +1,405 @@
+// Copyright 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package quic
+
+import (
+	"context"
+	"encoding/json"
+	"time"
+
+	"google.golang.org/protobuf/proto"
+
+	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+)
+
+// Compile-time interface assertion.
+var _ transport.TenantClient = (*Transport)(nil)
+
+// CreateTenant creates a new tenant via the QUIC tenant.Create handler.
+func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenantRequest) (*transport.CreateTenantResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	payload, err := proto.Marshal(&pb.TenantCreateRequest{
+		Id:            req.ID,
+		Name:          req.Name,
+		IsolationType: string(req.IsolationType),
+	})
+	if err != nil {
+		return nil, &transport.RequestError{Method: "CreateTenant", Err: err}
+	}
+
+	respBytes, err := t.call(ctx, "tenant.Create", payload)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "CreateTenant", Err: err}
+	}
+
+	var resp pb.TenantResponse
+	if err := proto.Unmarshal(respBytes, &resp); err != nil {
+		return nil, &transport.RequestError{Method: "CreateTenant", Err: err}
+	}
+
+	return &transport.CreateTenantResponse{Tenant: quicProtoToTenantInfo(&resp)}, nil
+}
+
+// GetTenant retrieves a tenant by ID via the QUIC tenant.Get handler.
+func (t *Transport) GetTenant(ctx context.Context, tenantID string) (*transport.GetTenantResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	payload, err := proto.Marshal(&pb.TenantGetRequest{Id: tenantID})
+	if err != nil {
+		return nil, &transport.RequestError{Method: "GetTenant", Err: err}
+	}
+
+	respBytes, err := t.call(ctx, "tenant.Get", payload)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "GetTenant", Err: err}
+	}
+
+	var resp pb.TenantResponse
+	if err := proto.Unmarshal(respBytes, &resp); err != nil {
+		return nil, &transport.RequestError{Method: "GetTenant", Err: err}
+	}
+
+	return &transport.GetTenantResponse{Tenant: quicProtoToTenantInfo(&resp)}, nil
+}
+
+// ListTenants returns all tenants via the QUIC tenant.List handler.
+func (t *Transport) ListTenants(ctx context.Context) (*transport.ListTenantsResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	respBytes, err := t.call(ctx, "tenant.List", nil)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "ListTenants", Err: err}
+	}
+
+	var resp pb.TenantListResponse
+	if err := proto.Unmarshal(respBytes, &resp); err != nil {
+		return nil, &transport.RequestError{Method: "ListTenants", Err: err}
+	}
+
+	tenants := make([]transport.TenantInfo, len(resp.GetTenants()))
+	for i, pt := range resp.GetTenants() {
+		tenants[i] = quicProtoToTenantInfo(pt)
+	}
+
+	return &transport.ListTenantsResponse{Tenants: tenants}, nil
+}
+
+// DeleteTenant removes a tenant via the QUIC tenant.Delete handler.
+func (t *Transport) DeleteTenant(ctx context.Context, tenantID string) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+
+	payload, err := proto.Marshal(&pb.TenantDeleteRequest{Id: tenantID})
+	if err != nil {
+		return &transport.RequestError{Method: "DeleteTenant", Err: err}
+	}
+
+	_, err = t.call(ctx, "tenant.Delete", payload)
+	if err != nil {
+		return &transport.RequestError{Method: "DeleteTenant", Err: err}
+	}
+
+	return nil
+}
+
+// UpdateTenant applies a partial update to an existing tenant via the QUIC tenant.Update handler.
+func (t *Transport) UpdateTenant(ctx context.Context, req *transport.UpdateTenantRequest) (*transport.UpdateTenantResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	payload, err := proto.Marshal(&pb.TenantUpdateRequest{
+		Id:            req.TenantID,
+		Name:          req.Name,
+		IsolationType: string(req.IsolationType),
+	})
+	if err != nil {
+		return nil, &transport.RequestError{Method: "UpdateTenant", Err: err}
+	}
+
+	respBytes, err := t.call(ctx, "tenant.Update", payload)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "UpdateTenant", Err: err}
+	}
+
+	var resp pb.TenantResponse
+	if err := proto.Unmarshal(respBytes, &resp); err != nil {
+		return nil, &transport.RequestError{Method: "UpdateTenant", Err: err}
+	}
+
+	return &transport.UpdateTenantResponse{Tenant: quicProtoToTenantInfo(&resp)}, nil
+}
+
+// UpdateTenantQuotas sets the resource quotas for a tenant via the QUIC tenant.UpdateQuotas handler.
+func (t *Transport) UpdateTenantQuotas(ctx context.Context, req *transport.UpdateTenantQuotasRequest) (*transport.UpdateTenantQuotasResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	payload, err := proto.Marshal(&pb.TenantUpdateQuotasRequest{
+		Id: req.TenantID,
+		Quotas: &pb.TenantQuotas{
+			MaxDatabases:    req.Quotas.MaxDatabases,
+			MaxRaftGroups:   req.Quotas.MaxRaftGroups,
+			MaxCollections:  req.Quotas.MaxCollections,
+			MaxKeys:         req.Quotas.MaxKeys,
+			MaxStorageBytes: req.Quotas.MaxStorageBytes,
+			MaxUsers:        req.Quotas.MaxUsers,
+			MaxRoles:        req.Quotas.MaxRoles,
+			MaxCertificates: req.Quotas.MaxCertificates,
+			MaxBackups:      req.Quotas.MaxBackups,
+			MaxVectorDims:   req.Quotas.MaxVectorDims,
+			MaxTsMetrics:    req.Quotas.MaxTSMetrics,
+		},
+	})
+	if err != nil {
+		return nil, &transport.RequestError{Method: "UpdateTenantQuotas", Err: err}
+	}
+
+	respBytes, err := t.call(ctx, "tenant.UpdateQuotas", payload)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "UpdateTenantQuotas", Err: err}
+	}
+
+	var resp pb.TenantResponse
+	if err := proto.Unmarshal(respBytes, &resp); err != nil {
+		return nil, &transport.RequestError{Method: "UpdateTenantQuotas", Err: err}
+	}
+
+	return &transport.UpdateTenantQuotasResponse{Tenant: quicProtoToTenantInfo(&resp)}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Per-tenant barrier operations
+//
+// The barrier handlers use JSON wire payloads (matching the audit and auth
+// factor frame conventions) since these schema-light operations do not warrant
+// generating dedicated protobuf messages. Field shapes are defined server-side
+// in pkg/api/quic/handlers_tenant_barrier.go.
+// ---------------------------------------------------------------------------
+
+// quicTenantBarrierInitRequest mirrors the server-side wire schema for
+// tenant.BarrierInit.
+type quicTenantBarrierInitRequest struct {
+	TenantID   string `json:"tenant_id"`
+	Passphrase string `json:"passphrase,omitempty"`
+	Threshold  int    `json:"threshold,omitempty"`
+	Shares     int    `json:"shares,omitempty"`
+	Strategy   string `json:"strategy,omitempty"`
+}
+
+// quicTenantBarrierUnsealRequest mirrors the server-side wire schema for
+// tenant.BarrierUnseal.
+type quicTenantBarrierUnsealRequest struct {
+	TenantID string `json:"tenant_id"`
+	Share    []byte `json:"share,omitempty"`
+	Key      []byte `json:"key,omitempty"`
+}
+
+// quicTenantBarrierSealRequest mirrors the server-side wire schema for
+// tenant.BarrierSeal.
+type quicTenantBarrierSealRequest struct {
+	TenantID string `json:"tenant_id"`
+}
+
+// quicTenantBarrierStatusRequest mirrors the server-side wire schema for
+// tenant.BarrierStatus.
+type quicTenantBarrierStatusRequest struct {
+	TenantID string `json:"tenant_id"`
+}
+
+// quicTenantBarrierStatusResponse mirrors the server-side wire schema for
+// tenant.BarrierStatus responses.
+type quicTenantBarrierStatusResponse struct {
+	TenantID       string `json:"tenant_id"`
+	Sealed         bool   `json:"sealed"`
+	Initialized    bool   `json:"initialized"`
+	Strategy       string `json:"strategy"`
+	HardwareBacked bool   `json:"hardware_backed"`
+}
+
+// nilTenantBarrierRequestError is returned when a per-tenant barrier method
+// is called with a nil request struct.
+type nilTenantBarrierRequestError struct {
+	Method string
+}
+
+// Error returns a human-readable description.
+func (e *nilTenantBarrierRequestError) Error() string {
+	return "transport: " + e.Method + ": nil request"
+}
+
+// TenantBarrierInit initializes a per-tenant barrier via the QUIC
+// tenant.BarrierInit handler.
+func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.TenantBarrierInitRequest) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	if req == nil {
+		return &transport.RequestError{Method: "TenantBarrierInit", Err: &nilTenantBarrierRequestError{Method: "TenantBarrierInit"}}
+	}
+
+	payload, err := json.Marshal(quicTenantBarrierInitRequest{
+		TenantID:   req.TenantID,
+		Passphrase: req.Passphrase,
+		Threshold:  req.Threshold,
+		Shares:     req.Shares,
+		Strategy:   req.Strategy,
+	})
+	if err != nil {
+		return &transport.RequestError{Method: "TenantBarrierInit", Err: err}
+	}
+
+	if _, err := t.call(ctx, "tenant.BarrierInit", payload); err != nil {
+		return &transport.RequestError{Method: "TenantBarrierInit", Err: err}
+	}
+	return nil
+}
+
+// TenantBarrierUnseal unseals a per-tenant barrier via the QUIC
+// tenant.BarrierUnseal handler.
+func (t *Transport) TenantBarrierUnseal(ctx context.Context, req *transport.TenantBarrierUnsealRequest) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	if req == nil {
+		return &transport.RequestError{Method: "TenantBarrierUnseal", Err: &nilTenantBarrierRequestError{Method: "TenantBarrierUnseal"}}
+	}
+
+	payload, err := json.Marshal(quicTenantBarrierUnsealRequest{
+		TenantID: req.TenantID,
+		Share:    req.Share,
+		Key:      req.Key,
+	})
+	if err != nil {
+		return &transport.RequestError{Method: "TenantBarrierUnseal", Err: err}
+	}
+
+	if _, err := t.call(ctx, "tenant.BarrierUnseal", payload); err != nil {
+		return &transport.RequestError{Method: "TenantBarrierUnseal", Err: err}
+	}
+	return nil
+}
+
+// TenantBarrierSeal seals a per-tenant barrier via the QUIC
+// tenant.BarrierSeal handler.
+func (t *Transport) TenantBarrierSeal(ctx context.Context, req *transport.TenantBarrierSealRequest) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	if req == nil {
+		return &transport.RequestError{Method: "TenantBarrierSeal", Err: &nilTenantBarrierRequestError{Method: "TenantBarrierSeal"}}
+	}
+
+	payload, err := json.Marshal(quicTenantBarrierSealRequest{TenantID: req.TenantID})
+	if err != nil {
+		return &transport.RequestError{Method: "TenantBarrierSeal", Err: err}
+	}
+
+	if _, err := t.call(ctx, "tenant.BarrierSeal", payload); err != nil {
+		return &transport.RequestError{Method: "TenantBarrierSeal", Err: err}
+	}
+	return nil
+}
+
+// TenantBarrierStatus returns the current sealed/initialized state and active
+// strategy metadata for a per-tenant barrier via the QUIC
+// tenant.BarrierStatus handler.
+func (t *Transport) TenantBarrierStatus(ctx context.Context, req *transport.TenantBarrierStatusRequest) (*transport.TenantBarrierStatusResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierStatus", Err: &nilTenantBarrierRequestError{Method: "TenantBarrierStatus"}}
+	}
+
+	payload, err := json.Marshal(quicTenantBarrierStatusRequest{TenantID: req.TenantID})
+	if err != nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierStatus", Err: err}
+	}
+
+	respBytes, err := t.call(ctx, "tenant.BarrierStatus", payload)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierStatus", Err: err}
+	}
+
+	var wire quicTenantBarrierStatusResponse
+	if err := json.Unmarshal(respBytes, &wire); err != nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierStatus", Err: err}
+	}
+
+	return &transport.TenantBarrierStatusResponse{
+		TenantID:       wire.TenantID,
+		Sealed:         wire.Sealed,
+		Initialized:    wire.Initialized,
+		Strategy:       wire.Strategy,
+		HardwareBacked: wire.HardwareBacked,
+	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Proto conversion helpers
+// ---------------------------------------------------------------------------
+
+// quicProtoToTenantInfo converts a protobuf TenantResponse to a transport.TenantInfo.
+func quicProtoToTenantInfo(resp *pb.TenantResponse) transport.TenantInfo {
+	if resp == nil {
+		return transport.TenantInfo{}
+	}
+
+	info := transport.TenantInfo{
+		ID:            resp.GetId(),
+		Name:          resp.GetName(),
+		IsolationType: transport.TenantIsolationType(resp.GetIsolationType()),
+	}
+
+	if pbQ := resp.GetQuotas(); pbQ != nil {
+		info.Quotas = &transport.TenantQuotas{
+			MaxDatabases:    pbQ.GetMaxDatabases(),
+			MaxRaftGroups:   pbQ.GetMaxRaftGroups(),
+			MaxCollections:  pbQ.GetMaxCollections(),
+			MaxKeys:         pbQ.GetMaxKeys(),
+			MaxStorageBytes: pbQ.GetMaxStorageBytes(),
+			MaxUsers:        pbQ.GetMaxUsers(),
+			MaxRoles:        pbQ.GetMaxRoles(),
+			MaxCertificates: pbQ.GetMaxCertificates(),
+			MaxBackups:      pbQ.GetMaxBackups(),
+			MaxVectorDims:   pbQ.GetMaxVectorDims(),
+			MaxTSMetrics:    pbQ.GetMaxTsMetrics(),
+		}
+	}
+
+	if ts := resp.GetCreatedAt(); ts != "" {
+		if parsed, err := time.Parse(time.RFC3339, ts); err == nil {
+			info.CreatedAt = parsed
+		}
+	}
+	if ts := resp.GetUpdatedAt(); ts != "" {
+		if parsed, err := time.Parse(time.RFC3339, ts); err == nil {
+			info.UpdatedAt = parsed
+		}
+	}
+
+	return info
+}

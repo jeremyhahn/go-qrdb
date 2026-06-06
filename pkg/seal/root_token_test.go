@@ -361,7 +361,7 @@ func TestRootTokenVerifyCredentialMode(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		b.strategies[StrategySoftware] = wrongStrat
+		b.strategies[StrategyPassphrase] = wrongStrat
 
 		// verifyCredentialMode loads the sealed blob, finds the software strategy,
 		// and calls UnsealRootKey which will fail with the wrong passphrase.
@@ -401,14 +401,14 @@ func TestRootTokenVerifyDirectModeStrategyCheck(t *testing.T) {
 		// Create a barrier with Shamir strategy, but store a root key blob
 		// that claims to use the software strategy instead.
 		backend := NewMemoryBackend()
-		shamirStore := NewMemoryBackend()
-		shamirStrat, err := NewShamirStrategy(shamirStore, 2, 3)
+		shamirStrat, err := NewShamirStrategy(2, 3)
 		if err != nil {
 			t.Fatal(err)
 		}
 		b, err := NewBarrier(slog.Default(), backend, BarrierConfig{
-			RootKeyPath: "test/root-key",
-			Shamir:      &ShamirConfig{Threshold: 2, TotalShares: 3},
+			RootKeyPath:     "test/root-key",
+			Shamir:          &ShamirConfig{Threshold: 2, TotalShares: 3},
+			PreferenceOrder: []StrategyID{StrategyShamir},
 		}, testSoftwareStrategy(t), shamirStrat)
 		if err != nil {
 			t.Fatal(err)
@@ -429,7 +429,7 @@ func TestRootTokenVerifyDirectModeStrategyCheck(t *testing.T) {
 		if err := json.Unmarshal(blob, &sealed); err != nil {
 			t.Fatal(err)
 		}
-		sealed.Strategy = StrategySoftware
+		sealed.Strategy = StrategyPassphrase
 		modified, _ := json.Marshal(&sealed)
 		if err := backend.Put(ctx, "test/root-key", modified); err != nil {
 			t.Fatal(err)

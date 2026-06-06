@@ -27,7 +27,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/awnumar/memguard"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -81,7 +81,7 @@ func WithDefaultTTL(d time.Duration) ProviderOption {
 
 // DefaultCertProvider implements CertProvider using barrier-sealed CA key
 // material. The CA private key is encrypted at rest via the
-// EncryptionBarrier and held in a memguard-protected buffer while
+// EncryptionBarrier and held in a secure.Wipe'd buffer while
 // unsealed.
 type DefaultCertProvider struct {
 	kvStore    kvstore.KVStore
@@ -173,7 +173,7 @@ func (p *DefaultCertProvider) Initialize(ctx context.Context) error {
 	// Encrypt the private key via the barrier.
 	wrappedKey, err := p.barrier.Encrypt(caKeyDER)
 	if err != nil {
-		memguard.WipeBytes(caKeyDER)
+		secure.Wipe(caKeyDER)
 		return &CertGenerateError{Err: err}
 	}
 
@@ -185,18 +185,18 @@ func (p *DefaultCertProvider) Initialize(ctx context.Context) error {
 
 	// Persist wrapped key and CA cert PEM.
 	if err := p.kvStore.Put(ctx, wrappedKeyPath, wrappedKey); err != nil {
-		memguard.WipeBytes(caKeyDER)
+		secure.Wipe(caKeyDER)
 		return &StoreError{Op: "put", Detail: wrappedKeyPath, Err: err}
 	}
 	if err := p.kvStore.Put(ctx, certPEMPath, caCertPEM); err != nil {
-		memguard.WipeBytes(caKeyDER)
+		secure.Wipe(caKeyDER)
 		return &StoreError{Op: "put", Detail: certPEMPath, Err: err}
 	}
 
 	// Parse the CA cert for signing.
 	caCert, err := x509.ParseCertificate(caCertDER)
 	if err != nil {
-		memguard.WipeBytes(caKeyDER)
+		secure.Wipe(caKeyDER)
 		return &CertGenerateError{Err: err}
 	}
 
@@ -229,7 +229,7 @@ func (p *DefaultCertProvider) Seal() error {
 	defer p.mu.Unlock()
 
 	if p.caKey != nil {
-		memguard.WipeBytes(p.caKey)
+		secure.Wipe(p.caKey)
 		p.caKey = nil
 	}
 	p.caCert = nil
@@ -307,7 +307,7 @@ func (p *DefaultCertProvider) GenerateClientCert(ctx context.Context, req *Gener
 		Type:  "EC PRIVATE KEY",
 		Bytes: clientKeyDER,
 	})
-	memguard.WipeBytes(clientKeyDER)
+	secure.Wipe(clientKeyDER)
 
 	serialHex := serialNumber.Text(16)
 
@@ -488,14 +488,14 @@ func (p *DefaultCertProvider) loadCA(ctx context.Context, tenantID string) error
 	}
 	caCert, err := x509.ParseCertificate(block.Bytes)
 	if err != nil {
-		memguard.WipeBytes(caKeyDER)
+		secure.Wipe(caKeyDER)
 		return &CertGenerateError{Err: err}
 	}
 
 	p.mu.Lock()
 	// Wipe old key if present.
 	if p.caKey != nil {
-		memguard.WipeBytes(p.caKey)
+		secure.Wipe(p.caKey)
 	}
 	p.caKey = caKeyDER
 	p.caCert = caCert

@@ -8,7 +8,7 @@
 
 // Package seal provides barrier encryption for go-qrdb's storage layer.
 // The StorageBarrier wraps a StorageBackend with transparent authenticated
-// encryption, supporting multiple sealing strategies (software, Shamir,
+// encryption, supporting multiple sealing strategies (passphrase, Shamir,
 // hardware via go-xkms), multi-tenant isolation, and disaster recovery
 // operations.
 //
@@ -60,8 +60,27 @@ type ShamirInitResult = quicraftseal.ShamirInitResult
 type ShamirConfig = quicraftseal.ShamirConfig
 
 // SoftwareStrategy is a type alias for go-quicraft's SoftwareStrategy.
-// This enables go-qrdb consumers to use the software sealing strategy
-// without importing go-quicraft directly.
+// This enables go-qrdb consumers to use the passphrase (software) sealing
+// strategy without importing go-quicraft directly.
+//
+// The software strategy auto-selects the KDF at construction time via
+// DefaultKDFVersion(): PBKDF2-SHA256 (600,000 iterations, NIST SP 800-132)
+// when GOFIPS140 is set, Argon2id (OWASP defaults) otherwise. Both KDF
+// adapters are always registered so a FIPS binary can unseal a key that was
+// originally sealed by a non-FIPS binary, and vice-versa. The KDF version
+// is stored in SealedRootKey.Metadata[0] for cross-version routing.
+//
+// Strategy preference order (highest to lowest):
+//
+//	TPM2 > PKCS#11 > Passphrase (Software)
+//
+// qrdb owns only the Passphrase/Software baseline (and the StrategyNone
+// passthrough). Hardware-backed strategies (TPM2, PKCS#11, cloud KMS, Vault)
+// live exclusively in go-xkms and are injected at composition time via the
+// server option WithStrategyRegistry. The preference order above is the
+// canonical ordering applied at runtime when multiple strategies are
+// registered; when only Passphrase (or only None) is registered, that
+// strategy is selected unconditionally.
 type SoftwareStrategy = quicraftseal.SoftwareStrategy
 
 // NewSoftwareStrategy is a constructor alias for go-quicraft's software
@@ -116,23 +135,49 @@ var ErrNonceReuse = quicraftseal.ErrNonceReuse
 
 // --- Re-exported constants ---
 
+// go-qrdb names only the strategies it implements (shamir) plus the L1
+// strategies it aliases (none/passphrase). It does NOT define hardware/cloud
+// strategy IDs — those are owned by go-xkms (the implementing layer). The
+// barrier registry routes by the StrategyID string read from config / the
+// sealed blob, so go-qrdb never needs the hardware/cloud IDs as named consts.
 const (
-	StrategyTPM2     = quicraftseal.StrategyTPM2
-	StrategyPKCS11   = quicraftseal.StrategyPKCS11
-	StrategyAWSKMS   = quicraftseal.StrategyAWSKMS
-	StrategyGCPKMS   = quicraftseal.StrategyGCPKMS
-	StrategyAzureKV  = quicraftseal.StrategyAzureKV
-	StrategyVault    = quicraftseal.StrategyVault
-	StrategyShamir   = quicraftseal.StrategyShamir
-	StrategySoftware = quicraftseal.StrategySoftware
+	// StrategyShamir splits the root key into M-of-N Shamir shares (impl: go-qrdb).
+	StrategyShamir StrategyID = "shamir"
 )
 
-// DefaultPreferenceOrder defines strategy selection priority.
-var DefaultPreferenceOrder = quicraftseal.DefaultPreferenceOrder
+const (
+	// StrategyPassphrase is the canonical operator-facing identifier for the
+	// passphrase-protected software seal strategy (Argon2id / PBKDF2-FIPS via
+	// the deferred software strategy). Implemented by go-quicraft (L1); aliased
+	// here so there is a single source of truth for the on-disk and AAD string.
+	StrategyPassphrase = quicraftseal.StrategyPassphrase
+
+	// StrategyNone disables barrier encryption (impl: go-quicraft L1).
+	StrategyNone = quicraftseal.StrategyNone
+)
+
+// IsPassphraseStrategy reports whether id selects the passphrase-protected
+// software seal strategy.
+func IsPassphraseStrategy(id StrategyID) bool {
+	return id == StrategyPassphrase
+}
+
+// NewNoneStrategy is a constructor alias for go-quicraft's no-encryption
+// barrier strategy. Selecting this strategy disables barrier-level
+// encryption entirely; data is stored plaintext. Intended for dev/test or
+// deployments that rely on OS-level full-disk encryption.
+var NewNoneStrategy = quicraftseal.NewNoneStrategy
 
 // DefaultQuorumTTL is the default time-to-live for a quorum accumulator
 // session, re-exported from go-quicraft.
 const DefaultQuorumTTL = quicraftseal.DefaultQuorumTTL
+
+// DefaultShareTTL is qrdb's default time-to-live for an unseal-share quorum
+// session when seal.share_ttl is not configured. Submitted shares that do not
+// reach the threshold within this window are expired and discarded, requiring
+// Security Officers to resubmit. Overridable via the seal.share_ttl config key
+// (env QRDB_SEAL_SHARE_TTL).
+const DefaultShareTTL = 15 * time.Minute
 
 // BarrierStatus reports the current state of a StorageBarrier.
 type BarrierStatus struct {

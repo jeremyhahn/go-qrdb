@@ -30,12 +30,15 @@ import (
 	quicgo "github.com/quic-go/quic-go"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
@@ -49,25 +52,35 @@ type methodHandler func(ctx context.Context, payload []byte) ([]byte, error)
 // QUIC connections, accepts bidirectional streams, and dispatches
 // requests to the service layer using a binary wire protocol.
 type Server struct {
-	kvSvc         service.KVServicer
-	adminSvc      service.AdminServicer
-	mvccSvc       service.MVCCKVServicer
-	txSvc         service.TransactionServicer
-	batchSvc      service.BatchServicer
-	watchSvc      service.WatchServicer
-	leaseSvc      lease.LeaseServicer
-	lockSvc       service.LockServicer
-	indexSvc      index.IndexServicer
-	tsSvc         timeseries.TimeSeriesServicer
-	vectorSvc     service.VectorServicer
-	userSvc       user.UserServicer
-	roleSvc       role.RoleServicer
-	certProv      cert.CertProvider
-	collectionSvc service.CollectionServicer
-	databaseSvc   service.DatabaseServicer
-	barrierSvc    service.BarrierServicer
-	ceremonySvc   service.CeremonyServicer
-	authMW        *authmw.AuthMiddleware
+	kvSvc             service.KVServicer
+	adminSvc          service.AdminServicer
+	mvccSvc           service.MVCCKVServicer
+	txSvc             service.TransactionServicer
+	batchSvc          service.BatchServicer
+	watchSvc          service.WatchServicer
+	leaseSvc          lease.LeaseServicer
+	lockSvc           service.LockServicer
+	indexSvc          index.IndexServicer
+	tsSvc             timeseries.TimeSeriesServicer
+	vectorSvc         service.VectorServicer
+	userSvc           user.UserServicer
+	roleSvc           role.RoleServicer
+	certProv          cert.CertProvider
+	collectionSvc     service.CollectionServicer
+	databaseSvc       service.DatabaseServicer
+	barrierSvc        service.BarrierServicer
+	pinBackend        pin.PINBackend
+	ceremonySvc       service.CeremonyServicer
+	tenantSvc         tenant.TenantServicer
+	backupSvc         service.BackupServicer
+	rebalanceSvc      service.RebalanceServicer
+	embeddingSvc      service.EmbeddingServicer
+	ragSvc            service.RAGServicer
+	credentialSvc     service.CredentialServicer
+	authFactorSvc     service.AuthFactorServicer
+	userAuthFactorSvc service.UserAuthFactorServicer
+	authMW            *authmw.AuthMiddleware
+	auditLogger       audit.AuditLogger
 
 	addr      string
 	tlsConfig *tls.Config
@@ -161,9 +174,65 @@ func WithBarrierService(svc service.BarrierServicer) ServerOption {
 	return func(s *Server) { s.barrierSvc = svc }
 }
 
+// WithPINBackend configures the QUIC server with the canonical
+// pin.PINBackend used for the optional SO PIN / User PIN compliance-gating
+// layer on barrier administrative operations.
+func WithPINBackend(backend pin.PINBackend) ServerOption {
+	return func(s *Server) { s.pinBackend = backend }
+}
+
 // WithCeremonyService configures the QUIC server with a ceremony management service.
 func WithCeremonyService(svc service.CeremonyServicer) ServerOption {
 	return func(s *Server) { s.ceremonySvc = svc }
+}
+
+// WithTenantService configures the QUIC server with a tenant management service.
+func WithTenantService(svc tenant.TenantServicer) ServerOption {
+	return func(s *Server) { s.tenantSvc = svc }
+}
+
+// WithBackupService configures the QUIC server with a backup management service.
+func WithBackupService(svc service.BackupServicer) ServerOption {
+	return func(s *Server) { s.backupSvc = svc }
+}
+
+// WithRebalanceService configures the QUIC server with a cluster rebalance service.
+func WithRebalanceService(svc service.RebalanceServicer) ServerOption {
+	return func(s *Server) { s.rebalanceSvc = svc }
+}
+
+// WithEmbedding configures the QUIC server with a text embedding service.
+func WithEmbedding(svc service.EmbeddingServicer) ServerOption {
+	return func(s *Server) { s.embeddingSvc = svc }
+}
+
+// WithRAGService configures the QUIC server with a RAG service.
+func WithRAGService(svc service.RAGServicer) ServerOption {
+	return func(s *Server) { s.ragSvc = svc }
+}
+
+// WithCredentialService configures the QUIC server with a credential
+// management service for credential storage, rotation, and versioning.
+func WithCredentialService(svc service.CredentialServicer) ServerOption {
+	return func(s *Server) { s.credentialSvc = svc }
+}
+
+// WithAuthFactorService configures the QUIC server with an auth factor service
+// for custodian enrollment, challenge, and verification.
+func WithAuthFactorService(svc service.AuthFactorServicer) ServerOption {
+	return func(s *Server) { s.authFactorSvc = svc }
+}
+
+// WithUserAuthFactorService configures the QUIC server with the user-side
+// auth factor service (M14) used for the 1-to-many user-factor model.
+func WithUserAuthFactorService(svc service.UserAuthFactorServicer) ServerOption {
+	return func(s *Server) { s.userAuthFactorSvc = svc }
+}
+
+// WithAuditLogger configures the QUIC server with a compliance-grade audit logger.
+// When set, the "audit.Query" frame method is registered.
+func WithAuditLogger(l audit.AuditLogger) ServerOption {
+	return func(s *Server) { s.auditLogger = l }
 }
 
 // WithAuthMiddleware configures the QUIC server with authentication and
@@ -341,6 +410,15 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 			s.logRequest(method, requestID, wire.StatusPermissionDenied, start)
 			return
 		}
+	}
+
+	// Watch is server-streaming: it writes a stream of response frames on this
+	// same stream rather than a single unary response, so it bypasses the
+	// request/response dispatch table.
+	if isWatchMethod(method) {
+		s.handleWatchStream(ctx, stream, requestID, method == watchPrefixMethodKey, payload)
+		s.logRequest(method, requestID, wire.StatusOK, start)
+		return
 	}
 
 	// Dispatch to handler.

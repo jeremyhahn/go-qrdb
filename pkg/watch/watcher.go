@@ -99,12 +99,26 @@ func (w *watcher) setErr(err error) {
 	w.err.CompareAndSwap(nil, &err)
 }
 
-// send delivers a watch response to the watcher. If the channel is
-// full or the context is cancelled, the response is dropped.
+// send delivers a watch response to the watcher. It MUST NOT block: it is
+// called from the state-machine apply path (under the hub shard read lock),
+// so blocking here would stall the entire Raft apply loop and make the node
+// appear Unavailable to every client. Three non-blocking outcomes:
+//   - buffer has room: enqueue the response;
+//   - context already cancelled: drop (the watcher is going away);
+//   - buffer full (slow/abandoned consumer): evict the watcher — record
+//     ErrWatcherOverflow and cancel it.
+//
+// cancel() only flips the context; the cleanup goroutine's
+// removeWatcher/close(events) is serialized behind the shard WRITE lock, so
+// it cannot run until notify releases the READ lock it holds across this
+// call — there is no send-on-closed-channel race.
 func (w *watcher) send(resp WatchResponse) {
 	select {
 	case w.events <- resp:
 	case <-w.ctx.Done():
+	default:
+		w.setErr(ErrWatcherOverflow)
+		w.cancel()
 	}
 }
 

@@ -96,15 +96,21 @@ If any step fails, the request is rejected with the appropriate error (401 Unaut
 
 ## Admin Bootstrap
 
-The `cmd/qrdbd/start.go` startup sequence bootstraps the authentication and authorization system:
+Admin bootstrap is owned by [`pkg/firstboot`](../../pkg/firstboot/firstboot.go). It is the canonical place where the system tenant, built-in roles, and the platform admin user are created. The package is reusable across qrdb, xkms, quicbaas, and any future binary in the stack — dependencies are passed by interface (`TenantCreator`, `RoleCreator`, `UserCreator`, `CertProvider`).
 
-1. **TLS setup**: Generate or load CA certificate and server TLS credentials
-2. **Admin client certificate**: Generate an admin client certificate with `CN=admin`, `OU=default`
-3. **Store creation**: Create `UserStore`, `RoleStore`, and `DefaultCertProvider` backed by the KVStore
-4. **Bootstrap**: Create built-in roles (`superadmin`, `admin`, `reader`, `writer`), create the initial admin user with the `superadmin` role
-5. **Wire middleware**: Construct `AuthMiddleware` with `MTLSAuthenticator` and `RBACAuthorizer`, inject into REST and gRPC server constructors
+`firstboot.Initialize` runs after `ceremony.Initialize`:
 
-The admin client certificate is written to the data directory so the CLI can authenticate immediately after first start.
+1. **TLS setup** (driven by ceremony): Generate or load CA certificate and server TLS credentials.
+2. **System tenant**: Create the reserved `system` tenant via an internal-call context that bypasses the public reserved-id rejection.
+3. **Built-in roles**: Register the six built-in roles (SO / Admin / Operator / User / Auditor / Custodian) returned by `role.BuiltInRoles(tenantID)` under the system tenant. Already-exists errors are tolerated so re-runs are idempotent.
+4. **Admin user**: Create user `admin` in the system tenant with exactly one role grant: `Admin@system`. The system-tenant rule in `pkg/auth/rbac` promotes that single grant to cross-tenant authority.
+5. **Admin client certificate**: Issue an mTLS client certificate via the supplied `CertProvider` so the CLI can authenticate immediately after first start.
+
+Every step is idempotent and Raft-replicated; follower nodes observe the leader's writes and skip duplication on their own runs.
+
+The function returns a `firstboot.Result` describing which artifacts were created in *this* run (the `*Created` flags reflect this run only, not the overall presence of the resource — useful for distinguishing a true first boot from a follower replay).
+
+> See `pkg/firstboot/firstboot.go:130-204` for the canonical implementation.
 
 ## go-xkms Integration
 

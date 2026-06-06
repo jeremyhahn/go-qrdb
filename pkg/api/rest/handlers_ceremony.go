@@ -71,6 +71,23 @@ type signCSRRequest struct {
 	Role     string `json:"role"`
 }
 
+// enrollExternalOfficerRequest is the JSON payload for
+// POST /v1/init/enroll-external-officer.
+type enrollExternalOfficerRequest struct {
+	Username   string `json:"username"`
+	CertPEM    string `json:"cert_pem,omitempty"`
+	PubKeyPEM  string `json:"pubkey_pem,omitempty"`
+	ShareIndex int    `json:"share_index"`
+	AuthFactor string `json:"auth_factor"`
+	ShareBytes []byte `json:"share_bytes,omitempty"`
+}
+
+// enrollExternalOfficerResponse is the JSON response for
+// POST /v1/init/enroll-external-officer.
+type enrollExternalOfficerResponse struct {
+	SealedShare string `json:"sealed_share,omitempty"`
+}
+
 // ---------------------------------------------------------------------------
 // Ceremony handlers
 // ---------------------------------------------------------------------------
@@ -78,6 +95,7 @@ type signCSRRequest struct {
 // handleCeremonyInitialize handles POST /v1/ceremony/initialize -- performs
 // the initialization ceremony using the server's pre-configured CeremonyCA,
 // issuing TLS and SO certificates and optionally starting M-of-N enrollment.
+// Required permission: ceremony:initialize (SO role only).
 func (s *Server) handleCeremonyInitialize(w http.ResponseWriter, r *http.Request) {
 	if s.ceremonySvc == nil {
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "ceremony"})
@@ -90,7 +108,10 @@ func (s *Server) handleCeremonyInitialize(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	result, err := s.ceremonySvc.CeremonyInitialize(r.Context(), s.ceremonyCA)
+	result, err := s.ceremonySvc.CeremonyInitialize(r.Context(), s.ceremonyCA, &service.CeremonyInitializeOptions{
+		SOPin:   req.SOPin,
+		UserPin: req.UserPin,
+	})
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
@@ -101,6 +122,7 @@ func (s *Server) handleCeremonyInitialize(w http.ResponseWriter, r *http.Request
 
 // handleCeremonyStatus handles GET /v1/ceremony/status -- returns the
 // current ceremony state and SPKI pin.
+// Required permission: ceremony:status (SO, Admin, Operator, Auditor).
 func (s *Server) handleCeremonyStatus(w http.ResponseWriter, r *http.Request) {
 	if s.ceremonySvc == nil {
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "ceremony"})
@@ -119,6 +141,7 @@ func (s *Server) handleCeremonyStatus(w http.ResponseWriter, r *http.Request) {
 // handleCeremonyClaimCertBegin handles POST /v1/ceremony/claim-cert/begin --
 // starts the certificate claim handshake for an officer by issuing a
 // challenge nonce.
+// Required permission: ceremony:claim_cert (enrolled officer / SO).
 func (s *Server) handleCeremonyClaimCertBegin(w http.ResponseWriter, r *http.Request) {
 	if s.ceremonySvc == nil {
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "ceremony"})
@@ -143,6 +166,7 @@ func (s *Server) handleCeremonyClaimCertBegin(w http.ResponseWriter, r *http.Req
 // handleCeremonyClaimCertComplete handles POST /v1/ceremony/claim-cert/complete --
 // completes the certificate claim handshake by verifying the officer's nonce
 // signature and returning the issued certificate.
+// Required permission: ceremony:claim_cert (enrolled officer / SO).
 func (s *Server) handleCeremonyClaimCertComplete(w http.ResponseWriter, r *http.Request) {
 	if s.ceremonySvc == nil {
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "ceremony"})
@@ -172,6 +196,7 @@ func (s *Server) handleCeremonyClaimCertComplete(w http.ResponseWriter, r *http.
 
 // handleCeremonyClaimShare handles POST /v1/ceremony/claim-share -- retrieves
 // the Shamir share for the given officer username.
+// Required permission: ceremony:claim_share_complete (enrolled Custodian).
 func (s *Server) handleCeremonyClaimShare(w http.ResponseWriter, r *http.Request) {
 	if s.ceremonySvc == nil {
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "ceremony"})
@@ -198,6 +223,7 @@ func (s *Server) handleCeremonyClaimShare(w http.ResponseWriter, r *http.Request
 // handleCeremonySignCSR handles POST /v1/ceremony/sign-csr -- signs a CSR
 // during the ceremony for an officer or service, returning the issued
 // certificate PEM.
+// Required permission: ceremony:sign_csr (SO role only).
 func (s *Server) handleCeremonySignCSR(w http.ResponseWriter, r *http.Request) {
 	if s.ceremonySvc == nil {
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "ceremony"})
@@ -217,6 +243,38 @@ func (s *Server) handleCeremonySignCSR(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, ceremonySignCSRToResponse(result))
+}
+
+// handleCeremonyEnrollExternalOfficer handles
+// POST /v1/init/enroll-external-officer — admin-driven enrollment of an
+// officer whose key material lives outside go-qrdb.
+// Required permission: ceremony:enroll_external_officer (SO role only).
+func (s *Server) handleCeremonyEnrollExternalOfficer(w http.ResponseWriter, r *http.Request) {
+	if s.ceremonySvc == nil {
+		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "ceremony"})
+		return
+	}
+
+	var req enrollExternalOfficerRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+		return
+	}
+
+	resp, err := s.ceremonySvc.CeremonyEnrollExternalOfficer(r.Context(), &service.CeremonyEnrollExternalOfficerRequest{
+		Username:   req.Username,
+		CertPEM:    req.CertPEM,
+		PubKeyPEM:  req.PubKeyPEM,
+		ShareIndex: req.ShareIndex,
+		AuthFactor: req.AuthFactor,
+		ShareBytes: req.ShareBytes,
+	})
+	if err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
+
+	writeJSON(w, enrollExternalOfficerResponse{SealedShare: resp.SealedShare})
 }
 
 // ---------------------------------------------------------------------------

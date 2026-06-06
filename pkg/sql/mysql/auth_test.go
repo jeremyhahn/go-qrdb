@@ -98,7 +98,7 @@ func newPlainConn() *vitessmysql.Conn {
 // sessionBuilder tests
 // ---------------------------------------------------------------------------
 
-func TestSessionBuilder_NilAuth_ReturnsDefaultSession(t *testing.T) {
+func TestSessionBuilder_NilAuth_ReturnsSystemSession(t *testing.T) {
 	sb := newSessionBuilder(nil)
 
 	conn := newPlainConn()
@@ -112,7 +112,7 @@ func TestSessionBuilder_NilAuth_ReturnsDefaultSession(t *testing.T) {
 	qrdbSess, ok := sess.(*provider.QRDBSession)
 	require.True(t, ok, "expected *provider.QRDBSession, got %T", sess)
 	assert.Nil(t, qrdbSess.Identity())
-	assert.Equal(t, "default", qrdbSess.TenantID())
+	assert.Equal(t, "system", qrdbSess.TenantID())
 }
 
 func TestSessionBuilder_AuthSuccess(t *testing.T) {
@@ -249,8 +249,8 @@ func TestNewSessionBuilder_WithMiddleware(t *testing.T) {
 // Type assertion test for provider.QRDBSession certificate extraction
 // ---------------------------------------------------------------------------
 
-func TestSessionBuilder_NilAuth_TenantDefault(t *testing.T) {
-	// Verify that a nil-auth session always produces "default" tenant.
+func TestSessionBuilder_NilAuth_TenantSystem(t *testing.T) {
+	// Verify that a nil-auth session always produces the system tenant.
 	sb := newSessionBuilder(nil)
 
 	conn := newPlainConn()
@@ -260,6 +260,6 @@ func TestSessionBuilder_NilAuth_TenantDefault(t *testing.T) {
 	require.NoError(t, err)
 
 	qrdbSess := sess.(*provider.QRDBSession)
-	assert.Equal(t, "default", qrdbSess.TenantID())
+	assert.Equal(t, "system", qrdbSess.TenantID())
 	assert.Nil(t, qrdbSess.Identity())
 }

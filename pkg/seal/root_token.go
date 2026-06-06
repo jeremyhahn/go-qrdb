@@ -18,7 +18,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/awnumar/memguard"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir"
 )
 
@@ -65,14 +65,14 @@ func (b *StorageBarrier) GenerateRootToken(ctx context.Context, shareValues []st
 	if err != nil {
 		return nil, ErrShamirCombineFailed
 	}
-	defer memguard.WipeBytes(secret)
+	defer secure.Wipe(secret)
 
 	// Verify the secret against the sealed root key.
 	rootKey, err := b.verifySecretAndGetRootKey(ctx, secret)
 	if err != nil {
 		return nil, err
 	}
-	defer memguard.WipeBytes(rootKey)
+	defer secure.Wipe(rootKey)
 
 	// Generate a random nonce.
 	nonce := make([]byte, rootTokenSize)

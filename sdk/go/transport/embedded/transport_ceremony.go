@@ -30,9 +30,12 @@ import (
 
 // CeremonyInitialize starts the initialization ceremony by delegating to the
 // injected CeremonyServicer. The embedded transport passes the injected
-// CeremonyCA directly; the request configuration is assumed to have been
-// applied at service construction time.
-func (t *Transport) CeremonyInitialize(ctx context.Context, _ *transport.CeremonyInitializeRequest) (*transport.CeremonyInitializeResponse, error) {
+// CeremonyCA directly and forwards the per-request SO and user PINs from the
+// request so that callers can supply credentials on the call itself rather
+// than mutating shared service configuration. Per-request PINs take
+// precedence over any construction-time configuration; when both are absent
+// the ceremony fails closed at the service layer.
+func (t *Transport) CeremonyInitialize(ctx context.Context, req *transport.CeremonyInitializeRequest) (*transport.CeremonyInitializeResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -42,7 +45,14 @@ func (t *Transport) CeremonyInitialize(ctx context.Context, _ *transport.Ceremon
 	if t.ceremonyCA == nil {
 		return nil, &NilServiceError{Service: "CeremonyCA"}
 	}
-	result, err := t.ceremonySvc.CeremonyInitialize(ctx, t.ceremonyCA)
+	if req == nil {
+		return nil, &InvalidRequestError{Method: "CeremonyInitialize"}
+	}
+	opts := &service.CeremonyInitializeOptions{
+		SOPin:   req.SOPin,
+		UserPin: req.UserPin,
+	}
+	result, err := t.ceremonySvc.CeremonyInitialize(ctx, t.ceremonyCA, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -263,4 +273,30 @@ func WithCeremonyCA(ca ceremony.CeremonyCA) Option {
 	return func(t *Transport) {
 		t.ceremonyCA = ca
 	}
+}
+
+// CeremonyEnrollExternalOfficer enrols an officer whose key material lives
+// outside go-qrdb (external CA cert or bare public key) by delegating to
+// the injected CeremonyServicer.
+func (t *Transport) CeremonyEnrollExternalOfficer(ctx context.Context, req *transport.EnrollExternalOfficerRequest) (*transport.EnrollExternalOfficerResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.ceremonySvc == nil {
+		return nil, &NilServiceError{Service: "CeremonyServicer"}
+	}
+	result, err := t.ceremonySvc.CeremonyEnrollExternalOfficer(ctx, &service.CeremonyEnrollExternalOfficerRequest{
+		Username:   req.Username,
+		CertPEM:    req.CertPEM,
+		PubKeyPEM:  req.PubKeyPEM,
+		ShareIndex: req.ShareIndex,
+		AuthFactor: req.AuthFactor,
+		ShareBytes: req.ShareBytes,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &transport.EnrollExternalOfficerResponse{
+		SealedShare: result.SealedShare,
+	}, nil
 }

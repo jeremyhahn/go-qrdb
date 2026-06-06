@@ -289,8 +289,8 @@ func (e *SQLQueryError) Unwrap() error {
 	return e.Err
 }
 
-// TenantNotFoundError is returned when the tenant ID from X-QRDB-Tenant does
-// not match any provisioned tenant. Maps to HTTP 404.
+// TenantNotFoundError is returned when the tenant ID from the authenticated
+// identity does not match any provisioned tenant. Maps to HTTP 404.
 type TenantNotFoundError struct {
 	TenantID string
 }
@@ -321,4 +321,15 @@ type BarrierSealedError struct {
 // Error returns a human-readable description.
 func (e *BarrierSealedError) Error() string {
 	return "rest: barrier sealed for tenant: " + e.TenantID
+}
+
+// ValidationError is returned when a required field is absent or invalid in
+// the request payload. Maps to HTTP 400.
+type ValidationError struct {
+	Field string
+}
+
+// Error returns a human-readable description.
+func (e *ValidationError) Error() string {
+	return "rest: validation error: " + e.Field
 }

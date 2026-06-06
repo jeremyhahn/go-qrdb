@@ -154,6 +154,170 @@ func TestNewGPUIndexFactory_StoresConfig(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// DefaultRemoteGPUConfig
+// ---------------------------------------------------------------------------
+
+func TestDefaultRemoteGPUConfig_Values(t *testing.T) {
+	cfg := DefaultRemoteGPUConfig()
+	if cfg == nil {
+		t.Fatal("DefaultRemoteGPUConfig returned nil")
+	}
+	if cfg.Enabled {
+		t.Error("DefaultRemoteGPUConfig: Enabled should be false")
+	}
+	if cfg.Endpoint != "" {
+		t.Errorf("Endpoint = %q, want empty", cfg.Endpoint)
+	}
+	if cfg.Protocol != "grpc" {
+		t.Errorf("Protocol = %q, want %q", cfg.Protocol, "grpc")
+	}
+	if cfg.TimeoutMs != 5000 {
+		t.Errorf("TimeoutMs = %d, want 5000", cfg.TimeoutMs)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RemoteGPUIndexFactory
+// ---------------------------------------------------------------------------
+
+func TestNewRemoteGPUIndexFactory_StoresConfigAndFallback(t *testing.T) {
+	cfg := DefaultRemoteGPUConfig()
+	fallback := &mockHNSWFactory{index: &mockHNSWIndex{countVal: 7}}
+
+	factory := NewRemoteGPUIndexFactory(cfg, fallback)
+	if factory == nil {
+		t.Fatal("NewRemoteGPUIndexFactory returned nil")
+	}
+	if factory.config != cfg {
+		t.Error("config not stored on RemoteGPUIndexFactory")
+	}
+	if factory.fallback != fallback {
+		t.Error("fallback not stored on RemoteGPUIndexFactory")
+	}
+}
+
+func TestRemoteGPUIndexFactory_CreateIndex_RemoteDisabled_UseFallback(t *testing.T) {
+	cpuIndex := &mockHNSWIndex{countVal: 4}
+	fallback := &mockHNSWFactory{index: cpuIndex}
+
+	cfg := DefaultRemoteGPUConfig()
+	cfg.Enabled = false
+
+	factory := NewRemoteGPUIndexFactory(cfg, fallback)
+	idx, err := factory.CreateIndex(interfaces.DefaultHNSWConfig())
+	if err != nil {
+		t.Fatalf("CreateIndex (remote disabled): %v", err)
+	}
+	if idx.Count() != 4 {
+		t.Errorf("expected count 4 from fallback, got %d", idx.Count())
+	}
+}
+
+func TestRemoteGPUIndexFactory_CreateIndex_NilConfig_UseFallback(t *testing.T) {
+	cpuIndex := &mockHNSWIndex{countVal: 2}
+	fallback := &mockHNSWFactory{index: cpuIndex}
+
+	factory := NewRemoteGPUIndexFactory(nil, fallback)
+	idx, err := factory.CreateIndex(interfaces.DefaultHNSWConfig())
+	if err != nil {
+		t.Fatalf("CreateIndex (nil config): %v", err)
+	}
+	if idx.Count() != 2 {
+		t.Errorf("expected count 2 from fallback, got %d", idx.Count())
+	}
+}
+
+func TestRemoteGPUIndexFactory_CreateIndex_RemoteEnabled_EmptyEndpoint_Error(t *testing.T) {
+	cfg := DefaultRemoteGPUConfig()
+	cfg.Enabled = true
+	cfg.Endpoint = "" // empty endpoint → NewRemoteGPUIndex returns error
+
+	factory := NewRemoteGPUIndexFactory(cfg, nil)
+	_, err := factory.CreateIndex(interfaces.DefaultHNSWConfig())
+	if err == nil {
+		t.Fatal("expected error when remote enabled with empty endpoint, got nil")
+	}
+}
+
+func TestRemoteGPUIndexFactory_CreateIndex_NilFallback_ReturnsError(t *testing.T) {
+	cfg := DefaultRemoteGPUConfig()
+	cfg.Enabled = false
+
+	factory := NewRemoteGPUIndexFactory(cfg, nil)
+	_, err := factory.CreateIndex(interfaces.DefaultHNSWConfig())
+	if err == nil {
+		t.Fatal("expected error with nil fallback, got nil")
+	}
+	if !errors.Is(err, ErrNoFallbackFactory) {
+		t.Errorf("expected ErrNoFallbackFactory, got: %v", err)
+	}
+}
+
+func TestRemoteGPUIndexFactory_CreateIndex_FallbackError(t *testing.T) {
+	sentinel := errors.New("fallback factory failed")
+	fallback := &mockHNSWFactory{createErr: sentinel}
+
+	cfg := DefaultRemoteGPUConfig()
+	cfg.Enabled = false
+
+	factory := NewRemoteGPUIndexFactory(cfg, fallback)
+	_, err := factory.CreateIndex(interfaces.DefaultHNSWConfig())
+	if !errors.Is(err, sentinel) {
+		t.Errorf("expected sentinel error, got: %v", err)
+	}
+}
+
+func TestRemoteGPUIndexFactory_ImplementsHNSWIndexFactory(t *testing.T) {
+	factory := NewRemoteGPUIndexFactory(DefaultRemoteGPUConfig(), &mockHNSWFactory{})
+	var _ interfaces.HNSWIndexFactory = factory
+}
+
+// ---------------------------------------------------------------------------
+// remoteConfigToConnConfig
+// ---------------------------------------------------------------------------
+
+func TestRemoteConfigToConnConfig_MapsAllFields(t *testing.T) {
+	cfg := &RemoteGPUConfig{
+		Endpoint:  "192.168.1.100:9090",
+		TLSCert:   "/path/to/cert.pem",
+		TLSKey:    "/path/to/key.pem",
+		TLSCA:     "/path/to/ca.pem",
+		TimeoutMs: 3000,
+	}
+	conn := remoteConfigToConnConfig(cfg)
+	if conn.Endpoint != cfg.Endpoint {
+		t.Errorf("Endpoint = %q, want %q", conn.Endpoint, cfg.Endpoint)
+	}
+	if conn.TLSCert != cfg.TLSCert {
+		t.Errorf("TLSCert = %q, want %q", conn.TLSCert, cfg.TLSCert)
+	}
+	if conn.TLSKey != cfg.TLSKey {
+		t.Errorf("TLSKey = %q, want %q", conn.TLSKey, cfg.TLSKey)
+	}
+	if conn.TLSCA != cfg.TLSCA {
+		t.Errorf("TLSCA = %q, want %q", conn.TLSCA, cfg.TLSCA)
+	}
+	if conn.TimeoutMs != cfg.TimeoutMs {
+		t.Errorf("TimeoutMs = %d, want %d", conn.TimeoutMs, cfg.TimeoutMs)
+	}
+}
+
+func TestGPUIndexFactory_CreateIndex_RemoteEnabled_EmptyEndpoint_Error(t *testing.T) {
+	// When remoteConfig.Enabled is true but Endpoint is empty, NewRemoteGPUIndex
+	// returns an error. This exercises the createRemoteIndex error path.
+	remoteCfg := DefaultRemoteGPUConfig()
+	remoteCfg.Enabled = true
+	remoteCfg.Endpoint = ""
+
+	cfg := DefaultGPUConfig()
+	factory := NewGPUIndexFactory(cfg, remoteCfg, &mockHNSWFactory{})
+	_, err := factory.CreateIndex(interfaces.DefaultHNSWConfig())
+	if err == nil {
+		t.Fatal("expected error when remote enabled with empty endpoint, got nil")
+	}
+}
+
 func TestGPUIndexFactory_CreateIndex_GPUEnabled_GPUAvailable_CreatesGPUIndex(t *testing.T) {
 	cfg := DefaultGPUConfig()
 	cfg.Enabled = true

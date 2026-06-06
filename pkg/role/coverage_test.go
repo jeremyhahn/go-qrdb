@@ -16,49 +16,62 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
-// TestSuperadminRoleID_WithTenantID verifies that SuperadminRoleID returns
-// a deterministic, non-empty string for a given tenant ID.
-func TestSuperadminRoleID_WithTenantID(t *testing.T) {
-	id := SuperadminRoleID("acme")
+// TestSystemRoleID_WithTenantID verifies that SystemRoleID returns
+// a deterministic, non-empty string for a given tenant id and role name.
+func TestSystemRoleID_WithTenantID(t *testing.T) {
+	id := SystemRoleID("acme", RoleNameAdmin)
 	if id == "" {
-		t.Fatal("SuperadminRoleID returned empty string")
+		t.Fatal("SystemRoleID returned empty string")
 	}
 }
 
-// TestSuperadminRoleID_EmptyTenantDefaultsToDefaultTenantID verifies that an
-// empty tenantID falls back to the default tenant and produces the same result
-// as passing DefaultTenantID explicitly.
-func TestSuperadminRoleID_EmptyTenantDefaultsToDefaultTenantID(t *testing.T) {
-	idEmpty := SuperadminRoleID("")
-	idDefault := SuperadminRoleID(tenant.DefaultTenantID)
+// TestSystemRoleID_EmptyTenantDefaultsToSystemTenantID verifies that an
+// empty tenant id falls back to the system tenant and produces the same
+// result as passing SystemTenantID explicitly.
+func TestSystemRoleID_EmptyTenantDefaultsToSystemTenantID(t *testing.T) {
+	idEmpty := SystemRoleID("", RoleNameAdmin)
+	idSystem := SystemRoleID(tenant.SystemTenantID, RoleNameAdmin)
 
 	if idEmpty == "" {
-		t.Fatal("SuperadminRoleID(\"\") returned empty string")
+		t.Fatal("SystemRoleID(\"\", admin) returned empty string")
 	}
-	if idEmpty != idDefault {
-		t.Errorf("SuperadminRoleID(\"\") = %q, want %q (same as DefaultTenantID)", idEmpty, idDefault)
+	if idEmpty != idSystem {
+		t.Errorf("SystemRoleID(\"\", admin) = %q, want %q (same as SystemTenantID)", idEmpty, idSystem)
 	}
 }
 
-// TestSuperadminRoleID_DifferentTenants verifies that different tenant IDs
-// produce different superadmin role IDs.
-func TestSuperadminRoleID_DifferentTenants(t *testing.T) {
-	id1 := SuperadminRoleID("tenant-a")
-	id2 := SuperadminRoleID("tenant-b")
+// TestSystemRoleID_DifferentTenants verifies that different tenant ids
+// produce different role ids for the same role name.
+func TestSystemRoleID_DifferentTenants(t *testing.T) {
+	id1 := SystemRoleID("tenant-a", RoleNameAdmin)
+	id2 := SystemRoleID("tenant-b", RoleNameAdmin)
 
 	if id1 == id2 {
-		t.Errorf("SuperadminRoleID must differ between tenants, both returned %q", id1)
+		t.Errorf("SystemRoleID must differ between tenants, both returned %q", id1)
 	}
 }
 
-// TestSuperadminRoleID_Deterministic verifies that calling SuperadminRoleID
-// twice with the same tenant yields the same UUID.
-func TestSuperadminRoleID_Deterministic(t *testing.T) {
-	id1 := SuperadminRoleID("acme")
-	id2 := SuperadminRoleID("acme")
+// TestSystemRoleID_DeterministicForAdmin verifies that calling
+// SystemRoleID twice with the same tenant and the Admin role name yields
+// the same UUID. (TestSystemRoleID_Deterministic in store_test.go covers
+// the same property across all six canonical role names.)
+func TestSystemRoleID_DeterministicForAdmin(t *testing.T) {
+	id1 := SystemRoleID("acme", RoleNameAdmin)
+	id2 := SystemRoleID("acme", RoleNameAdmin)
 
 	if id1 != id2 {
-		t.Errorf("SuperadminRoleID must be deterministic: first=%q, second=%q", id1, id2)
+		t.Errorf("SystemRoleID must be deterministic: first=%q, second=%q", id1, id2)
+	}
+}
+
+// TestSystemRoleID_DifferentRoleNames verifies that different role names
+// in the same tenant produce different role ids.
+func TestSystemRoleID_DifferentRoleNames(t *testing.T) {
+	idAdmin := SystemRoleID("acme", RoleNameAdmin)
+	idAuditor := SystemRoleID("acme", RoleNameAuditor)
+
+	if idAdmin == idAuditor {
+		t.Errorf("SystemRoleID must differ between role names, both returned %q", idAdmin)
 	}
 }
 

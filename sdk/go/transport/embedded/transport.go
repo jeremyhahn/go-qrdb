@@ -22,13 +22,18 @@ import (
 	"context"
 	"errors"
 	"io"
+	"sync"
 	"sync/atomic"
 	"time"
 
+	objpool "github.com/jeremyhahn/go-objstore/pkg/pool"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -65,6 +70,14 @@ var (
 	_ transport.TenantClient         = (*Transport)(nil)
 	_ transport.LockClient           = (*Transport)(nil)
 	_ transport.Client               = (*Transport)(nil)
+
+	// Phase 3 provider assertions.
+	_ transport.PermissionProvider = (*Transport)(nil)
+	_ transport.RBACProvider       = (*Transport)(nil)
+	_ transport.FactorProvider     = (*Transport)(nil)
+	_ transport.LoginProvider      = (*Transport)(nil)
+	_ transport.SessionProvider    = (*Transport)(nil)
+	_ transport.VolumePoolProvider = (*Transport)(nil)
 )
 
 // Transport implements the QRDB SDK transport interface by delegating
@@ -87,19 +100,42 @@ type Transport struct {
 	certProv          cert.CertProvider
 	dbSvc             service.DatabaseServicer
 	barrierSvc        service.BarrierServicer
+	pinBackend        pin.PINBackend
 	dekSvc            service.DEKServicer
 	ceremonySvc       service.CeremonyServicer
 	ceremonyCA        ceremony.CeremonyCA
 	credentialSvc     service.CredentialServicer
 	backupSvc         service.BackupServicer
 	rebalanceSvc      service.RebalanceServicer
+	embeddingSvc      service.EmbeddingServicer
+	ragSvc            service.RAGServicer
 	collectionSvc     service.CollectionServicer
 	sealStoreSvc      *seal.SealStore
 	tenantSvc         tenant.TenantServicer
 	lockSvc           service.LockServicer
 	custodianGroupSvc ceremony.CustodianGroupServicer
 	shareSvc          ceremony.ShareServicer
-	closed            atomic.Bool
+	authFactorSvc     service.AuthFactorServicer
+
+	// Phase 3 auth/identity wiring. All optional; SDK accessors return
+	// typed Missing*Error values when the corresponding service is not
+	// configured.
+	rbacAuthz         auth.Authorizer
+	userAuthFactorSvc service.UserAuthFactorServicer
+	loginResolver     *auth.LoginResolver
+	sessionIssuer     SessionIssuer
+	identityHydrator  IdentityHydrator
+	factorVerifierMu  sync.RWMutex
+	factorVerifiers   map[transport.FactorType]FactorVerifier
+	loginSessions     *loginSessionStore
+	poolManager       objpool.Manager
+	poolStateStore    objpool.StateStore
+
+	// nowFunc is overridable so tests can drive deterministic time
+	// without monkey-patching. Defaults to time.Now().UTC at New.
+	nowFunc func() time.Time
+
+	closed atomic.Bool
 }
 
 // Option configures an embedded transport.
@@ -161,6 +197,16 @@ func WithVectorService(svc service.VectorServicer) Option {
 	}
 }
 
+// WithRAGService injects a RAGServicer into the transport. The option setter
+// is ungated so untagged callers (e.g. the node builder) can wire it; the
+// RAGClient method implementations live in the qrdb_vector-gated
+// transport_rag.go.
+func WithRAGService(svc service.RAGServicer) Option {
+	return func(t *Transport) {
+		t.ragSvc = svc
+	}
+}
+
 // WithUserService injects a UserServicer into the transport.
 func WithUserService(svc user.UserServicer) Option {
 	return func(t *Transport) {
@@ -207,8 +253,10 @@ func New(kvSvc service.KVServicer, adminSvc service.AdminServicer, opts ...Optio
 		return nil, &NilServiceError{Service: "AdminServicer"}
 	}
 	t := &Transport{
-		kvSvc:    kvSvc,
-		adminSvc: adminSvc,
+		kvSvc:         kvSvc,
+		adminSvc:      adminSvc,
+		loginSessions: newLoginSessionStore(),
+		nowFunc:       func() time.Time { return time.Now().UTC() },
 	}
 	for _, opt := range opts {
 		opt(t)
@@ -260,108 +308,109 @@ type requestHandler func(ctx context.Context, t *Transport, req, resp any) error
 // requestHandlers maps method names to their handler functions for O(1)
 // dispatch in the generic Request method.
 var requestHandlers = map[string]requestHandler{
-	"Put":                          handlePut,
-	"Get":                          handleGet,
-	"Delete":                       handleDelete,
-	"List":                         handleList,
-	"Health":                       handleHealth,
-	"Status":                       handleStatus,
-	"Peers":                        handlePeers,
-	"AddMember":                    handleAddMember,
-	"RemoveMember":                 handleRemoveMember,
-	"RequestSnapshot":              handleRequestSnapshot,
-	"Drain":                        handleDrain,
-	"PutWithLease":                 handlePutWithLease,
-	"GetRevision":                  handleGetRevision,
-	"GetAtRevision":                handleGetAtRevision,
-	"Range":                        handleRange,
-	"Compact":                      handleCompact,
-	"CurrentRevision":              handleCurrentRevision,
-	"ExecuteTransaction":           handleExecuteTransaction,
-	"ExecuteBatch":                 handleExecuteBatch,
-	"Watch":                        handleWatch,
-	"WatchPrefix":                  handleWatchPrefix,
-	"LeaseGrant":                   handleLeaseGrant,
-	"LeaseRevoke":                  handleLeaseRevoke,
-	"LeaseKeepAlive":               handleLeaseKeepAlive,
-	"LeaseTimeToLive":              handleLeaseTimeToLive,
-	"LeaseList":                    handleLeaseList,
-	"TSWrite":                      handleTSWrite,
-	"TSWriteBatch":                 handleTSWriteBatch,
-	"TSQuery":                      handleTSQuery,
-	"TSAggregate":                  handleTSAggregate,
-	"TSWritePoint":                 handleTSWritePoint,
-	"TSRichQuery":                  handleTSRichQuery,
-	"TSDeleteSeries":               handleTSDeleteSeries,
-	"TSGetRetention":               handleTSGetRetention,
-	"TSSetRetention":               handleTSSetRetention,
-	"TSListMetrics":                handleTSListMetrics,
-	"Capabilities":                 handleCapabilities,
-	"StartShard":                   handleStartShard,
-	"StopShard":                    handleStopShard,
-	"GetShardState":                handleGetShardState,
-	"GetTopology":                  handleGetTopology,
-	"CreateNamespace":              handleCreateNamespace,
-	"DeleteNamespace":              handleDeleteNamespace,
-	"ListNamespaces":               handleListNamespaces,
-	"GetNamespaceInfo":             handleGetNamespaceInfo,
-	"UpsertVector":                 handleUpsertVector,
-	"GetVector":                    handleGetVector,
-	"DeleteVector":                 handleDeleteVector,
-	"BatchUpsert":                  handleBatchUpsert,
-	"BatchDeleteVectors":           handleBatchDeleteVectors,
-	"ListVectors":                  handleListVectors,
-	"UpdateMetadata":               handleUpdateMetadata,
-	"SearchSimilar":                handleSearchSimilar,
-	"SearchByMetadata":             handleSearchByMetadata,
-	"HybridSearch":                 handleHybridSearch,
-	"SearchByID":                   handleSearchByID,
-	"RebuildIndex":                 handleRebuildIndex,
-	"GetRebuildProgress":           handleGetRebuildProgress,
-	"GetIndexStats":                handleGetIndexStats,
-	"CompactNamespace":             handleCompactNamespace,
-	"GetCompactionProgress":        handleGetCompactionProgress,
-	"DEKInitialize":                handleDEKInitialize,
-	"DEKGetStatus":                 handleDEKGetStatus,
-	"DEKRotate":                    handleDEKRotate,
-	"DEKGetCurrent":                handleDEKGetCurrent,
-	"DEKSyncToNode":                handleDEKSyncToNode,
-	"TenantDEKGetOrCreate":         handleTenantDEKGetOrCreate,
-	"TenantDEKRotate":              handleTenantDEKRotate,
-	"TenantDEKDelete":              handleTenantDEKDelete,
-	"TenantDEKList":                handleTenantDEKList,
-	"TenantDEKGetStatus":           handleTenantDEKGetStatus,
-	"BarrierInitialize":            handleBarrierInitialize,
-	"BarrierUnseal":                handleBarrierUnseal,
-	"BarrierSeal":                  handleBarrierSeal,
-	"BarrierStatus":                handleBarrierStatus,
-	"BarrierInitializeShamir":      handleBarrierInitializeShamir,
-	"BarrierUnsealWithShare":       handleBarrierUnsealWithShare,
-	"BarrierUnsealWithShares":      handleBarrierUnsealWithShares,
-	"BarrierShamirListShares":      handleBarrierShamirListShares,
-	"BarrierShamirDeleteShare":     handleBarrierShamirDeleteShare,
-	"BarrierShamirDeleteAllShares": handleBarrierShamirDeleteAllShares,
-	"BarrierShamirVerify":          handleBarrierShamirVerify,
-	"BarrierRekey":                 handleBarrierRekey,
-	"BarrierGenerateRecoveryKeys":  handleBarrierGenerateRecoveryKeys,
-	"BarrierRecoverWithKeys":       handleBarrierRecoverWithKeys,
-	"BarrierDeleteRecoveryKeys":    handleBarrierDeleteRecoveryKeys,
-	"BarrierHasRecoveryKeys":       handleBarrierHasRecoveryKeys,
-	"BarrierGenerateRootToken":     handleBarrierGenerateRootToken,
-	"CeremonyInitialize":           handleCeremonyInitialize,
-	"CeremonyStatus":               handleCeremonyStatus,
-	"CeremonyClaimCertBegin":       handleCeremonyClaimCertBegin,
-	"CeremonyClaimCertComplete":    handleCeremonyClaimCertComplete,
-	"CeremonyClaimShare":           handleCeremonyClaimShare,
-	"CeremonySignCSR":              handleCeremonySignCSR,
-	"CredentialSubmit":             handleCredentialSubmit,
-	"CredentialStrategy":           handleCredentialStrategy,
-	"CredentialDelete":             handleCredentialDelete,
-	"IndexCreate":                  handleIndexCreate,
-	"IndexDrop":                    handleIndexDrop,
-	"IndexQuery":                   handleIndexQuery,
-	"IndexScan":                    handleIndexScan,
-	"IndexList":                    handleIndexList,
+	"Put":                         handlePut,
+	"Get":                         handleGet,
+	"Delete":                      handleDelete,
+	"List":                        handleList,
+	"Health":                      handleHealth,
+	"Status":                      handleStatus,
+	"Peers":                       handlePeers,
+	"AddMember":                   handleAddMember,
+	"RemoveMember":                handleRemoveMember,
+	"RequestSnapshot":             handleRequestSnapshot,
+	"Drain":                       handleDrain,
+	"PutWithLease":                handlePutWithLease,
+	"GetRevision":                 handleGetRevision,
+	"GetAtRevision":               handleGetAtRevision,
+	"Range":                       handleRange,
+	"Compact":                     handleCompact,
+	"CurrentRevision":             handleCurrentRevision,
+	"ExecuteTransaction":          handleExecuteTransaction,
+	"ExecuteBatch":                handleExecuteBatch,
+	"Watch":                       handleWatch,
+	"WatchPrefix":                 handleWatchPrefix,
+	"LeaseGrant":                  handleLeaseGrant,
+	"LeaseRevoke":                 handleLeaseRevoke,
+	"LeaseKeepAlive":              handleLeaseKeepAlive,
+	"LeaseTimeToLive":             handleLeaseTimeToLive,
+	"LeaseList":                   handleLeaseList,
+	"TSWrite":                     handleTSWrite,
+	"TSWriteBatch":                handleTSWriteBatch,
+	"TSQuery":                     handleTSQuery,
+	"TSAggregate":                 handleTSAggregate,
+	"TSWritePoint":                handleTSWritePoint,
+	"TSRichQuery":                 handleTSRichQuery,
+	"TSDeleteSeries":              handleTSDeleteSeries,
+	"TSGetRetention":              handleTSGetRetention,
+	"TSSetRetention":              handleTSSetRetention,
+	"TSListMetrics":               handleTSListMetrics,
+	"Capabilities":                handleCapabilities,
+	"StartShard":                  handleStartShard,
+	"StopShard":                   handleStopShard,
+	"GetShardState":               handleGetShardState,
+	"GetTopology":                 handleGetTopology,
+	"CreateNamespace":             handleCreateNamespace,
+	"DeleteNamespace":             handleDeleteNamespace,
+	"ListNamespaces":              handleListNamespaces,
+	"GetNamespaceInfo":            handleGetNamespaceInfo,
+	"UpsertVector":                handleUpsertVector,
+	"GetVector":                   handleGetVector,
+	"DeleteVector":                handleDeleteVector,
+	"BatchUpsert":                 handleBatchUpsert,
+	"BatchDeleteVectors":          handleBatchDeleteVectors,
+	"ListVectors":                 handleListVectors,
+	"UpdateMetadata":              handleUpdateMetadata,
+	"SearchSimilar":               handleSearchSimilar,
+	"SearchByMetadata":            handleSearchByMetadata,
+	"HybridSearch":                handleHybridSearch,
+	"SearchByID":                  handleSearchByID,
+	"RebuildIndex":                handleRebuildIndex,
+	"GetRebuildProgress":          handleGetRebuildProgress,
+	"GetIndexStats":               handleGetIndexStats,
+	"CompactNamespace":            handleCompactNamespace,
+	"GetCompactionProgress":       handleGetCompactionProgress,
+	"DEKInitialize":               handleDEKInitialize,
+	"DEKGetStatus":                handleDEKGetStatus,
+	"DEKRotate":                   handleDEKRotate,
+	"DEKGetCurrent":               handleDEKGetCurrent,
+	"DEKSyncToNode":               handleDEKSyncToNode,
+	"TenantDEKGetOrCreate":        handleTenantDEKGetOrCreate,
+	"TenantDEKRotate":             handleTenantDEKRotate,
+	"TenantDEKDelete":             handleTenantDEKDelete,
+	"TenantDEKList":               handleTenantDEKList,
+	"TenantDEKGetStatus":          handleTenantDEKGetStatus,
+	"BarrierInitialize":           handleBarrierInitialize,
+	"BarrierUnseal":               handleBarrierUnseal,
+	"BarrierSeal":                 handleBarrierSeal,
+	"BarrierStatus":               handleBarrierStatus,
+	"BarrierInitializeShamir":     handleBarrierInitializeShamir,
+	"BarrierUnsealWithShare":      handleBarrierUnsealWithShare,
+	"BarrierUnsealWithShares":     handleBarrierUnsealWithShares,
+	"BarrierRekey":                handleBarrierRekey,
+	"BarrierGenerateRecoveryKeys": handleBarrierGenerateRecoveryKeys,
+	"BarrierRecoverWithKeys":      handleBarrierRecoverWithKeys,
+	"BarrierDeleteRecoveryKeys":   handleBarrierDeleteRecoveryKeys,
+	"BarrierHasRecoveryKeys":      handleBarrierHasRecoveryKeys,
+	"BarrierGenerateRootToken":    handleBarrierGenerateRootToken,
+	"CeremonyInitialize":          handleCeremonyInitialize,
+	"CeremonyStatus":              handleCeremonyStatus,
+	"CeremonyClaimCertBegin":      handleCeremonyClaimCertBegin,
+	"CeremonyClaimCertComplete":   handleCeremonyClaimCertComplete,
+	"CeremonyClaimShare":          handleCeremonyClaimShare,
+	"CeremonySignCSR":             handleCeremonySignCSR,
+	"CredentialSubmit":            handleCredentialSubmit,
+	"CredentialStrategy":          handleCredentialStrategy,
+	"CredentialDelete":            handleCredentialDelete,
+	"CredentialList":              handleCredentialList,
+	"CredentialRotate":            handleCredentialRotate,
+	"CredentialRetrieveVersion":   handleCredentialRetrieveVersion,
+	"CredentialListVersions":      handleCredentialListVersions,
+	"CredentialGCExpired":         handleCredentialGCExpired,
+	"IndexCreate":                 handleIndexCreate,
+	"IndexDrop":                   handleIndexDrop,
+	"IndexQuery":                  handleIndexQuery,
+	"IndexScan":                   handleIndexScan,
+	"IndexList":                   handleIndexList,
 }
 
 // ---------------------------------------------------------------------------
@@ -413,17 +462,47 @@ func resolveWriteMode(opts []transport.WriteOption) (writemode.Mode, bool) {
 	return mapWriteMode(wo.Mode), true
 }
 
+// parseTSConsistency parses the optional consistency string from an SDK
+// time-series request (e.g. TSQueryRequest.Consistency). An empty string
+// returns (zero, false, nil), meaning the caller should use the plain
+// service method. An unrecognised value returns a non-nil error.
+func parseTSConsistency(s string) (consistency.ReadOptions, bool, error) {
+	if s == "" {
+		return consistency.ReadOptions{}, false, nil
+	}
+	level, err := consistency.ParseLevel(s)
+	if err != nil {
+		return consistency.ReadOptions{}, false, err
+	}
+	return consistency.ReadOptions{
+		Consistency: level,
+		AllowStale:  level == consistency.Eventual,
+	}, true, nil
+}
+
 // resolveReadConsistency resolves the variadic ReadOption slice and returns
 // the mapped consistency.ReadOptions and whether consistency was explicitly set.
 func resolveReadConsistency(opts []transport.ReadOption) (consistency.ReadOptions, bool) {
 	ro := transport.ResolveReadOptions(opts...)
 	if !ro.ConsistencySet {
+		// WithAllowStale() on its own (no explicit level) is an eventual read,
+		// matching the network transports which map allow-stale to eventual.
+		if ro.AllowStale {
+			return consistency.ReadOptions{
+				Consistency: consistency.Eventual,
+				Timeout:     ro.TimeoutMs,
+				AllowStale:  true,
+			}, true
+		}
 		return consistency.ReadOptions{}, false
 	}
+	// AllowStale is true when the caller explicitly requests eventual
+	// consistency or when the WithAllowStale option is set.
+	allowStale := ro.AllowStale || ro.Consistency == transport.ConsistencyEventual
 	return consistency.ReadOptions{
 		Consistency: mapConsistencyLevel(ro.Consistency),
 		Timeout:     ro.TimeoutMs,
-		AllowStale:  ro.AllowStale,
+		AllowStale:  allowStale,
 	}, true
 }
 
@@ -1177,7 +1256,8 @@ func (t *Transport) TSWriteBatch(ctx context.Context, points []transport.TSDataP
 }
 
 // TSQuery retrieves data points for a metric within a time range
-// through the embedded time-series service.
+// through the embedded time-series service. When req.Consistency is
+// set, it routes to QueryWithConsistency.
 func (t *Transport) TSQuery(ctx context.Context, req *transport.TSQueryRequest) (*transport.TSQueryResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
@@ -1200,7 +1280,18 @@ func (t *Transport) TSQuery(ctx context.Context, req *transport.TSQueryRequest) 
 		opts = append(opts, service.WithDescending())
 	}
 
-	points, err := t.tsSvc.Query(ctx, req.Metric, start, end, opts...)
+	ropts, roptsSet, roptsErr := parseTSConsistency(req.Consistency)
+	if roptsErr != nil {
+		return nil, translateError(roptsErr)
+	}
+
+	var points []service.DataPoint
+	var err error
+	if roptsSet {
+		points, err = t.tsSvc.QueryWithConsistency(ctx, req.Metric, start, end, ropts, opts...)
+	} else {
+		points, err = t.tsSvc.Query(ctx, req.Metric, start, end, opts...)
+	}
 	if err != nil {
 		return nil, translateError(err)
 	}
@@ -1211,7 +1302,8 @@ func (t *Transport) TSQuery(ctx context.Context, req *transport.TSQueryRequest) 
 }
 
 // TSAggregate computes an aggregation over data points in a time range
-// through the embedded time-series service.
+// through the embedded time-series service. When req.Consistency is
+// set, it routes to AggregateWithConsistency.
 func (t *Transport) TSAggregate(ctx context.Context, req *transport.TSAggregateRequest) (*transport.TSAggregateResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
@@ -1225,7 +1317,18 @@ func (t *Transport) TSAggregate(ctx context.Context, req *transport.TSAggregateR
 	fn := service.AggFunc(req.Function)
 	interval := time.Duration(req.IntervalNs)
 
-	results, err := t.tsSvc.Aggregate(ctx, req.Metric, start, end, fn, interval)
+	ropts, roptsSet, roptsErr := parseTSConsistency(req.Consistency)
+	if roptsErr != nil {
+		return nil, translateError(roptsErr)
+	}
+
+	var results []service.AggResult
+	var err error
+	if roptsSet {
+		results, err = t.tsSvc.AggregateWithConsistency(ctx, req.Metric, start, end, fn, interval, ropts)
+	} else {
+		results, err = t.tsSvc.Aggregate(ctx, req.Metric, start, end, fn, interval)
+	}
 	if err != nil {
 		return nil, translateError(err)
 	}
@@ -1254,7 +1357,8 @@ func (t *Transport) TSWritePoint(ctx context.Context, point *transport.TSDataPoi
 }
 
 // TSRichQuery performs a rich query with aggregation, downsampling, and
-// grouping through the embedded time-series service.
+// grouping through the embedded time-series service. When req.Consistency
+// is set, it routes to QueryRichWithConsistency.
 func (t *Transport) TSRichQuery(ctx context.Context, req *transport.TSRichQueryRequest) (*transport.TSRichQueryResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
@@ -1275,7 +1379,18 @@ func (t *Transport) TSRichQuery(ctx context.Context, req *transport.TSRichQueryR
 		Percentile:  req.Percentile,
 	}
 
-	result, err := t.tsSvc.QueryRich(ctx, svcReq)
+	ropts, roptsSet, roptsErr := parseTSConsistency(req.Consistency)
+	if roptsErr != nil {
+		return nil, translateError(roptsErr)
+	}
+
+	var result *timeseries.QueryResult
+	var err error
+	if roptsSet {
+		result, err = t.tsSvc.QueryRichWithConsistency(ctx, svcReq, ropts)
+	} else {
+		result, err = t.tsSvc.QueryRich(ctx, svcReq)
+	}
 	if err != nil {
 		return nil, translateError(err)
 	}
@@ -1346,7 +1461,8 @@ func (t *Transport) TSSetRetention(ctx context.Context, req *transport.TSSetRete
 }
 
 // TSListMetrics lists metric names matching a prefix through the
-// embedded time-series service.
+// embedded time-series service. When req.Consistency is set, it routes
+// to ListMetricsWithConsistency.
 func (t *Transport) TSListMetrics(ctx context.Context, req *transport.TSListMetricsRequest) (*transport.TSListMetricsResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
@@ -1355,7 +1471,18 @@ func (t *Transport) TSListMetrics(ctx context.Context, req *transport.TSListMetr
 		return nil, &NilServiceError{Service: "TimeSeriesServicer"}
 	}
 
-	metrics, err := t.tsSvc.ListMetrics(req.Prefix, int(req.Limit))
+	ropts, roptsSet, roptsErr := parseTSConsistency(req.Consistency)
+	if roptsErr != nil {
+		return nil, translateError(roptsErr)
+	}
+
+	var metrics []string
+	var err error
+	if roptsSet {
+		metrics, err = t.tsSvc.ListMetricsWithConsistency(ctx, req.Prefix, int(req.Limit), ropts)
+	} else {
+		metrics, err = t.tsSvc.ListMetrics(req.Prefix, int(req.Limit))
+	}
 	if err != nil {
 		return nil, translateError(err)
 	}

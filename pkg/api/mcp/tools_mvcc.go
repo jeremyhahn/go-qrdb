@@ -70,11 +70,15 @@ func toolMVCCPutWithLease() mcp.Tool {
 			mcp.Required(),
 			mcp.Description("The lease ID to attach to the key."),
 		),
+		mcp.WithString("write_mode",
+			mcp.Description("Write durability mode: sync, wal_durable, or batched. Absent or empty uses sync."),
+		),
 	)
 }
 
 // handleMVCCPutWithLease returns a tool handler that delegates to
-// mvccSvc.PutWithLease.
+// mvccSvc.PutWithLease or mvccSvc.PutWithLeaseAndMode when a write_mode
+// arg is present.
 func handleMVCCPutWithLease(mvccSvc service.MVCCKVServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		key := mcp.ParseString(req, "key", "")
@@ -87,12 +91,25 @@ func handleMVCCPutWithLease(mvccSvc service.MVCCKVServicer) mcpserver.ToolHandle
 		}
 		leaseID := mcp.ParseInt64(req, "lease_id", 0)
 
-		kv, err := mvccSvc.PutWithLease(ctx, key, []byte(value), leaseID)
+		mode, modeSet, modeErr := writeModeFromArg(req)
+		if modeErr != nil {
+			return mcp.NewToolResultError("invalid write_mode: " + modeErr.Error()), nil
+		}
+
+		var (
+			kvResult interface{}
+			err      error
+		)
+		if modeSet {
+			kvResult, err = mvccSvc.PutWithLeaseAndMode(ctx, key, []byte(value), leaseID, mode)
+		} else {
+			kvResult, err = mvccSvc.PutWithLease(ctx, key, []byte(value), leaseID)
+		}
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_mvcc_put_with_lease", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(kv)
+		data, jsonErr := json.Marshal(kvResult)
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_mvcc_put_with_lease", Err: jsonErr}
 		}
@@ -109,11 +126,15 @@ func toolMVCCGetRevision() mcp.Tool {
 			mcp.Required(),
 			mcp.Description("The key to retrieve."),
 		),
+		mcp.WithString("consistency",
+			mcp.Description("Read consistency level: strong, linearizable, or eventual. Absent or empty uses linearizable."),
+		),
 	)
 }
 
 // handleMVCCGetRevision returns a tool handler that delegates to
-// mvccSvc.GetRevision.
+// mvccSvc.GetRevision or mvccSvc.GetRevisionWithConsistency when a
+// consistency arg is present.
 func handleMVCCGetRevision(mvccSvc service.MVCCKVServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		key := mcp.ParseString(req, "key", "")
@@ -121,7 +142,20 @@ func handleMVCCGetRevision(mvccSvc service.MVCCKVServicer) mcpserver.ToolHandler
 			return mcp.NewToolResultError("key is required"), nil
 		}
 
-		kv, err := mvccSvc.GetRevision(ctx, key)
+		opts, optsSet, optsErr := readOptsFromArg(req)
+		if optsErr != nil {
+			return mcp.NewToolResultError("invalid consistency: " + optsErr.Error()), nil
+		}
+
+		var (
+			kv  interface{}
+			err error
+		)
+		if optsSet {
+			kv, err = mvccSvc.GetRevisionWithConsistency(ctx, key, opts)
+		} else {
+			kv, err = mvccSvc.GetRevision(ctx, key)
+		}
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_mvcc_get_revision", Err: err}
 		}
@@ -147,11 +181,15 @@ func toolMVCCGetAtRevision() mcp.Tool {
 			mcp.Required(),
 			mcp.Description("The historical MVCC revision to read at."),
 		),
+		mcp.WithString("consistency",
+			mcp.Description("Read consistency level: strong, linearizable, or eventual. Absent or empty uses linearizable."),
+		),
 	)
 }
 
 // handleMVCCGetAtRevision returns a tool handler that delegates to
-// mvccSvc.GetAtRevision.
+// mvccSvc.GetAtRevision or mvccSvc.GetAtRevisionWithConsistency when a
+// consistency arg is present.
 func handleMVCCGetAtRevision(mvccSvc service.MVCCKVServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		key := mcp.ParseString(req, "key", "")
@@ -163,7 +201,20 @@ func handleMVCCGetAtRevision(mvccSvc service.MVCCKVServicer) mcpserver.ToolHandl
 			return mcp.NewToolResultError("revision is required"), nil
 		}
 
-		kv, err := mvccSvc.GetAtRevision(ctx, key, revision)
+		opts, optsSet, optsErr := readOptsFromArg(req)
+		if optsErr != nil {
+			return mcp.NewToolResultError("invalid consistency: " + optsErr.Error()), nil
+		}
+
+		var (
+			kv  interface{}
+			err error
+		)
+		if optsSet {
+			kv, err = mvccSvc.GetAtRevisionWithConsistency(ctx, key, revision, opts)
+		} else {
+			kv, err = mvccSvc.GetAtRevision(ctx, key, revision)
+		}
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_mvcc_get_at_revision", Err: err}
 		}
@@ -201,6 +252,9 @@ func toolMVCCRange() mcp.Tool {
 		mcp.WithBoolean("keys_only",
 			mcp.Description("Return keys without their values."),
 		),
+		mcp.WithString("consistency",
+			mcp.Description("Read consistency level: strong, linearizable, or eventual. Absent or empty uses linearizable."),
+		),
 	)
 }
 
@@ -210,7 +264,8 @@ type mvccRangeResponse struct {
 	Count     int64           `json:"count"`
 }
 
-// handleMVCCRange returns a tool handler that delegates to mvccSvc.Range.
+// handleMVCCRange returns a tool handler that delegates to mvccSvc.Range or
+// mvccSvc.RangeWithConsistency when a consistency arg is present.
 func handleMVCCRange(mvccSvc service.MVCCKVServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		start := mcp.ParseString(req, "start", "")
@@ -236,7 +291,21 @@ func handleMVCCRange(mvccSvc service.MVCCKVServicer) mcpserver.ToolHandlerFunc {
 			opts = append(opts, service.WithKeysOnly())
 		}
 
-		kvs, count, err := mvccSvc.Range(ctx, []byte(start), []byte(end), opts...)
+		ropts, roptsSet, roptsErr := readOptsFromArg(req)
+		if roptsErr != nil {
+			return mcp.NewToolResultError("invalid consistency: " + roptsErr.Error()), nil
+		}
+
+		var (
+			kvs   interface{}
+			count int64
+			err   error
+		)
+		if roptsSet {
+			kvs, count, err = mvccSvc.RangeWithConsistency(ctx, []byte(start), []byte(end), ropts, opts...)
+		} else {
+			kvs, count, err = mvccSvc.Range(ctx, []byte(start), []byte(end), opts...)
+		}
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_mvcc_range", Err: err}
 		}

@@ -199,7 +199,7 @@ func TestLookupUser_PrimarySucceeds(t *testing.T) {
 func TestLookupUser_PrimaryNotFound_NoFallback(t *testing.T) {
 	// UserNotFoundError is authoritative; should not fall back.
 	primary := &mockUserServicer{
-		err: &user.UserNotFoundError{ID: "alice"},
+		err: &user.UserNotFoundError{Lookup: "alice"},
 	}
 
 	m := &AuthMiddleware{users: primary}
@@ -246,7 +246,7 @@ func TestLookupUser_PrimaryTransient_FallbackNotFound(t *testing.T) {
 	// The fallback's UserNotFoundError should be used.
 	primary := &mockUserServicer{err: errors.New("raft timeout")}
 	fallback := &mockUserServicer{
-		err: &user.UserNotFoundError{ID: "ghost"},
+		err: &user.UserNotFoundError{Lookup: "ghost"},
 	}
 
 	m := &AuthMiddleware{users: primary, usersFallback: fallback}
@@ -389,10 +389,13 @@ func TestAuthorizeQUIC_NoMapping(t *testing.T) {
 	authz := &mockAuthorizer{}
 	m := New(authz)
 
-	// A method without a permission mapping should pass without authorization.
-	err := m.AuthorizeQUIC(context.Background(), "unknown.Method")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	// DEFAULT-DENY: a method without a permission mapping is rejected, not
+	// allowed through. The authorizer is never consulted for an unmapped
+	// method (the denial is decided before the permission check).
+	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "alice", TenantID: "t1"})
+	err := m.AuthorizeQUIC(ctx, "unknown.Method")
+	if err == nil {
+		t.Fatal("expected unmapped QUIC method to be denied, got nil")
 	}
 	if authz.calls.Load() != 0 {
 		t.Errorf("expected 0 authorize calls, got %d", authz.calls.Load())

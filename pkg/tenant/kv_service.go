@@ -23,11 +23,21 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
 // ErrBarrierNotEnabled is returned when a barrier operation is attempted
 // but the seal subsystem is not configured.
 var ErrBarrierNotEnabled = errors.New("tenant: barrier not enabled (seal subsystem disabled)")
+
+// ErrBarrierIsolationUnavailable is returned when barrier isolation is
+// requested for a tenant while the seal subsystem is disabled. The no-seal
+// KV-backed tenant service has no barrier registry, so it cannot register or
+// initialize a per-tenant barrier. Accepting the request would silently
+// persist a barrier-isolated tenant whose barrier never exists, causing the
+// store resolver to fail later when it tries to resolve the (absent) barrier.
+// This fails closed instead: barrier isolation requires the seal subsystem.
+var ErrBarrierIsolationUnavailable = errors.New("tenant: barrier isolation requires the seal subsystem (disabled)")
 
 // kvTenantService implements TenantServicer using a kvstore.KVStore backend.
 // It is used when the seal subsystem is not enabled and provides full tenant
@@ -55,7 +65,14 @@ func NewKVTenantService(store kvstore.KVStore, logger *slog.Logger) (TenantServi
 }
 
 // CreateTenant creates a new tenant and persists its metadata to the KV store.
-// When isolationType is empty, IsolationBarrier is used.
+// When isolationType is empty, IsolationPrefix is used (barrier isolation is
+// opt-in). This service runs without a seal barrier, so every tenant is
+// effectively prefix-isolated; barrier operations return ErrBarrierNotEnabled.
+//
+// An explicit IsolationBarrier request is rejected with
+// ErrBarrierIsolationUnavailable: the no-seal service has no barrier registry
+// and cannot honor barrier isolation. Failing closed here prevents persisting
+// a barrier-isolated tenant whose barrier never exists.
 func (s *kvTenantService) CreateTenant(ctx context.Context, id, name string, isolationType IsolationType) (*TenantInfo, error) {
 	if id == "" {
 		return nil, ErrEmptyTenantID
@@ -63,8 +80,14 @@ func (s *kvTenantService) CreateTenant(ctx context.Context, id, name string, iso
 	if name == "" {
 		return nil, ErrEmptyTenantName
 	}
+	if err := validateReservedTenantID(ctx, id); err != nil {
+		return nil, err
+	}
 	if isolationType == "" {
-		isolationType = IsolationBarrier
+		isolationType = IsolationPrefix
+	}
+	if isolationType == IsolationBarrier {
+		return nil, ErrBarrierIsolationUnavailable
 	}
 
 	key := metadataPrefix + id
@@ -106,9 +129,16 @@ func (s *kvTenantService) CreateTenant(ctx context.Context, id, name string, iso
 // patch fields replace the corresponding stored value. When
 // patch.IsolationType differs, the caller is expected to have verified the
 // tenant has no data before calling this method.
+//
+// Upgrading a tenant to IsolationBarrier is rejected with
+// ErrBarrierIsolationUnavailable for the same reason CreateTenant rejects it:
+// the no-seal service has no barrier registry to back the isolation.
 func (s *kvTenantService) UpdateTenant(ctx context.Context, tenantID string, patch TenantPatch) (*TenantInfo, error) {
 	if tenantID == "" {
 		return nil, ErrEmptyTenantID
+	}
+	if patch.IsolationType == IsolationBarrier {
+		return nil, ErrBarrierIsolationUnavailable
 	}
 
 	info, err := s.GetTenant(ctx, tenantID)
@@ -249,9 +279,131 @@ func (s *kvTenantService) UpdateQuotas(ctx context.Context, tenantID string, quo
 	return info, nil
 }
 
+// IncrementQuotaUsage increments the current-usage counter for the given
+// resource by delta and persists the change. Returns QuotaExceededError
+// when the resulting usage would exceed the configured limit.
+func (s *kvTenantService) IncrementQuotaUsage(ctx context.Context, tenantID string, resource quota.Resource, delta int64) (*TenantInfo, error) {
+	if tenantID == "" {
+		return nil, ErrEmptyTenantID
+	}
+	if delta <= 0 {
+		return nil, &StoreError{Op: "increment-quota", Err: errors.New("delta must be positive")}
+	}
+	info, err := s.GetTenant(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	if info.Quotas == nil {
+		info.Quotas = &quota.Quotas{}
+	}
+	current, qErr := info.Quotas.CurrentUsage(resource)
+	if qErr != nil {
+		return nil, &StoreError{Op: "increment-quota", Err: qErr}
+	}
+	limit, qErr := info.Quotas.Limit(resource)
+	if qErr != nil {
+		return nil, &StoreError{Op: "increment-quota", Err: qErr}
+	}
+	if limit > 0 && current+delta > limit {
+		return nil, &QuotaExceededError{
+			TenantID: tenantID,
+			Resource: resource.String(),
+			Current:  current,
+			Delta:    delta,
+			Limit:    limit,
+		}
+	}
+	if qErr := info.Quotas.SetCurrentUsage(resource, current+delta); qErr != nil {
+		return nil, &StoreError{Op: "increment-quota", Err: qErr}
+	}
+	info.UpdatedAt = time.Now().UTC()
+	data, err := json.Marshal(info)
+	if err != nil {
+		return nil, &StoreError{Op: "marshal", Err: err}
+	}
+	key := metadataPrefix + tenantID
+	if err := s.store.Put(ctx, key, data); err != nil {
+		return nil, &StoreError{Op: "put", Err: err}
+	}
+	s.logger.Debug("quota usage incremented",
+		slog.String("tenant_id", tenantID),
+		slog.String("resource", resource.String()),
+		slog.Int64("delta", delta))
+	return info, nil
+}
+
+// DecrementQuotaUsage decrements the current-usage counter for the given
+// resource by delta. The counter is clamped to zero.
+func (s *kvTenantService) DecrementQuotaUsage(ctx context.Context, tenantID string, resource quota.Resource, delta int64) (*TenantInfo, error) {
+	if tenantID == "" {
+		return nil, ErrEmptyTenantID
+	}
+	if delta <= 0 {
+		return nil, &StoreError{Op: "decrement-quota", Err: errors.New("delta must be positive")}
+	}
+	info, err := s.GetTenant(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	if info.Quotas == nil {
+		info.Quotas = &quota.Quotas{}
+	}
+	current, qErr := info.Quotas.CurrentUsage(resource)
+	if qErr != nil {
+		return nil, &StoreError{Op: "decrement-quota", Err: qErr}
+	}
+	next := current - delta
+	if next < 0 {
+		next = 0
+	}
+	if qErr := info.Quotas.SetCurrentUsage(resource, next); qErr != nil {
+		return nil, &StoreError{Op: "decrement-quota", Err: qErr}
+	}
+	info.UpdatedAt = time.Now().UTC()
+	data, err := json.Marshal(info)
+	if err != nil {
+		return nil, &StoreError{Op: "marshal", Err: err}
+	}
+	key := metadataPrefix + tenantID
+	if err := s.store.Put(ctx, key, data); err != nil {
+		return nil, &StoreError{Op: "put", Err: err}
+	}
+	s.logger.Debug("quota usage decremented",
+		slog.String("tenant_id", tenantID),
+		slog.String("resource", resource.String()),
+		slog.Int64("delta", delta))
+	return info, nil
+}
+
+// GetQuotaUsage returns the current-usage value for the given resource and
+// tenant without modifying any state.
+func (s *kvTenantService) GetQuotaUsage(ctx context.Context, tenantID string, resource quota.Resource) (int64, error) {
+	if tenantID == "" {
+		return 0, ErrEmptyTenantID
+	}
+	info, err := s.GetTenant(ctx, tenantID)
+	if err != nil {
+		return 0, err
+	}
+	if info.Quotas == nil {
+		return 0, nil
+	}
+	usage, qErr := info.Quotas.CurrentUsage(resource)
+	if qErr != nil {
+		return 0, &StoreError{Op: "get-quota-usage", Err: qErr}
+	}
+	return usage, nil
+}
+
 // TenantBarrierInit returns ErrBarrierNotEnabled. The seal subsystem is not
 // configured when this service implementation is in use.
-func (s *kvTenantService) TenantBarrierInit(_ context.Context, _ string, _, _ int) error {
+func (s *kvTenantService) TenantBarrierInit(_ context.Context, _, _ string, _, _ int) error {
+	return ErrBarrierNotEnabled
+}
+
+// TenantBarrierInitWithStrategy returns ErrBarrierNotEnabled. The seal
+// subsystem is not configured when this service implementation is in use.
+func (s *kvTenantService) TenantBarrierInitWithStrategy(_ context.Context, _, _ string, _, _ int, _ seal.StrategyID) error {
 	return ErrBarrierNotEnabled
 }
 
@@ -259,4 +411,16 @@ func (s *kvTenantService) TenantBarrierInit(_ context.Context, _ string, _, _ in
 // configured when this service implementation is in use.
 func (s *kvTenantService) TenantBarrierUnseal(_ context.Context, _ string, _ []byte) error {
 	return ErrBarrierNotEnabled
+}
+
+// TenantBarrierSeal returns ErrBarrierNotEnabled. The seal subsystem is not
+// configured when this service implementation is in use.
+func (s *kvTenantService) TenantBarrierSeal(_ context.Context, _ string) error {
+	return ErrBarrierNotEnabled
+}
+
+// TenantBarrierStatus returns ErrBarrierNotEnabled. The seal subsystem is not
+// configured when this service implementation is in use.
+func (s *kvTenantService) TenantBarrierStatus(_ context.Context, _ string) (*TenantBarrierStatus, error) {
+	return nil, ErrBarrierNotEnabled
 }

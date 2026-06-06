@@ -15,89 +15,47 @@
 package quic
 
 import (
-	"context"
-	"errors"
 	"testing"
 )
 
 // ---------------------------------------------------------------------------
-// handleWatchSetup
+// Watch is server-streaming
+//
+// Watch is handled by handleWatchStream on the dedicated streaming path
+// (see handleStream + isWatchMethod), NOT the unary request/response dispatch
+// table. The full streaming behavior — request decode, watcher creation,
+// multi-frame WatchResponse delivery, and client-disconnect cancellation — is
+// exercised end-to-end against a real QUIC connection by the multi-protocol
+// integration suite (test/integration/api/cli_watch_test.go). These unit
+// tests assert the routing invariants.
 // ---------------------------------------------------------------------------
 
-func TestHandleWatchSetup_ReturnsServiceNotConfigured(t *testing.T) {
-	srv := newTestServer(&mockKVService{}, &mockAdminService{})
-	ctx := context.Background()
-
-	_, err := srv.handleWatchSetup(ctx, nil)
-	if err == nil {
-		t.Fatal("expected error from handleWatchSetup, got nil")
+func TestIsWatchMethod(t *testing.T) {
+	cases := []struct {
+		method string
+		want   bool
+	}{
+		{"watch.Watch", true},
+		{"watch.WatchPrefix", true},
+		{"kv.Get", false},
+		{"watch.Other", false},
+		{"", false},
 	}
-
-	var snc *ServiceNotConfiguredError
-	if !errors.As(err, &snc) {
-		t.Fatalf("expected *ServiceNotConfiguredError, got %T: %v", err, err)
-	}
-	if snc.Service != "watch" {
-		t.Errorf("expected service %q, got %q", "watch", snc.Service)
+	for _, tc := range cases {
+		if got := isWatchMethod(tc.method); got != tc.want {
+			t.Errorf("isWatchMethod(%q) = %v, want %v", tc.method, got, tc.want)
+		}
 	}
 }
 
-func TestHandleWatchSetup_WithWatchService(t *testing.T) {
-	// Even when a watch service is configured, the setup handler still
-	// returns ServiceNotConfiguredError because watches use the streaming
-	// path, not the request-response path.
-	watchSvc := &mockWatchService{}
-	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithWatch(watchSvc))
-	ctx := context.Background()
-
-	_, err := srv.handleWatchSetup(ctx, nil)
-	if err == nil {
-		t.Fatal("expected error from handleWatchSetup even with watch service, got nil")
-	}
-
-	var snc *ServiceNotConfiguredError
-	if !errors.As(err, &snc) {
-		t.Fatalf("expected *ServiceNotConfiguredError, got %T: %v", err, err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// handleWatchPrefixSetup
-// ---------------------------------------------------------------------------
-
-func TestHandleWatchPrefixSetup_ReturnsServiceNotConfigured(t *testing.T) {
-	srv := newTestServer(&mockKVService{}, &mockAdminService{})
-	ctx := context.Background()
-
-	_, err := srv.handleWatchPrefixSetup(ctx, nil)
-	if err == nil {
-		t.Fatal("expected error from handleWatchPrefixSetup, got nil")
-	}
-
-	var snc *ServiceNotConfiguredError
-	if !errors.As(err, &snc) {
-		t.Fatalf("expected *ServiceNotConfiguredError, got %T: %v", err, err)
-	}
-	if snc.Service != "watch" {
-		t.Errorf("expected service %q, got %q", "watch", snc.Service)
-	}
-}
-
-func TestHandleWatchPrefixSetup_WithWatchService(t *testing.T) {
-	// Even when a watch service is configured, the prefix setup handler
-	// still returns ServiceNotConfiguredError because prefix watches use
-	// the streaming path, not the request-response path.
-	watchSvc := &mockWatchService{}
-	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithWatch(watchSvc))
-	ctx := context.Background()
-
-	_, err := srv.handleWatchPrefixSetup(ctx, nil)
-	if err == nil {
-		t.Fatal("expected error from handleWatchPrefixSetup even with watch service, got nil")
-	}
-
-	var snc *ServiceNotConfiguredError
-	if !errors.As(err, &snc) {
-		t.Fatalf("expected *ServiceNotConfiguredError, got %T: %v", err, err)
+// TestWatchMethodsNotInUnaryDispatch verifies the streaming watch methods are
+// intentionally absent from the unary handler table — they must be routed to
+// handleWatchStream, not invoked as one-shot request/response handlers.
+func TestWatchMethodsNotInUnaryDispatch(t *testing.T) {
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithWatch(&mockWatchService{}))
+	for _, method := range []string{"watch.Watch", "watch.WatchPrefix"} {
+		if _, ok := srv.handlers[method]; ok {
+			t.Errorf("method %q must NOT be in the unary dispatch table (it is server-streaming)", method)
+		}
 	}
 }

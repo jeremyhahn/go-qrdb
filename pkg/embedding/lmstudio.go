@@ -47,8 +47,8 @@ var lmstudioModelDimensions = map[string]int{
 	"intfloat/e5-small-v2-GGUF":                    384,
 	"intfloat/e5-base-v2-GGUF":                     768,
 	"intfloat/e5-large-v2-GGUF":                    1024,
-	"Snowflake/snowflake-arctic-embed-m-v1.5-GGUF":  768,
-	"Snowflake/snowflake-arctic-embed-l-v2.0-GGUF":  1024,
+	"Snowflake/snowflake-arctic-embed-m-v1.5-GGUF": 768,
+	"Snowflake/snowflake-arctic-embed-l-v2.0-GGUF": 1024,
 }
 
 // LMStudioConfig holds configuration for the LMStudio embedding provider.

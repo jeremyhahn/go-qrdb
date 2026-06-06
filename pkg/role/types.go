@@ -22,6 +22,54 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 )
 
+// ---------------------------------------------------------------------------
+// Canonical role name constants
+// ---------------------------------------------------------------------------
+
+// The six canonical FIPS 140-3 / PCI-DSS v4 system roles defined in
+// docs/auth/roles.md. All six are undeletable system roles created
+// deterministically on daemon initialization.
+
+const (
+	// RoleNameSO is the Security Officer role name. The SO manages module
+	// initialization, PIN management, and CA operations. The SO is explicitly
+	// denied all cryptographic operations (FIPS 140-3 AS10.03).
+	RoleNameSO = "so"
+
+	// RoleNameAdmin is the Admin role name. Admins manage key lifecycle and
+	// tenant configuration. They cannot initialize the module or reset SO PINs.
+	RoleNameAdmin = "admin"
+
+	// RoleNameOperator is the Operator role name. Operators perform routine key
+	// use (sign, encrypt, decrypt) and maintenance operations.
+	RoleNameOperator = "operator"
+
+	// RoleNameUser is the User role name. Users perform cryptographic operations
+	// (sign, verify, encrypt, decrypt) using existing keys. No key management.
+	RoleNameUser = "user"
+
+	// RoleNameAuditor is the Auditor role name. Auditors have read-only access
+	// to audit logs and system state (FIPS 140-3 AS10.10).
+	RoleNameAuditor = "auditor"
+
+	// RoleNameCustodian is the Custodian role name. Custodians hold one Shamir
+	// share and can only submit barrier:unseal-share (FIPS 140-3 AS10.06).
+	RoleNameCustodian = "custodian"
+
+	// RoleNameOwner is the Owner role name. Owner is the standard-posture
+	// convenience superuser: it holds the full operational permission set
+	// (permission.All()) so a single bootstrap identity can run the entire
+	// database without juggling separate admin/operator/SO identities.
+	//
+	// Owner is NOT one of the six canonical FIPS 140-3 / PCI-DSS roles. It is
+	// provisioned and assigned to the bootstrap admin ONLY under the standard
+	// (non-strict) RBAC posture, and the RBAC authorizer treats any Owner
+	// grant as inert whenever strict separation of duties is active (FIPS
+	// 140-3 mode or auth.separation_of_duties=true). It therefore cannot
+	// weaken the security model of a compliant deployment.
+	RoleNameOwner = "owner"
+)
+
 // Role represents an RBAC role entity in the system. Roles aggregate
 // fine-grained permissions and can be assigned to users.
 type Role struct {
@@ -58,7 +106,7 @@ type CreateRoleRequest struct {
 	// Name is the desired role name. Must not be empty.
 	Name string
 
-	// TenantID identifies the tenant. Defaults to DefaultTenantID when empty.
+	// TenantID identifies the tenant. Defaults to SystemTenantID when empty.
 	TenantID string
 
 	// Permissions are the permissions to assign to this role.
@@ -79,7 +127,7 @@ type UpdateRoleRequest struct {
 
 // ListRolesRequest holds parameters for listing roles.
 type ListRolesRequest struct {
-	// TenantID filters roles by tenant. Defaults to DefaultTenantID when empty.
+	// TenantID filters roles by tenant. Defaults to SystemTenantID when empty.
 	TenantID string
 
 	// Page is the 1-based page number. Zero or negative defaults to 1.

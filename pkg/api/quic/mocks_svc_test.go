@@ -18,9 +18,11 @@ package quic
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/custodian"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -38,10 +40,6 @@ type mockBarrierService struct {
 	barrierInitializeShamirFn   func(ctx context.Context, secret string, threshold, totalShares int) (*service.ShamirInitInfo, error)
 	barrierUnsealWithShareFn    func(ctx context.Context, share string) (*service.UnsealShareProgress, error)
 	barrierUnsealWithSharesFn   func(ctx context.Context, shares []string) error
-	barrierShamirListSharesFn   func(ctx context.Context) (*service.ShamirSharesInfo, error)
-	barrierShamirDeleteShareFn  func(ctx context.Context, index int) error
-	barrierShamirDeleteAllFn    func(ctx context.Context) error
-	barrierShamirVerifyFn       func(ctx context.Context) error
 	barrierRekeyFn              func(ctx context.Context, threshold, total int) (*service.ShamirInitInfo, error)
 	barrierGenRecoveryKeysFn    func(ctx context.Context, threshold, total int) (*service.RecoveryKeysInfo, error)
 	barrierRecoverWithKeysFn    func(ctx context.Context, keys []string) error
@@ -104,34 +102,6 @@ func (m *mockBarrierService) BarrierUnsealWithShares(ctx context.Context, shares
 	return nil
 }
 
-func (m *mockBarrierService) BarrierShamirListShares(ctx context.Context) (*service.ShamirSharesInfo, error) {
-	if m.barrierShamirListSharesFn != nil {
-		return m.barrierShamirListSharesFn(ctx)
-	}
-	return &service.ShamirSharesInfo{Count: 2, Threshold: 2, Total: 3}, nil
-}
-
-func (m *mockBarrierService) BarrierShamirDeleteShare(ctx context.Context, index int) error {
-	if m.barrierShamirDeleteShareFn != nil {
-		return m.barrierShamirDeleteShareFn(ctx, index)
-	}
-	return nil
-}
-
-func (m *mockBarrierService) BarrierShamirDeleteAllShares(ctx context.Context) error {
-	if m.barrierShamirDeleteAllFn != nil {
-		return m.barrierShamirDeleteAllFn(ctx)
-	}
-	return nil
-}
-
-func (m *mockBarrierService) BarrierShamirVerify(ctx context.Context) error {
-	if m.barrierShamirVerifyFn != nil {
-		return m.barrierShamirVerifyFn(ctx)
-	}
-	return nil
-}
-
 func (m *mockBarrierService) BarrierRekey(ctx context.Context, threshold, total int) (*service.ShamirInitInfo, error) {
 	if m.barrierRekeyFn != nil {
 		return m.barrierRekeyFn(ctx, threshold, total)
@@ -187,7 +157,7 @@ type mockCeremonyService struct {
 	ceremonyStatusFn            func(ctx context.Context) (*service.CeremonyStatusInfo, error)
 }
 
-func (m *mockCeremonyService) CeremonyInitialize(ctx context.Context, ca ceremony.CeremonyCA) (*service.CeremonyInitResult, error) {
+func (m *mockCeremonyService) CeremonyInitialize(ctx context.Context, ca ceremony.CeremonyCA, _ *service.CeremonyInitializeOptions) (*service.CeremonyInitResult, error) {
 	if m.ceremonyInitializeFn != nil {
 		return m.ceremonyInitializeFn(ctx, ca)
 	}
@@ -235,6 +205,28 @@ func (m *mockCeremonyService) CeremonyStatus(ctx context.Context) (*service.Cere
 		return m.ceremonyStatusFn(ctx)
 	}
 	return &service.CeremonyStatusInfo{State: "initialized", SPKIPin: "sha256/abc123"}, nil
+}
+
+// CeremonyClaimShareBegin is a stub satisfying the Phase 4 custodian-ceremony
+// extension of service.CeremonyServicer. The QUIC handler tests do not
+// exercise factor-based claim flows.
+func (m *mockCeremonyService) CeremonyClaimShareBegin(_ context.Context, _ string) (*service.CeremonyCustodianChallenge, error) {
+	return nil, fmt.Errorf("not implemented in mock")
+}
+
+// CeremonyClaimShareComplete is a stub for the custodian claim-complete flow.
+func (m *mockCeremonyService) CeremonyClaimShareComplete(_ context.Context, _, _ string, _ []byte) (*custodian.Custodian, error) {
+	return nil, fmt.Errorf("not implemented in mock")
+}
+
+// CeremonySubmitUnsealShare is a stub for custodian unseal-share submission.
+func (m *mockCeremonyService) CeremonySubmitUnsealShare(_ context.Context, _, _ string, _, _ []byte) (*service.CeremonyUnsealShareResult, error) {
+	return nil, fmt.Errorf("not implemented in mock")
+}
+
+// CeremonyEnrollExternalOfficer is a stub for external-officer enrollment.
+func (m *mockCeremonyService) CeremonyEnrollExternalOfficer(_ context.Context, _ *service.CeremonyEnrollExternalOfficerRequest) (*service.CeremonyEnrollExternalOfficerResponse, error) {
+	return nil, fmt.Errorf("not implemented in mock")
 }
 
 // ---------------------------------------------------------------------------
@@ -431,65 +423,68 @@ func (m *mockDatabaseService) DatabaseBarrierStatus(name string) (*seal.BarrierS
 	return &seal.BarrierStatus{}, nil
 }
 
+// The *ForTenant methods honor an explicit *ForTenantFn when set; otherwise
+// they delegate to the plain method, mirroring the real DatabaseService's
+// scope routing for the system tenant (the test context carries no tenant).
 func (m *mockDatabaseService) CreateForTenant(ctx context.Context, cfg database.DatabaseConfig) (*database.DatabaseInfo, error) {
 	if m.createForTenantFn != nil {
 		return m.createForTenantFn(ctx, cfg)
 	}
-	return &database.DatabaseInfo{Name: cfg.Name}, nil
+	return m.Create(cfg)
 }
 
 func (m *mockDatabaseService) GetForTenant(ctx context.Context, name string) (*database.DatabaseInfo, error) {
 	if m.getForTenantFn != nil {
 		return m.getForTenantFn(ctx, name)
 	}
-	return &database.DatabaseInfo{Name: name}, nil
+	return m.Get(name)
 }
 
 func (m *mockDatabaseService) ListForTenant(ctx context.Context) ([]database.DatabaseInfo, error) {
 	if m.listForTenantFn != nil {
 		return m.listForTenantFn(ctx)
 	}
-	return []database.DatabaseInfo{}, nil
+	return m.List()
 }
 
 func (m *mockDatabaseService) DropForTenant(ctx context.Context, name string) error {
 	if m.dropForTenantFn != nil {
 		return m.dropForTenantFn(ctx, name)
 	}
-	return nil
+	return m.Drop(name)
 }
 
 func (m *mockDatabaseService) UpdateProtocolForTenant(ctx context.Context, name string, protocol database.ProtocolConfig) (*database.DatabaseInfo, error) {
 	if m.updateProtocolForTenantFn != nil {
 		return m.updateProtocolForTenantFn(ctx, name, protocol)
 	}
-	return &database.DatabaseInfo{Name: name}, nil
+	return m.UpdateProtocol(name, protocol)
 }
 
 func (m *mockDatabaseService) UpdateEtcdForTenant(ctx context.Context, name string, etcd *database.EtcdConfig) (*database.DatabaseInfo, error) {
 	if m.updateEtcdForTenantFn != nil {
 		return m.updateEtcdForTenantFn(ctx, name, etcd)
 	}
-	return &database.DatabaseInfo{Name: name}, nil
+	return m.UpdateEtcd(name, etcd)
 }
 
 func (m *mockDatabaseService) UpdateRaftForTenant(ctx context.Context, name string, raft *database.DatabaseRaftConfig) (*database.DatabaseInfo, error) {
 	if m.updateRaftForTenantFn != nil {
 		return m.updateRaftForTenantFn(ctx, name, raft)
 	}
-	return &database.DatabaseInfo{Name: name}, nil
+	return m.UpdateRaft(name, raft)
 }
 
 func (m *mockDatabaseService) UpdateBarrierForTenant(ctx context.Context, name string, barrier *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
 	if m.updateBarrierForTenantFn != nil {
 		return m.updateBarrierForTenantFn(ctx, name, barrier)
 	}
-	return &database.DatabaseInfo{Name: name}, nil
+	return m.UpdateBarrier(name, barrier)
 }
 
 func (m *mockDatabaseService) UpdateConnectionForTenant(ctx context.Context, name string, conn *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
 	if m.updateConnectionForTenantFn != nil {
 		return m.updateConnectionForTenantFn(ctx, name, conn)
 	}
-	return &database.DatabaseInfo{Name: name}, nil
+	return m.UpdateConnection(name, conn)
 }

@@ -132,6 +132,30 @@ func (t *TenantDatabaseClient) UpdateDatabaseConnection(ctx context.Context, req
 	return t.inner.UpdateDatabaseConnection(ctx, req)
 }
 
+// SealDatabase seals the barrier for a tenant-owned database.
+func (t *TenantDatabaseClient) SealDatabase(ctx context.Context, name string) error {
+	if err := t.verifyOwnership(ctx, name); err != nil {
+		return err
+	}
+	return t.inner.SealDatabase(ctx, name)
+}
+
+// UnsealDatabase unseals the barrier for a tenant-owned database.
+func (t *TenantDatabaseClient) UnsealDatabase(ctx context.Context, name, secret string) error {
+	if err := t.verifyOwnership(ctx, name); err != nil {
+		return err
+	}
+	return t.inner.UnsealDatabase(ctx, name, secret)
+}
+
+// DatabaseBarrierStatus returns the barrier status for a tenant-owned database.
+func (t *TenantDatabaseClient) DatabaseBarrierStatus(ctx context.Context, name string) (*DatabaseBarrierStatus, error) {
+	if err := t.verifyOwnership(ctx, name); err != nil {
+		return nil, err
+	}
+	return t.inner.DatabaseBarrierStatus(ctx, name)
+}
+
 // verifyOwnership checks that the named database belongs to this tenant.
 func (t *TenantDatabaseClient) verifyOwnership(ctx context.Context, name string) error {
 	info, err := t.inner.GetDatabase(ctx, name)

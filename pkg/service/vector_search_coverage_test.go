@@ -87,9 +87,12 @@ func newSearchTestService(t *testing.T, namespace string, dimension uint32, mock
 	storage := newMockVectorStorage()
 	logger := newMockLogger()
 
-	// Pre-populate namespace in storage so ListNamespaces during init succeeds
+	// The service scopes namespaces by tenant. Tests run without an explicit
+	// tenant ID so tenant.FromContext returns SystemTenantID. Pre-populate the
+	// storage using the scoped name so that init loads the index correctly.
+	scoped := scopedNamespace(tenant.SystemTenantID, namespace)
 	require.NoError(t, storage.CreateNamespace(context.Background(), &vector.NamespaceInfo{
-		Name:      namespace,
+		Name:      scoped,
 		Dimension: dimension,
 	}))
 
@@ -98,10 +101,10 @@ func newSearchTestService(t *testing.T, namespace string, dimension uint32, mock
 
 	vs := svc.(*vectorService)
 
-	// Inject mock HNSW index to replace the real one created during init
+	// Inject mock HNSW index keyed by the scoped name (the key the service uses).
 	if mockIndex != nil {
 		vs.indexMu.Lock()
-		vs.hnswIndexes[namespace] = mockIndex
+		vs.hnswIndexes[scoped] = mockIndex
 		vs.indexMu.Unlock()
 	}
 
@@ -251,7 +254,9 @@ func TestEnsureHNSWIndex_ExistingIndex(t *testing.T) {
 
 	vs, _ := newSearchTestService(t, "test-ns", 3, mockIdx)
 
-	idx, err := vs.ensureHNSWIndex(context.Background(), "test-ns")
+	// ensureHNSWIndex operates on the physical (scoped) namespace key.
+	scoped := testScopedNS("test-ns")
+	idx, err := vs.ensureHNSWIndex(context.Background(), scoped)
 
 	require.NoError(t, err)
 	assert.NotNil(t, idx)
@@ -347,21 +352,23 @@ func TestEnsureHNSWIndex_LoadsVectorsFromStorage(t *testing.T) {
 
 	vs := svc.(*vectorService)
 
-	// Create namespace and add vectors to storage
+	// Create namespace and add vectors using the scoped key, since
+	// ensureHNSWIndex is an internal function that receives a scoped key.
+	scoped := testScopedNS("load-ns")
 	require.NoError(t, storage.CreateNamespace(context.Background(), &vector.NamespaceInfo{
-		Name:      "load-ns",
+		Name:      scoped,
 		Dimension: 3,
 	}))
-	require.NoError(t, storage.UpsertVector(context.Background(), "load-ns", &vector.VectorValue{
+	require.NoError(t, storage.UpsertVector(context.Background(), scoped, &vector.VectorValue{
 		ID:        1,
 		Embedding: []float32{1.0, 0.0, 0.0},
 	}))
-	require.NoError(t, storage.UpsertVector(context.Background(), "load-ns", &vector.VectorValue{
+	require.NoError(t, storage.UpsertVector(context.Background(), scoped, &vector.VectorValue{
 		ID:        2,
 		Embedding: []float32{0.0, 1.0, 0.0},
 	}))
 
-	idx, err := vs.ensureHNSWIndex(context.Background(), "load-ns")
+	idx, err := vs.ensureHNSWIndex(context.Background(), scoped)
 
 	require.NoError(t, err)
 	assert.NotNil(t, idx)
@@ -411,13 +418,15 @@ func TestVectorSearchSimilar_SuccessWithResults(t *testing.T) {
 
 	vs, storage := newSearchTestService(t, "search-ns", 3, mockIdx)
 
-	// Populate storage with vectors for IncludeVectors/IncludeMetadata path
-	require.NoError(t, storage.UpsertVector(context.Background(), "search-ns", &vector.VectorValue{
+	// Populate storage with vectors for IncludeVectors/IncludeMetadata path.
+	// Use the scoped name — this is what SearchSimilar queries against.
+	scopedNS := scopedNamespace(tenant.SystemTenantID, "search-ns")
+	require.NoError(t, storage.UpsertVector(context.Background(), scopedNS, &vector.VectorValue{
 		ID:        1,
 		Embedding: []float32{1.0, 0.0, 0.0},
 		Metadata:  map[string]string{"category": "A"},
 	}))
-	require.NoError(t, storage.UpsertVector(context.Background(), "search-ns", &vector.VectorValue{
+	require.NoError(t, storage.UpsertVector(context.Background(), scopedNS, &vector.VectorValue{
 		ID:        2,
 		Embedding: []float32{0.0, 1.0, 0.0},
 		Metadata:  map[string]string{"category": "B"},
@@ -482,12 +491,12 @@ func TestVectorSearchSimilar_WithMetadataFilter(t *testing.T) {
 
 	vs, storage := newSearchTestService(t, "metafilter-ns", 3, mockIdx)
 
-	require.NoError(t, storage.UpsertVector(context.Background(), "metafilter-ns", &vector.VectorValue{
+	require.NoError(t, storage.UpsertVector(context.Background(), testScopedNS("metafilter-ns"), &vector.VectorValue{
 		ID:        1,
 		Embedding: []float32{1.0, 0.0, 0.0},
 		Metadata:  map[string]string{"category": "A"},
 	}))
-	require.NoError(t, storage.UpsertVector(context.Background(), "metafilter-ns", &vector.VectorValue{
+	require.NoError(t, storage.UpsertVector(context.Background(), testScopedNS("metafilter-ns"), &vector.VectorValue{
 		ID:        2,
 		Embedding: []float32{0.0, 1.0, 0.0},
 		Metadata:  map[string]string{"category": "B"},
@@ -582,18 +591,23 @@ func TestVectorSearchSimilar_ClosedService(t *testing.T) {
 	assert.Equal(t, qrdbErrors.ErrInternal, qrdbErr.Code)
 }
 
-func TestVectorSearchSimilar_TenantAccessDenied(t *testing.T) {
-	mockIdx := &searchMockHNSWIndex{}
-	vs, storage := newSearchTestService(t, "tenant-ns", 3, mockIdx)
-
-	// Override GetNamespaceInfo to return a namespace owned by a different tenant
-	storage.getNamespaceInfoFn = func(ctx context.Context, namespace string) (*vector.NamespaceInfo, error) {
-		return &vector.NamespaceInfo{
-			Name:     namespace,
-			TenantID: "other-tenant",
-		}, nil
+func TestVectorSearchSimilar_TenantNamespaceIsolation(t *testing.T) {
+	// Scoped storage keys guarantee that tenant "my-tenant" cannot retrieve
+	// search results from tenant "other-tenant"'s namespace. Each tenant's
+	// namespace resolves to a different storage key, so searching the same
+	// logical name from a different tenant returns empty results (the intruder
+	// has no index for their own scoped key).
+	mockIdx := &searchMockHNSWIndex{
+		searchFn: func(query []float32, k int) ([]*interfaces.HNSWSearchResult, error) {
+			return []*interfaces.HNSWSearchResult{{ID: 1, Distance: 0.1}}, nil
+		},
 	}
 
+	// Set up the namespace under the system tenant (default when no ctx tenant).
+	vs, _ := newSearchTestService(t, "tenant-ns", 3, mockIdx)
+
+	// A completely different tenant ("my-tenant") searches the same logical
+	// name → they see their own (empty) scoped namespace.
 	ctx := tenant.WithTenantID(context.Background(), "my-tenant")
 	req := &SearchSimilarRequest{
 		Namespace:   "tenant-ns",
@@ -603,12 +617,10 @@ func TestVectorSearchSimilar_TenantAccessDenied(t *testing.T) {
 
 	resp, err := vs.SearchSimilar(ctx, req)
 
-	require.Error(t, err)
-	assert.Nil(t, resp)
-
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrForbidden, qrdbErr.Code)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	// Empty because "my-tenant" has no vectors in their own scoped namespace.
+	assert.Empty(t, resp.Results)
 }
 
 func TestVectorSearchSimilar_NamespaceDoesNotExist(t *testing.T) {
@@ -646,7 +658,7 @@ func TestVectorSearchSimilar_GetVectorErrorDuringEnrichment(t *testing.T) {
 
 	vs, storage := newSearchTestService(t, "enrich-ns", 3, mockIdx)
 
-	require.NoError(t, storage.UpsertVector(context.Background(), "enrich-ns", &vector.VectorValue{
+	require.NoError(t, storage.UpsertVector(context.Background(), testScopedNS("enrich-ns"), &vector.VectorValue{
 		ID:        1,
 		Embedding: []float32{1.0, 0.0, 0.0},
 		Metadata:  map[string]string{"k": "v"},
@@ -690,7 +702,7 @@ func TestVectorSearchByID_Success(t *testing.T) {
 	vs, storage := newSearchTestService(t, "byid-ns", 3, mockIdx)
 
 	// Source vector that SearchByID will fetch first
-	require.NoError(t, storage.UpsertVector(context.Background(), "byid-ns", &vector.VectorValue{
+	require.NoError(t, storage.UpsertVector(context.Background(), testScopedNS("byid-ns"), &vector.VectorValue{
 		ID:        1,
 		Embedding: []float32{1.0, 0.0, 0.0},
 	}))
@@ -826,7 +838,7 @@ func TestVectorSearchByID_WithoutExcludeSelf(t *testing.T) {
 
 	vs, storage := newSearchTestService(t, "noexclude-ns", 3, mockIdx)
 
-	require.NoError(t, storage.UpsertVector(context.Background(), "noexclude-ns", &vector.VectorValue{
+	require.NoError(t, storage.UpsertVector(context.Background(), testScopedNS("noexclude-ns"), &vector.VectorValue{
 		ID:        1,
 		Embedding: []float32{1.0, 0.0, 0.0},
 	}))
@@ -847,29 +859,32 @@ func TestVectorSearchByID_WithoutExcludeSelf(t *testing.T) {
 	assert.Len(t, resp.Results, 2)
 }
 
-func TestVectorSearchByID_TenantAccessDenied(t *testing.T) {
+func TestVectorSearchByID_TenantNamespaceIsolation(t *testing.T) {
+	// A tenant that never inserted a vector into their scoped namespace gets
+	// ErrNotFound when searching by ID (the source vector does not exist in
+	// their own scoped store, regardless of whether another tenant has it).
 	storage := newMockVectorStorage()
 	logger := newMockLogger()
 
+	// Seed the namespace under "owner-tenant" using the scoped key.
+	ownerScoped := scopedNamespace("owner-tenant", "tenant-byid-ns")
 	require.NoError(t, storage.CreateNamespace(context.Background(), &vector.NamespaceInfo{
-		Name:      "tenant-byid-ns",
+		Name:      ownerScoped,
 		Dimension: 3,
+		TenantID:  "owner-tenant",
 	}))
-
-	// Override GetNamespaceInfo to return TenantID (mock CreateNamespace does not preserve it)
-	storage.getNamespaceInfoFn = func(ctx context.Context, namespace string) (*vector.NamespaceInfo, error) {
-		return &vector.NamespaceInfo{
-			Name:      namespace,
-			Dimension: 3,
-			TenantID:  "owner-tenant",
-		}, nil
-	}
+	require.NoError(t, storage.UpsertVector(context.Background(), ownerScoped, &vector.VectorValue{
+		ID:        1,
+		Embedding: []float32{1.0, 0.0, 0.0},
+	}))
 
 	svc, err := NewVectorService(storage, logger)
 	require.NoError(t, err)
 
 	vs := svc.(*vectorService)
 
+	// "different-tenant" cannot find the vector because their scoped key is
+	// different → storage returns ErrNotFound, bubbling up to the caller.
 	ctx := tenant.WithTenantID(context.Background(), "different-tenant")
 	req := &SearchByIDRequest{
 		Namespace: "tenant-byid-ns",
@@ -884,7 +899,7 @@ func TestVectorSearchByID_TenantAccessDenied(t *testing.T) {
 
 	var qrdbErr *qrdbErrors.QRDBError
 	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrForbidden, qrdbErr.Code)
+	assert.Equal(t, qrdbErrors.ErrNotFound, qrdbErr.Code)
 }
 
 func TestVectorSearchByID_ExcludeSelfTruncatesResults(t *testing.T) {
@@ -904,7 +919,7 @@ func TestVectorSearchByID_ExcludeSelfTruncatesResults(t *testing.T) {
 
 	vs, storage := newSearchTestService(t, "truncate-ns", 3, mockIdx)
 
-	require.NoError(t, storage.UpsertVector(context.Background(), "truncate-ns", &vector.VectorValue{
+	require.NoError(t, storage.UpsertVector(context.Background(), testScopedNS("truncate-ns"), &vector.VectorValue{
 		ID:        5,
 		Embedding: []float32{1.0, 0.0, 0.0},
 	}))
@@ -944,17 +959,17 @@ func TestVectorHybridSearch_SuccessWithMetadataFiltering(t *testing.T) {
 
 	vs, storage := newSearchTestService(t, "hybrid-ns", 3, mockIdx)
 
-	require.NoError(t, storage.UpsertVector(context.Background(), "hybrid-ns", &vector.VectorValue{
+	require.NoError(t, storage.UpsertVector(context.Background(), testScopedNS("hybrid-ns"), &vector.VectorValue{
 		ID:        1,
 		Embedding: []float32{1.0, 0.0, 0.0},
 		Metadata:  map[string]string{"category": "A"},
 	}))
-	require.NoError(t, storage.UpsertVector(context.Background(), "hybrid-ns", &vector.VectorValue{
+	require.NoError(t, storage.UpsertVector(context.Background(), testScopedNS("hybrid-ns"), &vector.VectorValue{
 		ID:        2,
 		Embedding: []float32{0.0, 1.0, 0.0},
 		Metadata:  map[string]string{"category": "B"},
 	}))
-	require.NoError(t, storage.UpsertVector(context.Background(), "hybrid-ns", &vector.VectorValue{
+	require.NoError(t, storage.UpsertVector(context.Background(), testScopedNS("hybrid-ns"), &vector.VectorValue{
 		ID:        3,
 		Embedding: []float32{0.0, 0.0, 1.0},
 		Metadata:  map[string]string{"category": "A"},
@@ -1012,12 +1027,12 @@ func TestVectorHybridSearch_NoMetadataFilter(t *testing.T) {
 
 	vs, storage := newSearchTestService(t, "hybrid-nofilter-ns", 3, mockIdx)
 
-	require.NoError(t, storage.UpsertVector(context.Background(), "hybrid-nofilter-ns", &vector.VectorValue{
+	require.NoError(t, storage.UpsertVector(context.Background(), testScopedNS("hybrid-nofilter-ns"), &vector.VectorValue{
 		ID:        1,
 		Embedding: []float32{1.0, 0.0, 0.0},
 		Metadata:  map[string]string{"k": "v"},
 	}))
-	require.NoError(t, storage.UpsertVector(context.Background(), "hybrid-nofilter-ns", &vector.VectorValue{
+	require.NoError(t, storage.UpsertVector(context.Background(), testScopedNS("hybrid-nofilter-ns"), &vector.VectorValue{
 		ID:        2,
 		Embedding: []float32{0.0, 1.0, 0.0},
 		Metadata:  map[string]string{"k": "v2"},
@@ -1076,7 +1091,7 @@ func TestVectorHybridSearch_KLimitsFilteredResults(t *testing.T) {
 	vs, storage := newSearchTestService(t, "klimit-ns", 3, mockIdx)
 
 	for i := uint64(1); i <= 4; i++ {
-		require.NoError(t, storage.UpsertVector(context.Background(), "klimit-ns", &vector.VectorValue{
+		require.NoError(t, storage.UpsertVector(context.Background(), testScopedNS("klimit-ns"), &vector.VectorValue{
 			ID:        i,
 			Embedding: []float32{float32(i), 0.0, 0.0},
 			Metadata:  map[string]string{"pass": "yes"},
@@ -1098,40 +1113,51 @@ func TestVectorHybridSearch_KLimitsFilteredResults(t *testing.T) {
 	assert.LessOrEqual(t, resp.TotalFiltered, 2, "should not exceed K")
 }
 
-func TestVectorHybridSearch_TenantAccessDenied(t *testing.T) {
+func TestVectorHybridSearch_TenantNamespacesAreIsolated(t *testing.T) {
+	// Scoped namespaces guarantee that "intruder" cannot retrieve vectors
+	// stored under "owner" even when both use the same logical namespace name.
+	// "owner" creates the namespace and inserts a vector.
+	// "intruder" HybridSearch on the same logical name receives empty results
+	// because the service resolves a different scoped storage key.
 	storage := newMockVectorStorage()
 	logger := newMockLogger()
 
-	require.NoError(t, storage.CreateNamespace(context.Background(), &vector.NamespaceInfo{
-		Name: "hybrid-tenant-ns",
-	}))
+	ownerCtx := tenant.WithTenantID(context.Background(), "owner")
+	ownerScoped := scopedNamespace("owner", "hybrid-tenant-ns")
 
-	// Override GetNamespaceInfo to return TenantID (mock CreateNamespace does not preserve it)
-	storage.getNamespaceInfoFn = func(ctx context.Context, namespace string) (*vector.NamespaceInfo, error) {
-		return &vector.NamespaceInfo{
-			Name:     namespace,
-			TenantID: "owner",
-		}, nil
-	}
+	require.NoError(t, storage.CreateNamespace(context.Background(), &vector.NamespaceInfo{
+		Name:      ownerScoped,
+		Dimension: 3,
+		TenantID:  "owner",
+	}))
+	require.NoError(t, storage.UpsertVector(ownerCtx, ownerScoped, &vector.VectorValue{
+		ID:        1,
+		Embedding: []float32{1.0, 0.0, 0.0},
+	}))
 
 	svc, err := NewVectorService(storage, logger)
 	require.NoError(t, err)
 
-	vs := svc.(*vectorService)
-
-	ctx := tenant.WithTenantID(context.Background(), "intruder")
-	req := &HybridSearchRequest{
+	// Owner can search their own namespace.
+	ownerReq := &HybridSearchRequest{
 		Namespace:   "hybrid-tenant-ns",
 		QueryVector: []float32{1.0, 0.0, 0.0},
 		K:           5,
 	}
+	ownerResp, err := svc.HybridSearch(ownerCtx, ownerReq)
+	require.NoError(t, err)
+	require.NotNil(t, ownerResp)
 
-	resp, err := vs.HybridSearch(ctx, req)
-
-	require.Error(t, err)
-	assert.Nil(t, resp)
-
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrForbidden, qrdbErr.Code)
+	// Intruder searches the same logical namespace but gets empty results —
+	// they see their own (empty) scoped namespace, not owner's data.
+	intruderCtx := tenant.WithTenantID(context.Background(), "intruder")
+	intruderReq := &HybridSearchRequest{
+		Namespace:   "hybrid-tenant-ns",
+		QueryVector: []float32{1.0, 0.0, 0.0},
+		K:           5,
+	}
+	intruderResp, err := svc.HybridSearch(intruderCtx, intruderReq)
+	require.NoError(t, err)
+	require.NotNil(t, intruderResp)
+	assert.Empty(t, intruderResp.Results, "intruder must not see owner's vectors")
 }

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestCLIMultiProtocolLeaseLifecycle tests the full lease lifecycle
@@ -169,6 +170,76 @@ func TestCLIMultiProtocolLeaseWithKV(t *testing.T) {
 				fmt.Sprintf("[%s] kv get should return stored value", proto))
 
 			t.Logf("[%s] lease with KV passed for key: %s, lease: %s", proto, key, leaseID)
+		})
+	}
+}
+
+// TestCLIClusterLeaseExpiryNotifiesWatch validates the exact primitive
+// combination a service registry (e.g. go-quicbaas) relies on over a network
+// transport: a key attached to a short-lived lease is automatically deleted
+// when the lease expires (no keep-alive), and a prefix watch observes that
+// DELETE. This is the "node death -> lease expiry -> auto-delete -> watchers
+// notified" path, exercised end-to-end across each streaming-capable protocol.
+func TestCLIClusterLeaseExpiryNotifiesWatch(t *testing.T) {
+	cfg := LoadTestConfig()
+	requireCLI(t, cfg)
+
+	for _, proto := range watchSupportedProtocols() {
+		t.Run(string(proto), func(t *testing.T) {
+			if !cfg.IsProtocolAvailable(t, proto) {
+				t.Fatalf("server not available for protocol %s", proto)
+			}
+
+			// Grant a short-lived lease (no keep-alive -> it will expire).
+			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto, "lease", "grant", "--ttl", "3")
+			if err != nil {
+				t.Logf("stdout: %s", stdout)
+				t.Logf("stderr: %s", stderr)
+				t.Fatalf("[%s] lease grant failed: %v", proto, err)
+			}
+			var leaseID string
+			for _, line := range strings.Split(stdout, "\n") {
+				if strings.HasPrefix(line, "ID:") {
+					leaseID = strings.TrimSpace(strings.TrimPrefix(line, "ID:"))
+					break
+				}
+			}
+			if leaseID == "" {
+				t.Fatalf("[%s] could not extract lease ID from output: %s", proto, stdout)
+			}
+
+			ts := testTimestamp()
+			prefix := fmt.Sprintf("__svc-test-%s-%d", proto, ts)
+			key := prefix + "/instance-1"
+			t.Cleanup(func() {
+				execCLIWithProtocol(t, cfg, proto, "kv", "del", key)           //nolint:errcheck
+				execCLIWithProtocol(t, cfg, proto, "lease", "revoke", leaseID) //nolint:errcheck
+			})
+
+			// Register the instance: put the key under the watched prefix with
+			// the lease attached.
+			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "kv", "put", key, "instance-addr", "--lease-id", leaseID)
+			if err != nil {
+				t.Logf("stdout: %s", stdout)
+				t.Logf("stderr: %s", stderr)
+				t.Fatalf("[%s] kv put --lease-id failed: %v", proto, err)
+			}
+
+			// Start a prefix watch BEFORE the lease expires so it observes the
+			// expiry-driven delete.
+			buf, cancel := execCLIBackground(t, cfg, proto, 20*time.Second, "watch", prefix, "--prefix")
+
+			// Do not keep-alive: wait for the lease (ttl=3s) to expire and the
+			// lessor to delete the attached key, plus propagation margin.
+			time.Sleep(10 * time.Second)
+
+			cancel()
+			output := buf.String()
+
+			assertContains(t, output, "DELETE",
+				fmt.Sprintf("[%s] watch should observe a DELETE when the lease expires; output: %s", proto, output))
+
+			t.Logf("[%s] lease-expiry delete observed by watch for prefix: %s", proto, prefix)
 		})
 	}
 }

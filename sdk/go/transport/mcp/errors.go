@@ -106,3 +106,14 @@ func (e *jsonEncodeError) Error() string {
 func (e *jsonEncodeError) Unwrap() error {
 	return e.Err
 }
+
+// nilRequestError is returned when a transport method is called with a nil
+// request struct.
+type nilRequestError struct {
+	Method string
+}
+
+// Error returns a human-readable description.
+func (e *nilRequestError) Error() string {
+	return "mcp transport: " + e.Method + ": nil request"
+}

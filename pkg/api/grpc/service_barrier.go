@@ -30,9 +30,16 @@ import (
 // ---------------------------------------------------------------------------
 
 // BarrierInitialize initializes the storage barrier with a secret credential.
+// When the request supplies a non-empty SoPin / UserPin and the server has a
+// pin.PINBackend configured, the PINs are persisted on the backend before
+// the barrier is initialized. With no backend the PIN fields are ignored.
 func (s *qrdbServiceServer) BarrierInitialize(ctx context.Context, req *pb.BarrierInitializeRequest) (*emptypb.Empty, error) {
 	if s.barrierSvc == nil {
 		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "barrier"}).Error())
+	}
+
+	if err := applyBarrierInitializePINs(s.pinBackend, req.GetSoPin(), req.GetUserPin()); err != nil {
+		return nil, mapPINError(err)
 	}
 
 	if err := s.barrierSvc.BarrierInitialize(ctx, req.GetSecret()); err != nil {
@@ -55,7 +62,12 @@ func (s *qrdbServiceServer) BarrierUnseal(ctx context.Context, req *pb.BarrierUn
 	return &emptypb.Empty{}, nil
 }
 
-// BarrierSeal transitions the storage barrier to the sealed state.
+// BarrierSeal transitions the storage barrier to the sealed state. The
+// proto RPC accepts Empty so this transport does not surface SO PIN gating
+// at the wire (it would require a breaking proto change). The same SO PIN
+// enforcement is available through the REST surface which carries the
+// barrierSealRequest JSON body; QUIC, MCP and Unix mirror REST semantics
+// for parity.
 func (s *qrdbServiceServer) BarrierSeal(ctx context.Context, _ *emptypb.Empty) (*emptypb.Empty, error) {
 	if s.barrierSvc == nil {
 		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "barrier"}).Error())
@@ -89,10 +101,16 @@ func (s *qrdbServiceServer) BarrierStatus(ctx context.Context, _ *emptypb.Empty)
 }
 
 // BarrierShamirInitialize initializes the barrier with Shamir secret sharing,
-// splitting the root key into threshold-of-totalShares shares.
+// splitting the root key into threshold-of-totalShares shares. When the
+// request supplies SoPin / UserPin and a pin.PINBackend is configured,
+// the PINs are persisted on the backend before initialization.
 func (s *qrdbServiceServer) BarrierShamirInitialize(ctx context.Context, req *pb.BarrierShamirInitializeRequest) (*pb.BarrierShamirInitializeResponse, error) {
 	if s.barrierSvc == nil {
 		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "barrier"}).Error())
+	}
+
+	if err := applyBarrierInitializePINs(s.pinBackend, req.GetSoPin(), req.GetUserPin()); err != nil {
+		return nil, mapPINError(err)
 	}
 
 	info, err := s.barrierSvc.BarrierInitializeShamir(ctx, req.GetSecret(), int(req.GetThreshold()), int(req.GetTotalShares()))
@@ -140,69 +158,16 @@ func (s *qrdbServiceServer) BarrierShamirUnsealShares(ctx context.Context, req *
 	return &emptypb.Empty{}, nil
 }
 
-// BarrierShamirListShares returns metadata about the persisted Shamir shares
-// including count, threshold, and total.
-func (s *qrdbServiceServer) BarrierShamirListShares(ctx context.Context, _ *emptypb.Empty) (*pb.BarrierShamirSharesResponse, error) {
-	if s.barrierSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "barrier"}).Error())
-	}
-
-	info, err := s.barrierSvc.BarrierShamirListShares(ctx)
-	if err != nil {
-		return nil, mapServiceError(err)
-	}
-
-	return &pb.BarrierShamirSharesResponse{
-		Count:     int32(info.Count),
-		Threshold: int32(info.Threshold),
-		Total:     int32(info.Total),
-	}, nil
-}
-
-// BarrierShamirDeleteShare removes a single Shamir share by its 1-based index.
-func (s *qrdbServiceServer) BarrierShamirDeleteShare(ctx context.Context, req *pb.BarrierShamirDeleteShareRequest) (*emptypb.Empty, error) {
-	if s.barrierSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "barrier"}).Error())
-	}
-
-	if err := s.barrierSvc.BarrierShamirDeleteShare(ctx, int(req.GetIndex())); err != nil {
-		return nil, mapServiceError(err)
-	}
-
-	return &emptypb.Empty{}, nil
-}
-
-// BarrierShamirDeleteAllShares removes all persisted Shamir shares.
-func (s *qrdbServiceServer) BarrierShamirDeleteAllShares(ctx context.Context, _ *emptypb.Empty) (*emptypb.Empty, error) {
-	if s.barrierSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "barrier"}).Error())
-	}
-
-	if err := s.barrierSvc.BarrierShamirDeleteAllShares(ctx); err != nil {
-		return nil, mapServiceError(err)
-	}
-
-	return &emptypb.Empty{}, nil
-}
-
-// BarrierShamirVerify validates the consistency of all persisted Shamir shares.
-func (s *qrdbServiceServer) BarrierShamirVerify(ctx context.Context, _ *emptypb.Empty) (*emptypb.Empty, error) {
-	if s.barrierSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "barrier"}).Error())
-	}
-
-	if err := s.barrierSvc.BarrierShamirVerify(ctx); err != nil {
-		return nil, mapServiceError(err)
-	}
-
-	return &emptypb.Empty{}, nil
-}
-
 // BarrierRekey generates new Shamir shares for the existing root key with
-// the specified threshold and total parameters.
+// the specified threshold and total parameters. SO PIN verification is
+// enforced when a pin.PINBackend is configured AND a SO PIN has been set.
 func (s *qrdbServiceServer) BarrierRekey(ctx context.Context, req *pb.BarrierRekeyRequest) (*pb.BarrierShamirInitializeResponse, error) {
 	if s.barrierSvc == nil {
 		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "barrier"}).Error())
+	}
+
+	if err := verifyBarrierSOPIN(s.pinBackend, req.GetSoPin()); err != nil {
+		return nil, mapPINError(err)
 	}
 
 	info, err := s.barrierSvc.BarrierRekey(ctx, int(req.GetThreshold()), int(req.GetTotal()))
@@ -218,10 +183,15 @@ func (s *qrdbServiceServer) BarrierRekey(ctx context.Context, req *pb.BarrierRek
 }
 
 // BarrierRecoveryGenerate generates a set of Shamir recovery shares from the
-// root key for disaster recovery.
+// root key for disaster recovery. SO PIN verification is enforced when a
+// pin.PINBackend is configured AND a SO PIN has been set.
 func (s *qrdbServiceServer) BarrierRecoveryGenerate(ctx context.Context, req *pb.BarrierRecoveryGenerateRequest) (*pb.BarrierRecoveryKeysResponse, error) {
 	if s.barrierSvc == nil {
 		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "barrier"}).Error())
+	}
+
+	if err := verifyBarrierSOPIN(s.pinBackend, req.GetSoPin()); err != nil {
+		return nil, mapPINError(err)
 	}
 
 	info, err := s.barrierSvc.BarrierGenerateRecoveryKeys(ctx, int(req.GetThreshold()), int(req.GetTotal()))

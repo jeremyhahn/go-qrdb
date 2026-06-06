@@ -54,11 +54,50 @@ func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserReq
 }
 
 // GetUser retrieves a user by ID via the embedded user service.
-func (t *Transport) GetUser(ctx context.Context, id string) (*transport.User, error) {
+func (t *Transport) GetUser(ctx context.Context, id uint64) (*transport.User, error) {
 	if t.userSvc == nil {
 		return nil, &transport.NotImplementedError{Method: "GetUser"}
 	}
 	u, err := t.userSvc.GetUser(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return userToTransport(u), nil
+}
+
+// GetUserByUsername retrieves a user by tenant-scoped username via the
+// embedded user service.
+func (t *Transport) GetUserByUsername(ctx context.Context, tenantID, username string) (*transport.User, error) {
+	if t.userSvc == nil {
+		return nil, &transport.NotImplementedError{Method: "GetUserByUsername"}
+	}
+	u, err := t.userSvc.GetUserByUsername(ctx, tenantID, username)
+	if err != nil {
+		return nil, err
+	}
+	return userToTransport(u), nil
+}
+
+// GetUserByCertThumbprint resolves a user by mTLS SPKI thumbprint via the
+// embedded user service.
+func (t *Transport) GetUserByCertThumbprint(ctx context.Context, thumbprint string) (*transport.User, error) {
+	if t.userSvc == nil {
+		return nil, &transport.NotImplementedError{Method: "GetUserByCertThumbprint"}
+	}
+	u, err := t.userSvc.UserByCertThumbprint(ctx, thumbprint)
+	if err != nil {
+		return nil, err
+	}
+	return userToTransport(u), nil
+}
+
+// AddCertBinding binds an mTLS SPKI thumbprint to a user via the embedded
+// user service.
+func (t *Transport) AddCertBinding(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*transport.User, error) {
+	if t.userSvc == nil {
+		return nil, &transport.NotImplementedError{Method: "AddCertBinding"}
+	}
+	u, err := t.userSvc.AddCertBinding(ctx, userID, thumbprint, notAfterUnix)
 	if err != nil {
 		return nil, err
 	}
@@ -82,7 +121,7 @@ func (t *Transport) UpdateUser(ctx context.Context, req *transport.UpdateUserReq
 }
 
 // DeleteUser removes a non-system user by ID via the embedded user service.
-func (t *Transport) DeleteUser(ctx context.Context, id string) error {
+func (t *Transport) DeleteUser(ctx context.Context, id uint64) error {
 	if t.userSvc == nil {
 		return &transport.NotImplementedError{Method: "DeleteUser"}
 	}
@@ -114,7 +153,7 @@ func (t *Transport) ListUsers(ctx context.Context, req *transport.ListUsersReque
 }
 
 // EnableUser activates a user account via the embedded user service.
-func (t *Transport) EnableUser(ctx context.Context, id string) error {
+func (t *Transport) EnableUser(ctx context.Context, id uint64) error {
 	if t.userSvc == nil {
 		return &transport.NotImplementedError{Method: "EnableUser"}
 	}
@@ -122,7 +161,7 @@ func (t *Transport) EnableUser(ctx context.Context, id string) error {
 }
 
 // DisableUser deactivates a user account via the embedded user service.
-func (t *Transport) DisableUser(ctx context.Context, id string) error {
+func (t *Transport) DisableUser(ctx context.Context, id uint64) error {
 	if t.userSvc == nil {
 		return &transport.NotImplementedError{Method: "DisableUser"}
 	}
@@ -212,7 +251,7 @@ func (t *Transport) ListRoles(ctx context.Context, req *transport.ListRolesReque
 }
 
 // AssignRole adds a role to a user's role set via the embedded services.
-func (t *Transport) AssignRole(ctx context.Context, userID, roleID string) error {
+func (t *Transport) AssignRole(ctx context.Context, userID uint64, roleID string) error {
 	if t.roleSvc == nil {
 		return &transport.NotImplementedError{Method: "AssignRole"}
 	}
@@ -244,7 +283,7 @@ func (t *Transport) AssignRole(ctx context.Context, userID, roleID string) error
 }
 
 // UnassignRole removes a role from a user's role set via the embedded services.
-func (t *Transport) UnassignRole(ctx context.Context, userID, roleID string) error {
+func (t *Transport) UnassignRole(ctx context.Context, userID uint64, roleID string) error {
 	if t.roleSvc == nil {
 		return &transport.NotImplementedError{Method: "UnassignRole"}
 	}

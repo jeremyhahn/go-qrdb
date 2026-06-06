@@ -22,6 +22,7 @@ services:
       - ..:/workspace/go-qrdb
       - ../../go-quicraft:/workspace/go-quicraft
       - ../../go-truststrap:/workspace/go-truststrap
+      - ../../go-objstore:/workspace/go-objstore
     working_dir: /workspace/go-qrdb
     cap_add:
       - NET_ADMIN
@@ -35,6 +36,7 @@ services:
       - ..:/workspace/go-qrdb
       - ../../go-quicraft:/workspace/go-quicraft
       - ../../go-truststrap:/workspace/go-truststrap
+      - ../../go-objstore:/workspace/go-objstore
     working_dir: /workspace/go-qrdb
     command: ["make", "_build-client"]
 
@@ -47,6 +49,7 @@ services:
       - ..:/workspace/go-qrdb
       - ../../go-quicraft:/workspace/go-quicraft
       - ../../go-truststrap:/workspace/go-truststrap
+      - ../../go-objstore:/workspace/go-objstore
     working_dir: /workspace/go-qrdb
     environment:
       - CI=true
@@ -61,6 +64,7 @@ services:
       - ..:/workspace/go-qrdb
       - ../../go-quicraft:/workspace/go-quicraft
       - ../../go-truststrap:/workspace/go-truststrap
+      - ../../go-objstore:/workspace/go-objstore
     working_dir: /workspace/go-qrdb
     cap_add:
       - NET_ADMIN
@@ -84,6 +88,7 @@ services:
       - ..:/workspace/go-qrdb
       - ../../go-quicraft:/workspace/go-quicraft
       - ../../go-truststrap:/workspace/go-truststrap
+      - ../../go-objstore:/workspace/go-objstore
     working_dir: /workspace/go-qrdb
     cap_add:
       - NET_ADMIN

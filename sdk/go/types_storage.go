@@ -15,6 +15,10 @@
 package sdk
 
 import (
+	"github.com/cockroachdb/pebble/v2/vfs"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/encfs"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/file"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
@@ -112,3 +116,15 @@ var DefaultPebbleConfig = pebble.DefaultConfig
 
 // TestPebbleConfig returns a test-optimized PebbleDB configuration.
 var TestPebbleConfig = pebble.TestConfig
+
+// EncryptedPebbleConfig returns a DefaultPebbleConfig for the given dataDir with
+// the Pebble vfs.FS pre-set to an encfs-wrapped FS backed by the supplied
+// StorageBarrier. The barrier must be unsealed before pebble.Open is called.
+// A nil barrier returns a plain DefaultPebbleConfig with no encryption.
+func EncryptedPebbleConfig(dataDir string, barrier *seal.StorageBarrier) *pebble.Config {
+	cfg := pebble.DefaultConfig(dataDir)
+	if barrier != nil {
+		cfg.FS = encfs.New(vfs.Default, barrier)
+	}
+	return cfg
+}

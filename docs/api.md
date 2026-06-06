@@ -218,6 +218,14 @@ Retrieves the value for a single key. Returns raw bytes with `application/octet-
 
 **Response** `200 OK` with the value as the body.
 
+**Read consistency:** append `?consistency=strong|linearizable|eventual` to
+select the read-consistency level (the legacy `?stale=true` is equivalent to
+`eventual`). Omitting it uses the server default (linearizable). The same query
+param applies to `GET /kv?prefix=` (list), `/kv/scan`, `/kv/range`, and the
+time-series read endpoints. Write endpoints (`PUT`/`DELETE /kv/{key}`) accept
+`?write_mode=sync|wal_durable|batched` to select write durability. See
+[Consistency Levels](05-consistency.md#7a-transport-exposure).
+
 **Errors**
 
 | Code | Condition       |
@@ -226,7 +234,7 @@ Retrieves the value for a single key. Returns raw bytes with `application/octet-
 | 500  | Raft read error |
 
 ```bash
-curl -sk https://localhost:63002/kv/mykey
+curl -sk "https://localhost:63002/kv/mykey?consistency=eventual"
 ```
 
 ---
@@ -393,6 +401,76 @@ curl -sk -X POST -H 'Content-Type: application/json' \
   -d '{"shard_id":1}' \
   https://localhost:63002/snapshot | jq .
 ```
+
+---
+
+#### POST /admin/shards
+
+Initializes and starts a Raft group for a shard on this node. Requires the
+`admin:start_shard` permission.
+
+**Request body** `application/json`
+
+```json
+{
+  "shard_id": 7,
+  "replica_id": 2,
+  "members": { "2": "127.0.0.1:7000" },
+  "join": false
+}
+```
+
+**Response** `200 OK` — `{"status":"ok"}`. Errors: `400` malformed JSON, `500`
+shard start failure.
+
+---
+
+#### DELETE /admin/shards/{id}
+
+Stops the Raft group for the shard. Requires `admin:stop_shard`. Returns
+`{"status":"ok"}`; `400` for a non-numeric shard ID, `500` on failure.
+
+---
+
+#### GET /admin/shards/{id}/state
+
+Returns the Raft state for a shard. Requires `admin:shard_state`.
+
+**Response** `200 OK`
+
+```json
+{
+  "shard_id": 1,
+  "config_change_index": 4,
+  "term": 9,
+  "leader_id": 1,
+  "has_leader": true
+}
+```
+
+---
+
+#### GET /admin/topology
+
+Returns the full cluster topology as seen from this node. Requires
+`admin:topology`.
+
+**Response** `200 OK`
+
+```json
+{
+  "node_id": "node-1",
+  "raft_address": "127.0.0.1:7000",
+  "shard_count": 1,
+  "shards": [
+    { "shard_id": 1, "replica_id": 1, "is_leader": true, "leader_id": 1, "nodes": { "1": "127.0.0.1:7000" } }
+  ]
+}
+```
+
+These four operations are exposed with parity across REST, gRPC (`StartShard`,
+`StopShard`, `GetShardState`, `GetTopology`), QUIC (`admin.*`), and MCP
+(`qrdb_admin_*`).
 
 ---
 

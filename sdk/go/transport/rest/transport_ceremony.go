@@ -133,3 +133,18 @@ func (t *Transport) CeremonySignCSR(ctx context.Context, req *transport.SignCSRI
 
 	return &resp, nil
 }
+
+// CeremonyEnrollExternalOfficer enrols an officer whose key material lives
+// outside go-qrdb. Maps to POST /v1/init/enroll-external-officer.
+func (t *Transport) CeremonyEnrollExternalOfficer(ctx context.Context, req *transport.EnrollExternalOfficerRequest) (*transport.EnrollExternalOfficerResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	var resp transport.EnrollExternalOfficerResponse
+	if err := t.postJSONDecode(ctx, "CeremonyEnrollExternalOfficer", "/v1/init/enroll-external-officer", req, &resp); err != nil {
+		return nil, err
+	}
+
+	return &resp, nil
+}

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:build codec_json && raft && qrdb_ts && qrdb_vector && qrdb_mysql && qrdb_pgsql && qrdb_etcd
+//go:build codec_json && raft && !integration
 
 package statemachine
 
@@ -1621,13 +1621,14 @@ func TestKVDispatch_MVCCRange_NotConfigured(t *testing.T) {
 	entries := []sm.Entry{{Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
+	// Update must not return error — ServiceNotConfiguredError is encoded in
+	// result.Data to prevent Raft lastApplied from stalling.
 	err := k.Update(entries, results)
-	if err == nil {
-		t.Fatal("expected ServiceNotConfiguredError for MVCCRange without mvccStore")
+	if err != nil {
+		t.Fatalf("Update must not return error for unconfigured mvcc service: %v", err)
 	}
-	var sncErr *ServiceNotConfiguredError
-	if !stderrors.As(err, &sncErr) {
-		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
+	if len(results[0].Data) == 0 {
+		t.Fatal("expected ServiceNotConfiguredError encoded in result.Data for MVCCRange")
 	}
 }
 
@@ -1639,12 +1640,11 @@ func TestKVDispatch_MVCCCompact_NotConfigured(t *testing.T) {
 	results := make([]sm.Result, 1)
 
 	err := k.Update(entries, results)
-	if err == nil {
-		t.Fatal("expected ServiceNotConfiguredError for MVCCCompact without mvccStore")
+	if err != nil {
+		t.Fatalf("Update must not return error for unconfigured mvcc service: %v", err)
 	}
-	var sncErr *ServiceNotConfiguredError
-	if !stderrors.As(err, &sncErr) {
-		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
+	if len(results[0].Data) == 0 {
+		t.Fatal("expected ServiceNotConfiguredError encoded in result.Data for MVCCCompact")
 	}
 }
 

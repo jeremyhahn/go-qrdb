@@ -108,13 +108,13 @@ func TestHandleAssignRole_UserNotFound(t *testing.T) {
 	}
 	userErr := &testError{msg: "user not found"}
 	mockUser := &mockUserService{
-		getUserFn: func(_ context.Context, _ string) (*user.User, error) {
+		getUserFn: func(_ context.Context, _ uint64) (*user.User, error) {
 			return nil, userErr
 		},
 	}
 
 	srv := newRoleServer(mockRole, mockUser)
-	payload, _ := json.Marshal(assignRoleWireRequest{UserID: "missing-user", RoleID: "role-x"})
+	payload, _ := json.Marshal(assignRoleWireRequest{UserID: 9999, RoleID: "role-x"})
 
 	_, err := srv.handleAssignRole(context.Background(), payload)
 	if err == nil {
@@ -135,8 +135,8 @@ func TestHandleAssignRole_UpdateUserError(t *testing.T) {
 	}
 	updateErr := &testError{msg: "update user failed"}
 	mockUser := &mockUserService{
-		getUserFn: func(_ context.Context, _ string) (*user.User, error) {
-			return testUser("user-99", "charlie", "t"), nil
+		getUserFn: func(_ context.Context, _ uint64) (*user.User, error) {
+			return testUser(99, "charlie", "t"), nil
 		},
 		updateUserFn: func(_ context.Context, _ *user.UpdateUserRequest) (*user.User, error) {
 			return nil, updateErr
@@ -144,7 +144,7 @@ func TestHandleAssignRole_UpdateUserError(t *testing.T) {
 	}
 
 	srv := newRoleServer(mockRole, mockUser)
-	payload, _ := json.Marshal(assignRoleWireRequest{UserID: "user-99", RoleID: "role-z"})
+	payload, _ := json.Marshal(assignRoleWireRequest{UserID: 99, RoleID: "role-z"})
 
 	_, err := srv.handleAssignRole(context.Background(), payload)
 	if err == nil {

@@ -252,7 +252,7 @@ func TestDatabase_GetTableInsensitive_WithoutSession(t *testing.T) {
 
 	kvTbl, ok := tbl.(*KVTable)
 	require.True(t, ok)
-	assert.Equal(t, "default", kvTbl.tenantID)
+	assert.Equal(t, "system", kvTbl.tenantID)
 }
 
 func TestDatabase_GetTableNames(t *testing.T) {

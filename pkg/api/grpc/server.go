@@ -32,12 +32,15 @@ import (
 	"google.golang.org/grpc/status"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
@@ -45,31 +48,45 @@ import (
 // Server is the gRPC server for QRDB. It registers the QRDBService with
 // recovery and logging interceptors for both unary and streaming RPCs.
 type Server struct {
-	kvSvc         service.KVServicer
-	adminSvc      service.AdminServicer
-	mvccSvc       service.MVCCKVServicer
-	txSvc         service.TransactionServicer
-	batchSvc      service.BatchServicer
-	watchSvc      service.WatchServicer
-	leaseSvc      lease.LeaseServicer
-	lockSvc       service.LockServicer
-	indexSvc      index.IndexServicer
-	tsSvc         timeseries.TimeSeriesServicer
-	vectorSvc     service.VectorServicer
-	embeddingSvc  service.EmbeddingServicer
-	databaseSvc   service.DatabaseServicer
-	barrierSvc    service.BarrierServicer
-	ceremonySvc   service.CeremonyServicer
-	credentialSvc service.CredentialServicer
-	userSvc       user.UserServicer
-	roleSvc       role.RoleServicer
-	certProv      cert.CertProvider
-	collectionSvc service.CollectionServicer
-	authMW        *authmw.AuthMiddleware
-	addr          string
-	server        *grpc.Server
-	listener      net.Listener
-	tls           *tls.Config
+	kvSvc             service.KVServicer
+	adminSvc          service.AdminServicer
+	mvccSvc           service.MVCCKVServicer
+	txSvc             service.TransactionServicer
+	batchSvc          service.BatchServicer
+	watchSvc          service.WatchServicer
+	leaseSvc          lease.LeaseServicer
+	lockSvc           service.LockServicer
+	indexSvc          index.IndexServicer
+	tsSvc             timeseries.TimeSeriesServicer
+	vectorSvc         service.VectorServicer
+	embeddingSvc      service.EmbeddingServicer
+	ragSvc            service.RAGServicer
+	databaseSvc       service.DatabaseServicer
+	barrierSvc        service.BarrierServicer
+	pinBackend        pin.PINBackend
+	ceremonySvc       service.CeremonyServicer
+	credentialSvc     service.CredentialServicer
+	tenantSvc         tenant.TenantServicer
+	userSvc           user.UserServicer
+	roleSvc           role.RoleServicer
+	certProv          cert.CertProvider
+	collectionSvc     service.CollectionServicer
+	backupSvc         service.BackupServicer
+	rebalanceSvc      service.RebalanceServicer
+	authFactorSvc     service.AuthFactorServicer
+	userAuthFactorSvc service.UserAuthFactorServicer
+	authMW            *authmw.AuthMiddleware
+	auditLogger       audit.AuditLogger
+	addr              string
+	server            *grpc.Server
+	listener          net.Listener
+	tls               *tls.Config
+
+	// sealedWindowProbe controls the sealed-window interceptors. When
+	// set and IsSealed() returns true, every method whose trailing
+	// component is not on SealedWindowAllowlist is rejected with
+	// codes.Unavailable. When nil the interceptors are not installed.
+	sealedWindowProbe sealedWindowProbe
 }
 
 // ServerOption configures optional Server dependencies.
@@ -150,6 +167,11 @@ func WithEmbedding(svc service.EmbeddingServicer) ServerOption {
 	return func(s *Server) { s.embeddingSvc = svc }
 }
 
+// WithRAGService configures the gRPC server with a RAG service.
+func WithRAGService(svc service.RAGServicer) ServerOption {
+	return func(s *Server) { s.ragSvc = svc }
+}
+
 // WithDatabaseService configures the gRPC server with a database management service.
 func WithDatabaseService(svc service.DatabaseServicer) ServerOption {
 	return func(s *Server) {
@@ -162,6 +184,14 @@ func WithBarrierService(svc service.BarrierServicer) ServerOption {
 	return func(s *Server) { s.barrierSvc = svc }
 }
 
+// WithPINBackend configures the gRPC server with the canonical
+// pin.PINBackend used for the optional SO PIN / User PIN compliance-gating
+// layer on barrier administrative operations. When nil, PIN fields supplied
+// in barrier requests are ignored.
+func WithPINBackend(backend pin.PINBackend) ServerOption {
+	return func(s *Server) { s.pinBackend = backend }
+}
+
 // WithCeremonyService configures the gRPC server with a ceremony management service.
 func WithCeremonyService(svc service.CeremonyServicer) ServerOption {
 	return func(s *Server) { s.ceremonySvc = svc }
@@ -170,6 +200,13 @@ func WithCeremonyService(svc service.CeremonyServicer) ServerOption {
 // WithCredentialService configures the gRPC server with a credential management service.
 func WithCredentialService(svc service.CredentialServicer) ServerOption {
 	return func(s *Server) { s.credentialSvc = svc }
+}
+
+// WithAuditLogger configures the gRPC server with an audit logger, which
+// enables the AuditService (compliance-grade audit event queries). When nil
+// the audit gRPC service is not registered.
+func WithAuditLogger(l audit.AuditLogger) ServerOption {
+	return func(s *Server) { s.auditLogger = l }
 }
 
 // WithUserService configures the gRPC server with a user management service.
@@ -192,10 +229,53 @@ func WithCollectionService(svc service.CollectionServicer) ServerOption {
 	return func(s *Server) { s.collectionSvc = svc }
 }
 
+// WithTenantService configures the gRPC server with a tenant management service.
+func WithTenantService(svc tenant.TenantServicer) ServerOption {
+	return func(s *Server) { s.tenantSvc = svc }
+}
+
+// WithBackupService configures the gRPC server with a backup management service.
+func WithBackupService(svc service.BackupServicer) ServerOption {
+	return func(s *Server) { s.backupSvc = svc }
+}
+
+// WithRebalanceService configures the gRPC server with a cluster rebalance service.
+func WithRebalanceService(svc service.RebalanceServicer) ServerOption {
+	return func(s *Server) { s.rebalanceSvc = svc }
+}
+
+// WithAuthFactorService configures the gRPC server with an auth factor service
+// for custodian enrollment, challenge, and verification.
+func WithAuthFactorService(svc service.AuthFactorServicer) ServerOption {
+	return func(s *Server) { s.authFactorSvc = svc }
+}
+
+// WithUserAuthFactorService configures the gRPC server with the user-side
+// auth factor service (M14) used for the 1-to-many user-factor model.
+func WithUserAuthFactorService(svc service.UserAuthFactorServicer) ServerOption {
+	return func(s *Server) { s.userAuthFactorSvc = svc }
+}
+
 // WithAuthMiddleware configures the gRPC server with authentication and
 // authorization middleware for unary and streaming interceptors.
 func WithAuthMiddleware(mw *authmw.AuthMiddleware) ServerOption {
 	return func(s *Server) { s.authMW = mw }
+}
+
+// WithSealedWindowProbe installs the sealed-window unary and streaming
+// interceptors backed by the supplied probe. While probe.IsSealed()
+// returns true, every method whose trailing component is not on
+// SealedWindowAllowlist is rejected with codes.Unavailable + message
+// "barrier sealed". Once unsealed the interceptors are passthrough;
+// on re-seal they engage again.
+//
+// The interceptors are appended to the chain after auth so that
+// allowlisted methods (notably Barrier* and Ceremony*) remain
+// reachable without authentication during the sealed window — the
+// Vault model where possession of the unseal credential is itself
+// the authorization to drive unseal.
+func WithSealedWindowProbe(probe sealedWindowProbe) ServerOption {
+	return func(s *Server) { s.sealedWindowProbe = probe }
 }
 
 // WithKVService configures the gRPC server with a KV service. This is an
@@ -242,6 +322,11 @@ func (s *Server) Start() error {
 
 	// Build interceptor chains for both unary and streaming RPCs.
 	// Auth interceptors are inserted after logging when configured.
+	// The sealed-window interceptor sits AFTER auth so non-allowlisted
+	// methods are rejected with codes.Unavailable before the handler
+	// runs, while allowlisted methods (Barrier*, Ceremony*) flow
+	// through unauthenticated during the sealed window — possession of
+	// the unseal credential is the authorization (Vault model).
 	unaryInterceptors := []grpc.UnaryServerInterceptor{
 		recoveryInterceptor,
 		loggingInterceptor,
@@ -249,12 +334,20 @@ func (s *Server) Start() error {
 	if s.authMW != nil {
 		unaryInterceptors = append(unaryInterceptors, s.authMW.UnaryInterceptor())
 	}
+	if s.sealedWindowProbe != nil {
+		unaryInterceptors = append(unaryInterceptors,
+			SealedWindowUnaryInterceptor(s.sealedWindowProbe, nil))
+	}
 	streamInterceptors := []grpc.StreamServerInterceptor{
 		streamRecoveryInterceptor,
 		streamLoggingInterceptor,
 	}
 	if s.authMW != nil {
 		streamInterceptors = append(streamInterceptors, s.authMW.StreamInterceptor())
+	}
+	if s.sealedWindowProbe != nil {
+		streamInterceptors = append(streamInterceptors,
+			SealedWindowStreamInterceptor(s.sealedWindowProbe, nil))
 	}
 	serverOpts := []grpc.ServerOption{
 		grpc.ChainUnaryInterceptor(unaryInterceptors...),
@@ -283,16 +376,35 @@ func (s *Server) Start() error {
 		tsSvc:         s.tsSvc,
 		vectorSvc:     s.vectorSvc,
 		embeddingSvc:  s.embeddingSvc,
+		ragSvc:        s.ragSvc,
 		databaseSvc:   s.databaseSvc,
 		barrierSvc:    s.barrierSvc,
+		pinBackend:    s.pinBackend,
 		ceremonySvc:   s.ceremonySvc,
 		credentialSvc: s.credentialSvc,
+		tenantSvc:     s.tenantSvc,
 		userSvc:       s.userSvc,
 		roleSvc:       s.roleSvc,
 		certProv:      s.certProv,
 		collectionSvc: s.collectionSvc,
+		backupSvc:     s.backupSvc,
+		rebalanceSvc:  s.rebalanceSvc,
 	}
 	pb.RegisterQRDBServiceServer(s.server, svc)
+
+	// Register the auth factor service when configured.
+	RegisterAuthFactorService(s.server, s.authFactorSvc)
+
+	// Register the user-side auth factor service (M14) when configured.
+	RegisterUserAuthFactorService(s.server, s.userAuthFactorSvc)
+
+	// Register the per-tenant barrier service when a tenant servicer is configured.
+	RegisterTenantBarrierService(s.server, s.tenantSvc, s.authMW)
+
+	// Register the audit query service when an audit logger is configured.
+	if s.auditLogger != nil {
+		RegisterAuditService(s.server, s.auditLogger)
+	}
 
 	proto := "gRPC"
 	if s.tls != nil {

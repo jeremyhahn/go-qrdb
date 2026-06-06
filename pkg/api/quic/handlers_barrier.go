@@ -35,6 +35,10 @@ func (s *Server) handleBarrierInitialize(ctx context.Context, payload []byte) ([
 		return nil, &UnmarshalError{Err: err}
 	}
 
+	if err := applyBarrierInitializePINs(s.pinBackend, req.GetSoPin(), req.GetUserPin()); err != nil {
+		return nil, err
+	}
+
 	if err := s.barrierSvc.BarrierInitialize(ctx, req.GetSecret()); err != nil {
 		return nil, err
 	}
@@ -111,6 +115,10 @@ func (s *Server) handleBarrierShamirInitialize(ctx context.Context, payload []by
 		return nil, &UnmarshalError{Err: err}
 	}
 
+	if err := applyBarrierInitializePINs(s.pinBackend, req.GetSoPin(), req.GetUserPin()); err != nil {
+		return nil, err
+	}
+
 	info, err := s.barrierSvc.BarrierInitializeShamir(ctx, req.GetSecret(), int(req.GetThreshold()), int(req.GetTotalShares()))
 	if err != nil {
 		return nil, err
@@ -174,75 +182,6 @@ func (s *Server) handleBarrierShamirUnsealShares(ctx context.Context, payload []
 	return nil, nil
 }
 
-// handleBarrierShamirListShares returns information about persisted Shamir
-// shares including count, threshold, and total.
-func (s *Server) handleBarrierShamirListShares(ctx context.Context, _ []byte) ([]byte, error) {
-	if s.barrierSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "barrier"}
-	}
-
-	info, err := s.barrierSvc.BarrierShamirListShares(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	resp, err := proto.Marshal(&pb.BarrierShamirSharesResponse{
-		Count:     int32(info.Count),
-		Threshold: int32(info.Threshold),
-		Total:     int32(info.Total),
-	})
-	if err != nil {
-		return nil, &MarshalError{Err: err}
-	}
-	return resp, nil
-}
-
-// handleBarrierShamirDeleteShare removes a single Shamir share by its
-// 1-based index.
-func (s *Server) handleBarrierShamirDeleteShare(ctx context.Context, payload []byte) ([]byte, error) {
-	if s.barrierSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "barrier"}
-	}
-
-	var req pb.BarrierShamirDeleteShareRequest
-	if err := proto.Unmarshal(payload, &req); err != nil {
-		return nil, &UnmarshalError{Err: err}
-	}
-
-	if err := s.barrierSvc.BarrierShamirDeleteShare(ctx, int(req.GetIndex())); err != nil {
-		return nil, err
-	}
-
-	return nil, nil
-}
-
-// handleBarrierShamirDeleteAllShares removes all persisted Shamir shares.
-func (s *Server) handleBarrierShamirDeleteAllShares(ctx context.Context, _ []byte) ([]byte, error) {
-	if s.barrierSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "barrier"}
-	}
-
-	if err := s.barrierSvc.BarrierShamirDeleteAllShares(ctx); err != nil {
-		return nil, err
-	}
-
-	return nil, nil
-}
-
-// handleBarrierShamirVerify validates the consistency of all persisted
-// Shamir shares.
-func (s *Server) handleBarrierShamirVerify(ctx context.Context, _ []byte) ([]byte, error) {
-	if s.barrierSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "barrier"}
-	}
-
-	if err := s.barrierSvc.BarrierShamirVerify(ctx); err != nil {
-		return nil, err
-	}
-
-	return nil, nil
-}
-
 // handleBarrierRekey generates new Shamir shares for the existing root key
 // with the specified threshold and total parameters.
 func (s *Server) handleBarrierRekey(ctx context.Context, payload []byte) ([]byte, error) {
@@ -253,6 +192,10 @@ func (s *Server) handleBarrierRekey(ctx context.Context, payload []byte) ([]byte
 	var req pb.BarrierRekeyRequest
 	if err := proto.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
+	}
+
+	if err := verifyBarrierSOPIN(s.pinBackend, req.GetSoPin()); err != nil {
+		return nil, err
 	}
 
 	info, err := s.barrierSvc.BarrierRekey(ctx, int(req.GetThreshold()), int(req.GetTotal()))
@@ -281,6 +224,10 @@ func (s *Server) handleBarrierRecoveryGenerate(ctx context.Context, payload []by
 	var req pb.BarrierRecoveryGenerateRequest
 	if err := proto.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
+	}
+
+	if err := verifyBarrierSOPIN(s.pinBackend, req.GetSoPin()); err != nil {
+		return nil, err
 	}
 
 	info, err := s.barrierSvc.BarrierGenerateRecoveryKeys(ctx, int(req.GetThreshold()), int(req.GetTotal()))

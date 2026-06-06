@@ -24,6 +24,8 @@ import (
 	"crypto/x509"
 	"encoding/asn1"
 	"encoding/base64"
+	"encoding/hex"
+	"encoding/pem"
 	"errors"
 	"math/big"
 )
@@ -85,4 +87,54 @@ func computeSPKIPin(cert *x509.Certificate) (string, error) {
 	}
 	digest := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
 	return base64.StdEncoding.EncodeToString(digest[:]), nil
+}
+
+// certThumbprint returns the lowercase hex SHA-256 of the DER-encoded
+// certificate.
+func certThumbprint(certDER []byte) string {
+	digest := sha256.Sum256(certDER)
+	return hex.EncodeToString(digest[:])
+}
+
+// marshalPublicKeyPEM encodes a crypto.PublicKey to a PKIX-form PEM string.
+// Supports the same key types we accept at signature verification time:
+// RSA, ECDSA, Ed25519.
+func marshalPublicKeyPEM(pubKey crypto.PublicKey) (string, error) {
+	der, err := x509.MarshalPKIXPublicKey(pubKey)
+	if err != nil {
+		return "", err
+	}
+	return string(pem.EncodeToMemory(&pem.Block{
+		Type:  "PUBLIC KEY",
+		Bytes: der,
+	})), nil
+}
+
+// parsePublicKeyPEM is the inverse of marshalPublicKeyPEM. It accepts a
+// PKIX PUBLIC KEY block and returns the parsed crypto.PublicKey.
+func parsePublicKeyPEM(pemStr string) (crypto.PublicKey, error) {
+	block, _ := pem.Decode([]byte(pemStr))
+	if block == nil {
+		return nil, ErrInvalidPubKeyPEM
+	}
+	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return nil, err
+	}
+	return pub, nil
+}
+
+// authFactorFromAuthenticator translates a legacy AuthenticatorType into
+// the auth-factor string used by the persistent registry. PIV/FIDO2 map
+// directly; Software maps to "mtls" because that's the default factor we
+// expect for software-keyed officers using TLS client auth.
+func authFactorFromAuthenticator(t AuthenticatorType) string {
+	switch t.Normalized() {
+	case AuthenticatorPIV:
+		return "piv"
+	case AuthenticatorFIDO2:
+		return "webauthn"
+	default:
+		return "mtls"
+	}
 }

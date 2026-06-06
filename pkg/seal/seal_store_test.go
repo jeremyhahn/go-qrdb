@@ -341,8 +341,8 @@ func TestSealStore_Status_Unsealed(t *testing.T) {
 	if len(status.SecretNames) != 3 {
 		t.Errorf("expected 3 secret names, got %d", len(status.SecretNames))
 	}
-	if status.Strategy != StrategySoftware {
-		t.Errorf("expected strategy %q, got %q", StrategySoftware, status.Strategy)
+	if status.Strategy != StrategyPassphrase {
+		t.Errorf("expected strategy %q, got %q", StrategyPassphrase, status.Strategy)
 	}
 }
 

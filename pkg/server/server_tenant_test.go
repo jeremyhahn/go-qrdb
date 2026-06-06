@@ -21,6 +21,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/dek"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -61,7 +62,11 @@ func (m *mockTenantServicer) ListTenants(_ context.Context) ([]tenant.TenantInfo
 	return nil, nil
 }
 func (m *mockTenantServicer) DeleteTenant(_ context.Context, _ string) error { return nil }
-func (m *mockTenantServicer) TenantBarrierInit(_ context.Context, _ string, _, _ int) error {
+func (m *mockTenantServicer) TenantBarrierInit(_ context.Context, _, _ string, _, _ int) error {
+	return nil
+}
+
+func (m *mockTenantServicer) TenantBarrierInitWithStrategy(_ context.Context, _, _ string, _, _ int, _ seal.StrategyID) error {
 	return nil
 }
 func (m *mockTenantServicer) TenantBarrierUnseal(_ context.Context, _ string, _ []byte) error {
@@ -72,6 +77,15 @@ func (m *mockTenantServicer) UpdateQuotas(_ context.Context, _ string, _ *quota.
 }
 func (m *mockTenantServicer) Quotas(_ context.Context, _ string) (*quota.Quotas, error) {
 	return nil, nil
+}
+func (m *mockTenantServicer) IncrementQuotaUsage(_ context.Context, _ string, _ quota.Resource, _ int64) (*tenant.TenantInfo, error) {
+	return nil, nil
+}
+func (m *mockTenantServicer) DecrementQuotaUsage(_ context.Context, _ string, _ quota.Resource, _ int64) (*tenant.TenantInfo, error) {
+	return nil, nil
+}
+func (m *mockTenantServicer) GetQuotaUsage(_ context.Context, _ string, _ quota.Resource) (int64, error) {
+	return 0, nil
 }
 
 // Compile-time interface check.

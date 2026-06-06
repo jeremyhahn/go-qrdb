@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 )
@@ -35,16 +36,20 @@ import (
 // tsMock implements timeseries.TimeSeriesServicer with configurable hooks
 // for all methods. Methods without hooks return nil/zero values.
 type tsMock struct {
-	writeFn        func(ctx context.Context, metric string, value float64, timestamp time.Time, tags map[string]string) error
-	writeBatchFn   func(ctx context.Context, points []timeseries.DataPoint) error
-	queryFn        func(ctx context.Context, metric string, start, end time.Time, opts ...timeseries.TSQueryOption) ([]timeseries.DataPoint, error)
-	aggregateFn    func(ctx context.Context, metric string, start, end time.Time, fn timeseries.AggFunc, interval time.Duration) ([]timeseries.AggResult, error)
-	writePointFn   func(ctx context.Context, point *timeseries.DataPoint) error
-	queryRichFn    func(ctx context.Context, req *timeseries.QueryRequest) (*timeseries.QueryResult, error)
-	deleteSeriesFn func(ctx context.Context, req *timeseries.DeleteRequest) error
-	getRetentionFn func(metric string) (*timeseries.RetentionPolicy, error)
-	setRetentionFn func(metric string, policy *timeseries.RetentionPolicy) error
-	listMetricsFn  func(prefix string, limit int) ([]string, error)
+	writeFn                      func(ctx context.Context, metric string, value float64, timestamp time.Time, tags map[string]string) error
+	writeBatchFn                 func(ctx context.Context, points []timeseries.DataPoint) error
+	queryFn                      func(ctx context.Context, metric string, start, end time.Time, opts ...timeseries.TSQueryOption) ([]timeseries.DataPoint, error)
+	queryWithConsistencyFn       func(ctx context.Context, metric string, start, end time.Time, ropts consistency.ReadOptions, opts ...timeseries.TSQueryOption) ([]timeseries.DataPoint, error)
+	aggregateFn                  func(ctx context.Context, metric string, start, end time.Time, fn timeseries.AggFunc, interval time.Duration) ([]timeseries.AggResult, error)
+	aggregateWithConsistencyFn   func(ctx context.Context, metric string, start, end time.Time, fn timeseries.AggFunc, interval time.Duration, ropts consistency.ReadOptions) ([]timeseries.AggResult, error)
+	writePointFn                 func(ctx context.Context, point *timeseries.DataPoint) error
+	queryRichFn                  func(ctx context.Context, req *timeseries.QueryRequest) (*timeseries.QueryResult, error)
+	queryRichWithConsistencyFn   func(ctx context.Context, req *timeseries.QueryRequest, ropts consistency.ReadOptions) (*timeseries.QueryResult, error)
+	deleteSeriesFn               func(ctx context.Context, req *timeseries.DeleteRequest) error
+	getRetentionFn               func(metric string) (*timeseries.RetentionPolicy, error)
+	setRetentionFn               func(metric string, policy *timeseries.RetentionPolicy) error
+	listMetricsFn                func(prefix string, limit int) ([]string, error)
+	listMetricsWithConsistencyFn func(ctx context.Context, prefix string, limit int, ropts consistency.ReadOptions) ([]string, error)
 }
 
 func (m *tsMock) Write(ctx context.Context, metric string, value float64, ts time.Time, tags map[string]string) error {
@@ -68,11 +73,25 @@ func (m *tsMock) Query(ctx context.Context, metric string, start, end time.Time,
 	return nil, nil
 }
 
+func (m *tsMock) QueryWithConsistency(ctx context.Context, metric string, start, end time.Time, ropts consistency.ReadOptions, opts ...timeseries.TSQueryOption) ([]timeseries.DataPoint, error) {
+	if m.queryWithConsistencyFn != nil {
+		return m.queryWithConsistencyFn(ctx, metric, start, end, ropts, opts...)
+	}
+	return m.Query(ctx, metric, start, end, opts...)
+}
+
 func (m *tsMock) Aggregate(ctx context.Context, metric string, start, end time.Time, fn timeseries.AggFunc, interval time.Duration) ([]timeseries.AggResult, error) {
 	if m.aggregateFn != nil {
 		return m.aggregateFn(ctx, metric, start, end, fn, interval)
 	}
 	return nil, nil
+}
+
+func (m *tsMock) AggregateWithConsistency(ctx context.Context, metric string, start, end time.Time, fn timeseries.AggFunc, interval time.Duration, ropts consistency.ReadOptions) ([]timeseries.AggResult, error) {
+	if m.aggregateWithConsistencyFn != nil {
+		return m.aggregateWithConsistencyFn(ctx, metric, start, end, fn, interval, ropts)
+	}
+	return m.Aggregate(ctx, metric, start, end, fn, interval)
 }
 
 func (m *tsMock) WritePoint(ctx context.Context, point *timeseries.DataPoint) error {
@@ -87,6 +106,13 @@ func (m *tsMock) QueryRich(ctx context.Context, req *timeseries.QueryRequest) (*
 		return m.queryRichFn(ctx, req)
 	}
 	return nil, nil
+}
+
+func (m *tsMock) QueryRichWithConsistency(ctx context.Context, req *timeseries.QueryRequest, ropts consistency.ReadOptions) (*timeseries.QueryResult, error) {
+	if m.queryRichWithConsistencyFn != nil {
+		return m.queryRichWithConsistencyFn(ctx, req, ropts)
+	}
+	return m.QueryRich(ctx, req)
 }
 
 func (m *tsMock) DeleteSeries(ctx context.Context, req *timeseries.DeleteRequest) error {
@@ -115,6 +141,13 @@ func (m *tsMock) ListMetrics(prefix string, limit int) ([]string, error) {
 		return m.listMetricsFn(prefix, limit)
 	}
 	return nil, nil
+}
+
+func (m *tsMock) ListMetricsWithConsistency(ctx context.Context, prefix string, limit int, ropts consistency.ReadOptions) ([]string, error) {
+	if m.listMetricsWithConsistencyFn != nil {
+		return m.listMetricsWithConsistencyFn(ctx, prefix, limit, ropts)
+	}
+	return m.ListMetrics(prefix, limit)
 }
 
 // newTSServer creates a test Server with the given TS mock attached.

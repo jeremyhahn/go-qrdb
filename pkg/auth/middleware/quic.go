@@ -32,18 +32,23 @@ func (m *AuthMiddleware) AuthenticateQUIC(ctx context.Context) (context.Context,
 	return ctx, nil
 }
 
-// AuthorizeQUIC checks whether the authenticated caller in the context
-// has permission for the given QUIC method. Methods without a permission
-// mapping are allowed through (public endpoints).
+// AuthorizeQUIC checks whether the authenticated caller in the context has
+// permission for the given QUIC method. DEFAULT-DENY: every dispatched method
+// must carry a permission mapping; an unmapped method is rejected rather than
+// treated as public, so a newly-added handler cannot silently become
+// unauthorized.
 func (m *AuthMiddleware) AuthorizeQUIC(ctx context.Context, method string) error {
-	perm, ok := LookupQUIC(method)
-	if !ok {
-		return nil
-	}
-
 	identity := auth.IdentityFromContext(ctx)
 	if identity == nil {
 		return &auth.AuthError{Code: "unauthenticated", Message: "no identity in context"}
+	}
+
+	perm, ok := LookupQUIC(method)
+	if !ok {
+		return &auth.AuthError{
+			Code:    "unauthorized",
+			Message: "quic: method not authorized (no permission mapping): " + method,
+		}
 	}
 
 	return m.authorize(ctx, identity, perm)

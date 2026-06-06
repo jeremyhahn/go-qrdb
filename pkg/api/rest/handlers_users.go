@@ -15,6 +15,7 @@
 package rest
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -44,7 +45,7 @@ type updateUserRequest struct {
 
 // userResponse is the JSON representation of a user entity.
 type userResponse struct {
-	ID        string   `json:"id"`
+	ID        uint64   `json:"id"`
 	Username  string   `json:"username"`
 	TenantID  string   `json:"tenantID"`
 	RoleIDs   []string `json:"roleIDs"`
@@ -78,7 +79,10 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	u, err := s.userSvc.CreateUser(r.Context(), &user.CreateUserRequest{
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
+	u, err := s.userSvc.CreateUser(ctx, &user.CreateUserRequest{
 		Username: req.Username,
 		TenantID: req.TenantID,
 		RoleIDs:  req.RoleIDs,
@@ -125,7 +129,10 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 		listReq.PageSize = pageSize
 	}
 
-	resp, err := s.userSvc.ListUsers(r.Context(), listReq)
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
+	resp, err := s.userSvc.ListUsers(ctx, listReq)
 	if err != nil {
 		writeErrorJSON(w, mapUserError(err), err)
 		return
@@ -165,14 +172,63 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// /users/by-username/{username} -> resolve user by tenant-scoped username.
+	if username, found := strings.CutPrefix(rest, "by-username/"); found {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", "GET")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if username == "" {
+			writeErrorJSON(w, http.StatusBadRequest, &MissingParameterError{Param: "username"})
+			return
+		}
+		s.handleGetUserByUsername(w, r, username)
+		return
+	}
+
+	// /users/by-cert-thumbprint/{thumbprint} -> resolve user by mTLS SPKI thumbprint.
+	if thumbprint, found := strings.CutPrefix(rest, "by-cert-thumbprint/"); found {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", "GET")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if thumbprint == "" {
+			writeErrorJSON(w, http.StatusBadRequest, &MissingParameterError{Param: "thumbprint"})
+			return
+		}
+		s.handleGetUserByCertThumbprint(w, r, thumbprint)
+		return
+	}
+
 	// Check for /enable and /disable suffixes.
 	if r.Method == http.MethodPost {
-		if id, found := strings.CutSuffix(rest, "/enable"); found && id != "" {
+		if seg, found := strings.CutSuffix(rest, "/enable"); found && seg != "" {
+			id, err := parseUserID(seg)
+			if err != nil {
+				writeErrorJSON(w, http.StatusBadRequest, err)
+				return
+			}
 			s.handleEnableUser(w, r, id)
 			return
 		}
-		if id, found := strings.CutSuffix(rest, "/disable"); found && id != "" {
+		if seg, found := strings.CutSuffix(rest, "/disable"); found && seg != "" {
+			id, err := parseUserID(seg)
+			if err != nil {
+				writeErrorJSON(w, http.StatusBadRequest, err)
+				return
+			}
 			s.handleDisableUser(w, r, id)
+			return
+		}
+		if seg, found := strings.CutSuffix(rest, "/cert-bindings"); found && seg != "" {
+			id, err := parseUserID(seg)
+			if err != nil {
+				writeErrorJSON(w, http.StatusBadRequest, err)
+				return
+			}
+			s.handleAddCertBinding(w, r, id)
 			return
 		}
 		w.Header().Set("Allow", "GET, PUT, DELETE")
@@ -181,7 +237,11 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The remaining path is the user ID (no suffix).
-	id := rest
+	id, err := parseUserID(rest)
+	if err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, err)
+		return
+	}
 
 	handler, ok := userMethodHandlers[r.Method]
 	if !ok {
@@ -194,7 +254,7 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 }
 
 // userMethodHandler handles a user request for a specific HTTP method.
-type userMethodHandler func(s *Server, w http.ResponseWriter, r *http.Request, id string)
+type userMethodHandler func(s *Server, w http.ResponseWriter, r *http.Request, id uint64)
 
 // userMethodHandlers maps HTTP methods to their user handler functions.
 var userMethodHandlers = map[string]userMethodHandler{
@@ -204,8 +264,74 @@ var userMethodHandlers = map[string]userMethodHandler{
 }
 
 // handleGetUser handles GET /users/{id} -- retrieves a user by ID.
-func (s *Server) handleGetUser(w http.ResponseWriter, r *http.Request, id string) {
-	u, err := s.userSvc.GetUser(r.Context(), id)
+func (s *Server) handleGetUser(w http.ResponseWriter, r *http.Request, id uint64) {
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
+	u, err := s.userSvc.GetUser(ctx, id)
+	if err != nil {
+		writeErrorJSON(w, mapUserError(err), err)
+		return
+	}
+
+	writeJSON(w, userToResponse(u))
+}
+
+// handleGetUserByUsername handles GET /users/by-username/{username}
+// -- resolves a user by tenant-scoped username. The tenantID is read
+// from the "tenantID" query parameter (empty selects the default
+// tenant).
+func (s *Server) handleGetUserByUsername(w http.ResponseWriter, r *http.Request, username string) {
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
+	tenantID := r.URL.Query().Get("tenantID")
+
+	u, err := s.userSvc.GetUserByUsername(ctx, tenantID, username)
+	if err != nil {
+		writeErrorJSON(w, mapUserError(err), err)
+		return
+	}
+
+	writeJSON(w, userToResponse(u))
+}
+
+// handleGetUserByCertThumbprint handles GET /users/by-cert-thumbprint/{thumbprint}
+// -- resolves a user by an mTLS certificate's SPKI thumbprint via the
+// secondary index (the mTLS-auth hot path).
+func (s *Server) handleGetUserByCertThumbprint(w http.ResponseWriter, r *http.Request, thumbprint string) {
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
+	u, err := s.userSvc.UserByCertThumbprint(ctx, thumbprint)
+	if err != nil {
+		writeErrorJSON(w, mapUserError(err), err)
+		return
+	}
+
+	writeJSON(w, userToResponse(u))
+}
+
+// addCertBindingRequest is the JSON payload for POST /users/{userID}/cert-bindings.
+type addCertBindingRequest struct {
+	Thumbprint   string `json:"thumbprint"`
+	NotAfterUnix int64  `json:"not_after_unix"`
+}
+
+// handleAddCertBinding handles POST /users/{userID}/cert-bindings
+// -- binds an mTLS certificate's SPKI thumbprint to a user so the
+// secondary index resolves it (the enrollment seam).
+func (s *Server) handleAddCertBinding(w http.ResponseWriter, r *http.Request, userID uint64) {
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
+	var req addCertBindingRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+		return
+	}
+
+	u, err := s.userSvc.AddCertBinding(ctx, userID, req.Thumbprint, req.NotAfterUnix)
 	if err != nil {
 		writeErrorJSON(w, mapUserError(err), err)
 		return
@@ -215,14 +341,17 @@ func (s *Server) handleGetUser(w http.ResponseWriter, r *http.Request, id string
 }
 
 // handleUpdateUser handles PUT /users/{id} -- applies partial updates.
-func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request, id string) {
+func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request, id uint64) {
 	var req updateUserRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
 		return
 	}
 
-	u, err := s.userSvc.UpdateUser(r.Context(), &user.UpdateUserRequest{
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
+	u, err := s.userSvc.UpdateUser(ctx, &user.UpdateUserRequest{
 		ID:       id,
 		Username: req.Username,
 		RoleIDs:  req.RoleIDs,
@@ -236,8 +365,11 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request, id str
 }
 
 // handleDeleteUser handles DELETE /users/{id} -- removes a non-system user.
-func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request, id string) {
-	if err := s.userSvc.DeleteUser(r.Context(), id); err != nil {
+func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request, id uint64) {
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
+	if err := s.userSvc.DeleteUser(ctx, id); err != nil {
 		writeErrorJSON(w, mapUserError(err), err)
 		return
 	}
@@ -246,8 +378,11 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request, id str
 }
 
 // handleEnableUser handles POST /users/{id}/enable -- activates a user.
-func (s *Server) handleEnableUser(w http.ResponseWriter, r *http.Request, id string) {
-	if err := s.userSvc.EnableUser(r.Context(), id); err != nil {
+func (s *Server) handleEnableUser(w http.ResponseWriter, r *http.Request, id uint64) {
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
+	if err := s.userSvc.EnableUser(ctx, id); err != nil {
 		writeErrorJSON(w, mapUserError(err), err)
 		return
 	}
@@ -256,8 +391,11 @@ func (s *Server) handleEnableUser(w http.ResponseWriter, r *http.Request, id str
 }
 
 // handleDisableUser handles POST /users/{id}/disable -- deactivates a user.
-func (s *Server) handleDisableUser(w http.ResponseWriter, r *http.Request, id string) {
-	if err := s.userSvc.DisableUser(r.Context(), id); err != nil {
+func (s *Server) handleDisableUser(w http.ResponseWriter, r *http.Request, id uint64) {
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
+	if err := s.userSvc.DisableUser(ctx, id); err != nil {
 		writeErrorJSON(w, mapUserError(err), err)
 		return
 	}
@@ -314,4 +452,14 @@ func mapUserError(err error) int {
 	default:
 		return http.StatusInternalServerError
 	}
+}
+
+// parseUserID parses a user ID path segment into the uint64 wire type,
+// returning an InvalidParameterError on malformed input.
+func parseUserID(seg string) (uint64, *InvalidParameterError) {
+	id, err := strconv.ParseUint(seg, 10, 64)
+	if err != nil {
+		return 0, &InvalidParameterError{Param: "id", Err: err}
+	}
+	return id, nil
 }

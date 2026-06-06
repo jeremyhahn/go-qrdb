@@ -19,7 +19,6 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strconv"
 	"strings"
@@ -31,7 +30,6 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
-	"github.com/jeremyhahn/go-qrdb/pkg/codec"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
@@ -313,26 +311,21 @@ type Host interface {
 	Close() error
 }
 
-// KVServiceOption configures optional KVService behavior.
+// KVServiceOption configures KVService at construction time.
 type KVServiceOption func(*KVService)
 
-// WithCodecManager sets the dual-codec manager for storage encoding and
-// wire transcoding. When nil (the default), values pass through unmodified.
-func WithCodecManager(cm *codec.Manager) KVServiceOption {
-	return func(s *KVService) {
-		s.codec = cm
-	}
-}
-
-// KVService implements KVServicer backed by a QuicRaft host.
+// KVService implements KVServicer backed by a QuicRaft host. Values are
+// stored and returned verbatim as opaque byte slices. Callers that require
+// typed serialization (e.g., msgpack or JSON marshaling of structs) must
+// encode/decode themselves before calling Put and after calling Get;
+// KVService makes no assumptions about value encoding.
 type KVService struct {
 	host    Host
 	shardID uint64
-	codec   *codec.Manager
 }
 
 // NewKVService creates a new KVServicer that operates on the specified shard.
-// Optional KVServiceOption values configure codec encoding and other behavior.
+// Optional KVServiceOption values configure additional behavior at construction time.
 func NewKVService(host Host, shardID uint64, opts ...KVServiceOption) KVServicer {
 	svc := &KVService{
 		host:    host,
@@ -345,34 +338,28 @@ func NewKVService(host Host, shardID uint64, opts ...KVServiceOption) KVServicer
 }
 
 // Put stores a key-value pair through Raft consensus. The command is encoded
-// using the KV wire protocol and proposed to the shard's Raft group. When a
-// codec manager is configured, the value is encoded using the storage codec
-// before proposal.
+// using the KV wire protocol and proposed to the shard's Raft group. The
+// value is stored verbatim; no codec transformation is applied.
 func (s *KVService) Put(ctx context.Context, key string, value []byte) error {
-	storeValue := value
-	if s.codec != nil {
-		// Pass as string to prevent json.Marshal from base64-encoding []byte.
-		encoded, err := s.codec.EncodeForStorage(string(value))
-		if err != nil {
-			return &CodecEncodeError{Op: "put", Err: err}
-		}
-		storeValue = encoded
-	}
-	cmd, err := kv.EncodePut([]byte(key), storeValue)
+	cmd, err := kv.EncodePut([]byte(key), value)
 	if err != nil {
 		return &ProposeError{Err: err}
 	}
-	_, err = s.host.SyncPropose(ctx, s.shardID, cmd)
+	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
 		return s.translateProposeError(err)
+	}
+	// Surface a state-machine-encoded application error (e.g. a unique-index
+	// violation that rejected the write without stalling consensus).
+	if resultErr := checkResultError(result); resultErr != nil {
+		return resultErr
 	}
 	return nil
 }
 
 // Get retrieves a value by key with a linearizable read through the Raft
 // consensus layer. Returns KeyNotFoundError when the key does not exist.
-// When a codec manager is configured, the stored value is transcoded from
-// the storage codec to the wire codec before being returned.
+// The value is returned verbatim; no codec transformation is applied.
 func (s *KVService) Get(ctx context.Context, key string) ([]byte, error) {
 	result, err := s.host.SyncRead(ctx, s.shardID, []byte(key))
 	if err != nil {
@@ -385,14 +372,6 @@ func (s *KVService) Get(ctx context.Context, key string) ([]byte, error) {
 	data, ok := result.([]byte)
 	if !ok {
 		return nil, &ReadError{Err: &unexpectedResultTypeError{}}
-	}
-
-	if s.codec != nil {
-		var decoded json.RawMessage
-		if err := s.codec.DecodeFromStorage(data, &decoded); err != nil {
-			return nil, &CodecDecodeError{Op: "get", Err: err}
-		}
-		return []byte(decoded), nil
 	}
 
 	return data, nil
@@ -457,9 +436,8 @@ func (s *KVService) Scan(ctx context.Context, prefix string) (map[string][]byte,
 
 // GetStale retrieves a value by key from the local state machine without
 // Raft coordination. Returns potentially stale data but with sub-millisecond
-// latency. Returns KeyNotFoundError when the key does not exist. When a
-// codec manager is configured, the stored value is transcoded from the
-// storage codec to the wire codec.
+// latency. Returns KeyNotFoundError when the key does not exist. The value
+// is returned verbatim; no codec transformation is applied.
 func (s *KVService) GetStale(ctx context.Context, key string) ([]byte, error) {
 	result, err := s.host.StaleRead(ctx, s.shardID, []byte(key))
 	if err != nil {
@@ -472,14 +450,6 @@ func (s *KVService) GetStale(ctx context.Context, key string) ([]byte, error) {
 	data, ok := result.([]byte)
 	if !ok {
 		return nil, &ReadError{Err: &unexpectedResultTypeError{}}
-	}
-
-	if s.codec != nil {
-		var decoded json.RawMessage
-		if err := s.codec.DecodeFromStorage(data, &decoded); err != nil {
-			return nil, &CodecDecodeError{Op: "get_stale", Err: err}
-		}
-		return []byte(decoded), nil
 	}
 
 	return data, nil
@@ -533,18 +503,10 @@ func (s *KVService) ScanStale(ctx context.Context, prefix string) (map[string][]
 
 // PutWithMode stores a key-value pair with the specified write durability.
 // The command is encoded using the KV wire protocol and proposed to the
-// shard's Raft group via ProposeWithMode. When a codec manager is configured,
-// the value is encoded using the storage codec before proposal.
+// shard's Raft group via ProposeWithMode. The value is stored verbatim;
+// no codec transformation is applied.
 func (s *KVService) PutWithMode(ctx context.Context, key string, value []byte, mode writemode.Mode) error {
-	storeValue := value
-	if s.codec != nil {
-		encoded, err := s.codec.EncodeForStorage(string(value))
-		if err != nil {
-			return &CodecEncodeError{Op: "put_with_mode", Err: err}
-		}
-		storeValue = encoded
-	}
-	cmd, err := kv.EncodePut([]byte(key), storeValue)
+	cmd, err := kv.EncodePut([]byte(key), value)
 	if err != nil {
 		return &ProposeError{Err: err}
 	}
@@ -575,9 +537,8 @@ func (s *KVService) DeleteWithMode(ctx context.Context, key string, mode writemo
 // ---------------------------------------------------------------------------
 
 // GetWithConsistency retrieves a value by key with the specified consistency
-// level. Returns KeyNotFoundError when the key does not exist. When a codec
-// manager is configured, the stored value is transcoded from the storage
-// codec to the wire codec before being returned.
+// level. Returns KeyNotFoundError when the key does not exist. The value is
+// returned verbatim; no codec transformation is applied.
 func (s *KVService) GetWithConsistency(ctx context.Context, key string, opts consistency.ReadOptions) ([]byte, error) {
 	result, err := s.host.ReadWithConsistency(ctx, s.shardID, []byte(key), opts)
 	if err != nil {
@@ -590,14 +551,6 @@ func (s *KVService) GetWithConsistency(ctx context.Context, key string, opts con
 	data, ok := result.([]byte)
 	if !ok {
 		return nil, &ReadError{Err: &unexpectedResultTypeError{}}
-	}
-
-	if s.codec != nil {
-		var decoded json.RawMessage
-		if err := s.codec.DecodeFromStorage(data, &decoded); err != nil {
-			return nil, &CodecDecodeError{Op: "get_with_consistency", Err: err}
-		}
-		return []byte(decoded), nil
 	}
 
 	return data, nil

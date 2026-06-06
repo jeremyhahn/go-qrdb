@@ -16,23 +16,127 @@ package quic
 
 import (
 	"context"
+
+	quicgo "github.com/quic-go/quic-go"
+	"google.golang.org/protobuf/proto"
+
+	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
+	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
-// handleWatchSetup is a placeholder handler registered in the dispatch map
-// for the "watch.Watch" method. Watch requires server-streaming semantics
-// that are handled by a dedicated streaming path in the QUIC server, not
-// the standard request-response handleStream flow. This handler returns
-// a ServiceNotConfiguredError directing callers to the streaming watch
-// implementation.
-func (s *Server) handleWatchSetup(_ context.Context, _ []byte) ([]byte, error) {
-	return nil, &ServiceNotConfiguredError{Service: "watch"}
+// Watch method names. Watch is server-streaming and is handled by the
+// dedicated streaming path in handleStream (handleWatchStream), NOT the
+// request/response dispatch table — so these are intentionally absent from
+// s.handlers. Authorization still applies via the AuthorizeQUIC mapping for
+// these method strings.
+const (
+	watchMethodKey       = "watch.Watch"
+	watchPrefixMethodKey = "watch.WatchPrefix"
+)
+
+// isWatchMethod reports whether method is a server-streaming watch method that
+// must be served by handleWatchStream rather than the unary dispatch table.
+func isWatchMethod(method string) bool {
+	return method == watchMethodKey || method == watchPrefixMethodKey
 }
 
-// handleWatchPrefixSetup is a placeholder handler registered in the dispatch
-// map for the "watch.WatchPrefix" method. Like handleWatchSetup, prefix
-// watches require server-streaming semantics and must use the dedicated
-// streaming path. This handler returns a ServiceNotConfiguredError directing
-// callers to the streaming watch implementation.
-func (s *Server) handleWatchPrefixSetup(_ context.Context, _ []byte) ([]byte, error) {
-	return nil, &ServiceNotConfiguredError{Service: "watch"}
+// handleWatchStream serves the server-streaming watch protocol over a single
+// QUIC stream: it decodes the protobuf WatchRequest, creates a watcher, and
+// writes a stream of protobuf WatchResponse frames (each tagged with the
+// original requestID) until the client disconnects (the stream context is
+// canceled), the watcher's event channel closes, or the server is shutting
+// down. The wire framing matches the SDK QUIC client's watchStream reader.
+func (s *Server) handleWatchStream(ctx context.Context, stream *quicgo.Stream, requestID uint64, prefix bool, payload []byte) {
+	if s.watchSvc == nil {
+		_ = wire.WriteResponse(stream, requestID, wire.StatusUnimplemented,
+			[]byte((&ServiceNotConfiguredError{Service: "watch"}).Error()))
+		return
+	}
+
+	var req pb.WatchRequest
+	if err := proto.Unmarshal(payload, &req); err != nil {
+		_ = wire.WriteResponse(stream, requestID, wire.StatusError,
+			[]byte((&UnmarshalError{Err: err}).Error()))
+		return
+	}
+
+	// Tie the watcher's lifetime to the client stream: when the client closes
+	// or resets the stream, stream.Context() is canceled, which cancels the
+	// watcher and ends the stream loop. The parent ctx (server-side) cancels on
+	// shutdown.
+	watchCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go func() {
+		select {
+		case <-stream.Context().Done():
+			cancel()
+		case <-watchCtx.Done():
+		}
+	}()
+
+	var opts []watch.WatchOption
+	if req.GetStartRevision() > 0 {
+		opts = append(opts, watch.WithStartRevision(req.GetStartRevision()))
+	}
+	if req.GetPrevKv() {
+		opts = append(opts, watch.WithPrevKV())
+	}
+	if req.GetProgressNotify() {
+		opts = append(opts, watch.WithProgressNotify())
+	}
+
+	var (
+		w   watch.Watcher
+		err error
+	)
+	if prefix || len(req.GetRangeEnd()) > 0 {
+		w, err = s.watchSvc.WatchPrefix(watchCtx, string(req.GetKey()), opts...)
+	} else {
+		w, err = s.watchSvc.Watch(watchCtx, string(req.GetKey()), opts...)
+	}
+	if err != nil {
+		statusCode, errPayload := mapServiceError(err)
+		_ = wire.WriteResponse(stream, requestID, statusCode, errPayload)
+		return
+	}
+	defer func() { _ = w.Close() }()
+
+	for {
+		select {
+		case <-watchCtx.Done():
+			return
+		case resp, ok := <-w.Events():
+			if !ok {
+				// Channel closed: surface a watcher error if any, else end.
+				if wErr := w.Err(); wErr != nil {
+					statusCode, errPayload := mapServiceError(wErr)
+					_ = wire.WriteResponse(stream, requestID, statusCode, errPayload)
+				}
+				return
+			}
+
+			events := make([]*pb.Event, len(resp.Events))
+			for i, e := range resp.Events {
+				events[i] = eventToProto(e)
+			}
+			pbResp := &pb.WatchResponse{
+				WatchId:      resp.WatchID,
+				Events:       events,
+				Revision:     resp.Revision,
+				Canceled:     resp.Canceled,
+				CancelReason: resp.CancelReason,
+			}
+			data, mErr := proto.Marshal(pbResp)
+			if mErr != nil {
+				return
+			}
+			if wErr := wire.WriteResponse(stream, requestID, wire.StatusOK, data); wErr != nil {
+				return
+			}
+			if resp.Canceled {
+				return
+			}
+		}
+	}
 }

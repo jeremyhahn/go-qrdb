@@ -61,9 +61,10 @@ func (s *Server) buildHandlers() {
 	// Batch
 	s.handlers["batch.Batch"] = s.handleBatch
 
-	// Watch — streaming handlers are registered separately
-	s.handlers["watch.Watch"] = s.handleWatchSetup
-	s.handlers["watch.WatchPrefix"] = s.handleWatchPrefixSetup
+	// Watch is server-streaming: handled by handleWatchStream in the stream
+	// dispatch path (see handleStream + isWatchMethod), NOT registered here as
+	// a unary handler. Authorization for "watch.Watch"/"watch.WatchPrefix"
+	// still applies via the AuthorizeQUIC permission mapping.
 
 	// Lease
 	s.handlers["lease.Grant"] = s.handleLeaseGrant
@@ -124,6 +125,9 @@ func (s *Server) buildHandlers() {
 	// User management
 	s.handlers["user.Create"] = s.handleCreateUser
 	s.handlers["user.Get"] = s.handleGetUser
+	s.handlers["user.GetByUsername"] = s.handleGetUserByUsername
+	s.handlers["user.GetByCertThumbprint"] = s.handleGetUserByCertThumbprint
+	s.handlers["user.AddCertBinding"] = s.handleAddCertBinding
 	s.handlers["user.Update"] = s.handleUpdateUser
 	s.handlers["user.Delete"] = s.handleDeleteUser
 	s.handlers["user.List"] = s.handleListUsers
@@ -133,12 +137,14 @@ func (s *Server) buildHandlers() {
 	// Role management
 	s.handlers["role.Create"] = s.handleCreateRole
 	s.handlers["role.Get"] = s.handleGetRole
+	s.handlers["role.GetByName"] = s.handleGetRoleByName
 	s.handlers["role.Update"] = s.handleUpdateRole
 	s.handlers["role.Delete"] = s.handleDeleteRole
 	s.handlers["role.List"] = s.handleListRoles
 	s.handlers["role.Assign"] = s.handleAssignRole
 	s.handlers["role.Unassign"] = s.handleUnassignRole
 	s.handlers["role.ListPermissions"] = s.handleListPermissions
+	s.handlers["role.ResolvePermissions"] = s.handleResolvePermissions
 
 	// Certificate management
 	s.handlers["cert.Generate"] = s.handleGenerateCert
@@ -167,6 +173,9 @@ func (s *Server) buildHandlers() {
 	s.handlers["db.UpdateRaft"] = s.handleDatabaseUpdateRaft
 	s.handlers["db.UpdateBarrier"] = s.handleDatabaseUpdateBarrier
 	s.handlers["db.UpdateConnection"] = s.handleDatabaseUpdateConnection
+	s.handlers["db.Seal"] = s.handleDatabaseSeal
+	s.handlers["db.Unseal"] = s.handleDatabaseUnseal
+	s.handlers["db.BarrierStatus"] = s.handleDatabaseBarrierStatus
 
 	// Barrier
 	s.handlers["barrier.Initialize"] = s.handleBarrierInitialize
@@ -176,10 +185,6 @@ func (s *Server) buildHandlers() {
 	s.handlers["barrier.ShamirInitialize"] = s.handleBarrierShamirInitialize
 	s.handlers["barrier.ShamirUnsealShare"] = s.handleBarrierShamirUnsealShare
 	s.handlers["barrier.ShamirUnsealShares"] = s.handleBarrierShamirUnsealShares
-	s.handlers["barrier.ShamirListShares"] = s.handleBarrierShamirListShares
-	s.handlers["barrier.ShamirDeleteShare"] = s.handleBarrierShamirDeleteShare
-	s.handlers["barrier.ShamirDeleteAllShares"] = s.handleBarrierShamirDeleteAllShares
-	s.handlers["barrier.ShamirVerify"] = s.handleBarrierShamirVerify
 	s.handlers["barrier.Rekey"] = s.handleBarrierRekey
 	s.handlers["barrier.RecoveryGenerate"] = s.handleBarrierRecoveryGenerate
 	s.handlers["barrier.RecoveryRecover"] = s.handleBarrierRecoveryRecover
@@ -194,4 +199,97 @@ func (s *Server) buildHandlers() {
 	s.handlers["ceremony.ClaimCertComplete"] = s.handleCeremonyClaimCertComplete
 	s.handlers["ceremony.ClaimShare"] = s.handleCeremonyClaimShare
 	s.handlers["ceremony.SignCSR"] = s.handleCeremonySignCSR
+	s.handlers["ceremony.ClaimShareBegin"] = s.handleCeremonyClaimShareBegin
+	s.handlers["ceremony.ClaimShareComplete"] = s.handleCeremonyClaimShareComplete
+	s.handlers["ceremony.SubmitUnsealShare"] = s.handleCeremonySubmitUnsealShare
+
+	// Tenant management
+	s.handlers["tenant.Create"] = s.handleTenantCreate
+	s.handlers["tenant.Get"] = s.handleTenantGet
+	s.handlers["tenant.List"] = s.handleTenantList
+	s.handlers["tenant.Update"] = s.handleTenantUpdate
+	s.handlers["tenant.Delete"] = s.handleTenantDelete
+	s.handlers["tenant.UpdateQuotas"] = s.handleTenantUpdateQuotas
+
+	// Credential management
+	if s.credentialSvc != nil {
+		s.handlers["credential.Submit"] = s.handleCredentialSubmit
+		s.handlers["credential.Strategy"] = s.handleCredentialStrategy
+		s.handlers["credential.Delete"] = s.handleCredentialDelete
+		s.handlers["credential.List"] = s.handleCredentialList
+		s.handlers["credential.Rotate"] = s.handleCredentialRotate
+		s.handlers["credential.RetrieveVersion"] = s.handleCredentialRetrieveVersion
+		s.handlers["credential.ListVersions"] = s.handleCredentialListVersions
+		s.handlers["credential.GCExpired"] = s.handleCredentialGCExpired
+		s.handlers["credential.Store"] = s.handleCredentialStore
+		s.handlers["credential.Retrieve"] = s.handleCredentialRetrieve
+	}
+
+	// Per-tenant barrier lifecycle
+	if s.tenantSvc != nil {
+		s.handlers["tenant.BarrierInit"] = s.handleTenantBarrierInit
+		s.handlers["tenant.BarrierUnseal"] = s.handleTenantBarrierUnseal
+		s.handlers["tenant.BarrierSeal"] = s.handleTenantBarrierSeal
+		s.handlers["tenant.BarrierStatus"] = s.handleTenantBarrierStatus
+	}
+
+	// Backup management
+	if s.backupSvc != nil {
+		s.handlers["backup.Create"] = s.handleBackupCreate
+		s.handlers["backup.List"] = s.handleBackupList
+		s.handlers["backup.Get"] = s.handleBackupGet
+		s.handlers["backup.Delete"] = s.handleBackupDelete
+		s.handlers["backup.Restore"] = s.handleBackupRestore
+		s.handlers["backup.Verify"] = s.handleBackupVerify
+	}
+
+	// Cluster rebalance
+	if s.rebalanceSvc != nil {
+		s.handlers["rebalance.GetShardStats"] = s.handleRebalanceGetShardStats
+		s.handlers["rebalance.CreatePlan"] = s.handleRebalanceCreatePlan
+		s.handlers["rebalance.Execute"] = s.handleRebalanceExecute
+		s.handlers["rebalance.GetImbalanceReport"] = s.handleRebalanceGetImbalanceReport
+	}
+
+	// Embedding
+	if s.embeddingSvc != nil {
+		s.handlers["embedding.Embed"] = s.handleEmbed
+		s.handlers["embedding.BatchEmbed"] = s.handleBatchEmbed
+		s.handlers["embedding.ListModels"] = s.handleListEmbeddingModels
+	}
+
+	// RAG (retrieval-augmented generation)
+	if s.ragSvc != nil {
+		s.handlers["rag.IngestDocument"] = s.handleRAGIngestDocument
+		s.handlers["rag.Query"] = s.handleRAGQuery
+		s.handlers["rag.DeleteDocument"] = s.handleRAGDeleteDocument
+		s.handlers["rag.ListDocuments"] = s.handleRAGListDocuments
+	}
+
+	// Auth factors
+	if s.authFactorSvc != nil {
+		s.handlers["authfactor.Enroll"] = s.handleAuthFactorEnroll
+		s.handlers["authfactor.Challenge"] = s.handleAuthFactorChallenge
+		s.handlers["authfactor.Verify"] = s.handleAuthFactorVerify
+		s.handlers["authfactor.List"] = s.handleAuthFactorList
+		s.handlers["authfactor.Revoke"] = s.handleAuthFactorRevoke
+	}
+
+	// User auth factors (M14)
+	if s.userAuthFactorSvc != nil {
+		s.handlers["userauthfactor.Add"] = s.handleUserAuthFactorAdd
+		s.handlers["userauthfactor.List"] = s.handleUserAuthFactorList
+		s.handlers["userauthfactor.Get"] = s.handleUserAuthFactorGet
+		s.handlers["userauthfactor.Remove"] = s.handleUserAuthFactorRemove
+		s.handlers["userauthfactor.Rotate"] = s.handleUserAuthFactorRotate
+		s.handlers["userauthfactor.Relabel"] = s.handleUserAuthFactorRelabel
+		s.handlers["userauthfactor.Login"] = s.handleUserAuthFactorLogin
+	}
+
+	// Audit
+	// Authorization: requires "audit:query" permission.
+	// TODO: switch to permission.AuditQuery constant once Phase 2 lands.
+	if s.auditLogger != nil {
+		s.handlers["audit.Query"] = s.handleAuditQuery
+	}
 }

@@ -239,7 +239,7 @@ func newDAOTransaction[E Entity](dao *transactionalDAO[E]) *daoTransaction[E] {
 func isNil[E any](entity E) bool {
 	v := reflect.ValueOf(entity)
 	switch v.Kind() {
-	case reflect.Ptr, reflect.Interface, reflect.Slice, reflect.Map, reflect.Chan, reflect.Func:
+	case reflect.Pointer, reflect.Interface, reflect.Slice, reflect.Map, reflect.Chan, reflect.Func:
 		return v.IsNil()
 	default:
 		return false

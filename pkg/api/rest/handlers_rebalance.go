@@ -1,0 +1,275 @@
+// Copyright 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package rest
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
+)
+
+// rebalanceRequestTimeout bounds rebalance read/plan endpoints. Plan execution
+// can move shard data, so it gets the wider backupRequestTimeout instead.
+const rebalanceRequestTimeout = 30 * time.Second
+
+// ---------------------------------------------------------------------------
+// Rebalance request/response types
+// ---------------------------------------------------------------------------
+
+// rebalancePlanRequest is the JSON payload for POST /v1/rebalance/plan.
+type rebalancePlanRequest struct {
+	MaxMoves      int     `json:"max_moves,omitempty"`
+	DryRun        bool    `json:"dry_run,omitempty"`
+	TargetBalance float64 `json:"target_balance,omitempty"`
+}
+
+// shardStatsResponse is the JSON representation of a single shard's statistics.
+type shardStatsResponse struct {
+	ShardID      uint64 `json:"shard_id"`
+	KeyCount     uint64 `json:"key_count"`
+	ByteCount    uint64 `json:"byte_count"`
+	LeaderID     uint64 `json:"leader_id"`
+	ReplicaCount int    `json:"replica_count"`
+}
+
+// rebalanceMoveResponse is the JSON representation of a single planned move.
+type rebalanceMoveResponse struct {
+	ShardID        uint64 `json:"shard_id"`
+	FromNode       string `json:"from_node"`
+	ToNode         string `json:"to_node"`
+	EstimatedBytes uint64 `json:"estimated_bytes"`
+}
+
+// rebalancePlanResponse is the JSON representation of a rebalance plan. It is
+// both the response of POST /v1/rebalance/plan and the request body of
+// POST /v1/rebalance/execute.
+type rebalancePlanResponse struct {
+	Moves               []rebalanceMoveResponse `json:"moves"`
+	EstimatedDurationMs int64                   `json:"estimated_duration_ms"`
+	CurrentImbalance    float64                 `json:"current_imbalance"`
+}
+
+// rebalanceExecutionResponse is the JSON payload returned by
+// POST /v1/rebalance/execute.
+type rebalanceExecutionResponse struct {
+	MovesCompleted int     `json:"moves_completed"`
+	MovesFailed    int     `json:"moves_failed"`
+	DurationMs     int64   `json:"duration_ms"`
+	FinalImbalance float64 `json:"final_imbalance"`
+}
+
+// nodeLoadResponse is the JSON representation of a single node's load.
+type nodeLoadResponse struct {
+	NodeID      string `json:"node_id"`
+	Address     string `json:"address"`
+	ShardCount  int    `json:"shard_count"`
+	TotalKeys   uint64 `json:"total_keys"`
+	TotalBytes  uint64 `json:"total_bytes"`
+	LeaderCount int    `json:"leader_count"`
+}
+
+// imbalanceReportResponse is the JSON payload returned by GET /v1/rebalance/report.
+type imbalanceReportResponse struct {
+	Nodes          []nodeLoadResponse `json:"nodes"`
+	ImbalanceScore float64            `json:"imbalance_score"`
+	Hotspots       []string           `json:"hotspots,omitempty"`
+}
+
+// ---------------------------------------------------------------------------
+// Rebalance handlers
+// ---------------------------------------------------------------------------
+
+// handleRebalanceShardStats handles GET /v1/rebalance/shards/{id} -- returns
+// statistics for a single shard.
+func (s *Server) handleRebalanceShardStats(w http.ResponseWriter, r *http.Request) {
+	if s.rebalanceSvc == nil {
+		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "rebalance"})
+		return
+	}
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	idStr := strings.TrimPrefix(r.URL.Path, "/v1/rebalance/shards/")
+	shardID, err := strconv.ParseUint(idStr, 10, 64)
+	if err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, &InvalidParameterError{Param: "id", Err: err})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), rebalanceRequestTimeout)
+	defer cancel()
+	stats, err := s.rebalanceSvc.GetShardStats(ctx, shardID)
+	if err != nil {
+		writeErrorJSON(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	writeJSON(w, shardStatsResponse{
+		ShardID:      stats.ShardID,
+		KeyCount:     stats.KeyCount,
+		ByteCount:    stats.ByteCount,
+		LeaderID:     stats.LeaderID,
+		ReplicaCount: stats.ReplicaCount,
+	})
+}
+
+// handleRebalancePlan handles POST /v1/rebalance/plan -- generates a move plan.
+func (s *Server) handleRebalancePlan(w http.ResponseWriter, r *http.Request) {
+	if s.rebalanceSvc == nil {
+		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "rebalance"})
+		return
+	}
+
+	var req rebalancePlanRequest
+	if r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+			return
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), rebalanceRequestTimeout)
+	defer cancel()
+	plan, err := s.rebalanceSvc.CreateRebalancePlan(ctx, &service.RebalancePlanOptions{
+		MaxMoves:      req.MaxMoves,
+		DryRun:        req.DryRun,
+		TargetBalance: req.TargetBalance,
+	})
+	if err != nil {
+		writeErrorJSON(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	writeJSON(w, rebalancePlanToResponse(plan))
+}
+
+// handleRebalanceExecute handles POST /v1/rebalance/execute -- executes a plan.
+func (s *Server) handleRebalanceExecute(w http.ResponseWriter, r *http.Request) {
+	if s.rebalanceSvc == nil {
+		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "rebalance"})
+		return
+	}
+
+	var req rebalancePlanResponse
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), backupRequestTimeout)
+	defer cancel()
+	result, err := s.rebalanceSvc.ExecuteRebalance(ctx, responseToRebalancePlan(&req))
+	if err != nil {
+		writeErrorJSON(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	writeJSON(w, rebalanceExecutionResponse{
+		MovesCompleted: result.MovesCompleted,
+		MovesFailed:    result.MovesFailed,
+		DurationMs:     result.Duration.Milliseconds(),
+		FinalImbalance: result.FinalImbalance,
+	})
+}
+
+// handleImbalanceReport handles GET /v1/rebalance/report -- returns the
+// cluster's current load distribution.
+func (s *Server) handleImbalanceReport(w http.ResponseWriter, r *http.Request) {
+	if s.rebalanceSvc == nil {
+		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "rebalance"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), rebalanceRequestTimeout)
+	defer cancel()
+	report, err := s.rebalanceSvc.GetImbalanceReport(ctx)
+	if err != nil {
+		writeErrorJSON(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	nodes := make([]nodeLoadResponse, len(report.Nodes))
+	for i := range report.Nodes {
+		nodes[i] = nodeLoadResponse{
+			NodeID:      report.Nodes[i].NodeID,
+			Address:     report.Nodes[i].Address,
+			ShardCount:  report.Nodes[i].ShardCount,
+			TotalKeys:   report.Nodes[i].TotalKeys,
+			TotalBytes:  report.Nodes[i].TotalBytes,
+			LeaderCount: report.Nodes[i].LeaderCount,
+		}
+	}
+	writeJSON(w, imbalanceReportResponse{
+		Nodes:          nodes,
+		ImbalanceScore: report.ImbalanceScore,
+		Hotspots:       report.Hotspots,
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Rebalance conversion helpers
+// ---------------------------------------------------------------------------
+
+// rebalancePlanToResponse converts a service.RebalancePlanResult to its JSON
+// response.
+func rebalancePlanToResponse(plan *service.RebalancePlanResult) rebalancePlanResponse {
+	if plan == nil {
+		return rebalancePlanResponse{}
+	}
+	moves := make([]rebalanceMoveResponse, len(plan.Moves))
+	for i := range plan.Moves {
+		moves[i] = rebalanceMoveResponse{
+			ShardID:        plan.Moves[i].ShardID,
+			FromNode:       plan.Moves[i].FromNode,
+			ToNode:         plan.Moves[i].ToNode,
+			EstimatedBytes: plan.Moves[i].EstimatedBytes,
+		}
+	}
+	return rebalancePlanResponse{
+		Moves:               moves,
+		EstimatedDurationMs: plan.EstimatedDuration.Milliseconds(),
+		CurrentImbalance:    plan.CurrentImbalance,
+	}
+}
+
+// responseToRebalancePlan converts a JSON rebalance plan back to its
+// service-layer representation for execution.
+func responseToRebalancePlan(resp *rebalancePlanResponse) *service.RebalancePlanResult {
+	if resp == nil {
+		return nil
+	}
+	moves := make([]service.RebalanceMovePlan, len(resp.Moves))
+	for i := range resp.Moves {
+		moves[i] = service.RebalanceMovePlan{
+			ShardID:        resp.Moves[i].ShardID,
+			FromNode:       resp.Moves[i].FromNode,
+			ToNode:         resp.Moves[i].ToNode,
+			EstimatedBytes: resp.Moves[i].EstimatedBytes,
+		}
+	}
+	return &service.RebalancePlanResult{
+		Moves:             moves,
+		EstimatedDuration: time.Duration(resp.EstimatedDurationMs) * time.Millisecond,
+		CurrentImbalance:  resp.CurrentImbalance,
+	}
+}

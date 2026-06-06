@@ -18,9 +18,9 @@ func TestAnalyzer_WithStemmer(t *testing.T) {
 	a := NewAnalyzer(WithStemmer(SimpleStemmer{}))
 	terms := a.Analyze("running messages quickly")
 	// SimpleStemmer strips common suffixes
-	assert.Contains(t, terms, "runn")    // running -> runn
-	assert.Contains(t, terms, "messag")  // messages -> messag
-	assert.Contains(t, terms, "quick")   // quickly -> quick
+	assert.Contains(t, terms, "runn")   // running -> runn
+	assert.Contains(t, terms, "messag") // messages -> messag
+	assert.Contains(t, terms, "quick")  // quickly -> quick
 }
 
 func TestAnalyzer_StemmerDeduplication(t *testing.T) {

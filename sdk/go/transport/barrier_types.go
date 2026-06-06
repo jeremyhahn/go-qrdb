@@ -14,13 +14,33 @@
 
 package transport
 
-// BarrierInitializeRequest holds the secret used to initialize the
-// cryptographic barrier with a single master key.
+// BarrierInitializeRequest holds the parameters used to initialize the
+// cryptographic barrier. The canonical CLI verb tree (qrdb / xkmsctl /
+// quicbaas / platformctl) exposes:
+//
+//	barrier init --barrier-strategy <none|software|shamir>
+//	             --secret <passphrase>     (required for software and shamir)
+//	             --so-pin <pin>            (optional)
+//	             --user-pin <pin>          (required if --so-pin set)
+//
+// BarrierStrategy + SOPin + UserPin are optional on the wire to remain
+// backward compatible with servers that pre-date the canonical surface.
+//
+// Secret is the strategy wrapping passphrase. SOPin/UserPin, when
+// provided, are routed to the canonical pin.PINBackend on the server
+// (qrdb/pkg/pin) — independent of and complementary to Secret.
 type BarrierInitializeRequest struct {
-	Secret string `json:"secret"`
+	Secret          string `json:"secret"`
+	BarrierStrategy string `json:"barrier_strategy,omitempty"`
+	SOPin           string `json:"so_pin,omitempty"`
+	UserPin         string `json:"user_pin,omitempty"`
 }
 
-// BarrierUnsealRequest holds the secret used to unseal the barrier.
+// BarrierUnsealRequest holds the secret used to unseal the barrier when
+// the barrier was initialized with a single-master-key strategy
+// (--barrier-strategy=software). PIN fields are intentionally absent —
+// unseal uses the strategy's passphrase directly and requires no PIN
+// authorization.
 type BarrierUnsealRequest struct {
 	Secret string `json:"secret"`
 }
@@ -34,12 +54,32 @@ type BarrierStatusResponse struct {
 	InitializedAt  string `json:"initialized_at,omitempty"`
 }
 
+// BarrierSealRequest carries the optional Security Officer PIN supplied
+// when sealing the barrier. The SO PIN is verified against the canonical
+// pin.PINBackend when one is configured and a SO PIN has been set; when
+// no backend or PIN is configured the field is ignored.
+//
+// This type is part of the canonical SO-PIN-gated administrative-op
+// surface. Older clients that call BarrierSeal without a body still work
+// because the server treats a missing SOPin as a no-op when no PIN
+// backend is configured.
+type BarrierSealRequest struct {
+	SOPin string `json:"so_pin,omitempty"`
+}
+
 // BarrierInitializeShamirRequest holds the parameters for initializing the
-// barrier with Shamir secret sharing.
+// barrier with Shamir secret sharing M-of-N. The canonical CLI verb is
+// `barrier init-shamir`.
+//
+// SOPin/UserPin, when provided, are routed to the canonical
+// pin.PINBackend on the server — independent of and complementary to
+// Secret.
 type BarrierInitializeShamirRequest struct {
 	Secret      string `json:"secret"`
 	Threshold   int    `json:"threshold"`
 	TotalShares int    `json:"total_shares"`
+	SOPin       string `json:"so_pin,omitempty"`
+	UserPin     string `json:"user_pin,omitempty"`
 }
 
 // BarrierInitializeShamirResponse returns the generated key shares after
@@ -64,28 +104,24 @@ type BarrierUnsealShareResponse struct {
 }
 
 // BarrierUnsealSharesRequest holds multiple Shamir shares for batch
-// unsealing.
+// unsealing. The canonical CLI verb is `barrier unseal-shares`.
 type BarrierUnsealSharesRequest struct {
 	Shares []string `json:"shares"`
 }
 
-// BarrierShamirSharesResponse describes the stored Shamir share metadata.
-type BarrierShamirSharesResponse struct {
-	Count     int `json:"count"`
-	Threshold int `json:"threshold"`
-	Total     int `json:"total"`
-}
-
-// BarrierShamirDeleteShareRequest identifies a single share to delete by
-// its zero-based index.
-type BarrierShamirDeleteShareRequest struct {
-	Index int `json:"index"`
-}
-
-// BarrierRekeyRequest holds parameters for rekeying the Shamir shares.
+// BarrierRekeyRequest holds parameters for rekeying the barrier. The
+// canonical CLI verb is `barrier rekey` and accepts the new passphrase,
+// an optional SO PIN (required when a PINBackend is configured), and
+// optional Shamir threshold/total when the strategy is shamir.
+//
+// SOPin, when provided, is verified against the canonical pin.PINBackend
+// before the rekey is executed. When no backend or PIN is configured the
+// field is ignored, preserving dev-mode flows.
 type BarrierRekeyRequest struct {
-	Threshold int `json:"threshold"`
-	Total     int `json:"total"`
+	NewSecret string `json:"new_secret,omitempty"`
+	SOPin     string `json:"so_pin,omitempty"`
+	Threshold int    `json:"threshold"`
+	Total     int    `json:"total"`
 }
 
 // BarrierRekeyResponse returns the new key shares after a rekey operation.
@@ -96,10 +132,12 @@ type BarrierRekeyResponse struct {
 }
 
 // BarrierGenerateRecoveryKeysRequest holds parameters for generating
-// recovery keys.
+// recovery keys. The canonical CLI verb is `barrier recovery generate`
+// and supports an optional SO PIN.
 type BarrierGenerateRecoveryKeysRequest struct {
-	Threshold int `json:"threshold"`
-	Total     int `json:"total"`
+	Threshold int    `json:"threshold"`
+	Total     int    `json:"total"`
+	SOPin     string `json:"so_pin,omitempty"`
 }
 
 // BarrierRecoveryKeysResponse returns generated recovery keys.
@@ -110,7 +148,8 @@ type BarrierRecoveryKeysResponse struct {
 }
 
 // BarrierRecoverWithKeysRequest holds recovery keys used to unseal the
-// barrier during disaster recovery.
+// barrier during disaster recovery. The canonical CLI verb is
+// `barrier recovery recover` with repeatable `--share` flags.
 type BarrierRecoverWithKeysRequest struct {
 	Keys []string `json:"keys"`
 }

@@ -1131,15 +1131,14 @@ func TestRegularStateMachine_Lease_NotConfigured(t *testing.T) {
 	results := make([]sm.Result, 1)
 
 	err := rsm.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for lease not configured")
+	if err != nil {
+		t.Fatalf("expected nil error (SNC encoded in result.Data), got %v", err)
 	}
-	var svcErr *ServiceNotConfiguredError
-	if !errors.As(err, &svcErr) {
-		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
+	if len(results[0].Data) == 0 {
+		t.Fatal("expected ServiceNotConfiguredError encoded in result.Data")
 	}
-	if svcErr.Service != "lease" {
-		t.Fatalf("expected service 'lease', got %q", svcErr.Service)
+	if !bytes.Contains(results[0].Data, []byte("lease")) {
+		t.Fatalf("expected Data to mention %q, got %q", "lease", results[0].Data)
 	}
 }
 
@@ -1152,15 +1151,14 @@ func TestRegularStateMachine_Index_NotConfigured(t *testing.T) {
 	results := make([]sm.Result, 1)
 
 	err := rsm.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for index not configured")
+	if err != nil {
+		t.Fatalf("expected nil error (SNC encoded in result.Data), got %v", err)
 	}
-	var svcErr *ServiceNotConfiguredError
-	if !errors.As(err, &svcErr) {
-		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
+	if len(results[0].Data) == 0 {
+		t.Fatal("expected ServiceNotConfiguredError encoded in result.Data")
 	}
-	if svcErr.Service != "index" {
-		t.Fatalf("expected service 'index', got %q", svcErr.Service)
+	if !bytes.Contains(results[0].Data, []byte("index")) {
+		t.Fatalf("expected Data to mention %q, got %q", "index", results[0].Data)
 	}
 }
 
@@ -1172,15 +1170,14 @@ func TestRegularStateMachine_TimeSeries_NotConfigured(t *testing.T) {
 	results := make([]sm.Result, 1)
 
 	err := rsm.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for timeseries not configured")
+	if err != nil {
+		t.Fatalf("expected nil error (SNC encoded in result.Data), got %v", err)
 	}
-	var svcErr *ServiceNotConfiguredError
-	if !errors.As(err, &svcErr) {
-		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
+	if len(results[0].Data) == 0 {
+		t.Fatal("expected ServiceNotConfiguredError encoded in result.Data")
 	}
-	if svcErr.Service != "timeseries" {
-		t.Fatalf("expected service 'timeseries', got %q", svcErr.Service)
+	if !bytes.Contains(results[0].Data, []byte("timeseries")) {
+		t.Fatalf("expected Data to mention %q, got %q", "timeseries", results[0].Data)
 	}
 }
 
@@ -1196,12 +1193,14 @@ func TestRegularStateMachine_MVCCPut_NotConfigured(t *testing.T) {
 	results := make([]sm.Result, 1)
 
 	err := rsm.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for MVCC put not configured")
+	if err != nil {
+		t.Fatalf("expected nil error (SNC encoded in result.Data), got %v", err)
 	}
-	var svcErr *ServiceNotConfiguredError
-	if !errors.As(err, &svcErr) {
-		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
+	if len(results[0].Data) == 0 {
+		t.Fatal("expected ServiceNotConfiguredError encoded in result.Data")
+	}
+	if !bytes.Contains(results[0].Data, []byte("mvcc")) {
+		t.Fatalf("expected Data to mention %q, got %q", "mvcc", results[0].Data)
 	}
 }
 
@@ -1213,12 +1212,14 @@ func TestRegularStateMachine_MVCCDelete_NotConfigured(t *testing.T) {
 	results := make([]sm.Result, 1)
 
 	err := rsm.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for MVCC delete not configured")
+	if err != nil {
+		t.Fatalf("expected nil error (SNC encoded in result.Data), got %v", err)
 	}
-	var svcErr *ServiceNotConfiguredError
-	if !errors.As(err, &svcErr) {
-		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
+	if len(results[0].Data) == 0 {
+		t.Fatal("expected ServiceNotConfiguredError encoded in result.Data")
+	}
+	if !bytes.Contains(results[0].Data, []byte("mvcc")) {
+		t.Fatalf("expected Data to mention %q, got %q", "mvcc", results[0].Data)
 	}
 }
 
@@ -1230,12 +1231,14 @@ func TestRegularStateMachine_MVCCRange_NotConfigured(t *testing.T) {
 	results := make([]sm.Result, 1)
 
 	err := rsm.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for MVCC range not configured")
+	if err != nil {
+		t.Fatalf("expected nil error (SNC encoded in result.Data), got %v", err)
 	}
-	var svcErr *ServiceNotConfiguredError
-	if !errors.As(err, &svcErr) {
-		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
+	if len(results[0].Data) == 0 {
+		t.Fatal("expected ServiceNotConfiguredError encoded in result.Data")
+	}
+	if !bytes.Contains(results[0].Data, []byte("mvcc")) {
+		t.Fatalf("expected Data to mention %q, got %q", "mvcc", results[0].Data)
 	}
 }
 
@@ -1247,12 +1250,14 @@ func TestRegularStateMachine_MVCCCompact_NotConfigured(t *testing.T) {
 	results := make([]sm.Result, 1)
 
 	err := rsm.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for MVCC compact not configured")
+	if err != nil {
+		t.Fatalf("expected nil error (SNC encoded in result.Data), got %v", err)
 	}
-	var svcErr *ServiceNotConfiguredError
-	if !errors.As(err, &svcErr) {
-		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
+	if len(results[0].Data) == 0 {
+		t.Fatal("expected ServiceNotConfiguredError encoded in result.Data")
+	}
+	if !bytes.Contains(results[0].Data, []byte("mvcc")) {
+		t.Fatalf("expected Data to mention %q, got %q", "mvcc", results[0].Data)
 	}
 }
 
@@ -1264,12 +1269,14 @@ func TestRegularStateMachine_Transaction_NotConfigured(t *testing.T) {
 	results := make([]sm.Result, 1)
 
 	err := rsm.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for transaction not configured")
+	if err != nil {
+		t.Fatalf("expected nil error (SNC encoded in result.Data), got %v", err)
 	}
-	var svcErr *ServiceNotConfiguredError
-	if !errors.As(err, &svcErr) {
-		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
+	if len(results[0].Data) == 0 {
+		t.Fatal("expected ServiceNotConfiguredError encoded in result.Data")
+	}
+	if !bytes.Contains(results[0].Data, []byte("mvcc")) {
+		t.Fatalf("expected Data to mention %q, got %q", "mvcc", results[0].Data)
 	}
 }
 
@@ -1286,12 +1293,14 @@ func TestRegularStateMachine_LeaseRevoke_NotConfigured(t *testing.T) {
 	results := make([]sm.Result, 1)
 
 	err := rsm.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for lease revoke not configured")
+	if err != nil {
+		t.Fatalf("expected nil error (SNC encoded in result.Data), got %v", err)
 	}
-	var svcErr *ServiceNotConfiguredError
-	if !errors.As(err, &svcErr) {
-		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
+	if len(results[0].Data) == 0 {
+		t.Fatal("expected ServiceNotConfiguredError encoded in result.Data")
+	}
+	if !bytes.Contains(results[0].Data, []byte("lease")) {
+		t.Fatalf("expected Data to mention %q, got %q", "lease", results[0].Data)
 	}
 }
 
@@ -1304,12 +1313,14 @@ func TestRegularStateMachine_LeaseKeepAlive_NotConfigured(t *testing.T) {
 	results := make([]sm.Result, 1)
 
 	err := rsm.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for lease keep-alive not configured")
+	if err != nil {
+		t.Fatalf("expected nil error (SNC encoded in result.Data), got %v", err)
 	}
-	var svcErr *ServiceNotConfiguredError
-	if !errors.As(err, &svcErr) {
-		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
+	if len(results[0].Data) == 0 {
+		t.Fatal("expected ServiceNotConfiguredError encoded in result.Data")
+	}
+	if !bytes.Contains(results[0].Data, []byte("lease")) {
+		t.Fatalf("expected Data to mention %q, got %q", "lease", results[0].Data)
 	}
 }
 
@@ -1325,12 +1336,14 @@ func TestRegularStateMachine_IndexDrop_NotConfigured(t *testing.T) {
 	results := make([]sm.Result, 1)
 
 	err := rsm.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for index drop not configured")
+	if err != nil {
+		t.Fatalf("expected nil error (SNC encoded in result.Data), got %v", err)
 	}
-	var svcErr *ServiceNotConfiguredError
-	if !errors.As(err, &svcErr) {
-		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
+	if len(results[0].Data) == 0 {
+		t.Fatal("expected ServiceNotConfiguredError encoded in result.Data")
+	}
+	if !bytes.Contains(results[0].Data, []byte("index")) {
+		t.Fatalf("expected Data to mention %q, got %q", "index", results[0].Data)
 	}
 }
 
@@ -1346,12 +1359,14 @@ func TestRegularStateMachine_TSWriteBatch_NotConfigured(t *testing.T) {
 	results := make([]sm.Result, 1)
 
 	err := rsm.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for ts write batch not configured")
+	if err != nil {
+		t.Fatalf("expected nil error (SNC encoded in result.Data), got %v", err)
 	}
-	var svcErr *ServiceNotConfiguredError
-	if !errors.As(err, &svcErr) {
-		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
+	if len(results[0].Data) == 0 {
+		t.Fatal("expected ServiceNotConfiguredError encoded in result.Data")
+	}
+	if !bytes.Contains(results[0].Data, []byte("timeseries")) {
+		t.Fatalf("expected Data to mention %q, got %q", "timeseries", results[0].Data)
 	}
 }
 
@@ -1363,12 +1378,14 @@ func TestRegularStateMachine_TSWritePoint_NotConfigured(t *testing.T) {
 	results := make([]sm.Result, 1)
 
 	err := rsm.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for ts write point not configured")
+	if err != nil {
+		t.Fatalf("expected nil error (SNC encoded in result.Data), got %v", err)
 	}
-	var svcErr *ServiceNotConfiguredError
-	if !errors.As(err, &svcErr) {
-		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
+	if len(results[0].Data) == 0 {
+		t.Fatal("expected ServiceNotConfiguredError encoded in result.Data")
+	}
+	if !bytes.Contains(results[0].Data, []byte("timeseries")) {
+		t.Fatalf("expected Data to mention %q, got %q", "timeseries", results[0].Data)
 	}
 }
 
@@ -1380,12 +1397,14 @@ func TestRegularStateMachine_TSDeleteSeries_NotConfigured(t *testing.T) {
 	results := make([]sm.Result, 1)
 
 	err := rsm.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for ts delete series not configured")
+	if err != nil {
+		t.Fatalf("expected nil error (SNC encoded in result.Data), got %v", err)
 	}
-	var svcErr *ServiceNotConfiguredError
-	if !errors.As(err, &svcErr) {
-		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
+	if len(results[0].Data) == 0 {
+		t.Fatal("expected ServiceNotConfiguredError encoded in result.Data")
+	}
+	if !bytes.Contains(results[0].Data, []byte("timeseries")) {
+		t.Fatalf("expected Data to mention %q, got %q", "timeseries", results[0].Data)
 	}
 }
 
@@ -1397,12 +1416,14 @@ func TestRegularStateMachine_TSSetRetention_NotConfigured(t *testing.T) {
 	results := make([]sm.Result, 1)
 
 	err := rsm.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for ts set retention not configured")
+	if err != nil {
+		t.Fatalf("expected nil error (SNC encoded in result.Data), got %v", err)
 	}
-	var svcErr *ServiceNotConfiguredError
-	if !errors.As(err, &svcErr) {
-		t.Fatalf("expected ServiceNotConfiguredError, got %T: %v", err, err)
+	if len(results[0].Data) == 0 {
+		t.Fatal("expected ServiceNotConfiguredError encoded in result.Data")
+	}
+	if !bytes.Contains(results[0].Data, []byte("timeseries")) {
+		t.Fatalf("expected Data to mention %q, got %q", "timeseries", results[0].Data)
 	}
 }
 

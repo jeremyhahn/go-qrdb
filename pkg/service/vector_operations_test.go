@@ -1,3 +1,5 @@
+//go:build qrdb_vector
+
 // Copyright 2026 Jeremy Hahn
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -32,15 +34,22 @@ import (
 // Test Helper: Create a VectorService with a pre-populated namespace
 // =============================================================================
 
+// newVecSvcWithNamespace creates a mock-backed vector service that recognises
+// the given logical namespace name. The mock intercepts storage calls for the
+// system-tenant-scoped version of the namespace (because test contexts carry
+// no explicit tenant → tenant.FromContext returns SystemTenantID).
 func newVecSvcWithNamespace(t *testing.T, namespace string, dimension uint32) (VectorService, *vecMockStorage) {
 	t.Helper()
 	storage := newVecMockStorage()
 	logger := newVecTestLogger()
 
+	// The scoped name used for system-tenant requests.
+	scoped := scopedNamespace(tenant.SystemTenantID, namespace)
+
 	storage.listNamespacesFn = func(ctx context.Context) ([]vector.NamespaceInfo, error) {
 		return []vector.NamespaceInfo{
 			{
-				Name:           namespace,
+				Name:           scoped,
 				Dimension:      dimension,
 				VectorCount:    0,
 				DistanceMetric: "L2",
@@ -52,9 +61,9 @@ func newVecSvcWithNamespace(t *testing.T, namespace string, dimension uint32) (V
 	}
 
 	storage.getNamespaceInfoFn = func(ctx context.Context, ns string) (*vector.NamespaceInfo, error) {
-		if ns == namespace {
+		if ns == scoped {
 			return &vector.NamespaceInfo{
-				Name:           namespace,
+				Name:           scoped,
 				Dimension:      dimension,
 				VectorCount:    0,
 				DistanceMetric: "L2",
@@ -108,9 +117,9 @@ func TestVecCreateNamespace_MetadataConversionAndStorageWrite(t *testing.T) {
 		Metadata:       map[string]interface{}{"description": "test namespace"},
 	})
 
-	// Verify storage was called with converted metadata
+	// Verify storage was called with the scoped name and converted metadata.
 	require.NotNil(t, createdInfo)
-	assert.Equal(t, "meta-ns", createdInfo.Name)
+	assert.Equal(t, scopedNamespace(tenant.SystemTenantID, "meta-ns"), createdInfo.Name)
 	assert.Equal(t, uint32(256), createdInfo.Dimension)
 	assert.Equal(t, "COSINE", createdInfo.DistanceMetric)
 	assert.Equal(t, "HNSW", createdInfo.IndexType)
@@ -363,18 +372,23 @@ func TestVecListNamespaces_OffsetBeyondCount(t *testing.T) {
 func TestVecListNamespaces_TenantFiltering(t *testing.T) {
 	svc, storage := newBasicVecSvc(t)
 
+	// Use scoped names so filterNamespacesByTenant correctly identifies the
+	// owner via unscopedNamespace. The TenantID field is set for display only.
 	storage.listNamespacesFn = func(ctx context.Context) ([]vector.NamespaceInfo, error) {
 		return []vector.NamespaceInfo{
-			{Name: "ns-tenant-a", TenantID: "tenant-a"},
-			{Name: "ns-tenant-b", TenantID: "tenant-b"},
-			{Name: "ns-shared", TenantID: ""},
+			{Name: scopedNamespace("tenant-a", "docs"), TenantID: "tenant-a"},
+			{Name: scopedNamespace("tenant-b", "docs"), TenantID: "tenant-b"},
 		}, nil
 	}
 
+	// tenant-a should only see their own namespace.
 	ctx := tenant.WithTenantID(context.Background(), "tenant-a")
 	resp, err := svc.ListNamespaces(ctx, &ListNamespacesRequest{})
 	require.NoError(t, err)
-	assert.Equal(t, 2, resp.TotalCount)
+	assert.Equal(t, 1, resp.TotalCount)
+	require.Len(t, resp.Namespaces, 1)
+	// Response namespace name should be the logical (unscoped) name.
+	assert.Equal(t, "docs", resp.Namespaces[0].Namespace)
 }
 
 // =============================================================================
@@ -545,16 +559,11 @@ func TestVecUpsert_ServiceClosed(t *testing.T) {
 	assert.Nil(t, resp)
 }
 
-func TestVecUpsert_TenantForbidden(t *testing.T) {
-	svc, storage := newVecSvcWithNamespace(t, "tenant-ns", 3)
-
-	storage.getNamespaceInfoFn = func(ctx context.Context, namespace string) (*vector.NamespaceInfo, error) {
-		return &vector.NamespaceInfo{
-			Name:      "tenant-ns",
-			Dimension: 3,
-			TenantID:  "owner-tenant",
-		}, nil
-	}
+func TestVecUpsert_OtherTenantGetsNotFound(t *testing.T) {
+	// newVecSvcWithNamespace only creates the namespace for the system tenant.
+	// A different tenant's UpsertVector resolves to their own (non-existent)
+	// scoped key → ErrNotFound, not ErrForbidden.
+	svc, _ := newVecSvcWithNamespace(t, "tenant-ns", 3)
 
 	ctx := tenant.WithTenantID(context.Background(), "other-tenant")
 	resp, err := svc.UpsertVector(ctx, &UpsertVectorRequest{
@@ -567,7 +576,7 @@ func TestVecUpsert_TenantForbidden(t *testing.T) {
 
 	var qrdbErr *qrdbErrors.QRDBError
 	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrForbidden, qrdbErr.Code)
+	assert.Equal(t, qrdbErrors.ErrNotFound, qrdbErr.Code)
 }
 
 // =============================================================================
@@ -613,16 +622,9 @@ func TestVecGetVector_ServiceClosed(t *testing.T) {
 	assert.Nil(t, resp)
 }
 
-func TestVecGetVector_TenantForbidden(t *testing.T) {
-	svc, storage := newVecSvcWithNamespace(t, "tenant-ns", 3)
-
-	storage.getNamespaceInfoFn = func(ctx context.Context, namespace string) (*vector.NamespaceInfo, error) {
-		return &vector.NamespaceInfo{
-			Name:      "tenant-ns",
-			Dimension: 3,
-			TenantID:  "owner",
-		}, nil
-	}
+func TestVecGetVector_OtherTenantGetsNotFound(t *testing.T) {
+	// Attacker uses their own scoped key which has no vectors → ErrNotFound.
+	svc, _ := newVecSvcWithNamespace(t, "tenant-ns", 3)
 
 	ctx := tenant.WithTenantID(context.Background(), "attacker")
 	resp, err := svc.GetVector(ctx, &GetVectorRequest{
@@ -631,6 +633,10 @@ func TestVecGetVector_TenantForbidden(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.Nil(t, resp)
+
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrNotFound, qrdbErr.Code)
 }
 
 // =============================================================================
@@ -672,24 +678,30 @@ func TestVecDeleteVector_ServiceClosed(t *testing.T) {
 	assert.Nil(t, resp)
 }
 
-func TestVecDeleteVector_TenantForbidden(t *testing.T) {
+func TestVecDeleteVector_OtherTenantUsesDifferentScopedKey(t *testing.T) {
+	// Verify that the storage is called with the attacker's scoped key, NOT the
+	// owner's scoped key. The mock captures the namespace argument to verify this.
 	svc, storage := newVecSvcWithNamespace(t, "tenant-ns", 3)
 
-	storage.getNamespaceInfoFn = func(ctx context.Context, namespace string) (*vector.NamespaceInfo, error) {
-		return &vector.NamespaceInfo{
-			Name:      "tenant-ns",
-			Dimension: 3,
-			TenantID:  "owner-tenant",
-		}, nil
+	var capturedNS string
+	storage.deleteVectorFn = func(ctx context.Context, namespace string, id uint64) error {
+		capturedNS = namespace
+		return nil
 	}
 
+	ownerScoped := scopedNamespace(tenant.SystemTenantID, "tenant-ns")
+	attackerScoped := scopedNamespace("attacker-tenant", "tenant-ns")
+
 	ctx := tenant.WithTenantID(context.Background(), "attacker-tenant")
-	resp, err := svc.DeleteVector(ctx, &DeleteVectorRequest{
+	_, err := svc.DeleteVector(ctx, &DeleteVectorRequest{
 		Namespace: "tenant-ns",
 		ID:        1,
 	})
-	require.Error(t, err)
-	assert.Nil(t, resp)
+	require.NoError(t, err)
+
+	// Storage was called with the attacker's own scoped key, not the owner's.
+	assert.Equal(t, attackerScoped, capturedNS)
+	assert.NotEqual(t, ownerScoped, capturedNS)
 }
 
 // =============================================================================
@@ -731,24 +743,28 @@ func TestVecBatchUpsert_ServiceClosed(t *testing.T) {
 	assert.Nil(t, resp)
 }
 
-func TestVecBatchUpsert_TenantForbidden(t *testing.T) {
+func TestVecBatchUpsert_OtherTenantUsesDifferentScopedKey(t *testing.T) {
+	// Verify BatchUpsert routes to the attacker's own scoped namespace key.
 	svc, storage := newVecSvcWithNamespace(t, "tenant-ns", 3)
 
-	storage.getNamespaceInfoFn = func(ctx context.Context, namespace string) (*vector.NamespaceInfo, error) {
-		return &vector.NamespaceInfo{
-			Name:      "tenant-ns",
-			Dimension: 3,
-			TenantID:  "owner",
-		}, nil
+	var capturedNS string
+	storage.batchUpsertVectorsFn = func(ctx context.Context, namespace string, vecs []*vector.VectorValue) error {
+		capturedNS = namespace
+		return nil
 	}
 
+	ownerScoped := scopedNamespace(tenant.SystemTenantID, "tenant-ns")
+	attackerScoped := scopedNamespace("attacker", "tenant-ns")
+
 	ctx := tenant.WithTenantID(context.Background(), "attacker")
-	resp, err := svc.BatchUpsert(ctx, &BatchUpsertRequest{
+	_, err := svc.BatchUpsert(ctx, &BatchUpsertRequest{
 		Namespace: "tenant-ns",
 		Vectors:   []*VectorData{{ID: 1, Vector: []float32{1.0, 2.0, 3.0}}},
 	})
-	require.Error(t, err)
-	assert.Nil(t, resp)
+	require.NoError(t, err)
+
+	assert.Equal(t, attackerScoped, capturedNS)
+	assert.NotEqual(t, ownerScoped, capturedNS)
 }
 
 func TestVecBatchUpsert_MultipleVectors(t *testing.T) {
@@ -808,16 +824,11 @@ func TestVecSearchSimilar_ServiceClosed(t *testing.T) {
 	assert.Nil(t, resp)
 }
 
-func TestVecSearchSimilar_TenantForbidden(t *testing.T) {
-	svc, storage := newVecSvcWithNamespace(t, "tenant-ns", 3)
-
-	storage.getNamespaceInfoFn = func(ctx context.Context, namespace string) (*vector.NamespaceInfo, error) {
-		return &vector.NamespaceInfo{
-			Name:      "tenant-ns",
-			Dimension: 3,
-			TenantID:  "owner",
-		}, nil
-	}
+func TestVecSearchSimilar_OtherTenantGetsEmptyResults(t *testing.T) {
+	// SearchSimilar for a different tenant resolves to an empty scoped namespace
+	// (no HNSW index, no vectors). The service returns empty results, not an
+	// error, to avoid leaking the existence of the owner's namespace.
+	svc, _ := newVecSvcWithNamespace(t, "tenant-ns", 3)
 
 	ctx := tenant.WithTenantID(context.Background(), "attacker")
 	resp, err := svc.SearchSimilar(ctx, &SearchSimilarRequest{
@@ -825,8 +836,9 @@ func TestVecSearchSimilar_TenantForbidden(t *testing.T) {
 		QueryVector: []float32{1.0, 2.0, 3.0},
 		K:           5,
 	})
-	require.Error(t, err)
-	assert.Nil(t, resp)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Empty(t, resp.Results, "attacker must not see owner's vectors")
 }
 
 // =============================================================================
@@ -926,24 +938,20 @@ func TestVecSearchByMetadata_ServiceClosed(t *testing.T) {
 	assert.Nil(t, resp)
 }
 
-func TestVecSearchByMetadata_TenantForbidden(t *testing.T) {
-	svc, storage := newVecSvcWithNamespace(t, "tenant-ns", 3)
-
-	storage.getNamespaceInfoFn = func(ctx context.Context, namespace string) (*vector.NamespaceInfo, error) {
-		return &vector.NamespaceInfo{
-			Name:      "tenant-ns",
-			Dimension: 3,
-			TenantID:  "owner",
-		}, nil
-	}
+func TestVecSearchByMetadata_AttackerSeesDifferentScopedNamespace(t *testing.T) {
+	// Scoped namespaces guarantee an attacker searching the same logical name
+	// resolves a different storage key and receives empty results, not the
+	// owner's data.
+	svc, _ := newVecSvcWithNamespace(t, "tenant-ns", 3)
 
 	ctx := tenant.WithTenantID(context.Background(), "attacker")
 	resp, err := svc.SearchByMetadata(ctx, &SearchByMetadataRequest{
 		Namespace: "tenant-ns",
 		Filters:   map[string]interface{}{"key": "val"},
 	})
-	require.Error(t, err)
-	assert.Nil(t, resp)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Empty(t, resp.Results, "attacker must see no results from owner's namespace")
 }
 
 // =============================================================================
@@ -1069,16 +1077,10 @@ func TestVecListVectors_ScanError(t *testing.T) {
 	assert.Nil(t, resp)
 }
 
-func TestVecListVectors_TenantForbidden(t *testing.T) {
-	svc, storage := newVecSvcWithNamespace(t, "tenant-ns", 3)
-
-	storage.getNamespaceInfoFn = func(ctx context.Context, namespace string) (*vector.NamespaceInfo, error) {
-		return &vector.NamespaceInfo{
-			Name:      "tenant-ns",
-			Dimension: 3,
-			TenantID:  "owner",
-		}, nil
-	}
+func TestVecListVectors_AttackerGetsNotFound(t *testing.T) {
+	// An attacker using their own tenant context on the same logical namespace
+	// gets ErrNotFound because their scoped key has no namespace in storage.
+	svc, _ := newVecSvcWithNamespace(t, "tenant-ns", 3)
 
 	ctx := tenant.WithTenantID(context.Background(), "attacker")
 	resp, err := svc.ListVectors(ctx, &ListVectorsRequest{
@@ -1086,6 +1088,10 @@ func TestVecListVectors_TenantForbidden(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.Nil(t, resp)
+
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrNotFound, qrdbErr.Code)
 }
 
 // =============================================================================
@@ -1199,16 +1205,10 @@ func TestVecSearchByID_VectorNotFound(t *testing.T) {
 	assert.Nil(t, resp)
 }
 
-func TestVecSearchByID_TenantForbidden(t *testing.T) {
-	svc, storage := newVecSvcWithNamespace(t, "tenant-ns", 3)
-
-	storage.getNamespaceInfoFn = func(ctx context.Context, namespace string) (*vector.NamespaceInfo, error) {
-		return &vector.NamespaceInfo{
-			Name:      "tenant-ns",
-			Dimension: 3,
-			TenantID:  "owner",
-		}, nil
-	}
+func TestVecSearchByID_OtherTenantGetsNotFound(t *testing.T) {
+	// SearchByID first fetches the source vector. The attacker's scoped
+	// namespace has no vectors → ErrNotFound.
+	svc, _ := newVecSvcWithNamespace(t, "tenant-ns", 3)
 
 	ctx := tenant.WithTenantID(context.Background(), "attacker")
 	resp, err := svc.SearchByID(ctx, &SearchByIDRequest{
@@ -1218,6 +1218,10 @@ func TestVecSearchByID_TenantForbidden(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.Nil(t, resp)
+
+	var qrdbErr *qrdbErrors.QRDBError
+	require.True(t, errors.As(err, &qrdbErr))
+	assert.Equal(t, qrdbErrors.ErrNotFound, qrdbErr.Code)
 }
 
 // =============================================================================
@@ -1275,24 +1279,29 @@ func TestVecBatchDelete_FallbackPartialFailure(t *testing.T) {
 	assert.Contains(t, resp.FailedIDs, uint64(2))
 }
 
-func TestVecBatchDelete_TenantForbidden(t *testing.T) {
+func TestVecBatchDelete_AttackerUsesDifferentScopedKey(t *testing.T) {
+	// Verify BatchDeleteVectors routes to the attacker's own scoped namespace
+	// key and NOT to the owner's key.
 	svc, storage := newVecSvcWithNamespace(t, "tenant-ns", 3)
 
-	storage.getNamespaceInfoFn = func(ctx context.Context, namespace string) (*vector.NamespaceInfo, error) {
-		return &vector.NamespaceInfo{
-			Name:      "tenant-ns",
-			Dimension: 3,
-			TenantID:  "owner",
-		}, nil
+	var capturedNS string
+	storage.batchDeleteVectorsFn = func(ctx context.Context, namespace string, ids []uint64) error {
+		capturedNS = namespace
+		return nil
 	}
 
+	ownerScoped := scopedNamespace(tenant.SystemTenantID, "tenant-ns")
+	attackerScoped := scopedNamespace("attacker", "tenant-ns")
+
 	ctx := tenant.WithTenantID(context.Background(), "attacker")
-	resp, err := svc.BatchDeleteVectors(ctx, &BatchDeleteVectorsRequest{
+	_, err := svc.BatchDeleteVectors(ctx, &BatchDeleteVectorsRequest{
 		Namespace: "tenant-ns",
 		IDs:       []uint64{1},
 	})
-	require.Error(t, err)
-	assert.Nil(t, resp)
+	require.NoError(t, err)
+
+	assert.Equal(t, attackerScoped, capturedNS, "storage was called with attacker's scoped key")
+	assert.NotEqual(t, ownerScoped, capturedNS, "storage was NOT called with owner's scoped key")
 }
 
 // =============================================================================
@@ -1398,23 +1407,52 @@ func TestVecGetCompactionProgress_NotFound(t *testing.T) {
 // Tenant Access Validation
 // =============================================================================
 
-func TestVecTenantAccess_DefaultTenantDeniedCrossTenant(t *testing.T) {
-	// In qrdb, tenant.FromContext always returns a non-empty string ("default")
-	// when no tenant is explicitly set. The default tenant cannot access
-	// a namespace owned by a different tenant.
-	svc, storage := newVecSvcWithNamespace(t, "ns", 3)
+func TestVecTenantAccess_ScopedNamespacesAreIsolated(t *testing.T) {
+	// Verify that two tenants creating the same logical namespace name receive
+	// isolated scoped keys: tenant-A's "ns" maps to "A\x1fns" and tenant-B's
+	// "ns" maps to "B\x1fns". A lookup by tenant-A does NOT return data for
+	// tenant-B even if tenant-B's namespace has TenantID set.
+	storage := newMockVectorStorage()
+	logger := newMockLogger()
 
-	storage.getNamespaceInfoFn = func(ctx context.Context, namespace string) (*vector.NamespaceInfo, error) {
-		return &vector.NamespaceInfo{Name: "ns", Dimension: 3, TenantID: "some-tenant"}, nil
-	}
+	// Create two namespaces under different tenants using scoped keys.
+	scopedA := scopedNamespace("tenant-a", "ns")
+	scopedB := scopedNamespace("tenant-b", "ns")
 
-	resp, err := svc.GetNamespaceInfo(context.Background(), &GetNamespaceInfoRequest{Namespace: "ns"})
+	require.NoError(t, storage.CreateNamespace(context.Background(), &vector.NamespaceInfo{
+		Name:      scopedA,
+		TenantID:  "tenant-a",
+		Dimension: 3,
+	}))
+	require.NoError(t, storage.CreateNamespace(context.Background(), &vector.NamespaceInfo{
+		Name:      scopedB,
+		TenantID:  "tenant-b",
+		Dimension: 3,
+	}))
+
+	svc, err := NewVectorService(storage, logger)
+	require.NoError(t, err)
+
+	// Tenant-A's lookup succeeds and returns tenant-A's namespace.
+	ctxA := tenant.WithTenantID(context.Background(), "tenant-a")
+	respA, err := svc.GetNamespaceInfo(ctxA, &GetNamespaceInfoRequest{Namespace: "ns"})
+	require.NoError(t, err)
+	assert.NotNil(t, respA)
+
+	// Tenant-B's lookup also succeeds and returns tenant-B's own namespace.
+	ctxB := tenant.WithTenantID(context.Background(), "tenant-b")
+	respB, err := svc.GetNamespaceInfo(ctxB, &GetNamespaceInfoRequest{Namespace: "ns"})
+	require.NoError(t, err)
+	assert.NotNil(t, respB)
+
+	// A third tenant that never created the namespace gets NotFound, not
+	// tenant-A's or tenant-B's namespace.
+	ctxC := tenant.WithTenantID(context.Background(), "tenant-c")
+	_, err = svc.GetNamespaceInfo(ctxC, &GetNamespaceInfoRequest{Namespace: "ns"})
 	require.Error(t, err)
-	assert.Nil(t, resp)
-
 	var qrdbErr *qrdbErrors.QRDBError
 	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrForbidden, qrdbErr.Code)
+	assert.Equal(t, qrdbErrors.ErrNotFound, qrdbErr.Code)
 }
 
 func TestVecTenantAccess_MatchingTenant(t *testing.T) {

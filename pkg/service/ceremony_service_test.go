@@ -170,6 +170,19 @@ func (s *testCredentialService) StoreCredential(_ context.Context, name string, 
 	return nil
 }
 
+// newTestOfficerCSR generates a valid PEM-encoded ECDSA P-256 CSR for the
+// given common name, suitable for CeremonySignCSR tests.
+func newTestOfficerCSR(t *testing.T, commonName string) []byte {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	csrDER, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
+		Subject: pkix.Name{CommonName: commonName},
+	}, key)
+	require.NoError(t, err)
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER})
+}
+
 // newTestCeremonyService creates a ceremony.CeremonyService and wraps it
 // in the service-layer CeremonyService for testing. It uses an in-memory
 // barrier, a test credential service, and single-admin configuration.
@@ -240,7 +253,7 @@ func TestCeremonyService_CeremonyInitialize_SingleAdmin(t *testing.T) {
 	svc, ca := newTestCeremonyService(t)
 	ctx := context.Background()
 
-	result, err := svc.CeremonyInitialize(ctx, ca)
+	result, err := svc.CeremonyInitialize(ctx, ca, nil)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
@@ -257,10 +270,10 @@ func TestCeremonyService_CeremonyInitialize_AlreadyInitialized(t *testing.T) {
 	svc, ca := newTestCeremonyService(t)
 	ctx := context.Background()
 
-	_, err := svc.CeremonyInitialize(ctx, ca)
+	_, err := svc.CeremonyInitialize(ctx, ca, nil)
 	require.NoError(t, err)
 
-	_, err = svc.CeremonyInitialize(ctx, ca)
+	_, err = svc.CeremonyInitialize(ctx, ca, nil)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ceremony.ErrAlreadyInitialized)
 }
@@ -269,7 +282,7 @@ func TestCeremonyService_CeremonyStatus_AfterInit(t *testing.T) {
 	svc, ca := newTestCeremonyService(t)
 	ctx := context.Background()
 
-	_, err := svc.CeremonyInitialize(ctx, ca)
+	_, err := svc.CeremonyInitialize(ctx, ca, nil)
 	require.NoError(t, err)
 
 	status, err := svc.CeremonyStatus(ctx)
@@ -318,7 +331,7 @@ func TestCeremonyService_CeremonySignCSR_EmptyUsername(t *testing.T) {
 	svc, ca := newTestCeremonyService(t)
 	ctx := context.Background()
 
-	_, err := svc.CeremonyInitialize(ctx, ca)
+	_, err := svc.CeremonyInitialize(ctx, ca, nil)
 	require.NoError(t, err)
 
 	_, err = svc.CeremonySignCSR(ctx, "", "test-so-pin", "csr-pem", "admin")
@@ -330,7 +343,7 @@ func TestCeremonyService_CeremonySignCSR_EmptySOPin(t *testing.T) {
 	svc, ca := newTestCeremonyService(t)
 	ctx := context.Background()
 
-	_, err := svc.CeremonyInitialize(ctx, ca)
+	_, err := svc.CeremonyInitialize(ctx, ca, nil)
 	require.NoError(t, err)
 
 	_, err = svc.CeremonySignCSR(ctx, "user1", "", "csr-pem", "admin")
@@ -342,7 +355,7 @@ func TestCeremonyService_CeremonySignCSR_WrongSOPin(t *testing.T) {
 	svc, ca := newTestCeremonyService(t)
 	ctx := context.Background()
 
-	_, err := svc.CeremonyInitialize(ctx, ca)
+	_, err := svc.CeremonyInitialize(ctx, ca, nil)
 	require.NoError(t, err)
 
 	_, err = svc.CeremonySignCSR(ctx, "user1", "wrong-pin", "csr-pem", "admin")
@@ -354,7 +367,7 @@ func TestCeremonyService_CeremonySignCSR_MissingCSR(t *testing.T) {
 	svc, ca := newTestCeremonyService(t)
 	ctx := context.Background()
 
-	_, err := svc.CeremonyInitialize(ctx, ca)
+	_, err := svc.CeremonyInitialize(ctx, ca, nil)
 	require.NoError(t, err)
 
 	_, err = svc.CeremonySignCSR(ctx, "user1", "test-so-pin", "", "admin")
@@ -366,7 +379,7 @@ func TestCeremonyService_CeremonySignCSR_MissingRole(t *testing.T) {
 	svc, ca := newTestCeremonyService(t)
 	ctx := context.Background()
 
-	_, err := svc.CeremonyInitialize(ctx, ca)
+	_, err := svc.CeremonyInitialize(ctx, ca, nil)
 	require.NoError(t, err)
 
 	_, err = svc.CeremonySignCSR(ctx, "user1", "test-so-pin", "some-csr", "")
@@ -378,7 +391,7 @@ func TestCeremonyService_CeremonySignCSR_InvalidRole(t *testing.T) {
 	svc, ca := newTestCeremonyService(t)
 	ctx := context.Background()
 
-	_, err := svc.CeremonyInitialize(ctx, ca)
+	_, err := svc.CeremonyInitialize(ctx, ca, nil)
 	require.NoError(t, err)
 
 	_, err = svc.CeremonySignCSR(ctx, "user1", "test-so-pin", "some-csr", "nonexistent-role")
@@ -390,7 +403,7 @@ func TestCeremonyService_CeremonySignCSR_ValidCSR(t *testing.T) {
 	svc, ca := newTestCeremonyService(t)
 	ctx := context.Background()
 
-	_, err := svc.CeremonyInitialize(ctx, ca)
+	_, err := svc.CeremonyInitialize(ctx, ca, nil)
 	require.NoError(t, err)
 
 	// Generate a valid CSR.
@@ -450,7 +463,7 @@ func TestCeremonyService_CeremonyInitialize_MofN(t *testing.T) {
 	svc, ca := newTestCeremonyServiceWithConfig(t, config)
 	ctx := context.Background()
 
-	result, err := svc.CeremonyInitialize(ctx, ca)
+	result, err := svc.CeremonyInitialize(ctx, ca, nil)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
@@ -486,7 +499,12 @@ func TestCeremonyService_MofN_BeginAndCompleteClaimCert(t *testing.T) {
 
 		csrPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER})
 		entries[i] = officerEntry{key: key, username: username}
-		officers[i] = ceremony.OfficerConfig{Username: username, CSRPEM: csrPEM}
+		officers[i] = ceremony.OfficerConfig{
+			Username:          username,
+			CSRPEM:            csrPEM,
+			AuthenticatorType: ceremony.AuthenticatorPIV,
+			AuthenticatorRef:  "9a",
+		}
 	}
 
 	config := &ceremony.CeremonyConfig{
@@ -501,7 +519,7 @@ func TestCeremonyService_MofN_BeginAndCompleteClaimCert(t *testing.T) {
 	svc, ca := newTestCeremonyServiceWithConfig(t, config)
 	ctx := context.Background()
 
-	_, err := svc.CeremonyInitialize(ctx, ca)
+	_, err := svc.CeremonyInitialize(ctx, ca, nil)
 	require.NoError(t, err)
 
 	// Exercise the full BeginClaimCert -> CompleteClaimCert flow for
@@ -569,7 +587,7 @@ func TestCeremonyService_MofN_ClaimShare(t *testing.T) {
 	svc, ca := newTestCeremonyServiceWithConfig(t, config)
 	ctx := context.Background()
 
-	_, err := svc.CeremonyInitialize(ctx, ca)
+	_, err := svc.CeremonyInitialize(ctx, ca, nil)
 	require.NoError(t, err)
 
 	// Claim share for the first officer.
@@ -598,7 +616,7 @@ func TestCeremonyService_CeremonyInitialize_InvalidConfig_NoSOPin(t *testing.T) 
 	svc, ca := newTestCeremonyServiceWithConfig(t, config)
 	ctx := context.Background()
 
-	_, err := svc.CeremonyInitialize(ctx, ca)
+	_, err := svc.CeremonyInitialize(ctx, ca, nil)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ceremony.ErrInvalidSOPIN)
 }
@@ -613,7 +631,7 @@ func TestCeremonyService_CeremonyInitialize_InvalidConfig_NoUserPin(t *testing.T
 	svc, ca := newTestCeremonyServiceWithConfig(t, config)
 	ctx := context.Background()
 
-	_, err := svc.CeremonyInitialize(ctx, ca)
+	_, err := svc.CeremonyInitialize(ctx, ca, nil)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ceremony.ErrInvalidUserPIN)
 }
@@ -648,7 +666,7 @@ func TestCeremonyService_CeremonySignCSR_AllRoles(t *testing.T) {
 	svc, ca := newTestCeremonyService(t)
 	ctx := context.Background()
 
-	_, err := svc.CeremonyInitialize(ctx, ca)
+	_, err := svc.CeremonyInitialize(ctx, ca, nil)
 	require.NoError(t, err)
 
 	roles := []string{"so", "admin", "operator", "user", "auditor", "custodian"}
@@ -730,4 +748,91 @@ func TestCeremonyService_CeremonyNilLogger(t *testing.T) {
 	_, err = ceremony.NewCeremonyService(config, barrier, credSvc, nil)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ceremony.ErrNilLogger)
+}
+
+// TestCeremonyService_CeremonyInitialize_PerRequestPINsReachService proves the
+// SO and user PINs supplied on the CeremonyInitialize call (not the
+// construction-time config) drive the ceremony. The service is built with
+// EMPTY configured PINs: a nil/empty-opts call must fail closed, while a call
+// carrying the PINs in the options succeeds. This is the regression guard for
+// the gap where the transport request PINs were dropped and consumers had to
+// mutate shared config per-init.
+func TestCeremonyService_CeremonyInitialize_PerRequestPINsReachService(t *testing.T) {
+	emptyConfig := &ceremony.CeremonyConfig{
+		// SOPin and UserPin intentionally empty — they must come from opts.
+		Hostname: "localhost",
+		SANs:     []string{"localhost", "127.0.0.1"},
+	}
+
+	t.Run("nil opts fails closed", func(t *testing.T) {
+		svc, ca := newTestCeremonyServiceWithConfig(t, &ceremony.CeremonyConfig{Hostname: "localhost"})
+		_, err := svc.CeremonyInitialize(context.Background(), ca, nil)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ceremony.ErrInvalidSOPIN,
+			"empty configured PIN with no per-request PIN must fail closed")
+	})
+
+	t.Run("empty opts pins fail closed", func(t *testing.T) {
+		svc, ca := newTestCeremonyServiceWithConfig(t, &ceremony.CeremonyConfig{Hostname: "localhost"})
+		_, err := svc.CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{})
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ceremony.ErrInvalidSOPIN)
+	})
+
+	t.Run("so pin only still fails closed on missing user pin", func(t *testing.T) {
+		svc, ca := newTestCeremonyServiceWithConfig(t, &ceremony.CeremonyConfig{Hostname: "localhost"})
+		_, err := svc.CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{SOPin: "so-pin"})
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ceremony.ErrInvalidUserPIN)
+	})
+
+	t.Run("per-request pins succeed where config is empty", func(t *testing.T) {
+		// A fresh service each time because Initialize is one-shot.
+		_ = emptyConfig
+		svc, ca := newTestCeremonyServiceWithConfig(t, &ceremony.CeremonyConfig{
+			Hostname: "localhost",
+			SANs:     []string{"localhost", "127.0.0.1"},
+		})
+		result, err := svc.CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{
+			SOPin:   "request-so-pin",
+			UserPin: "request-user-pin",
+		})
+		require.NoError(t, err, "per-request PINs must satisfy the ceremony with empty config")
+		require.NotNil(t, result)
+		assert.NotEmpty(t, result.SPKIPin)
+		assert.Equal(t, "operational", result.State)
+	})
+}
+
+// TestCeremonyService_CeremonyInitialize_PerRequestPINsTakePrecedence proves
+// that a non-empty per-request PIN overrides the configured PIN and that the
+// effective PIN governs subsequent SO-authenticated operations (SignCSR),
+// confirming the override is persisted consistently and not just consumed at
+// init time.
+func TestCeremonyService_CeremonyInitialize_PerRequestPINsTakePrecedence(t *testing.T) {
+	svc, ca := newTestCeremonyServiceWithConfig(t, &ceremony.CeremonyConfig{
+		SOPin:    "config-so-pin",
+		UserPin:  "config-user-pin",
+		Hostname: "localhost",
+		SANs:     []string{"localhost", "127.0.0.1"},
+	})
+
+	_, err := svc.CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{
+		SOPin:   "override-so-pin",
+		UserPin: "override-user-pin",
+	})
+	require.NoError(t, err)
+
+	// The override SO PIN must now be the effective one: signing with the old
+	// config PIN must be rejected, signing with the override PIN must be
+	// accepted.
+	csrPEM := newTestOfficerCSR(t, "operator-1")
+
+	_, err = svc.CeremonySignCSR(context.Background(), "operator-1", "config-so-pin", string(csrPEM), "operator")
+	require.Error(t, err, "stale config SO PIN must be rejected after per-request override")
+	assert.ErrorIs(t, err, ceremony.ErrSOPINMismatch)
+
+	res, err := svc.CeremonySignCSR(context.Background(), "operator-1", "override-so-pin", string(csrPEM), "operator")
+	require.NoError(t, err, "override SO PIN must be accepted")
+	assert.NotEmpty(t, res.CertPEM)
 }

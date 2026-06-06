@@ -56,7 +56,7 @@ func TestRoleNameExistsError_Message(t *testing.T) {
 }
 
 func TestRoleNameExistsError_As(t *testing.T) {
-	var err error = &RoleNameExistsError{Name: "editor", TenantID: "default"}
+	var err error = &RoleNameExistsError{Name: "editor", TenantID: "system"}
 	var target *RoleNameExistsError
 	if !errors.As(err, &target) {
 		t.Fatal("errors.As should match *RoleNameExistsError")
@@ -71,8 +71,8 @@ func TestRoleNameExistsError_As(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSystemRoleImmutableError_Message(t *testing.T) {
-	err := &SystemRoleImmutableError{ID: "superadmin-id"}
-	want := "role: system role cannot be deleted: superadmin-id"
+	err := &SystemRoleImmutableError{ID: "admin-role-id"}
+	want := "role: system role cannot be deleted: admin-role-id"
 	if err.Error() != want {
 		t.Fatalf("Error(): got %q, want %q", err.Error(), want)
 	}

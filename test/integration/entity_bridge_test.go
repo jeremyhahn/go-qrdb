@@ -43,23 +43,26 @@ type bridgeUser struct {
 }
 
 // putBridgeUser marshals u as JSON and stores it via the REST KV API.
-// The key includes the "default/" tenant prefix because the EntityTable
-// scans with tenant.PrefixKey(tenantID, entityType + "/") to match the
-// same tenant-scoped key format used by the KVTable SQL writer.
+// The key includes the "system/" tenant prefix because the EntityTable
+// scans with tenant.PrefixKey(tenantID, entityType + "/"), and the SQL
+// session derives its tenant from the authenticated mTLS identity — the
+// admin client cert carries OU=system, so the session tenant is "system".
+// The DAO write must land under the same namespace the SQL reader scans.
 func putBridgeUser(t *testing.T, ca *testCA, adminPort int, u bridgeUser) {
 	t.Helper()
 	data, err := json.Marshal(u)
 	if err != nil {
 		t.Fatalf("putBridgeUser: marshal: %v", err)
 	}
-	httpPut(t, ca, adminPort, fmt.Sprintf("default/bridge_users/%d", u.ID), data)
+	httpPut(t, ca, adminPort, fmt.Sprintf("system/bridge_users/%d", u.ID), data)
 }
 
 // getBridgeUser retrieves the entity via the REST KV API and unmarshals
-// it into a bridgeUser. The key includes the "default/" tenant prefix.
+// it into a bridgeUser. The key includes the "system/" tenant prefix
+// (the admin identity's tenant; see putBridgeUser).
 func getBridgeUser(t *testing.T, ca *testCA, adminPort int, id uint64) bridgeUser {
 	t.Helper()
-	data := httpGet(t, ca, adminPort, fmt.Sprintf("default/bridge_users/%d", id))
+	data := httpGet(t, ca, adminPort, fmt.Sprintf("system/bridge_users/%d", id))
 	var u bridgeUser
 	if err := json.Unmarshal(data, &u); err != nil {
 		t.Fatalf("getBridgeUser: unmarshal: %v", err)
@@ -80,7 +83,7 @@ func TestEntityBridge_MySQL_DAOWriteSQLRead(t *testing.T) {
 	want := bridgeUser{ID: 100, Name: "Alice", Email: "alice@example.com", Age: 30, Score: 9.5}
 	putBridgeUser(t, ca, adminPort, want)
 
-	certPath, keyPath := generateClientCert(t, ca, "admin", "default")
+	certPath, keyPath := generateClientCert(t, ca, "admin", "system")
 	db := waitForMySQL(t, ca, certPath, keyPath, mysqlPort, "admin")
 
 	var (
@@ -120,7 +123,7 @@ func TestEntityBridge_MySQL_DAOWriteSQLRead(t *testing.T) {
 func TestEntityBridge_MySQL_SQLWriteDAORead(t *testing.T) {
 	adminPort, mysqlPort, _, ca := startSingleNodeWithSQL(t)
 
-	certPath, keyPath := generateClientCert(t, ca, "admin", "default")
+	certPath, keyPath := generateClientCert(t, ca, "admin", "system")
 	db := waitForMySQL(t, ca, certPath, keyPath, mysqlPort, "admin")
 
 	// Columns are in alphabetical order after _id: _id, age, email, name, score.
@@ -165,7 +168,7 @@ func TestEntityBridge_MySQL_SelectAll(t *testing.T) {
 		putBridgeUser(t, ca, adminPort, u)
 	}
 
-	certPath, keyPath := generateClientCert(t, ca, "admin", "default")
+	certPath, keyPath := generateClientCert(t, ca, "admin", "system")
 	db := waitForMySQL(t, ca, certPath, keyPath, mysqlPort, "admin")
 
 	rows, err := db.Query("SELECT _id, name, email FROM bridge_users")
@@ -221,7 +224,7 @@ func TestEntityBridge_MySQL_UpdateAndVerify(t *testing.T) {
 	original := bridgeUser{ID: 400, Name: "Frank", Email: "frank@example.com", Age: 40, Score: 3.0}
 	putBridgeUser(t, ca, adminPort, original)
 
-	certPath, keyPath := generateClientCert(t, ca, "admin", "default")
+	certPath, keyPath := generateClientCert(t, ca, "admin", "system")
 	db := waitForMySQL(t, ca, certPath, keyPath, mysqlPort, "admin")
 
 	_, err := db.Exec("UPDATE bridge_users SET name = ? WHERE _id = ?", "Franklin", 400)
@@ -255,7 +258,7 @@ func TestEntityBridge_MySQL_DeleteAndVerify(t *testing.T) {
 	u := bridgeUser{ID: 500, Name: "Grace", Email: "grace@example.com", Age: 27, Score: 4.8}
 	putBridgeUser(t, ca, adminPort, u)
 
-	certPath, keyPath := generateClientCert(t, ca, "admin", "default")
+	certPath, keyPath := generateClientCert(t, ca, "admin", "system")
 	db := waitForMySQL(t, ca, certPath, keyPath, mysqlPort, "admin")
 
 	result, err := db.Exec("DELETE FROM bridge_users WHERE _id = ?", 500)
@@ -278,7 +281,7 @@ func TestEntityBridge_MySQL_DeleteAndVerify(t *testing.T) {
 	}
 
 	// Verify REST GET returns 404.
-	status := httpGetStatus(t, ca, adminPort, "default/bridge_users/500")
+	status := httpGetStatus(t, ca, adminPort, "system/bridge_users/500")
 	if status != 404 {
 		t.Errorf("REST GET after DELETE: got status %d, want 404", status)
 	}
@@ -289,7 +292,7 @@ func TestEntityBridge_MySQL_DeleteAndVerify(t *testing.T) {
 func TestEntityBridge_MySQL_EmptyTable(t *testing.T) {
 	_, mysqlPort, _, ca := startSingleNodeWithSQL(t)
 
-	certPath, keyPath := generateClientCert(t, ca, "admin", "default")
+	certPath, keyPath := generateClientCert(t, ca, "admin", "system")
 	db := waitForMySQL(t, ca, certPath, keyPath, mysqlPort, "admin")
 
 	rows, err := db.Query("SELECT _id, name FROM bridge_users")
@@ -324,7 +327,7 @@ func TestEntityBridge_MySQL_FilterByAge(t *testing.T) {
 		putBridgeUser(t, ca, adminPort, u)
 	}
 
-	certPath, keyPath := generateClientCert(t, ca, "admin", "default")
+	certPath, keyPath := generateClientCert(t, ca, "admin", "system")
 	db := waitForMySQL(t, ca, certPath, keyPath, mysqlPort, "admin")
 
 	rows, err := db.Query("SELECT name FROM bridge_users WHERE age > ?", 25)
@@ -364,7 +367,7 @@ func TestEntityBridge_MySQL_ReplaceInto(t *testing.T) {
 	original := bridgeUser{ID: 700, Name: "Heidi", Email: "heidi@example.com", Age: 33, Score: 6.0}
 	putBridgeUser(t, ca, adminPort, original)
 
-	certPath, keyPath := generateClientCert(t, ca, "admin", "default")
+	certPath, keyPath := generateClientCert(t, ca, "admin", "system")
 	db := waitForMySQL(t, ca, certPath, keyPath, mysqlPort, "admin")
 
 	// Columns in alphabetical order after _id: _id, age, email, name, score.
@@ -408,7 +411,7 @@ func TestEntityBridge_PgSQL_DAOWriteSQLRead(t *testing.T) {
 	want := bridgeUser{ID: 800, Name: "Ivan", Email: "ivan@example.com", Age: 45, Score: 8.8}
 	putBridgeUser(t, ca, adminPort, want)
 
-	certPath, keyPath := generateClientCert(t, ca, "admin", "default")
+	certPath, keyPath := generateClientCert(t, ca, "admin", "system")
 	conn := waitForPgSQL(t, ca, certPath, keyPath, pgsqlPort, "admin")
 	ctx := context.Background()
 
@@ -449,7 +452,7 @@ func TestEntityBridge_PgSQL_DAOWriteSQLRead(t *testing.T) {
 func TestEntityBridge_PgSQL_SQLWriteDAORead(t *testing.T) {
 	adminPort, _, pgsqlPort, ca := startSingleNodeWithSQL(t)
 
-	certPath, keyPath := generateClientCert(t, ca, "admin", "default")
+	certPath, keyPath := generateClientCert(t, ca, "admin", "system")
 	conn := waitForPgSQL(t, ca, certPath, keyPath, pgsqlPort, "admin")
 	ctx := context.Background()
 
@@ -496,7 +499,7 @@ func TestEntityBridge_PgSQL_SelectAll(t *testing.T) {
 		putBridgeUser(t, ca, adminPort, u)
 	}
 
-	certPath, keyPath := generateClientCert(t, ca, "admin", "default")
+	certPath, keyPath := generateClientCert(t, ca, "admin", "system")
 	conn := waitForPgSQL(t, ca, certPath, keyPath, pgsqlPort, "admin")
 	ctx := context.Background()
 

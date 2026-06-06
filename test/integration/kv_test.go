@@ -1278,7 +1278,7 @@ func TestUsers_SingleNode_CreateAndList(t *testing.T) {
 		RoleIDs  []string `json:"roleIDs"`
 	}{
 		Username: "testuser1",
-		TenantID: "default",
+		TenantID: "system",
 		RoleIDs:  []string{},
 	}
 	body, err := json.Marshal(payload)
@@ -1299,7 +1299,7 @@ func TestUsers_SingleNode_CreateAndList(t *testing.T) {
 	}
 
 	var createdUser struct {
-		ID       string `json:"id"`
+		ID       uint64 `json:"id"`
 		Username string `json:"username"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&createdUser); err != nil {
@@ -1309,10 +1309,12 @@ func TestUsers_SingleNode_CreateAndList(t *testing.T) {
 		t.Errorf("created user name: got %q, want %q", createdUser.Username, "testuser1")
 	}
 
-	// List users and verify the created user is present. Use a retry loop
-	// because the linearizable read may take a brief moment to reflect the
-	// freshly committed write on a newly started node.
-	listURL := fmt.Sprintf("https://127.0.0.1:%d/users/list?tenantID=default", adminPort)
+	// List users and verify the created user is present. The list must be
+	// scoped to the SAME tenant the user was created in ("system" above) —
+	// handleListUsers filters strictly by the tenantID query param. Use a
+	// retry loop because the linearizable read may take a brief moment to
+	// reflect the freshly committed write on a newly started node.
+	listURL := fmt.Sprintf("https://127.0.0.1:%d/users/list?tenantID=system", adminPort)
 	deadline := time.Now().Add(10 * time.Second)
 	var lastTotal int
 	for time.Now().Before(deadline) {
@@ -1329,7 +1331,7 @@ func TestUsers_SingleNode_CreateAndList(t *testing.T) {
 
 		var listResult struct {
 			Users []struct {
-				ID       string `json:"id"`
+				ID       uint64 `json:"id"`
 				Username string `json:"username"`
 			} `json:"users"`
 			Total int `json:"total"`
@@ -1364,7 +1366,7 @@ func TestRoles_SingleNode_CreateAndAssign(t *testing.T) {
 		Permissions []string `json:"permissions"`
 	}{
 		Name:        "testrole",
-		TenantID:    "default",
+		TenantID:    "system",
 		Permissions: []string{"kv:get", "kv:put"},
 	}
 	roleBody, err := json.Marshal(rolePayload)
@@ -1399,7 +1401,7 @@ func TestRoles_SingleNode_CreateAndAssign(t *testing.T) {
 		RoleIDs  []string `json:"roleIDs"`
 	}{
 		Username: "roleuser",
-		TenantID: "default",
+		TenantID: "system",
 		RoleIDs:  []string{},
 	}
 	userBody, err := json.Marshal(userPayload)
@@ -1420,7 +1422,7 @@ func TestRoles_SingleNode_CreateAndAssign(t *testing.T) {
 	}
 
 	var createdUser struct {
-		ID string `json:"id"`
+		ID uint64 `json:"id"`
 	}
 	if err := json.NewDecoder(userResp.Body).Decode(&createdUser); err != nil {
 		t.Fatalf("create user decode: %v", err)
@@ -1428,7 +1430,7 @@ func TestRoles_SingleNode_CreateAndAssign(t *testing.T) {
 
 	// Assign the role to the user.
 	assignPayload := struct {
-		UserID string `json:"userID"`
+		UserID uint64 `json:"userID"`
 		RoleID string `json:"roleID"`
 	}{
 		UserID: createdUser.ID,

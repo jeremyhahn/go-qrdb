@@ -61,9 +61,10 @@ func (t *Transport) PutWithLease(ctx context.Context, key string, value []byte, 
 	ctx = applyWriteMetadata(ctx, opts...)
 
 	resp, err := t.client.PutWithLease(ctx, &pb.PutWithLeaseRequest{
-		Key:     key,
-		Value:   value,
-		LeaseId: leaseID,
+		Key:       key,
+		Value:     value,
+		LeaseId:   leaseID,
+		WriteMode: protoWriteMode(opts...),
 	})
 	if err != nil {
 		return nil, mapGRPCError("PutWithLease", err)
@@ -82,7 +83,8 @@ func (t *Transport) GetRevision(ctx context.Context, key string, opts ...transpo
 	ctx = applyReadMetadata(ctx, opts...)
 
 	resp, err := t.client.GetRevision(ctx, &pb.GetRevisionRequest{
-		Key: key,
+		Key:         key,
+		Consistency: protoConsistency(opts...),
 	})
 	if err != nil {
 		return nil, mapGRPCError("GetRevision", err)
@@ -102,8 +104,9 @@ func (t *Transport) GetAtRevision(ctx context.Context, key string, revision int6
 	ctx = applyReadMetadata(ctx, opts...)
 
 	resp, err := t.client.GetAtRevision(ctx, &pb.GetAtRevisionRequest{
-		Key:      key,
-		Revision: revision,
+		Key:         key,
+		Revision:    revision,
+		Consistency: protoConsistency(opts...),
 	})
 	if err != nil {
 		return nil, mapGRPCError("GetAtRevision", err)
@@ -123,14 +126,15 @@ func (t *Transport) Range(ctx context.Context, start, end []byte, rangeOpts tran
 	ctx = applyReadMetadata(ctx, opts...)
 
 	resp, err := t.client.Range(ctx, &pb.RangeRequest{
-		Start:      start,
-		End:        end,
-		Limit:      rangeOpts.Limit,
-		Revision:   rangeOpts.Revision,
-		CountOnly:  rangeOpts.CountOnly,
-		KeysOnly:   rangeOpts.KeysOnly,
-		SortOrder:  sdkSortOrderToProto[rangeOpts.SortOrder],
-		SortTarget: sdkSortTargetToProto[rangeOpts.SortTarget],
+		Start:       start,
+		End:         end,
+		Limit:       rangeOpts.Limit,
+		Revision:    rangeOpts.Revision,
+		CountOnly:   rangeOpts.CountOnly,
+		KeysOnly:    rangeOpts.KeysOnly,
+		SortOrder:   sdkSortOrderToProto[rangeOpts.SortOrder],
+		SortTarget:  sdkSortTargetToProto[rangeOpts.SortTarget],
+		Consistency: protoConsistency(opts...),
 	})
 	if err != nil {
 		return nil, mapGRPCError("Range", err)

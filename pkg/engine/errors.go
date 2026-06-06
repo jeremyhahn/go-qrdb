@@ -42,6 +42,21 @@ func (e *InvalidQueryError) Error() string {
 	return "engine: invalid query: " + e.Reason
 }
 
+// UniqueConstraintError is returned when a write would map a second key to a
+// value already held under a unique secondary index. It is an APPLICATION
+// error (a deterministic consequence of valid client input), so update
+// handlers surface it to the client via the result payload rather than
+// returning it from Update — which would stall consensus. See
+// protocol.EncodeAppError.
+type UniqueConstraintError struct {
+	Index string
+	Field string
+}
+
+func (e *UniqueConstraintError) Error() string {
+	return "engine: unique constraint violation on index " + e.Index + " (field " + e.Field + ")"
+}
+
 // hexByte converts a byte to its two-character hexadecimal representation.
 func hexByte(b byte) string {
 	const hex = "0123456789abcdef"

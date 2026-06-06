@@ -121,7 +121,7 @@ func TestCertRecord_JSONFields(t *testing.T) {
 func TestGenerateRequest_ZeroTTL(t *testing.T) {
 	req := &GenerateRequest{
 		Username: "alice",
-		TenantID: "default",
+		TenantID: "system",
 	}
 	if req.TTL != 0 {
 		t.Errorf("default TTL: got %v, want 0", req.TTL)

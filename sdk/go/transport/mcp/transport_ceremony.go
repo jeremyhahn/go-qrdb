@@ -193,3 +193,31 @@ func (t *Transport) CeremonySignCSR(ctx context.Context, req *transport.SignCSRI
 
 	return &resp, nil
 }
+
+// CeremonyEnrollExternalOfficer enrols an officer whose key material lives
+// outside go-qrdb (external CA cert or bare public key) by calling the
+// qrdb_ceremony_enroll_external_officer MCP tool.
+func (t *Transport) CeremonyEnrollExternalOfficer(ctx context.Context, req *transport.EnrollExternalOfficerRequest) (*transport.EnrollExternalOfficerResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	text, err := t.callTool(ctx, "qrdb_ceremony_enroll_external_officer", map[string]any{
+		"username":    req.Username,
+		"cert_pem":    req.CertPEM,
+		"pubkey_pem":  req.PubKeyPEM,
+		"share_index": req.ShareIndex,
+		"auth_factor": req.AuthFactor,
+		"share_bytes": req.ShareBytes,
+	})
+	if err != nil {
+		return nil, &transport.RequestError{Method: "CeremonyEnrollExternalOfficer", Err: err}
+	}
+
+	var resp transport.EnrollExternalOfficerResponse
+	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "CeremonyEnrollExternalOfficer", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+
+	return &resp, nil
+}

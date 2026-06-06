@@ -345,3 +345,186 @@ describe('Bug 4 – database protocol endpoint path and body', () => {
         expect(url.pathname).toBe('/v1/databases/my%20db/protocol');
     });
 });
+
+// ---------------------------------------------------------------------------
+// Outbound snake_case transform — camelCase SDK fields must arrive as
+// snake_case in the serialized JSON body that the Go server receives.
+// These are the request types that were silently broken before jsonBody()
+// applied deepCamelToSnake: isolationType→isolation_type, tenantId→tenant_id,
+// maxDatabases→max_databases, createRevision→create_revision, etc.
+// ---------------------------------------------------------------------------
+
+describe('Outbound transform — tenants.create sends isolation_type', () => {
+    beforeEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it('isolationType is serialized as isolation_type in POST body', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({ tenant: { id: 't1', name: 'T', isolation_type: 'prefix' } });
+
+        await client.tenants.create({ id: 't1', name: 'T', isolationType: 'prefix' });
+
+        expect(calls).toHaveLength(1);
+        const body = calls[0].body as Record<string, unknown>;
+        // Must arrive as snake_case — Go struct tag is json:"isolation_type".
+        expect(body['isolation_type']).toBe('prefix');
+        // camelCase key must NOT be present.
+        expect(body['isolationType']).toBeUndefined();
+        expect(body['id']).toBe('t1');
+        expect(body['name']).toBe('T');
+    });
+
+    it('tenants.update sends isolation_type in PUT body', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({ tenant: { id: 't1', name: 'T', isolation_type: 'prefix' } });
+
+        await client.tenants.update('t1', { isolationType: 'prefix' });
+
+        expect(calls).toHaveLength(1);
+        const body = calls[0].body as Record<string, unknown>;
+        expect(body['isolation_type']).toBe('prefix');
+        expect(body['isolationType']).toBeUndefined();
+    });
+});
+
+describe('Outbound transform — tenants.barrierInit sends tenant_id', () => {
+    beforeEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it('tenantId is serialized as tenant_id', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({});
+
+        await client.tenants.barrierInit({ tenantId: 'abc', threshold: 2, shares: 3 });
+
+        expect(calls).toHaveLength(1);
+        const body = calls[0].body as Record<string, unknown>;
+        expect(body['tenant_id']).toBe('abc');
+        expect(body['tenantId']).toBeUndefined();
+        expect(body['threshold']).toBe(2);
+        expect(body['shares']).toBe(3);
+    });
+});
+
+describe('Outbound transform — tenants.updateQuotas sends snake_case quota fields', () => {
+    beforeEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it('maxDatabases, maxKeys, maxStorageBytes all become snake_case', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({ tenant: { id: 'q1' } });
+
+        await client.tenants.updateQuotas({
+            tenantId: 'q1',
+            quotas: {
+                maxDatabases: 5,
+                maxRaftGroups: 3,
+                maxCollections: 10,
+                maxKeys: 1000,
+                maxStorageBytes: 500000,
+                maxUsers: 20,
+                maxRoles: 10,
+                maxCertificates: 50,
+                maxBackups: 5,
+                maxVectorDims: 512,
+                maxTSMetrics: 100,
+            },
+        });
+
+        expect(calls).toHaveLength(1);
+        const body = calls[0].body as Record<string, unknown>;
+        // tenantId is present in body (alongside URL path) as tenant_id.
+        expect(body['tenant_id']).toBe('q1');
+        const quotas = body['quotas'] as Record<string, unknown>;
+        // Simple camelCase fields convert correctly.
+        expect(quotas['max_databases']).toBe(5);
+        expect(quotas['max_keys']).toBe(1000);
+        expect(quotas['max_storage_bytes']).toBe(500000);
+        expect(quotas['max_raft_groups']).toBe(3);
+        expect(quotas['max_users']).toBe(20);
+        // camelCase originals must not appear.
+        expect(quotas['maxDatabases']).toBeUndefined();
+        expect(quotas['maxKeys']).toBeUndefined();
+    });
+});
+
+describe('Outbound transform — membership endpoints preserve existing snake_case', () => {
+    beforeEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it('addMember hand-written shard_id/replica_id survive deepCamelToSnake', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({});
+
+        await client.admin.addMember(7, 3, '10.0.0.1:63001');
+
+        expect(calls).toHaveLength(1);
+        const body = calls[0].body as Record<string, unknown>;
+        // These were hand-written snake_case — must not double-transform.
+        expect(body['shard_id']).toBe(7);
+        expect(body['replica_id']).toBe(3);
+        expect(body['address']).toBe('10.0.0.1:63001');
+    });
+
+    it('removeMember preserves shard_id and replica_id', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({});
+
+        await client.admin.removeMember(2, 1);
+
+        expect(calls).toHaveLength(1);
+        const body = calls[0].body as Record<string, unknown>;
+        expect(body['shard_id']).toBe(2);
+        expect(body['replica_id']).toBe(1);
+    });
+
+    it('requestSnapshot preserves shard_id', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({});
+
+        await client.admin.requestSnapshot(5);
+
+        expect(calls).toHaveLength(1);
+        const body = calls[0].body as Record<string, unknown>;
+        expect(body['shard_id']).toBe(5);
+    });
+});
+
+describe('Outbound transform — users.create body contains correct field names', () => {
+    beforeEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it('users.create username is emitted unchanged', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({ id: 'u1', username: 'alice' });
+
+        // SDK CreateUserRequest uses tenantId/roleIds (camelCase with lowercase d/s).
+        // deepCamelToSnake converts them to tenant_id/role_ids which are correct
+        // snake_case equivalents. The Go handler uses json:"tenantID"/json:"roleIDs"
+        // (uppercase acronyms), which is a pre-existing server-side inconsistency
+        // separate from the camelCase outbound bug fixed here.
+        await client.users.create({ username: 'alice' });
+
+        expect(calls).toHaveLength(1);
+        const body = calls[0].body as Record<string, unknown>;
+        expect(body['username']).toBe('alice');
+    });
+
+    it('users.create roleIds is serialized as role_ids (snake_case of SDK field)', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({ id: 'u1', username: 'bob' });
+
+        await client.users.create({ username: 'bob', roleIds: ['editor', 'viewer'] });
+
+        expect(calls).toHaveLength(1);
+        const body = calls[0].body as Record<string, unknown>;
+        expect(body['role_ids']).toEqual(['editor', 'viewer']);
+        // camelCase key must not appear.
+        expect(body['roleIds']).toBeUndefined();
+    });
+});

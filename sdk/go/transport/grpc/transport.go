@@ -26,6 +26,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -97,8 +98,13 @@ func (t *Transport) Connect(ctx context.Context) error {
 	t.conn = conn
 	t.client = pb.NewQRDBServiceClient(conn)
 
-	// Verify connectivity with a health check.
-	if !t.Healthy(ctx) {
+	// Verify connectivity with a health check, retrying with backoff so a
+	// transient connection-establishment stall (TLS/HTTP2 handshake while the
+	// server is briefly busy under load) does not fail the command outright.
+	// grpc.NewClient connects lazily, so the first Health RPC drives the
+	// handshake; each attempt is bounded by the unary timeout interceptor and
+	// the whole loop by ctx.
+	if !t.connectHealthy(ctx) {
 		return &transport.ConnectionError{
 			Address: t.config.Address,
 			Err:     &dialError{Err: status.Error(codes.Unavailable, "health check failed")},
@@ -106,6 +112,28 @@ func (t *Transport) Connect(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// connectWaitBudget bounds how long Connect waits for the gRPC connection to
+// become READY before giving up. Generous enough to ride out a slow handshake
+// on a busy host, but short enough to leave the rest of the caller's deadline
+// for the actual RPC.
+const connectWaitBudget = 15 * time.Second
+
+// connectHealthy waits for the gRPC connection to become usable, then
+// confirms the server answers a Health RPC. It uses grpc.WaitForReady(true)
+// so the call BLOCKS until the ClientConn reaches READY (the TLS/HTTP2
+// handshake completes) rather than failing fast — a transiently-busy host
+// that takes a few seconds to handshake still connects instead of the client
+// abandoning the connection mid-handshake (which the server logs as
+// "TLS handshake error: EOF"). The wait is bounded to connectWaitBudget so a
+// genuinely-down server still fails in reasonable time, leaving the rest of
+// the caller's deadline for the actual RPC.
+func (t *Transport) connectHealthy(ctx context.Context) bool {
+	cctx, cancel := context.WithTimeout(ctx, connectWaitBudget)
+	defer cancel()
+	resp, err := t.client.Health(cctx, &emptypb.Empty{}, grpc.WaitForReady(true))
+	return err == nil && resp.GetStatus() != ""
 }
 
 // Close shuts down the gRPC connection and releases all resources.
@@ -157,7 +185,7 @@ func (t *Transport) Put(ctx context.Context, key string, value []byte, opts ...t
 
 	ctx = applyWriteMetadata(ctx, opts...)
 
-	_, err := t.client.Put(ctx, &pb.PutRequest{Key: key, Value: value})
+	_, err := t.client.Put(ctx, &pb.PutRequest{Key: key, Value: value, WriteMode: protoWriteMode(opts...)})
 	if err != nil {
 		return mapGRPCError("Put", err)
 	}
@@ -173,7 +201,7 @@ func (t *Transport) Get(ctx context.Context, key string, opts ...transport.ReadO
 
 	ctx = applyReadMetadata(ctx, opts...)
 
-	resp, err := t.client.Get(ctx, &pb.GetRequest{Key: key})
+	resp, err := t.client.Get(ctx, &pb.GetRequest{Key: key, Consistency: protoConsistency(opts...)})
 	if err != nil {
 		return nil, mapGRPCError("Get", err)
 	}
@@ -188,7 +216,7 @@ func (t *Transport) Delete(ctx context.Context, key string, opts ...transport.Wr
 
 	ctx = applyWriteMetadata(ctx, opts...)
 
-	_, err := t.client.Delete(ctx, &pb.DeleteRequest{Key: key})
+	_, err := t.client.Delete(ctx, &pb.DeleteRequest{Key: key, WriteMode: protoWriteMode(opts...)})
 	if err != nil {
 		return mapGRPCError("Delete", err)
 	}
@@ -204,7 +232,7 @@ func (t *Transport) List(ctx context.Context, prefix string, opts ...transport.R
 
 	ctx = applyReadMetadata(ctx, opts...)
 
-	resp, err := t.client.List(ctx, &pb.ListRequest{Prefix: prefix})
+	resp, err := t.client.List(ctx, &pb.ListRequest{Prefix: prefix, Consistency: protoConsistency(opts...)})
 	if err != nil {
 		return nil, mapGRPCError("List", err)
 	}
@@ -219,7 +247,7 @@ func (t *Transport) Scan(ctx context.Context, prefix string, opts ...transport.R
 
 	ctx = applyReadMetadata(ctx, opts...)
 
-	resp, err := t.client.Scan(ctx, &pb.ScanRequest{Prefix: prefix})
+	resp, err := t.client.Scan(ctx, &pb.ScanRequest{Prefix: prefix, Consistency: protoConsistency(opts...)})
 	if err != nil {
 		return nil, mapGRPCError("Scan", err)
 	}
@@ -505,7 +533,29 @@ func (t *Transport) buildDialOptions() ([]grpc.DialOption, error) {
 		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	}
 
+	// Enforce the configured per-call timeout on every unary RPC. A unary
+	// interceptor is the canonical, single point of enforcement: it covers
+	// all RPC entry points without per-call duplication and intentionally
+	// leaves server-streaming RPCs (such as Watch) unbounded. When the
+	// timeout is zero the interceptor passes the context through unchanged,
+	// preserving the existing no-timeout behavior.
+	if t.config.Timeout > 0 {
+		opts = append(opts, grpc.WithUnaryInterceptor(timeoutUnaryInterceptor(t.config.Timeout)))
+	}
+
 	return opts, nil
+}
+
+// timeoutUnaryInterceptor returns a gRPC unary client interceptor that
+// bounds each outbound call with the given timeout, mirroring the REST
+// transport's http.Client.Timeout. If the caller's context already carries
+// an earlier deadline, context.WithTimeout retains the sooner one.
+func timeoutUnaryInterceptor(timeout time.Duration) grpc.UnaryClientInterceptor {
+	return func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+		ctx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		return invoker(ctx, method, req, reply, cc, opts...)
+	}
 }
 
 // buildTLSConfig constructs the TLS configuration from the transport config.
@@ -603,4 +653,59 @@ func applyReadMetadata(ctx context.Context, opts ...transport.ReadOption) contex
 		ctx = metadata.AppendToOutgoingContext(ctx, "x-qrdb-allow-stale", "true")
 	}
 	return ctx
+}
+
+// vectorConsistencyToProto maps a transport.ConsistencyLevel stored as a
+// uint8 in vector request types to its proto ConsistencyLevel equivalent.
+// The zero value (ConsistencyStrong) maps to STRONG so that the server
+// preserves the same behavior clients received when the field was int32.
+func vectorConsistencyToProto(level uint8) pb.ConsistencyLevel {
+	switch transport.ConsistencyLevel(level) {
+	case transport.ConsistencyLinearizable:
+		return pb.ConsistencyLevel_CONSISTENCY_LEVEL_LINEARIZABLE
+	case transport.ConsistencyEventual:
+		return pb.ConsistencyLevel_CONSISTENCY_LEVEL_EVENTUAL
+	default:
+		// ConsistencyStrong (0) and any unrecognized value → STRONG.
+		return pb.ConsistencyLevel_CONSISTENCY_LEVEL_STRONG
+	}
+}
+
+// protoConsistency resolves read options into the proto ConsistencyLevel
+// carried in the request body. UNSPECIFIED is returned when no consistency
+// was requested, letting the server apply its default. An explicit
+// WithAllowStale (without a level) maps to EVENTUAL.
+func protoConsistency(opts ...transport.ReadOption) pb.ConsistencyLevel {
+	ro := transport.ResolveReadOptions(opts...)
+	if ro.ConsistencySet {
+		switch ro.Consistency {
+		case transport.ConsistencyStrong:
+			return pb.ConsistencyLevel_CONSISTENCY_LEVEL_STRONG
+		case transport.ConsistencyLinearizable:
+			return pb.ConsistencyLevel_CONSISTENCY_LEVEL_LINEARIZABLE
+		case transport.ConsistencyEventual:
+			return pb.ConsistencyLevel_CONSISTENCY_LEVEL_EVENTUAL
+		}
+	}
+	if ro.AllowStale {
+		return pb.ConsistencyLevel_CONSISTENCY_LEVEL_EVENTUAL
+	}
+	return pb.ConsistencyLevel_CONSISTENCY_LEVEL_UNSPECIFIED
+}
+
+// protoWriteMode resolves write options into the proto WriteMode carried in
+// the request body. UNSPECIFIED is returned when no mode was requested.
+func protoWriteMode(opts ...transport.WriteOption) pb.WriteMode {
+	wo := transport.ResolveWriteOptions(opts...)
+	if wo.ModeSet {
+		switch wo.Mode {
+		case transport.WriteModeSync:
+			return pb.WriteMode_WRITE_MODE_SYNC
+		case transport.WriteModeWALDurable:
+			return pb.WriteMode_WRITE_MODE_WAL_DURABLE
+		case transport.WriteModeBatched:
+			return pb.WriteMode_WRITE_MODE_BATCHED
+		}
+	}
+	return pb.WriteMode_WRITE_MODE_UNSPECIFIED
 }

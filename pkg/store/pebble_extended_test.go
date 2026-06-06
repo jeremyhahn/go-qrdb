@@ -535,9 +535,11 @@ func TestPebbleStateMachine_LeaseGrant_NoLessor(t *testing.T) {
 	cmd := protocol.EncodeLeaseGrant(10)
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error when lessor not configured")
+	if err := s.Update(context.Background(), entries, results); err != nil {
+		t.Fatalf("Update must not return a fatal error when lessor not configured: %v", err)
+	}
+	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
+		t.Fatal("expected app-error payload when lessor not configured")
 	}
 }
 
@@ -603,9 +605,11 @@ func TestPebbleStateMachine_LeaseKeepAlive_NoLessor(t *testing.T) {
 	cmd := protocol.EncodeLeaseKeepAlive(99)
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error when lessor not configured")
+	if err := s.Update(context.Background(), entries, results); err != nil {
+		t.Fatalf("Update must not return a fatal error when lessor not configured: %v", err)
+	}
+	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
+		t.Fatal("expected app-error payload when lessor not configured")
 	}
 }
 
@@ -615,9 +619,11 @@ func TestPebbleStateMachine_LeaseRevoke_NoLessor(t *testing.T) {
 	cmd := protocol.EncodeLeaseRevoke(1)
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error when lessor not configured")
+	if err := s.Update(context.Background(), entries, results); err != nil {
+		t.Fatalf("Update must not return a fatal error when lessor not configured: %v", err)
+	}
+	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
+		t.Fatal("expected app-error payload when lessor not configured")
 	}
 }
 
@@ -722,14 +728,34 @@ func TestPebbleStateMachine_IndexCreate_Duplicate(t *testing.T) {
 	s := openExtendedStore(t)
 
 	cmd := protocol.EncodeIndexCreate("dup_idx", "field", false, false, false)
-	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: cmd}})
+	firstResults := applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: cmd}})
+	if firstResults[0].Value != 1 {
+		t.Fatalf("first create: expected result 1, got %d", firstResults[0].Value)
+	}
 
-	// Creating same index again should fail.
+	// Creating the same index again is a no-op success (idempotent). A
+	// non-nil error from a Raft Update() handler permanently stalls the
+	// cluster, so duplicate-create must succeed without error.
 	entries := []sm.Entry{{Index: 2, Cmd: cmd}}
 	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for duplicate index")
+	if err := s.Update(context.Background(), entries, results); err != nil {
+		t.Fatalf("duplicate create: expected no-op success, got error: %v", err)
+	}
+	if results[0].Value != 1 {
+		t.Fatalf("duplicate create: expected result 1, got %d", results[0].Value)
+	}
+
+	// Only one index entry should exist.
+	listResult, err := s.Lookup(context.Background(), index.IndexListRequest{})
+	if err != nil {
+		t.Fatalf("Lookup IndexListRequest: %v", err)
+	}
+	names := listResult.([]string)
+	if len(names) != 1 {
+		t.Fatalf("expected 1 index after duplicate create, got %d", len(names))
+	}
+	if names[0] != "dup_idx" {
+		t.Fatalf("expected index name dup_idx, got %s", names[0])
 	}
 }
 
@@ -760,12 +786,17 @@ func TestPebbleStateMachine_IndexDrop(t *testing.T) {
 func TestPebbleStateMachine_IndexDrop_NotFound(t *testing.T) {
 	s := openExtendedStore(t)
 
+	// Dropping a non-existent index is a no-op success (idempotent). A
+	// non-nil error from a Raft Update() handler permanently stalls the
+	// cluster, so drop-not-found must succeed without error.
 	cmd := protocol.EncodeIndexDrop("nonexistent")
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for dropping nonexistent index")
+	if err := s.Update(context.Background(), entries, results); err != nil {
+		t.Fatalf("drop nonexistent: expected no-op success, got error: %v", err)
+	}
+	if results[0].Value != 1 {
+		t.Fatalf("drop nonexistent: expected result 1, got %d", results[0].Value)
 	}
 }
 
@@ -844,9 +875,11 @@ func TestPebbleStateMachine_TSWrite_NoStorage(t *testing.T) {
 	cmd := protocol.EncodeTSWrite("cpu.usage", ts, 42.5, nil)
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error when time-series not configured")
+	if err := s.Update(context.Background(), entries, results); err != nil {
+		t.Fatalf("Update must not return a fatal error when time-series not configured: %v", err)
+	}
+	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
+		t.Fatal("expected app-error payload when time-series not configured")
 	}
 }
 
@@ -875,9 +908,11 @@ func TestPebbleStateMachine_TSWriteBatch_NoStorage(t *testing.T) {
 	cmd := protocol.EncodeTSWriteBatch(params)
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error when time-series not configured")
+	if err := s.Update(context.Background(), entries, results); err != nil {
+		t.Fatalf("Update must not return a fatal error when time-series not configured: %v", err)
+	}
+	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
+		t.Fatal("expected app-error payload when time-series not configured")
 	}
 }
 
@@ -899,9 +934,11 @@ func TestPebbleStateMachine_TSWritePoint_NoStorage(t *testing.T) {
 	cmd := protocol.EncodeTSWritePoint("cpu", time.Now().UnixNano(), 1.0, nil)
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error when time-series not configured")
+	if err := s.Update(context.Background(), entries, results); err != nil {
+		t.Fatalf("Update must not return a fatal error when time-series not configured: %v", err)
+	}
+	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
+		t.Fatal("expected app-error payload when time-series not configured")
 	}
 }
 
@@ -927,9 +964,11 @@ func TestPebbleStateMachine_TSDeleteSeries_NoStorage(t *testing.T) {
 	cmd := protocol.EncodeTSDeleteSeries("m", 0, 0, nil)
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error when time-series not configured")
+	if err := s.Update(context.Background(), entries, results); err != nil {
+		t.Fatalf("Update must not return a fatal error when time-series not configured: %v", err)
+	}
+	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
+		t.Fatal("expected app-error payload when time-series not configured")
 	}
 }
 
@@ -949,9 +988,11 @@ func TestPebbleStateMachine_TSSetRetention_NoStorage(t *testing.T) {
 	cmd := protocol.EncodeTSSetRetention("cpu", int64(time.Hour), 0, 0)
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error when time-series not configured")
+	if err := s.Update(context.Background(), entries, results); err != nil {
+		t.Fatalf("Update must not return a fatal error when time-series not configured: %v", err)
+	}
+	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
+		t.Fatal("expected app-error payload when time-series not configured")
 	}
 }
 

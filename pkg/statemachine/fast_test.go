@@ -853,8 +853,8 @@ func TestFastStateMachine_Lookup_UnsupportedQueryType(t *testing.T) {
 func TestFastStateMachine_HandlersNotConfigured(t *testing.T) {
 	fsm, _ := newTestFSM()
 
-	// Handlers for domain stores that are not configured should return
-	// ServiceNotConfiguredError.
+	// Handlers for domain stores that are not configured should encode
+	// ServiceNotConfiguredError in result.Data (Raft-safe: no error returned).
 	notConfiguredOps := []struct {
 		op      byte
 		service string
@@ -882,16 +882,14 @@ func TestFastStateMachine_HandlersNotConfigured(t *testing.T) {
 		results := make([]sm.Result, 1)
 
 		err := fsm.Update(context.Background(), entries, results)
-		if err == nil {
-			t.Fatalf("op %d: expected ServiceNotConfiguredError, got nil", tc.op)
+		if err != nil {
+			t.Fatalf("op %d: expected nil error (SNC encoded in result.Data), got %v", tc.op, err)
 		}
-
-		var svcErr *ServiceNotConfiguredError
-		if !errors.As(err, &svcErr) {
-			t.Fatalf("op %d: expected ServiceNotConfiguredError, got %T: %v", tc.op, err, err)
+		if len(results[0].Data) == 0 {
+			t.Fatalf("op %d: expected ServiceNotConfiguredError encoded in result.Data", tc.op)
 		}
-		if svcErr.Service != tc.service {
-			t.Fatalf("op %d: expected service %q, got %q", tc.op, tc.service, svcErr.Service)
+		if !bytes.Contains(results[0].Data, []byte(tc.service)) {
+			t.Fatalf("op %d: expected Data to mention %q, got %q", tc.op, tc.service, results[0].Data)
 		}
 	}
 }

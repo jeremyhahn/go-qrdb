@@ -365,7 +365,7 @@ func TestInitialize_SingleAdminSuccess(t *testing.T) {
 	require.NoError(t, err)
 
 	ca := newMockCA(t)
-	result, err := svc.Initialize(context.Background(), ca)
+	result, err := svc.Initialize(context.Background(), ca, nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, StateOperational, result.State)
@@ -384,7 +384,7 @@ func TestInitialize_MofNSuccess(t *testing.T) {
 	require.NoError(t, err)
 
 	ca := newMockCA(t)
-	result, err := svc.Initialize(context.Background(), ca)
+	result, err := svc.Initialize(context.Background(), ca, nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, StateEnrolling, result.State)
@@ -398,10 +398,10 @@ func TestInitialize_AlreadyInitialized(t *testing.T) {
 	require.NoError(t, err)
 
 	ca := newMockCA(t)
-	_, err = svc.Initialize(context.Background(), ca)
+	_, err = svc.Initialize(context.Background(), ca, nil)
 	require.NoError(t, err)
 
-	_, err = svc.Initialize(context.Background(), ca)
+	_, err = svc.Initialize(context.Background(), ca, nil)
 	assert.ErrorIs(t, err, ErrAlreadyInitialized)
 }
 
@@ -411,7 +411,7 @@ func TestInitialize_EmptySOPin(t *testing.T) {
 	svc, err := NewCeremonyService(cfg, testBarrier(t), newTestCredentialService(), testLogger())
 	require.NoError(t, err)
 
-	_, err = svc.Initialize(context.Background(), newMockCA(t))
+	_, err = svc.Initialize(context.Background(), newMockCA(t), nil)
 	assert.ErrorIs(t, err, ErrInvalidSOPIN)
 }
 
@@ -421,7 +421,7 @@ func TestInitialize_EmptyUserPin(t *testing.T) {
 	svc, err := NewCeremonyService(cfg, testBarrier(t), newTestCredentialService(), testLogger())
 	require.NoError(t, err)
 
-	_, err = svc.Initialize(context.Background(), newMockCA(t))
+	_, err = svc.Initialize(context.Background(), newMockCA(t), nil)
 	assert.ErrorIs(t, err, ErrInvalidUserPIN)
 }
 
@@ -432,7 +432,7 @@ func TestInitialize_MofN_NoOfficers(t *testing.T) {
 	svc, err := NewCeremonyService(cfg, testBarrier(t), newTestCredentialService(), testLogger())
 	require.NoError(t, err)
 
-	_, err = svc.Initialize(context.Background(), newMockCA(t))
+	_, err = svc.Initialize(context.Background(), newMockCA(t), nil)
 	assert.ErrorIs(t, err, ErrNoOfficers)
 }
 
@@ -441,7 +441,7 @@ func TestInitialize_MofN_ThresholdExceedsOfficers(t *testing.T) {
 	svc, err := NewCeremonyService(cfg, testBarrier(t), newTestCredentialService(), testLogger())
 	require.NoError(t, err)
 
-	_, err = svc.Initialize(context.Background(), newMockCA(t))
+	_, err = svc.Initialize(context.Background(), newMockCA(t), nil)
 	assert.ErrorIs(t, err, ErrInvalidThreshold)
 }
 
@@ -457,7 +457,7 @@ func TestInitialize_MofN_DuplicateUsername(t *testing.T) {
 	svc, err := NewCeremonyService(cfg, testBarrier(t), newTestCredentialService(), testLogger())
 	require.NoError(t, err)
 
-	_, err = svc.Initialize(context.Background(), newMockCA(t))
+	_, err = svc.Initialize(context.Background(), newMockCA(t), nil)
 	assert.ErrorIs(t, err, ErrDuplicateUsername)
 }
 
@@ -472,7 +472,7 @@ func TestInitialize_MofN_EmptyOfficerUsername(t *testing.T) {
 	svc, err := NewCeremonyService(cfg, testBarrier(t), newTestCredentialService(), testLogger())
 	require.NoError(t, err)
 
-	_, err = svc.Initialize(context.Background(), newMockCA(t))
+	_, err = svc.Initialize(context.Background(), newMockCA(t), nil)
 	assert.ErrorIs(t, err, ErrMissingUsername)
 }
 
@@ -486,7 +486,7 @@ func TestInitialize_MofN_InvalidCSR(t *testing.T) {
 	svc, err := NewCeremonyService(cfg, testBarrier(t), newTestCredentialService(), testLogger())
 	require.NoError(t, err)
 
-	_, err = svc.Initialize(context.Background(), newMockCA(t))
+	_, err = svc.Initialize(context.Background(), newMockCA(t), nil)
 	var csrErr *CSRParseError
 	assert.ErrorAs(t, err, &csrErr)
 }
@@ -497,7 +497,7 @@ func TestInitialize_IssueTLSCertFails(t *testing.T) {
 
 	ca := newErrorCA(t)
 	ca.failOnIssueCall = 1 // fail on TLS cert issuance
-	_, err = svc.Initialize(context.Background(), ca)
+	_, err = svc.Initialize(context.Background(), ca, nil)
 	assert.ErrorIs(t, err, ErrInitFailed)
 }
 
@@ -507,7 +507,7 @@ func TestInitialize_IssueSOCertFails(t *testing.T) {
 
 	ca := newErrorCA(t)
 	ca.failOnIssueCall = 2 // fail on SO cert issuance
-	_, err = svc.Initialize(context.Background(), ca)
+	_, err = svc.Initialize(context.Background(), ca, nil)
 	assert.ErrorIs(t, err, ErrInitFailed)
 }
 
@@ -517,7 +517,7 @@ func TestInitialize_CACertificateFails(t *testing.T) {
 
 	ca := newErrorCA(t)
 	ca.failCACertificate = true
-	_, err = svc.Initialize(context.Background(), ca)
+	_, err = svc.Initialize(context.Background(), ca, nil)
 	assert.ErrorIs(t, err, ErrInitFailed)
 }
 
@@ -527,7 +527,7 @@ func TestInitialize_CABundleFails(t *testing.T) {
 
 	ca := newErrorCA(t)
 	ca.failCABundle = true
-	_, err = svc.Initialize(context.Background(), ca)
+	_, err = svc.Initialize(context.Background(), ca, nil)
 	assert.ErrorIs(t, err, ErrInitFailed)
 }
 
@@ -539,7 +539,7 @@ func TestInitialize_StoreSOPinCredentialFails(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	_, err = svc.Initialize(context.Background(), newMockCA(t))
+	_, err = svc.Initialize(context.Background(), newMockCA(t), nil)
 	assert.ErrorIs(t, err, ErrInitFailed)
 }
 
@@ -551,7 +551,7 @@ func TestInitialize_StoreUserPinCredentialFails(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	_, err = svc.Initialize(context.Background(), newMockCA(t))
+	_, err = svc.Initialize(context.Background(), newMockCA(t), nil)
 	assert.ErrorIs(t, err, ErrInitFailed)
 }
 
@@ -564,7 +564,7 @@ func TestBeginClaimCert_Success(t *testing.T) {
 	svc, err := NewCeremonyService(cfg, testBarrier(t), newTestCredentialService(), testLogger())
 	require.NoError(t, err)
 
-	_, err = svc.Initialize(context.Background(), newMockCA(t))
+	_, err = svc.Initialize(context.Background(), newMockCA(t), nil)
 	require.NoError(t, err)
 
 	challenge, err := svc.BeginClaimCert(context.Background(), "officer-0")
@@ -579,7 +579,7 @@ func TestBeginClaimCert_NotEnrollingState(t *testing.T) {
 	require.NoError(t, err)
 
 	// Single admin mode goes straight to operational.
-	_, err = svc.Initialize(context.Background(), newMockCA(t))
+	_, err = svc.Initialize(context.Background(), newMockCA(t), nil)
 	require.NoError(t, err)
 
 	_, err = svc.BeginClaimCert(context.Background(), "officer-0")
@@ -599,7 +599,7 @@ func TestBeginClaimCert_UnknownUsername(t *testing.T) {
 	svc, err := NewCeremonyService(cfg, testBarrier(t), newTestCredentialService(), testLogger())
 	require.NoError(t, err)
 
-	_, err = svc.Initialize(context.Background(), newMockCA(t))
+	_, err = svc.Initialize(context.Background(), newMockCA(t), nil)
 	require.NoError(t, err)
 
 	_, err = svc.BeginClaimCert(context.Background(), "nonexistent")
@@ -611,7 +611,7 @@ func TestBeginClaimCert_EmptyUsername(t *testing.T) {
 	svc, err := NewCeremonyService(cfg, testBarrier(t), newTestCredentialService(), testLogger())
 	require.NoError(t, err)
 
-	_, err = svc.Initialize(context.Background(), newMockCA(t))
+	_, err = svc.Initialize(context.Background(), newMockCA(t), nil)
 	require.NoError(t, err)
 
 	_, err = svc.BeginClaimCert(context.Background(), "")
@@ -627,7 +627,7 @@ func TestCompleteClaimCert_ECDSASuccess(t *testing.T) {
 	svc, err := NewCeremonyService(cfg, testBarrier(t), newTestCredentialService(), testLogger())
 	require.NoError(t, err)
 
-	_, err = svc.Initialize(context.Background(), newMockCA(t))
+	_, err = svc.Initialize(context.Background(), newMockCA(t), nil)
 	require.NoError(t, err)
 
 	challenge, err := svc.BeginClaimCert(context.Background(), "officer-0")
@@ -647,7 +647,7 @@ func TestCompleteClaimCert_WrongSignature(t *testing.T) {
 	svc, err := NewCeremonyService(cfg, testBarrier(t), newTestCredentialService(), testLogger())
 	require.NoError(t, err)
 
-	_, err = svc.Initialize(context.Background(), newMockCA(t))
+	_, err = svc.Initialize(context.Background(), newMockCA(t), nil)
 	require.NoError(t, err)
 
 	challenge, err := svc.BeginClaimCert(context.Background(), "officer-0")
@@ -665,7 +665,7 @@ func TestCompleteClaimCert_ExpiredChallenge(t *testing.T) {
 	svc, err := NewCeremonyService(cfg, testBarrier(t), newTestCredentialService(), testLogger())
 	require.NoError(t, err)
 
-	_, err = svc.Initialize(context.Background(), newMockCA(t))
+	_, err = svc.Initialize(context.Background(), newMockCA(t), nil)
 	require.NoError(t, err)
 
 	challenge, err := svc.BeginClaimCert(context.Background(), "officer-0")
@@ -696,7 +696,7 @@ func TestCompleteClaimCert_EmptyUsername(t *testing.T) {
 	svc, err := NewCeremonyService(cfg, testBarrier(t), newTestCredentialService(), testLogger())
 	require.NoError(t, err)
 
-	_, err = svc.Initialize(context.Background(), newMockCA(t))
+	_, err = svc.Initialize(context.Background(), newMockCA(t), nil)
 	require.NoError(t, err)
 
 	_, err = svc.CompleteClaimCert(context.Background(), "", "abc", []byte("sig"))
@@ -708,7 +708,7 @@ func TestCompleteClaimCert_NoChallengeExists(t *testing.T) {
 	svc, err := NewCeremonyService(cfg, testBarrier(t), newTestCredentialService(), testLogger())
 	require.NoError(t, err)
 
-	_, err = svc.Initialize(context.Background(), newMockCA(t))
+	_, err = svc.Initialize(context.Background(), newMockCA(t), nil)
 	require.NoError(t, err)
 
 	_, err = svc.CompleteClaimCert(context.Background(), "officer-0", "abc", []byte("sig"))
@@ -720,7 +720,7 @@ func TestCompleteClaimCert_InvalidNonceHex(t *testing.T) {
 	svc, err := NewCeremonyService(cfg, testBarrier(t), newTestCredentialService(), testLogger())
 	require.NoError(t, err)
 
-	_, err = svc.Initialize(context.Background(), newMockCA(t))
+	_, err = svc.Initialize(context.Background(), newMockCA(t), nil)
 	require.NoError(t, err)
 
 	_, err = svc.BeginClaimCert(context.Background(), "officer-0")
@@ -735,7 +735,7 @@ func TestCompleteClaimCert_NonceMismatch(t *testing.T) {
 	svc, err := NewCeremonyService(cfg, testBarrier(t), newTestCredentialService(), testLogger())
 	require.NoError(t, err)
 
-	_, err = svc.Initialize(context.Background(), newMockCA(t))
+	_, err = svc.Initialize(context.Background(), newMockCA(t), nil)
 	require.NoError(t, err)
 
 	challenge, err := svc.BeginClaimCert(context.Background(), "officer-0")
@@ -759,7 +759,7 @@ func TestCompleteClaimCert_AlreadyClaimed(t *testing.T) {
 	svc, err := NewCeremonyService(cfg, testBarrier(t), newTestCredentialService(), testLogger())
 	require.NoError(t, err)
 
-	_, err = svc.Initialize(context.Background(), newMockCA(t))
+	_, err = svc.Initialize(context.Background(), newMockCA(t), nil)
 	require.NoError(t, err)
 
 	// First claim succeeds.
@@ -784,7 +784,7 @@ func TestClaimShare_Success(t *testing.T) {
 	svc, err := NewCeremonyService(cfg, testBarrier(t), newTestCredentialService(), testLogger())
 	require.NoError(t, err)
 
-	_, err = svc.Initialize(context.Background(), newMockCA(t))
+	_, err = svc.Initialize(context.Background(), newMockCA(t), nil)
 	require.NoError(t, err)
 
 	share, err := svc.ClaimShare(context.Background(), "officer-0")
@@ -806,7 +806,7 @@ func TestClaimShare_UnknownUsername(t *testing.T) {
 	svc, err := NewCeremonyService(cfg, testBarrier(t), newTestCredentialService(), testLogger())
 	require.NoError(t, err)
 
-	_, err = svc.Initialize(context.Background(), newMockCA(t))
+	_, err = svc.Initialize(context.Background(), newMockCA(t), nil)
 	require.NoError(t, err)
 
 	_, err = svc.ClaimShare(context.Background(), "nonexistent")
@@ -818,7 +818,7 @@ func TestClaimShare_EmptyUsername(t *testing.T) {
 	svc, err := NewCeremonyService(cfg, testBarrier(t), newTestCredentialService(), testLogger())
 	require.NoError(t, err)
 
-	_, err = svc.Initialize(context.Background(), newMockCA(t))
+	_, err = svc.Initialize(context.Background(), newMockCA(t), nil)
 	require.NoError(t, err)
 
 	_, err = svc.ClaimShare(context.Background(), "")
@@ -830,7 +830,7 @@ func TestClaimShare_AlreadyClaimed(t *testing.T) {
 	svc, err := NewCeremonyService(cfg, testBarrier(t), newTestCredentialService(), testLogger())
 	require.NoError(t, err)
 
-	_, err = svc.Initialize(context.Background(), newMockCA(t))
+	_, err = svc.Initialize(context.Background(), newMockCA(t), nil)
 	require.NoError(t, err)
 
 	_, err = svc.ClaimShare(context.Background(), "officer-0")
@@ -845,7 +845,7 @@ func TestClaimShare_AllClaimsTransitionToOperational(t *testing.T) {
 	svc, err := NewCeremonyService(cfg, testBarrier(t), newTestCredentialService(), testLogger())
 	require.NoError(t, err)
 
-	_, err = svc.Initialize(context.Background(), newMockCA(t))
+	_, err = svc.Initialize(context.Background(), newMockCA(t), nil)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -878,7 +878,7 @@ func TestSignCSRInit_SingleAdminSuccess(t *testing.T) {
 	svc, err := NewCeremonyService(defaultConfig(), testBarrier(t), newTestCredentialService(), testLogger())
 	require.NoError(t, err)
 
-	_, err = svc.Initialize(context.Background(), newMockCA(t))
+	_, err = svc.Initialize(context.Background(), newMockCA(t), nil)
 	require.NoError(t, err)
 
 	csrPEM, _ := generateCSRPEM(t, "user-1")
@@ -893,7 +893,7 @@ func TestSignCSRInit_EnrollingStateSuccess(t *testing.T) {
 	svc, err := NewCeremonyService(cfg, testBarrier(t), newTestCredentialService(), testLogger())
 	require.NoError(t, err)
 
-	_, err = svc.Initialize(context.Background(), newMockCA(t))
+	_, err = svc.Initialize(context.Background(), newMockCA(t), nil)
 	require.NoError(t, err)
 
 	csrPEM, _ := generateCSRPEM(t, "new-user")
@@ -907,7 +907,7 @@ func TestSignCSRInit_WrongSOPin(t *testing.T) {
 	svc, err := NewCeremonyService(defaultConfig(), testBarrier(t), newTestCredentialService(), testLogger())
 	require.NoError(t, err)
 
-	_, err = svc.Initialize(context.Background(), newMockCA(t))
+	_, err = svc.Initialize(context.Background(), newMockCA(t), nil)
 	require.NoError(t, err)
 
 	csrPEM, _ := generateCSRPEM(t, "user-1")
@@ -920,7 +920,7 @@ func TestSignCSRInit_EmptySOPin(t *testing.T) {
 	svc, err := NewCeremonyService(defaultConfig(), testBarrier(t), newTestCredentialService(), testLogger())
 	require.NoError(t, err)
 
-	_, err = svc.Initialize(context.Background(), newMockCA(t))
+	_, err = svc.Initialize(context.Background(), newMockCA(t), nil)
 	require.NoError(t, err)
 
 	csrPEM, _ := generateCSRPEM(t, "user-1")
@@ -933,12 +933,12 @@ func TestSignCSRInit_InvalidRole(t *testing.T) {
 	svc, err := NewCeremonyService(defaultConfig(), testBarrier(t), newTestCredentialService(), testLogger())
 	require.NoError(t, err)
 
-	_, err = svc.Initialize(context.Background(), newMockCA(t))
+	_, err = svc.Initialize(context.Background(), newMockCA(t), nil)
 	require.NoError(t, err)
 
 	csrPEM, _ := generateCSRPEM(t, "user-1")
 
-	_, err = svc.SignCSRInit(context.Background(), "user-1", "test-so-pin", csrPEM, "superadmin")
+	_, err = svc.SignCSRInit(context.Background(), "user-1", "test-so-pin", csrPEM, "not-a-real-role")
 	assert.ErrorIs(t, err, ErrInvalidRole)
 }
 
@@ -946,7 +946,7 @@ func TestSignCSRInit_EmptyCSR(t *testing.T) {
 	svc, err := NewCeremonyService(defaultConfig(), testBarrier(t), newTestCredentialService(), testLogger())
 	require.NoError(t, err)
 
-	_, err = svc.Initialize(context.Background(), newMockCA(t))
+	_, err = svc.Initialize(context.Background(), newMockCA(t), nil)
 	require.NoError(t, err)
 
 	_, err = svc.SignCSRInit(context.Background(), "user-1", "test-so-pin", nil, "admin")
@@ -957,7 +957,7 @@ func TestSignCSRInit_EmptyRole(t *testing.T) {
 	svc, err := NewCeremonyService(defaultConfig(), testBarrier(t), newTestCredentialService(), testLogger())
 	require.NoError(t, err)
 
-	_, err = svc.Initialize(context.Background(), newMockCA(t))
+	_, err = svc.Initialize(context.Background(), newMockCA(t), nil)
 	require.NoError(t, err)
 
 	csrPEM, _ := generateCSRPEM(t, "user-1")
@@ -970,7 +970,7 @@ func TestSignCSRInit_EmptyUsername(t *testing.T) {
 	svc, err := NewCeremonyService(defaultConfig(), testBarrier(t), newTestCredentialService(), testLogger())
 	require.NoError(t, err)
 
-	_, err = svc.Initialize(context.Background(), newMockCA(t))
+	_, err = svc.Initialize(context.Background(), newMockCA(t), nil)
 	require.NoError(t, err)
 
 	csrPEM, _ := generateCSRPEM(t, "user-1")
@@ -993,7 +993,7 @@ func TestSignCSRInit_AllRoleProfiles(t *testing.T) {
 	svc, err := NewCeremonyService(defaultConfig(), testBarrier(t), newTestCredentialService(), testLogger())
 	require.NoError(t, err)
 
-	_, err = svc.Initialize(context.Background(), newMockCA(t))
+	_, err = svc.Initialize(context.Background(), newMockCA(t), nil)
 	require.NoError(t, err)
 
 	roles := []string{"so", "admin", "operator", "user", "auditor", "custodian"}
@@ -1019,7 +1019,7 @@ func TestSignCSRInit_CASignCSRFails(t *testing.T) {
 	require.NoError(t, err)
 
 	ca := newErrorCA(t)
-	_, err = svc.Initialize(context.Background(), ca)
+	_, err = svc.Initialize(context.Background(), ca, nil)
 	require.NoError(t, err)
 
 	ca.failSignCSR = true
@@ -1045,7 +1045,7 @@ func TestSPKIPin_AfterInit(t *testing.T) {
 	svc, err := NewCeremonyService(defaultConfig(), testBarrier(t), newTestCredentialService(), testLogger())
 	require.NoError(t, err)
 
-	_, err = svc.Initialize(context.Background(), newMockCA(t))
+	_, err = svc.Initialize(context.Background(), newMockCA(t), nil)
 	require.NoError(t, err)
 
 	pin, err := svc.SPKIPin()
@@ -1058,7 +1058,7 @@ func TestSPKIPin_CACertificateFails(t *testing.T) {
 	require.NoError(t, err)
 
 	ca := newErrorCA(t)
-	_, err = svc.Initialize(context.Background(), ca)
+	_, err = svc.Initialize(context.Background(), ca, nil)
 	require.NoError(t, err)
 
 	ca.failCACertificate = true
@@ -1088,7 +1088,7 @@ func TestCleanup(t *testing.T) {
 	svc, err := NewCeremonyService(cfg, testBarrier(t), newTestCredentialService(), testLogger())
 	require.NoError(t, err)
 
-	_, err = svc.Initialize(context.Background(), newMockCA(t))
+	_, err = svc.Initialize(context.Background(), newMockCA(t), nil)
 	require.NoError(t, err)
 
 	// Issue a challenge to verify it gets cleaned up.
@@ -1190,7 +1190,7 @@ func TestCompleteClaimCert_WrongKey(t *testing.T) {
 	svc, err := NewCeremonyService(cfg, testBarrier(t), newTestCredentialService(), testLogger())
 	require.NoError(t, err)
 
-	_, err = svc.Initialize(context.Background(), newMockCA(t))
+	_, err = svc.Initialize(context.Background(), newMockCA(t), nil)
 	require.NoError(t, err)
 
 	challenge, err := svc.BeginClaimCert(context.Background(), "officer-0")
@@ -1221,7 +1221,7 @@ func TestCompleteClaimCert_CABundleError(t *testing.T) {
 	require.NoError(t, err)
 
 	ca := newErrorCA(t)
-	_, err = svc.Initialize(context.Background(), ca)
+	_, err = svc.Initialize(context.Background(), ca, nil)
 	require.NoError(t, err)
 
 	challenge, err := svc.BeginClaimCert(context.Background(), "officer-0")
@@ -1250,7 +1250,7 @@ func TestInitialize_MofN_SignCSRFails(t *testing.T) {
 	ca := newErrorCA(t)
 	ca.failSignCSR = true
 
-	_, err = svc.Initialize(context.Background(), ca)
+	_, err = svc.Initialize(context.Background(), ca, nil)
 	var certErr *CertEncodeError
 	assert.ErrorAs(t, err, &certErr)
 }
@@ -1264,7 +1264,7 @@ func TestClaimShare_PartialClaimsStayEnrolling(t *testing.T) {
 	svc, err := NewCeremonyService(cfg, testBarrier(t), newTestCredentialService(), testLogger())
 	require.NoError(t, err)
 
-	_, err = svc.Initialize(context.Background(), newMockCA(t))
+	_, err = svc.Initialize(context.Background(), newMockCA(t), nil)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -1297,7 +1297,7 @@ func TestClaimShare_WithoutCertClaimStaysEnrolling(t *testing.T) {
 	svc, err := NewCeremonyService(cfg, testBarrier(t), newTestCredentialService(), testLogger())
 	require.NoError(t, err)
 
-	_, err = svc.Initialize(context.Background(), newMockCA(t))
+	_, err = svc.Initialize(context.Background(), newMockCA(t), nil)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -1321,4 +1321,159 @@ func TestClaimShare_WithoutCertClaimStaysEnrolling(t *testing.T) {
 
 	// officer-2 has not claimed their cert, so should remain enrolling.
 	assert.Equal(t, StateEnrolling, svc.State())
+}
+
+// ---------------------------------------------------------------------------
+// AuthenticatorType tests
+// ---------------------------------------------------------------------------
+
+func TestAuthenticatorType_Validate(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   AuthenticatorType
+		wantErr error
+	}{
+		{name: "empty is valid", input: "", wantErr: nil},
+		{name: "piv is valid", input: AuthenticatorPIV, wantErr: nil},
+		{name: "fido2 is valid", input: AuthenticatorFIDO2, wantErr: nil},
+		{name: "software is valid", input: AuthenticatorSoftware, wantErr: nil},
+		{name: "bogus value rejected", input: AuthenticatorType("bogus"), wantErr: ErrInvalidAuthenticatorType},
+		{name: "uppercase rejected", input: AuthenticatorType("PIV"), wantErr: ErrInvalidAuthenticatorType},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.input.Validate()
+			if tc.wantErr == nil {
+				assert.NoError(t, err)
+				return
+			}
+			assert.ErrorIs(t, err, tc.wantErr)
+		})
+	}
+}
+
+func TestAuthenticatorType_Normalized(t *testing.T) {
+	tests := []struct {
+		name  string
+		input AuthenticatorType
+		want  AuthenticatorType
+	}{
+		{name: "empty maps to software", input: "", want: AuthenticatorSoftware},
+		{name: "piv round trips", input: AuthenticatorPIV, want: AuthenticatorPIV},
+		{name: "fido2 round trips", input: AuthenticatorFIDO2, want: AuthenticatorFIDO2},
+		{name: "software round trips", input: AuthenticatorSoftware, want: AuthenticatorSoftware},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.input.Normalized()
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// TestValidateOfficerAuthenticators_Valid ensures the config-level helper
+// accepts all known authenticator types (including the empty default).
+func TestValidateOfficerAuthenticators_Valid(t *testing.T) {
+	officers := []OfficerConfig{
+		{Username: "alice", AuthenticatorType: AuthenticatorPIV, AuthenticatorRef: "9a"},
+		{Username: "bob", AuthenticatorType: AuthenticatorFIDO2, AuthenticatorRef: "cred-id-xyz"},
+		{Username: "carol", AuthenticatorType: AuthenticatorSoftware},
+		{Username: "dave"}, // empty defaults to software
+	}
+	err := validateOfficerAuthenticators(officers)
+	assert.NoError(t, err)
+}
+
+// TestValidateOfficerAuthenticators_Invalid ensures the config-level helper
+// rejects unknown authenticator types.
+func TestValidateOfficerAuthenticators_Invalid(t *testing.T) {
+	officers := []OfficerConfig{
+		{Username: "alice", AuthenticatorType: AuthenticatorPIV},
+		{Username: "bob", AuthenticatorType: AuthenticatorType("yubikey-direct")},
+	}
+	err := validateOfficerAuthenticators(officers)
+	assert.ErrorIs(t, err, ErrInvalidAuthenticatorType)
+}
+
+// TestInitialize_MofN_InvalidAuthenticatorType ensures Initialize rejects
+// a ceremony configuration with an unknown authenticator type before any
+// cryptographic work happens.
+func TestInitialize_MofN_InvalidAuthenticatorType(t *testing.T) {
+	cfg, _ := mofnConfig(t, 2, 3)
+	cfg.Officers[0].AuthenticatorType = AuthenticatorType("bogus")
+
+	svc, err := NewCeremonyService(cfg, testBarrier(t), newTestCredentialService(), testLogger())
+	require.NoError(t, err)
+
+	_, err = svc.Initialize(context.Background(), newMockCA(t), nil)
+	assert.ErrorIs(t, err, ErrInvalidAuthenticatorType)
+}
+
+// TestInitialize_MofN_AuthenticatorTypeRoundTrip asserts that
+// AuthenticatorType + AuthenticatorRef on OfficerConfig survive ceremony
+// enrollment and end up on the corresponding PendingCert. Empty types
+// are normalized to AuthenticatorSoftware.
+func TestInitialize_MofN_AuthenticatorTypeRoundTrip(t *testing.T) {
+	cfg, _ := mofnConfig(t, 2, 3)
+	cfg.Officers[0].AuthenticatorType = AuthenticatorPIV
+	cfg.Officers[0].AuthenticatorRef = "9a"
+	cfg.Officers[1].AuthenticatorType = AuthenticatorFIDO2
+	cfg.Officers[1].AuthenticatorRef = "cred-id-xyz"
+	// Officers[2] is left with empty AuthenticatorType — should default
+	// to software via Normalized().
+
+	svc, err := NewCeremonyService(cfg, testBarrier(t), newTestCredentialService(), testLogger())
+	require.NoError(t, err)
+
+	_, err = svc.Initialize(context.Background(), newMockCA(t), nil)
+	require.NoError(t, err)
+
+	svc.mu.RLock()
+	defer svc.mu.RUnlock()
+
+	pending0 := svc.pendingCerts[cfg.Officers[0].Username]
+	require.NotNil(t, pending0)
+	assert.Equal(t, AuthenticatorPIV, pending0.AuthenticatorType)
+	assert.Equal(t, "9a", pending0.AuthenticatorRef)
+
+	pending1 := svc.pendingCerts[cfg.Officers[1].Username]
+	require.NotNil(t, pending1)
+	assert.Equal(t, AuthenticatorFIDO2, pending1.AuthenticatorType)
+	assert.Equal(t, "cred-id-xyz", pending1.AuthenticatorRef)
+
+	pending2 := svc.pendingCerts[cfg.Officers[2].Username]
+	require.NotNil(t, pending2)
+	assert.Equal(t, AuthenticatorSoftware, pending2.AuthenticatorType,
+		"empty AuthenticatorType should normalize to software")
+	assert.Equal(t, "", pending2.AuthenticatorRef)
+}
+
+// TestMofN_ClaimCertFlow_WithAuthenticatorType ensures the existing
+// challenge-response claim flow is unaffected by the new authenticator
+// metadata — signature verification remains backend-agnostic.
+func TestMofN_ClaimCertFlow_WithAuthenticatorType(t *testing.T) {
+	cfg, keys := mofnConfig(t, 2, 3)
+	cfg.Officers[0].AuthenticatorType = AuthenticatorPIV
+	cfg.Officers[0].AuthenticatorRef = "9a"
+
+	svc, err := NewCeremonyService(cfg, testBarrier(t), newTestCredentialService(), testLogger())
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	_, err = svc.Initialize(ctx, newMockCA(t), nil)
+	require.NoError(t, err)
+
+	username := cfg.Officers[0].Username
+	challenge, err := svc.BeginClaimCert(ctx, username)
+	require.NoError(t, err)
+
+	sig := signNonce(t, keys[0], challenge.Nonce)
+	nonceHex := hex.EncodeToString(challenge.Nonce)
+
+	result, err := svc.CompleteClaimCert(ctx, username, nonceHex, sig)
+	require.NoError(t, err)
+	assert.NotEmpty(t, result.CertPEM)
+	assert.NotEmpty(t, result.CACertPEM)
 }

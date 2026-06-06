@@ -46,7 +46,7 @@ func TestNewSession_NilIdentity(t *testing.T) {
 
 	require.NotNil(t, sess)
 	assert.Nil(t, sess.Identity())
-	assert.Equal(t, "default", sess.TenantID())
+	assert.Equal(t, "system", sess.TenantID())
 }
 
 func TestQRDBSession_TenantID_EmptyTenant(t *testing.T) {
@@ -58,7 +58,7 @@ func TestQRDBSession_TenantID_EmptyTenant(t *testing.T) {
 
 	sess := NewSession(base, identity)
 
-	assert.Equal(t, "default", sess.TenantID())
+	assert.Equal(t, "system", sess.TenantID())
 }
 
 func TestQRDBSession_TenantID_NonEmptyTenant(t *testing.T) {

@@ -183,7 +183,70 @@ var (
 
 	// ErrInvalidTotal is returned when the total member count is invalid.
 	ErrInvalidTotal = errors.New("ceremony: invalid total member count")
+
+	// ErrInvalidAuthenticatorType is returned when an officer's
+	// AuthenticatorType is not one of the known values.
+	ErrInvalidAuthenticatorType = errors.New("ceremony: invalid authenticator type")
+
+	// ErrInvalidOfficerRecord is returned when a nil or otherwise invalid
+	// officer record is supplied to the persistent registry.
+	ErrInvalidOfficerRecord = errors.New("ceremony: invalid officer record")
+
+	// ErrCertAndPubKeyBothSupplied is returned when an external officer
+	// enrollment carries both CertPEM and PubKeyPEM. Exactly one must be
+	// provided.
+	ErrCertAndPubKeyBothSupplied = errors.New("ceremony: cannot supply both cert and pubkey")
+
+	// ErrCertOrPubKeyRequired is returned when neither CertPEM nor
+	// PubKeyPEM is provided to external officer enrollment.
+	ErrCertOrPubKeyRequired = errors.New("ceremony: cert or pubkey required")
+
+	// ErrInvalidAuthFactor is returned when an external officer enrollment
+	// carries an unrecognised auth factor.
+	ErrInvalidAuthFactor = errors.New("ceremony: invalid auth factor")
+
+	// ErrCertExpired is returned when the supplied X.509 certificate is
+	// not valid at the current time.
+	ErrCertExpired = errors.New("ceremony: certificate expired or not yet valid")
+
+	// ErrCertUntrusted is returned when the supplied X.509 certificate
+	// does not chain to any configured CA pool.
+	ErrCertUntrusted = errors.New("ceremony: certificate does not chain to a trusted CA")
+
+	// ErrInvalidCertPEM is returned when CertPEM cannot be parsed.
+	ErrInvalidCertPEM = errors.New("ceremony: invalid certificate PEM")
+
+	// ErrInvalidPubKeyPEM is returned when PubKeyPEM cannot be parsed.
+	ErrInvalidPubKeyPEM = errors.New("ceremony: invalid public key PEM")
+
+	// ErrUnsupportedKeyAlgorithm is returned when the public key algorithm
+	// is not supported for share sealing.
+	ErrUnsupportedKeyAlgorithm = errors.New("ceremony: unsupported key algorithm for share sealing")
+
+	// ErrShareSealFailed is returned when share sealing to the officer's
+	// public key fails for any cryptographic reason.
+	ErrShareSealFailed = errors.New("ceremony: share sealing failed")
+
+	// ErrInvalidShareIndex is returned when ShareIndex is outside the
+	// valid 1..N range.
+	ErrInvalidShareIndex = errors.New("ceremony: invalid share index")
 )
+
+// OfficerRegistryError wraps an error from persistent-registry operations.
+type OfficerRegistryError struct {
+	Op  string
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *OfficerRegistryError) Error() string {
+	return fmt.Sprintf("ceremony: officer registry %s failed: %v", e.Op, e.Err)
+}
+
+// Unwrap returns the underlying error.
+func (e *OfficerRegistryError) Unwrap() error {
+	return e.Err
+}
 
 // ShamirSplitError wraps an error from the Shamir split operation.
 type ShamirSplitError struct {

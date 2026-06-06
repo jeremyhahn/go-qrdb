@@ -70,6 +70,11 @@ func New(opts ...transport.Option) (*Transport, error) {
 // Connect establishes the QUIC connection to the QRDB server. QUIC
 // always requires TLS; the ALPN protocol is set to "qrdb-quic" to
 // match the server-side configuration.
+// quicConnectBudget bounds QUIC connection establishment (dial + health
+// probe) so a stalled UDP handshake fails fast rather than hanging until the
+// caller's outer deadline, leaving the rest of that deadline for the RPC.
+const quicConnectBudget = 10 * time.Second
+
 func (t *Transport) Connect(ctx context.Context) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
@@ -88,7 +93,16 @@ func (t *Transport) Connect(ctx context.Context) error {
 		MaxIncomingStreams: 1000,
 	}
 
-	conn, err := quicgo.DialAddr(ctx, addr, tlsCfg, quicCfg)
+	// Bound connection establishment. QUIC rides UDP, so a degraded datagram
+	// path (small kernel buffers, loss under load) can stall the handshake;
+	// without a deadline DialAddr/Healthy would hang until the caller's outer
+	// deadline (or indefinitely on a background context), surfacing as an
+	// opaque process kill. Cap it so a stalled connect fails fast and leaves
+	// the rest of the caller's budget for the actual RPC.
+	cctx, cancel := context.WithTimeout(ctx, quicConnectBudget)
+	defer cancel()
+
+	conn, err := quicgo.DialAddr(cctx, addr, tlsCfg, quicCfg)
 	if err != nil {
 		return &transport.ConnectionError{
 			Address: t.config.Address,
@@ -99,7 +113,7 @@ func (t *Transport) Connect(ctx context.Context) error {
 	t.conn = conn
 
 	// Verify connectivity with a health check.
-	if !t.Healthy(ctx) {
+	if !t.Healthy(cctx) {
 		_ = conn.CloseWithError(0, "health check failed")
 		return &transport.ConnectionError{
 			Address: t.config.Address,
@@ -147,15 +161,20 @@ func (t *Transport) Request(_ context.Context, method string, _, _ any) error {
 // KVClient implementation
 // ---------------------------------------------------------------------------
 
-// Put stores a key-value pair through Raft consensus.
+// Put stores a key-value pair through Raft consensus. When opts specify a
+// write mode, the WriteMode proto field is set on the request so the server
+// routes to the appropriate write path. Omitting opts preserves the existing
+// default (sync/quorum) behavior.
 func (t *Transport) Put(ctx context.Context, key string, value []byte, opts ...transport.WriteOption) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
 
-	ctx = applyWriteHeaders(ctx, opts...)
-
-	payload, err := proto.Marshal(&pb.PutRequest{Key: key, Value: value})
+	payload, err := proto.Marshal(&pb.PutRequest{
+		Key:       key,
+		Value:     value,
+		WriteMode: protoWriteMode(opts...),
+	})
 	if err != nil {
 		return &transport.RequestError{Method: "Put", Err: err}
 	}
@@ -167,16 +186,20 @@ func (t *Transport) Put(ctx context.Context, key string, value []byte, opts ...t
 	return nil
 }
 
-// Get retrieves a value by key with a linearizable read. Returns
-// KeyNotFoundError when the server responds with a key-not-found error.
+// Get retrieves a value by key. When opts specify a consistency level, the
+// ConsistencyLevel proto field is set on the request so the server routes to
+// the appropriate read path. Omitting opts preserves the existing default
+// (linearizable) behavior. Returns KeyNotFoundError when the server responds
+// with a key-not-found error.
 func (t *Transport) Get(ctx context.Context, key string, opts ...transport.ReadOption) ([]byte, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
 
-	ctx = applyReadHeaders(ctx, opts...)
-
-	payload, err := proto.Marshal(&pb.GetRequest{Key: key})
+	payload, err := proto.Marshal(&pb.GetRequest{
+		Key:         key,
+		Consistency: protoConsistency(opts...),
+	})
 	if err != nil {
 		return nil, &transport.RequestError{Method: "Get", Err: err}
 	}
@@ -193,15 +216,17 @@ func (t *Transport) Get(ctx context.Context, key string, opts ...transport.ReadO
 	return resp.GetValue(), nil
 }
 
-// Delete removes a key through Raft consensus.
+// Delete removes a key through Raft consensus. When opts specify a write
+// mode, the WriteMode proto field is set on the request.
 func (t *Transport) Delete(ctx context.Context, key string, opts ...transport.WriteOption) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
 
-	ctx = applyWriteHeaders(ctx, opts...)
-
-	payload, err := proto.Marshal(&pb.DeleteRequest{Key: key})
+	payload, err := proto.Marshal(&pb.DeleteRequest{
+		Key:       key,
+		WriteMode: protoWriteMode(opts...),
+	})
 	if err != nil {
 		return &transport.RequestError{Method: "Delete", Err: err}
 	}
@@ -213,16 +238,18 @@ func (t *Transport) Delete(ctx context.Context, key string, opts ...transport.Wr
 	return nil
 }
 
-// List returns sorted keys matching the given prefix. An empty prefix
-// returns all keys.
+// List returns sorted keys matching the given prefix. When opts specify a
+// consistency level, the ConsistencyLevel proto field is set on the request.
+// An empty prefix returns all keys.
 func (t *Transport) List(ctx context.Context, prefix string, opts ...transport.ReadOption) ([]string, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
 
-	ctx = applyReadHeaders(ctx, opts...)
-
-	payload, err := proto.Marshal(&pb.ListRequest{Prefix: prefix})
+	payload, err := proto.Marshal(&pb.ListRequest{
+		Prefix:      prefix,
+		Consistency: protoConsistency(opts...),
+	})
 	if err != nil {
 		return nil, &transport.RequestError{Method: "List", Err: err}
 	}
@@ -239,15 +266,18 @@ func (t *Transport) List(ctx context.Context, prefix string, opts ...transport.R
 	return resp.GetKeys(), nil
 }
 
-// Scan returns all key-value pairs matching the given prefix.
+// Scan returns all key-value pairs matching the given prefix. When opts
+// specify a consistency level, the ConsistencyLevel proto field is set on
+// the request.
 func (t *Transport) Scan(ctx context.Context, prefix string, opts ...transport.ReadOption) (map[string][]byte, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
 
-	ctx = applyReadHeaders(ctx, opts...)
-
-	payload, err := proto.Marshal(&pb.ScanRequest{Prefix: prefix})
+	payload, err := proto.Marshal(&pb.ScanRequest{
+		Prefix:      prefix,
+		Consistency: protoConsistency(opts...),
+	})
 	if err != nil {
 		return nil, &transport.RequestError{Method: "Scan", Err: err}
 	}
@@ -589,11 +619,28 @@ func (t *Transport) GetTopology(ctx context.Context) (*transport.TopologyRespons
 // Internal helpers
 // ---------------------------------------------------------------------------
 
+// callContext derives the per-call context for a unary QUIC RPC. When the
+// configured timeout is positive it bounds the call's round-trip (stream
+// open, request write, and response read) with context.WithTimeout,
+// mirroring the REST transport's http.Client.Timeout. When the timeout is
+// zero the context is returned unchanged with a no-op cancel, preserving
+// the existing no-timeout behavior. Long-lived server-streaming RPCs (such
+// as Watch) deliberately bypass this helper so they remain unbounded.
+func (t *Transport) callContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if t.config.Timeout > 0 {
+		return context.WithTimeout(ctx, t.config.Timeout)
+	}
+	return ctx, func() {}
+}
+
 // call opens a bidirectional QUIC stream, writes a wire-protocol request
 // frame, reads the response frame, and maps non-OK status codes to SDK
 // error types. Each RPC uses a dedicated stream that is closed after the
 // response is read.
 func (t *Transport) call(ctx context.Context, method string, payload []byte) ([]byte, error) {
+	ctx, cancel := t.callContext(ctx)
+	defer cancel()
+
 	stream, err := t.conn.OpenStreamSync(ctx)
 	if err != nil {
 		return nil, &streamError{Err: err}
@@ -724,22 +771,4 @@ func appendALPN(protos []string) []string {
 		}
 	}
 	return append(protos, "qrdb-quic")
-}
-
-// applyWriteHeaders is a no-op for now on the QUIC transport. The wire
-// protocol does not currently support per-request metadata headers, but
-// the options are resolved so the signature satisfies the interface.
-// Future wire protocol versions may embed these in the request frame.
-func applyWriteHeaders(ctx context.Context, _ ...transport.WriteOption) context.Context {
-	// QUIC wire protocol does not yet support per-request metadata.
-	// Options are accepted to satisfy the interface contract.
-	return ctx
-}
-
-// applyReadHeaders is a no-op for now on the QUIC transport. See
-// applyWriteHeaders for rationale.
-func applyReadHeaders(ctx context.Context, _ ...transport.ReadOption) context.Context {
-	// QUIC wire protocol does not yet support per-request metadata.
-	// Options are accepted to satisfy the interface contract.
-	return ctx
 }

@@ -234,7 +234,7 @@ func TestNewServer_ValidationErrors(t *testing.T) {
 			config: &ServerConfig{
 				Backend: database.BackendMemory,
 				Barrier: &BarrierConfig{
-					Strategy: seal.StrategySoftware,
+					Strategy: seal.StrategyPassphrase,
 				},
 			},
 			field: "DataDir",
@@ -278,11 +278,15 @@ func TestNewServer_MemoryBackend_NoDataDir(t *testing.T) {
 
 func TestNewServer_WithBarrier_Software(t *testing.T) {
 	ctx := context.Background()
+	// Use the memory backend so the deferred SDK init flow is valid.
+	// The disk-backed pebble path requires AutoUnseal because the
+	// encrypting FS cannot be wired to a sealed barrier; that path is
+	// covered separately in server_encfs_test.go.
 	srv, err := NewServer(ctx, &ServerConfig{
-		Backend: database.BackendPebble,
+		Backend: database.BackendMemory,
 		DataDir: t.TempDir(),
 		Barrier: &BarrierConfig{
-			Strategy: seal.StrategySoftware,
+			Strategy: seal.StrategyPassphrase,
 		},
 	})
 	if err != nil {
@@ -312,8 +316,10 @@ func TestNewServer_WithBarrier_Software(t *testing.T) {
 
 func TestNewServer_WithBarrier_Shamir(t *testing.T) {
 	ctx := context.Background()
+	// Memory backend: covers the deferred SDK init path. Disk-backed
+	// pebble + shamir + AutoUnseal is exercised in server_encfs_test.go.
 	srv, err := NewServer(ctx, &ServerConfig{
-		Backend: database.BackendPebble,
+		Backend: database.BackendMemory,
 		DataDir: t.TempDir(),
 		Barrier: &BarrierConfig{
 			Strategy: seal.StrategyShamir,
@@ -426,11 +432,15 @@ func TestNewServer_BarrierInitializeAndUnseal(t *testing.T) {
 	ctx := context.Background()
 	dataDir := t.TempDir()
 
+	// Memory backend keeps the deferred SDK init/unseal API surface
+	// exercisable. Disk-backed pebble requires AutoUnseal so that the
+	// encrypting FS opens behind an unsealed barrier; see
+	// server_encfs_test.go for that flow.
 	srv, err := NewServer(ctx, &ServerConfig{
-		Backend: database.BackendPebble,
+		Backend: database.BackendMemory,
 		DataDir: dataDir,
 		Barrier: &BarrierConfig{
-			Strategy: seal.StrategySoftware,
+			Strategy: seal.StrategyPassphrase,
 		},
 	})
 	if err != nil {
@@ -479,11 +489,11 @@ func TestNewServer_BarrierInitializeAndUnseal(t *testing.T) {
 	if status.Sealed {
 		t.Fatal("expected barrier to be unsealed after initialization")
 	}
-	// NOTE: StorageBarrier.Status() does not yet populate InitializedAt
-	// (the field exists on BarrierStatus but is never set by the seal
-	// package). Verify the barrier is unsealed and functional instead.
 	if status.Strategy == "" {
 		t.Fatal("expected Strategy to be set after initialization")
+	}
+	if status.InitializedAt == "" {
+		t.Fatal("expected InitializedAt to be populated after initialization")
 	}
 
 	// KV operations should work while unsealed.

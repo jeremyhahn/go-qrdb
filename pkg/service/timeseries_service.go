@@ -21,6 +21,7 @@ import (
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 )
@@ -49,9 +50,15 @@ func NewTimeSeriesService(host Host, shardID uint64) TimeSeriesServicer {
 // Write stores a single time-series data point through Raft consensus.
 func (s *TimeSeriesService) Write(ctx context.Context, metric string, value float64, timestamp time.Time, tags map[string]string) error {
 	cmd := protocol.EncodeTSWrite(metric, timestamp.UnixNano(), value, tags)
-	_, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
 		return s.translateProposeError(err)
+	}
+	// Surface a state-machine-encoded application error (e.g. time-series
+	// subsystem not configured, validation failure) that the SM placed in the
+	// result payload instead of stalling consensus.
+	if resultErr := checkResultError(result); resultErr != nil {
+		return resultErr
 	}
 	return nil
 }
@@ -69,9 +76,15 @@ func (s *TimeSeriesService) WriteBatch(ctx context.Context, points []DataPoint) 
 		}
 	}
 	cmd := protocol.EncodeTSWriteBatch(params)
-	_, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
 		return s.translateProposeError(err)
+	}
+	// Surface a state-machine-encoded application error (e.g. time-series
+	// subsystem not configured, validation failure) that the SM placed in the
+	// result payload instead of stalling consensus.
+	if resultErr := checkResultError(result); resultErr != nil {
+		return resultErr
 	}
 	return nil
 }
@@ -84,6 +97,26 @@ func (s *TimeSeriesService) Query(ctx context.Context, metric string, start, end
 		End:    end,
 		Opts:   opts,
 	})
+	if err != nil {
+		return nil, s.translateReadError(err)
+	}
+
+	points, ok := result.([]DataPoint)
+	if !ok {
+		return nil, &unexpectedResultTypeError{}
+	}
+	return points, nil
+}
+
+// QueryWithConsistency retrieves data points for a metric within the given
+// time range using the specified read-consistency level.
+func (s *TimeSeriesService) QueryWithConsistency(ctx context.Context, metric string, start, end time.Time, ropts consistency.ReadOptions, opts ...TSQueryOption) ([]DataPoint, error) {
+	result, err := s.host.ReadWithConsistency(ctx, s.shardID, TSQueryRequest{
+		Metric: metric,
+		Start:  start,
+		End:    end,
+		Opts:   opts,
+	}, ropts)
 	if err != nil {
 		return nil, s.translateReadError(err)
 	}
@@ -116,12 +149,39 @@ func (s *TimeSeriesService) Aggregate(ctx context.Context, metric string, start,
 	return results, nil
 }
 
+// AggregateWithConsistency computes an aggregation using the specified
+// read-consistency level.
+func (s *TimeSeriesService) AggregateWithConsistency(ctx context.Context, metric string, start, end time.Time, fn AggFunc, interval time.Duration, ropts consistency.ReadOptions) ([]AggResult, error) {
+	result, err := s.host.ReadWithConsistency(ctx, s.shardID, TSAggregateRequest{
+		Metric:   metric,
+		Start:    start,
+		End:      end,
+		Func:     fn,
+		Interval: interval,
+	}, ropts)
+	if err != nil {
+		return nil, s.translateReadError(err)
+	}
+
+	results, ok := result.([]AggResult)
+	if !ok {
+		return nil, &unexpectedResultTypeError{}
+	}
+	return results, nil
+}
+
 // WritePoint stores a single validated data point through Raft consensus.
 func (s *TimeSeriesService) WritePoint(ctx context.Context, point *DataPoint) error {
 	cmd := protocol.EncodeTSWritePoint(point.Metric, point.Timestamp.UnixNano(), point.Value, point.Tags)
-	_, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
 		return s.translateProposeError(err)
+	}
+	// Surface a state-machine-encoded application error (e.g. time-series
+	// subsystem not configured, validation failure) that the SM placed in the
+	// result payload instead of stalling consensus.
+	if resultErr := checkResultError(result); resultErr != nil {
+		return resultErr
 	}
 	return nil
 }
@@ -132,6 +192,23 @@ func (s *TimeSeriesService) QueryRich(ctx context.Context, req *QueryRequest) (*
 	result, err := s.host.SyncRead(ctx, s.shardID, TSRichQueryRequest{
 		Request: req,
 	})
+	if err != nil {
+		return nil, s.translateReadError(err)
+	}
+
+	qr, ok := result.(*QueryResult)
+	if !ok {
+		return nil, &unexpectedResultTypeError{}
+	}
+	return qr, nil
+}
+
+// QueryRichWithConsistency performs a rich query using the specified
+// read-consistency level.
+func (s *TimeSeriesService) QueryRichWithConsistency(ctx context.Context, req *QueryRequest, ropts consistency.ReadOptions) (*QueryResult, error) {
+	result, err := s.host.ReadWithConsistency(ctx, s.shardID, TSRichQueryRequest{
+		Request: req,
+	}, ropts)
 	if err != nil {
 		return nil, s.translateReadError(err)
 	}
@@ -154,9 +231,15 @@ func (s *TimeSeriesService) DeleteSeries(ctx context.Context, req *DeleteRequest
 		endNs = req.EndTime.UnixNano()
 	}
 	cmd := protocol.EncodeTSDeleteSeries(req.Metric, startNs, endNs, req.Tags)
-	_, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
 		return s.translateProposeError(err)
+	}
+	// Surface a state-machine-encoded application error (e.g. time-series
+	// subsystem not configured, validation failure) that the SM placed in the
+	// result payload instead of stalling consensus.
+	if resultErr := checkResultError(result); resultErr != nil {
+		return resultErr
 	}
 	return nil
 }
@@ -187,9 +270,12 @@ func (s *TimeSeriesService) SetRetentionPolicy(metric string, policy *RetentionP
 		int64(policy.Resolution),
 		byte(policy.Aggregation),
 	)
-	_, err := s.host.SyncPropose(context.Background(), s.shardID, cmd)
+	result, err := s.host.SyncPropose(context.Background(), s.shardID, cmd)
 	if err != nil {
 		return s.translateProposeError(err)
+	}
+	if resultErr := checkResultError(result); resultErr != nil {
+		return resultErr
 	}
 	return nil
 }
@@ -201,6 +287,24 @@ func (s *TimeSeriesService) ListMetrics(prefix string, limit int) ([]string, err
 		Prefix: prefix,
 		Limit:  limit,
 	})
+	if err != nil {
+		return nil, s.translateReadError(err)
+	}
+
+	metrics, ok := result.([]string)
+	if !ok {
+		return nil, &unexpectedResultTypeError{}
+	}
+	return metrics, nil
+}
+
+// ListMetricsWithConsistency returns metric names using the specified
+// read-consistency level.
+func (s *TimeSeriesService) ListMetricsWithConsistency(ctx context.Context, prefix string, limit int, ropts consistency.ReadOptions) ([]string, error) {
+	result, err := s.host.ReadWithConsistency(ctx, s.shardID, TSListMetricsRequest{
+		Prefix: prefix,
+		Limit:  limit,
+	}, ropts)
 	if err != nil {
 		return nil, s.translateReadError(err)
 	}

@@ -16,6 +16,7 @@ package rest
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -29,11 +30,17 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/kv"
 	"github.com/jeremyhahn/go-qrdb/pkg/lock"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
+
+// apiRequestTimeout bounds every KV, admin, cert, role, and user endpoint so
+// a stalled Raft SyncRead never hangs the GUI. 5s is generous — operations on
+// a healthy cluster return in milliseconds; failure must surface quickly.
+const apiRequestTimeout = 5 * time.Second
 
 // ---------------------------------------------------------------------------
 // Response types
@@ -155,7 +162,10 @@ var kvMethodHandlers = map[string]kvMethodHandler{
 
 // handleStatus returns node and shard status information.
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
-	info, err := s.adminSvc.Status(r.Context())
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
+	info, err := s.adminSvc.Status(ctx)
 	if err != nil {
 		writeErrorJSON(w, http.StatusInternalServerError, err)
 		return
@@ -176,7 +186,10 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 // handlePeers returns the peer list for all loaded shards.
 func (s *Server) handlePeers(w http.ResponseWriter, r *http.Request) {
-	info, err := s.adminSvc.Peers(r.Context())
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
+	info, err := s.adminSvc.Peers(ctx)
 	if err != nil {
 		writeErrorJSON(w, http.StatusInternalServerError, err)
 		return
@@ -208,7 +221,10 @@ func (s *Server) handlePeers(w http.ResponseWriter, r *http.Request) {
 // handleHealth returns a health check response. Returns 200 for "ok"
 // status and 503 for any degraded or unhealthy state.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	info, err := s.adminSvc.Health(r.Context())
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
+	info, err := s.adminSvc.Health(ctx)
 	if err != nil {
 		writeErrorJSON(w, http.StatusServiceUnavailable, err)
 		return
@@ -226,7 +242,10 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 // handleDrain transitions the host into drain mode.
 func (s *Server) handleDrain(w http.ResponseWriter, r *http.Request) {
-	if err := s.adminSvc.Drain(r.Context()); err != nil {
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
+	if err := s.adminSvc.Drain(ctx); err != nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		writeJSON(w, drainResponse{Status: "drain_timeout", Error: err.Error()})
 		return
@@ -236,7 +255,10 @@ func (s *Server) handleDrain(w http.ResponseWriter, r *http.Request) {
 
 // handleCapabilities returns the compile-time feature set of the QRDB binary.
 func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
-	caps, err := s.adminSvc.Capabilities(r.Context())
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
+	caps, err := s.adminSvc.Capabilities(ctx)
 	if err != nil {
 		writeErrorJSON(w, http.StatusInternalServerError, err)
 		return
@@ -296,6 +318,9 @@ func (s *Server) handleKV(w http.ResponseWriter, r *http.Request) {
 // the value is stored with the specified lease attachment. When the local
 // node is not the leader and leader forwarding is configured, the request
 // is transparently proxied to the leader.
+//
+// Optional query parameter ?write_mode=sync|wal_durable|batched selects the
+// write durability mode; absent/empty preserves existing behavior.
 func (s *Server) handleKVPut(w http.ResponseWriter, r *http.Request, key string) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -303,10 +328,13 @@ func (s *Server) handleKVPut(w http.ResponseWriter, r *http.Request, key string)
 		return
 	}
 
-	ctx := r.Context()
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
+	q := r.URL.Query()
 
 	// Check for lease-id query parameter for PutWithLease.
-	if leaseIDStr := r.URL.Query().Get("lease-id"); leaseIDStr != "" {
+	if leaseIDStr := q.Get("lease-id"); leaseIDStr != "" {
 		mvccSvc := s.mvccSvcFor(w, ctx)
 		if mvccSvc == nil {
 			// mvccSvcFor already wrote the response (error or 501).
@@ -320,7 +348,19 @@ func (s *Server) handleKVPut(w http.ResponseWriter, r *http.Request, key string)
 			writeErrorJSON(w, http.StatusBadRequest, &InvalidParameterError{Param: "lease-id", Err: parseErr})
 			return
 		}
-		kv, putErr := mvccSvc.PutWithLease(ctx, key, body, leaseID)
+
+		mode, modeSpecified, modeOK := parseWriteModeParam(w, q)
+		if !modeOK {
+			return
+		}
+
+		var kv *service.KeyValue
+		var putErr error
+		if modeSpecified {
+			kv, putErr = mvccSvc.PutWithLeaseAndMode(ctx, key, body, leaseID, mode)
+		} else {
+			kv, putErr = mvccSvc.PutWithLease(ctx, key, body, leaseID)
+		}
 		if putErr != nil {
 			if s.tryForwardWrite(w, r, key, body, putErr) {
 				return
@@ -337,11 +377,22 @@ func (s *Server) handleKVPut(w http.ResponseWriter, r *http.Request, key string)
 		return
 	}
 
-	if err := kvSvc.Put(ctx, key, body); err != nil {
-		if s.tryForwardWrite(w, r, key, body, err) {
+	mode, modeSpecified, modeOK := parseWriteModeParam(w, q)
+	if !modeOK {
+		return
+	}
+
+	var putErr error
+	if modeSpecified {
+		putErr = kvSvc.PutWithMode(ctx, key, body, mode)
+	} else {
+		putErr = kvSvc.Put(ctx, key, body)
+	}
+	if putErr != nil {
+		if s.tryForwardWrite(w, r, key, body, putErr) {
 			return
 		}
-		writeErrorJSON(w, http.StatusInternalServerError, &ProposeError{Err: err})
+		writeErrorJSON(w, http.StatusInternalServerError, &ProposeError{Err: putErr})
 		return
 	}
 
@@ -352,8 +403,14 @@ func (s *Server) handleKVPut(w http.ResponseWriter, r *http.Request, key string)
 // revision=true query parameter is present, returns the full KeyValue with
 // MVCC metadata. When at-revision=N is present, returns the key as it
 // existed at that historical revision.
+//
+// Optional query parameter ?consistency=strong|linearizable|eventual selects
+// the read consistency level. The legacy ?stale=true is equivalent to
+// ?consistency=eventual. When both are given, ?consistency= wins.
 func (s *Server) handleKVGet(w http.ResponseWriter, r *http.Request, key string) {
-	ctx := r.Context()
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
 	q := r.URL.Query()
 
 	// GET /kv/{key}?at-revision=N -- historical revision read.
@@ -370,7 +427,19 @@ func (s *Server) handleKVGet(w http.ResponseWriter, r *http.Request, key string)
 			writeErrorJSON(w, http.StatusBadRequest, &InvalidParameterError{Param: "at-revision", Err: parseErr})
 			return
 		}
-		kv, getErr := mvccSvc.GetAtRevision(ctx, key, rev)
+
+		consistOpts, consistSpecified, consistOK := parseConsistencyParam(w, q)
+		if !consistOK {
+			return
+		}
+
+		var kv *service.KeyValue
+		var getErr error
+		if consistSpecified {
+			kv, getErr = mvccSvc.GetAtRevisionWithConsistency(ctx, key, rev, consistOpts)
+		} else {
+			kv, getErr = mvccSvc.GetAtRevision(ctx, key, rev)
+		}
 		if getErr != nil {
 			writeErrorJSON(w, mapHTTPError(getErr), getErr)
 			return
@@ -388,7 +457,19 @@ func (s *Server) handleKVGet(w http.ResponseWriter, r *http.Request, key string)
 			}
 			return
 		}
-		kv, getErr := mvccSvc.GetRevision(ctx, key)
+
+		consistOpts, consistSpecified, consistOK := parseConsistencyParam(w, q)
+		if !consistOK {
+			return
+		}
+
+		var kv *service.KeyValue
+		var getErr error
+		if consistSpecified {
+			kv, getErr = mvccSvc.GetRevisionWithConsistency(ctx, key, consistOpts)
+		} else {
+			kv, getErr = mvccSvc.GetRevision(ctx, key)
+		}
 		if getErr != nil {
 			writeErrorJSON(w, mapHTTPError(getErr), getErr)
 			return
@@ -397,19 +478,27 @@ func (s *Server) handleKVGet(w http.ResponseWriter, r *http.Request, key string)
 		return
 	}
 
-	// Default: simple byte value retrieval. When ?stale=true, reads from
-	// the local state machine without Raft coordination for sub-millisecond
-	// latency (may return stale data).
+	// Default: simple byte value retrieval. Consistency is controlled via
+	// ?consistency= or the legacy ?stale=true shorthand.
 	kvSvc := s.kvSvcFor(w, ctx)
 	if kvSvc == nil {
 		return
 	}
 
+	consistOpts, consistSpecified, consistOK := parseConsistencyParam(w, q)
+	if !consistOK {
+		return
+	}
+
 	var data []byte
 	var err error
-	if q.Get("stale") == "true" {
+	switch {
+	case consistSpecified && consistOpts.Consistency == consistency.Eventual:
+		// Both ?consistency=eventual and legacy ?stale=true take this path.
 		data, err = kvSvc.GetStale(ctx, key)
-	} else {
+	case consistSpecified:
+		data, err = kvSvc.GetWithConsistency(ctx, key, consistOpts)
+	default:
 		data, err = kvSvc.Get(ctx, key)
 	}
 	if err != nil {
@@ -430,13 +519,30 @@ func (s *Server) handleKVGet(w http.ResponseWriter, r *http.Request, key string)
 // handleKVDelete handles DELETE /kv/{key} -- removes a key. When the
 // local node is not the leader and leader forwarding is configured, the
 // request is transparently proxied to the leader.
+//
+// Optional query parameter ?write_mode=sync|wal_durable|batched selects the
+// write durability mode; absent/empty preserves existing behavior.
 func (s *Server) handleKVDelete(w http.ResponseWriter, r *http.Request, key string) {
-	ctx := r.Context()
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
 	kvSvc := s.kvSvcFor(w, ctx)
 	if kvSvc == nil {
 		return
 	}
-	if err := kvSvc.Delete(ctx, key); err != nil {
+
+	mode, modeSpecified, modeOK := parseWriteModeParam(w, r.URL.Query())
+	if !modeOK {
+		return
+	}
+
+	var err error
+	if modeSpecified {
+		err = kvSvc.DeleteWithMode(ctx, key, mode)
+	} else {
+		err = kvSvc.Delete(ctx, key)
+	}
+	if err != nil {
 		if s.tryForwardWrite(w, r, key, nil, err) {
 			return
 		}
@@ -447,24 +553,34 @@ func (s *Server) handleKVDelete(w http.ResponseWriter, r *http.Request, key stri
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleKVList handles GET /kv?prefix=X -- lists keys by prefix. When
-// ?stale=true, reads from the local state machine without Raft coordination
-// for sub-millisecond latency (may return stale data).
+// handleKVList handles GET /kv?prefix=X -- lists keys by prefix. Consistency
+// is controlled via ?consistency=strong|linearizable|eventual or the legacy
+// ?stale=true shorthand (equivalent to eventual).
 func (s *Server) handleKVList(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	prefix := q.Get("prefix")
 
-	ctx := r.Context()
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
 	kvSvc := s.kvSvcFor(w, ctx)
 	if kvSvc == nil {
 		return
 	}
 
+	consistOpts, consistSpecified, consistOK := parseConsistencyParam(w, q)
+	if !consistOK {
+		return
+	}
+
 	var keys []string
 	var err error
-	if q.Get("stale") == "true" {
+	switch {
+	case consistSpecified && consistOpts.Consistency == consistency.Eventual:
 		keys, err = kvSvc.ListStale(ctx, prefix)
-	} else {
+	case consistSpecified:
+		keys, err = kvSvc.ListWithConsistency(ctx, prefix, consistOpts)
+	default:
 		keys, err = kvSvc.List(ctx, prefix)
 	}
 	if err != nil {
@@ -476,17 +592,36 @@ func (s *Server) handleKVList(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleKVScan handles GET /kv/scan?prefix=X -- returns key-value pairs
-// matching the given prefix.
+// matching the given prefix. Consistency is controlled via
+// ?consistency=strong|linearizable|eventual or the legacy ?stale=true
+// shorthand (equivalent to eventual).
 func (s *Server) handleKVScan(w http.ResponseWriter, r *http.Request) {
-	prefix := r.URL.Query().Get("prefix")
+	q := r.URL.Query()
+	prefix := q.Get("prefix")
 
-	ctx := r.Context()
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
 	kvSvc := s.kvSvcFor(w, ctx)
 	if kvSvc == nil {
 		return
 	}
 
-	pairs, err := kvSvc.Scan(ctx, prefix)
+	consistOpts, consistSpecified, consistOK := parseConsistencyParam(w, q)
+	if !consistOK {
+		return
+	}
+
+	var pairs map[string][]byte
+	var err error
+	switch {
+	case consistSpecified && consistOpts.Consistency == consistency.Eventual:
+		pairs, err = kvSvc.ScanStale(ctx, prefix)
+	case consistSpecified:
+		pairs, err = kvSvc.ScanWithConsistency(ctx, prefix, consistOpts)
+	default:
+		pairs, err = kvSvc.Scan(ctx, prefix)
+	}
 	if err != nil {
 		writeErrorJSON(w, http.StatusInternalServerError, &ReadError{Err: err})
 		return
@@ -507,7 +642,9 @@ func (s *Server) handleMembershipAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := r.Context()
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
 	if err := s.adminSvc.AddMember(ctx, req.ShardID, req.ReplicaID, req.Address); err != nil {
 		writeErrorJSON(w, http.StatusInternalServerError, &MembershipError{Op: "add", Err: err})
 		return
@@ -524,7 +661,9 @@ func (s *Server) handleMembershipRemove(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	ctx := r.Context()
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
 	if err := s.adminSvc.RemoveMember(ctx, req.ShardID, req.ReplicaID); err != nil {
 		writeErrorJSON(w, http.StatusInternalServerError, &MembershipError{Op: "remove", Err: err})
 		return
@@ -541,7 +680,9 @@ func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := r.Context()
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
 	if err := s.adminSvc.RequestSnapshot(ctx, req.ShardID); err != nil {
 		writeErrorJSON(w, http.StatusInternalServerError, &SnapshotRequestError{Err: err})
 		return
@@ -727,6 +868,7 @@ func mapHTTPError(err error) int {
 	var tnf *TenantNotFoundError
 	var dnf *DatabaseNotFoundError
 	var bse *BarrierSealedError
+	var smnc *service.SMNotConfiguredError
 
 	switch {
 	case errors.As(err, &knf):
@@ -827,6 +969,10 @@ func mapHTTPError(err error) int {
 		return http.StatusNotFound
 	case errors.As(err, &bse):
 		return http.StatusServiceUnavailable
+	case errors.As(err, &smnc):
+		// SM subsystem not configured — surface as 501 Not Implemented so
+		// clients know the operation is not supported by this server instance.
+		return http.StatusNotImplemented
 	default:
 		// Allow build-tagged packages to extend the error mapping.
 		if ragErrorMapperFn != nil {

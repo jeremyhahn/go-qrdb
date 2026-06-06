@@ -3,39 +3,149 @@ Copyright 2026 Jeremy Hahn
 Licensed under the Apache License, Version 2.0
 -->
 
-# Seal Package — ExtendedBarrier
+# Seal Package — StorageBarrier
 
 The `pkg/seal/` package provides transparent at-rest encryption for go-qrdb's storage layer. It extends go-quicraft's minimal barrier with database-layer features: Shamir threshold unsealing, multi-tenant barriers, storage wrapping, recovery keys, rekey, and root token generation.
+
+## Why this exists
+
+go-qrdb runs in three distinct deployment shapes:
+
+1. **Software only** — single passphrase or Shamir M-of-N, no hardware. The default. The barrier itself is fully self-contained.
+2. **None** — barrier disabled entirely, data stored in plaintext for dev/test or where the operator already provides full-disk encryption.
+3. **Hardware-backed** — TPM2, PKCS#11, AWS KMS, GCP KMS, Azure Key Vault, or HashiCorp Vault as root of trust.
+
+The first two ship inside qrdb. The third ships in go-xkms and is **registered into qrdb at composition time** through a `seal.StrategyRegistry`. qrdb has no compile-time dependency on any hardware code; it just calls a registered factory by name.
+
+## Related pages
+
+- [sealed-window.md](sealed-window.md) — Sealed-window endpoint allowlist, format-version sentinel, pre-host listener boot sequence.
+- [shamir.md](shamir.md) — M-of-N share split, threshold unsealing, share lifecycle.
+- [custodians.md](custodians.md) — Custodian registration, revocation, dual-factor auth.
+- [multi-tenant.md](multi-tenant.md) — Per-tenant barrier isolation via `NamespacedBackend`.
+- [compliance.md](compliance.md) — FIPS, FedRAMP, PCI-DSS, HIPAA mapping.
+- [../pin/README.md](../pin/README.md) — PIN backend used by the SO/User PIN ceremony.
 
 ## Three-Layer Architecture
 
 ```
-go-quicraft/pkg/seal/          Interfaces + memguard + minimal barrier
+go-quicraft/pkg/seal/          Interfaces + memguard + minimal Barrier + Software/None/Shamir primitives
         ↑
-go-qrdb/pkg/seal/              ExtendedBarrier: Shamir, multi-tenant, storage, recovery
+go-qrdb/pkg/seal/              StorageBarrier: multi-tenant, storage wrapping, recovery, root tokens,
+                               share exchange, StrategyRegistry (Software + None pre-registered)
 go-qrdb/pkg/dek/               ClusterDEKManager, TenantDEKManager
         ↑
-go-xkms/pkg/seal/              Hardware strategies: TPM2, PKCS#11, cloud KMS
+go-xkms/pkg/seal/              Hardware strategies (TPM2, PKCS#11, AWS KMS, GCP KMS, Azure KV, Vault)
+                               registered into a qrdb StrategyRegistry at composition time
 ```
 
-- **go-quicraft** defines the barrier interfaces (`Barrier`, `SnapshotBarrier`, `EpochTracker`) and a minimal default implementation with AES-256-GCM, epoch rotation, deployment ID isolation, brute-force protection, and memguard memory protection.
-- **go-qrdb** embeds go-quicraft's barrier in `ExtendedBarrier`, adding all database-layer features. The `pkg/dek/` package provides cluster and tenant DEK management using `seal.EncryptionBarrier` for key wrapping.
-- **go-xkms** adds hardware `SealingStrategy` implementations that plug into any layer via IoC.
+- **go-quicraft** defines the barrier interfaces (`Barrier`, `SnapshotBarrier`, `EpochTracker`) and a minimal default implementation with AES-256-GCM, epoch rotation, deployment ID isolation, brute-force protection, and memguard memory protection. It also owns the three software-shape strategies: `SoftwareStrategy`, `ShamirStrategy`, `NoneStrategy`.
+- **go-qrdb** wraps go-quicraft's barrier in `StorageBarrier`, adding all database-layer features. The `pkg/dek/` package provides cluster and tenant DEK management using `seal.EncryptionBarrier` for key wrapping.
+- **go-xkms** ships hardware `SealingStrategy` implementations and registers them into a qrdb `StrategyRegistry` so qrdb can resolve `--barrier-strategy <name>` at init time without importing any HSM SDK.
 
-## ExtendedBarrier
+## Strategies owned by qrdb
+
+| StrategyID | Constant | Source | When to use |
+|------------|----------|--------|-------------|
+| `passphrase` | `seal.StrategyPassphrase` | go-quicraft (re-exported) | Single passphrase, FIPS-aware KDF (Argon2id or PBKDF2-SHA256). The default. |
+| `shamir`   | `seal.StrategyShamir`   | go-qrdb (`pkg/seal/strategy_shamir.go`) | M-of-N quorum unseal; the root key is the Shamir secret. |
+| `none`     | `seal.StrategyNone`     | go-quicraft (re-exported) | Barrier disabled; data stored plaintext. Dev/test or OS-level FDE deployments. |
+
+> **Config alias:** the YAML `seal.strategy` field accepts `software` as a **deprecated alias** for `passphrase`. It is canonicalized once at config load (`SealConfig.CanonicalStrategy()`), so every consumer sees the canonical `passphrase` ID — the software/passphrase strategy reports `ID() == "passphrase"`.
+
+Hardware strategies (`tpm2`, `pkcs11`, `aws-kms`, `gcp-kms`, `azure-kv`, `vault`) live in go-xkms and register themselves through `StrategyRegistry.Register` at composition time.
+
+The runtime selection priority for **active strategy** when multiple are registered:
+
+```
+TPM2 > PKCS#11 > Software
+```
+
+(see `pkg/seal/strategy.go:73-83` and `DefaultPreferenceOrder`). When only Software (or only None) is registered, that strategy is selected unconditionally.
+
+## StrategyRegistry — the canonical lookup table
+
+`StrategyRegistry` decouples the daemon from concrete strategy implementations. The daemon parses `--barrier-strategy <name>` and calls `LookupFactory` on the registry; the registry returns a `StrategyFactory` that constructs the strategy on demand. (`pkg/seal/strategy_registry.go:39-58`)
 
 ```go
-type ExtendedBarrier struct {
-    *quicraftseal.Barrier          // embedded minimal barrier (memguard, epochs)
+type StrategyRegistry interface {
+    Register(name StrategyID, factory StrategyFactory) error
+    Unregister(name StrategyID)
+    LookupFactory(name StrategyID) (StrategyFactory, error)
+    ListAvailable() []StrategyID
+}
 
-    strategies     map[string]SealingStrategy
-    prefOrder      []string
-    mode           barrierMode        // software or hardware
-    encryptor      atomic.Value       // SymmetricEncrypter for hardware mode
-    accumulator    atomic.Value       // *shamirAccumulator for quorum unsealing
+type StrategyFactory func() (SealingStrategy, error)
+```
+
+### Defaults — `NewDefaultStrategyRegistry`
+
+`NewDefaultStrategyRegistry()` (`pkg/seal/strategy_registry.go:88-97`) returns a registry pre-populated with the two software strategies qrdb owns outright:
+
+- `StrategySoftware` — built via `NewDeferredSoftwareStrategy()` so the passphrase can be supplied at Initialize/Unseal time rather than at construction.
+- `StrategyNone` — built via `NewNoneStrategy()`.
+
+`StrategyShamir` is intentionally NOT registered in the default registry because the Shamir strategy requires a `Threshold` and `Shares` configuration that only the daemon's init command can supply; the daemon constructs it inline at init time.
+
+### Hardware injection — `WithStrategyRegistry`
+
+Higher layers add hardware strategies on top by handing qrdb's server constructor a registry through `WithStrategyRegistry`:
+
+```go
+// pkg/server/server.go:478-486
+func WithStrategyRegistry(reg seal.StrategyRegistry) ServerOption {
+    return func(o *serverOptions) { o.strategyRegistry = reg }
+}
+```
+
+The typical composition flow (driven by go-quicbaas):
+
+```mermaid
+sequenceDiagram
+    participant App as quicbaas main
+    participant Reg as seal.StrategyRegistry
+    participant XKMS as go-xkms
+    participant QRDB as qrdb server
+    App->>Reg: NewDefaultStrategyRegistry()
+    App->>XKMS: xkms.RegisterAll(Reg)
+    XKMS->>Reg: Register(StrategyTPM2, factory)
+    XKMS->>Reg: Register(StrategyPKCS11, factory)
+    XKMS->>Reg: Register(StrategyAWSKMS, factory)
+    App->>QRDB: server.New(cfg, ..., WithStrategyRegistry(Reg))
+    QRDB->>Reg: LookupFactory("tpm2")
+    Reg-->>QRDB: factory()
+    QRDB->>QRDB: Initialize barrier with TPM2 strategy
+```
+
+The same registry can be used to inject test/fake strategies in integration tests without any hardware coupling.
+
+### Direct injection — `WithSealStrategy`
+
+For deployments that know the strategy at construction time (typical software-only setups, embedded SDK callers) `WithSealStrategy` bypasses the registry and hands the constructor a pre-built `SealingStrategy`:
+
+```go
+// pkg/server/server.go:469-476
+func WithSealStrategy(strategy seal.SealingStrategy) ServerOption {
+    return func(o *serverOptions) { o.sealStrategy = strategy }
+}
+```
+
+Pick one or the other; the registry is for name-based dispatch at `qrdbd init --barrier-strategy <name>`, the direct injector is for compile-time decisions.
+
+## StorageBarrier
+
+```go
+type StorageBarrier struct {
+    logger         *slog.Logger
     base           StorageBackend     // optional storage wrapping
-    auditLogger    AuditLogger
-    activeStrategy atomic.Value
+    barrier        *quicraftseal.Barrier // embedded go-quicraft barrier
+    config         BarrierConfig
+    strategies     map[StrategyID]SealingStrategy
+    prefOrder      []StrategyID
+
+    state          atomic.Int32       // 0 = sealed, 1 = unsealed
+    activeStrategy atomic.Value       // StrategyID that sealed the root key
+    accumulator    atomic.Value       // *shamirAccumulator for quorum unsealing
 }
 ```
 
@@ -43,12 +153,27 @@ type ExtendedBarrier struct {
 
 | Mode | Strategy Type | Encrypt/Decrypt | Key Rotation |
 |------|--------------|-----------------|--------------|
-| **Software** | SoftwareStrategy, ShamirStrategy | Epoch-based HKDF DEKs via embedded barrier | `Rotate()` generates new epoch DEK |
-| **Hardware** | TPM2, PKCS#11, cloud KMS | Delegates to `BarrierEncryptor` from strategy | Hardware manages key lifecycle |
+| **Software / Shamir** | `SoftwareStrategy`, `ShamirStrategy` | Epoch-based HKDF DEKs via embedded barrier | `Rotate()` generates new epoch DEK |
+| **None** | `NoneStrategy` | Passthrough (no encryption) | n/a |
+| **Hardware** (xkms-registered) | TPM2, PKCS#11, cloud KMS, Vault | Delegates to `BarrierEncryptor` from strategy | Hardware manages key lifecycle |
 
 ### Storage Wrapping
 
 When `base` is set, the barrier transparently encrypts all `Put` operations and decrypts all `Get` operations. When nil, the barrier operates as pure crypto (go-quicraft behavior for Raft WAL).
+
+## StrategyNone — the no-encryption mode
+
+`StrategyNone` (`pkg/seal/strategy.go:147,150-154`) selects the no-encryption barrier shape. All `Put` / `Get` operations bypass encryption and store data in plaintext. The barrier still maintains state machinery (sealed/unsealed) so callers and audit logs do not need to special-case it.
+
+Use cases:
+
+- Local development without a passphrase prompt
+- Test fixtures that exercise the storage path without crypto overhead
+- Deployments where the storage device already provides authenticated full-disk encryption (LUKS+integrity, BitLocker with TPM-bound VMK, etc.)
+
+`StrategyNone` is registered in the default registry alongside `StrategySoftware`. Operators opt in with `qrdbd init --barrier-strategy none` or by selecting it explicitly via `WithSealStrategy(NewNoneStrategy())`.
+
+> **Operational note**: When `none` is selected, the audit log marks every barrier operation with `strategy: none` so the absence of encryption is permanently visible in the trail. The xkms `--require-encryption` compliance gate refuses to come up against a `none`-mode barrier.
 
 ## Features
 
@@ -66,7 +191,7 @@ When `base` is set, the barrier transparently encrypts all `Put` operations and 
 
 ## DEK Package
 
-The `pkg/dek/` package manages Data Encryption Keys at the cluster and tenant level. It was migrated from go-quicbaas to keep all encryption logic in the database layer, eliminating the xkms dependency for DEK operations.
+The `pkg/dek/` package manages Data Encryption Keys at the cluster and tenant level. It keeps all encryption logic in the database layer, with no transitive xkms dependency.
 
 ### ClusterDEKManager
 
@@ -91,7 +216,7 @@ Manages per-tenant DEKs, each isolated and wrapped by the cluster DEK.
 
 - Creates, retrieves, rotates, and deletes per-tenant DEKs
 - Wraps tenant DEKs using stdlib `crypto/aes` + `crypto/cipher` (AES-256-GCM)
-- No xkms dependency — pure Go stdlib cryptography
+- Pure Go stdlib cryptography
 - Stores wrapped DEKs at `__sys:dek/tenant/{tenantID}` in a `StorageBackend`
 
 ```go
@@ -189,7 +314,7 @@ All barrier operations emit audit events when an `AuditLogger` is configured:
 
 ## SDK Client Usage
 
-The barrier is accessible through the Go SDK via `client.Barrier()`, which returns a `transport.BarrierClient`. All transports (REST, gRPC, UNIX, MCP, embedded) implement this interface.
+The barrier is accessible through the Go SDK via `client.Security().Barrier()`, which returns a `transport.BarrierClient`. All transports (REST, gRPC, UNIX, MCP, embedded) implement this interface.
 
 ### Setup
 
@@ -216,7 +341,7 @@ if err := client.Connect(ctx); err != nil {
 }
 defer client.Close()
 
-barrier := client.Barrier()
+barrier := client.Security().Barrier()
 ```
 
 ### Common Workflows
@@ -239,6 +364,16 @@ err = barrier.BarrierUnseal(ctx, &transport.BarrierUnsealRequest{
 })
 ```
 
+#### Initialize with `none` strategy
+
+Selecting `none` skips secret prompting entirely. The barrier is immediately operational with no encryption applied to user data.
+
+```bash
+qrdbd init --barrier-strategy none
+```
+
+There is no `BarrierInitialize` call required for `none`; the daemon transitions to operational on startup. Audit events still fire with `strategy: none`.
+
 #### Initialize with Shamir M-of-N
 
 Initialize with Shamir secret sharing. The returned shares must be distributed to key holders and stored securely.
@@ -252,8 +387,6 @@ resp, err := barrier.BarrierInitializeShamir(ctx, &transport.BarrierInitializeSh
 if err != nil {
     return err
 }
-// resp.Shares contains 5 key shares; distribute to separate custodians.
-// Unseal requires any 3 of the 5 shares.
 for i, share := range resp.Shares {
     fmt.Printf("Share %d: %s\n", i, share)
 }
@@ -302,67 +435,39 @@ fmt.Printf("sealed=%v strategy=%s hardware=%v\n",
 
 #### Rekey
 
-Rekey replaces existing Shamir shares with a new set. The master key is unchanged; only the shares are rotated. Use this after a share custodian change.
-
 ```go
 resp, err := barrier.BarrierRekey(ctx, &transport.BarrierRekeyRequest{
     Threshold: 2,
     Total:     3,
 })
-if err != nil {
-    return err
-}
-// resp.Shares contains the new shares. Distribute and discard the old ones.
 ```
 
 #### Recovery Keys
 
-Recovery keys provide an independent Shamir split of the DEK for disaster recovery when the primary shares are unavailable.
-
 ```go
-// Generate recovery keys (typically done once after initial setup).
 keys, err := barrier.BarrierGenerateRecoveryKeys(ctx, &transport.BarrierGenerateRecoveryKeysRequest{
     Threshold: 2,
     Total:     3,
 })
-if err != nil {
-    return err
-}
-// Store keys.Keys offline in separate secure locations.
 
-// Check whether recovery keys exist.
 status, err := barrier.BarrierHasRecoveryKeys(ctx)
-if err != nil {
-    return err
-}
-fmt.Printf("has recovery keys: %v\n", status.HasKeys)
 
-// Unseal using recovery keys during disaster recovery.
 err = barrier.BarrierRecoverWithKeys(ctx, &transport.BarrierRecoverWithKeysRequest{
     Keys: []string{"key-A", "key-B"},
 })
 
-// Remove recovery keys when no longer needed.
 err = barrier.BarrierDeleteRecoveryKeys(ctx)
 ```
 
 #### Root Token Generation
 
-Generate a one-time root token using Shamir shares. This is used to recover admin access without a stored password.
-
 ```go
 resp, err := barrier.BarrierGenerateRootToken(ctx, &transport.BarrierGenerateRootTokenRequest{
     Shares: []string{"share-A", "share-B", "share-C"},
 })
-if err != nil {
-    return err
-}
-fmt.Printf("root token: %s (created: %s)\n", resp.Token, resp.CreatedAt)
 ```
 
 #### Seal
-
-Seal the barrier to revoke all data access without restarting the node.
 
 ```go
 err := barrier.BarrierSeal(ctx)
@@ -371,19 +476,9 @@ err := barrier.BarrierSeal(ctx)
 #### Shamir Share Management
 
 ```go
-// List share metadata (does not expose share values).
 shares, err := barrier.BarrierShamirListShares(ctx)
-fmt.Printf("shares: %d/%d (threshold %d)\n", shares.Count, shares.Total, shares.Threshold)
-
-// Verify share integrity.
 err = barrier.BarrierShamirVerify(ctx)
-
-// Delete a single share by zero-based index.
-err = barrier.BarrierShamirDeleteShare(ctx, &transport.BarrierShamirDeleteShareRequest{
-    Index: 2,
-})
-
-// Delete all stored shares.
+err = barrier.BarrierShamirDeleteShare(ctx, &transport.BarrierShamirDeleteShareRequest{Index: 2})
 err = barrier.BarrierShamirDeleteAllShares(ctx)
 ```
 
@@ -411,9 +506,18 @@ All endpoints are under the `/v1/barrier/` prefix. Mutation endpoints require an
 | `GET` | `/v1/barrier/recovery/status` | Check if recovery keys exist |
 | `POST` | `/v1/barrier/root-token` | Generate a root token |
 
-Successful mutation endpoints return `204 No Content`. Endpoints that return data respond with `200 OK` and a JSON body. Errors follow the standard `{"error": "..."}` envelope.
+Successful mutation endpoints return `204 No Content`. Endpoints that return data respond with `200 OK` and a JSON body.
+
+## Compliance Documentation
+
+- **[../auth/roles.md](../auth/roles.md)** — Six-role model (SO, Admin, Operator, User, Auditor, Custodian) with FIPS 140-3 AS10.03 separation of duties
+- **[compliance.md](compliance.md)** — FIPS 140-3, FedRAMP, PCI-DSS v4, HIPAA requirement cross-reference
+- **[custodians.md](custodians.md)** — Custodian lifecycle, two-tier share model (operational Shamir + recovery keys), share-delivery protocol
 
 ## See Also
 
-- [go-quicraft docs/06-crypto.md](https://github.com/jeremyhahn/go-quicraft/blob/main/docs/06-crypto.md) — Minimal barrier, memguard, epoch rotation
-- [go-xkms docs/seal/README.md](https://github.com/jeremyhahn/go-xkms/blob/main/docs/seal/README.md) — Hardware sealing strategies
+- [go-quicraft docs/06-crypto.md](https://github.com/jeremyhahn/go-quicraft/blob/main/docs/06-crypto.md) — Minimal barrier, memguard, epoch rotation, software/none/shamir primitives
+- [go-xkms docs/seal/README.md](https://github.com/jeremyhahn/go-xkms/blob/main/docs/seal/README.md) — Hardware sealing strategies that register into qrdb's `StrategyRegistry`
+- [../pin/README.md](../pin/README.md) — PIN backend interface (canonical PIN contract for the stack)
+- [../credentials/README.md](../credentials/README.md) — Versioned credential rotation backed by the barrier
+- [../audit/README.md](../audit/README.md) — Audit event logging and query API

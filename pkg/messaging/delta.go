@@ -101,7 +101,7 @@ func (dc *DeltaComputer) Compute(old, new interface{}) (*DeltaPayload, error) {
 	}
 
 	newVal := reflect.ValueOf(new)
-	if newVal.Kind() == reflect.Ptr {
+	if newVal.Kind() == reflect.Pointer {
 		if newVal.IsNil() {
 			return nil, &DeltaNilInputError{Parameter: "new entity (nil pointer)"}
 		}
@@ -111,7 +111,7 @@ func (dc *DeltaComputer) Compute(old, new interface{}) (*DeltaPayload, error) {
 	var oldVal reflect.Value
 	if old != nil {
 		oldVal = reflect.ValueOf(old)
-		if oldVal.Kind() == reflect.Ptr {
+		if oldVal.Kind() == reflect.Pointer {
 			if oldVal.IsNil() {
 				old = nil
 			} else {
@@ -175,7 +175,7 @@ func (dc *DeltaComputer) ComputeBytes(oldData, newData []byte, entityType interf
 
 	// Get the type to create new instances
 	entityVal := reflect.ValueOf(entityType)
-	if entityVal.Kind() != reflect.Ptr {
+	if entityVal.Kind() != reflect.Pointer {
 		return nil, &DeltaTypeMismatchError{
 			OldType: "non-pointer",
 			NewType: "pointer",
@@ -218,7 +218,7 @@ func (dc *DeltaComputer) computeWithDiffable(old interface{}, diffable Diffable)
 	}
 
 	newVal := reflect.ValueOf(diffable)
-	if newVal.Kind() == reflect.Ptr {
+	if newVal.Kind() == reflect.Pointer {
 		newVal = newVal.Elem()
 	}
 
@@ -262,7 +262,7 @@ func (dc *DeltaComputer) extractAllFields(val reflect.Value, path string, depth 
 		return nil, &DeltaMaxDepthExceededError{MaxDepth: dc.maxDepth, Path: path}
 	}
 
-	if val.Kind() == reflect.Ptr {
+	if val.Kind() == reflect.Pointer {
 		if val.IsNil() {
 			return nil, nil
 		}
@@ -300,7 +300,7 @@ func (dc *DeltaComputer) extractAllFields(val reflect.Value, path string, depth 
 			}
 
 			// Handle pointer to struct
-			if fieldVal.Kind() == reflect.Ptr && !fieldVal.IsNil() {
+			if fieldVal.Kind() == reflect.Pointer && !fieldVal.IsNil() {
 				elem := fieldVal.Elem()
 				if elem.Kind() == reflect.Struct && !dc.isSpecialType(elem.Type()) {
 					nestedChanges, err := dc.extractAllFields(elem, fullPath, depth+1)
@@ -376,7 +376,7 @@ func (dc *DeltaComputer) computeChanges(oldVal, newVal reflect.Value, path strin
 	}
 
 	// Handle pointers
-	if oldVal.Kind() == reflect.Ptr && newVal.Kind() == reflect.Ptr {
+	if oldVal.Kind() == reflect.Pointer && newVal.Kind() == reflect.Pointer {
 		if oldVal.IsNil() && newVal.IsNil() {
 			return nil, nil
 		}
@@ -658,7 +658,7 @@ func (dc *DeltaComputer) isZeroValue(v reflect.Value) bool {
 	}
 
 	switch v.Kind() {
-	case reflect.Ptr, reflect.Interface, reflect.Slice, reflect.Map, reflect.Chan, reflect.Func:
+	case reflect.Pointer, reflect.Interface, reflect.Slice, reflect.Map, reflect.Chan, reflect.Func:
 		return v.IsNil()
 	case reflect.Array:
 		for i := 0; i < v.Len(); i++ {
@@ -691,7 +691,7 @@ func (dc *DeltaComputer) isSpecialType(t reflect.Type) bool {
 		return true
 	}
 	// Pointer to time.Time
-	if t.Kind() == reflect.Ptr && t.Elem() == reflect.TypeOf(time.Time{}) {
+	if t.Kind() == reflect.Pointer && t.Elem() == reflect.TypeOf(time.Time{}) {
 		return true
 	}
 	return false
@@ -704,7 +704,7 @@ func (dc *DeltaComputer) extractValue(v reflect.Value) interface{} {
 	}
 
 	// Handle pointers and interfaces
-	if v.Kind() == reflect.Ptr || v.Kind() == reflect.Interface {
+	if v.Kind() == reflect.Pointer || v.Kind() == reflect.Interface {
 		if v.IsNil() {
 			return nil
 		}
@@ -729,7 +729,7 @@ func (dc *DeltaComputer) valueToString(v reflect.Value) string {
 // extractEntityID attempts to extract an ID field from the entity.
 func (dc *DeltaComputer) extractEntityID(entity interface{}) string {
 	val := reflect.ValueOf(entity)
-	if val.Kind() == reflect.Ptr {
+	if val.Kind() == reflect.Pointer {
 		if val.IsNil() {
 			return ""
 		}
@@ -759,7 +759,7 @@ func (dc *DeltaComputer) extractEntityIDFromValue(val reflect.Value) string {
 
 // extractEntityType returns the type name of the entity.
 func (dc *DeltaComputer) extractEntityType(t reflect.Type) string {
-	if t.Kind() == reflect.Ptr {
+	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	return t.Name()

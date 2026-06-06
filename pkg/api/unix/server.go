@@ -32,11 +32,14 @@ import (
 	"google.golang.org/grpc/status"
 
 	grpcpkg "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
@@ -46,29 +49,38 @@ import (
 // by the TCP gRPC server, but communicates over a local socket path
 // without TLS.
 type Server struct {
-	kvSvc         service.KVServicer
-	adminSvc      service.AdminServicer
-	socketPath    string
-	userSvc       user.UserServicer
-	roleSvc       role.RoleServicer
-	certProv      cert.CertProvider
-	barrierSvc    service.BarrierServicer
-	ceremonySvc   service.CeremonyServicer
-	credentialSvc service.CredentialServicer
-	collectionSvc service.CollectionServicer
-	mvccSvc       service.MVCCKVServicer
-	txSvc         service.TransactionServicer
-	batchSvc      service.BatchServicer
-	watchSvc      service.WatchServicer
-	leaseSvc      lease.LeaseServicer
-	lockSvc       service.LockServicer
-	indexSvc      index.IndexServicer
-	tsSvc         timeseries.TimeSeriesServicer
-	vectorSvc     service.VectorServicer
-	databaseSvc   service.DatabaseServicer
-	server        *grpc.Server
-	listener      net.Listener
-	serveWg       sync.WaitGroup
+	kvSvc            service.KVServicer
+	adminSvc         service.AdminServicer
+	socketPath       string
+	userSvc          user.UserServicer
+	roleSvc          role.RoleServicer
+	certProv         cert.CertProvider
+	barrierSvc       service.BarrierServicer
+	pinBackend       pin.PINBackend
+	ceremonySvc      service.CeremonyServicer
+	credentialSvc    service.CredentialServicer
+	collectionSvc    service.CollectionServicer
+	mvccSvc          service.MVCCKVServicer
+	txSvc            service.TransactionServicer
+	batchSvc         service.BatchServicer
+	watchSvc         service.WatchServicer
+	leaseSvc         lease.LeaseServicer
+	lockSvc          service.LockServicer
+	indexSvc         index.IndexServicer
+	tsSvc            timeseries.TimeSeriesServicer
+	vectorSvc        service.VectorServicer
+	embeddingSvc     service.EmbeddingServicer
+	ragSvc           service.RAGServicer
+	databaseSvc      service.DatabaseServicer
+	tenantSvc        tenant.TenantServicer
+	backupSvc        service.BackupServicer
+	rebalanceSvc     service.RebalanceServicer
+	authFactorSvc    service.AuthFactorServicer
+	tenantBarrierSvc tenant.TenantServicer
+	auditLogger      audit.AuditLogger
+	server           *grpc.Server
+	listener         net.Listener
+	serveWg          sync.WaitGroup
 }
 
 // ServerOption configures optional Server dependencies.
@@ -92,6 +104,13 @@ func WithCertProvider(svc cert.CertProvider) ServerOption {
 // WithBarrierService configures the Unix socket server with a barrier service.
 func WithBarrierService(svc service.BarrierServicer) ServerOption {
 	return func(s *Server) { s.barrierSvc = svc }
+}
+
+// WithPINBackend configures the Unix socket server with the canonical
+// pin.PINBackend used for the optional SO PIN / User PIN compliance-gating
+// layer on barrier administrative operations.
+func WithPINBackend(backend pin.PINBackend) ServerOption {
+	return func(s *Server) { s.pinBackend = backend }
 }
 
 // WithCeremonyService configures the Unix socket server with a ceremony service.
@@ -154,9 +173,49 @@ func WithVector(svc service.VectorServicer) ServerOption {
 	return func(s *Server) { s.vectorSvc = svc }
 }
 
+// WithEmbedding configures the Unix socket server with a text embedding service.
+func WithEmbedding(svc service.EmbeddingServicer) ServerOption {
+	return func(s *Server) { s.embeddingSvc = svc }
+}
+
+// WithRAGService configures the Unix socket server with a RAG service.
+func WithRAGService(svc service.RAGServicer) ServerOption {
+	return func(s *Server) { s.ragSvc = svc }
+}
+
 // WithDatabaseService configures the Unix socket server with a database service.
 func WithDatabaseService(svc service.DatabaseServicer) ServerOption {
 	return func(s *Server) { s.databaseSvc = svc }
+}
+
+// WithTenantService configures the Unix socket server with a tenant management service.
+func WithTenantService(svc tenant.TenantServicer) ServerOption {
+	return func(s *Server) { s.tenantSvc = svc }
+}
+
+// WithBackupService configures the Unix socket server with a backup management service.
+func WithBackupService(svc service.BackupServicer) ServerOption {
+	return func(s *Server) { s.backupSvc = svc }
+}
+
+// WithRebalanceService configures the Unix socket server with a cluster rebalance service.
+func WithRebalanceService(svc service.RebalanceServicer) ServerOption {
+	return func(s *Server) { s.rebalanceSvc = svc }
+}
+
+// WithAuthFactorService configures the Unix socket server with an auth factor
+// service for custodian enrollment, challenge, and verification.
+func WithAuthFactorService(svc service.AuthFactorServicer) ServerOption {
+	return func(s *Server) { s.authFactorSvc = svc }
+}
+
+// WithTenantBarrierService configures the Unix socket server with a tenant
+// servicer used to expose the per-tenant barrier RPCs (Init, Unseal, Seal,
+// Status). When set, the TenantBarrierService is registered on the gRPC
+// server alongside the main QRDBService — same gating pattern as
+// WithAuthFactorService and WithAuditLogger.
+func WithTenantBarrierService(svc tenant.TenantServicer) ServerOption {
+	return func(s *Server) { s.tenantBarrierSvc = svc }
 }
 
 // WithKVService configures the Unix socket server with a KV service. This is
@@ -236,6 +295,9 @@ func (s *Server) Start() error {
 	if s.barrierSvc != nil {
 		regOpts = append(regOpts, grpcpkg.WithRegisterBarrierService(s.barrierSvc))
 	}
+	if s.pinBackend != nil {
+		regOpts = append(regOpts, grpcpkg.WithRegisterPINBackend(s.pinBackend))
+	}
 	if s.ceremonySvc != nil {
 		regOpts = append(regOpts, grpcpkg.WithRegisterCeremonyService(s.ceremonySvc))
 	}
@@ -272,12 +334,50 @@ func (s *Server) Start() error {
 	if s.vectorSvc != nil {
 		regOpts = append(regOpts, grpcpkg.WithRegisterVector(s.vectorSvc))
 	}
+	if s.embeddingSvc != nil {
+		regOpts = append(regOpts, grpcpkg.WithRegisterEmbedding(s.embeddingSvc))
+	}
+	if s.ragSvc != nil {
+		regOpts = append(regOpts, grpcpkg.WithRegisterRAGService(s.ragSvc))
+	}
 	if s.databaseSvc != nil {
 		regOpts = append(regOpts, grpcpkg.WithRegisterDatabaseService(s.databaseSvc))
+	}
+	if s.tenantSvc != nil {
+		regOpts = append(regOpts, grpcpkg.WithRegisterTenantService(s.tenantSvc))
+	}
+	if s.backupSvc != nil {
+		regOpts = append(regOpts, grpcpkg.WithRegisterBackupService(s.backupSvc))
+	}
+	if s.rebalanceSvc != nil {
+		regOpts = append(regOpts, grpcpkg.WithRegisterRebalanceService(s.rebalanceSvc))
 	}
 
 	// Reuse the gRPC package's service registration.
 	grpcpkg.RegisterService(s.server, s.kvSvc, s.adminSvc, regOpts...)
+
+	// Register AuditService alongside QRDBService when an audit logger is set.
+	// Authorization: requires "audit:query" permission.
+	// TODO: switch to permission.AuditQuery constant once Phase 2 lands.
+	if s.auditLogger != nil {
+		grpcpkg.RegisterAuditService(s.server, s.auditLogger)
+	}
+
+	// Register AuthFactorService alongside QRDBService when configured.
+	if s.authFactorSvc != nil {
+		grpcpkg.RegisterAuthFactorService(s.server, s.authFactorSvc)
+	}
+
+	// Register TenantBarrierService alongside QRDBService when configured.
+	// The same TenantServicer can be passed to both WithTenantService (for
+	// CRUD) and WithTenantBarrierService (for the per-tenant barrier
+	// lifecycle); they expose disjoint gRPC methods on disjoint service
+	// descriptors.
+	// The Unix socket is a local-trust transport with no auth middleware, so
+	// the tenant-scoped barrier gate is passed nil (no-op) here.
+	if s.tenantBarrierSvc != nil {
+		grpcpkg.RegisterTenantBarrierService(s.server, s.tenantBarrierSvc, nil)
+	}
 
 	slog.Info("unix gRPC server started", "socket", s.socketPath)
 

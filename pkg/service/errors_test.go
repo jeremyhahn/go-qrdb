@@ -17,6 +17,9 @@ package service
 import (
 	"errors"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
+	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 )
 
 // ---------------------------------------------------------------------------
@@ -316,5 +319,60 @@ func TestConsistencyError_ErrorsAs(t *testing.T) {
 	}
 	if target.Reason != "timeout" {
 		t.Fatalf("expected Reason 'timeout', got %q", target.Reason)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// checkResultError — SM-encoded application error detection (Bug 1)
+// ---------------------------------------------------------------------------
+
+// TestCheckResultError_EmptyData returns nil for a zero-value result so
+// callers do not treat successful proposals as errors.
+func TestCheckResultError_EmptyData(t *testing.T) {
+	result := sm.Result{Value: 42}
+	if err := checkResultError(result); err != nil {
+		t.Fatalf("expected nil, got %v", err)
+	}
+}
+
+// TestCheckResultError_WithData returns SMNotConfiguredError when the SM
+// encodes an error string in result.Data. This is the signal used when a
+// subsystem (e.g. lease) is not wired into the SM.
+func TestCheckResultError_WithData(t *testing.T) {
+	// Only an application-error payload carrying the discriminated prefix is
+	// treated as an error.
+	result := sm.Result{Data: protocol.EncodeAppError("lease not configured")}
+	err := checkResultError(result)
+	if err == nil {
+		t.Fatal("expected non-nil error, got nil")
+	}
+
+	var target *SMNotConfiguredError
+	if !errors.As(err, &target) {
+		t.Fatalf("expected *SMNotConfiguredError, got %T: %v", err, err)
+	}
+	if target.Message != "lease not configured" {
+		t.Fatalf("decoded message: got %q, want %q", target.Message, "lease not configured")
+	}
+}
+
+// TestCheckResultError_NonAppErrorData verifies that ordinary result payloads
+// without the application-error prefix — notably the one-byte transaction
+// success flag — are NOT misread as errors.
+func TestCheckResultError_NonAppErrorData(t *testing.T) {
+	for _, data := range [][]byte{nil, {}, {0x01}, {0x00}, []byte("plain text")} {
+		if err := checkResultError(sm.Result{Data: data}); err != nil {
+			t.Fatalf("Data %v must not be an error, got %v", data, err)
+		}
+	}
+}
+
+// TestSMNotConfiguredError_Message verifies the error message includes
+// the original SM error string so callers receive a useful diagnostic.
+func TestSMNotConfiguredError_Message(t *testing.T) {
+	e := &SMNotConfiguredError{Message: "statemachine: lease not configured"}
+	want := "service: statemachine: lease not configured"
+	if e.Error() != want {
+		t.Fatalf("Error() = %q, want %q", e.Error(), want)
 	}
 }

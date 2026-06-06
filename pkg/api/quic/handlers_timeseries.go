@@ -22,6 +22,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 )
 
@@ -107,7 +108,15 @@ func (s *Server) handleTSQuery(ctx context.Context, payload []byte) ([]byte, err
 		opts = append(opts, timeseries.WithDescending())
 	}
 
-	points, err := s.tsSvc.Query(ctx, req.GetMetric(), start, end, opts...)
+	var (
+		points []timeseries.DataPoint
+		err    error
+	)
+	if ropts, ok := readOptsFromWire(req.GetConsistency()); ok {
+		points, err = s.tsSvc.QueryWithConsistency(ctx, req.GetMetric(), start, end, ropts, opts...)
+	} else {
+		points, err = s.tsSvc.Query(ctx, req.GetMetric(), start, end, opts...)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -143,7 +152,15 @@ func (s *Server) handleTSAggregate(ctx context.Context, payload []byte) ([]byte,
 	fn := protoAggFuncMap[req.GetFunction()]
 	interval := time.Duration(req.GetIntervalNs())
 
-	results, err := s.tsSvc.Aggregate(ctx, req.GetMetric(), start, end, fn, interval)
+	var (
+		results []timeseries.AggResult
+		err     error
+	)
+	if ropts, ok := readOptsFromWire(req.GetConsistency()); ok {
+		results, err = s.tsSvc.AggregateWithConsistency(ctx, req.GetMetric(), start, end, fn, interval, ropts)
+	} else {
+		results, err = s.tsSvc.Aggregate(ctx, req.GetMetric(), start, end, fn, interval)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -183,6 +200,9 @@ type tsRichQueryWireRequest struct {
 	GroupBy     []string          `json:"group_by,omitempty"`
 	Limit       int               `json:"limit,omitempty"`
 	Percentile  float64           `json:"percentile,omitempty"`
+	// Consistency selects the read-consistency level
+	// ("strong"/"linearizable"/"eventual"). Empty uses the server default.
+	Consistency string `json:"consistency,omitempty"`
 }
 
 // tsRichQueryWireResponse is the JSON wire representation of a rich query result.
@@ -241,6 +261,9 @@ type tsSetRetentionWireRequest struct {
 type tsListMetricsWireRequest struct {
 	Prefix string `json:"prefix,omitempty"`
 	Limit  int    `json:"limit,omitempty"`
+	// Consistency selects the read-consistency level
+	// ("strong"/"linearizable"/"eventual"). Empty uses the server default.
+	Consistency string `json:"consistency,omitempty"`
 }
 
 // tsListMetricsWireResponse is the JSON wire payload returned by ts.ListMetrics.
@@ -316,7 +339,7 @@ func (s *Server) handleTSRichQuery(ctx context.Context, payload []byte) ([]byte,
 		return nil, &UnmarshalError{Err: err}
 	}
 
-	result, err := s.tsSvc.QueryRich(ctx, &timeseries.QueryRequest{
+	qr := &timeseries.QueryRequest{
 		Metric:      req.Metric,
 		Tags:        req.Tags,
 		StartTime:   time.Unix(0, req.StartNs),
@@ -326,7 +349,25 @@ func (s *Server) handleTSRichQuery(ctx context.Context, payload []byte) ([]byte,
 		GroupBy:     req.GroupBy,
 		Limit:       req.Limit,
 		Percentile:  req.Percentile,
-	})
+	}
+
+	var (
+		result *timeseries.QueryResult
+		err    error
+	)
+	if req.Consistency != "" {
+		level, parseErr := consistency.ParseLevel(req.Consistency)
+		if parseErr != nil {
+			return nil, &UnmarshalError{Err: parseErr}
+		}
+		ropts := consistency.ReadOptions{
+			Consistency: level,
+			AllowStale:  level == consistency.Eventual,
+		}
+		result, err = s.tsSvc.QueryRichWithConsistency(ctx, qr, ropts)
+	} else {
+		result, err = s.tsSvc.QueryRich(ctx, qr)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -454,7 +495,23 @@ func (s *Server) handleTSListMetrics(ctx context.Context, payload []byte) ([]byt
 		return nil, &UnmarshalError{Err: err}
 	}
 
-	metrics, err := s.tsSvc.ListMetrics(req.Prefix, req.Limit)
+	var (
+		metrics []string
+		err     error
+	)
+	if req.Consistency != "" {
+		level, parseErr := consistency.ParseLevel(req.Consistency)
+		if parseErr != nil {
+			return nil, &UnmarshalError{Err: parseErr}
+		}
+		ropts := consistency.ReadOptions{
+			Consistency: level,
+			AllowStale:  level == consistency.Eventual,
+		}
+		metrics, err = s.tsSvc.ListMetricsWithConsistency(ctx, req.Prefix, req.Limit, ropts)
+	} else {
+		metrics, err = s.tsSvc.ListMetrics(req.Prefix, req.Limit)
+	}
 	if err != nil {
 		return nil, err
 	}

@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//go:build !integration
+
 package rest
 
 import (
@@ -26,6 +28,8 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
+	"github.com/jeremyhahn/go-qrdb/pkg/custodian"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
@@ -70,7 +74,7 @@ func newCoverageCeremonyService() *coverageCeremonyService {
 	}
 }
 
-func (m *coverageCeremonyService) CeremonyInitialize(_ context.Context, _ ceremony.CeremonyCA) (*service.CeremonyInitResult, error) {
+func (m *coverageCeremonyService) CeremonyInitialize(_ context.Context, _ ceremony.CeremonyCA, _ *service.CeremonyInitializeOptions) (*service.CeremonyInitResult, error) {
 	return m.initResult, m.initErr
 }
 func (m *coverageCeremonyService) CeremonyStatus(_ context.Context) (*service.CeremonyStatusInfo, error) {
@@ -87,6 +91,19 @@ func (m *coverageCeremonyService) CeremonyClaimShare(_ context.Context, _ string
 }
 func (m *coverageCeremonyService) CeremonySignCSR(_ context.Context, _, _, _, _ string) (*service.CeremonySignCSRResult, error) {
 	return m.signCSRResult, m.signCSRErr
+}
+func (m *coverageCeremonyService) CeremonyClaimShareBegin(_ context.Context, _ string) (*service.CeremonyCustodianChallenge, error) {
+	return nil, nil
+}
+func (m *coverageCeremonyService) CeremonyClaimShareComplete(_ context.Context, _, _ string, _ []byte) (*custodian.Custodian, error) {
+	return nil, nil
+}
+func (m *coverageCeremonyService) CeremonySubmitUnsealShare(_ context.Context, _, _ string, _, _ []byte) (*service.CeremonyUnsealShareResult, error) {
+	return nil, nil
+}
+
+func (m *coverageCeremonyService) CeremonyEnrollExternalOfficer(_ context.Context, _ *service.CeremonyEnrollExternalOfficerRequest) (*service.CeremonyEnrollExternalOfficerResponse, error) {
+	return nil, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -118,9 +135,14 @@ func (m *coverageCeremonyCA) IssueCertificate(_ *ceremony.IssueCertRequest) (*ce
 // ---------------------------------------------------------------------------
 
 type coverageCredentialService struct {
-	submitFn   func(ctx context.Context, name string, value []byte) error
-	strategyFn func() string
-	deleteFn   func(ctx context.Context, name string) error
+	submitFn          func(ctx context.Context, name string, value []byte) error
+	strategyFn        func() string
+	deleteFn          func(ctx context.Context, name string) error
+	listFn            func(ctx context.Context) ([]string, error)
+	rotateFn          func(ctx context.Context, name string, opts credentials.RotateOptions) (*credentials.RotateResult, error)
+	retrieveVersionFn func(ctx context.Context, name string, version uint64) ([]byte, error)
+	listVersionsFn    func(ctx context.Context, name string) ([]credentials.CredentialVersion, error)
+	gcFn              func(ctx context.Context, name string) (int, error)
 }
 
 var _ service.CredentialServicer = (*coverageCredentialService)(nil)
@@ -155,6 +177,36 @@ func (m *coverageCredentialService) CredentialStore(_ context.Context, _ string,
 func (m *coverageCredentialService) CredentialRetrieve(_ context.Context, _ string) ([]byte, error) {
 	return nil, nil
 }
+func (m *coverageCredentialService) CredentialList(ctx context.Context) ([]string, error) {
+	if m.listFn != nil {
+		return m.listFn(ctx)
+	}
+	return []string{}, nil
+}
+func (m *coverageCredentialService) CredentialRotate(ctx context.Context, name string, opts credentials.RotateOptions) (*credentials.RotateResult, error) {
+	if m.rotateFn != nil {
+		return m.rotateFn(ctx, name, opts)
+	}
+	return &credentials.RotateResult{Name: name, PreviousVersion: 0, NewVersion: 1}, nil
+}
+func (m *coverageCredentialService) CredentialRetrieveVersion(ctx context.Context, name string, version uint64) ([]byte, error) {
+	if m.retrieveVersionFn != nil {
+		return m.retrieveVersionFn(ctx, name, version)
+	}
+	return nil, nil
+}
+func (m *coverageCredentialService) CredentialListVersions(ctx context.Context, name string) ([]credentials.CredentialVersion, error) {
+	if m.listVersionsFn != nil {
+		return m.listVersionsFn(ctx, name)
+	}
+	return nil, nil
+}
+func (m *coverageCredentialService) CredentialGCExpired(ctx context.Context, name string) (int, error) {
+	if m.gcFn != nil {
+		return m.gcFn(ctx, name)
+	}
+	return 0, nil
+}
 
 // ---------------------------------------------------------------------------
 // mockDatabaseServiceWithEtcd overrides UpdateEtcd to return a non-nil
@@ -168,6 +220,12 @@ type mockDatabaseServiceWithEtcd struct {
 
 func (m *mockDatabaseServiceWithEtcd) UpdateEtcd(_ string, _ *database.EtcdConfig) (*database.DatabaseInfo, error) {
 	return m.updateEtcdResult, nil
+}
+
+// UpdateEtcdForTenant overrides the embedded mock's promoted method so it
+// routes to this type's UpdateEtcd (Go embedding is not virtual dispatch).
+func (m *mockDatabaseServiceWithEtcd) UpdateEtcdForTenant(_ context.Context, name string, cfg *database.EtcdConfig) (*database.DatabaseInfo, error) {
+	return m.UpdateEtcd(name, cfg)
 }
 
 // ---------------------------------------------------------------------------

@@ -226,7 +226,7 @@ func (q *QueryBuilder[E]) Aggregate(aggs ...AggFunc) (AggregateResult, error) {
 // extractFieldValue extracts a field value from an entity using reflection.
 func extractFieldValue(entity interface{}, fieldName string) interface{} {
 	v := reflect.ValueOf(entity)
-	if v.Kind() == reflect.Ptr {
+	if v.Kind() == reflect.Pointer {
 		v = v.Elem()
 	}
 	if v.Kind() != reflect.Struct {

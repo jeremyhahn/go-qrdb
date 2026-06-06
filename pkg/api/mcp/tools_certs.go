@@ -24,6 +24,7 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // certTools returns the MCP tool registrations for certificate management
@@ -196,7 +197,7 @@ func toolCertList() mcp.Tool {
 	return mcp.NewTool("qrdb_cert_list",
 		mcp.WithDescription("List all issued client certificates for a tenant."),
 		mcp.WithString("tenant_id",
-			mcp.Description(`The tenant ID to list certificates for. Defaults to "default" when empty.`),
+			mcp.Description(`The tenant ID to list certificates for. Defaults to the system tenant id when empty.`),
 		),
 	)
 }
@@ -204,7 +205,7 @@ func toolCertList() mcp.Tool {
 // handleCertList returns a tool handler that delegates to svc.ListCerts.
 func handleCertList(svc cert.CertProvider) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		tenantID := mcp.ParseString(req, "tenant_id", "default")
+		tenantID := mcp.ParseString(req, "tenant_id", tenant.SystemTenantID)
 
 		records, err := svc.ListCerts(ctx, tenantID)
 		if err != nil {
