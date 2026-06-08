@@ -91,6 +91,29 @@ func isSODenied(resource, action string) bool {
 	return false
 }
 
+// permissionGranted reports whether the resolved permission set admits the
+// requested resource:action, honoring segment wildcards. A granted permission
+// matches when it is the exact "resource:action", a resource wildcard
+// "resource:*", an action wildcard "*:action", or the full wildcard "*:*".
+// Only whole-segment "*" wildcards are recognized (not glob prefixes), so the
+// check is a bounded O(1) lookup against the set rather than an iteration. A
+// role that grants "keys:*" therefore satisfies a concrete "keys:sign" check
+// while the built-in roles continue to use concrete permissions.
+func permissionGranted(permSet map[permission.Permission]struct{}, resource, action string) bool {
+	candidates := [...]permission.Permission{
+		permission.Permission(resource + ":" + action),
+		permission.Permission(resource + ":*"),
+		permission.Permission("*:" + action),
+		permission.Permission("*:*"),
+	}
+	for _, c := range candidates {
+		if _, ok := permSet[c]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 // RBACAuthorizer implements auth.Authorizer using role-based access control.
 // Permissions are resolved through the role service and cached per identity
 // with a configurable TTL.
@@ -307,7 +330,7 @@ func (a *RBACAuthorizer) Authorize(ctx context.Context, identity *auth.Identity,
 	}
 
 	required := permission.Permission(resource + ":" + action)
-	if _, allowed := permSet[required]; !allowed {
+	if !permissionGranted(permSet, resource, action) {
 		return &PermissionDeniedError{
 			Resource: resource,
 			Action:   action,

@@ -1494,6 +1494,13 @@ export interface SealStatus {
     readonly sealed: boolean;
     /** Whether the seal has been initialized (bootstrap completed). */
     readonly initialized: boolean;
+    /**
+     * Active sealing strategy: "none", "passphrase", or "shamir". Empty
+     * string when the barrier has not yet been initialized. Consumers use
+     * this to choose the correct unseal flow (passphrase entry vs Shamir
+     * share accumulation).
+     */
+    readonly strategy: string;
     /** Number of Shamir shares needed to unseal. */
     readonly sharesRequired: number;
     /** Number of Shamir shares provided so far. */

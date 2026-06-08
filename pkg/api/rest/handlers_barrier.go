@@ -435,7 +435,9 @@ func (s *Server) handleBarrierRootToken(w http.ResponseWriter, r *http.Request) 
 // ---------------------------------------------------------------------------
 
 // barrierStatusToResponse converts a BarrierStatusInfo to a JSON-friendly
-// map. The initialized_at field is omitted when zero.
+// map. The initialized_at field is omitted when zero. The shamir_threshold
+// and shamir_total fields are included only when the strategy is shamir and
+// the values are non-zero.
 func barrierStatusToResponse(info *service.BarrierStatusInfo) map[string]interface{} {
 	resp := map[string]interface{}{
 		"sealed":          info.Sealed,
@@ -444,6 +446,12 @@ func barrierStatusToResponse(info *service.BarrierStatusInfo) map[string]interfa
 	}
 	if !info.InitializedAt.IsZero() {
 		resp["initialized_at"] = info.InitializedAt.Format(time.RFC3339)
+	}
+	if info.ShamirThreshold > 0 {
+		resp["shamir_threshold"] = info.ShamirThreshold
+	}
+	if info.ShamirTotal > 0 {
+		resp["shamir_total"] = info.ShamirTotal
 	}
 	return resp
 }

@@ -14,7 +14,21 @@
 
 package sdk
 
-import "github.com/jeremyhahn/go-qrdb/pkg/tenant"
+import (
+	"context"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+)
+
+// ContextWithTenant returns a context that binds the given tenant ID as the
+// target tenant for tenant-aware operations such as RBAC().Authorize. The
+// RBAC authorizer derives the request's target tenant from the context; bind
+// the acting identity's tenant here so a self-scope permission resolves
+// against the identity's own tenant. An empty tenantID leaves the context
+// resolving to the system tenant.
+func ContextWithTenant(ctx context.Context, tenantID string) context.Context {
+	return tenant.WithTenantID(ctx, tenantID)
+}
 
 // ---------------------------------------------------------------------------
 // Tenant metadata types

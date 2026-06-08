@@ -508,6 +508,24 @@ All endpoints are under the `/v1/barrier/` prefix. Mutation endpoints require an
 
 Successful mutation endpoints return `204 No Content`. Endpoints that return data respond with `200 OK` and a JSON body.
 
+Notes on specific endpoints:
+
+- `POST /v1/barrier/shamir/initialize` honors the **request's** `threshold` and `total_shares` (the operator/UI-chosen M-of-N scheme). When omitted (zero), the daemon's configured `seal.shamir_threshold` / `seal.shamir_total` are used. It returns the generated shares; the administrative root token is a separate call (`POST /v1/barrier/root-token`).
+- `GET /v1/barrier/status` includes `shamir_threshold` and `shamir_total` when the active strategy is `shamir` (absent otherwise), so clients can display the M-of-N scheme.
+- `GET /health` returns `503 {"error":"barrier sealed","code":"SEALED"}` while the barrier is sealed and `200` once unsealed and bootstrapped.
+
+## Web UI administration
+
+The browser admin UI (`cmd/qrdb/frontend`) drives the barrier entirely over the REST API above:
+
+- **Bootstrap.** When the UI connects to a sealed, *uninitialized* server it routes to the Server Initialization wizard (none / passphrase / Shamir). For Shamir, the generated key shares **and** root token are displayed exactly once with a save-acknowledgement gate before the app proceeds — they cannot be recovered later.
+- **Unseal.** When the UI connects to a sealed, *initialized* server it shows an unseal screen; the Seal Manager also seals/unseals an already-loaded server. The unseal control adapts to the active strategy (passphrase entry vs Shamir share submission).
+- **Sealed connectivity.** A sealed daemon serves only the `/v1/barrier/*` (and ceremony/credential) endpoints via its pre-host sealed-window listener — it does **not** serve the SPA itself (see [sealed-window.md](sealed-window.md)). In production the embedded UI is therefore reachable only once unsealed; for development the Vite dev server serves the SPA and proxies the API to the daemon (`QRDB_PROXY_TARGET`), so the init/unseal screens are reachable against a sealed backend.
+
+### Per-tenant barriers in the UI
+
+Per-tenant barriers (Tenants admin view) use the **passphrase** strategy only — per-tenant Shamir is not supported (`strategy: "shamir"` is rejected). They also require a storage **volume pool** to be configured on the daemon (`storage.volume_pools`); without one, `POST /v1/tenants/{id}/barrier/init` returns `volume pool not configured`. The init form collects a passphrase (required) and new tenants default to `prefix` isolation, which needs no volume pool. See [multi-tenant.md](multi-tenant.md).
+
 ## Compliance Documentation
 
 - **[../auth/roles.md](../auth/roles.md)** — Six-role model (SO, Admin, Operator, User, Auditor, Custodian) with FIPS 140-3 AS10.03 separation of duties

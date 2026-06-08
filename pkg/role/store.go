@@ -548,7 +548,7 @@ func soPermissions() []permission.Permission {
 		permission.CeremonySignCSR, permission.CeremonyStatus,
 		// Certificate management
 		permission.CertsGenerate, permission.CertsExport, permission.CertsRevoke,
-		permission.CertsList,
+		permission.CertsList, permission.CertsRead,
 		// Role management (SO-exclusive)
 		permission.RolesCreate, permission.RolesRead, permission.RolesUpdate,
 		permission.RolesDelete, permission.RolesList, permission.RolesAssign,
@@ -562,6 +562,13 @@ func soPermissions() []permission.Permission {
 		permission.TenantsDelete, permission.TenantsList,
 		// Key lifecycle (infrastructure keys — delete any key; create infra keys)
 		permission.KeysCreate, permission.KeysDelete, permission.KeysList, permission.KeysGet,
+		// Key material import/export (privileged lifecycle — NOT sign/encrypt/decrypt)
+		permission.KeysImport, permission.KeysExport,
+		// Hardware crypto backend inventory
+		permission.BackendsList, permission.BackendsRead,
+		// PKCS#11 PIN management and PIV slot administration (governance, no crypto use)
+		permission.PINRead, permission.PINWrite,
+		permission.PIVRead, permission.PIVWrite, permission.PIVDelete,
 		// Audit (operational oversight)
 		permission.AuditRead, permission.AuditQuery,
 		// Admin
@@ -593,9 +600,19 @@ func adminPermissions() []permission.Permission {
 		permission.KeysList, permission.KeysGet,
 		// Wrap/unwrap for key transport
 		permission.KeysWrap, permission.KeysUnwrap,
+		// Key material import/export (privileged lifecycle)
+		permission.KeysImport, permission.KeysExport,
 		// Certificate management
 		permission.CertsGenerate, permission.CertsExport, permission.CertsRevoke,
-		permission.CertsList,
+		permission.CertsList, permission.CertsRead,
+		// Hardware crypto backend inventory
+		permission.BackendsList, permission.BackendsRead,
+		// PKCS#11 PIN management and PIV slot administration (no crypto use)
+		permission.PINRead, permission.PINWrite,
+		permission.PIVRead, permission.PIVWrite, permission.PIVDelete,
+		// Password vault administration
+		permission.PasswordsRead, permission.PasswordsWrite, permission.PasswordsDelete,
+		permission.PasswordsGenerate, permission.PasswordsLock, permission.PasswordsUnlock,
 		// Seal management (operational subset: no bootstrap, rotate, rekey)
 		permission.SealUnseal, permission.SealSeal, permission.SealStatus,
 		permission.SealRecoverWithKeys,
@@ -649,6 +666,15 @@ func operatorPermissions() []permission.Permission {
 		permission.KeysList, permission.KeysGet,
 		// Key rotation (not creation/deletion)
 		permission.KeysRotate,
+		// Key derivation (KDF / ECDH key agreement)
+		permission.KeysDerive,
+		// Hardware crypto backend inventory (read-only — operators use backends)
+		permission.BackendsList, permission.BackendsRead,
+		// PIN read, PIV slot read + cryptographic use
+		permission.PINRead, permission.PIVRead, permission.PIVUse,
+		// Password vault (operational use)
+		permission.PasswordsRead, permission.PasswordsWrite, permission.PasswordsDelete,
+		permission.PasswordsGenerate, permission.PasswordsLock, permission.PasswordsUnlock,
 		// Barrier (operational: not bootstrap or SO-exclusive ops)
 		permission.SealUnseal, permission.SealSeal, permission.SealStatus,
 		// Ceremony (status only)
@@ -702,8 +728,14 @@ func userPermissions() []permission.Permission {
 		// Cryptographic operations (read-only key access)
 		permission.KeysSign, permission.KeysVerify,
 		permission.KeysEncrypt, permission.KeysDecrypt,
+		// Key derivation (KDF / ECDH)
+		permission.KeysDerive,
 		// Key metadata (public fields only)
 		permission.KeysGet, permission.KeysList,
+		// PIV slot cryptographic use
+		permission.PIVUse,
+		// Personal password vault (use own credentials)
+		permission.PasswordsRead, permission.PasswordsLock, permission.PasswordsUnlock,
 		// System health (all roles can check health)
 		permission.AdminHealth, permission.AdminStatus,
 	}
@@ -723,7 +755,11 @@ func auditorPermissions() []permission.Permission {
 		// User, role, cert, tenant listing (metadata only — no writes)
 		permission.UsersList, permission.UsersRead,
 		permission.RolesList, permission.RolesRead, permission.PermissionsList,
-		permission.CertsList,
+		permission.CertsList, permission.CertsRead,
+		// Hardware crypto backend inventory (read-only visibility)
+		permission.BackendsList, permission.BackendsRead,
+		// PIN / PIV / password state (read-only visibility)
+		permission.PINRead, permission.PIVRead, permission.PasswordsRead,
 		permission.TenantsList, permission.TenantsRead,
 		// Key metadata (public fields only — no cryptographic operations)
 		permission.KeysList, permission.KeysGet,
@@ -745,10 +781,15 @@ func custodianPermissions() []permission.Permission {
 	}
 }
 
-// validatePermissions checks that every permission in the slice is
-// registered in the global permission registry.
+// validatePermissions checks that every permission in the slice is either
+// registered in the global permission registry or a whole-segment wildcard
+// (e.g. "keys:*"). Wildcards are admitted because the RBAC authorizer expands
+// them against concrete resource:action checks at authorization time.
 func validatePermissions(perms []permission.Permission) error {
 	for _, p := range perms {
+		if permission.IsWildcard(p) {
+			continue
+		}
 		if !permission.IsRegistered(p) {
 			return &InvalidPermissionError{Permission: string(p)}
 		}

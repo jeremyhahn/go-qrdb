@@ -1234,6 +1234,93 @@ func TestRootTokenToResponse(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
+// Fix 2: /v1/barrier/status includes shamir_threshold / shamir_total
+// ---------------------------------------------------------------------------
+
+func TestBarrierHandlers_Status_ShamirFields_Exposed(t *testing.T) {
+	tests := []struct {
+		name              string
+		strategy          string
+		shamirThreshold   int
+		shamirTotal       int
+		wantThresholdKey  bool
+		wantTotalKey      bool
+	}{
+		{
+			name:             "shamir strategy includes fields",
+			strategy:         "shamir",
+			shamirThreshold:  3,
+			shamirTotal:      5,
+			wantThresholdKey: true,
+			wantTotalKey:     true,
+		},
+		{
+			name:             "software strategy omits fields",
+			strategy:         "software",
+			shamirThreshold:  0,
+			shamirTotal:      0,
+			wantThresholdKey: false,
+			wantTotalKey:     false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &mockBarrierService{
+				statusFn: func(_ context.Context) (*service.BarrierStatusInfo, error) {
+					return &service.BarrierStatusInfo{
+						Sealed:          false,
+						Strategy:        tc.strategy,
+						HardwareBacked:  false,
+						ShamirThreshold: tc.shamirThreshold,
+						ShamirTotal:     tc.shamirTotal,
+					}, nil
+				},
+			}
+			srv := newBarrierTestServer(t, svc)
+
+			req := httptest.NewRequest(http.MethodGet, "/v1/barrier/status", nil)
+			rec := httptest.NewRecorder()
+			srv.dispatch(rec, req)
+
+			assertStatus(t, rec, http.StatusOK)
+
+			var resp map[string]interface{}
+			decodeJSON(t, rec, &resp)
+
+			_, hasThreshold := resp["shamir_threshold"]
+			_, hasTotal := resp["shamir_total"]
+
+			if tc.wantThresholdKey && !hasThreshold {
+				t.Error("expected shamir_threshold key in response, not present")
+			}
+			if !tc.wantThresholdKey && hasThreshold {
+				t.Errorf("expected no shamir_threshold key for non-shamir, got %v", resp["shamir_threshold"])
+			}
+			if tc.wantTotalKey && !hasTotal {
+				t.Error("expected shamir_total key in response, not present")
+			}
+			if !tc.wantTotalKey && hasTotal {
+				t.Errorf("expected no shamir_total key for non-shamir, got %v", resp["shamir_total"])
+			}
+
+			if tc.wantThresholdKey {
+				got := int(resp["shamir_threshold"].(float64))
+				if got != tc.shamirThreshold {
+					t.Errorf("shamir_threshold = %d, want %d", got, tc.shamirThreshold)
+				}
+			}
+			if tc.wantTotalKey {
+				got := int(resp["shamir_total"].(float64))
+				if got != tc.shamirTotal {
+					t.Errorf("shamir_total = %d, want %d", got, tc.shamirTotal)
+				}
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
 // WithBarrierService option test
 // ---------------------------------------------------------------------------
 

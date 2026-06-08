@@ -279,6 +279,8 @@ const (
 	CertsRevoke Permission = "certs:revoke"
 	// CertsList grants access to list TLS certificates.
 	CertsList Permission = "certs:list"
+	// CertsRead grants access to read a single certificate's metadata.
+	CertsRead Permission = "certs:read"
 )
 
 // ---------------------------------------------------------------------------
@@ -308,6 +310,68 @@ const (
 	KeysList Permission = "keys:list"
 	// KeysGet grants access to read key metadata (public fields only).
 	KeysGet Permission = "keys:get"
+	// KeysImport grants access to import external key material under management.
+	KeysImport Permission = "keys:import"
+	// KeysExport grants access to export managed key material.
+	KeysExport Permission = "keys:export"
+	// KeysDerive grants access to derive key material from a key (KDF / ECDH).
+	KeysDerive Permission = "keys:derive"
+)
+
+// ---------------------------------------------------------------------------
+// Hardware backend permissions (TPM 2.0 / PKCS#11 / cloud KMS inventory)
+// ---------------------------------------------------------------------------
+
+const (
+	// BackendsList grants access to list the configured hardware crypto backends.
+	BackendsList Permission = "backends:list"
+	// BackendsRead grants access to read a single hardware crypto backend's details.
+	BackendsRead Permission = "backends:read"
+)
+
+// ---------------------------------------------------------------------------
+// PKCS#11 PIN management permissions
+// ---------------------------------------------------------------------------
+
+const (
+	// PINRead grants access to read PIN state (lockout status, verify PIN).
+	PINRead Permission = "pin:read"
+	// PINWrite grants access to set, change, or reset SO/user PINs and lockout.
+	PINWrite Permission = "pin:write"
+)
+
+// ---------------------------------------------------------------------------
+// PIV (smart-card) slot permissions
+// ---------------------------------------------------------------------------
+
+const (
+	// PIVRead grants access to read PIV slot metadata and certificates.
+	PIVRead Permission = "piv:read"
+	// PIVWrite grants access to store, generate, or import PIV slot material.
+	PIVWrite Permission = "piv:write"
+	// PIVUse grants access to use a PIV slot key for cryptographic operations.
+	PIVUse Permission = "piv:use"
+	// PIVDelete grants access to delete PIV slot certificates.
+	PIVDelete Permission = "piv:delete"
+)
+
+// ---------------------------------------------------------------------------
+// Password vault permissions
+// ---------------------------------------------------------------------------
+
+const (
+	// PasswordsRead grants access to read or list stored passwords.
+	PasswordsRead Permission = "passwords:read"
+	// PasswordsWrite grants access to add or update stored passwords.
+	PasswordsWrite Permission = "passwords:write"
+	// PasswordsDelete grants access to delete stored passwords.
+	PasswordsDelete Permission = "passwords:delete"
+	// PasswordsGenerate grants access to generate new passwords.
+	PasswordsGenerate Permission = "passwords:generate"
+	// PasswordsLock grants access to lock the password vault.
+	PasswordsLock Permission = "passwords:lock"
+	// PasswordsUnlock grants access to unlock the password vault.
+	PasswordsUnlock Permission = "passwords:unlock"
 )
 
 // ---------------------------------------------------------------------------
@@ -657,7 +721,7 @@ var categories = []Category{
 		Name:  "Certificate Management",
 		Group: "Management Services",
 		Permissions: []Permission{
-			CertsGenerate, CertsExport, CertsRevoke, CertsList,
+			CertsGenerate, CertsExport, CertsRevoke, CertsList, CertsRead,
 		},
 	},
 	{
@@ -666,7 +730,36 @@ var categories = []Category{
 		Permissions: []Permission{
 			KeysSign, KeysVerify, KeysEncrypt, KeysDecrypt,
 			KeysWrap, KeysUnwrap, KeysCreate, KeysRotate,
-			KeysDelete, KeysList, KeysGet,
+			KeysDelete, KeysList, KeysGet, KeysImport, KeysExport, KeysDerive,
+		},
+	},
+	{
+		Name:  "Hardware Backends",
+		Group: "Cryptographic Services",
+		Permissions: []Permission{
+			BackendsList, BackendsRead,
+		},
+	},
+	{
+		Name:  "PKCS#11 PIN",
+		Group: "Cryptographic Services",
+		Permissions: []Permission{
+			PINRead, PINWrite,
+		},
+	},
+	{
+		Name:  "PIV Smart Card",
+		Group: "Cryptographic Services",
+		Permissions: []Permission{
+			PIVRead, PIVWrite, PIVUse, PIVDelete,
+		},
+	},
+	{
+		Name:  "Password Vault",
+		Group: "Security Services",
+		Permissions: []Permission{
+			PasswordsRead, PasswordsWrite, PasswordsDelete,
+			PasswordsGenerate, PasswordsLock, PasswordsUnlock,
 		},
 	},
 	{

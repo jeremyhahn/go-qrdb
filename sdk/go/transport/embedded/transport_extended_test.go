@@ -1084,6 +1084,8 @@ func TestEmbeddedCustodian_DistributeShares_Error(t *testing.T) {
 type mockShareService struct {
 	submitFn func(ctx context.Context, req *transport.SubmitShareRequest) (*transport.SubmitShareResponse, error)
 	listFn   func(ctx context.Context) ([]transport.ShareInfo, error)
+	getFn    func(ctx context.Context, serverURL, groupID string, shareIndex int) (*transport.ShareInfo, error)
+	deleteFn func(ctx context.Context, serverURL, groupID string, shareIndex int) error
 	statusFn func(ctx context.Context, groupID string) (*transport.ShareCollectionStatus, error)
 }
 
@@ -1099,6 +1101,20 @@ func (m *mockShareService) ListShares(ctx context.Context) ([]transport.ShareInf
 		return m.listFn(ctx)
 	}
 	return nil, nil
+}
+
+func (m *mockShareService) GetShare(ctx context.Context, serverURL, groupID string, shareIndex int) (*transport.ShareInfo, error) {
+	if m.getFn != nil {
+		return m.getFn(ctx, serverURL, groupID, shareIndex)
+	}
+	return &transport.ShareInfo{ServerURL: serverURL, GroupID: groupID, ShareIndex: shareIndex}, nil
+}
+
+func (m *mockShareService) DeleteShare(ctx context.Context, serverURL, groupID string, shareIndex int) error {
+	if m.deleteFn != nil {
+		return m.deleteFn(ctx, serverURL, groupID, shareIndex)
+	}
+	return nil
 }
 
 func (m *mockShareService) GetShareCollectionStatus(ctx context.Context, groupID string) (*transport.ShareCollectionStatus, error) {
@@ -1223,6 +1239,113 @@ func TestEmbeddedShare_Status_Closed(t *testing.T) {
 	var closedErr *transport.ClosedError
 	if !errors.As(err, &closedErr) {
 		t.Fatalf("expected ClosedError, got %T", err)
+	}
+}
+
+func TestEmbeddedShare_Get(t *testing.T) {
+	var gotURL, gotGroup string
+	var gotIndex int
+	svc := &mockShareService{
+		getFn: func(_ context.Context, serverURL, groupID string, shareIndex int) (*transport.ShareInfo, error) {
+			gotURL, gotGroup, gotIndex = serverURL, groupID, shareIndex
+			return &transport.ShareInfo{
+				ServerURL:  serverURL,
+				GroupID:    groupID,
+				ShareIndex: shareIndex,
+				ShareData:  []byte("share-bytes"),
+			}, nil
+		},
+	}
+	tr := newExtTransport(t, WithShareService(svc))
+	info, err := tr.GetShare(context.Background(), "https://server:8443", "g1", 2)
+	if err != nil {
+		t.Fatalf("GetShare: %v", err)
+	}
+	if gotURL != "https://server:8443" || gotGroup != "g1" || gotIndex != 2 {
+		t.Errorf("delegated args = %q, %q, %d", gotURL, gotGroup, gotIndex)
+	}
+	if string(info.ShareData) != "share-bytes" {
+		t.Errorf("ShareData = %q", info.ShareData)
+	}
+}
+
+func TestEmbeddedShare_Get_NilService(t *testing.T) {
+	tr := newExtTransport(t)
+	_, err := tr.GetShare(context.Background(), "https://server:8443", "g1", 0)
+	var nilErr *NilServiceError
+	if !errors.As(err, &nilErr) {
+		t.Fatalf("expected NilServiceError, got %T", err)
+	}
+}
+
+func TestEmbeddedShare_Get_Closed(t *testing.T) {
+	tr := closedExtTransport(t, WithShareService(&mockShareService{}))
+	_, err := tr.GetShare(context.Background(), "https://server:8443", "g1", 0)
+	var closedErr *transport.ClosedError
+	if !errors.As(err, &closedErr) {
+		t.Fatalf("expected ClosedError, got %T", err)
+	}
+}
+
+func TestEmbeddedShare_Get_Error(t *testing.T) {
+	svc := &mockShareService{
+		getFn: func(context.Context, string, string, int) (*transport.ShareInfo, error) {
+			return nil, errSentinel
+		},
+	}
+	tr := newExtTransport(t, WithShareService(svc))
+	_, err := tr.GetShare(context.Background(), "https://server:8443", "g1", 0)
+	if !errors.Is(err, errSentinel) {
+		t.Errorf("expected errSentinel, got %v", err)
+	}
+}
+
+func TestEmbeddedShare_Delete(t *testing.T) {
+	var gotURL, gotGroup string
+	var gotIndex int
+	svc := &mockShareService{
+		deleteFn: func(_ context.Context, serverURL, groupID string, shareIndex int) error {
+			gotURL, gotGroup, gotIndex = serverURL, groupID, shareIndex
+			return nil
+		},
+	}
+	tr := newExtTransport(t, WithShareService(svc))
+	if err := tr.DeleteShare(context.Background(), "https://server:8443", "g1", 3); err != nil {
+		t.Fatalf("DeleteShare: %v", err)
+	}
+	if gotURL != "https://server:8443" || gotGroup != "g1" || gotIndex != 3 {
+		t.Errorf("delegated args = %q, %q, %d", gotURL, gotGroup, gotIndex)
+	}
+}
+
+func TestEmbeddedShare_Delete_NilService(t *testing.T) {
+	tr := newExtTransport(t)
+	err := tr.DeleteShare(context.Background(), "https://server:8443", "g1", 0)
+	var nilErr *NilServiceError
+	if !errors.As(err, &nilErr) {
+		t.Fatalf("expected NilServiceError, got %T", err)
+	}
+}
+
+func TestEmbeddedShare_Delete_Closed(t *testing.T) {
+	tr := closedExtTransport(t, WithShareService(&mockShareService{}))
+	err := tr.DeleteShare(context.Background(), "https://server:8443", "g1", 0)
+	var closedErr *transport.ClosedError
+	if !errors.As(err, &closedErr) {
+		t.Fatalf("expected ClosedError, got %T", err)
+	}
+}
+
+func TestEmbeddedShare_Delete_Error(t *testing.T) {
+	svc := &mockShareService{
+		deleteFn: func(context.Context, string, string, int) error {
+			return errSentinel
+		},
+	}
+	tr := newExtTransport(t, WithShareService(svc))
+	err := tr.DeleteShare(context.Background(), "https://server:8443", "g1", 0)
+	if !errors.Is(err, errSentinel) {
+		t.Errorf("expected errSentinel, got %v", err)
 	}
 }
 

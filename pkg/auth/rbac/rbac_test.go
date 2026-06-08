@@ -173,6 +173,44 @@ func TestAuthorize_Allowed_SelfScope_OwnTenant(t *testing.T) {
 	}
 }
 
+func TestAuthorize_WildcardGrants(t *testing.T) {
+	// A role granting "keys:*" satisfies any concrete keys action, but does
+	// not leak across resources. A "*:read" action wildcard matches any
+	// resource's read; "*:*" matches everything.
+	svc := newMockRoleService(map[string][]permission.Permission{
+		"keymaster": {"keys:*"},
+		"reader":    {"*:read"},
+		"root":      {"*:*"},
+	})
+	authz := New(svc)
+
+	cases := []struct {
+		name             string
+		role             string
+		resource, action string
+		wantAllowed      bool
+	}{
+		{"resource-wildcard-sign", "keymaster", "keys", "sign", true},
+		{"resource-wildcard-get", "keymaster", "keys", "get", true},
+		{"resource-wildcard-no-cross-resource", "keymaster", "certs", "generate", false},
+		{"action-wildcard-match", "reader", "backends", "read", true},
+		{"action-wildcard-no-cross-action", "reader", "backends", "list", false},
+		{"full-wildcard", "root", "anything", "whatever", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			identity := &auth.Identity{Subject: "u-" + tc.name, TenantID: "tenant-1", Roles: []string{tc.role}}
+			err := authz.Authorize(ctxFor("tenant-1"), identity, tc.resource, tc.action)
+			if tc.wantAllowed && err != nil {
+				t.Fatalf("expected allow for %s:%s, got %v", tc.resource, tc.action, err)
+			}
+			if !tc.wantAllowed && err == nil {
+				t.Fatalf("expected deny for %s:%s, got allow", tc.resource, tc.action)
+			}
+		})
+	}
+}
+
 func TestAuthorize_RoleResolveFallbackOnTransientError(t *testing.T) {
 	// Primary role store fails as if the host were draining / ReadIndex cold.
 	primary := newMockRoleService(nil)

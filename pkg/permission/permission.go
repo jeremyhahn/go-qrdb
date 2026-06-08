@@ -98,6 +98,15 @@ func IsRegistered(p Permission) bool {
 	return ok
 }
 
+// IsWildcard reports whether p uses a whole-segment "*" wildcard in its
+// resource or action component (e.g. "keys:*", "*:read", "*:*"). Wildcard
+// permissions are matched against concrete resource:action checks by the
+// RBAC authorizer; they are accepted as valid role grants without being
+// listed in the concrete permission registry.
+func IsWildcard(p Permission) bool {
+	return Resource(p) == "*" || Action(p) == "*"
+}
+
 // Parse validates a raw string and returns the corresponding Permission.
 // It returns an InvalidPermissionError if the string does not contain
 // exactly one colon separating a non-empty resource and a non-empty action.

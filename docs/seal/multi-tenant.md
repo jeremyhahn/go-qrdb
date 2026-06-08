@@ -18,6 +18,14 @@ Tenants can use one of two isolation strategies, configured per tenant:
 
 Both modes provide separate keyspaces via namespace prefixing. The difference is whether an additional per-tenant cryptographic barrier is layered on top. When the seal subsystem is not configured, `IsolationBarrier` still enforces isolation via the namespace prefix—the crypto layer simply becomes unavailable.
 
+### Operational requirements
+
+A per-tenant cryptographic barrier (an `IsolationBarrier` tenant, or `POST /v1/tenants/{id}/barrier/init` for any tenant) is backed by a dedicated per-tenant store allocated from a storage **volume pool**. The daemon must therefore have `storage.volume_pools` configured; without one, barrier registration fails with `volume pool not configured on barrier registry`, and creating an `IsolationBarrier` tenant fails before the volume pool is wired.
+
+Per-tenant barriers use the **passphrase** strategy (the software strategy qrdb owns for tenants) or an injected hardware strategy. **Shamir is not supported per-tenant** — `POST /v1/tenants/{id}/barrier/init` with `strategy: "shamir"` is rejected with `invalid seal strategy: shamir`. The passphrase is required for the passphrase strategy (there is no derived fallback).
+
+Because barrier isolation requires this additional daemon configuration, the Tenants admin UI defaults new tenants to `prefix` isolation and exposes a passphrase-only barrier-init form.
+
 ## BarrierRegistry
 
 `BarrierRegistry` manages multiple tenant barriers with independent lifecycles:

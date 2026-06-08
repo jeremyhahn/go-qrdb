@@ -10,6 +10,7 @@ package seal
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -21,6 +22,11 @@ import (
 // If a ShamirStrategy is registered, the root key itself is split into shares
 // (direct mode). Otherwise, the credential secret is split and used to
 // unseal a password-protected root key (credential mode).
+//
+// The threshold and total share counts come from b.config.Shamir, which the
+// service layer populates via SetShamirConfig before calling this method.
+// Callers that omit threshold/total in their request should preserve the
+// existing config values rather than overwriting with zeros.
 func (b *StorageBarrier) InitializeShamir(ctx context.Context, creds Credentials) (*ShamirInitResult, error) {
 	if b.config.Shamir == nil {
 		return nil, ErrShamirNotConfigured
@@ -35,7 +41,7 @@ func (b *StorageBarrier) InitializeShamir(ctx context.Context, creds Credentials
 
 	// Direct mode: ShamirStrategy splits the root key itself.
 	if strat := b.ShamirStrategy(); strat != nil {
-		return b.initializeShamirDirect(ctx, strat)
+		return b.initializeShamirDirect(ctx, strat, threshold, total)
 	}
 
 	// Credential mode: initialize barrier with the credential, then
@@ -68,7 +74,10 @@ func (b *StorageBarrier) InitializeShamir(ctx context.Context, creds Credentials
 // are NEVER persisted — only the key-material-free SealedRootKey envelope is
 // stored. Unsealing later requires the SOs to re-submit their shares via
 // UnsealWithShare.
-func (b *StorageBarrier) initializeShamirDirect(ctx context.Context, shamirStrat *ShamirStrategy) (*ShamirInitResult, error) {
+//
+// threshold and total come from the caller (b.config.Shamir after SetShamirConfig),
+// not from the boot-time ShamirStrategy, so that the request parameters win.
+func (b *StorageBarrier) initializeShamirDirect(ctx context.Context, shamirStrat *ShamirStrategy, threshold, total int) (*ShamirInitResult, error) {
 	exists, err := b.base.Exists(ctx, b.config.RootKeyPath)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrCorruptRootKey, err)
@@ -91,16 +100,61 @@ func (b *StorageBarrier) initializeShamirDirect(ctx context.Context, shamirStrat
 	}
 	defer secure.Wipe(rootKey)
 
-	shareVals, err := NewShamirShareSplitter().Split(rootKey, shamirStrat.Threshold(), shamirStrat.TotalShares())
+	shareVals, err := NewShamirShareSplitter().Split(rootKey, threshold, total)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrShamirSplitFailed, err)
 	}
 
+	// When the request parameters differ from the boot-time strategy, update
+	// the persisted sealed envelope and replace the in-memory strategy so
+	// that future UnsealWithShare uses the correct threshold/total.
+	if threshold != shamirStrat.Threshold() || total != shamirStrat.TotalShares() {
+		if updateErr := b.updateSealedShamirParams(ctx, threshold, total); updateErr != nil {
+			return nil, updateErr
+		}
+	}
+
 	return &ShamirInitResult{
 		Shares:      shareVals,
-		Threshold:   shamirStrat.Threshold(),
-		TotalShares: shamirStrat.TotalShares(),
+		Threshold:   threshold,
+		TotalShares: total,
 	}, nil
+}
+
+// updateSealedShamirParams writes new threshold/total values into the
+// persisted (key-material-free) sealed envelope and replaces the in-memory
+// ShamirStrategy so that future UnsealWithShare / Status calls reflect the
+// updated scheme. This mirrors the pattern used in Rekey.
+func (b *StorageBarrier) updateSealedShamirParams(ctx context.Context, threshold, total int) error {
+	blob, err := b.base.Get(ctx, b.config.RootKeyPath)
+	if err != nil {
+		return err
+	}
+	var sealed SealedRootKey
+	if err := json.Unmarshal(blob, &sealed); err != nil {
+		return ErrCorruptRootKey
+	}
+	sealed.ShamirThreshold = threshold
+	sealed.ShamirTotal = total
+	updatedBlob, err := json.Marshal(&sealed)
+	if err != nil {
+		return err
+	}
+	if err := b.base.Put(ctx, b.config.RootKeyPath, updatedBlob); err != nil {
+		return err
+	}
+
+	newStrat, err := NewShamirStrategy(threshold, total)
+	if err != nil {
+		return err
+	}
+	b.strategies[StrategyShamir] = newStrat
+
+	if b.config.Shamir != nil {
+		b.config.Shamir.Threshold = threshold
+		b.config.Shamir.TotalShares = total
+	}
+	return nil
 }
 
 // UnsealWithShare submits a single Shamir share toward the quorum threshold.

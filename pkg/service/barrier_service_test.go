@@ -791,6 +791,300 @@ func TestBarrierService_BarrierUnsealWithShares_CredentialMode(t *testing.T) {
 	}
 }
 
+// --- Fix 1: InitializeShamir honors request threshold/total ---
+
+// TestBarrierService_InitializeShamir_RequestParamsWin verifies that when
+// explicit threshold/total are provided to BarrierInitializeShamir, those
+// values override the boot-time daemon config (direct-mode ShamirStrategy).
+func TestBarrierService_InitializeShamir_RequestParamsWin(t *testing.T) {
+	tests := []struct {
+		name              string
+		daemonThreshold   int
+		daemonTotal       int
+		requestThreshold  int
+		requestTotal      int
+		wantThreshold     int
+		wantTotal         int
+		wantShareCount    int
+	}{
+		{
+			name:             "request 3-of-5 overrides daemon 2-of-3",
+			daemonThreshold:  2,
+			daemonTotal:      3,
+			requestThreshold: 3,
+			requestTotal:     5,
+			wantThreshold:    3,
+			wantTotal:        5,
+			wantShareCount:   5,
+		},
+		{
+			name:             "request 2-of-4 overrides daemon 3-of-5",
+			daemonThreshold:  3,
+			daemonTotal:      5,
+			requestThreshold: 2,
+			requestTotal:     4,
+			wantThreshold:    2,
+			wantTotal:        4,
+			wantShareCount:   4,
+		},
+		{
+			name:             "request matches daemon config",
+			daemonThreshold:  2,
+			daemonTotal:      3,
+			requestThreshold: 2,
+			requestTotal:     3,
+			wantThreshold:    2,
+			wantTotal:        3,
+			wantShareCount:   3,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			backend := seal.NewMemoryBackend()
+			shamirStrat, err := seal.NewShamirStrategy(tc.daemonThreshold, tc.daemonTotal)
+			if err != nil {
+				t.Fatalf("NewShamirStrategy: %v", err)
+			}
+			config := seal.BarrierConfig{
+				RootKeyPath:     "root-key",
+				PreferenceOrder: []seal.StrategyID{seal.StrategyShamir},
+				Shamir: &seal.ShamirConfig{
+					Threshold:   tc.daemonThreshold,
+					TotalShares: tc.daemonTotal,
+				},
+			}
+			barrier, err := seal.NewStorageBarrier(testLogger(), backend, config, shamirStrat)
+			if err != nil {
+				t.Fatalf("NewStorageBarrier: %v", err)
+			}
+			t.Cleanup(func() { _ = barrier.Close() })
+
+			svc := NewBarrierService(barrier)
+			ctx := context.Background()
+
+			info, err := svc.BarrierInitializeShamir(ctx, "", tc.requestThreshold, tc.requestTotal)
+			if err != nil {
+				t.Fatalf("BarrierInitializeShamir: %v", err)
+			}
+			if info.Threshold != tc.wantThreshold {
+				t.Errorf("Threshold = %d, want %d", info.Threshold, tc.wantThreshold)
+			}
+			if info.TotalShares != tc.wantTotal {
+				t.Errorf("TotalShares = %d, want %d", info.TotalShares, tc.wantTotal)
+			}
+			if len(info.Shares) != tc.wantShareCount {
+				t.Errorf("len(Shares) = %d, want %d", len(info.Shares), tc.wantShareCount)
+			}
+		})
+	}
+}
+
+// TestBarrierService_InitializeShamir_ZeroValueFallsBackToConfig verifies
+// that when the request omits threshold/total (both zero), the barrier's
+// existing daemon config is preserved as the fallback.
+func TestBarrierService_InitializeShamir_ZeroValueFallsBackToConfig(t *testing.T) {
+	backend := seal.NewMemoryBackend()
+	shamirStrat, err := seal.NewShamirStrategy(2, 3)
+	if err != nil {
+		t.Fatalf("NewShamirStrategy: %v", err)
+	}
+	config := seal.BarrierConfig{
+		RootKeyPath:     "root-key",
+		PreferenceOrder: []seal.StrategyID{seal.StrategyShamir},
+		Shamir: &seal.ShamirConfig{
+			Threshold:   2,
+			TotalShares: 3,
+		},
+	}
+	barrier, err := seal.NewStorageBarrier(testLogger(), backend, config, shamirStrat)
+	if err != nil {
+		t.Fatalf("NewStorageBarrier: %v", err)
+	}
+	t.Cleanup(func() { _ = barrier.Close() })
+
+	svc := NewBarrierService(barrier)
+	ctx := context.Background()
+
+	// Pass threshold=0, totalShares=0 — request omits the params.
+	info, err := svc.BarrierInitializeShamir(ctx, "", 0, 0)
+	if err != nil {
+		t.Fatalf("BarrierInitializeShamir with zero params: %v", err)
+	}
+	if info.Threshold != 2 {
+		t.Errorf("Threshold = %d, want 2 (daemon config fallback)", info.Threshold)
+	}
+	if info.TotalShares != 3 {
+		t.Errorf("TotalShares = %d, want 3 (daemon config fallback)", info.TotalShares)
+	}
+	if len(info.Shares) != 3 {
+		t.Errorf("len(Shares) = %d, want 3", len(info.Shares))
+	}
+}
+
+// TestBarrierService_InitializeShamir_CredentialMode_RequestParamsWin verifies
+// the "request wins" behavior also holds in credential mode (no ShamirStrategy).
+func TestBarrierService_InitializeShamir_CredentialMode_RequestParamsWin(t *testing.T) {
+	backend := seal.NewMemoryBackend()
+	sw, err := seal.NewSoftwareStrategy([]byte("test-master-key-32bytes!abcdefgh"))
+	if err != nil {
+		t.Fatalf("NewSoftwareStrategy: %v", err)
+	}
+	config := seal.BarrierConfig{
+		RootKeyPath:     "root-key",
+		PreferenceOrder: []seal.StrategyID{seal.StrategyPassphrase},
+		// Daemon config says 2-of-3.
+		Shamir: &seal.ShamirConfig{
+			Threshold:   2,
+			TotalShares: 3,
+		},
+	}
+	barrier, err := seal.NewStorageBarrier(testLogger(), backend, config, sw)
+	if err != nil {
+		t.Fatalf("NewStorageBarrier: %v", err)
+	}
+	t.Cleanup(func() { _ = barrier.Close() })
+
+	svc := NewBarrierService(barrier)
+	ctx := context.Background()
+
+	// Request 3-of-5 — must override daemon config.
+	info, err := svc.BarrierInitializeShamir(ctx, "my-secret", 3, 5)
+	if err != nil {
+		t.Fatalf("BarrierInitializeShamir: %v", err)
+	}
+	if info.Threshold != 3 {
+		t.Errorf("Threshold = %d, want 3", info.Threshold)
+	}
+	if info.TotalShares != 5 {
+		t.Errorf("TotalShares = %d, want 5", info.TotalShares)
+	}
+	if len(info.Shares) != 5 {
+		t.Errorf("len(Shares) = %d, want 5", len(info.Shares))
+	}
+}
+
+// --- Fix 2: BarrierStatus reports active Shamir threshold/total ---
+
+// TestBarrierService_BarrierStatus_ShamirFields verifies that after a Shamir
+// initialization, BarrierStatus reports the correct ShamirThreshold and
+// ShamirTotal fields.
+func TestBarrierService_BarrierStatus_ShamirFields(t *testing.T) {
+	tests := []struct {
+		name      string
+		threshold int
+		total     int
+	}{
+		{"2-of-3", 2, 3},
+		{"3-of-5", 3, 5},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			backend := seal.NewMemoryBackend()
+			shamirStrat, err := seal.NewShamirStrategy(tc.threshold, tc.total)
+			if err != nil {
+				t.Fatalf("NewShamirStrategy: %v", err)
+			}
+			config := seal.BarrierConfig{
+				RootKeyPath:     "root-key",
+				PreferenceOrder: []seal.StrategyID{seal.StrategyShamir},
+				Shamir: &seal.ShamirConfig{
+					Threshold:   tc.threshold,
+					TotalShares: tc.total,
+				},
+			}
+			barrier, err := seal.NewStorageBarrier(testLogger(), backend, config, shamirStrat)
+			if err != nil {
+				t.Fatalf("NewStorageBarrier: %v", err)
+			}
+			t.Cleanup(func() { _ = barrier.Close() })
+
+			svc := NewBarrierService(barrier)
+			ctx := context.Background()
+
+			_, err = svc.BarrierInitializeShamir(ctx, "", tc.threshold, tc.total)
+			if err != nil {
+				t.Fatalf("BarrierInitializeShamir: %v", err)
+			}
+
+			status, err := svc.BarrierStatus(ctx)
+			if err != nil {
+				t.Fatalf("BarrierStatus: %v", err)
+			}
+			if status.ShamirThreshold != tc.threshold {
+				t.Errorf("ShamirThreshold = %d, want %d", status.ShamirThreshold, tc.threshold)
+			}
+			if status.ShamirTotal != tc.total {
+				t.Errorf("ShamirTotal = %d, want %d", status.ShamirTotal, tc.total)
+			}
+		})
+	}
+}
+
+// TestBarrierService_BarrierStatus_ShamirFields_AfterRequestOverride verifies
+// that when the request changes threshold/total at init time, BarrierStatus
+// reflects the overridden values (not the daemon config).
+func TestBarrierService_BarrierStatus_ShamirFields_AfterRequestOverride(t *testing.T) {
+	backend := seal.NewMemoryBackend()
+	// Daemon says 2-of-3.
+	shamirStrat, err := seal.NewShamirStrategy(2, 3)
+	if err != nil {
+		t.Fatalf("NewShamirStrategy: %v", err)
+	}
+	config := seal.BarrierConfig{
+		RootKeyPath:     "root-key",
+		PreferenceOrder: []seal.StrategyID{seal.StrategyShamir},
+		Shamir: &seal.ShamirConfig{
+			Threshold:   2,
+			TotalShares: 3,
+		},
+	}
+	barrier, err := seal.NewStorageBarrier(testLogger(), backend, config, shamirStrat)
+	if err != nil {
+		t.Fatalf("NewStorageBarrier: %v", err)
+	}
+	t.Cleanup(func() { _ = barrier.Close() })
+
+	svc := NewBarrierService(barrier)
+	ctx := context.Background()
+
+	// Request 3-of-5.
+	_, err = svc.BarrierInitializeShamir(ctx, "", 3, 5)
+	if err != nil {
+		t.Fatalf("BarrierInitializeShamir: %v", err)
+	}
+
+	status, err := svc.BarrierStatus(ctx)
+	if err != nil {
+		t.Fatalf("BarrierStatus: %v", err)
+	}
+	if status.ShamirThreshold != 3 {
+		t.Errorf("ShamirThreshold = %d, want 3 (request override)", status.ShamirThreshold)
+	}
+	if status.ShamirTotal != 5 {
+		t.Errorf("ShamirTotal = %d, want 5 (request override)", status.ShamirTotal)
+	}
+}
+
+// TestBarrierService_BarrierStatus_NonShamir_ZeroFields verifies that for
+// a non-Shamir barrier, ShamirThreshold and ShamirTotal are zero.
+func TestBarrierService_BarrierStatus_NonShamir_ZeroFields(t *testing.T) {
+	svc := initAndUnsealSoftwareBarrier(t)
+	ctx := context.Background()
+
+	status, err := svc.BarrierStatus(ctx)
+	if err != nil {
+		t.Fatalf("BarrierStatus: %v", err)
+	}
+	if status.ShamirThreshold != 0 {
+		t.Errorf("ShamirThreshold = %d, want 0 for non-shamir barrier", status.ShamirThreshold)
+	}
+	if status.ShamirTotal != 0 {
+		t.Errorf("ShamirTotal = %d, want 0 for non-shamir barrier", status.ShamirTotal)
+	}
+}
+
 // --- NewBarrierService Construction Test ---
 
 func TestNewBarrierService(t *testing.T) {

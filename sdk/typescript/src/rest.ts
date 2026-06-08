@@ -350,9 +350,22 @@ export class RestClient implements Client {
         return {
             connect: async (address: string): Promise<void> => {
                 this.baseUrl = address.replace(/\/$/, '');
-                const health = await fetchJSON<HealthResponse>(this.baseUrl, '/health');
-                if (health.status) {
-                    this.connected = true;
+                try {
+                    const health = await fetchJSON<HealthResponse>(this.baseUrl, '/health');
+                    if (health.status) {
+                        this.connected = true;
+                    }
+                } catch (err: unknown) {
+                    // A sealed server returns 503 on /health but is still
+                    // reachable: its sealed-window listener serves the barrier
+                    // endpoints (status/initialize/unseal). Treat this as
+                    // connected-but-sealed so the seal init/unseal flow can
+                    // proceed instead of surfacing a fatal connection error.
+                    if (err instanceof TransportError && err.statusCode === 503) {
+                        this.connected = true;
+                    } else {
+                        throw err;
+                    }
                 }
                 // Attempt to retrieve server version from status endpoint.
                 try {
@@ -1684,31 +1697,110 @@ export class RestClient implements Client {
     get seal(): SealClient {
         return {
             bootstrap: async (): Promise<BootstrapResult> => {
+                // No single REST "bootstrap" endpoint exists; callers use
+                // initialize() (passphrase/none) or initializeShamir() (Shamir).
                 throw new DesktopOnlyError('seal.bootstrap');
             },
-            initialize: async (_secret: string): Promise<void> => {
-                throw new DesktopOnlyError('seal.initialize');
+            initialize: async (secret: string): Promise<void> => {
+                this.ensureConnected();
+                // Passphrase (or none, when secret is "") barrier bootstrap.
+                await fetchVoid(this.baseUrl, '/v1/barrier/initialize', {
+                    method: 'POST',
+                    ...jsonBody({ secret }),
+                });
             },
-            initializeShamir: async (_secret: string, _threshold: number, _totalShares: number): Promise<BootstrapResult> => {
-                throw new DesktopOnlyError('seal.initializeShamir');
+            initializeShamir: async (secret: string, threshold: number, totalShares: number): Promise<BootstrapResult> => {
+                this.ensureConnected();
+                // Step 1: split the barrier root key into M-of-N Shamir shares.
+                interface ShamirInitResponse {
+                    readonly shares: readonly string[];
+                    readonly threshold: number;
+                    readonly totalShares: number;
+                }
+                const init = await fetchJSON<ShamirInitResponse>(
+                    this.baseUrl,
+                    '/v1/barrier/shamir/initialize',
+                    { method: 'POST', ...jsonBody({ secret, threshold, totalShares }) },
+                );
+                // Step 2: derive the administrative root token from a
+                // threshold-sized subset of the freshly generated shares,
+                // mirroring the desktop binding's BootstrapResult contract.
+                //
+                // Initialization auto-unseals the barrier and then restarts the
+                // HTTP listener (the pre-bootstrap sealed-window server is torn
+                // down and the full server boots). During that ~seconds-long
+                // window root-token requests transiently fail (500 / connection
+                // reset), so we retry until the full server is ready.
+                //
+                // The shares returned by step 1 are the ONLY copy of the unseal
+                // material and have already been captured above; we therefore
+                // never discard them on a root-token failure. If the token
+                // cannot be obtained within the deadline it is returned empty
+                // and can be regenerated later from a share quorum via
+                // POST /v1/barrier/root-token — losing the shares would lock the
+                // operator out, losing the token would not.
+                interface RootTokenResponse {
+                    readonly token: string;
+                    readonly createdAt: string;
+                }
+                const thresholdShares = init.shares.slice(0, threshold);
+                const rootTokenDeadline = Date.now() + 30_000;
+                let rootToken = '';
+                for (;;) {
+                    try {
+                        const rt = await fetchJSON<RootTokenResponse>(
+                            this.baseUrl,
+                            '/v1/barrier/root-token',
+                            { method: 'POST', ...jsonBody({ shares: thresholdShares }) },
+                        );
+                        rootToken = rt.token;
+                        break;
+                    } catch {
+                        if (Date.now() >= rootTokenDeadline) {
+                            break;
+                        }
+                        await new Promise((resolve) => setTimeout(resolve, 750));
+                    }
+                }
+                return { rootToken, keyShares: [...init.shares] };
             },
             unseal: async (share: string): Promise<UnsealProgress> => {
                 this.ensureConnected();
-                interface UnsealShareProgressResponse {
-                    readonly required: number;
-                    readonly submitted: number;
-                    readonly complete: boolean;
+                // Route to the correct unseal endpoint based on the active
+                // strategy. Shamir accumulates shares; passphrase/none take the
+                // secret directly. (The previous implementation always hit the
+                // Shamir endpoint, which failed on passphrase barriers with
+                // "shamir not configured".)
+                interface BarrierStrategyResponse {
+                    readonly strategy: string;
                 }
-                const resp = await fetchJSON<UnsealShareProgressResponse>(
+                const { strategy } = await fetchJSON<BarrierStrategyResponse>(
                     this.baseUrl,
-                    '/v1/barrier/shamir/unseal-share',
-                    { method: 'POST', ...jsonBody({ share }) },
+                    '/v1/barrier/status',
                 );
-                return {
-                    sealed: !resp.complete,
-                    sharesProvided: resp.submitted,
-                    sharesRequired: resp.required,
-                };
+                if (strategy === 'shamir') {
+                    interface UnsealShareProgressResponse {
+                        readonly required: number;
+                        readonly submitted: number;
+                        readonly complete: boolean;
+                    }
+                    const resp = await fetchJSON<UnsealShareProgressResponse>(
+                        this.baseUrl,
+                        '/v1/barrier/shamir/unseal-share',
+                        { method: 'POST', ...jsonBody({ share }) },
+                    );
+                    return {
+                        sealed: !resp.complete,
+                        sharesProvided: resp.submitted,
+                        sharesRequired: resp.required,
+                    };
+                }
+                // Passphrase / none: the provided value carries the secret.
+                await fetchVoid(this.baseUrl, '/v1/barrier/unseal', {
+                    method: 'POST',
+                    ...jsonBody({ secret: share }),
+                });
+                return { sealed: false, sharesProvided: 0, sharesRequired: 0 };
             },
             seal: async (): Promise<void> => {
                 this.ensureConnected();
@@ -1721,6 +1813,9 @@ export class RestClient implements Client {
                     readonly strategy: string;
                     readonly hardwareBacked: boolean;
                     readonly initializedAt?: string;
+                    // Shamir scheme, present only for strategy === "shamir".
+                    readonly shamirThreshold?: number;
+                    readonly shamirTotal?: number;
                 }
                 try {
                     const resp = await fetchJSON<BarrierStatusResponse>(
@@ -1730,9 +1825,13 @@ export class RestClient implements Client {
                     return {
                         sealed: resp.sealed,
                         initialized: resp.initializedAt !== undefined && resp.initializedAt !== '',
-                        sharesRequired: 0,
+                        strategy: resp.strategy ?? '',
+                        // For Shamir the server reports the M-of-N scheme; other
+                        // strategies have no shares. sharesProvided is only known
+                        // mid-ceremony (from unseal-share responses), not from status.
+                        sharesRequired: resp.shamirThreshold ?? 0,
                         sharesProvided: 0,
-                        sharesTotal: 0,
+                        sharesTotal: resp.shamirTotal ?? 0,
                     };
                 } catch (err: unknown) {
                     if (err instanceof TransportError && err.statusCode === 404) {
@@ -1740,6 +1839,7 @@ export class RestClient implements Client {
                         return {
                             sealed: false,
                             initialized: false,
+                            strategy: 'none',
                             sharesRequired: 0,
                             sharesProvided: 0,
                             sharesTotal: 0,

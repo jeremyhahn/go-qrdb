@@ -288,6 +288,119 @@ func TestShareService_GetShareCollectionStatus_NilGroupSvc(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// GetShare / DeleteShare tests
+// ---------------------------------------------------------------------------
+
+func TestShareService_GetShare_RoundTrip(t *testing.T) {
+	svc := newTestShareService(t)
+	ctx := context.Background()
+
+	_, err := svc.SubmitShare(ctx, &transport.SubmitShareRequest{
+		ServerURL:  "https://server:8443",
+		GroupID:    "g1",
+		GroupName:  "Root Custodians",
+		ShareIndex: 2,
+		ShareData:  []byte("secret-share-2"),
+		Purpose:    "barrier unseal",
+		TenantID:   "t1",
+	})
+	require.NoError(t, err)
+
+	got, err := svc.GetShare(ctx, "https://server:8443", "g1", 2)
+	require.NoError(t, err)
+	assert.Equal(t, "https://server:8443", got.ServerURL)
+	assert.Equal(t, "g1", got.GroupID)
+	assert.Equal(t, 2, got.ShareIndex)
+	assert.Equal(t, []byte("secret-share-2"), got.ShareData)
+	assert.Equal(t, "t1", got.TenantID)
+
+	// Deleting removes the share; a subsequent Get returns not found.
+	require.NoError(t, svc.DeleteShare(ctx, "https://server:8443", "g1", 2))
+
+	_, err = svc.GetShare(ctx, "https://server:8443", "g1", 2)
+	assert.ErrorIs(t, err, ErrShareNotFound)
+}
+
+func TestShareService_GetShare_EmptyServerURLMatchesAny(t *testing.T) {
+	svc := newTestShareService(t)
+	ctx := context.Background()
+
+	_, err := svc.SubmitShare(ctx, &transport.SubmitShareRequest{
+		ServerURL:  "https://server:8443",
+		GroupID:    "g1",
+		ShareIndex: 0,
+		ShareData:  []byte("s0"),
+	})
+	require.NoError(t, err)
+
+	// An empty serverURL is treated as a wildcard and matches the stored share.
+	got, err := svc.GetShare(ctx, "", "g1", 0)
+	require.NoError(t, err)
+	assert.Equal(t, "https://server:8443", got.ServerURL)
+}
+
+func TestShareService_GetShare_ServerURLMismatch(t *testing.T) {
+	svc := newTestShareService(t)
+	ctx := context.Background()
+
+	_, err := svc.SubmitShare(ctx, &transport.SubmitShareRequest{
+		ServerURL:  "https://server:8443",
+		GroupID:    "g1",
+		ShareIndex: 0,
+		ShareData:  []byte("s0"),
+	})
+	require.NoError(t, err)
+
+	_, err = svc.GetShare(ctx, "https://other:8443", "g1", 0)
+	assert.ErrorIs(t, err, ErrShareNotFound)
+}
+
+func TestShareService_GetShare_NotFound(t *testing.T) {
+	svc := newTestShareService(t)
+	_, err := svc.GetShare(context.Background(), "https://server:8443", "missing", 0)
+	assert.ErrorIs(t, err, ErrShareNotFound)
+}
+
+func TestShareService_GetShare_EmptyGroupID(t *testing.T) {
+	svc := newTestShareService(t)
+	_, err := svc.GetShare(context.Background(), "https://server:8443", "", 0)
+	assert.ErrorIs(t, err, ErrEmptyGroupID)
+}
+
+func TestShareService_DeleteShare_NotFound(t *testing.T) {
+	svc := newTestShareService(t)
+	err := svc.DeleteShare(context.Background(), "https://server:8443", "missing", 0)
+	assert.ErrorIs(t, err, ErrShareNotFound)
+}
+
+func TestShareService_DeleteShare_EmptyGroupID(t *testing.T) {
+	svc := newTestShareService(t)
+	err := svc.DeleteShare(context.Background(), "https://server:8443", "", 0)
+	assert.ErrorIs(t, err, ErrEmptyGroupID)
+}
+
+func TestShareService_DeleteShare_ServerURLMismatch(t *testing.T) {
+	svc := newTestShareService(t)
+	ctx := context.Background()
+
+	_, err := svc.SubmitShare(ctx, &transport.SubmitShareRequest{
+		ServerURL:  "https://server:8443",
+		GroupID:    "g1",
+		ShareIndex: 0,
+		ShareData:  []byte("s0"),
+	})
+	require.NoError(t, err)
+
+	// Mismatched serverURL must not delete the share.
+	err = svc.DeleteShare(ctx, "https://other:8443", "g1", 0)
+	assert.ErrorIs(t, err, ErrShareNotFound)
+
+	// The share is still present.
+	_, err = svc.GetShare(ctx, "https://server:8443", "g1", 0)
+	require.NoError(t, err)
+}
+
+// ---------------------------------------------------------------------------
 // Error type tests
 // ---------------------------------------------------------------------------
 

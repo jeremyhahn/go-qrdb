@@ -47,6 +47,30 @@ func (t *Transport) ListShares(ctx context.Context) (*transport.ListSharesRespon
 	return &transport.ListSharesResponse{Shares: shares}, nil
 }
 
+// GetShare retrieves a single submitted share identified by its server URL,
+// group ID, and share index.
+func (t *Transport) GetShare(ctx context.Context, serverURL, groupID string, shareIndex int) (*transport.ShareInfo, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.shareSvc == nil {
+		return nil, &NilServiceError{Service: "ShareServicer"}
+	}
+	return t.shareSvc.GetShare(ctx, serverURL, groupID, shareIndex)
+}
+
+// DeleteShare removes a single submitted share identified by its server URL,
+// group ID, and share index.
+func (t *Transport) DeleteShare(ctx context.Context, serverURL, groupID string, shareIndex int) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	if t.shareSvc == nil {
+		return &NilServiceError{Service: "ShareServicer"}
+	}
+	return t.shareSvc.DeleteShare(ctx, serverURL, groupID, shareIndex)
+}
+
 // GetShareCollectionStatus returns the collection status for a group.
 func (t *Transport) GetShareCollectionStatus(ctx context.Context, groupID string) (*transport.ShareCollectionStatus, error) {
 	if t.closed.Load() {

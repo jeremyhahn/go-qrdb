@@ -41,6 +41,14 @@ type ShareServicer interface {
 	// ListShares lists all submitted shares.
 	ListShares(ctx context.Context) ([]transport.ShareInfo, error)
 
+	// GetShare retrieves a single submitted share identified by its
+	// server URL, group ID, and share index.
+	GetShare(ctx context.Context, serverURL, groupID string, shareIndex int) (*transport.ShareInfo, error)
+
+	// DeleteShare removes a single submitted share identified by its
+	// server URL, group ID, and share index.
+	DeleteShare(ctx context.Context, serverURL, groupID string, shareIndex int) error
+
 	// GetShareCollectionStatus returns the collection progress for a group.
 	GetShareCollectionStatus(ctx context.Context, groupID string) (*transport.ShareCollectionStatus, error)
 }
@@ -150,6 +158,97 @@ func (s *ShareService) ListShares(ctx context.Context) ([]transport.ShareInfo, e
 	}
 
 	return shares, nil
+}
+
+// GetShare retrieves the single submitted share identified by serverURL,
+// groupID, and shareIndex. Shares are persisted by SubmitShare under the
+// "shares/{groupID}/{shareIndex}" key (one share per group/index). The
+// lookup gates on Exists (mirroring SubmitShare) before fetching the exact
+// key and, when a non-empty serverURL is supplied, verifies it matches the
+// stored share's ServerURL. Returns ErrEmptyGroupID if groupID is empty and
+// ErrShareNotFound if no matching share exists.
+func (s *ShareService) GetShare(ctx context.Context, serverURL, groupID string, shareIndex int) (*transport.ShareInfo, error) {
+	if groupID == "" {
+		return nil, ErrEmptyGroupID
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	key := s.shareKey(groupID, shareIndex)
+
+	exists, err := s.store.Exists(ctx, key)
+	if err != nil {
+		return nil, &ShareServiceError{Op: "exists-check", Err: err}
+	}
+	if !exists {
+		return nil, ErrShareNotFound
+	}
+
+	data, err := s.store.Get(ctx, key)
+	if err != nil {
+		return nil, &ShareServiceError{Op: "get", Err: err}
+	}
+
+	var info transport.ShareInfo
+	if err := json.Unmarshal(data, &info); err != nil {
+		return nil, &ShareServiceError{Op: "unmarshal", Err: err}
+	}
+
+	if serverURL != "" && info.ServerURL != serverURL {
+		return nil, ErrShareNotFound
+	}
+
+	return &info, nil
+}
+
+// DeleteShare removes the single submitted share identified by serverURL,
+// groupID, and shareIndex. It mirrors the SubmitShare persistence scheme:
+// the share lives at "shares/{groupID}/{shareIndex}". The delete gates on
+// Exists, and when a non-empty serverURL is supplied it is verified against
+// the stored share's ServerURL before removal. Returns ErrEmptyGroupID if
+// groupID is empty and ErrShareNotFound if no matching share exists.
+func (s *ShareService) DeleteShare(ctx context.Context, serverURL, groupID string, shareIndex int) error {
+	if groupID == "" {
+		return ErrEmptyGroupID
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	key := s.shareKey(groupID, shareIndex)
+
+	exists, err := s.store.Exists(ctx, key)
+	if err != nil {
+		return &ShareServiceError{Op: "exists-check", Err: err}
+	}
+	if !exists {
+		return ErrShareNotFound
+	}
+
+	if serverURL != "" {
+		data, err := s.store.Get(ctx, key)
+		if err != nil {
+			return &ShareServiceError{Op: "get", Err: err}
+		}
+		var info transport.ShareInfo
+		if err := json.Unmarshal(data, &info); err != nil {
+			return &ShareServiceError{Op: "unmarshal", Err: err}
+		}
+		if info.ServerURL != serverURL {
+			return ErrShareNotFound
+		}
+	}
+
+	if err := s.store.Delete(ctx, key); err != nil {
+		return &ShareServiceError{Op: "delete", Err: err}
+	}
+
+	s.logger.Info("share deleted",
+		slog.String("group_id", groupID),
+		slog.Int("share_index", shareIndex))
+
+	return nil
 }
 
 // GetShareCollectionStatus returns the collection status for the given

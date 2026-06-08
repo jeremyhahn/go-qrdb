@@ -85,6 +85,14 @@ type BarrierStatusInfo struct {
 
 	// InitializedAt records when the barrier was first initialized.
 	InitializedAt time.Time
+
+	// ShamirThreshold is the minimum number of Shamir shares required to
+	// unseal. Zero when the active strategy is not Shamir.
+	ShamirThreshold int
+
+	// ShamirTotal is the total number of Shamir shares generated at
+	// initialization or last rekey. Zero when the active strategy is not Shamir.
+	ShamirTotal int
 }
 
 // ShamirInitInfo contains the output of a Shamir initialization or rekey
@@ -171,21 +179,27 @@ func (s *BarrierService) BarrierSeal(_ context.Context) error {
 func (s *BarrierService) BarrierStatus(_ context.Context) (*BarrierStatusInfo, error) {
 	status := s.barrier.Status()
 	return &BarrierStatusInfo{
-		Sealed:         status.Sealed,
-		Strategy:       string(status.Strategy),
-		HardwareBacked: status.HardwareBacked,
-		InitializedAt:  status.InitializedAt,
+		Sealed:          status.Sealed,
+		Strategy:        string(status.Strategy),
+		HardwareBacked:  status.HardwareBacked,
+		InitializedAt:   status.InitializedAt,
+		ShamirThreshold: status.ShamirThreshold,
+		ShamirTotal:     status.ShamirTotal,
 	}, nil
 }
 
 // BarrierInitializeShamir initializes the barrier with Shamir secret sharing.
-// The Shamir configuration is set on the barrier before initialization, and
-// the resulting shares are mapped to the service-layer ShamirInitInfo type.
+// When threshold and totalShares are both non-zero the barrier's Shamir config
+// is updated to honor the request parameters (request wins). When either is
+// zero the existing daemon configuration is preserved as the fallback.
+// The resulting shares are mapped to the service-layer ShamirInitInfo type.
 func (s *BarrierService) BarrierInitializeShamir(ctx context.Context, secret string, threshold, totalShares int) (*ShamirInitInfo, error) {
-	s.barrier.SetShamirConfig(&seal.ShamirConfig{
-		Threshold:   threshold,
-		TotalShares: totalShares,
-	})
+	if threshold != 0 || totalShares != 0 {
+		s.barrier.SetShamirConfig(&seal.ShamirConfig{
+			Threshold:   threshold,
+			TotalShares: totalShares,
+		})
+	}
 
 	result, err := s.barrier.InitializeShamir(ctx, seal.Credentials{Secret: secret})
 	if err != nil {

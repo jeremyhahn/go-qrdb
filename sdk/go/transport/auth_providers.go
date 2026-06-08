@@ -80,3 +80,12 @@ type SessionProvider interface {
 type VolumePoolProvider interface {
 	VolumePoolClient() VolumePoolClient
 }
+
+// AuditProvider yields an AuditClient that can emit and query
+// compliance-grade audit events. The embedded transport implements this
+// when the node injects its AuditLogger; transports without an audit
+// surface (or with no logger configured) cause the SDK accessor to
+// return nil.
+type AuditProvider interface {
+	AuditClient() AuditClient
+}

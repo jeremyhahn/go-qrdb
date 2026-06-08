@@ -90,6 +90,7 @@ import (
 	"github.com/cockroachdb/pebble/v2/vfs"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	raftbackend "github.com/jeremyhahn/go-qrdb/pkg/backend/raft"
@@ -337,6 +338,12 @@ type Node struct {
 	// present) even when these are absent.
 	sessionIssuer        embedded.SessionIssuer
 	loginFactorVerifiers []embedded.FactorVerifier
+
+	// auditLogger is the caller-supplied compliance audit logger resolved
+	// from the server.ServerOptions. It is shared with the multi-protocol
+	// server (via server.WithAuditLogger) and injected into the embedded
+	// transport so client.Audit() emits and queries against the same logger.
+	auditLogger audit.AuditLogger
 
 	// loginFactorSvc is the UserAuthFactor service instance the unified-login
 	// ceremony reads from. It is built in buildLoginOpts and retained here so
@@ -1131,6 +1138,10 @@ func attemptAutoUnseal(ctx context.Context, barrier *seal.StorageBarrier, sealCf
 // and multi-protocol server. Used by both standalone and clustered builders
 // after the service graph is ready.
 func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node, cfg *qrdbconfig.Config, callerOpts []server.ServerOption) error {
+	// Resolve the caller-supplied audit logger so the same instance backs
+	// both the multi-protocol server and the in-process client.Audit().
+	n.auditLogger = server.ResolveCryptoOptions(callerOpts...).AuditLogger
+
 	// Build in-process transport.
 	embeddedOpts, err := n.buildEmbeddedOpts(svcNode)
 	if err != nil {
@@ -1199,6 +1210,9 @@ func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node) ([]embedded.Option, er
 	}
 	if svcNode.Barrier != nil {
 		opts = append(opts, embedded.WithBarrierService(svcNode.Barrier))
+	}
+	if n.auditLogger != nil {
+		opts = append(opts, embedded.WithAuditLogger(n.auditLogger))
 	}
 
 	// Wire the unified-login ceremony only when a user model is present.

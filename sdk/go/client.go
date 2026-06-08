@@ -247,6 +247,20 @@ func (c *Client) Permissions() transport.PermissionClient {
 	return nil
 }
 
+// Audit returns an AuditClient that can emit and query compliance-grade
+// audit events. The transport must implement transport.AuditProvider and
+// have an AuditLogger configured; otherwise the returned client is nil and
+// callers should fall back appropriately.
+func (c *Client) Audit() transport.AuditClient {
+	if c.closed.Load() {
+		return nil
+	}
+	if p, ok := c.transport.(transport.AuditProvider); ok {
+		return p.AuditClient()
+	}
+	return nil
+}
+
 // RBAC returns an RBACClient that exposes the qrdb auth.Authorizer.
 // Honours the Phase 0 system-tenant rule transitively — the underlying
 // authorizer performs all gating.

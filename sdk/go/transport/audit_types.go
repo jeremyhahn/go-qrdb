@@ -55,10 +55,19 @@ type AuditPage struct {
 	Total  int          `json:"total"`
 }
 
-// AuditClient is the interface for audit event retrieval over any transport.
-// Authorization: requires "audit:query" permission.
-// TODO: switch to permission.AuditQuery constant once Phase 2 lands.
+// AuditClient is the interface for audit event emission and retrieval over
+// any transport.
+// Authorization: EmitAudit requires "audit:emit"; QueryAudit requires
+// "audit:query".
+// TODO: switch to permission.AuditEmit/AuditQuery constants once Phase 2 lands.
 type AuditClient interface {
+	// EmitAudit records a compliance-grade audit event. The underlying
+	// logger contract is best-effort and non-blocking; the error return
+	// exists for transport symmetry (network transports surface dispatch
+	// failures here). The embedded transport returns nil once the event
+	// has been handed to the in-process logger.
+	EmitAudit(ctx context.Context, ev AuditEvent) error
+
 	// QueryAudit returns a paginated page of audit events matching the filter.
 	QueryAudit(ctx context.Context, f AuditFilter) (*AuditPage, error)
 }

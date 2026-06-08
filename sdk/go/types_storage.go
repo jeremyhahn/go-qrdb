@@ -22,6 +22,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/file"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/objstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 )
 
@@ -82,6 +83,16 @@ type FileEngine = file.Engine
 // PebbleStorage is a PebbleDB-backed storage engine.
 type PebbleStorage = pebble.PebbleStorage
 
+// ObjStoreEngine is an object-storage-backed storage engine. The "local" and
+// "memory" providers are always available; cloud providers (s3, gcs, azure,
+// minio, glacier, azurearchive) are compiled in only when go-objstore's
+// matching build tag is set.
+type ObjStoreEngine = objstore.Engine
+
+// ObjStoreUnsupportedProviderError is returned for a provider not compiled into
+// this build (cloud providers require go-objstore build tags).
+type ObjStoreUnsupportedProviderError = objstore.UnsupportedProviderError
+
 // PebbleConfig holds PebbleDB configuration.
 type PebbleConfig = pebble.Config
 
@@ -110,6 +121,11 @@ var NewPebbleStorage = pebble.New
 
 // NewPebbleStorageFromDB wraps an existing PebbleDB instance.
 var NewPebbleStorageFromDB = pebble.NewFromDB
+
+// NewObjStoreStorage creates an object-storage-backed storage engine for the
+// given go-objstore provider ("local", "memory", "s3", ...). Settings are passed
+// verbatim to the provider (e.g. "path" for local, bucket/region for cloud).
+var NewObjStoreStorage = objstore.New
 
 // DefaultPebbleConfig returns the default PebbleDB configuration.
 var DefaultPebbleConfig = pebble.DefaultConfig

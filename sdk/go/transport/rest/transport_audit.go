@@ -29,6 +29,18 @@ import (
 // Compile-time interface assertion.
 var _ transport.AuditClient = (*Transport)(nil)
 
+// EmitAudit is not supported over the REST transport: audit events are
+// emitted server-side by the request handlers themselves, and the REST API
+// exposes no audit-emit endpoint. Remote callers query audit via QueryAudit;
+// emission belongs to the in-process (embedded) transport. The error return
+// satisfies the AuditClient contract for transport symmetry.
+func (t *Transport) EmitAudit(ctx context.Context, ev transport.AuditEvent) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	return &transport.NotImplementedError{Method: "EmitAudit"}
+}
+
 // QueryAudit queries the audit log via GET /v1/audit/events.
 // Authorization: requires "audit:query" permission.
 // TODO: switch to permission.AuditQuery constant once Phase 2 lands.

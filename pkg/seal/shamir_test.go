@@ -513,6 +513,183 @@ func TestShamirUnsealWithShares_CombineFails(t *testing.T) {
 	}
 }
 
+// ---------- InitializeShamir request-params-win tests ----------
+
+// TestShamirInitializeShamir_DirectMode_RequestParamsOverride verifies that
+// when SetShamirConfig is called with threshold/total different from the
+// boot-time ShamirStrategy, initializeShamirDirect uses the config values
+// and persists them to the sealed envelope.
+func TestShamirInitializeShamir_DirectMode_RequestParamsOverride(t *testing.T) {
+	tests := []struct {
+		name              string
+		bootThreshold     int
+		bootTotal         int
+		requestThreshold  int
+		requestTotal      int
+	}{
+		{"3-of-5 overrides 2-of-3", 2, 3, 3, 5},
+		{"2-of-4 overrides 3-of-6", 3, 6, 2, 4},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := NewMemoryBackend()
+			shamirStrat, err := NewShamirStrategy(tc.bootThreshold, tc.bootTotal)
+			if err != nil {
+				t.Fatalf("NewShamirStrategy: %v", err)
+			}
+			b, err := NewBarrier(testLogger(), store, BarrierConfig{
+				RootKeyPath: "test/root-key",
+				Shamir: &ShamirConfig{
+					Threshold:   tc.bootThreshold,
+					TotalShares: tc.bootTotal,
+				},
+				PreferenceOrder: []StrategyID{StrategyShamir},
+			}, shamirStrat, testSoftwareStrategy(t))
+			if err != nil {
+				t.Fatalf("NewBarrier: %v", err)
+			}
+
+			// Simulate "request wins" — service layer calls SetShamirConfig.
+			b.SetShamirConfig(&ShamirConfig{
+				Threshold:   tc.requestThreshold,
+				TotalShares: tc.requestTotal,
+			})
+
+			result, err := b.InitializeShamir(context.Background(), Credentials{})
+			if err != nil {
+				t.Fatalf("InitializeShamir: %v", err)
+			}
+
+			if result.Threshold != tc.requestThreshold {
+				t.Errorf("result.Threshold = %d, want %d", result.Threshold, tc.requestThreshold)
+			}
+			if result.TotalShares != tc.requestTotal {
+				t.Errorf("result.TotalShares = %d, want %d", result.TotalShares, tc.requestTotal)
+			}
+			if len(result.Shares) != tc.requestTotal {
+				t.Errorf("len(Shares) = %d, want %d", len(result.Shares), tc.requestTotal)
+			}
+
+			// In-memory strategy must reflect the new params.
+			strat := b.ShamirStrategy()
+			if strat == nil {
+				t.Fatal("ShamirStrategy() returned nil after override")
+			}
+			if strat.Threshold() != tc.requestThreshold {
+				t.Errorf("ShamirStrategy.Threshold() = %d, want %d", strat.Threshold(), tc.requestThreshold)
+			}
+			if strat.TotalShares() != tc.requestTotal {
+				t.Errorf("ShamirStrategy.TotalShares() = %d, want %d", strat.TotalShares(), tc.requestTotal)
+			}
+		})
+	}
+}
+
+// TestShamirInitializeShamir_DirectMode_FallbackToBootConfig verifies that
+// when config threshold/total match the boot ShamirStrategy, the sealed
+// envelope is not unnecessarily rewritten but the result is still correct.
+func TestShamirInitializeShamir_DirectMode_FallbackToBootConfig(t *testing.T) {
+	b := newShamirTestBarrierDirect(t)
+	// Config already matches the boot strategy (2-of-3). No override needed.
+	result, err := b.InitializeShamir(context.Background(), Credentials{})
+	if err != nil {
+		t.Fatalf("InitializeShamir: %v", err)
+	}
+	if result.Threshold != 2 {
+		t.Errorf("Threshold = %d, want 2", result.Threshold)
+	}
+	if result.TotalShares != 3 {
+		t.Errorf("TotalShares = %d, want 3", result.TotalShares)
+	}
+	if len(result.Shares) != 3 {
+		t.Errorf("len(Shares) = %d, want 3", len(result.Shares))
+	}
+}
+
+// ---------- Status Shamir fields tests ----------
+
+// TestBarrierStatus_ShamirFields_ShamirStrategy verifies that Status() exposes
+// ShamirThreshold/ShamirTotal from the registered ShamirStrategy.
+func TestBarrierStatus_ShamirFields_ShamirStrategy(t *testing.T) {
+	b := newShamirTestBarrierDirect(t)
+	ctx := context.Background()
+
+	_, err := b.InitializeShamir(ctx, Credentials{})
+	if err != nil {
+		t.Fatalf("InitializeShamir: %v", err)
+	}
+
+	status := b.Status()
+	if status.ShamirThreshold != 2 {
+		t.Errorf("ShamirThreshold = %d, want 2", status.ShamirThreshold)
+	}
+	if status.ShamirTotal != 3 {
+		t.Errorf("ShamirTotal = %d, want 3", status.ShamirTotal)
+	}
+}
+
+// TestBarrierStatus_ShamirFields_AfterOverride verifies that after a request
+// overrides threshold/total, Status() reflects the new values.
+func TestBarrierStatus_ShamirFields_AfterOverride(t *testing.T) {
+	store := NewMemoryBackend()
+	shamirStrat, err := NewShamirStrategy(2, 3)
+	if err != nil {
+		t.Fatalf("NewShamirStrategy: %v", err)
+	}
+	b, err := NewBarrier(testLogger(), store, BarrierConfig{
+		RootKeyPath: "test/root-key",
+		Shamir: &ShamirConfig{
+			Threshold:   2,
+			TotalShares: 3,
+		},
+		PreferenceOrder: []StrategyID{StrategyShamir},
+	}, shamirStrat, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatalf("NewBarrier: %v", err)
+	}
+
+	// Override to 3-of-5 via SetShamirConfig.
+	b.SetShamirConfig(&ShamirConfig{Threshold: 3, TotalShares: 5})
+
+	_, err = b.InitializeShamir(context.Background(), Credentials{})
+	if err != nil {
+		t.Fatalf("InitializeShamir: %v", err)
+	}
+
+	status := b.Status()
+	if status.ShamirThreshold != 3 {
+		t.Errorf("ShamirThreshold = %d, want 3 after override", status.ShamirThreshold)
+	}
+	if status.ShamirTotal != 5 {
+		t.Errorf("ShamirTotal = %d, want 5 after override", status.ShamirTotal)
+	}
+}
+
+// TestBarrierStatus_ShamirFields_NonShamirBarrier verifies that for a
+// non-Shamir barrier, ShamirThreshold and ShamirTotal are zero.
+func TestBarrierStatus_ShamirFields_NonShamirBarrier(t *testing.T) {
+	store := NewMemoryBackend()
+	b, err := NewBarrier(testLogger(), store, BarrierConfig{
+		RootKeyPath: "test/root-key",
+	}, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatalf("NewBarrier: %v", err)
+	}
+
+	if err := b.Initialize(context.Background(), Credentials{Secret: "pw"}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	status := b.Status()
+	if status.ShamirThreshold != 0 {
+		t.Errorf("ShamirThreshold = %d, want 0 for non-shamir barrier", status.ShamirThreshold)
+	}
+	if status.ShamirTotal != 0 {
+		t.Errorf("ShamirTotal = %d, want 0 for non-shamir barrier", status.ShamirTotal)
+	}
+}
+
 // ---------- loadOrCreateAccumulator tests ----------
 
 func TestShamirLoadOrCreateAccumulator_CreatesNew(t *testing.T) {

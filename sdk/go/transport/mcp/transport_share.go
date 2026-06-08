@@ -37,6 +37,20 @@ func (t *Transport) ListShares(ctx context.Context) (*transport.ListSharesRespon
 	return nil, &transport.NotImplementedError{Method: "ListShares"}
 }
 
+// GetShare retrieves a single submitted share. This method is not yet
+// implemented for the MCP transport and requires corresponding MCP tool
+// definitions.
+func (t *Transport) GetShare(ctx context.Context, serverURL, groupID string, shareIndex int) (*transport.ShareInfo, error) {
+	return nil, &transport.NotImplementedError{Method: "GetShare"}
+}
+
+// DeleteShare removes a single submitted share. This method is not yet
+// implemented for the MCP transport and requires corresponding MCP tool
+// definitions.
+func (t *Transport) DeleteShare(ctx context.Context, serverURL, groupID string, shareIndex int) error {
+	return &transport.NotImplementedError{Method: "DeleteShare"}
+}
+
 // GetShareCollectionStatus returns the collection status for a group. This
 // method is not yet implemented for the MCP transport and requires
 // corresponding MCP tool definitions.

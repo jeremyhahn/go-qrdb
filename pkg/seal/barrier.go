@@ -464,6 +464,11 @@ func (b *StorageBarrier) IsSealed() bool {
 // warm-booted barrier (a fresh StorageBarrier constructed over the same
 // store) reports the original initialization timestamp even while still
 // sealed, without requiring an unseal first.
+//
+// When the active strategy is Shamir, ShamirThreshold and ShamirTotal reflect
+// the scheme that is actually in effect. The in-memory ShamirStrategy is
+// preferred (updated by initializeShamirDirect and Rekey); the config values
+// are used as the fallback for cold-booted barriers that have not yet unsealed.
 func (b *StorageBarrier) Status() *BarrierStatus {
 	status := &BarrierStatus{
 		Sealed: b.IsSealed(),
@@ -478,6 +483,16 @@ func (b *StorageBarrier) Status() *BarrierStatus {
 	}
 	if t := b.initializedAtOrPersisted(); !t.IsZero() {
 		status.InitializedAt = t
+	}
+	// Populate Shamir scheme fields. The in-memory ShamirStrategy is the
+	// most accurate source (it is replaced by initializeShamirDirect and
+	// Rekey); fall back to the config for cold-booted / sealed barriers.
+	if strat := b.ShamirStrategy(); strat != nil {
+		status.ShamirThreshold = strat.Threshold()
+		status.ShamirTotal = strat.TotalShares()
+	} else if b.config.Shamir != nil && b.config.Shamir.Threshold >= 2 {
+		status.ShamirThreshold = b.config.Shamir.Threshold
+		status.ShamirTotal = b.config.Shamir.TotalShares
 	}
 	return status
 }

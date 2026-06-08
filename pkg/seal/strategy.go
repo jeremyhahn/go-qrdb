@@ -193,4 +193,12 @@ type BarrierStatus struct {
 
 	// InitializedAt records when the barrier was first initialized.
 	InitializedAt time.Time `json:"initialized_at"`
+
+	// ShamirThreshold is the minimum number of Shamir shares required to
+	// unseal. Zero when the active strategy is not Shamir.
+	ShamirThreshold int `json:"shamir_threshold,omitempty"`
+
+	// ShamirTotal is the total number of Shamir shares generated at
+	// initialization or last rekey. Zero when the active strategy is not Shamir.
+	ShamirTotal int `json:"shamir_total,omitempty"`
 }

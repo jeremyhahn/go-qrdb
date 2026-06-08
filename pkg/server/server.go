@@ -542,6 +542,7 @@ type CryptoOptions struct {
 	SealStrategy     seal.SealingStrategy
 	PINBackend       pin.PINBackend
 	FactorRegistry   *authfactors.FactorRegistry
+	AuditLogger      audit.AuditLogger
 }
 
 // ResolveCryptoOptions applies the given ServerOptions to a throwaway option
@@ -562,6 +563,7 @@ func ResolveCryptoOptions(opts ...ServerOption) CryptoOptions {
 		SealStrategy:     o.sealStrategy,
 		PINBackend:       o.pinBackend,
 		FactorRegistry:   o.factorRegistry,
+		AuditLogger:      o.auditLogger,
 	}
 }
 

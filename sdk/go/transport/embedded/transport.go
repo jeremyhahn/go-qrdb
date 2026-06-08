@@ -28,6 +28,7 @@ import (
 
 	objpool "github.com/jeremyhahn/go-objstore/pkg/pool"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
@@ -78,6 +79,7 @@ var (
 	_ transport.LoginProvider      = (*Transport)(nil)
 	_ transport.SessionProvider    = (*Transport)(nil)
 	_ transport.VolumePoolProvider = (*Transport)(nil)
+	_ transport.AuditProvider      = (*Transport)(nil)
 )
 
 // Transport implements the QRDB SDK transport interface by delegating
@@ -116,6 +118,7 @@ type Transport struct {
 	custodianGroupSvc ceremony.CustodianGroupServicer
 	shareSvc          ceremony.ShareServicer
 	authFactorSvc     service.AuthFactorServicer
+	auditLogger       audit.AuditLogger
 
 	// Phase 3 auth/identity wiring. All optional; SDK accessors return
 	// typed Missing*Error values when the corresponding service is not
