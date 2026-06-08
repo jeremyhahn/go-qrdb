@@ -80,6 +80,7 @@ package node
 
 import (
 	"context"
+	"crypto/fips140"
 	"errors"
 	"os"
 	"path/filepath"
@@ -92,6 +93,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	raftbackend "github.com/jeremyhahn/go-qrdb/pkg/backend/raft"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
@@ -1143,7 +1145,14 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	n.auditLogger = server.ResolveCryptoOptions(callerOpts...).AuditLogger
 
 	// Build in-process transport.
-	embeddedOpts, err := n.buildEmbeddedOpts(svcNode)
+	// RBAC posture mirrors the standalone daemon EXACTLY
+	// (cmd/qrdbd/start.go): config can only RAISE strictness and a
+	// FIPS 140-3 build (crypto/fips140.Enabled()) is always strict
+	// regardless of config, so embedded and standalone authorize
+	// identically. The Auth.SeparationOfDuties flag is the same source
+	// the daemon reads (cfg.Auth.SeparationOfDuties).
+	strictSoD := fips140.Enabled() || cfg.Auth.SeparationOfDuties
+	embeddedOpts, err := n.buildEmbeddedOpts(svcNode, strictSoD)
 	if err != nil {
 		return err
 	}
@@ -1185,10 +1194,16 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 // node's KV servicer), a LoginResolver bridging factors to qrdb users, the
 // optional SessionIssuer, and any injected hardware FactorVerifiers.
 //
+// When the node carries a Role service it also constructs the qrdb RBAC
+// authorizer (rbac.New) with the same posture as the standalone daemon —
+// WithStrictSeparation(strictSoD) — and wires it via
+// embedded.WithRBACAuthorizer, so embedded consumers get a working PDP
+// (node.Client().RBAC().Authorize) identical to the multi-protocol path.
+//
 // It returns a LoginWiringError when the UserAuthFactor service cannot be
 // constructed; the caller aborts the boot so a misconfigured login surface
 // never silently degrades to "login not supported".
-func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node) ([]embedded.Option, error) {
+func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node, strictSoD bool) ([]embedded.Option, error) {
 	opts := []embedded.Option{
 		embedded.WithMVCCService(svcNode.MVCC),
 		embedded.WithTransactionService(svcNode.Transaction),
@@ -1207,6 +1222,17 @@ func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node) ([]embedded.Option, er
 	}
 	if svcNode.Role != nil {
 		opts = append(opts, embedded.WithRoleService(svcNode.Role))
+		// Construct the qrdb RBAC authorizer the SAME way the standalone
+		// daemon does (cmd/qrdbd/start.go bootstrapAuthEnforcement):
+		// rbac.New(roleService, WithStrictSeparation(strictSoD)). Without
+		// this the embedded RBACClient.Authorize returns
+		// MissingRBACAuthorizerError. The daemon's optional StaleRead
+		// WithRoleServiceFallback has no equivalent in the embedded path
+		// (lifecycle.Node carries a single Role service) and only affects
+		// transient-read failover, never which requests are admitted, so
+		// authorize decisions remain identical.
+		rbacAuthz := rbac.New(svcNode.Role, rbac.WithStrictSeparation(strictSoD))
+		opts = append(opts, embedded.WithRBACAuthorizer(rbacAuthz))
 	}
 	if svcNode.Barrier != nil {
 		opts = append(opts, embedded.WithBarrierService(svcNode.Barrier))
