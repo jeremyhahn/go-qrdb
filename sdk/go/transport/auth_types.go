@@ -77,6 +77,9 @@ type Role struct {
 
 // CreateRoleRequest holds parameters for creating a role.
 type CreateRoleRequest struct {
+	// ID is an optional pre-assigned deterministic identifier. When empty,
+	// the server generates a random UUID, preserving legacy behavior.
+	ID          string   `json:"id,omitempty"`
 	Name        string   `json:"name"`
 	TenantID    string   `json:"tenantID,omitempty"`
 	Permissions []string `json:"permissions"`

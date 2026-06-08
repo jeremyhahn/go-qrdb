@@ -213,6 +213,7 @@ func (s *qrdbServiceServer) CreateRole(ctx context.Context, req *pb.CreateRoleRe
 	}
 
 	r, err := s.roleSvc.CreateRole(ctx, &role.CreateRoleRequest{
+		ID:          req.GetId(),
 		Name:        req.GetName(),
 		TenantID:    req.GetTenantId(),
 		Permissions: perms,

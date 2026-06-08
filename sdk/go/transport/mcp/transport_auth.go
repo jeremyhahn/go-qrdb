@@ -422,6 +422,9 @@ func (t *Transport) CreateRole(ctx context.Context, req *transport.CreateRoleReq
 	if req.TenantID != "" {
 		args["tenant_id"] = req.TenantID
 	}
+	if req.ID != "" {
+		args["id"] = req.ID
+	}
 
 	text, err := t.callTool(ctx, "qrdb_role_create", args)
 	if err != nil {

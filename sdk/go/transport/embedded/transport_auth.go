@@ -179,6 +179,7 @@ func (t *Transport) CreateRole(ctx context.Context, req *transport.CreateRoleReq
 	}
 	perms := stringsToPermissions(req.Permissions)
 	rl, err := t.roleSvc.CreateRole(ctx, &role.CreateRoleRequest{
+		ID:          req.ID,
 		Name:        req.Name,
 		TenantID:    req.TenantID,
 		Permissions: perms,

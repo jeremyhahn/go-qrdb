@@ -2196,3 +2196,55 @@ func TestKVRoleStore_WithQuotaChecker_DefaultTenant(t *testing.T) {
 		t.Errorf("quota.Check() tenantID = %q, want %q", checkedTenantID, tenant.SystemTenantID)
 	}
 }
+
+func TestCreateRole_PreAssignedID(t *testing.T) {
+	svc := newTestStore(t)
+	ctx := context.Background()
+
+	const wantID = "deterministic-admin-id"
+	r, err := svc.CreateRole(ctx, &CreateRoleRequest{
+		ID:          wantID,
+		Name:        "admin",
+		TenantID:    "acme",
+		Permissions: []permission.Permission{permission.KVPut},
+	})
+	if err != nil {
+		t.Fatalf("CreateRole: %v", err)
+	}
+	if r.ID != wantID {
+		t.Fatalf("ID: got %q, want %q", r.ID, wantID)
+	}
+
+	// The role must be retrievable by the exact pre-assigned ID.
+	got, err := svc.GetRole(ctx, wantID)
+	if err != nil {
+		t.Fatalf("GetRole(%q): %v", wantID, err)
+	}
+	if got.ID != wantID {
+		t.Errorf("GetRole ID: got %q, want %q", got.ID, wantID)
+	}
+	if got.Name != "admin" {
+		t.Errorf("GetRole Name: got %q, want %q", got.Name, "admin")
+	}
+}
+
+func TestCreateRole_EmptyIDAutoGenerates(t *testing.T) {
+	svc := newTestStore(t)
+	ctx := context.Background()
+
+	r, err := svc.CreateRole(ctx, &CreateRoleRequest{
+		Name:        "viewer",
+		TenantID:    "acme",
+		Permissions: []permission.Permission{permission.KVGet},
+	})
+	if err != nil {
+		t.Fatalf("CreateRole: %v", err)
+	}
+	if r.ID == "" {
+		t.Fatal("expected auto-generated non-empty ID")
+	}
+	// Auto-generated IDs are UUIDs; ensure retrievable under that ID.
+	if _, err := svc.GetRole(ctx, r.ID); err != nil {
+		t.Fatalf("GetRole(%q): %v", r.ID, err)
+	}
+}

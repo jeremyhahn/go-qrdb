@@ -125,6 +125,7 @@ type statusWireResponse struct {
 
 // createRoleWireRequest is the JSON wire payload for role.Create.
 type createRoleWireRequest struct {
+	ID          string   `json:"id,omitempty"`
 	Name        string   `json:"name"`
 	TenantID    string   `json:"tenantID"`
 	Permissions []string `json:"permissions"`
@@ -519,6 +520,7 @@ func (t *Transport) CreateRole(ctx context.Context, req *transport.CreateRoleReq
 	}
 
 	payload, err := json.Marshal(createRoleWireRequest{
+		ID:          req.ID,
 		Name:        req.Name,
 		TenantID:    req.TenantID,
 		Permissions: req.Permissions,

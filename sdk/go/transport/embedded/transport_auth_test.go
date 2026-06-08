@@ -765,6 +765,56 @@ func TestCreateRole_Success(t *testing.T) {
 	}
 }
 
+func TestCreateRole_ForwardsPreAssignedID(t *testing.T) {
+	var captured string
+	mock := &mockRoleServicer{
+		createRoleFn: func(_ context.Context, req *role.CreateRoleRequest) (*role.Role, error) {
+			captured = req.ID
+			r := testRole()
+			r.ID = req.ID
+			return r, nil
+		},
+	}
+	tr := newAuthTransport(t, WithRoleService(mock))
+
+	const wantID = "deterministic-admin-id"
+	rl, err := tr.CreateRole(context.Background(), &transport.CreateRoleRequest{
+		ID:          wantID,
+		Name:        "admin",
+		TenantID:    "tenant-a",
+		Permissions: []string{"kv:put"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if captured != wantID {
+		t.Errorf("forwarded ID: got %q, want %q", captured, wantID)
+	}
+	if rl.ID != wantID {
+		t.Errorf("returned role ID: got %q, want %q", rl.ID, wantID)
+	}
+}
+
+func TestCreateRole_EmptyIDPreservesAutoGeneration(t *testing.T) {
+	mock := &mockRoleServicer{
+		createRoleFn: func(_ context.Context, req *role.CreateRoleRequest) (*role.Role, error) {
+			if req.ID != "" {
+				t.Errorf("expected empty ID forwarded for auto-generation, got %q", req.ID)
+			}
+			return testRole(), nil
+		},
+	}
+	tr := newAuthTransport(t, WithRoleService(mock))
+
+	if _, err := tr.CreateRole(context.Background(), &transport.CreateRoleRequest{
+		Name:        "admin",
+		TenantID:    "tenant-a",
+		Permissions: []string{"kv:put"},
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestCreateRole_NilService(t *testing.T) {
 	tr := newAuthTransport(t)
 	_, err := tr.CreateRole(context.Background(), &transport.CreateRoleRequest{

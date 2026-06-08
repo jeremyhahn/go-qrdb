@@ -85,6 +85,9 @@ func toolRoleCreate() mcp.Tool {
 		mcp.WithString("tenant_id",
 			mcp.Description("The tenant ID. Defaults to the system default tenant when empty."),
 		),
+		mcp.WithString("id",
+			mcp.Description("Optional pre-assigned deterministic role ID. When empty, a random UUID is generated."),
+		),
 		mcp.WithString("permissions",
 			mcp.Required(),
 			mcp.Description(`Comma-separated list of permissions in "resource:action" format (e.g., "kv:put,kv:get,admin:health").`),
@@ -111,6 +114,7 @@ func handleRoleCreate(roleSvc role.RoleServicer) mcpserver.ToolHandlerFunc {
 		}
 
 		r, createErr := roleSvc.CreateRole(ctx, &role.CreateRoleRequest{
+			ID:          mcp.ParseString(req, "id", ""),
 			Name:        name,
 			TenantID:    mcp.ParseString(req, "tenant_id", ""),
 			Permissions: perms,

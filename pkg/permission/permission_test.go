@@ -480,7 +480,9 @@ func TestAll_TotalCount(t *testing.T) {
 	// + 3 database barrier perms (Seal/Unseal/BarrierStatus) = 215.
 	// + 2 credential perms (Store/Retrieve) = 217.
 	// + 1 permissions:resolve perm = 218 total.
-	const expectedTotal = 218
+	// + 14 broker-domain perms (4 secrets + 2 trust + 2 acme + 3 mcp
+	//   + 3 agent:runtime) = 232 total.
+	const expectedTotal = 232
 	all := All()
 	if len(all) != expectedTotal {
 		t.Fatalf("All() count: got %d, want %d", len(all), expectedTotal)

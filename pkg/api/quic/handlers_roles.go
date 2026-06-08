@@ -30,6 +30,7 @@ import (
 
 // createRoleWireRequest is the JSON wire payload for role.Create.
 type createRoleWireRequest struct {
+	ID          string   `json:"id,omitempty"`
 	Name        string   `json:"name"`
 	TenantID    string   `json:"tenantID"`
 	Permissions []string `json:"permissions"`
@@ -129,6 +130,7 @@ func (s *Server) handleCreateRole(ctx context.Context, payload []byte) ([]byte, 
 	perms := stringsToPermissions(req.Permissions)
 
 	rl, err := s.roleSvc.CreateRole(ctx, &role.CreateRoleRequest{
+		ID:          req.ID,
 		Name:        req.Name,
 		TenantID:    req.TenantID,
 		Permissions: perms,

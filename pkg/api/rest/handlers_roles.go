@@ -34,6 +34,7 @@ import (
 
 // createRoleRequest is the JSON payload for POST /roles.
 type createRoleRequest struct {
+	ID          string   `json:"id,omitempty"`
 	Name        string   `json:"name"`
 	TenantID    string   `json:"tenantID"`
 	Permissions []string `json:"permissions"`
@@ -119,6 +120,7 @@ func (s *Server) handleCreateRole(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	rl, err := s.roleSvc.CreateRole(ctx, &role.CreateRoleRequest{
+		ID:          req.ID,
 		Name:        req.Name,
 		TenantID:    req.TenantID,
 		Permissions: perms,

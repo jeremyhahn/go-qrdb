@@ -1848,6 +1848,9 @@ message CreateRoleRequest {
     string tenant_id = 1;
     string name = 2;
     repeated string permissions = 3;
+    // id is an optional pre-assigned deterministic identifier. When empty,
+    // the server generates a random UUID (preserving legacy behavior).
+    string id = 4;
 }
 
 // GetRoleRequest retrieves a role by ID.

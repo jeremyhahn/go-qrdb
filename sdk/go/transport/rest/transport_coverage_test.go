@@ -333,6 +333,59 @@ func TestRESTCreateRole_Success(t *testing.T) {
 	}
 }
 
+func TestRESTCreateRole_ForwardsPreAssignedID(t *testing.T) {
+	rt, rs, _ := newExtTransport(t)
+	const wantID = "deterministic-admin-id"
+	var gotID string
+	rs.handle(exactPath(http.MethodPost, "/roles"), func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		gotID = body.ID
+		writeJSON(w, &transport.Role{ID: body.ID, Name: body.Name})
+	})
+	role, err := rt.CreateRole(context.Background(), &transport.CreateRoleRequest{
+		ID:   wantID,
+		Name: "admin",
+	})
+	if err != nil {
+		t.Fatalf("CreateRole: %v", err)
+	}
+	if gotID != wantID {
+		t.Errorf("wire body id: got %q, want %q", gotID, wantID)
+	}
+	if role.ID != wantID {
+		t.Errorf("returned role ID: got %q, want %q", role.ID, wantID)
+	}
+}
+
+func TestRESTCreateRole_EmptyIDOmitted(t *testing.T) {
+	rt, rs, _ := newExtTransport(t)
+	sawIDKey := false
+	rs.handle(exactPath(http.MethodPost, "/roles"), func(w http.ResponseWriter, r *http.Request) {
+		var raw map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		_, sawIDKey = raw["id"]
+		writeJSON(w, &transport.Role{ID: "generated-uuid", Name: "admin"})
+	})
+	role, err := rt.CreateRole(context.Background(), &transport.CreateRoleRequest{Name: "admin"})
+	if err != nil {
+		t.Fatalf("CreateRole: %v", err)
+	}
+	if sawIDKey {
+		t.Error("expected id to be omitted from wire body when empty")
+	}
+	if role.ID != "generated-uuid" {
+		t.Errorf("returned role ID: got %q, want server-generated", role.ID)
+	}
+}
+
 func TestRESTCreateRole_Closed(t *testing.T) {
 	rt, _, _ := newExtTransport(t)
 	_ = rt.Close()

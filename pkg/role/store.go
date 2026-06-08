@@ -649,6 +649,16 @@ func adminPermissions() []permission.Permission {
 		permission.RegistrationConfigRead, permission.RegistrationConfigUpdate,
 		// Cross-scope audit — only effective for system-tenant Admin.
 		permission.AuditReadCross,
+		// Broker-domain tenant security surfaces (ScopeTenantOnly: a tenant
+		// admin manages their OWN tenant's secret vault, trust pool, and ACME
+		// issuance; the system tenant is structurally denied by the
+		// ScopeTenantOnly rule). Parallels the Admin role already holding
+		// certs:* and passwords:*. mcp/agent scopes are intentionally NOT
+		// granted here — they are wired by the broker's role->scope mapping.
+		permission.SecretsRead, permission.SecretsWrite, permission.SecretsDelete,
+		permission.SecretsList,
+		permission.TrustRead, permission.TrustWrite,
+		permission.ACMERead, permission.ACMEWrite,
 	}
 	sort.Slice(perms, func(i, j int) bool { return perms[i] < perms[j] })
 	return perms

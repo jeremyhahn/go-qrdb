@@ -9340,10 +9340,13 @@ func (x *UserResponse) GetUpdatedAt() string {
 
 // CreateRoleRequest creates a new role.
 type CreateRoleRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	TenantId      string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
-	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
-	Permissions   []string               `protobuf:"bytes,3,rep,name=permissions,proto3" json:"permissions,omitempty"`
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	TenantId    string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	Name        string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	Permissions []string               `protobuf:"bytes,3,rep,name=permissions,proto3" json:"permissions,omitempty"`
+	// id is an optional pre-assigned deterministic identifier. When empty,
+	// the server generates a random UUID (preserving legacy behavior).
+	Id            string `protobuf:"bytes,4,opt,name=id,proto3" json:"id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -9397,6 +9400,13 @@ func (x *CreateRoleRequest) GetPermissions() []string {
 		return x.Permissions
 	}
 	return nil
+}
+
+func (x *CreateRoleRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
 }
 
 // GetRoleRequest retrieves a role by ID.
@@ -19491,11 +19501,12 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\a \x01(\tR\tcreatedAt\x12\x1d\n" +
 	"\n" +
-	"updated_at\x18\b \x01(\tR\tupdatedAt\"f\n" +
+	"updated_at\x18\b \x01(\tR\tupdatedAt\"v\n" +
 	"\x11CreateRoleRequest\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12 \n" +
-	"\vpermissions\x18\x03 \x03(\tR\vpermissions\" \n" +
+	"\vpermissions\x18\x03 \x03(\tR\vpermissions\x12\x0e\n" +
+	"\x02id\x18\x04 \x01(\tR\x02id\" \n" +
 	"\x0eGetRoleRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"G\n" +
 	"\x14GetRoleByNameRequest\x12\x1b\n" +

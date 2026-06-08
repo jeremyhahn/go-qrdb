@@ -218,6 +218,7 @@ func (t *Transport) CreateRole(ctx context.Context, req *transport.CreateRoleReq
 	}
 
 	resp, err := t.client.CreateRole(ctx, &pb.CreateRoleRequest{
+		Id:          req.ID,
 		TenantId:    req.TenantID,
 		Name:        req.Name,
 		Permissions: req.Permissions,
