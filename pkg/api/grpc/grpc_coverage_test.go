@@ -76,10 +76,10 @@ func newMockBarrierService() *mockBarrierService {
 			HardwareBacked: false,
 			InitializedAt:  time.Now(),
 		},
-		shamirInitResult:  &service.ShamirInitInfo{Shares: []string{"share1", "share2"}, Threshold: 2, TotalShares: 3},
+		shamirInitResult:  &service.ShamirInitInfo{Threshold: 2, TotalShares: 3, ShareCount: 2},
 		unsealShareResult: &service.UnsealShareProgress{Required: 2, Submitted: 1, Complete: false},
-		rekeyResult:       &service.ShamirInitInfo{Shares: []string{"new1", "new2"}, Threshold: 2, TotalShares: 3},
-		recoveryGenResult: &service.RecoveryKeysInfo{Keys: []string{"key1"}, Threshold: 1, Total: 1},
+		rekeyResult:       &service.ShamirInitInfo{Threshold: 2, TotalShares: 3, ShareCount: 2},
+		recoveryGenResult: &service.RecoveryKeysInfo{Threshold: 1, Total: 1, ShareCount: 1},
 		rootTokenResult:   &service.RootTokenInfo{Token: "root-token-hex", CreatedAt: time.Now()},
 	}
 }
@@ -144,6 +144,33 @@ func (m *mockBarrierService) BarrierGenerateRootToken(_ context.Context, _ []str
 		return nil, m.rootTokenErr
 	}
 	return m.rootTokenResult, nil
+}
+func (m *mockBarrierService) BarrierOfficerRegister(_ context.Context, _ *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
+	return &service.BarrierOfficerRegisterResult{}, nil
+}
+func (m *mockBarrierService) BarrierOfficerList(_ context.Context) ([]*service.BarrierOfficerStatus, error) {
+	return nil, nil
+}
+func (m *mockBarrierService) BarrierOfficerClaimStatus(_ context.Context) ([]*service.BarrierOfficerStatus, error) {
+	return nil, nil
+}
+func (m *mockBarrierService) BarrierShareClaimBegin(_ context.Context, _, _ string) (*service.BarrierShareClaimChallenge, error) {
+	return &service.BarrierShareClaimChallenge{}, nil
+}
+func (m *mockBarrierService) BarrierShareClaimComplete(_ context.Context, _, _ string, _ []byte, _ string) (*service.BarrierShareClaimResult, error) {
+	return &service.BarrierShareClaimResult{}, nil
+}
+func (m *mockBarrierService) BarrierShamirSealVote(_ context.Context, _ string) (*service.UnsealShareProgress, error) {
+	return &service.UnsealShareProgress{}, nil
+}
+func (m *mockBarrierService) BarrierRecoveryOfficerRegister(_ context.Context, _ *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
+	return &service.BarrierOfficerRegisterResult{}, nil
+}
+func (m *mockBarrierService) BarrierRecoveryShareClaimBegin(_ context.Context, _, _ string) (*service.BarrierShareClaimChallenge, error) {
+	return &service.BarrierShareClaimChallenge{}, nil
+}
+func (m *mockBarrierService) BarrierRecoveryShareClaimComplete(_ context.Context, _, _ string, _ []byte, _ string) (*service.BarrierShareClaimResult, error) {
+	return &service.BarrierShareClaimResult{}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -1288,8 +1315,9 @@ func TestGRPC_BarrierRekey_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BarrierRekey failed: %v", err)
 	}
-	if len(resp.GetShares()) != 2 {
-		t.Fatalf("expected 2 shares, got %d", len(resp.GetShares()))
+	// INV-1/INV-11: shares never in rekey response; assert share_count only.
+	if resp.GetShareCount() != 2 {
+		t.Fatalf("expected share_count=2, got %d", resp.GetShareCount())
 	}
 }
 
@@ -1319,8 +1347,9 @@ func TestGRPC_BarrierRecoveryGenerate_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BarrierRecoveryGenerate failed: %v", err)
 	}
-	if len(resp.GetKeys()) != 1 {
-		t.Fatalf("expected 1 key, got %d", len(resp.GetKeys()))
+	// INV-1/INV-11: recovery key bytes never in response; assert share_count only.
+	if resp.GetShareCount() != 1 {
+		t.Fatalf("expected share_count=1, got %d", resp.GetShareCount())
 	}
 }
 

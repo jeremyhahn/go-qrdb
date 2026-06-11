@@ -110,6 +110,8 @@ func factorTypeToDomain(t transport.FactorType) auth.AuthFactorType {
 		return auth.AuthFactorFIDO2
 	case transport.FactorTypePIV:
 		return auth.AuthFactorPIV
+	case transport.FactorTypePKCS11:
+		return auth.AuthFactorPKCS11
 	default:
 		return auth.AuthFactorType(string(t))
 	}
@@ -125,6 +127,8 @@ func factorTypeFromDomain(t auth.AuthFactorType) transport.FactorType {
 		return transport.FactorTypeFIDO2
 	case auth.AuthFactorPIV:
 		return transport.FactorTypePIV
+	case auth.AuthFactorPKCS11:
+		return transport.FactorTypePKCS11
 	default:
 		return transport.FactorType(string(t))
 	}

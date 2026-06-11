@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	unixserver "github.com/jeremyhahn/go-qrdb/pkg/api/unix"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	tenantpkg "github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -60,16 +61,23 @@ func (m *mockTenantBarrierSvc) UpdateQuotas(_ context.Context, _ string, _ *quot
 }
 
 // TenantBarrierInit dispatches to initFn or returns nil.
-func (m *mockTenantBarrierSvc) TenantBarrierInit(ctx context.Context, tenantID, passphrase string, threshold, shares int) error {
+func (m *mockTenantBarrierSvc) TenantBarrierInit(ctx context.Context, tenantID, passphrase string, threshold, shares int) (*tenantpkg.TenantBarrierInitResult, error) {
 	if m.initFn != nil {
-		return m.initFn(ctx, tenantID, passphrase, threshold, shares)
+		if err := m.initFn(ctx, tenantID, passphrase, threshold, shares); err != nil {
+			return nil, err
+		}
 	}
-	return nil
+	return &tenantpkg.TenantBarrierInitResult{TenantID: tenantID}, nil
 }
 
 // TenantBarrierInitWithStrategy delegates to TenantBarrierInit.
-func (m *mockTenantBarrierSvc) TenantBarrierInitWithStrategy(ctx context.Context, tenantID, passphrase string, threshold, shares int, _ seal.StrategyID) error {
+func (m *mockTenantBarrierSvc) TenantBarrierInitWithStrategy(ctx context.Context, tenantID, passphrase string, threshold, shares int, _ seal.StrategyID) (*tenantpkg.TenantBarrierInitResult, error) {
 	return m.TenantBarrierInit(ctx, tenantID, passphrase, threshold, shares)
+}
+
+// TenantBarrierUnsealShare returns a zero progress for the given tenant.
+func (m *mockTenantBarrierSvc) TenantBarrierUnsealShare(_ context.Context, tenantID, _ string) (*tenantpkg.TenantBarrierUnsealProgress, error) {
+	return &tenantpkg.TenantBarrierUnsealProgress{TenantID: tenantID}, nil
 }
 
 // TenantBarrierUnseal dispatches to unsealFn or returns nil.
@@ -108,6 +116,25 @@ func (m *mockTenantBarrierSvc) DecrementQuotaUsage(_ context.Context, _ string, 
 }
 func (m *mockTenantBarrierSvc) GetQuotaUsage(_ context.Context, _ string, _ quota.Resource) (int64, error) {
 	return 0, nil
+}
+
+func (m *mockTenantBarrierSvc) TenantBarrierOfficerRegister(_ context.Context, _ string, _ *ceremony.RegisterOfficerRequest) (*ceremony.RegisterOfficerResult, error) {
+	return &ceremony.RegisterOfficerResult{}, nil
+}
+func (m *mockTenantBarrierSvc) TenantBarrierOfficerList(_ context.Context, _ string) ([]*ceremony.OfficerStatus, error) {
+	return nil, nil
+}
+func (m *mockTenantBarrierSvc) TenantBarrierOfficerClaimStatus(_ context.Context, _ string) ([]*ceremony.OfficerStatus, error) {
+	return nil, nil
+}
+func (m *mockTenantBarrierSvc) TenantBarrierShareClaimBegin(_ context.Context, _, _, _ string) (*ceremony.ChallengeResponse, error) {
+	return &ceremony.ChallengeResponse{}, nil
+}
+func (m *mockTenantBarrierSvc) TenantBarrierShareClaimComplete(_ context.Context, _, _, _ string, _ []byte, _ string) (*ceremony.ShareClaimResult, error) {
+	return &ceremony.ShareClaimResult{}, nil
+}
+func (m *mockTenantBarrierSvc) TenantBarrierShamirSealVote(_ context.Context, _, _ string) (*tenantpkg.TenantBarrierUnsealProgress, error) {
+	return &tenantpkg.TenantBarrierUnsealProgress{}, nil
 }
 
 // Compile-time interface assertion.
@@ -171,7 +198,7 @@ func TestTransport_TenantBarrierInit_RoundTrip(t *testing.T) {
 	tr, cleanup := connectTransportWithBarrier(t, mock)
 	defer cleanup()
 
-	err := tr.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{
+	_, err := tr.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{
 		TenantID:  "alice",
 		Threshold: 3,
 		Shares:    5,
@@ -295,7 +322,7 @@ func TestTransport_TenantBarrierStatus_RoundTrip(t *testing.T) {
 func TestTransport_TenantBarrierInit_NilRequest(t *testing.T) {
 	tr, cleanup := connectTransportWithBarrier(t, &mockTenantBarrierSvc{})
 	defer cleanup()
-	if err := tr.TenantBarrierInit(context.Background(), nil); err == nil {
+	if _, err := tr.TenantBarrierInit(context.Background(), nil); err == nil {
 		t.Fatal("expected error for nil request")
 	}
 }
@@ -337,7 +364,7 @@ func TestTransport_TenantBarrierInit_ServerError(t *testing.T) {
 	tr, cleanup := connectTransportWithBarrier(t, mock)
 	defer cleanup()
 
-	err := tr.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{TenantID: "ghost"})
+	_, err := tr.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{TenantID: "ghost"})
 	if err == nil {
 		t.Fatal("expected error from server")
 	}
@@ -405,7 +432,8 @@ func TestTransport_TenantBarrier_ClosedTransport(t *testing.T) {
 		fn   func() error
 	}{
 		{"Init", func() error {
-			return tr.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{TenantID: "x"})
+			_, err := tr.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{TenantID: "x"})
+			return err
 		}},
 		{"Unseal", func() error {
 			return tr.TenantBarrierUnseal(context.Background(), &transport.TenantBarrierUnsealRequest{TenantID: "x"})

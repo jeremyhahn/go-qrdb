@@ -13,7 +13,9 @@ import (
 	"errors"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/jeremyhahn/go-objstore/pkg/common"
 	objpool "github.com/jeremyhahn/go-objstore/pkg/pool"
@@ -219,7 +221,10 @@ func (r *BarrierRegistry) allocatePooledBackend(ctx context.Context, tenantID st
 		return nil, ErrPoolBackendNotLocal
 	}
 
-	tenantPath := filepath.Join(accessor.LocalPath(), tenantID)
+	tenantPath, err := containedTenantPath(accessor.LocalPath(), tenantID)
+	if err != nil {
+		return nil, err
+	}
 	storage, err := perTenantReg.Open(ctx, tenantID, tenantPath)
 	if err != nil {
 		return nil, err
@@ -232,6 +237,29 @@ func (r *BarrierRegistry) allocatePooledBackend(ctx context.Context, tenantID st
 	}
 
 	return NewStorageAdapter(storage), nil
+}
+
+// containedTenantPath joins tenantID onto the volume-pool root and
+// verifies the result is a strict child of the root. The tenant service
+// rejects path-unsafe ids at creation time; this is the fail-closed
+// defense at the filesystem sink — a traversal id (one containing path
+// separators or ".." components) returns ErrTenantPathEscapesPool
+// instead of opening a Pebble store outside the pool.
+func containedTenantPath(root, tenantID string) (string, error) {
+	joined := filepath.Join(root, tenantID)
+	rel, err := filepath.Rel(root, joined)
+	if err != nil {
+		return "", ErrTenantPathEscapesPool
+	}
+	// The tenant directory must be exactly one path component below the
+	// root: not the root itself ("."), not above it (".." prefix), and
+	// not nested deeper (a separator in the relative path).
+	if rel == "." || rel == ".." ||
+		strings.HasPrefix(rel, ".."+string(filepath.Separator)) ||
+		strings.ContainsRune(rel, filepath.Separator) {
+		return "", ErrTenantPathEscapesPool
+	}
+	return joined, nil
 }
 
 // RegisterTenantDefault creates and registers a tenant barrier with
@@ -288,6 +316,58 @@ func (r *BarrierRegistry) RegisterTenantPooledWithStrategy(
 	strategies ...SealingStrategy,
 ) (*TenantBarrier, error) {
 	return r.RegisterTenant(ctx, tenantID, nil, tenantBarrierConfig(tenantID), strategies...)
+}
+
+// RegisterTenantPooledShamir creates and registers a durable, barrier-isolated
+// tenant whose DEK is sealed with an M-of-N Shamir scheme. It mirrors
+// RegisterTenantPooledWithStrategy but additionally constructs a ShamirStrategy
+// for the requested threshold/total and populates the per-tenant BarrierConfig's
+// Shamir section so InitializeShamir / UnsealWithShare can drive the quorum.
+//
+// threshold must be >= 2 and <= total. When ttl is zero the barrier falls back
+// to the default quorum share TTL. The strategy splits the tenant's root key
+// directly (direct mode); the generated shares are returned from
+// InitializeTenantShamir and are never persisted.
+func (r *BarrierRegistry) RegisterTenantPooledShamir(
+	ctx context.Context,
+	tenantID string,
+	threshold, total int,
+	ttl time.Duration,
+) (*TenantBarrier, error) {
+	strat, err := NewShamirStrategy(threshold, total)
+	if err != nil {
+		return nil, err
+	}
+	cfg := tenantBarrierConfig(tenantID)
+	cfg.Shamir = &ShamirConfig{
+		Threshold:   threshold,
+		TotalShares: total,
+		QuorumTTL:   ttl,
+	}
+	return r.RegisterTenant(ctx, tenantID, nil, cfg, strat)
+}
+
+// InitializeTenantShamir initializes the tenant barrier identified by tenantID
+// using Shamir secret sharing and seals shares to the enrolled Security Officers
+// via the barrier's CeremonyDistributor. Returns metadata only; no share bytes
+// are returned. The tenant must already be registered via RegisterTenantPooledShamir.
+func (r *BarrierRegistry) InitializeTenantShamir(ctx context.Context, tenantID string, creds Credentials) (*ShamirInitParams, error) {
+	tb, err := r.GetTenant(tenantID)
+	if err != nil {
+		return nil, err
+	}
+	return tb.InitializeShamir(ctx, creds)
+}
+
+// UnsealTenantWithShare submits a single Shamir share toward the tenant
+// barrier's quorum threshold, automatically unsealing once the threshold is
+// met. The tenant must already be registered and initialized with Shamir.
+func (r *BarrierRegistry) UnsealTenantWithShare(ctx context.Context, tenantID, shareValue string) (*QuorumProgress, error) {
+	tb, err := r.GetTenant(tenantID)
+	if err != nil {
+		return nil, err
+	}
+	return tb.UnsealWithShare(ctx, shareValue)
 }
 
 // tenantBarrierConfig returns the canonical BarrierConfig for a per-tenant

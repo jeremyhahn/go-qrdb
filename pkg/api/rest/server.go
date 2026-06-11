@@ -702,12 +702,21 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 		s.routes["/v1/barrier/shamir/initialize"] = route{method: http.MethodPost, handler: s.handleBarrierShamirInitialize}
 		s.routes["/v1/barrier/shamir/unseal-share"] = route{method: http.MethodPost, handler: s.handleBarrierShamirUnsealShare}
 		s.routes["/v1/barrier/shamir/unseal-shares"] = route{method: http.MethodPost, handler: s.handleBarrierShamirUnsealShares}
+		s.routes["/v1/barrier/shamir/seal-vote"] = route{method: http.MethodPost, handler: s.handleBarrierShamirSealVote}
 		s.routes["/v1/barrier/rekey"] = route{method: http.MethodPost, handler: s.handleBarrierRekey}
 		s.routes["/v1/barrier/recovery/generate"] = route{method: http.MethodPost, handler: s.handleBarrierRecoveryGenerate}
 		s.routes["/v1/barrier/recovery/recover"] = route{method: http.MethodPost, handler: s.handleBarrierRecoveryRecover}
 		s.routes["/v1/barrier/recovery"] = route{method: http.MethodDelete, handler: s.handleBarrierRecoveryDelete}
 		s.routes["/v1/barrier/recovery/status"] = route{method: http.MethodGet, handler: s.handleBarrierRecoveryStatus}
 		s.routes["/v1/barrier/root-token"] = route{method: http.MethodPost, handler: s.handleBarrierRootToken}
+		// Security Officer static routes. GET and POST /v1/barrier/officers
+		// share the same path; they are dispatched via handleBarrierOfficers
+		// from dispatch() which performs method-based routing.
+		s.routes["/v1/barrier/officers/claim-status"] = route{method: http.MethodGet, handler: s.handleBarrierOfficerClaimStatus}
+		s.routes["/v1/barrier/recovery/officers"] = route{method: http.MethodPost, handler: s.handleBarrierRecoveryOfficerRegister}
+		// Path-param claim routes (/{username}/claim/begin|complete) are
+		// dispatched via handleBarrierOfficersByPath in dispatch() using the
+		// /v1/barrier/officers/ and /v1/barrier/recovery/officers/ prefixes.
 	}
 
 	// Ceremony lifecycle routes.
@@ -917,6 +926,36 @@ func (s *Server) dispatch(w http.ResponseWriter, r *http.Request) {
 		// GET/PUT/DELETE /v1/collections/{db}/{name}/documents/{id}).
 		if len(r.URL.Path) > 16 && r.URL.Path[:16] == "/v1/collections/" {
 			s.handleCollectionByPath(w, r)
+			return
+		}
+		// Barrier officer routes (GET/POST /v1/barrier/officers and path-param
+		// claim routes under /v1/barrier/officers/{username}/... and
+		// /v1/barrier/recovery/officers/{username}/...).
+		const barrierOfficersPrefix = "/v1/barrier/officers/"
+		const barrierRecoveryOfficersPrefix = "/v1/barrier/recovery/officers/"
+		if r.URL.Path == "/v1/barrier/officers" {
+			// Exact path: GET lists, POST registers.
+			if s.barrierSvc == nil {
+				writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "barrier"})
+				return
+			}
+			switch r.Method {
+			case http.MethodGet:
+				s.handleBarrierOfficerList(w, r)
+			case http.MethodPost:
+				s.handleBarrierOfficerRegister(w, r)
+			default:
+				w.Header().Set("Allow", "GET, POST")
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			}
+			return
+		}
+		if len(r.URL.Path) > len(barrierOfficersPrefix) && r.URL.Path[:len(barrierOfficersPrefix)] == barrierOfficersPrefix {
+			s.handleBarrierOfficersByPath(w, r)
+			return
+		}
+		if len(r.URL.Path) > len(barrierRecoveryOfficersPrefix) && r.URL.Path[:len(barrierRecoveryOfficersPrefix)] == barrierRecoveryOfficersPrefix {
+			s.handleBarrierOfficersByPath(w, r)
 			return
 		}
 		// Tenant routes with path params

@@ -150,13 +150,13 @@ func (m *mockCeremonySvc) CeremonyEnrollExternalOfficer(_ context.Context, _ *se
 
 type mockCeremonyCA struct{}
 
-func (m *mockCeremonyCA) SignCSR(_ []byte, _ *ceremony.SignCSROptions) (*x509.Certificate, error) {
+func (m *mockCeremonyCA) SignCSR(_ context.Context, _ []byte, _ *ceremony.SignCSROptions) (*x509.Certificate, error) {
 	return nil, nil
 }
 
 func (m *mockCeremonyCA) CACertificate() (*x509.Certificate, error) { return nil, nil }
 func (m *mockCeremonyCA) CABundle() ([]byte, error)                 { return []byte("ca"), nil }
-func (m *mockCeremonyCA) IssueCertificate(_ *ceremony.IssueCertRequest) (*ceremony.IssuedCert, error) {
+func (m *mockCeremonyCA) IssueCertificate(_ context.Context, _ *ceremony.IssueCertRequest) (*ceremony.IssuedCert, error) {
 	return &ceremony.IssuedCert{CertPEM: []byte("cert")}, nil
 }
 

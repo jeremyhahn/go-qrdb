@@ -139,6 +139,57 @@ func TestValidateReservedTenantID_RejectsControlBytes(t *testing.T) {
 	}
 }
 
+// TestValidateReservedTenantID_RejectsPathSeparators verifies that tenant IDs
+// containing path separators are rejected for all callers, including internal
+// calls — tenant ids become filesystem path segments under barrier isolation,
+// so a traversal id must never reach a filepath.Join sink.
+func TestValidateReservedTenantID_RejectsPathSeparators(t *testing.T) {
+	cases := []struct {
+		name string
+		id   string
+	}{
+		{"forward slash traversal", "../../etc"},
+		{"forward slash infix", "acme/prod"},
+		{"leading slash", "/acme"},
+		{"backslash traversal", `..\..\windows`},
+		{"backslash infix", `acme\prod`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var charErr *InvalidTenantIDCharError
+			err := validateReservedTenantID(context.Background(), tc.id)
+			if !errors.As(err, &charErr) {
+				t.Fatalf("id %q: expected *InvalidTenantIDCharError, got %T: %v", tc.id, err, err)
+			}
+
+			// Also rejected for internal callers — the check is unconditional.
+			err = validateReservedTenantID(WithInternalCall(context.Background()), tc.id)
+			if !errors.As(err, &charErr) {
+				t.Fatalf("id %q (internal): expected *InvalidTenantIDCharError, got %T: %v", tc.id, err, err)
+			}
+		})
+	}
+}
+
+// TestValidateReservedTenantID_RejectsRelativeSegments verifies "." and ".."
+// are rejected as tenant ids for all callers.
+func TestValidateReservedTenantID_RejectsRelativeSegments(t *testing.T) {
+	for _, id := range []string{".", ".."} {
+		t.Run(id, func(t *testing.T) {
+			var idErr *InvalidTenantIDError
+			err := validateReservedTenantID(context.Background(), id)
+			if !errors.As(err, &idErr) {
+				t.Fatalf("id %q: expected *InvalidTenantIDError, got %T: %v", id, err, err)
+			}
+
+			err = validateReservedTenantID(WithInternalCall(context.Background()), id)
+			if !errors.As(err, &idErr) {
+				t.Fatalf("id %q (internal): expected *InvalidTenantIDError, got %T: %v", id, err, err)
+			}
+		})
+	}
+}
+
 // TestInvalidTenantIDCharError_Error verifies the error message format.
 func TestInvalidTenantIDCharError_Error(t *testing.T) {
 	e := &InvalidTenantIDCharError{TenantID: "acme\x1f", Byte: 0x1f}

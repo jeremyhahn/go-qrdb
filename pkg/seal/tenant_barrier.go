@@ -84,6 +84,24 @@ func (t *TenantBarrier) Unseal(ctx context.Context, creds Credentials) error {
 	return t.barrier.Unseal(ctx, creds)
 }
 
+// InitializeShamir initializes this tenant barrier using Shamir secret sharing
+// and seals the generated M-of-N shares to the enrolled Security Officers via
+// the CeremonyDistributor. No share bytes are returned; the ShamirInitParams
+// reports only the threshold, total, and officer share count.
+// The tenant barrier must have been registered with a ShamirStrategy and a
+// populated ShamirConfig (see BarrierRegistry.RegisterTenantPooledShamir).
+func (t *TenantBarrier) InitializeShamir(ctx context.Context, creds Credentials) (*ShamirInitParams, error) {
+	return t.barrier.InitializeShamir(ctx, creds)
+}
+
+// UnsealWithShare submits a single Shamir share toward this tenant barrier's
+// quorum threshold, automatically unsealing once enough shares are present. The
+// accumulator is owned by the tenant's own StorageBarrier, so quorum state is
+// isolated per tenant.
+func (t *TenantBarrier) UnsealWithShare(ctx context.Context, shareValue string) (*QuorumProgress, error) {
+	return t.barrier.UnsealWithShare(ctx, shareValue)
+}
+
 // Seal transitions the tenant barrier to sealed state and releases the
 // encryptor. All subsequent storage operations will return ErrSealed until
 // Unseal is called again.
@@ -101,6 +119,12 @@ func (t *TenantBarrier) Get(ctx context.Context, key string) ([]byte, error) {
 // encrypted storage.
 func (t *TenantBarrier) Put(ctx context.Context, key string, value []byte) error {
 	return t.barrier.Put(ctx, key, value)
+}
+
+// PutIfAbsent encrypts the value and atomically stores it under the given key
+// in the tenant's encrypted storage only if the key does not already exist.
+func (t *TenantBarrier) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
+	return t.barrier.PutIfAbsent(ctx, key, value)
 }
 
 // Delete removes the key from the tenant's storage.
@@ -154,6 +178,12 @@ func (n *NamespacedBackend) Get(ctx context.Context, key string) ([]byte, error)
 // Put stores the value under the namespaced key.
 func (n *NamespacedBackend) Put(ctx context.Context, key string, data []byte) error {
 	return n.base.Put(ctx, n.prefix+key, data)
+}
+
+// PutIfAbsent atomically stores the value under the namespaced key only if the
+// key does not already exist. Atomicity is delegated to the base backend.
+func (n *NamespacedBackend) PutIfAbsent(ctx context.Context, key string, data []byte) (bool, error) {
+	return n.base.PutIfAbsent(ctx, n.prefix+key, data)
 }
 
 // Delete removes the namespaced key from storage.

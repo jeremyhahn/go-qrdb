@@ -19,7 +19,6 @@
 //   - transport_ceremony_custodian.go (ClaimShareBegin, ClaimShareComplete, SubmitUnsealShare)
 //   - transport_credentials.go CredentialStore + CredentialRetrieve
 //   - transport_embedding.go (Embed, BatchEmbed, ListEmbeddingModels, toTransport)
-//   - transport_rag.go (RAGIngestDocument, RAGQuery, RAGDeleteDocument, RAGListDocuments)
 //   - transport_rebalance.go (GetShardStats, CreateRebalancePlan, ExecuteRebalance,
 //     GetImbalanceReport, toRebalancePlan, planToMCP)
 
@@ -194,52 +193,6 @@ func (m *minimalEmbeddingSvc) DeregisterProvider(_ string) error { return nil }
 
 func (m *minimalEmbeddingSvc) Close() error { return nil }
 
-// minimalRAGSvc satisfies service.RAGServicer.
-type minimalRAGSvc struct {
-	ingestErr        error
-	queryErr         error
-	deleteErr        error
-	listDocumentsErr error
-}
-
-var _ service.RAGServicer = (*minimalRAGSvc)(nil)
-
-func newMinimalRAGSvc() *minimalRAGSvc { return &minimalRAGSvc{} }
-
-func (m *minimalRAGSvc) IngestDocument(_ context.Context, req *service.IngestDocumentRequest) (*service.IngestDocumentResponse, error) {
-	if m.ingestErr != nil {
-		return nil, m.ingestErr
-	}
-	return &service.IngestDocumentResponse{DocumentID: req.DocumentID, ChunkCount: 3, Namespace: req.Namespace}, nil
-}
-
-func (m *minimalRAGSvc) Query(_ context.Context, req *service.RAGQueryRequest) (*service.RAGQueryResponse, error) {
-	if m.queryErr != nil {
-		return nil, m.queryErr
-	}
-	return &service.RAGQueryResponse{
-		Results: []*service.RAGQueryResult{{ChunkText: "text", Score: 0.9, DocumentID: "doc-1"}},
-	}, nil
-}
-
-func (m *minimalRAGSvc) DeleteDocument(_ context.Context, req *service.DeleteRAGDocumentRequest) (*service.DeleteRAGDocumentResponse, error) {
-	if m.deleteErr != nil {
-		return nil, m.deleteErr
-	}
-	return &service.DeleteRAGDocumentResponse{DocumentID: req.DocumentID, ChunksRemoved: 3}, nil
-}
-
-func (m *minimalRAGSvc) ListDocuments(_ context.Context, _ *service.ListRAGDocumentsRequest) (*service.ListRAGDocumentsResponse, error) {
-	if m.listDocumentsErr != nil {
-		return nil, m.listDocumentsErr
-	}
-	return &service.ListRAGDocumentsResponse{
-		Documents: []*service.RAGDocumentInfo{{ID: "doc-1", Namespace: "ns1"}},
-	}, nil
-}
-
-func (m *minimalRAGSvc) Close() error { return nil }
-
 // ---------------------------------------------------------------------------
 // Connection helpers
 // ---------------------------------------------------------------------------
@@ -281,22 +234,6 @@ func connectEmbeddingInProcess(t *testing.T, svc service.EmbeddingServicer) (*Tr
 	srv := mcpapi.NewServer(
 		newMockKVService(), newMockAdminService(), ":0",
 		mcpapi.WithEmbedding(svc),
-	)
-	tr, err := NewInProcess(srv.MCPServer())
-	if err != nil {
-		t.Fatalf("NewInProcess: %v", err)
-	}
-	if err := tr.Connect(context.Background()); err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
-	return tr, func() { _ = tr.Close() }
-}
-
-func connectRAGInProcess(t *testing.T, svc service.RAGServicer) (*Transport, func()) {
-	t.Helper()
-	srv := mcpapi.NewServer(
-		newMockKVService(), newMockAdminService(), ":0",
-		mcpapi.WithRAG(svc),
 	)
 	tr, err := NewInProcess(srv.MCPServer())
 	if err != nil {
@@ -755,116 +692,6 @@ func TestMCP_Embedding_ListModels_ServiceError(t *testing.T) {
 	defer cleanup()
 
 	_, err := tr.ListEmbeddingModels(context.Background(), "openai")
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// RAG tests
-// ---------------------------------------------------------------------------
-
-func TestMCP_RAG_IngestDocument_Success(t *testing.T) {
-	tr, cleanup := connectRAGInProcess(t, newMinimalRAGSvc())
-	defer cleanup()
-
-	resp, err := tr.RAGIngestDocument(context.Background(), &transport.RAGIngestRequest{
-		DocumentID: "doc-1", Text: "hello world", Namespace: "ns1",
-	})
-	if err != nil {
-		t.Fatalf("RAGIngestDocument: %v", err)
-	}
-	if resp.DocumentID != "doc-1" {
-		t.Fatalf("unexpected DocumentID: %q", resp.DocumentID)
-	}
-}
-
-func TestMCP_RAG_IngestDocument_ServiceError(t *testing.T) {
-	svc := newMinimalRAGSvc()
-	svc.ingestErr = errors.New("ingest failed")
-	tr, cleanup := connectRAGInProcess(t, svc)
-	defer cleanup()
-
-	_, err := tr.RAGIngestDocument(context.Background(), &transport.RAGIngestRequest{DocumentID: "d1"})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestMCP_RAG_Query_Success(t *testing.T) {
-	tr, cleanup := connectRAGInProcess(t, newMinimalRAGSvc())
-	defer cleanup()
-
-	resp, err := tr.RAGQuery(context.Background(), &transport.RAGQueryRequest{
-		Query: "what is QRDB", Namespace: "ns1", TopK: 5,
-	})
-	if err != nil {
-		t.Fatalf("RAGQuery: %v", err)
-	}
-	if len(resp.Results) == 0 {
-		t.Fatal("expected results")
-	}
-}
-
-func TestMCP_RAG_Query_ServiceError(t *testing.T) {
-	svc := newMinimalRAGSvc()
-	svc.queryErr = errors.New("query failed")
-	tr, cleanup := connectRAGInProcess(t, svc)
-	defer cleanup()
-
-	_, err := tr.RAGQuery(context.Background(), &transport.RAGQueryRequest{Query: "x"})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestMCP_RAG_DeleteDocument_Success(t *testing.T) {
-	tr, cleanup := connectRAGInProcess(t, newMinimalRAGSvc())
-	defer cleanup()
-
-	resp, err := tr.RAGDeleteDocument(context.Background(), &transport.RAGDeleteDocumentRequest{
-		DocumentID: "doc-1", Namespace: "ns1",
-	})
-	if err != nil {
-		t.Fatalf("RAGDeleteDocument: %v", err)
-	}
-	if resp.DocumentID != "doc-1" {
-		t.Fatalf("unexpected DocumentID: %q", resp.DocumentID)
-	}
-}
-
-func TestMCP_RAG_DeleteDocument_ServiceError(t *testing.T) {
-	svc := newMinimalRAGSvc()
-	svc.deleteErr = errors.New("not found")
-	tr, cleanup := connectRAGInProcess(t, svc)
-	defer cleanup()
-
-	_, err := tr.RAGDeleteDocument(context.Background(), &transport.RAGDeleteDocumentRequest{DocumentID: "d1"})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestMCP_RAG_ListDocuments_Success(t *testing.T) {
-	tr, cleanup := connectRAGInProcess(t, newMinimalRAGSvc())
-	defer cleanup()
-
-	resp, err := tr.RAGListDocuments(context.Background(), &transport.RAGListDocumentsRequest{Namespace: "ns1"})
-	if err != nil {
-		t.Fatalf("RAGListDocuments: %v", err)
-	}
-	if len(resp.Documents) == 0 {
-		t.Fatal("expected documents")
-	}
-}
-
-func TestMCP_RAG_ListDocuments_ServiceError(t *testing.T) {
-	svc := newMinimalRAGSvc()
-	svc.listDocumentsErr = errors.New("list failed")
-	tr, cleanup := connectRAGInProcess(t, svc)
-	defer cleanup()
-
-	_, err := tr.RAGListDocuments(context.Background(), &transport.RAGListDocumentsRequest{Namespace: "ns1"})
 	if err == nil {
 		t.Fatal("expected error")
 	}

@@ -41,6 +41,10 @@ type ListUsersResponse = user.ListUsersResponse
 // exists.
 type UsernameExistsError = user.UsernameExistsError
 
+// UserNotFoundError is returned when a user lookup (by id, username, or cert
+// thumbprint) does not resolve.
+type UserNotFoundError = user.UserNotFoundError
+
 // ---------------------------------------------------------------------------
 // Role IAM types
 // ---------------------------------------------------------------------------

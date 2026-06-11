@@ -33,25 +33,27 @@ import (
 
 // quicUserFactorRecord is the wire shape of an auth.AuthFactor.
 type quicUserFactorRecord struct {
-	ID           string            `json:"id"`
-	UserID       uint64            `json:"user_id"`
-	Type         string            `json:"type"`
-	Label        string            `json:"label,omitempty"`
-	Credential   []byte            `json:"credential"`
-	Metadata     map[string]string `json:"metadata,omitempty"`
-	RegisteredAt string            `json:"registered_at"`
-	LastUsedAt   string            `json:"last_used_at,omitempty"`
-	RevokedAt    string            `json:"revoked_at,omitempty"`
-	CreatedBy    string            `json:"created_by,omitempty"`
+	ID             string            `json:"id"`
+	UserID         uint64            `json:"user_id"`
+	Type           string            `json:"type"`
+	Label          string            `json:"label,omitempty"`
+	Credential     []byte            `json:"credential"`
+	SPKICredential []byte            `json:"spki_credential,omitempty"`
+	Metadata       map[string]string `json:"metadata,omitempty"`
+	RegisteredAt   string            `json:"registered_at"`
+	LastUsedAt     string            `json:"last_used_at,omitempty"`
+	RevokedAt      string            `json:"revoked_at,omitempty"`
+	CreatedBy      string            `json:"created_by,omitempty"`
 }
 
 type quicUserFactorAddRequest struct {
-	UserID     uint64            `json:"user_id"`
-	Type       string            `json:"type"`
-	Label      string            `json:"label,omitempty"`
-	Credential []byte            `json:"credential"`
-	Metadata   map[string]string `json:"metadata,omitempty"`
-	CreatedBy  string            `json:"created_by,omitempty"`
+	UserID         uint64            `json:"user_id"`
+	Type           string            `json:"type"`
+	Label          string            `json:"label,omitempty"`
+	Credential     []byte            `json:"credential"`
+	SPKICredential []byte            `json:"spki_credential,omitempty"`
+	Metadata       map[string]string `json:"metadata,omitempty"`
+	CreatedBy      string            `json:"created_by,omitempty"`
 }
 
 type quicUserFactorListRequest struct {
@@ -88,14 +90,15 @@ func userFactorToQUIC(f *auth.AuthFactor) quicUserFactorRecord {
 		return quicUserFactorRecord{}
 	}
 	r := quicUserFactorRecord{
-		ID:           f.ID,
-		UserID:       f.UserID,
-		Type:         string(f.Type),
-		Label:        f.Label,
-		Credential:   f.Credential,
-		Metadata:     f.Metadata,
-		RegisteredAt: f.RegisteredAt.Format(time.RFC3339),
-		CreatedBy:    f.CreatedBy,
+		ID:             f.ID,
+		UserID:         f.UserID,
+		Type:           string(f.Type),
+		Label:          f.Label,
+		Credential:     f.Credential,
+		SPKICredential: f.SPKICredential,
+		Metadata:       f.Metadata,
+		RegisteredAt:   f.RegisteredAt.Format(time.RFC3339),
+		CreatedBy:      f.CreatedBy,
 	}
 	if f.LastUsedAt != nil {
 		r.LastUsedAt = f.LastUsedAt.Format(time.RFC3339)
@@ -108,12 +111,13 @@ func userFactorToQUIC(f *auth.AuthFactor) quicUserFactorRecord {
 
 func userFactorFromQUIC(req *quicUserFactorAddRequest) *auth.AuthFactor {
 	return &auth.AuthFactor{
-		UserID:     req.UserID,
-		Type:       auth.AuthFactorType(req.Type),
-		Label:      req.Label,
-		Credential: req.Credential,
-		Metadata:   req.Metadata,
-		CreatedBy:  req.CreatedBy,
+		UserID:         req.UserID,
+		Type:           auth.AuthFactorType(req.Type),
+		Label:          req.Label,
+		Credential:     req.Credential,
+		SPKICredential: req.SPKICredential,
+		Metadata:       req.Metadata,
+		CreatedBy:      req.CreatedBy,
 	}
 }
 

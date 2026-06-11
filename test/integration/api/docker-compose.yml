@@ -103,9 +103,10 @@ services:
           --data-binary '{"secret":"integration-test-secret"}' \
           https://localhost:63002/v1/barrier/initialize || true
         # Wait for the full-boot admin endpoint: after unseal the data plane
-        # opens, the host elects a leader, and /health flips to 200. Tenant
-        # provisioning needs the full server (tenant service) up, so gate it
-        # on /health here rather than racing the sealed-window teardown.
+        # opens, the host elects a leader, and /health flips to 200. Gating
+        # "Bootstrap complete" on /health keeps the log an accurate signal
+        # that the full server is up rather than racing the sealed-window
+        # teardown.
         echo "Waiting for admin endpoint (post-unseal full boot)..."
         for i in $$(seq 1 60); do
           if curl -ks --max-time 2 -o /dev/null -w '%{http_code}' https://localhost:63002/health | grep -q 200; then
@@ -114,13 +115,6 @@ services:
           fi
           sleep 1
         done
-        # Provision the default tenant (idempotent via || true). "default" is
-        # distinct from the auto-created "system" first-boot tenant.
-        echo "Provisioning default tenant..."
-        curl -ks --max-time 10 -X POST $$AUTH \
-          -H 'Content-Type: application/json' \
-          --data-binary '{"id":"default","name":"Default","isolation_type":"barrier"}' \
-          https://localhost:63002/v1/tenants || true
         echo "Bootstrap complete"
         # Hand control back to qrdbd.
         wait $$QRDBD_PID
@@ -130,8 +124,12 @@ services:
   # DISTINCT port set (64001-64005), data volume, and unix socket so the
   # Shamir CLI tests exercise a real Shamir-sealed barrier without disturbing
   # the software-seal coverage. The entrypoint mirrors qrdbd's bootstrap but
-  # drives POST /v1/barrier/shamir/initialize during the sealed window and
-  # captures the returned shares to a file on a shared volume.
+  # drives the Security Officer share-distribution flow
+  # (docs/seal/so-share-distribution-design.md): officers are registered
+  # with CSRs during the sealed window, POST /v1/barrier/shamir/initialize
+  # returns a share-free response (INV-1), and each officer claims their
+  # share exactly once over their own mTLS session (INV-11). The claimed
+  # share values are written to a file on a shared volume.
   qrdbd-shamir:
     build:
       context: ../../..
@@ -215,21 +213,51 @@ services:
           fi
           sleep 1
         done
-        # Auto-initialize the Shamir barrier so first boot is non-interactive.
-        # POST /v1/barrier/shamir/initialize is allowlisted during the sealed
-        # window; it splits the root key into total_shares shares (threshold
-        # required to unseal) and unseals the barrier in direct mode, after
-        # which qrdbd tears down the sealed-window listener and continues the
-        # full boot. The returned shares are captured to a shared volume so
-        # the integration-tests runner can replay them for share-based unseal.
-        echo "Initializing Shamir barrier..."
-        curl -ks --max-time 10 -X POST $$AUTH \
-          -H 'Content-Type: application/json' \
-          --data-binary '{"secret":"integration-test-shamir-secret","threshold":2,"total_shares":3}' \
-          -o /data/raft/shamir-init.json \
-          https://localhost:64002/v1/barrier/shamir/initialize || true
-        echo "Shamir init response:"
-        cat /data/raft/shamir-init.json || true
+        # Bootstrap the Shamir barrier through the Security Officer claim
+        # flow (docs/seal/so-share-distribution-design.md). Shares are never
+        # returned by shamir/initialize (INV-1); instead three officers are
+        # registered with CSRs while the barrier is still sealed (officer
+        # registration routes are on the sealed-window allowlist), then
+        # initialization distributes one share per officer into server-side
+        # memguard enclaves. Officer count must EQUAL total_shares, and
+        # registration must happen BEFORE initialize. Guarded on the shares
+        # file so a container restart against a persisted volume does not
+        # re-run the one-time flow.
+        OFFDIR=/data/raft/officers
+        if [ ! -s /data/raft/shamir-init.json ]; then
+          mkdir -p $$OFFDIR
+          echo "Generating Security Officer keys and CSRs..."
+          for n in 1 2 3; do
+            [ -f $$OFFDIR/so-$$n.key ] || openssl ecparam -name prime256v1 -genkey -noout -out $$OFFDIR/so-$$n.key
+            openssl req -new -key $$OFFDIR/so-$$n.key -subj "/CN=so-$$n" -out $$OFFDIR/so-$$n.csr
+          done
+          echo "Registering Security Officers..."
+          for n in 1 2 3; do
+            jq -n --arg u "so-$$n" --rawfile csr $$OFFDIR/so-$$n.csr '{username: $$u, csr_pem: $$csr}' \
+              | curl -ks --max-time 10 -X POST $$AUTH \
+                  -H 'Content-Type: application/json' \
+                  --data-binary @- \
+                  -o $$OFFDIR/so-$$n.register.json \
+                  https://localhost:64002/v1/barrier/officers || true
+            jq -r .cert_pem $$OFFDIR/so-$$n.register.json > $$OFFDIR/so-$$n.crt 2>/dev/null || true
+            if ! grep -q 'BEGIN CERTIFICATE' $$OFFDIR/so-$$n.crt 2>/dev/null; then
+              echo "Officer so-$$n registration failed:"
+              cat $$OFFDIR/so-$$n.register.json || true
+            fi
+          done
+          # Initialize the Shamir barrier (share-free response). This splits
+          # the root key into one enclave-held share per registered officer
+          # and unseals the barrier in direct mode, after which qrdbd tears
+          # down the sealed-window listener and continues the full boot.
+          echo "Initializing Shamir barrier..."
+          curl -ks --max-time 10 -X POST $$AUTH \
+            -H 'Content-Type: application/json' \
+            --data-binary '{"secret":"integration-test-shamir-secret","threshold":2,"total_shares":3}' \
+            -o /data/raft/shamir-init-response.json \
+            https://localhost:64002/v1/barrier/shamir/initialize || true
+          echo "Shamir init response:"
+          cat /data/raft/shamir-init-response.json || true
+        fi
         # Wait for the full-boot admin endpoint: after unseal the data plane
         # opens, the host elects a leader, and /health flips to 200.
         echo "Waiting for admin endpoint (post-unseal full boot)..."
@@ -240,12 +268,56 @@ services:
           fi
           sleep 1
         done
-        # Provision the default tenant (idempotent via || true).
-        echo "Provisioning default tenant..."
-        curl -ks --max-time 10 -X POST $$AUTH \
-          -H 'Content-Type: application/json' \
-          --data-binary '{"id":"default","name":"Default","isolation_type":"barrier"}' \
-          https://localhost:64002/v1/tenants || true
+        # Claim each officer's share over the officer's own mTLS session
+        # (INV-11: share bytes only ever appear in the claiming officer's
+        # response). The handshake is begin (returns a hex nonce) -> sign
+        # SHA-256(nonce) with the officer key (ECDSA ASN.1-DER, exactly what
+        # `openssl dgst -sha256 -sign` produces) -> complete (returns the
+        # base64 JSON-encoded shamir share, one time only — the server-side
+        # enclave is destroyed on claim). The combinable share VALUE strings
+        # are extracted and written to /data/raft/shamir-init.json so the
+        # integration-test runner can replay them for share-based unseal and
+        # seal-vote quorum tests.
+        if [ ! -s /data/raft/shamir-init.json ]; then
+          echo "Claiming Security Officer shares..."
+          : > $$OFFDIR/share-values.txt
+          for n in 1 2 3; do
+            SOAUTH="--cacert /data/raft/ca.pem --cert $$OFFDIR/so-$$n.crt --key $$OFFDIR/so-$$n.key"
+            curl -ks --max-time 10 -X POST $$SOAUTH \
+              -o $$OFFDIR/so-$$n.begin.json \
+              https://localhost:64002/v1/barrier/officers/so-$$n/claim/begin || true
+            NONCE=$$(jq -r '.nonce_hex // empty' $$OFFDIR/so-$$n.begin.json 2>/dev/null)
+            if [ -z "$$NONCE" ]; then
+              echo "Claim begin failed for so-$$n:"
+              cat $$OFFDIR/so-$$n.begin.json || true
+              continue
+            fi
+            printf '%s' "$$NONCE" | xxd -r -p > $$OFFDIR/so-$$n.nonce
+            SIG=$$(openssl dgst -sha256 -sign $$OFFDIR/so-$$n.key $$OFFDIR/so-$$n.nonce | base64 -w0)
+            jq -n --arg nonce "$$NONCE" --arg sig "$$SIG" '{nonce_hex: $$nonce, signature: $$sig}' \
+              | curl -ks --max-time 10 -X POST $$SOAUTH \
+                  -H 'Content-Type: application/json' \
+                  --data-binary @- \
+                  -o $$OFFDIR/so-$$n.complete.json \
+                  https://localhost:64002/v1/barrier/officers/so-$$n/claim/complete || true
+            SHARE=$$(jq -r '.share_bytes // empty' $$OFFDIR/so-$$n.complete.json 2>/dev/null | base64 -d 2>/dev/null | jq -r '.value // empty' 2>/dev/null)
+            if [ -z "$$SHARE" ]; then
+              echo "Claim complete failed for so-$$n:"
+              cat $$OFFDIR/so-$$n.complete.json || true
+              continue
+            fi
+            echo "$$SHARE" >> $$OFFDIR/share-values.txt
+            # Scrub claim artifacts; the share now lives only in the shares
+            # file consumed by the test runner.
+            rm -f $$OFFDIR/so-$$n.complete.json $$OFFDIR/so-$$n.nonce
+            echo "Officer so-$$n share claimed"
+          done
+          jq -Rn '{threshold: 2, total_shares: 3, shares: [inputs]}' \
+            < $$OFFDIR/share-values.txt > /data/raft/shamir-init.json
+          rm -f $$OFFDIR/share-values.txt
+          echo "Shamir shares file written:"
+          jq '{threshold, total_shares, share_count: (.shares | length)}' /data/raft/shamir-init.json || true
+        fi
         echo "Bootstrap complete"
         # Hand control back to qrdbd.
         wait $$QRDBD_PID

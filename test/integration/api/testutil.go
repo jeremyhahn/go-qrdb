@@ -114,15 +114,14 @@ func loadCACertPool(caFile string) *x509.CertPool {
 }
 
 // loadClientTLSConfig returns a tls.Config with the CA cert pool and, when
-// available, a client certificate for mTLS authentication. When the CA cert
-// cannot be loaded (e.g. the default /data/raft/ca.pem doesn't exist in local
-// dev), InsecureSkipVerify is set as a fallback so tests can still reach a
-// server that uses a self-signed certificate not in the system pool.
+// available, a client certificate for mTLS authentication. The CA cert pool
+// is required: set QRDB_TLS_CA_CERT to the server's CA PEM path so TLS
+// verification succeeds. InsecureSkipVerify is not supported.
 func loadClientTLSConfig(cfg *TestConfig) *tls.Config {
 	caPool := loadCACertPool(cfg.TLSCACert)
-	tlsCfg := &tls.Config{RootCAs: caPool}
-	if caPool == nil {
-		tlsCfg.InsecureSkipVerify = true //nolint:gosec // dev/test fallback only
+	tlsCfg := &tls.Config{
+		RootCAs:    caPool,
+		MinVersion: tls.VersionTLS13,
 	}
 	if cfg.TLSCert != "" && cfg.TLSKey != "" {
 		cert, err := tls.LoadX509KeyPair(cfg.TLSCert, cfg.TLSKey)
@@ -152,18 +151,16 @@ func requireCLI(t *testing.T, cfg *TestConfig) {
 }
 
 // isServerAvailable checks if the REST server is available.
-// The health endpoint is public (no client cert needed). When a CA cert is
-// configured and successfully loaded, its pool is used to verify the server
-// certificate. If the CA cert is missing or unreadable (common in local dev
-// where the server uses a self-signed cert not in the system pool), we fall
-// back to InsecureSkipVerify so the availability probe still works. TLS is
-// still used — only certificate chain verification is skipped.
+// The health endpoint is public (no client cert needed). The CA cert pool
+// from cfg.TLSCACert is used to verify the server certificate. Set
+// QRDB_TLS_CA_CERT to the server's CA PEM so TLS verification succeeds.
+// InsecureSkipVerify is not supported.
 func isServerAvailable(t *testing.T, cfg *TestConfig) bool {
 	t.Helper()
 	caPool := loadCACertPool(cfg.TLSCACert)
-	tlsCfg := &tls.Config{RootCAs: caPool}
-	if caPool == nil {
-		tlsCfg.InsecureSkipVerify = true //nolint:gosec // availability probe only
+	tlsCfg := &tls.Config{
+		RootCAs:    caPool,
+		MinVersion: tls.VersionTLS13,
 	}
 	client := &http.Client{
 		Timeout:   2 * time.Second,
@@ -291,8 +288,10 @@ func (cfg *TestConfig) shamirConfig() *TestConfig {
 }
 
 // loadShamirShares reads the JSON file produced by the qrdbd-shamir
-// bootstrap (POST /v1/barrier/shamir/initialize) and returns the generated
-// shares. The file shape is {"shares":[...],"threshold":N,"total_shares":N}.
+// bootstrap's Security Officer claim flow (register officers → share-free
+// POST /v1/barrier/shamir/initialize → one-time per-officer share claims)
+// and returns the claimed share values. The file shape is
+// {"shares":[...],"threshold":N,"total_shares":N}.
 func loadShamirShares(t *testing.T, cfg *TestConfig) []string {
 	t.Helper()
 	data, err := os.ReadFile(cfg.ShamirSharesFile)

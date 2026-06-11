@@ -21,6 +21,9 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // handleBarrierInitialize initializes the storage barrier with a secret
@@ -92,10 +95,12 @@ func (s *Server) handleBarrierStatus(ctx context.Context, _ []byte) ([]byte, err
 	}
 
 	resp, err := proto.Marshal(&pb.BarrierStatusResponse{
-		Sealed:         info.Sealed,
-		Strategy:       info.Strategy,
-		HardwareBacked: info.HardwareBacked,
-		InitializedAt:  info.InitializedAt.Format(time.RFC3339Nano),
+		Sealed:          info.Sealed,
+		Strategy:        info.Strategy,
+		HardwareBacked:  info.HardwareBacked,
+		InitializedAt:   info.InitializedAt.Format(time.RFC3339Nano),
+		ShamirThreshold: int32(info.ShamirThreshold),
+		ShamirTotal:     int32(info.ShamirTotal),
 	})
 	if err != nil {
 		return nil, &MarshalError{Err: err}
@@ -124,10 +129,11 @@ func (s *Server) handleBarrierShamirInitialize(ctx context.Context, payload []by
 		return nil, err
 	}
 
-	resp, err := proto.Marshal(&pb.BarrierShamirInitializeResponse{
-		Shares:      info.Shares,
+	// INV-1: share bytes never appear in the init response.
+	resp, err := proto.Marshal(&pb.BarrierShamirOperationResponse{
 		Threshold:   int32(info.Threshold),
 		TotalShares: int32(info.TotalShares),
+		ShareCount:  int32(info.ShareCount),
 	})
 	if err != nil {
 		return nil, &MarshalError{Err: err}
@@ -203,10 +209,11 @@ func (s *Server) handleBarrierRekey(ctx context.Context, payload []byte) ([]byte
 		return nil, err
 	}
 
-	resp, err := proto.Marshal(&pb.BarrierShamirInitializeResponse{
-		Shares:      info.Shares,
+	// INV-1: share bytes never appear in the rekey response.
+	resp, err := proto.Marshal(&pb.BarrierShamirOperationResponse{
 		Threshold:   int32(info.Threshold),
 		TotalShares: int32(info.TotalShares),
+		ShareCount:  int32(info.ShareCount),
 	})
 	if err != nil {
 		return nil, &MarshalError{Err: err}
@@ -235,10 +242,11 @@ func (s *Server) handleBarrierRecoveryGenerate(ctx context.Context, payload []by
 		return nil, err
 	}
 
+	// INV-1: recovery share bytes never appear in the generate response.
 	resp, err := proto.Marshal(&pb.BarrierRecoveryKeysResponse{
-		Keys:      info.Keys,
-		Threshold: int32(info.Threshold),
-		Total:     int32(info.Total),
+		Threshold:  int32(info.Threshold),
+		Total:      int32(info.Total),
+		ShareCount: int32(info.ShareCount),
 	})
 	if err != nil {
 		return nil, &MarshalError{Err: err}
@@ -324,4 +332,297 @@ func (s *Server) handleBarrierRootToken(ctx context.Context, payload []byte) ([]
 		return nil, &MarshalError{Err: err}
 	}
 	return resp, nil
+}
+
+// ---------------------------------------------------------------------------
+// Barrier Security Officer QUIC handlers
+// ---------------------------------------------------------------------------
+
+// quicCertThumbprint extracts the mTLS peer certificate thumbprint from the
+// context. Returns a ClientCertRequiredError when no peer certificate is present.
+func quicCertThumbprint(ctx context.Context) (string, error) {
+	tlsState := auth.TLSStateFromContext(ctx)
+	if tlsState == nil || len(tlsState.PeerCertificates) == 0 {
+		return "", &ClientCertRequiredError{}
+	}
+	return ceremony.CertThumbprint(tlsState.PeerCertificates[0].Raw), nil
+}
+
+// handleBarrierOfficerRegister registers a Security Officer for the system barrier.
+func (s *Server) handleBarrierOfficerRegister(ctx context.Context, payload []byte) ([]byte, error) {
+	if s.barrierSvc == nil {
+		return nil, &ServiceNotConfiguredError{Service: "barrier"}
+	}
+
+	var req pb.BarrierOfficerRegisterRequest
+	if err := proto.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+
+	result, err := s.barrierSvc.BarrierOfficerRegister(ctx, &service.BarrierOfficerRegisterRequest{
+		Username:          req.GetUsername(),
+		CSRPEM:            []byte(req.GetCsrPem()),
+		AuthenticatorType: req.GetAuthenticatorType(),
+		AuthenticatorRef:  req.GetAuthenticatorRef(),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := proto.Marshal(&pb.BarrierOfficerRegisterResponse{
+		CertPem:    result.CertPEM,
+		ShareIndex: int32(result.ShareIndex),
+	})
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return resp, nil
+}
+
+// handleBarrierOfficerList returns all enrolled Security Officers for the system barrier.
+func (s *Server) handleBarrierOfficerList(ctx context.Context, _ []byte) ([]byte, error) {
+	if s.barrierSvc == nil {
+		return nil, &ServiceNotConfiguredError{Service: "barrier"}
+	}
+
+	officers, err := s.barrierSvc.BarrierOfficerList(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	pbOfficers := quicBarrierOfficerStatusesToProto(officers)
+	resp, err := proto.Marshal(&pb.BarrierOfficerListResponse{Officers: pbOfficers})
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return resp, nil
+}
+
+// handleBarrierShareClaimBegin issues a challenge nonce to a Security Officer.
+func (s *Server) handleBarrierShareClaimBegin(ctx context.Context, payload []byte) ([]byte, error) {
+	if s.barrierSvc == nil {
+		return nil, &ServiceNotConfiguredError{Service: "barrier"}
+	}
+
+	var req pb.BarrierShareClaimBeginRequest
+	if err := proto.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+
+	thumbprint, err := quicCertThumbprint(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	challenge, err := s.barrierSvc.BarrierShareClaimBegin(ctx, req.GetUsername(), thumbprint)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := proto.Marshal(&pb.BarrierShareClaimBeginResponse{
+		NonceHex:  challenge.NonceHex,
+		ExpiresAt: challenge.ExpiresAt.Format(time.RFC3339),
+	})
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return resp, nil
+}
+
+// handleBarrierShareClaimComplete verifies the officer's nonce signature and
+// returns the share bytes exactly once (INV-1, INV-11).
+func (s *Server) handleBarrierShareClaimComplete(ctx context.Context, payload []byte) ([]byte, error) {
+	if s.barrierSvc == nil {
+		return nil, &ServiceNotConfiguredError{Service: "barrier"}
+	}
+
+	var req pb.BarrierShareClaimCompleteRequest
+	if err := proto.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+
+	thumbprint, err := quicCertThumbprint(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Signature is transmitted as raw bytes in the proto wire format.
+	result, err := s.barrierSvc.BarrierShareClaimComplete(ctx, req.GetUsername(), req.GetNonceHex(), req.GetSignature(), thumbprint)
+	if err != nil {
+		return nil, err
+	}
+
+	// INV-11: share_bytes appears only here, in the claiming officer's own session.
+	resp, err := proto.Marshal(&pb.BarrierShareClaimCompleteResponse{
+		ShareIndex: int32(result.ShareIndex),
+		ShareBytes: result.ShareBytes,
+	})
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return resp, nil
+}
+
+// handleBarrierOfficerClaimStatus returns a per-officer claim status snapshot.
+func (s *Server) handleBarrierOfficerClaimStatus(ctx context.Context, _ []byte) ([]byte, error) {
+	if s.barrierSvc == nil {
+		return nil, &ServiceNotConfiguredError{Service: "barrier"}
+	}
+
+	officers, err := s.barrierSvc.BarrierOfficerClaimStatus(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	pbOfficers := quicBarrierOfficerStatusesToProto(officers)
+	resp, err := proto.Marshal(&pb.BarrierOfficerClaimStatusResponse{Officers: pbOfficers})
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return resp, nil
+}
+
+// handleBarrierShamirSealVote submits a Shamir share as a seal vote.
+func (s *Server) handleBarrierShamirSealVote(ctx context.Context, payload []byte) ([]byte, error) {
+	if s.barrierSvc == nil {
+		return nil, &ServiceNotConfiguredError{Service: "barrier"}
+	}
+
+	var req pb.BarrierShamirSealVoteRequest
+	if err := proto.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+
+	progress, err := s.barrierSvc.BarrierShamirSealVote(ctx, req.GetShare())
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := proto.Marshal(&pb.BarrierShamirSealVoteResponse{
+		Required:  int32(progress.Required),
+		Submitted: int32(progress.Submitted),
+		Complete:  progress.Complete,
+	})
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return resp, nil
+}
+
+// handleBarrierRecoveryOfficerRegister registers a Security Officer for
+// recovery key distribution.
+func (s *Server) handleBarrierRecoveryOfficerRegister(ctx context.Context, payload []byte) ([]byte, error) {
+	if s.barrierSvc == nil {
+		return nil, &ServiceNotConfiguredError{Service: "barrier"}
+	}
+
+	var req pb.BarrierOfficerRegisterRequest
+	if err := proto.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+
+	result, err := s.barrierSvc.BarrierRecoveryOfficerRegister(ctx, &service.BarrierOfficerRegisterRequest{
+		Username:          req.GetUsername(),
+		CSRPEM:            []byte(req.GetCsrPem()),
+		AuthenticatorType: req.GetAuthenticatorType(),
+		AuthenticatorRef:  req.GetAuthenticatorRef(),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := proto.Marshal(&pb.BarrierOfficerRegisterResponse{
+		CertPem:    result.CertPEM,
+		ShareIndex: int32(result.ShareIndex),
+	})
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return resp, nil
+}
+
+// handleBarrierRecoveryShareClaimBegin issues a challenge nonce to a
+// recovery officer.
+func (s *Server) handleBarrierRecoveryShareClaimBegin(ctx context.Context, payload []byte) ([]byte, error) {
+	if s.barrierSvc == nil {
+		return nil, &ServiceNotConfiguredError{Service: "barrier"}
+	}
+
+	var req pb.BarrierShareClaimBeginRequest
+	if err := proto.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+
+	thumbprint, err := quicCertThumbprint(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	challenge, err := s.barrierSvc.BarrierRecoveryShareClaimBegin(ctx, req.GetUsername(), thumbprint)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := proto.Marshal(&pb.BarrierShareClaimBeginResponse{
+		NonceHex:  challenge.NonceHex,
+		ExpiresAt: challenge.ExpiresAt.Format(time.RFC3339),
+	})
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return resp, nil
+}
+
+// handleBarrierRecoveryShareClaimComplete verifies a recovery officer's nonce
+// signature and returns the recovery share bytes exactly once (INV-1, INV-11).
+func (s *Server) handleBarrierRecoveryShareClaimComplete(ctx context.Context, payload []byte) ([]byte, error) {
+	if s.barrierSvc == nil {
+		return nil, &ServiceNotConfiguredError{Service: "barrier"}
+	}
+
+	var req pb.BarrierShareClaimCompleteRequest
+	if err := proto.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+
+	thumbprint, err := quicCertThumbprint(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Signature is transmitted as raw bytes in the proto wire format.
+	result, err := s.barrierSvc.BarrierRecoveryShareClaimComplete(ctx, req.GetUsername(), req.GetNonceHex(), req.GetSignature(), thumbprint)
+	if err != nil {
+		return nil, err
+	}
+
+	// INV-11: share_bytes appears only here, in the claiming officer's own session.
+	resp, err := proto.Marshal(&pb.BarrierShareClaimCompleteResponse{
+		ShareIndex: int32(result.ShareIndex),
+		ShareBytes: result.ShareBytes,
+	})
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return resp, nil
+}
+
+// quicBarrierOfficerStatusesToProto converts a slice of BarrierOfficerStatus to
+// proto OfficerStatus messages.
+func quicBarrierOfficerStatusesToProto(officers []*service.BarrierOfficerStatus) []*pb.OfficerStatus {
+	out := make([]*pb.OfficerStatus, len(officers))
+	for i, o := range officers {
+		out[i] = &pb.OfficerStatus{
+			Username:       o.Username,
+			CertThumbprint: o.CertThumbprint,
+			ShareIndex:     int32(o.ShareIndex),
+			AuthFactor:     o.AuthFactor,
+			SharePending:   o.SharePending,
+			EnrolledAt:     o.EnrolledAt.Format(time.RFC3339),
+		}
+		if !o.ClaimedAt.IsZero() {
+			out[i].ClaimedAt = o.ClaimedAt.Format(time.RFC3339)
+		}
+	}
+	return out
 }

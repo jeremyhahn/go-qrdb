@@ -1301,6 +1301,187 @@ func TestBuiltInRoles_DifferentTenantsDifferentIDs(t *testing.T) {
 }
 
 // roleByName is a test helper that locates a role by name in the slice.
+// ---------------------------------------------------------------------------
+// Broker data-plane grant matrix (tenant-admin)
+// ---------------------------------------------------------------------------
+
+// brokerFamilyWildcards lists the eight broker data-plane resource families
+// the Admin (tenant-admin) role must hold as resource:* whole-segment
+// wildcards so a human tenant-admin's USER token resolves data-plane scopes.
+var brokerFamilyWildcards = []permission.Permission{
+	permission.ObjStoreAll,
+	permission.OrchestratorAll,
+	permission.SchedulerAll,
+	permission.MessagingAll,
+	permission.ParametersAll,
+	permission.DynamicSecretsAll,
+	permission.ProjectAll,
+	permission.OllamaAll,
+}
+
+// adminPermSet resolves the Admin built-in role permissions into a set for
+// membership assertions.
+func adminPermSet(t *testing.T) map[permission.Permission]struct{} {
+	t.Helper()
+	admin := roleByName(BuiltInRoles("acme"), RoleNameAdmin)
+	if admin == nil {
+		t.Fatal("admin role not found in BuiltInRoles")
+	}
+	set := make(map[permission.Permission]struct{}, len(admin.Permissions))
+	for _, p := range admin.Permissions {
+		set[p] = struct{}{}
+	}
+	return set
+}
+
+// wildcardSatisfies mirrors the RBAC authorizer's whole-segment wildcard match
+// (pkg/auth/rbac.permissionGranted): a granted resource:* covers any concrete
+// resource:action in that family. It is duplicated here only to assert the
+// grant's effect without importing the rbac package (which would create an
+// import cycle through role).
+func wildcardSatisfies(grants map[permission.Permission]struct{}, required permission.Permission) bool {
+	if _, ok := grants[required]; ok {
+		return true
+	}
+	res := permission.Resource(required)
+	act := permission.Action(required)
+	for _, cand := range []permission.Permission{
+		permission.Permission(res + ":*"),
+		permission.Permission("*:" + act),
+		permission.Permission("*:*"),
+	} {
+		if _, ok := grants[cand]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// TestBuiltInRoles_AdminHasBrokerDataPlaneWildcards verifies the tenant-admin
+// role carries every broker data-plane family as a resource:* wildcard grant.
+func TestBuiltInRoles_AdminHasBrokerDataPlaneWildcards(t *testing.T) {
+	set := adminPermSet(t)
+	for _, w := range brokerFamilyWildcards {
+		if _, ok := set[w]; !ok {
+			t.Errorf("admin missing broker data-plane wildcard grant: %q", w)
+		}
+	}
+}
+
+// TestBuiltInRoles_AdminWildcardsResolveConcreteDataPlane verifies the
+// tenant-admin wildcard grants actually satisfy concrete data-plane
+// resource:action checks (the operation the broker PEP enforces). Without the
+// Stage grant, every one of these resolved to a deny.
+func TestBuiltInRoles_AdminWildcardsResolveConcreteDataPlane(t *testing.T) {
+	set := adminPermSet(t)
+	concrete := []permission.Permission{
+		permission.ObjStorePut, permission.ObjStoreGet, permission.ObjStoreAdmin,
+		permission.OrchestratorSpawn, permission.OrchestratorStatus,
+		permission.SchedulerCreate, permission.SchedulerRead,
+		permission.MessagingPublish, permission.MessagingSubscribe,
+		permission.ParametersRead, permission.ParametersWrite,
+		permission.DynamicSecretsGenerate, permission.DynamicSecretsRoleCreate,
+		permission.ProjectRead, permission.ProjectList,
+		permission.OllamaEmbed, permission.OllamaModelList,
+	}
+	for _, p := range concrete {
+		if !wildcardSatisfies(set, p) {
+			t.Errorf("admin wildcard grants do not satisfy concrete %q", p)
+		}
+	}
+}
+
+// TestBuiltInRoles_AdminBrokerGrantsValidate verifies the wildcard grants on
+// the Admin role are accepted by validatePermissions (the same gate
+// CreateRole/UpdateRole apply), proving they are legal role grants even though
+// they are not registered as concrete permissions.
+func TestBuiltInRoles_AdminBrokerGrantsValidate(t *testing.T) {
+	admin := roleByName(BuiltInRoles("acme"), RoleNameAdmin)
+	if admin == nil {
+		t.Fatal("admin role not found")
+	}
+	if err := validatePermissions(admin.Permissions); err != nil {
+		t.Fatalf("admin permissions failed validation: %v", err)
+	}
+	for _, w := range brokerFamilyWildcards {
+		if !permission.IsWildcard(w) {
+			t.Errorf("expected %q to be a whole-segment wildcard", w)
+		}
+		if permission.IsRegistered(w) {
+			t.Errorf("wildcard %q must NOT be registered as a concrete permission", w)
+		}
+	}
+}
+
+// TestBrokerDataPlaneConcretePermsAreTenantOnly verifies the concrete
+// broker data-plane permissions remain ScopeTenantOnly. This is the
+// safety property that keeps the Admin wildcard grants from leaking across
+// tenants or to the system tenant: the authorizer resolves scope against the
+// concrete requested permission, not the wildcard grant.
+func TestBrokerDataPlaneConcretePermsAreTenantOnly(t *testing.T) {
+	concrete := []permission.Permission{
+		permission.ObjStorePut, permission.ObjStoreAdmin,
+		permission.OrchestratorSpawn, permission.SchedulerCreate,
+		permission.MessagingPublish, permission.ParametersWrite,
+		permission.DynamicSecretsGenerate, permission.DynamicSecretsRoleCreate,
+		permission.ProjectRead, permission.OllamaEmbed,
+	}
+	for _, p := range concrete {
+		if got := permission.LookupScope(p); got != permission.ScopeTenantOnly {
+			t.Errorf("scope for %q: got %v, want ScopeTenantOnly", p, got)
+		}
+	}
+}
+
+// TestNoDataUserRole documents the RESOLVED decision: no dedicated "data-user"
+// built-in role exists in qrdb. The day-to-day broker data-plane role is the
+// existing Operator role — it carries the non-admin verbs of all eight broker
+// data-plane families (objstore, orchestrator, scheduler, messaging,
+// parameters, dynamic_secrets, project, ollama), while the Admin role keeps the
+// full families via resource:* wildcards. There is therefore no need for a
+// separate data-user row in the grant matrix. This guards against a future
+// regression that silently reintroduces a data-user role (which would
+// duplicate Operator's data-plane grant) and confirms Operator actually carries
+// the data-plane families.
+func TestNoDataUserRole(t *testing.T) {
+	roles := BuiltInRoles("acme")
+	for _, r := range roles {
+		if r.Name == "data-user" || r.Name == "data_user" {
+			t.Fatalf("unexpected data-user role present: %q; the day-to-day"+
+				" data-plane role is Operator, not a dedicated data-user", r.Name)
+		}
+	}
+	if OwnerRole("acme").Name == "data-user" {
+		t.Fatal("owner role unexpectedly named data-user")
+	}
+
+	// The Operator role IS the resolved day-to-day data-plane carrier: it must
+	// hold at least one concrete verb from each broker data-plane family.
+	operator := roleByName(roles, RoleNameOperator)
+	if operator == nil {
+		t.Fatal("operator role not found")
+	}
+	permSet := make(map[permission.Permission]struct{}, len(operator.Permissions))
+	for _, p := range operator.Permissions {
+		permSet[p] = struct{}{}
+	}
+	familySentinels := []permission.Permission{
+		permission.ObjStoreGet,
+		permission.OrchestratorSpawn,
+		permission.SchedulerCreate,
+		permission.MessagingPublish,
+		permission.ParametersRead,
+		permission.DynamicSecretsGenerate,
+		permission.ProjectRead,
+		permission.OllamaEmbed,
+	}
+	for _, p := range familySentinels {
+		if _, ok := permSet[p]; !ok {
+			t.Errorf("operator missing day-to-day data-plane permission: %q", p)
+		}
+	}
+}
+
 func roleByName(roles []*Role, name string) *Role {
 	for _, r := range roles {
 		if r.Name == name {
@@ -1416,21 +1597,30 @@ func TestBuiltInRoles_SOHasNoCryptoPerms(t *testing.T) {
 	}
 }
 
-// TestBuiltInRoles_CustodianOnlyHasUnsealShare verifies that the Custodian
-// role's permission list contains exactly one entry: barrier:unseal-share.
-func TestBuiltInRoles_CustodianOnlyHasUnsealShare(t *testing.T) {
+// TestBuiltInRoles_CustodianOnlyHasShareOps verifies that the Custodian
+// role's permission list is the exact closed set of share-submission
+// operations: barrier:unseal-share plus the tenant-scoped claim-share and
+// seal-vote permissions. Any other permission on the Custodian role is a
+// FIPS 140-3 AS10.06 violation.
+func TestBuiltInRoles_CustodianOnlyHasShareOps(t *testing.T) {
 	roles := BuiltInRoles("acme")
 	custodian := roleByName(roles, RoleNameCustodian)
 	if custodian == nil {
 		t.Fatal("custodian role not found")
 	}
-	if len(custodian.Permissions) != 1 {
-		t.Fatalf("custodian: expected exactly 1 permission, got %d: %v",
-			len(custodian.Permissions), custodian.Permissions)
+	want := map[permission.Permission]struct{}{
+		permission.BarrierUnsealShare:      {},
+		permission.TenantBarrierClaimShare: {},
+		permission.TenantBarrierSealVote:   {},
 	}
-	if custodian.Permissions[0] != permission.BarrierUnsealShare {
-		t.Errorf("custodian: expected %q, got %q",
-			permission.BarrierUnsealShare, custodian.Permissions[0])
+	if len(custodian.Permissions) != len(want) {
+		t.Fatalf("custodian: expected exactly %d permissions, got %d: %v",
+			len(want), len(custodian.Permissions), custodian.Permissions)
+	}
+	for _, p := range custodian.Permissions {
+		if _, ok := want[p]; !ok {
+			t.Errorf("custodian: unexpected permission %q", p)
+		}
 	}
 }
 
@@ -1529,6 +1719,339 @@ func TestBuiltInRoles_OperatorHasCryptoPerms(t *testing.T) {
 	}
 }
 
+// TestBuiltInRoles_OperatorHasDataPlanePerms asserts the exact day-to-day
+// broker data-plane verb set granted to the Operator role across all eight
+// families. This pins the grant so a future edit cannot silently add or drop a
+// verb without updating this expectation.
+func TestBuiltInRoles_OperatorHasDataPlanePerms(t *testing.T) {
+	roles := BuiltInRoles("acme")
+	operator := roleByName(roles, RoleNameOperator)
+	if operator == nil {
+		t.Fatal("operator role not found")
+	}
+	permSet := make(map[permission.Permission]struct{}, len(operator.Permissions))
+	for _, p := range operator.Permissions {
+		permSet[p] = struct{}{}
+	}
+
+	want := []permission.Permission{
+		// objstore (day-to-day)
+		permission.ObjStorePut, permission.ObjStoreGet, permission.ObjStoreDelete,
+		permission.ObjStoreList, permission.ObjStoreHead, permission.ObjStoreCopy,
+		permission.ObjStoreArchive, permission.ObjStoreRestore,
+		permission.ObjStoreVerify, permission.ObjStoreBatch,
+		permission.ObjStoreReadPolicy, permission.ObjStoreReadBackend,
+		permission.ObjStoreReadStats, permission.ObjStoreTenantUsage,
+		permission.ObjStoreTenantQuotaRead,
+		// orchestrator (all 32 concrete verbs — full data plane)
+		permission.OrchestratorSpawn, permission.OrchestratorPrompt,
+		permission.OrchestratorStatus, permission.OrchestratorClose,
+		permission.OrchestratorList, permission.OrchestratorTaskCreate,
+		permission.OrchestratorTaskRead, permission.OrchestratorTaskList,
+		permission.OrchestratorTaskClaim, permission.OrchestratorTaskComplete,
+		permission.OrchestratorTaskDecompose, permission.OrchestratorArtifactSubmit,
+		permission.OrchestratorArtifactRead, permission.OrchestratorJobStart,
+		permission.OrchestratorJobRead, permission.OrchestratorJobList,
+		permission.OrchestratorJobCancel, permission.OrchestratorBackendList,
+		permission.OrchestratorDiscover, permission.OrchestratorHook,
+		permission.OrchestratorWorkflowRead, permission.OrchestratorWorkflowWrite,
+		permission.OrchestratorHealth, permission.OrchestratorInference,
+		permission.OrchestratorAgentRegister, permission.OrchestratorAgentRead,
+		permission.OrchestratorAgentList, permission.OrchestratorAgentRemove,
+		permission.OrchestratorAgentHeartbeat, permission.OrchestratorCacheRead,
+		permission.OrchestratorCacheWrite, permission.OrchestratorBroadcast,
+		// messaging (day-to-day)
+		permission.MessagingChannelCreate, permission.MessagingChannelRead,
+		permission.MessagingChannelList, permission.MessagingChannelDelete,
+		permission.MessagingPublish, permission.MessagingSubscribe,
+		permission.MessagingUnsubscribe, permission.MessagingWatch,
+		permission.MessagingStats,
+		// scheduler (day-to-day)
+		permission.SchedulerCreate, permission.SchedulerRead, permission.SchedulerList,
+		permission.SchedulerUpdate, permission.SchedulerDelete,
+		permission.SchedulerTrigger, permission.SchedulerPause,
+		permission.SchedulerResume, permission.SchedulerCancel,
+		permission.SchedulerHistory, permission.SchedulerStatus,
+		// parameters (day-to-day)
+		permission.ParametersRead, permission.ParametersWrite,
+		permission.ParametersDelete, permission.ParametersList,
+		permission.ParametersSearch,
+		// dynamic_secrets (day-to-day)
+		permission.DynamicSecretsGenerate, permission.DynamicSecretsLeaseRenew,
+		permission.DynamicSecretsLeaseRevoke, permission.DynamicSecretsLeaseList,
+		// project (day-to-day)
+		permission.ProjectCreate, permission.ProjectRead, permission.ProjectList,
+		permission.ProjectUpdate, permission.ProjectDelete,
+		// ollama (day-to-day)
+		permission.OllamaHealth, permission.OllamaModelList,
+		permission.OllamaModelInfo, permission.OllamaEmbed,
+	}
+	for _, p := range want {
+		if _, ok := permSet[p]; !ok {
+			t.Errorf("operator missing expected data-plane permission: %q", p)
+		}
+	}
+}
+
+// TestBuiltInRoles_OperatorExcludesAdminDataPlaneVerbs asserts the Operator
+// role does NOT carry any administrative / governance verb of the broker
+// data-plane families, nor any resource:* wildcard for those families. This is
+// the security-critical regression guard: operators are non-admin humans.
+func TestBuiltInRoles_OperatorExcludesAdminDataPlaneVerbs(t *testing.T) {
+	roles := BuiltInRoles("acme")
+	operator := roleByName(roles, RoleNameOperator)
+	if operator == nil {
+		t.Fatal("operator role not found")
+	}
+	permSet := make(map[permission.Permission]struct{}, len(operator.Permissions))
+	for _, p := range operator.Permissions {
+		permSet[p] = struct{}{}
+	}
+
+	forbidden := []permission.Permission{
+		// Known admin-only verbs.
+		permission.ObjStoreAdmin,
+		permission.DynamicSecretsRoleCreate, permission.DynamicSecretsRoleRead,
+		permission.DynamicSecretsRoleList, permission.DynamicSecretsRoleDelete,
+		// Governance verbs excluded per the audit. NOTE: the orchestrator family
+		// is fully granted to operator (all 32 concrete verbs incl.
+		// workflow_write/agent_remove/broadcast, which are operational not
+		// governance); only the orchestrator:* wildcard remains forbidden below.
+		permission.ObjStoreWritePolicy, permission.ObjStoreTenantQuotaWrite,
+		permission.ObjStoreReplicate, permission.ObjStoreMigrate,
+		permission.ProjectGrant, permission.ProjectRevoke,
+		// Whole-family wildcards must NEVER be granted to operator: they would
+		// sweep in every admin verb above.
+		permission.ObjStoreAll, permission.OrchestratorAll, permission.SchedulerAll,
+		permission.MessagingAll, permission.ParametersAll,
+		permission.DynamicSecretsAll, permission.ProjectAll, permission.OllamaAll,
+	}
+	for _, p := range forbidden {
+		if _, ok := permSet[p]; ok {
+			t.Errorf("operator unexpectedly holds admin/governance permission: %q", p)
+		}
+	}
+
+	// Defense-in-depth: no dynamic_secrets:role_* perm of any form may appear,
+	// even one added in the future.
+	for _, p := range operator.Permissions {
+		if strings.HasPrefix(string(p), "dynamic_secrets:role_") {
+			t.Errorf("operator holds a dynamic_secrets:role_* permission: %q", p)
+		}
+	}
+}
+
+// allOrchestratorVerbs is the canonical set of all 32 concrete orchestrator
+// data-plane verbs. It is the test fixture used to assert per-role grants of
+// the orchestrator family.
+var allOrchestratorVerbs = []permission.Permission{
+	permission.OrchestratorSpawn, permission.OrchestratorPrompt,
+	permission.OrchestratorStatus, permission.OrchestratorClose,
+	permission.OrchestratorList, permission.OrchestratorTaskCreate,
+	permission.OrchestratorTaskRead, permission.OrchestratorTaskList,
+	permission.OrchestratorTaskClaim, permission.OrchestratorTaskComplete,
+	permission.OrchestratorTaskDecompose, permission.OrchestratorArtifactSubmit,
+	permission.OrchestratorArtifactRead, permission.OrchestratorJobStart,
+	permission.OrchestratorJobRead, permission.OrchestratorJobList,
+	permission.OrchestratorJobCancel, permission.OrchestratorBackendList,
+	permission.OrchestratorDiscover, permission.OrchestratorHook,
+	permission.OrchestratorWorkflowRead, permission.OrchestratorWorkflowWrite,
+	permission.OrchestratorHealth, permission.OrchestratorInference,
+	permission.OrchestratorAgentRegister, permission.OrchestratorAgentRead,
+	permission.OrchestratorAgentList, permission.OrchestratorAgentRemove,
+	permission.OrchestratorAgentHeartbeat, permission.OrchestratorCacheRead,
+	permission.OrchestratorCacheWrite, permission.OrchestratorBroadcast,
+}
+
+// permSetOf indexes a role's permissions for O(1) membership tests.
+func permSetOf(perms []permission.Permission) map[permission.Permission]struct{} {
+	s := make(map[permission.Permission]struct{}, len(perms))
+	for _, p := range perms {
+		s[p] = struct{}{}
+	}
+	return s
+}
+
+// orchestratorVerbsIn returns the subset of allOrchestratorVerbs present in the
+// given permission set, used to assert exact orchestrator grants per role.
+func orchestratorVerbsIn(set map[permission.Permission]struct{}) []permission.Permission {
+	var got []permission.Permission
+	for _, v := range allOrchestratorVerbs {
+		if _, ok := set[v]; ok {
+			got = append(got, v)
+		}
+	}
+	return got
+}
+
+// TestBuiltInRoles_OperatorHasAllOrchestratorVerbs asserts the Operator role
+// holds every one of the 32 concrete orchestrator verbs — the full data plane
+// — but never the orchestrator:* wildcard (so future admin-only verbs do not
+// silently accrue to operator).
+func TestBuiltInRoles_OperatorHasAllOrchestratorVerbs(t *testing.T) {
+	operator := roleByName(BuiltInRoles("acme"), RoleNameOperator)
+	if operator == nil {
+		t.Fatal("operator role not found")
+	}
+	set := permSetOf(operator.Permissions)
+	for _, v := range allOrchestratorVerbs {
+		if _, ok := set[v]; !ok {
+			t.Errorf("operator missing orchestrator verb: %q", v)
+		}
+	}
+	if got := len(orchestratorVerbsIn(set)); got != 32 {
+		t.Errorf("operator: expected all 32 orchestrator verbs, got %d", got)
+	}
+	if _, ok := set[permission.OrchestratorAll]; ok {
+		t.Error("operator must NOT hold the orchestrator:* wildcard")
+	}
+}
+
+// TestBuiltInRoles_UserOrchestratorConsumerSlice asserts the User role holds
+// exactly the 17-verb consumer slice of the orchestrator family, none of the
+// excluded orchestrator verbs (worker/fleet/cache/broadcast/authoring), and
+// none of the other seven broker data-plane families.
+func TestBuiltInRoles_UserOrchestratorConsumerSlice(t *testing.T) {
+	user := roleByName(BuiltInRoles("acme"), RoleNameUser)
+	if user == nil {
+		t.Fatal("user role not found")
+	}
+	set := permSetOf(user.Permissions)
+
+	wantOrch := []permission.Permission{
+		permission.OrchestratorSpawn, permission.OrchestratorPrompt,
+		permission.OrchestratorStatus, permission.OrchestratorClose,
+		permission.OrchestratorList, permission.OrchestratorTaskCreate,
+		permission.OrchestratorTaskRead, permission.OrchestratorTaskList,
+		permission.OrchestratorTaskDecompose, permission.OrchestratorArtifactRead,
+		permission.OrchestratorJobStart, permission.OrchestratorJobRead,
+		permission.OrchestratorJobList, permission.OrchestratorJobCancel,
+		permission.OrchestratorWorkflowRead, permission.OrchestratorHealth,
+		permission.OrchestratorInference,
+	}
+	if len(wantOrch) != 17 {
+		t.Fatalf("test fixture error: consumer slice must be 17 verbs, got %d", len(wantOrch))
+	}
+	for _, v := range wantOrch {
+		if _, ok := set[v]; !ok {
+			t.Errorf("user missing consumer orchestrator verb: %q", v)
+		}
+	}
+
+	// Exactly 17 orchestrator verbs and no more.
+	if got := len(orchestratorVerbsIn(set)); got != 17 {
+		t.Errorf("user: expected exactly 17 orchestrator verbs, got %d: %v",
+			got, orchestratorVerbsIn(set))
+	}
+
+	// None of the excluded orchestrator verbs.
+	excludedOrch := []permission.Permission{
+		permission.OrchestratorTaskClaim, permission.OrchestratorTaskComplete,
+		permission.OrchestratorArtifactSubmit,
+		permission.OrchestratorAgentRegister, permission.OrchestratorAgentRead,
+		permission.OrchestratorAgentList, permission.OrchestratorAgentRemove,
+		permission.OrchestratorAgentHeartbeat,
+		permission.OrchestratorCacheRead, permission.OrchestratorCacheWrite,
+		permission.OrchestratorHook, permission.OrchestratorDiscover,
+		permission.OrchestratorWorkflowWrite, permission.OrchestratorBroadcast,
+		permission.OrchestratorBackendList, permission.OrchestratorAll,
+	}
+	for _, v := range excludedOrch {
+		if _, ok := set[v]; ok {
+			t.Errorf("user must NOT hold orchestrator verb: %q", v)
+		}
+	}
+
+	// User must hold NO permission from the other seven broker data-plane
+	// families: objstore, messaging, scheduler, parameters, dynamic_secrets,
+	// project, ollama. The consumer slice is orchestrator-only.
+	otherFamilyPrefixes := []string{
+		"objstore:", "messaging:", "scheduler:", "parameters:",
+		"dynamic_secrets:", "project:", "ollama:",
+	}
+	for _, p := range user.Permissions {
+		for _, prefix := range otherFamilyPrefixes {
+			if strings.HasPrefix(string(p), prefix) {
+				t.Errorf("user must NOT hold any %s permission, found: %q", prefix, p)
+			}
+		}
+	}
+}
+
+// TestBuiltInRoles_AuditorOrchestratorMetadataSlice asserts the Auditor role
+// holds exactly the 11-verb read-only metadata slice of the orchestrator
+// family and never artifact_read/cache_read (data payloads) nor any
+// write/exec verb (FIPS 140-3 AS10.10).
+func TestBuiltInRoles_AuditorOrchestratorMetadataSlice(t *testing.T) {
+	auditor := roleByName(BuiltInRoles("acme"), RoleNameAuditor)
+	if auditor == nil {
+		t.Fatal("auditor role not found")
+	}
+	set := permSetOf(auditor.Permissions)
+
+	wantOrch := []permission.Permission{
+		permission.OrchestratorStatus, permission.OrchestratorList,
+		permission.OrchestratorTaskRead, permission.OrchestratorTaskList,
+		permission.OrchestratorJobRead, permission.OrchestratorJobList,
+		permission.OrchestratorWorkflowRead, permission.OrchestratorAgentRead,
+		permission.OrchestratorAgentList, permission.OrchestratorBackendList,
+		permission.OrchestratorHealth,
+	}
+	if len(wantOrch) != 11 {
+		t.Fatalf("test fixture error: metadata slice must be 11 verbs, got %d", len(wantOrch))
+	}
+	for _, v := range wantOrch {
+		if _, ok := set[v]; !ok {
+			t.Errorf("auditor missing metadata orchestrator verb: %q", v)
+		}
+	}
+	if got := len(orchestratorVerbsIn(set)); got != 11 {
+		t.Errorf("auditor: expected exactly 11 orchestrator verbs, got %d: %v",
+			got, orchestratorVerbsIn(set))
+	}
+
+	// Data payloads and any write/exec verb are forbidden for auditors.
+	forbidden := []permission.Permission{
+		permission.OrchestratorArtifactRead, permission.OrchestratorCacheRead,
+		permission.OrchestratorCacheWrite, permission.OrchestratorInference,
+		permission.OrchestratorPrompt, permission.OrchestratorSpawn,
+		permission.OrchestratorClose, permission.OrchestratorTaskCreate,
+		permission.OrchestratorTaskClaim, permission.OrchestratorTaskComplete,
+		permission.OrchestratorTaskDecompose, permission.OrchestratorArtifactSubmit,
+		permission.OrchestratorJobStart, permission.OrchestratorJobCancel,
+		permission.OrchestratorWorkflowWrite, permission.OrchestratorAgentRegister,
+		permission.OrchestratorAgentRemove, permission.OrchestratorAgentHeartbeat,
+		permission.OrchestratorBroadcast, permission.OrchestratorDiscover,
+		permission.OrchestratorHook, permission.OrchestratorAll,
+	}
+	for _, v := range forbidden {
+		if _, ok := set[v]; ok {
+			t.Errorf("auditor must NOT hold orchestrator verb: %q", v)
+		}
+	}
+}
+
+// TestBuiltInRoles_SOAndCustodianHaveNoOrchestratorVerbs asserts the SO and
+// Custodian roles hold ZERO orchestrator verbs: SO is governance
+// crypto-denied and Custodian is Shamir-share-only (FIPS 140-3 AS10.03 /
+// AS10.06).
+func TestBuiltInRoles_SOAndCustodianHaveNoOrchestratorVerbs(t *testing.T) {
+	roles := BuiltInRoles("acme")
+	for _, name := range []string{RoleNameSO, RoleNameCustodian} {
+		r := roleByName(roles, name)
+		if r == nil {
+			t.Fatalf("%s role not found", name)
+		}
+		set := permSetOf(r.Permissions)
+		if got := orchestratorVerbsIn(set); len(got) != 0 {
+			t.Errorf("%s must hold zero orchestrator verbs, found: %v", name, got)
+		}
+		if _, ok := set[permission.OrchestratorAll]; ok {
+			t.Errorf("%s must NOT hold the orchestrator:* wildcard", name)
+		}
+	}
+}
+
 // TestBuiltInRoles_UserHasCryptoPerms verifies the User can sign, verify,
 // encrypt, and decrypt.
 func TestBuiltInRoles_UserHasCryptoPerms(t *testing.T) {
@@ -1552,8 +2075,17 @@ func TestBuiltInRoles_UserHasCryptoPerms(t *testing.T) {
 }
 
 func TestBuiltInRoles_AllPermissionsRegistered(t *testing.T) {
+	// Every built-in role permission must be either a concrete registered
+	// permission OR a whole-segment wildcard (e.g. "objstore:*"). Wildcards are
+	// intentionally NOT registered as concrete permissions; the RBAC authorizer
+	// expands them against concrete resource:action checks, and
+	// validatePermissions admits them as legal grants. The Admin (tenant-admin)
+	// role carries the broker data-plane families as resource:* wildcards.
 	for _, r := range BuiltInRoles("acme") {
 		for _, p := range r.Permissions {
+			if permission.IsWildcard(p) {
+				continue
+			}
 			if !permission.IsRegistered(p) {
 				t.Errorf("role %q has unregistered permission: %q", r.Name, p)
 			}

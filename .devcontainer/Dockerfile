@@ -24,6 +24,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     bc \
     curl \
+    jq \
+    xxd \
+    openssl \
     net-tools \
     iproute2 \
     iputils-ping \

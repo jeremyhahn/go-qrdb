@@ -118,7 +118,7 @@ func newMockCA(t *testing.T) *mockCA {
 	return &mockCA{key: key, cert: cert, certDER: certDER}
 }
 
-func (m *mockCA) SignCSR(csrPEM []byte, opts *SignCSROptions) (*x509.Certificate, error) {
+func (m *mockCA) SignCSR(_ context.Context, csrPEM []byte, opts *SignCSROptions) (*x509.Certificate, error) {
 	block, _ := pem.Decode(csrPEM)
 	if block == nil {
 		return nil, errors.New("failed to decode CSR PEM")
@@ -164,7 +164,7 @@ func (m *mockCA) CABundle() ([]byte, error) {
 	}), nil
 }
 
-func (m *mockCA) IssueCertificate(req *IssueCertRequest) (*IssuedCert, error) {
+func (m *mockCA) IssueCertificate(_ context.Context, req *IssueCertRequest) (*IssuedCert, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, err
@@ -225,11 +225,11 @@ func newErrorCA(t *testing.T) *errorCA {
 	return &errorCA{mockCA: newMockCA(t)}
 }
 
-func (e *errorCA) SignCSR(csrPEM []byte, opts *SignCSROptions) (*x509.Certificate, error) {
+func (e *errorCA) SignCSR(ctx context.Context, csrPEM []byte, opts *SignCSROptions) (*x509.Certificate, error) {
 	if e.failSignCSR {
 		return nil, errors.New("sign CSR error")
 	}
-	return e.mockCA.SignCSR(csrPEM, opts)
+	return e.mockCA.SignCSR(ctx, csrPEM, opts)
 }
 
 func (e *errorCA) CACertificate() (*x509.Certificate, error) {
@@ -246,7 +246,7 @@ func (e *errorCA) CABundle() ([]byte, error) {
 	return e.mockCA.CABundle()
 }
 
-func (e *errorCA) IssueCertificate(req *IssueCertRequest) (*IssuedCert, error) {
+func (e *errorCA) IssueCertificate(ctx context.Context, req *IssueCertRequest) (*IssuedCert, error) {
 	e.issueCallCount++
 	if e.failIssueCertificate {
 		return nil, errors.New("issue certificate error")
@@ -254,7 +254,7 @@ func (e *errorCA) IssueCertificate(req *IssueCertRequest) (*IssuedCert, error) {
 	if e.failOnIssueCall > 0 && e.issueCallCount == e.failOnIssueCall {
 		return nil, errors.New("issue certificate error on call")
 	}
-	return e.mockCA.IssueCertificate(req)
+	return e.mockCA.IssueCertificate(ctx, req)
 }
 
 // generateCSRPEM generates a real ECDSA CSR PEM for testing.
@@ -1476,4 +1476,61 @@ func TestMofN_ClaimCertFlow_WithAuthenticatorType(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEmpty(t, result.CertPEM)
 	assert.NotEmpty(t, result.CACertPEM)
+}
+
+// ---------------------------------------------------------------------------
+// SetCA
+// ---------------------------------------------------------------------------
+
+// TestSetCA_WiresWhenUnset verifies that lifecycle wiring can install a
+// CeremonyCA on a service that has not run Initialize, enabling officer
+// registration in daemon deployments.
+func TestSetCA_WiresWhenUnset(t *testing.T) {
+	svc := newTestService(t)
+	require.Nil(t, svc.CA())
+
+	ca := newMockCA(t)
+	svc.SetCA(ca)
+	assert.Same(t, CeremonyCA(ca), svc.CA())
+}
+
+// TestSetCA_NilIsNoOp verifies that a nil CA argument leaves the service
+// unchanged in both the unset and already-set states.
+func TestSetCA_NilIsNoOp(t *testing.T) {
+	svc := newTestService(t)
+	svc.SetCA(nil)
+	assert.Nil(t, svc.CA())
+
+	ca := newMockCA(t)
+	svc.SetCA(ca)
+	svc.SetCA(nil)
+	assert.Same(t, CeremonyCA(ca), svc.CA())
+}
+
+// TestSetCA_DoesNotOverwrite verifies that a CA already installed (e.g. by
+// Initialize during the full ceremony) remains authoritative — SetCA from
+// lifecycle wiring must never clobber it.
+func TestSetCA_DoesNotOverwrite(t *testing.T) {
+	svc := newTestService(t)
+
+	first := newMockCA(t)
+	second := newMockCA(t)
+	svc.SetCA(first)
+	svc.SetCA(second)
+	assert.Same(t, CeremonyCA(first), svc.CA())
+}
+
+// TestSetCA_DoesNotOverwriteInitializeCA verifies the Initialize-then-SetCA
+// ordering: the ceremony-established CA wins.
+func TestSetCA_DoesNotOverwriteInitializeCA(t *testing.T) {
+	cfg, _ := mofnConfig(t, 2, 3)
+	svc, err := NewCeremonyService(cfg, testBarrier(t), newTestCredentialService(), testLogger())
+	require.NoError(t, err)
+
+	initCA := newMockCA(t)
+	_, err = svc.Initialize(context.Background(), initCA, nil)
+	require.NoError(t, err)
+
+	svc.SetCA(newMockCA(t))
+	assert.Same(t, CeremonyCA(initCA), svc.CA())
 }

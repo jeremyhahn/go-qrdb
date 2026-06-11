@@ -25,7 +25,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestAuthFactorType_IsValid_ok(t *testing.T) {
-	cases := []AuthFactorType{AuthFactorMTLS, AuthFactorFIDO2, AuthFactorPIV}
+	cases := []AuthFactorType{AuthFactorMTLS, AuthFactorFIDO2, AuthFactorPIV, AuthFactorPKCS11}
 	for _, c := range cases {
 		if !c.IsValid() {
 			t.Fatalf("IsValid(%q) = false, want true", c)
@@ -36,8 +36,17 @@ func TestAuthFactorType_IsValid_ok(t *testing.T) {
 	}
 }
 
+func TestAuthFactorType_IsValid_pkcs11(t *testing.T) {
+	if !AuthFactorPKCS11.IsValid() {
+		t.Fatalf("IsValid(%q) = false, want true", AuthFactorPKCS11)
+	}
+	if AuthFactorPKCS11.String() != "pkcs11" {
+		t.Fatalf("String() = %q, want %q", AuthFactorPKCS11.String(), "pkcs11")
+	}
+}
+
 func TestAuthFactorType_IsValid_unknown(t *testing.T) {
-	cases := []AuthFactorType{"", "totp", "password", "MTLS", "FIDO2"}
+	cases := []AuthFactorType{"", "totp", "password", "MTLS", "FIDO2", "PKCS11"}
 	for _, c := range cases {
 		if c.IsValid() {
 			t.Fatalf("IsValid(%q) = true, want false", c)

@@ -29,10 +29,11 @@ import (
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	gogrpc "google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/protobuf/types/known/wrapperspb"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	tenantpkg "github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 )
 
@@ -674,7 +675,7 @@ func newInsecureGRPCConn(addr string) (*gogrpc.ClientConn, error) {
 }
 
 // ---------------------------------------------------------------------------
-// tenant_barrier_server.go: unseal key path and unmarshal error branches
+// tenant_barrier_server.go: unseal and error branch coverage.
 // ---------------------------------------------------------------------------
 
 func TestTenantBarrier_Unseal_KeyPreferred(t *testing.T) {
@@ -682,74 +683,79 @@ func TestTenantBarrier_Unseal_KeyPreferred(t *testing.T) {
 	conn, cleanup := startGRPCWithTenantBarrier(t, svc)
 	defer cleanup()
 
-	// Both Key and Share are set; Key should be preferred.
-	req := &GRPCTenantBarrierUnsealRequest{
-		TenantID: "t1",
+	// Pass the key directly; the proto Unseal has a single Key []byte field.
+	_, err := pb.NewTenantBarrierServiceClient(conn).Unseal(context.Background(), &pb.TenantBarrierUnsealRequest{
+		TenantId: "t1",
 		Key:      []byte("main-key"),
-		Share:    []byte("fallback-share"),
-	}
-	if err := TenantBarrierUnsealUnary(context.Background(), conn, req); err != nil {
-		t.Fatalf("TenantBarrierUnseal (key preferred) failed: %v", err)
+	})
+	if err != nil {
+		t.Fatalf("TenantBarrierUnseal (key) failed: %v", err)
 	}
 }
 
-func TestTenantBarrier_Init_InvalidJSON(t *testing.T) {
+// TestTenantBarrier_Init_EmptyPassphrase exercises the Init handler with a
+// non-empty tenant_id but empty passphrase, verifying the service is called
+// and succeeds (passphrase may legitimately be empty for shamir strategy).
+func TestTenantBarrier_Init_EmptyPassphrase(t *testing.T) {
 	svc := newMockTenantBarrierOnlySvc()
 	server := &tenantBarrierServer{svc: svc, authMW: nil}
 
-	dec := func(v any) error {
-		v.(*wrapperspb.BytesValue).Value = []byte(`not-valid-json`)
-		return nil
+	_, err := server.Init(context.Background(), &pb.TenantBarrierInitRequest{
+		TenantId:   "t1",
+		Passphrase: "",
+		Strategy:   "shamir",
+	})
+	if err != nil {
+		t.Fatalf("Init with empty passphrase failed: %v", err)
 	}
-	_, err := tenantBarrierInitHandler(server, context.Background(), dec, nil)
+}
+
+// TestTenantBarrier_Unseal_EmptyKey exercises the Unseal handler when the
+// key byte slice is empty, verifying the service is still invoked.
+func TestTenantBarrier_Unseal_EmptyKey(t *testing.T) {
+	svc := newMockTenantBarrierOnlySvc()
+	server := &tenantBarrierServer{svc: svc, authMW: nil}
+
+	_, err := server.Unseal(context.Background(), &pb.TenantBarrierUnsealRequest{
+		TenantId: "t1",
+		Key:      []byte{},
+	})
+	if err != nil {
+		t.Fatalf("Unseal with empty key failed: %v", err)
+	}
+}
+
+// TestTenantBarrier_Seal_NotFoundError verifies the Seal handler maps
+// ErrTenantNotFound to codes.NotFound via the direct server method.
+func TestTenantBarrier_Seal_NotFoundError(t *testing.T) {
+	svc := newMockTenantBarrierOnlySvc()
+	svc.barrierSealErr = tenantpkg.ErrTenantNotFound
+	server := &tenantBarrierServer{svc: svc, authMW: nil}
+
+	_, err := server.Seal(context.Background(), &pb.TenantBarrierSealRequest{TenantId: "t1"})
 	if err == nil {
-		t.Fatal("expected error for invalid JSON, got nil")
+		t.Fatal("expected error for not-found tenant, got nil")
 	}
 	st, _ := status.FromError(err)
-	if st.Code() != codes.InvalidArgument {
-		t.Fatalf("expected InvalidArgument, got %s", st.Code())
+	if st.Code() != codes.NotFound {
+		t.Fatalf("expected NotFound, got %s", st.Code())
 	}
 }
 
-func TestTenantBarrier_Unseal_InvalidJSON(t *testing.T) {
+// TestTenantBarrier_Status_NotFoundError verifies the Status handler maps
+// ErrTenantNotFound to codes.NotFound via the direct server method.
+func TestTenantBarrier_Status_NotFoundError(t *testing.T) {
 	svc := newMockTenantBarrierOnlySvc()
+	svc.barrierStatusErr = tenantpkg.ErrTenantNotFound
 	server := &tenantBarrierServer{svc: svc, authMW: nil}
 
-	dec := func(v any) error {
-		v.(*wrapperspb.BytesValue).Value = []byte(`{bad-json}`)
-		return nil
-	}
-	_, err := tenantBarrierUnsealHandler(server, context.Background(), dec, nil)
+	_, err := server.Status(context.Background(), &pb.TenantBarrierStatusRequest{TenantId: "t1"})
 	if err == nil {
-		t.Fatal("expected error for invalid JSON, got nil")
+		t.Fatal("expected error for not-found tenant, got nil")
 	}
-}
-
-func TestTenantBarrier_Seal_InvalidJSON(t *testing.T) {
-	svc := newMockTenantBarrierOnlySvc()
-	server := &tenantBarrierServer{svc: svc, authMW: nil}
-
-	dec := func(v any) error {
-		v.(*wrapperspb.BytesValue).Value = []byte(`nope`)
-		return nil
-	}
-	_, err := tenantBarrierSealHandler(server, context.Background(), dec, nil)
-	if err == nil {
-		t.Fatal("expected error for invalid JSON, got nil")
-	}
-}
-
-func TestTenantBarrier_Status_InvalidJSON(t *testing.T) {
-	svc := newMockTenantBarrierOnlySvc()
-	server := &tenantBarrierServer{svc: svc, authMW: nil}
-
-	dec := func(v any) error {
-		v.(*wrapperspb.BytesValue).Value = []byte(`[not-an-object]`)
-		return nil
-	}
-	_, err := tenantBarrierStatusHandler(server, context.Background(), dec, nil)
-	if err == nil {
-		t.Fatal("expected error for invalid JSON, got nil")
+	st, _ := status.FromError(err)
+	if st.Code() != codes.NotFound {
+		t.Fatalf("expected NotFound, got %s", st.Code())
 	}
 }
 
@@ -1008,6 +1014,18 @@ func (m *errorTSSvc) SetRetentionPolicy(_ string, _ *timeseries.RetentionPolicy)
 	return m.setRetErr
 }
 func (m *errorTSSvc) ListMetrics(_ string, _ int) ([]string, error) {
+	return nil, m.listMetErr
+}
+func (m *errorTSSvc) QueryWithConsistency(_ context.Context, _ string, _, _ time.Time, _ consistency.ReadOptions, _ ...timeseries.TSQueryOption) ([]timeseries.DataPoint, error) {
+	return nil, nil
+}
+func (m *errorTSSvc) AggregateWithConsistency(_ context.Context, _ string, _, _ time.Time, _ timeseries.AggFunc, _ time.Duration, _ consistency.ReadOptions) ([]timeseries.AggResult, error) {
+	return nil, nil
+}
+func (m *errorTSSvc) QueryRichWithConsistency(_ context.Context, _ *timeseries.QueryRequest, _ consistency.ReadOptions) (*timeseries.QueryResult, error) {
+	return nil, m.richQueryErr
+}
+func (m *errorTSSvc) ListMetricsWithConsistency(_ context.Context, _ string, _ int, _ consistency.ReadOptions) ([]string, error) {
 	return nil, m.listMetErr
 }
 

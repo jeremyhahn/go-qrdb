@@ -18,10 +18,17 @@ package mysql
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"errors"
+	"math/big"
 	"net"
 	"testing"
+	"time"
 
 	vitessmysql "github.com/dolthub/vitess/go/mysql"
 	"github.com/stretchr/testify/assert"
@@ -59,19 +66,61 @@ func (m *mockAuthorizer) Authorize(_ context.Context, _ *auth.Identity, _, _ str
 }
 
 // ---------------------------------------------------------------------------
+// Test CA helper
+// ---------------------------------------------------------------------------
+
+// testCAPool mints an in-memory ECDSA P-256 CA and returns a *x509.CertPool
+// containing the CA certificate. The pool is used in place of
+// InsecureSkipVerify so that tls.Config structs used in unit tests carry a
+// real trust anchor without skipping verification.
+//
+// No actual TLS handshake occurs in these tests — the net.Pipe connections
+// are never driven end-to-end — so the pool content itself is not exercised
+// cryptographically. Its purpose is solely to produce an honest tls.Config.
+func testCAPool(t *testing.T) *x509.CertPool {
+	t.Helper()
+
+	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err, "generate test CA key")
+
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "test-mysql-ca"},
+		NotBefore:             time.Now().Add(-time.Minute),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageCertSign,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &caKey.PublicKey, caKey)
+	require.NoError(t, err, "create test CA certificate")
+
+	caCert, err := x509.ParseCertificate(der)
+	require.NoError(t, err, "parse test CA certificate")
+
+	pool := x509.NewCertPool()
+	pool.AddCert(caCert)
+	return pool
+}
+
+// ---------------------------------------------------------------------------
 // Helper: create a vitess Conn with TLS
 // ---------------------------------------------------------------------------
 
 // newTLSConn creates a vitess mysql.Conn whose underlying net.Conn is a
-// *tls.Conn. This avoids real TLS handshakes in unit tests.
-func newTLSConn() *vitessmysql.Conn {
-	// Create a net.Pipe and wrap one end in TLS so the Conn field
-	// is a *tls.Conn instance.
+// *tls.Conn. This avoids real TLS handshakes in unit tests: both pipe ends
+// are created but only the client side is wrapped; the server side is closed
+// immediately, so no handshake is driven. The tls.Config carries a real
+// RootCAs pool from testCAPool to produce an honest (non-skip-verify) config.
+func newTLSConn(t *testing.T) *vitessmysql.Conn {
+	t.Helper()
 	clientConn, serverConn := net.Pipe()
 	defer func() { _ = serverConn.Close() }()
 
 	tlsCfg := &tls.Config{
-		InsecureSkipVerify: true,
+		ServerName: "test-mysql-server",
+		RootCAs:    testCAPool(t),
+		MinVersion: tls.VersionTLS12,
 	}
 	tlsClient := tls.Client(clientConn, tlsCfg)
 
@@ -130,7 +179,7 @@ func TestSessionBuilder_AuthSuccess(t *testing.T) {
 	sb := newSessionBuilder(mw)
 
 	// Need a TLS conn for the auth path.
-	conn := newTLSConn()
+	conn := newTLSConn(t)
 	defer func() { _ = conn.Conn.Close() }()
 
 	sess, err := sb.Build(context.Background(), conn, "127.0.0.1:3306")
@@ -152,7 +201,7 @@ func TestSessionBuilder_AuthFailure_ReturnsError(t *testing.T) {
 
 	sb := newSessionBuilder(mw)
 
-	conn := newTLSConn()
+	conn := newTLSConn(t)
 	defer func() { _ = conn.Conn.Close() }()
 
 	sess, err := sb.Build(context.Background(), conn, "127.0.0.1:3306")
@@ -197,7 +246,7 @@ func TestSessionBuilder_MTLSAuth_WithVerifiedChains(t *testing.T) {
 	// in the TLS state, which we cannot easily inject into a real
 	// tls.Conn without a full handshake. This test verifies that the code
 	// path correctly wraps the authentication error when mTLS fails.
-	conn := newTLSConn()
+	conn := newTLSConn(t)
 	defer func() { _ = conn.Conn.Close() }()
 
 	sess, err := sb.Build(context.Background(), conn, "127.0.0.1:3306")

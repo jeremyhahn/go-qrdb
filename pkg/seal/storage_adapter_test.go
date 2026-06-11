@@ -250,3 +250,64 @@ func TestStorageAdapter_CloseError(t *testing.T) {
 		t.Fatal("expected error from Close")
 	}
 }
+
+// --------------------------------------------------------------------------
+// storage_adapter.go: PutIfAbsent — 70% (key-exists branch untested)
+// --------------------------------------------------------------------------
+
+func TestStorageAdapter_PutIfAbsent_FirstCall(t *testing.T) {
+	inner := newMockLegacyStorage()
+	adapter := NewStorageAdapter(inner)
+	ctx := context.Background()
+
+	stored, err := adapter.PutIfAbsent(ctx, "new-key", []byte("value"))
+	if err != nil {
+		t.Fatalf("PutIfAbsent: %v", err)
+	}
+	if !stored {
+		t.Error("PutIfAbsent: expected true for absent key")
+	}
+}
+
+func TestStorageAdapter_PutIfAbsent_DuplicateKey(t *testing.T) {
+	inner := newMockLegacyStorage()
+	inner.data["existing"] = []byte("original")
+	adapter := NewStorageAdapter(inner)
+	ctx := context.Background()
+
+	stored, err := adapter.PutIfAbsent(ctx, "existing", []byte("new"))
+	if err != nil {
+		t.Fatalf("PutIfAbsent (dup): %v", err)
+	}
+	if stored {
+		t.Error("PutIfAbsent: expected false for existing key")
+	}
+	// Original value must be unchanged.
+	if !bytes.Equal(inner.data["existing"], []byte("original")) {
+		t.Error("PutIfAbsent: original value was overwritten")
+	}
+}
+
+func TestStorageAdapter_PutIfAbsent_ExistsError(t *testing.T) {
+	inner := newMockLegacyStorage()
+	inner.existErr = errors.New("exists failed")
+	adapter := NewStorageAdapter(inner)
+	ctx := context.Background()
+
+	_, err := adapter.PutIfAbsent(ctx, "key", []byte("value"))
+	if err == nil {
+		t.Fatal("expected error when Exists fails")
+	}
+}
+
+func TestStorageAdapter_PutIfAbsent_SetError(t *testing.T) {
+	inner := newMockLegacyStorage()
+	inner.setErr = errors.New("set failed")
+	adapter := NewStorageAdapter(inner)
+	ctx := context.Background()
+
+	_, err := adapter.PutIfAbsent(ctx, "key", []byte("value"))
+	if err == nil {
+		t.Fatal("expected error when Set fails")
+	}
+}

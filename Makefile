@@ -496,19 +496,55 @@ test-sdk:
 # E2E tests (Playwright – always run in devcontainer)
 # ============================================================================
 
-# Public target: build E2E container and run Playwright tests inside it.
+# Three Playwright tiers:
+#   - mocked       (playwright.config.ts)        — DOM vs page.route() mocks, no backend
+#   - real-backend (playwright.real.config.ts)   — drives REST against a live qrdbd
+#   - DOM          (playwright.dom.config.ts)     — drives the real UI (Vite) against a live qrdbd
+# The real-backend + DOM tiers spawn a live daemon, so they build qrdbd and
+# point QRDBD_BIN at the freshly built binary.
+QRDBD_E2E_BIN := $(CURDIR)/bin/$(SERVER_BINARY)
+
+# Public target: build E2E container and run ALL Playwright tiers inside it.
 .PHONY: test-e2e
 test-e2e:
 	@echo "==> Building E2E container..."
 	@docker compose -f $(COMPOSE_FILE) build --quiet e2e
-	@echo "==> Running E2E tests..."
+	@echo "==> Running E2E tests (mocked + real-backend + DOM)..."
 	docker compose -f $(COMPOSE_FILE) run --rm e2e make _test-e2e
 
 # Internal target: executed inside the devcontainer. Not intended for host use.
+# Builds qrdbd (for the real-backend + DOM tiers) and runs all three tiers.
 .PHONY: _test-e2e
-_test-e2e: build-sdk install-frontend
+_test-e2e: build-server build-sdk install-frontend
 	cd cmd/qrdb/frontend && npx playwright install chromium
+	@echo "==> [e2e] mocked tier"
 	cd cmd/qrdb/frontend && npx playwright test
+	@echo "==> [e2e] real-backend tier"
+	cd cmd/qrdb/frontend && QRDBD_BIN=$(QRDBD_E2E_BIN) npx playwright test --config=playwright.real.config.ts
+	@echo "==> [e2e] DOM tier"
+	cd cmd/qrdb/frontend && QRDBD_BIN=$(QRDBD_E2E_BIN) npx playwright test --config=playwright.dom.config.ts
+
+# Selective public target: real-backend tier only.
+.PHONY: test-e2e-real
+test-e2e-real:
+	@docker compose -f $(COMPOSE_FILE) build --quiet e2e
+	docker compose -f $(COMPOSE_FILE) run --rm e2e make _test-e2e-real
+
+.PHONY: _test-e2e-real
+_test-e2e-real: build-server build-sdk install-frontend
+	cd cmd/qrdb/frontend && npx playwright install chromium
+	cd cmd/qrdb/frontend && QRDBD_BIN=$(QRDBD_E2E_BIN) npx playwright test --config=playwright.real.config.ts
+
+# Selective public target: DOM tier only.
+.PHONY: test-e2e-dom
+test-e2e-dom:
+	@docker compose -f $(COMPOSE_FILE) build --quiet e2e
+	docker compose -f $(COMPOSE_FILE) run --rm e2e make _test-e2e-dom
+
+.PHONY: _test-e2e-dom
+_test-e2e-dom: build-server build-sdk install-frontend
+	cd cmd/qrdb/frontend && npx playwright install chromium
+	cd cmd/qrdb/frontend && QRDBD_BIN=$(QRDBD_E2E_BIN) npx playwright test --config=playwright.dom.config.ts
 
 .PHONY: test-playwright
 test-playwright: test-e2e

@@ -70,10 +70,10 @@ func newBarrierSvcMini() *barrierSvcMini {
 			Strategy:      "software",
 			InitializedAt: time.Now(),
 		},
-		shamirInitResult:  &service.ShamirInitInfo{Shares: []string{"s1", "s2"}, Threshold: 2, TotalShares: 3},
+		shamirInitResult:  &service.ShamirInitInfo{Threshold: 2, TotalShares: 3, ShareCount: 2},
 		unsealShareResult: &service.UnsealShareProgress{Required: 2, Submitted: 1, Complete: false},
-		rekeyResult:       &service.ShamirInitInfo{Shares: []string{"n1", "n2"}, Threshold: 2, TotalShares: 3},
-		recoveryGenResult: &service.RecoveryKeysInfo{Keys: []string{"k1"}, Threshold: 1, Total: 1},
+		rekeyResult:       &service.ShamirInitInfo{Threshold: 2, TotalShares: 3, ShareCount: 2},
+		recoveryGenResult: &service.RecoveryKeysInfo{Threshold: 1, Total: 1, ShareCount: 1},
 		rootTokenResult:   &service.RootTokenInfo{Token: "root-tok", CreatedAt: time.Now()},
 	}
 }
@@ -110,6 +110,33 @@ func (m *barrierSvcMini) BarrierHasRecoveryKeys(_ context.Context) (bool, error)
 }
 func (m *barrierSvcMini) BarrierGenerateRootToken(_ context.Context, _ []string) (*service.RootTokenInfo, error) {
 	return m.rootTokenResult, m.rootTokenErr
+}
+func (m *barrierSvcMini) BarrierOfficerRegister(_ context.Context, _ *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
+	return &service.BarrierOfficerRegisterResult{}, nil
+}
+func (m *barrierSvcMini) BarrierOfficerList(_ context.Context) ([]*service.BarrierOfficerStatus, error) {
+	return nil, nil
+}
+func (m *barrierSvcMini) BarrierOfficerClaimStatus(_ context.Context) ([]*service.BarrierOfficerStatus, error) {
+	return nil, nil
+}
+func (m *barrierSvcMini) BarrierShareClaimBegin(_ context.Context, _, _ string) (*service.BarrierShareClaimChallenge, error) {
+	return &service.BarrierShareClaimChallenge{}, nil
+}
+func (m *barrierSvcMini) BarrierShareClaimComplete(_ context.Context, _, _ string, _ []byte, _ string) (*service.BarrierShareClaimResult, error) {
+	return &service.BarrierShareClaimResult{}, nil
+}
+func (m *barrierSvcMini) BarrierShamirSealVote(_ context.Context, _ string) (*service.UnsealShareProgress, error) {
+	return &service.UnsealShareProgress{}, nil
+}
+func (m *barrierSvcMini) BarrierRecoveryOfficerRegister(_ context.Context, _ *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
+	return &service.BarrierOfficerRegisterResult{}, nil
+}
+func (m *barrierSvcMini) BarrierRecoveryShareClaimBegin(_ context.Context, _, _ string) (*service.BarrierShareClaimChallenge, error) {
+	return &service.BarrierShareClaimChallenge{}, nil
+}
+func (m *barrierSvcMini) BarrierRecoveryShareClaimComplete(_ context.Context, _, _ string, _ []byte, _ string) (*service.BarrierShareClaimResult, error) {
+	return &service.BarrierShareClaimResult{}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -647,8 +674,8 @@ func TestBarrier_Rekey_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BarrierRekey failed: %v", err)
 	}
-	if len(resp.GetShares()) != 2 {
-		t.Fatalf("expected 2 shares, got %d", len(resp.GetShares()))
+	if resp.GetShareCount() != 2 {
+		t.Fatalf("expected share_count=2, got %d", resp.GetShareCount())
 	}
 }
 
@@ -721,8 +748,8 @@ func TestBarrier_RecoveryGenerate_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BarrierRecoveryGenerate failed: %v", err)
 	}
-	if len(resp.GetKeys()) != 1 {
-		t.Fatalf("expected 1 key, got %d", len(resp.GetKeys()))
+	if resp.GetShareCount() != 1 {
+		t.Fatalf("expected share_count=1, got %d", resp.GetShareCount())
 	}
 }
 

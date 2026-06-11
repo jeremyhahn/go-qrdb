@@ -17,7 +17,7 @@ package auth
 import "time"
 
 // AuthFactorType identifies the kind of authentication factor a user has
-// registered. Three first-class types are supported per
+// registered. Four first-class types are supported per
 // docs/08-bootstrap-auth-architecture.md §5e.
 type AuthFactorType string
 
@@ -33,12 +33,19 @@ const (
 	// AuthFactorPIV designates a PIV smart card (NIST SP 800-73-4). The
 	// credential lookup key is the SHA-256 fingerprint of the slot certificate.
 	AuthFactorPIV AuthFactorType = "piv"
+
+	// AuthFactorPKCS11 designates a PKCS#11 / HSM hardware key. The credential
+	// lookup key is SHA-256(SubjectPublicKeyInfo DER) of the enrolled public key
+	// (32 bytes). The matching public key is stored in
+	// Metadata["public_key_pem"] or Metadata["public_key_der"]; possession is
+	// proven by an ECDSA/RSA/Ed25519 signature over a server nonce.
+	AuthFactorPKCS11 AuthFactorType = "pkcs11"
 )
 
 // IsValid reports whether the receiver is one of the supported factor types.
 func (t AuthFactorType) IsValid() bool {
 	switch t {
-	case AuthFactorMTLS, AuthFactorFIDO2, AuthFactorPIV:
+	case AuthFactorMTLS, AuthFactorFIDO2, AuthFactorPIV, AuthFactorPKCS11:
 		return true
 	default:
 		return false
@@ -71,9 +78,10 @@ const (
 // The Credential blob carries the canonical lookup key for the factor type —
 // the same bytes that an inbound auth event reduces to:
 //
-//	mtls : SHA-256(cert)        (32 bytes)
-//	fido2: WebAuthn credentialID (variable length)
-//	piv  : SHA-256(slot cert)   (32 bytes)
+//	mtls  : SHA-256(cert)                       (32 bytes)
+//	fido2 : WebAuthn credentialID               (variable length)
+//	piv   : SHA-256(slot cert)                  (32 bytes)
+//	pkcs11: SHA-256(SubjectPublicKeyInfo DER)    (32 bytes)
 //
 // Rich associated data (cert PEM, COSE public key, sign counter, AAGUID,
 // slot ID, card serial number) belongs in Metadata, not in Credential.
@@ -81,8 +89,9 @@ const (
 // vendor-agnostic.
 //
 // Hardware-specific verification (WebAuthn signature, PIV chain validation,
-// mTLS chain validation) is the responsibility of the transport layers in
-// go-xkms; this layer only provides the User <-> Factor mapping.
+// mTLS chain validation, PKCS#11 public-key possession proof) is the
+// responsibility of the transport layers in go-xkms; this layer only provides
+// the User <-> Factor mapping.
 type AuthFactor struct {
 	// ID is the stable factor identifier (UUID). Stable across rotations is
 	// not guaranteed — Rotate produces a new ID.
@@ -99,6 +108,18 @@ type AuthFactor struct {
 
 	// Credential is the type-specific opaque credential blob.
 	Credential []byte `json:"credential"`
+
+	// SPKICredential is an optional secondary lookup credential derived from
+	// the subject public key rather than the full certificate. For mtls and
+	// piv factors it carries SHA-256(cert.RawSubjectPublicKeyInfo) (32 bytes)
+	// — the same digest as user.ComputeSPKIThumbprint, in raw-byte form.
+	//
+	// Because the SPKI digest covers only the public key, it survives
+	// certificate renewal with the same keypair: a renewed cert produces a
+	// new SHA-256(cert) Credential but an identical SPKICredential, so login
+	// keeps working without re-enrollment. Empty for fido2 factors and for
+	// records enrolled before SPKI indexing was introduced.
+	SPKICredential []byte `json:"spki_credential,omitempty"`
 
 	// Metadata holds vendor / AAGUID / cert serial / slot info. Never carries
 	// private key material.
@@ -134,6 +155,9 @@ func (f *AuthFactor) Clone() *AuthFactor {
 	out := *f
 	if f.Credential != nil {
 		out.Credential = append([]byte(nil), f.Credential...)
+	}
+	if f.SPKICredential != nil {
+		out.SPKICredential = append([]byte(nil), f.SPKICredential...)
 	}
 	if f.Metadata != nil {
 		out.Metadata = make(map[string]string, len(f.Metadata))

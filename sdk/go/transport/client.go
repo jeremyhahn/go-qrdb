@@ -529,7 +529,9 @@ type BarrierClient interface {
 	BarrierStatus(ctx context.Context) (*BarrierStatusResponse, error)
 
 	// BarrierInitializeShamir initializes the barrier using Shamir secret
-	// sharing and returns the generated key shares.
+	// sharing. Share material is never returned; Security Officers claim
+	// their individual shares via the OfficerRegister/ShareClaimBegin/
+	// ShareClaimComplete flow.
 	BarrierInitializeShamir(ctx context.Context, req *BarrierInitializeShamirRequest) (*BarrierInitializeShamirResponse, error)
 
 	// BarrierUnsealWithShare submits a single Shamir share toward the
@@ -561,6 +563,42 @@ type BarrierClient interface {
 	// BarrierGenerateRootToken generates a new root token using the
 	// provided Shamir shares.
 	BarrierGenerateRootToken(ctx context.Context, req *BarrierGenerateRootTokenRequest) (*BarrierRootTokenResponse, error)
+
+	// OfficerRegister registers a Security Officer for the system barrier.
+	// The signed certificate in the response must be delivered to the officer
+	// out of band; it is not stored server-side after this response.
+	OfficerRegister(ctx context.Context, req *OfficerRegisterRequest) (*OfficerRegisterResponse, error)
+
+	// OfficerList lists all registered Security Officers for the system barrier.
+	OfficerList(ctx context.Context) ([]*OfficerStatus, error)
+
+	// OfficerClaimStatus returns per-officer claim status (no share data).
+	OfficerClaimStatus(ctx context.Context) ([]*OfficerStatus, error)
+
+	// ShareClaimBegin issues a challenge nonce to the named Security Officer.
+	// The officer must sign the nonce with their private key and call
+	// ShareClaimComplete within the nonce TTL.
+	ShareClaimBegin(ctx context.Context, req *ShareClaimBeginRequest) (*ShareClaimBeginResponse, error)
+
+	// ShareClaimComplete verifies the officer's nonce signature and returns
+	// the share bytes exactly once. The caller must wipe ShareBytes after use.
+	ShareClaimComplete(ctx context.Context, req *ShareClaimCompleteRequest) (*ShareClaimCompleteResponse, error)
+
+	// ShamirSealVote submits a Shamir share as a seal vote for a Shamir-
+	// protected system barrier. When the threshold is met the barrier is
+	// sealed automatically.
+	ShamirSealVote(ctx context.Context, req *ShamirSealVoteRequest) (*ShamirSealVoteResponse, error)
+
+	// RecoveryOfficerRegister registers a Security Officer for recovery key
+	// distribution.
+	RecoveryOfficerRegister(ctx context.Context, req *OfficerRegisterRequest) (*OfficerRegisterResponse, error)
+
+	// RecoveryShareClaimBegin issues a challenge nonce for a recovery officer.
+	RecoveryShareClaimBegin(ctx context.Context, req *ShareClaimBeginRequest) (*ShareClaimBeginResponse, error)
+
+	// RecoveryShareClaimComplete verifies the recovery officer's nonce
+	// signature and returns the recovery share bytes exactly once.
+	RecoveryShareClaimComplete(ctx context.Context, req *ShareClaimCompleteRequest) (*ShareClaimCompleteResponse, error)
 }
 
 // ---------------------------------------------------------------------------
@@ -764,11 +802,18 @@ type TenantClient interface {
 	// UpdateTenantQuotas sets the resource quotas for a tenant.
 	UpdateTenantQuotas(ctx context.Context, req *UpdateTenantQuotasRequest) (*UpdateTenantQuotasResponse, error)
 
-	// TenantBarrierInit initializes a per-tenant barrier.
-	TenantBarrierInit(ctx context.Context, req *TenantBarrierInitRequest) error
+	// TenantBarrierInit initializes a per-tenant barrier. For the Shamir
+	// strategy the response carries the generated M-of-N shares; for
+	// none/passphrase the share fields are empty.
+	TenantBarrierInit(ctx context.Context, req *TenantBarrierInitRequest) (*TenantBarrierInitResponse, error)
 
-	// TenantBarrierUnseal unseals a per-tenant barrier.
+	// TenantBarrierUnseal unseals a per-tenant barrier using a single key.
 	TenantBarrierUnseal(ctx context.Context, req *TenantBarrierUnsealRequest) error
+
+	// TenantBarrierUnsealShare submits a single Shamir share toward a
+	// per-tenant barrier's quorum threshold, automatically unsealing once
+	// enough distinct shares have been submitted.
+	TenantBarrierUnsealShare(ctx context.Context, req *TenantBarrierUnsealShareRequest) (*TenantBarrierUnsealProgress, error)
 
 	// TenantBarrierSeal seals a per-tenant barrier, returning it to the
 	// sealed state and refusing further reads/writes until unsealed again.
@@ -777,6 +822,31 @@ type TenantClient interface {
 	// TenantBarrierStatus returns the current sealed/initialized state and
 	// active strategy metadata for a per-tenant barrier.
 	TenantBarrierStatus(ctx context.Context, req *TenantBarrierStatusRequest) (*TenantBarrierStatusResponse, error)
+
+	// TenantBarrierOfficerRegister registers a Security Officer for a
+	// specific tenant's barrier.
+	TenantBarrierOfficerRegister(ctx context.Context, req *TenantOfficerRegisterRequest) (*OfficerRegisterResponse, error)
+
+	// TenantBarrierOfficerList lists all registered Security Officers for
+	// a specific tenant's barrier.
+	TenantBarrierOfficerList(ctx context.Context, tenantID string) ([]*OfficerStatus, error)
+
+	// TenantBarrierOfficerClaimStatus returns per-officer claim status for
+	// a specific tenant's barrier (no share data).
+	TenantBarrierOfficerClaimStatus(ctx context.Context, tenantID string) ([]*OfficerStatus, error)
+
+	// TenantBarrierShareClaimBegin issues a challenge nonce for a tenant
+	// barrier Security Officer.
+	TenantBarrierShareClaimBegin(ctx context.Context, req *TenantShareClaimBeginRequest) (*ShareClaimBeginResponse, error)
+
+	// TenantBarrierShareClaimComplete verifies the tenant officer's nonce
+	// signature and returns the share bytes exactly once. The caller must
+	// wipe ShareBytes after use.
+	TenantBarrierShareClaimComplete(ctx context.Context, req *TenantShareClaimCompleteRequest) (*ShareClaimCompleteResponse, error)
+
+	// TenantBarrierShamirSealVote submits a Shamir share as a seal vote for
+	// a Shamir-protected tenant barrier.
+	TenantBarrierShamirSealVote(ctx context.Context, req *TenantShamirSealVoteRequest) (*ShamirSealVoteResponse, error)
 }
 
 // ---------------------------------------------------------------------------

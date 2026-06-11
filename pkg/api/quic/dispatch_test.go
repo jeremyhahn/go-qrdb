@@ -170,7 +170,7 @@ var expectedMethods = []string{
 	"db.Unseal",
 	"db.BarrierStatus",
 
-	// Barrier (13)
+	// Barrier (22)
 	"barrier.Initialize",
 	"barrier.Unseal",
 	"barrier.Seal",
@@ -184,6 +184,15 @@ var expectedMethods = []string{
 	"barrier.RecoveryDelete",
 	"barrier.RecoveryStatus",
 	"barrier.RootToken",
+	"barrier.OfficerRegister",
+	"barrier.OfficerList",
+	"barrier.ShareClaimBegin",
+	"barrier.ShareClaimComplete",
+	"barrier.OfficerClaimStatus",
+	"barrier.RecoveryOfficerRegister",
+	"barrier.RecoveryShareClaimBegin",
+	"barrier.RecoveryShareClaimComplete",
+	"barrier.ShamirSealVote",
 
 	// Ceremony (9)
 	"ceremony.Initialize",
@@ -220,12 +229,12 @@ func TestBuildHandlers_RegistersAllMethods(t *testing.T) {
 func TestBuildHandlers_MethodCount(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{})
 
-	// 144 = 136 prior unary handlers + 3 database barrier handlers
-	// (db.Seal/Unseal/BarrierStatus) + 3 ceremony custodian handlers
-	// (ceremony.ClaimShareBegin/ClaimShareComplete/SubmitUnsealShare) + 2 role
-	// handlers (role.GetByName/role.ResolvePermissions). The 2 watch methods
+	// 153 = 144 prior unary handlers + 9 barrier SO handlers
+	// (barrier.OfficerRegister/OfficerList/ShareClaimBegin/ShareClaimComplete/
+	// OfficerClaimStatus/RecoveryOfficerRegister/RecoveryShareClaimBegin/
+	// RecoveryShareClaimComplete/ShamirSealVote). The 2 watch methods
 	// remain on the streaming path, not the unary table.
-	const wantCount = 144
+	const wantCount = 153
 	if got := len(srv.handlers); got != wantCount {
 		t.Fatalf("handler count = %d, want %d", got, wantCount)
 	}
@@ -327,7 +336,7 @@ func TestBuildHandlers_CategoryCounts(t *testing.T) {
 		"user":     10,
 		"role":     10,
 		"cert":     4,
-		"barrier":  13,
+		"barrier":  22,
 		"ceremony": 9,
 		"tenant":   6,
 	}

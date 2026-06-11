@@ -43,6 +43,24 @@ type RecoveryKeysInfo = service.RecoveryKeysInfo
 // RootTokenInfo holds a generated root token.
 type RootTokenInfo = service.RootTokenInfo
 
+// BarrierOfficerRegisterRequest carries the parameters for registering a
+// Security Officer against the system or recovery barrier.
+type BarrierOfficerRegisterRequest = service.BarrierOfficerRegisterRequest
+
+// BarrierOfficerRegisterResult is the outcome of a successful officer
+// registration.
+type BarrierOfficerRegisterResult = service.BarrierOfficerRegisterResult
+
+// BarrierOfficerStatus is a non-secret view of an enrolled Security Officer.
+type BarrierOfficerStatus = service.BarrierOfficerStatus
+
+// BarrierShareClaimChallenge is the challenge issued by BarrierShareClaimBegin.
+type BarrierShareClaimChallenge = service.BarrierShareClaimChallenge
+
+// BarrierShareClaimResult is returned to the Security Officer exactly once
+// upon a successful BarrierShareClaimComplete.
+type BarrierShareClaimResult = service.BarrierShareClaimResult
+
 // NewBarrierService creates a new BarrierServicer backed by the given barrier.
 var NewBarrierService = service.NewBarrierService
 

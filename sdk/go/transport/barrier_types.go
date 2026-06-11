@@ -14,6 +14,8 @@
 
 package transport
 
+import "time"
+
 // BarrierInitializeRequest holds the parameters used to initialize the
 // cryptographic barrier. The canonical CLI verb tree (qrdb / xkmsctl /
 // quicbaas / platformctl) exposes:
@@ -46,12 +48,15 @@ type BarrierUnsealRequest struct {
 }
 
 // BarrierStatusResponse describes the current state of the cryptographic
-// barrier.
+// barrier. ShamirThreshold and ShamirTotal carry the configured M-of-N
+// quorum when the barrier uses the Shamir strategy and are zero otherwise.
 type BarrierStatusResponse struct {
-	Sealed         bool   `json:"sealed"`
-	Strategy       string `json:"strategy"`
-	HardwareBacked bool   `json:"hardware_backed"`
-	InitializedAt  string `json:"initialized_at,omitempty"`
+	Sealed          bool   `json:"sealed"`
+	Strategy        string `json:"strategy"`
+	HardwareBacked  bool   `json:"hardware_backed"`
+	InitializedAt   string `json:"initialized_at,omitempty"`
+	ShamirThreshold int    `json:"shamir_threshold,omitempty"`
+	ShamirTotal     int    `json:"shamir_total,omitempty"`
 }
 
 // BarrierSealRequest carries the optional Security Officer PIN supplied
@@ -82,12 +87,14 @@ type BarrierInitializeShamirRequest struct {
 	UserPin     string `json:"user_pin,omitempty"`
 }
 
-// BarrierInitializeShamirResponse returns the generated key shares after
-// Shamir initialization.
+// BarrierInitializeShamirResponse is the share-free result of a Shamir
+// initialization. Share material is never returned here; Security Officers
+// retrieve their individual shares via the ShareClaimBegin/ShareClaimComplete
+// flow using their mTLS certificate.
 type BarrierInitializeShamirResponse struct {
-	Shares      []string `json:"shares"`
-	Threshold   int      `json:"threshold"`
-	TotalShares int      `json:"total_shares"`
+	Threshold   int `json:"threshold"`
+	TotalShares int `json:"total_shares"`
+	ShareCount  int `json:"share_count"`
 }
 
 // BarrierUnsealShareRequest holds a single Shamir share for incremental
@@ -110,25 +117,28 @@ type BarrierUnsealSharesRequest struct {
 }
 
 // BarrierRekeyRequest holds parameters for rekeying the barrier. The
-// canonical CLI verb is `barrier rekey` and accepts the new passphrase,
-// an optional SO PIN (required when a PINBackend is configured), and
-// optional Shamir threshold/total when the strategy is shamir.
+// canonical CLI verb is `barrier rekey` and accepts an optional SO PIN
+// (required when a PINBackend is configured) and optional Shamir
+// threshold/total. Rekey is a Shamir-only operation: the server
+// generates a fresh unseal key and share set itself, so no secret
+// material travels on the request.
 //
 // SOPin, when provided, is verified against the canonical pin.PINBackend
 // before the rekey is executed. When no backend or PIN is configured the
 // field is ignored, preserving dev-mode flows.
 type BarrierRekeyRequest struct {
-	NewSecret string `json:"new_secret,omitempty"`
 	SOPin     string `json:"so_pin,omitempty"`
 	Threshold int    `json:"threshold"`
 	Total     int    `json:"total"`
 }
 
-// BarrierRekeyResponse returns the new key shares after a rekey operation.
+// BarrierRekeyResponse is the share-free result of a rekey operation. New
+// shares are sealed to enrolled Security Officers and claimed via the
+// ShareClaimBegin/ShareClaimComplete flow.
 type BarrierRekeyResponse struct {
-	Shares      []string `json:"shares"`
-	Threshold   int      `json:"threshold"`
-	TotalShares int      `json:"total_shares"`
+	Threshold   int `json:"threshold"`
+	TotalShares int `json:"total_shares"`
+	ShareCount  int `json:"share_count"`
 }
 
 // BarrierGenerateRecoveryKeysRequest holds parameters for generating
@@ -140,11 +150,13 @@ type BarrierGenerateRecoveryKeysRequest struct {
 	SOPin     string `json:"so_pin,omitempty"`
 }
 
-// BarrierRecoveryKeysResponse returns generated recovery keys.
+// BarrierRecoveryKeysResponse is the share-free result of recovery key
+// generation. Recovery shares are sealed to enrolled recovery officers and
+// claimed via the RecoveryShareClaimBegin/RecoveryShareClaimComplete flow.
 type BarrierRecoveryKeysResponse struct {
-	Keys      []string `json:"keys"`
-	Threshold int      `json:"threshold"`
-	Total     int      `json:"total"`
+	Threshold  int `json:"threshold"`
+	Total      int `json:"total"`
+	ShareCount int `json:"share_count"`
 }
 
 // BarrierRecoverWithKeysRequest holds recovery keys used to unseal the
@@ -170,4 +182,118 @@ type BarrierGenerateRootTokenRequest struct {
 type BarrierRootTokenResponse struct {
 	Token     string `json:"token"`
 	CreatedAt string `json:"created_at"`
+}
+
+// ---------------------------------------------------------------------------
+// Security Officer registration and share-claim types (§7.5)
+// ---------------------------------------------------------------------------
+
+// OfficerRegisterRequest carries the parameters for registering a new
+// Security Officer against a system or recovery barrier.
+type OfficerRegisterRequest struct {
+	Username          string `json:"username"`
+	CSRPEM            []byte `json:"csr_pem"`
+	AuthenticatorType string `json:"authenticator_type,omitempty"`
+	AuthenticatorRef  string `json:"authenticator_ref,omitempty"`
+}
+
+// OfficerRegisterResponse is returned to the admin after successful officer
+// registration. The CertPEM must be delivered to the officer out of band;
+// it is not stored server-side after this response.
+type OfficerRegisterResponse struct {
+	CertPEM    []byte `json:"cert_pem"`
+	ShareIndex int    `json:"share_index"`
+}
+
+// OfficerStatus is a non-secret view of an enrolled Security Officer. All
+// fields are public metadata; no share material is present.
+type OfficerStatus struct {
+	Username       string    `json:"username"`
+	CertThumbprint string    `json:"cert_thumbprint,omitempty"`
+	ShareIndex     int       `json:"share_index"`
+	AuthFactor     string    `json:"auth_factor"`
+	EnrolledAt     time.Time `json:"enrolled_at"`
+	ClaimedAt      time.Time `json:"claimed_at,omitempty"`
+	SharePending   bool      `json:"share_pending"`
+}
+
+// ShareClaimBeginRequest starts the share-claim handshake for the named SO.
+type ShareClaimBeginRequest struct {
+	Username string `json:"username"`
+}
+
+// ShareClaimBeginResponse carries the challenge nonce for the SO to sign.
+type ShareClaimBeginResponse struct {
+	NonceHex  string    `json:"nonce_hex"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// ShareClaimCompleteRequest carries the signed nonce to complete the claim.
+type ShareClaimCompleteRequest struct {
+	Username  string `json:"username"`
+	NonceHex  string `json:"nonce_hex"`
+	Signature []byte `json:"signature"`
+}
+
+// ShareClaimCompleteResponse is returned to the Security Officer exactly once
+// upon a successful CompleteClaimShare. ShareBytes must be wiped by the caller
+// after recording or presenting them to the user; they are never logged and
+// never re-served.
+type ShareClaimCompleteResponse struct {
+	ShareIndex int    `json:"share_index"`
+	ShareBytes []byte `json:"share_bytes"` // present ONLY in this response type
+}
+
+// ShamirSealVoteRequest carries a single Shamir share as a seal vote.
+type ShamirSealVoteRequest struct {
+	Share string `json:"share"`
+}
+
+// ShamirSealVoteResponse reports progress toward the seal-quorum threshold.
+type ShamirSealVoteResponse struct {
+	Required  int  `json:"required"`
+	Submitted int  `json:"submitted"`
+	Complete  bool `json:"complete"`
+}
+
+// ---------------------------------------------------------------------------
+// Tenant officer/claim types (§7.5 — add TenantID as first field)
+// ---------------------------------------------------------------------------
+
+// TenantOfficerRegisterRequest carries the parameters for registering an SO
+// against a specific tenant's barrier.
+type TenantOfficerRegisterRequest struct {
+	TenantID          string `json:"tenant_id"`
+	Username          string `json:"username"`
+	CSRPEM            []byte `json:"csr_pem"`
+	AuthenticatorType string `json:"authenticator_type,omitempty"`
+	AuthenticatorRef  string `json:"authenticator_ref,omitempty"`
+}
+
+// TenantShareClaimBeginRequest starts the share-claim handshake for a tenant
+// barrier officer.
+type TenantShareClaimBeginRequest struct {
+	TenantID string `json:"tenant_id"`
+	Username string `json:"username"`
+}
+
+// TenantShareClaimCompleteRequest completes the share-claim handshake for a
+// tenant barrier officer.
+type TenantShareClaimCompleteRequest struct {
+	TenantID  string `json:"tenant_id"`
+	Username  string `json:"username"`
+	NonceHex  string `json:"nonce_hex"`
+	Signature []byte `json:"signature"`
+}
+
+// TenantOfficerClaimStatusRequest requests officer claim status for a tenant.
+type TenantOfficerClaimStatusRequest struct {
+	TenantID string `json:"tenant_id"`
+}
+
+// TenantShamirSealVoteRequest carries a Shamir share as a seal vote for a
+// specific tenant's barrier.
+type TenantShamirSealVoteRequest struct {
+	TenantID string `json:"tenant_id"`
+	Share    string `json:"share"`
 }

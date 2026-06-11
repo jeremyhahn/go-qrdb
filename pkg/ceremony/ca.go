@@ -14,7 +14,10 @@
 
 package ceremony
 
-import "crypto/x509"
+import (
+	"context"
+	"crypto/x509"
+)
 
 // SignCSROptions controls how a CSR is signed by the ceremony CA.
 type SignCSROptions struct {
@@ -69,7 +72,7 @@ type IssuedCert struct {
 type CeremonyCA interface {
 	// SignCSR signs a PEM-encoded certificate signing request with the
 	// given options and returns the issued certificate.
-	SignCSR(csrPEM []byte, opts *SignCSROptions) (*x509.Certificate, error)
+	SignCSR(ctx context.Context, csrPEM []byte, opts *SignCSROptions) (*x509.Certificate, error)
 
 	// CACertificate returns the CA's own certificate.
 	CACertificate() (*x509.Certificate, error)
@@ -79,5 +82,5 @@ type CeremonyCA interface {
 
 	// IssueCertificate generates a new key pair and issues a certificate
 	// with the given parameters.
-	IssueCertificate(req *IssueCertRequest) (*IssuedCert, error)
+	IssueCertificate(ctx context.Context, req *IssueCertRequest) (*IssuedCert, error)
 }

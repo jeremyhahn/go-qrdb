@@ -34,8 +34,20 @@ ending in `/` match by prefix; everything else is an exact match:
 - `/v1/barrier/recovery/generate`
 - `/v1/barrier/recovery/recover`
 - `/v1/barrier/recovery/status`
+- `/v1/barrier/officers` (exact) and `/v1/barrier/officers/` (prefix —
+  covers claim-status and `{username}/claim/begin|complete`)
+- `/v1/barrier/recovery/officers` (exact) and
+  `/v1/barrier/recovery/officers/` (prefix)
 - `/v1/init/` (prefix)
 - `/v1/bootstrap/` (prefix)
+
+The Security Officer registration and share-claim routes are
+allowlisted because first-boot Shamir initialization is reachable
+only through the sealed-window listener: officers must be registered
+(and able to claim their shares) before and immediately after
+`InitializeShamir` runs, while the barrier is still sealed. The
+seal-vote endpoint (`/v1/barrier/shamir/seal-vote`) is deliberately
+**not** allowlisted — sealing is only meaningful while unsealed.
 
 ## gRPC allowlist
 
@@ -46,11 +58,19 @@ in `info.FullMethod`:
 
 - `Health`, `Status`
 - `BarrierStatus`, `BarrierInitialize`, `BarrierUnseal`
-- `BarrierShamir{Initialize,UnsealShare,UnsealShares,ListShares,DeleteShare,DeleteAllShares,Verify}`
+- `BarrierShamir{Initialize,UnsealShare,UnsealShares}`
 - `BarrierRekey`
 - `BarrierRecovery{Generate,Recover,Delete,Status}`
 - `BarrierRootToken`
+- `BarrierOfficer{Register,List,ClaimStatus}`
+- `BarrierShareClaim{Begin,Complete}`
+- `BarrierRecoveryOfficerRegister`,
+  `BarrierRecoveryShareClaim{Begin,Complete}`
 - `Ceremony{Initialize,Status,ClaimCertBegin,ClaimCertComplete,ClaimShare,SignCSR,EnrollExternalOfficer}`
+
+`BarrierShamirSealVote` is deliberately **not** allowlisted — sealing
+is only meaningful while the barrier is unsealed, so seal votes are
+served by the regular (post-unseal) listener.
 
 ## Response envelope
 
@@ -82,6 +102,24 @@ After unseal, the middleware becomes a passthrough and the regular
 auth middleware takes effect for all endpoints. On re-seal (operator
 calls `/v1/barrier/seal` with `barrier:seal` permission), the
 sealed-window engages again automatically.
+
+### Identity-gated claim routes after unseal
+
+The officer share-claim routes (system, recovery, ceremony
+custodian, and tenant barrier — on all four transports) keep the
+Vault posture **after** unseal: they map to the
+`permission.IdentityGated` sentinel instead of an RBAC permission.
+The middleware requires only an authenticated mTLS identity (no
+certificate → 401) and audits the decision; the binding
+authorization — officer-registry membership, certificate-thumbprint
+match against the enrollment record (mismatch → 403), and
+nonce-signature or factor verification — is enforced at the handler
+layer. This is necessary, not merely convenient: Security Officers
+are registered in the ceremony registry during the sealed window,
+before the Raft-backed RBAC user store exists, so they are never
+RBAC users and no role grant could authorize them. The sentinel is
+deliberately unregistered — it cannot be granted to any role and
+never appears in the permission catalog.
 
 ## Format-version sentinel
 
@@ -121,6 +159,20 @@ restructures the boot sequence as follows:
    `server.WithSealedWindowProbe(barrier)` middleware. The probe
    keeps the canonical allowlist active so only the unseal-related
    endpoints accept requests.
+
+   When the daemon manages its own TLS material (auto-generated or
+   config-provided CA cert **and** key), `cmd/qrdbd` constructs a
+   `ceremony.LocalCA` from the cluster CA bundle
+   (`ceremonyCAFromBundle`) and wires it into the ceremony core via
+   `lifecycle.Infra.CeremonyCA` → `CeremonyService.SetCA`. Officer
+   CSRs signed during the sealed window therefore chain to the same
+   CA the server trusts for mTLS client auth, so a registered
+   security officer can immediately authenticate to claim their
+   share. With BYO TLS certificates (no CA key available), no
+   `LocalCA` is constructed and officer registration stays gated on
+   the full initialization ceremony (`ErrCANotInitialized`).
+   `SetCA` never overwrites a CA established by `Initialize`; the
+   ceremony-established CA stays authoritative.
 4. The listener loop polls `barrier.IsSealed()` on a 250ms ticker
    (channel-based; no `time.Sleep`) and either (a) tears the
    listener down and continues the boot when the operator drives
@@ -133,6 +185,18 @@ restructures the boot sequence as follows:
    barrier, credential service, and barrier registry instances
    built in step 1 are threaded into `BuildServices` via `Infra`
    so the post-unseal graph reuses the same underlying seal state.
+   `awaitUnseal` returns the sealed-window `*lifecycle.Node`, and
+   `start.go` extracts its ceremony core
+   (`service.CeremonyServiceCore`) and threads it into
+   `BuildServices` via `Infra.CeremonyCoreSvc`. The full boot
+   therefore reuses the **same** `ceremony.CeremonyService`
+   instance that served the sealed window, preserving its
+   in-memory state: enclave-held pending shares
+   (`sealedShareStore`), cache-only officer registrations made
+   while the registry was sealed, pending officer certificates,
+   and outstanding claim challenges. Without this reuse, shares
+   sealed to officers during first-boot Shamir initialization
+   would be unclaimable after the boot completes.
 
 When `barrier.enabled: false` (no encfs), the boot skips steps 1-4
 entirely and behaves as before.

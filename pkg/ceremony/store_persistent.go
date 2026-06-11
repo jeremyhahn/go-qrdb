@@ -76,12 +76,16 @@ type OfficerRegistry struct {
 	mu      sync.RWMutex
 	backend seal.StorageBackend
 	cache   map[string]*PersistentOfficer
+	// prefix is the storage key prefix under which records are persisted.
+	// Defaults to officerRegistryPrefix for the system barrier; scoped
+	// registries (tenant, recovery) use BarrierScope.StoragePrefix().
+	prefix string
 }
 
 // NewOfficerRegistry creates a new OfficerRegistry backed by the given
-// storage backend. The backend MUST be a *seal.StorageBarrier (or any
-// other backend that enforces sealed-state semantics) so that records
-// are encrypted at rest and unavailable while sealed.
+// storage backend using the default system-barrier prefix. The backend MUST
+// be a *seal.StorageBarrier (or any other backend that enforces sealed-state
+// semantics) so that records are encrypted at rest and unavailable while sealed.
 //
 // Returns ErrNilStore if backend is nil.
 func NewOfficerRegistry(backend seal.StorageBackend) (*OfficerRegistry, error) {
@@ -91,6 +95,23 @@ func NewOfficerRegistry(backend seal.StorageBackend) (*OfficerRegistry, error) {
 	return &OfficerRegistry{
 		backend: backend,
 		cache:   make(map[string]*PersistentOfficer),
+		prefix:  officerRegistryPrefix,
+	}, nil
+}
+
+// NewScopedOfficerRegistry creates an OfficerRegistry scoped to the given
+// BarrierScope. The scope determines the storage prefix and therefore the
+// namespace isolation between system, tenant, and recovery officer sets.
+//
+// Returns ErrNilStore if backend is nil.
+func NewScopedOfficerRegistry(backend seal.StorageBackend, scope BarrierScope) (*OfficerRegistry, error) {
+	if backend == nil {
+		return nil, ErrNilStore
+	}
+	return &OfficerRegistry{
+		backend: backend,
+		cache:   make(map[string]*PersistentOfficer),
+		prefix:  scope.StoragePrefix(),
 	}, nil
 }
 
@@ -126,7 +147,7 @@ func (r *OfficerRegistry) Save(ctx context.Context, officer *PersistentOfficer) 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if err := r.backend.Put(ctx, officerKey(officer.Username), blob); err != nil {
+	if err := r.backend.Put(ctx, r.officerKey(officer.Username), blob); err != nil {
 		return err
 	}
 
@@ -156,7 +177,7 @@ func (r *OfficerRegistry) Load(ctx context.Context, username string) (*Persisten
 	r.mu.RUnlock()
 
 	// Fall through to backend.
-	blob, err := r.backend.Get(ctx, officerKey(username))
+	blob, err := r.backend.Get(ctx, r.officerKey(username))
 	if err != nil {
 		if err == seal.ErrSecretNotFound {
 			return nil, ErrUserNotFound
@@ -185,7 +206,7 @@ func (r *OfficerRegistry) Load(ctx context.Context, username string) (*Persisten
 // The list is always served from the backend so that callers see the
 // authoritative state — the cache is updated as a side effect.
 func (r *OfficerRegistry) ListAll(ctx context.Context) ([]*PersistentOfficer, error) {
-	keys, err := r.backend.List(ctx, officerRegistryPrefix)
+	keys, err := r.backend.List(ctx, r.prefix)
 	if err != nil {
 		return nil, err
 	}
@@ -195,7 +216,7 @@ func (r *OfficerRegistry) ListAll(ctx context.Context) ([]*PersistentOfficer, er
 	defer r.mu.Unlock()
 
 	for _, k := range keys {
-		username := strings.TrimPrefix(k, officerRegistryPrefix)
+		username := strings.TrimPrefix(k, r.prefix)
 		blob, getErr := r.backend.Get(ctx, k)
 		if getErr != nil {
 			return nil, getErr
@@ -249,7 +270,7 @@ func (r *OfficerRegistry) MarkClaimed(ctx context.Context, username string, when
 //
 // Returns ErrSealed when invoked while the underlying barrier is sealed.
 func (r *OfficerRegistry) Reload(ctx context.Context) error {
-	keys, err := r.backend.List(ctx, officerRegistryPrefix)
+	keys, err := r.backend.List(ctx, r.prefix)
 	if err != nil {
 		return err
 	}
@@ -265,7 +286,7 @@ func (r *OfficerRegistry) Reload(ctx context.Context) error {
 			return &OfficerRegistryError{Op: "unmarshal", Err: err}
 		}
 		if officer.Username == "" {
-			officer.Username = strings.TrimPrefix(k, officerRegistryPrefix)
+			officer.Username = strings.TrimPrefix(k, r.prefix)
 		}
 		cp := officer
 		rebuilt[officer.Username] = &cp
@@ -274,6 +295,32 @@ func (r *OfficerRegistry) Reload(ctx context.Context) error {
 	r.mu.Lock()
 	r.cache = rebuilt
 	r.mu.Unlock()
+	return nil
+}
+
+// ResetClaimedAt clears the ClaimedAt timestamp on every enrolled officer,
+// marking a new share distribution round. Each officer record is updated in
+// the cache and persisted best-effort (sealed-barrier tolerance: a failed
+// write is logged but does not stop the reset). The cache is always updated
+// even when persistence fails so the in-memory view is immediately consistent.
+func (r *OfficerRegistry) ResetClaimedAt(ctx context.Context) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for username, officer := range r.cache {
+		if officer.ClaimedAt.IsZero() {
+			continue
+		}
+		officer.ClaimedAt = time.Time{}
+		cp := *officer
+		r.cache[username] = &cp
+
+		blob, err := json.Marshal(&cp)
+		if err != nil {
+			continue // best-effort
+		}
+		_ = r.backend.Put(ctx, r.officerKey(username), blob) // best-effort
+	}
 	return nil
 }
 
@@ -293,9 +340,15 @@ func (r *OfficerRegistry) Cached() []*PersistentOfficer {
 	return out
 }
 
-// officerKey returns the storage key for the given username.
-func officerKey(username string) string {
-	return officerRegistryPrefix + username
+// officerKey returns the storage key for the given username using this
+// registry's configured prefix.
+func (r *OfficerRegistry) officerKey(username string) string {
+	return r.prefix + username
+}
+
+// Prefix returns the storage prefix configured for this registry.
+func (r *OfficerRegistry) Prefix() string {
+	return r.prefix
 }
 
 // sortOfficersByEnrolledAt sorts officers in ascending enrolled-at order

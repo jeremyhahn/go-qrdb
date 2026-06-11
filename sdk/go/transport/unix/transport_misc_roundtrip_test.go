@@ -92,7 +92,7 @@ func (m *mockBarrierSvc) BarrierInitializeShamir(ctx context.Context, secret str
 		return m.shamirInitFn(ctx, secret, threshold, total)
 	}
 	return &service.ShamirInitInfo{
-		Shares:      []string{"share1", "share2", "share3"},
+		ShareCount:  3,
 		Threshold:   threshold,
 		TotalShares: total,
 	}, nil
@@ -117,7 +117,7 @@ func (m *mockBarrierSvc) BarrierRekey(ctx context.Context, threshold, total int)
 		return m.rekeyFn(ctx, threshold, total)
 	}
 	return &service.ShamirInitInfo{
-		Shares:      []string{"new1", "new2"},
+		ShareCount:  2,
 		Threshold:   threshold,
 		TotalShares: total,
 	}, nil
@@ -128,9 +128,9 @@ func (m *mockBarrierSvc) BarrierGenerateRecoveryKeys(ctx context.Context, thresh
 		return m.recoveryGenFn(ctx, threshold, total)
 	}
 	return &service.RecoveryKeysInfo{
-		Keys:      []string{"rec1"},
-		Threshold: threshold,
-		Total:     total,
+		ShareCount: 1,
+		Threshold:  threshold,
+		Total:      total,
 	}, nil
 }
 
@@ -160,6 +160,42 @@ func (m *mockBarrierSvc) BarrierGenerateRootToken(ctx context.Context, shares []
 		return m.rootTokenFn(ctx, shares)
 	}
 	return &service.RootTokenInfo{Token: "root-token-hex", CreatedAt: time.Unix(1_700_000_000, 0)}, nil
+}
+
+func (m *mockBarrierSvc) BarrierOfficerRegister(_ context.Context, _ *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
+	return &service.BarrierOfficerRegisterResult{}, nil
+}
+
+func (m *mockBarrierSvc) BarrierOfficerList(_ context.Context) ([]*service.BarrierOfficerStatus, error) {
+	return nil, nil
+}
+
+func (m *mockBarrierSvc) BarrierOfficerClaimStatus(_ context.Context) ([]*service.BarrierOfficerStatus, error) {
+	return nil, nil
+}
+
+func (m *mockBarrierSvc) BarrierShareClaimBegin(_ context.Context, _, _ string) (*service.BarrierShareClaimChallenge, error) {
+	return &service.BarrierShareClaimChallenge{}, nil
+}
+
+func (m *mockBarrierSvc) BarrierShareClaimComplete(_ context.Context, _, _ string, _ []byte, _ string) (*service.BarrierShareClaimResult, error) {
+	return &service.BarrierShareClaimResult{}, nil
+}
+
+func (m *mockBarrierSvc) BarrierShamirSealVote(_ context.Context, _ string) (*service.UnsealShareProgress, error) {
+	return &service.UnsealShareProgress{}, nil
+}
+
+func (m *mockBarrierSvc) BarrierRecoveryOfficerRegister(_ context.Context, _ *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
+	return &service.BarrierOfficerRegisterResult{}, nil
+}
+
+func (m *mockBarrierSvc) BarrierRecoveryShareClaimBegin(_ context.Context, _, _ string) (*service.BarrierShareClaimChallenge, error) {
+	return &service.BarrierShareClaimChallenge{}, nil
+}
+
+func (m *mockBarrierSvc) BarrierRecoveryShareClaimComplete(_ context.Context, _, _ string, _ []byte, _ string) (*service.BarrierShareClaimResult, error) {
+	return &service.BarrierShareClaimResult{}, nil
 }
 
 var _ service.BarrierServicer = (*mockBarrierSvc)(nil)
@@ -229,7 +265,7 @@ func TestUnixRT_BarrierInitializeShamir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BarrierInitializeShamir: %v", err)
 	}
-	if len(resp.Shares) != 3 || resp.Threshold != 2 {
+	if resp.ShareCount != 3 || resp.Threshold != 2 {
 		t.Errorf("got %+v", resp)
 	}
 }
@@ -271,8 +307,8 @@ func TestUnixRT_BarrierRekey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BarrierRekey: %v", err)
 	}
-	if len(resp.Shares) != 2 {
-		t.Errorf("got %d shares, want 2", len(resp.Shares))
+	if resp.ShareCount != 2 {
+		t.Errorf("got ShareCount=%d, want 2", resp.ShareCount)
 	}
 }
 
@@ -285,8 +321,8 @@ func TestUnixRT_BarrierGenerateRecoveryKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BarrierGenerateRecoveryKeys: %v", err)
 	}
-	if len(resp.Keys) != 1 {
-		t.Errorf("got %d keys, want 1", len(resp.Keys))
+	if resp.ShareCount != 1 {
+		t.Errorf("got ShareCount=%d, want 1", resp.ShareCount)
 	}
 }
 

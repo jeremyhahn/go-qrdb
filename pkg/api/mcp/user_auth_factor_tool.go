@@ -54,6 +54,7 @@ func toolUserAuthFactorAdd() mcp.Tool {
 		mcp.WithString("type", mcp.Required(), mcp.Description("Factor type: mtls, fido2, or piv.")),
 		mcp.WithString("label", mcp.Description("Human-readable display label.")),
 		mcp.WithString("credential_b64", mcp.Required(), mcp.Description("Base64-encoded canonical lookup-key bytes.")),
+		mcp.WithString("spki_credential_b64", mcp.Description("Base64-encoded SHA-256 of the certificate SubjectPublicKeyInfo (renewal-stable secondary lookup key, mtls/piv only).")),
 		mcp.WithString("metadata_json", mcp.Description("JSON-encoded type-specific metadata.")),
 		mcp.WithString("created_by", mcp.Description("Provenance: self, admin, or ceremony.")),
 	)
@@ -88,6 +89,7 @@ func toolUserAuthFactorRotate() mcp.Tool {
 		mcp.WithString("type", mcp.Required(), mcp.Description("New factor type.")),
 		mcp.WithString("label", mcp.Description("New factor label.")),
 		mcp.WithString("credential_b64", mcp.Required(), mcp.Description("Base64-encoded new credential bytes.")),
+		mcp.WithString("spki_credential_b64", mcp.Description("Base64-encoded SHA-256 of the certificate SubjectPublicKeyInfo (renewal-stable secondary lookup key, mtls/piv only).")),
 		mcp.WithString("metadata_json", mcp.Description("JSON-encoded new metadata.")),
 	)
 }
@@ -133,13 +135,18 @@ func handleUserAuthFactorAddTool(svc service.UserAuthFactorServicer) mcpserver.T
 				return mcp.NewToolResultError("metadata_json must be valid JSON: " + err.Error()), nil
 			}
 		}
+		spkiCred, perr := parseOptionalB64(req, "spki_credential_b64")
+		if perr != nil {
+			return mcp.NewToolResultError("spki_credential_b64 must be base64: " + perr.Error()), nil
+		}
 		factor := &auth.AuthFactor{
-			UserID:     userID,
-			Type:       auth.AuthFactorType(typ),
-			Label:      mcp.ParseString(req, "label", ""),
-			Credential: cred,
-			Metadata:   metadata,
-			CreatedBy:  mcp.ParseString(req, "created_by", ""),
+			UserID:         userID,
+			Type:           auth.AuthFactorType(typ),
+			Label:          mcp.ParseString(req, "label", ""),
+			Credential:     cred,
+			SPKICredential: spkiCred,
+			Metadata:       metadata,
+			CreatedBy:      mcp.ParseString(req, "created_by", ""),
 		}
 		if err := svc.Add(ctx, userID, factor); err != nil {
 			return nil, &ToolError{Tool: "qrdb_user_authfactor_add", Err: err}
@@ -214,11 +221,16 @@ func handleUserAuthFactorRotateTool(svc service.UserAuthFactorServicer) mcpserve
 				return mcp.NewToolResultError("metadata_json must be valid JSON: " + err.Error()), nil
 			}
 		}
+		spkiCred, perr := parseOptionalB64(req, "spki_credential_b64")
+		if perr != nil {
+			return mcp.NewToolResultError("spki_credential_b64 must be base64: " + perr.Error()), nil
+		}
 		newFactor := &auth.AuthFactor{
-			Type:       auth.AuthFactorType(typ),
-			Label:      mcp.ParseString(req, "label", ""),
-			Credential: cred,
-			Metadata:   metadata,
+			Type:           auth.AuthFactorType(typ),
+			Label:          mcp.ParseString(req, "label", ""),
+			Credential:     cred,
+			SPKICredential: spkiCred,
+			Metadata:       metadata,
 		}
 		if err := svc.Rotate(ctx, oldID, newFactor); err != nil {
 			return nil, &ToolError{Tool: "qrdb_user_authfactor_rotate", Err: err}
@@ -288,6 +300,9 @@ func factorToMCPMap(f *auth.AuthFactor) map[string]any {
 		"registered_at": f.RegisteredAt.Format(time.RFC3339),
 		"created_by":    f.CreatedBy,
 	}
+	if len(f.SPKICredential) > 0 {
+		out["spki_credential"] = base64.StdEncoding.EncodeToString(f.SPKICredential)
+	}
 	if f.LastUsedAt != nil {
 		out["last_used_at"] = f.LastUsedAt.Format(time.RFC3339)
 	}
@@ -306,4 +321,14 @@ func userAuthFactorJSONResult(f *auth.AuthFactor) (*mcp.CallToolResult, error) {
 // parseUint64 parses a decimal uint64.
 func parseUint64(s string) (uint64, error) {
 	return strconv.ParseUint(s, 10, 64)
+}
+
+// parseOptionalB64 decodes an optional base64-encoded string tool argument.
+// Returns (nil, nil) when the argument is absent or empty.
+func parseOptionalB64(req mcp.CallToolRequest, name string) ([]byte, error) {
+	v := mcp.ParseString(req, name, "")
+	if v == "" {
+		return nil, nil
+	}
+	return base64.StdEncoding.DecodeString(v)
 }

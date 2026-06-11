@@ -20,43 +20,48 @@ package transport
 
 // User represents a passwordless user entity. Authentication is exclusively
 // via mTLS X.509 certificates.
+//
+// The ID is a uint64 Snowflake that exceeds JavaScript's
+// Number.MAX_SAFE_INTEGER, so it crosses the JSON wire as a string
+// (proto3 JSON convention) to avoid precision loss in JS clients. The
+// json tags mirror the REST server's snake_case wire contract.
 type User struct {
-	ID        uint64   `json:"id"`
+	ID        uint64   `json:"id,string"`
 	Username  string   `json:"username"`
-	TenantID  string   `json:"tenantID"`
-	RoleIDs   []string `json:"roleIDs"`
+	TenantID  string   `json:"tenant_id"`
+	RoleIDs   []string `json:"role_ids"`
 	Enabled   bool     `json:"enabled"`
 	System    bool     `json:"system"`
-	CreatedAt string   `json:"createdAt"`
-	UpdatedAt string   `json:"updatedAt"`
+	CreatedAt string   `json:"created_at"`
+	UpdatedAt string   `json:"updated_at"`
 }
 
 // CreateUserRequest holds parameters for creating a user.
 type CreateUserRequest struct {
 	Username string   `json:"username"`
-	TenantID string   `json:"tenantID,omitempty"`
-	RoleIDs  []string `json:"roleIDs,omitempty"`
+	TenantID string   `json:"tenant_id,omitempty"`
+	RoleIDs  []string `json:"role_ids,omitempty"`
 }
 
 // UpdateUserRequest holds parameters for updating a user.
 type UpdateUserRequest struct {
-	ID       uint64   `json:"id"`
+	ID       uint64   `json:"id,string"`
 	Username string   `json:"username,omitempty"`
-	RoleIDs  []string `json:"roleIDs,omitempty"`
+	RoleIDs  []string `json:"role_ids,omitempty"`
 }
 
 // ListUsersRequest holds parameters for listing users.
 type ListUsersRequest struct {
-	TenantID string `json:"tenantID,omitempty"`
+	TenantID string `json:"tenant_id,omitempty"`
 	Page     int    `json:"page,omitempty"`
-	PageSize int    `json:"pageSize,omitempty"`
+	PageSize int    `json:"page_size,omitempty"`
 }
 
 // ListUsersResponse holds the paginated user list.
 type ListUsersResponse struct {
 	Users   []*User `json:"users"`
 	Total   int     `json:"total"`
-	HasMore bool    `json:"hasMore"`
+	HasMore bool    `json:"has_more"`
 }
 
 // ---------------------------------------------------------------------------
@@ -68,11 +73,11 @@ type ListUsersResponse struct {
 type Role struct {
 	ID          string   `json:"id"`
 	Name        string   `json:"name"`
-	TenantID    string   `json:"tenantID"`
+	TenantID    string   `json:"tenant_id"`
 	Permissions []string `json:"permissions"`
 	System      bool     `json:"system"`
-	CreatedAt   string   `json:"createdAt"`
-	UpdatedAt   string   `json:"updatedAt"`
+	CreatedAt   string   `json:"created_at"`
+	UpdatedAt   string   `json:"updated_at"`
 }
 
 // CreateRoleRequest holds parameters for creating a role.
@@ -81,7 +86,7 @@ type CreateRoleRequest struct {
 	// the server generates a random UUID, preserving legacy behavior.
 	ID          string   `json:"id,omitempty"`
 	Name        string   `json:"name"`
-	TenantID    string   `json:"tenantID,omitempty"`
+	TenantID    string   `json:"tenant_id,omitempty"`
 	Permissions []string `json:"permissions"`
 }
 
@@ -94,28 +99,31 @@ type UpdateRoleRequest struct {
 
 // ListRolesRequest holds parameters for listing roles.
 type ListRolesRequest struct {
-	TenantID string `json:"tenantID,omitempty"`
+	TenantID string `json:"tenant_id,omitempty"`
 	Page     int    `json:"page,omitempty"`
-	PageSize int    `json:"pageSize,omitempty"`
+	PageSize int    `json:"page_size,omitempty"`
 }
 
 // ListRolesResponse holds the paginated role list.
 type ListRolesResponse struct {
 	Roles   []*Role `json:"roles"`
 	Total   int     `json:"total"`
-	HasMore bool    `json:"hasMore"`
+	HasMore bool    `json:"has_more"`
 }
 
 // AssignRoleRequest holds parameters for assigning a role to a user.
+//
+// The user ID crosses the JSON wire as a string (proto3 JSON convention)
+// because uint64 Snowflakes exceed JavaScript's Number.MAX_SAFE_INTEGER.
 type AssignRoleRequest struct {
-	UserID uint64 `json:"userID"`
-	RoleID string `json:"roleID"`
+	UserID uint64 `json:"user_id,string"`
+	RoleID string `json:"role_id"`
 }
 
 // UnassignRoleRequest holds parameters for unassigning a role from a user.
 type UnassignRoleRequest struct {
-	UserID uint64 `json:"userID"`
-	RoleID string `json:"roleID"`
+	UserID uint64 `json:"user_id,string"`
+	RoleID string `json:"role_id"`
 }
 
 // PermissionCategory groups related permissions under a display name and
@@ -134,14 +142,14 @@ type ListPermissionsResponse struct {
 // GetRoleByNameRequest holds parameters for retrieving a role by its
 // tenant-scoped name.
 type GetRoleByNameRequest struct {
-	TenantID string `json:"tenantID,omitempty"`
+	TenantID string `json:"tenant_id,omitempty"`
 	Name     string `json:"name"`
 }
 
 // ResolvePermissionsRequest holds the role IDs whose effective permissions
 // should be resolved.
 type ResolvePermissionsRequest struct {
-	RoleIDs []string `json:"roleIDs"`
+	RoleIDs []string `json:"role_ids"`
 }
 
 // ResolvePermissionsResponse holds the resolved union of effective

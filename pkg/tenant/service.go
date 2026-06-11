@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
@@ -91,9 +92,9 @@ type TenantPatch struct {
 // including metadata CRUD and per-tenant barrier operations.
 type TenantServicer interface {
 	// CreateTenant creates a new tenant with the given ID, name, and
-	// isolation type. When isolationType is empty, IsolationBarrier is
-	// used. Registers the tenant in the barrier registry and persists
-	// metadata.
+	// isolation type. When isolationType is empty, IsolationPrefix is
+	// used (barrier isolation is opt-in). Registers barrier-isolated
+	// tenants in the barrier registry and persists metadata.
 	CreateTenant(ctx context.Context, id, name string, isolationType IsolationType) (*TenantInfo, error)
 
 	// GetTenant retrieves tenant metadata by ID.
@@ -139,7 +140,7 @@ type TenantServicer interface {
 	// seal.StrategyPassphrase. The threshold and shares parameters are
 	// reserved for Shamir secret-sharing configuration. An empty
 	// passphrase is rejected; there is no derived credential fallback.
-	TenantBarrierInit(ctx context.Context, tenantID, passphrase string, threshold, shares int) error
+	TenantBarrierInit(ctx context.Context, tenantID, passphrase string, threshold, shares int) (*TenantBarrierInitResult, error)
 
 	// TenantBarrierInitWithStrategy initializes the per-tenant barrier
 	// using an explicitly selected seal strategy resolved from the
@@ -152,12 +153,19 @@ type TenantServicer interface {
 	// injected, only the built-in software strategies (passphrase, none,
 	// shamir) are accepted and hardware/cloud strategy requests return
 	// InvalidStrategyError.
-	TenantBarrierInitWithStrategy(ctx context.Context, tenantID, passphrase string, threshold, shares int, strategyID seal.StrategyID) error
+	TenantBarrierInitWithStrategy(ctx context.Context, tenantID, passphrase string, threshold, shares int, strategyID seal.StrategyID) (*TenantBarrierInitResult, error)
 
 	// TenantBarrierUnseal unseals the per-tenant barrier using the
 	// caller-supplied key material. There is no derived credential
 	// fallback: empty key material is rejected.
 	TenantBarrierUnseal(ctx context.Context, tenantID string, key []byte) error
+
+	// TenantBarrierUnsealShare submits a single Shamir share toward the
+	// per-tenant barrier's quorum threshold, automatically unsealing once
+	// enough distinct shares have been submitted. It is the per-tenant
+	// analogue of the system barrier's unseal-share endpoint and is only
+	// valid for barriers initialized with the Shamir strategy.
+	TenantBarrierUnsealShare(ctx context.Context, tenantID, share string) (*TenantBarrierUnsealProgress, error)
 
 	// TenantBarrierSeal seals the per-tenant barrier, returning it to the
 	// sealed state. Subsequent reads and writes against the tenant's
@@ -167,6 +175,34 @@ type TenantServicer interface {
 	// TenantBarrierStatus returns the current state of the per-tenant
 	// barrier (sealed/initialized flags, active strategy, hardware-backing).
 	TenantBarrierStatus(ctx context.Context, tenantID string) (*TenantBarrierStatus, error)
+
+	// TenantBarrierOfficerRegister registers a Security Officer for the
+	// named tenant's barrier. Validates the CSR, signs it with the CA, and
+	// persists public metadata. No share bytes are produced at this step.
+	// Officers must be registered before TenantBarrierInitWithStrategy(Shamir)
+	// is called so that SealAndDistribute can seal one share per enrolled officer.
+	TenantBarrierOfficerRegister(ctx context.Context, tenantID string, req *ceremony.RegisterOfficerRequest) (*ceremony.RegisterOfficerResult, error)
+
+	// TenantBarrierOfficerList returns all enrolled Security Officers for
+	// the named tenant's barrier.
+	TenantBarrierOfficerList(ctx context.Context, tenantID string) ([]*ceremony.OfficerStatus, error)
+
+	// TenantBarrierShareClaimBegin issues a challenge nonce to the named
+	// Security Officer for the tenant barrier share claim handshake.
+	TenantBarrierShareClaimBegin(ctx context.Context, tenantID, username, callerCertThumbprint string) (*ceremony.ChallengeResponse, error)
+
+	// TenantBarrierShareClaimComplete verifies the officer's nonce signature
+	// and returns the share bytes exactly once via the officer's own mTLS session.
+	TenantBarrierShareClaimComplete(ctx context.Context, tenantID, username, nonceHex string, signature []byte, callerCertThumbprint string) (*ceremony.ShareClaimResult, error)
+
+	// TenantBarrierOfficerClaimStatus returns a per-officer claim status
+	// snapshot for the named tenant's barrier. Never includes share bytes.
+	TenantBarrierOfficerClaimStatus(ctx context.Context, tenantID string) ([]*ceremony.OfficerStatus, error)
+
+	// TenantBarrierShamirSealVote submits a Shamir share as a seal vote for
+	// the named tenant's barrier. When the quorum threshold is met the barrier
+	// is sealed automatically.
+	TenantBarrierShamirSealVote(ctx context.Context, tenantID, share string) (*TenantBarrierUnsealProgress, error)
 }
 
 // TenantBarrierStatus reports the current state of a per-tenant barrier.
@@ -191,6 +227,61 @@ type TenantBarrierStatus struct {
 	// HardwareBacked is true when the active strategy uses dedicated
 	// cryptographic hardware.
 	HardwareBacked bool `json:"hardware_backed"`
+
+	// ShamirThreshold is the minimum number of Shamir shares required to
+	// unseal this tenant barrier. Zero when the active strategy is not Shamir.
+	ShamirThreshold int `json:"shamir_threshold,omitempty"`
+
+	// ShamirTotal is the total number of Shamir shares generated at
+	// initialization. Zero when the active strategy is not Shamir.
+	ShamirTotal int `json:"shamir_total,omitempty"`
+}
+
+// TenantBarrierInitResult reports the outcome of a per-tenant barrier
+// initialization. For the Shamir strategy it carries the threshold, total, and
+// the number of officer shares sealed to ceremony enclaves. Share material is
+// never present here; Security Officers retrieve their shares via the
+// TenantBarrierShareClaimBegin / TenantBarrierShareClaimComplete flow.
+type TenantBarrierInitResult struct {
+	// TenantID is the tenant whose barrier was initialized.
+	TenantID string `json:"tenant_id"`
+
+	// Strategy is the seal strategy the barrier was initialized with.
+	Strategy string `json:"strategy"`
+
+	// Threshold is the minimum number of shares required to unseal. Zero for
+	// non-Shamir strategies.
+	Threshold int `json:"threshold,omitempty"`
+
+	// TotalShares is the total number of shares generated. Zero for non-Shamir
+	// strategies.
+	TotalShares int `json:"total_shares,omitempty"`
+
+	// ShareCount is the number of shares successfully sealed to officer enclaves.
+	// Equals TotalShares when all officers are enrolled; may be less when
+	// enrollment is still in progress. Zero for non-Shamir strategies.
+	ShareCount int `json:"share_count,omitempty"`
+}
+
+// TenantBarrierUnsealProgress reports quorum progress while submitting Shamir
+// shares to unseal a per-tenant barrier. Once Complete is true the barrier has
+// been unsealed and the quorum accumulator has been reset.
+type TenantBarrierUnsealProgress struct {
+	// TenantID is the tenant whose barrier is being unsealed.
+	TenantID string `json:"tenant_id"`
+
+	// Required is the number of shares needed to reach the threshold.
+	Required int `json:"required"`
+
+	// Submitted is the number of distinct shares submitted so far.
+	Submitted int `json:"submitted"`
+
+	// Complete indicates the threshold has been met and the barrier unsealed.
+	Complete bool `json:"complete"`
+
+	// Sealed reports whether the barrier is still sealed (the inverse of
+	// Complete for the current quorum round).
+	Sealed bool `json:"sealed"`
 }
 
 // TenantService manages multi-tenant lifecycle including metadata CRUD
@@ -200,6 +291,9 @@ type TenantService struct {
 	store            seal.StorageBackend
 	registry         *seal.BarrierRegistry
 	strategyRegistry seal.StrategyRegistry
+	distributor      seal.CeremonyDistributor
+	tenantCeremonies *ceremony.TenantCeremonyRegistry
+	ceremonyCA       ceremony.CeremonyCA
 	logger           *slog.Logger
 }
 
@@ -212,6 +306,25 @@ type TenantServiceOption func(*TenantService)
 // strategies (passphrase, none) are accepted for per-tenant barriers.
 func WithStrategyRegistry(reg seal.StrategyRegistry) TenantServiceOption {
 	return func(s *TenantService) { s.strategyRegistry = reg }
+}
+
+// WithTenantDistributor injects a CeremonyDistributor that is wired onto
+// each newly registered Shamir tenant barrier before initialization. In
+// production, pass a TenantCeremonyRegistry implementation; in tests, pass
+// a capture distributor to retrieve generated shares for unseal operations.
+// When set, this distributor takes precedence over the per-tenant ceremony
+// service resolved from the TenantCeremonyRegistry.
+func WithTenantDistributor(d seal.CeremonyDistributor) TenantServiceOption {
+	return func(s *TenantService) { s.distributor = d }
+}
+
+// WithTenantCeremonyCA injects the CeremonyCA used when lazily constructing
+// per-tenant TenantCeremonyService instances. If neither an explicit
+// distributor (WithTenantDistributor) nor a CA is configured, Shamir
+// initialization fails with ErrCeremonyDistributorNotConfigured because the
+// tenant's StorageBarrier has no distributor to seal shares to officers.
+func WithTenantCeremonyCA(ca ceremony.CeremonyCA) TenantServiceOption {
+	return func(s *TenantService) { s.ceremonyCA = ca }
 }
 
 // Compile-time interface checks.
@@ -240,9 +353,10 @@ func NewTenantService(
 		logger = slog.Default()
 	}
 	svc := &TenantService{
-		store:    store,
-		registry: registry,
-		logger:   logger,
+		store:            store,
+		registry:         registry,
+		tenantCeremonies: ceremony.NewTenantCeremonyRegistry(),
+		logger:           logger,
 	}
 	for _, o := range opts {
 		o(svc)
@@ -251,9 +365,10 @@ func NewTenantService(
 }
 
 // CreateTenant creates a new tenant with the given ID, name, and isolation
-// type. When isolationType is empty, IsolationBarrier is used. It validates
-// inputs, checks for duplicates, registers the tenant in the barrier registry
-// with default configuration, and persists metadata in the storage backend.
+// type. When isolationType is empty, IsolationPrefix is used (barrier
+// isolation is strictly opt-in). It validates inputs, checks for duplicates,
+// registers barrier-isolated tenants in the barrier registry with default
+// configuration, and persists metadata in the storage backend.
 func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isolationType IsolationType) (*TenantInfo, error) {
 	if id == "" {
 		return nil, ErrEmptyTenantID
@@ -465,6 +580,10 @@ func (s *TenantService) DeleteTenant(ctx context.Context, tenantID string) error
 		return &StoreError{Op: "delete", Err: err}
 	}
 
+	// Clean up any active tenant ceremony service (destroys pending share
+	// enclaves and releases challenge state).
+	s.tenantCeremonies.Delete(tenantID)
+
 	s.logger.Info("tenant deleted", slog.String("tenant_id", tenantID))
 
 	return nil
@@ -637,14 +756,37 @@ func (s *TenantService) GetQuotaUsage(ctx context.Context, tenantID string, reso
 	return usage, nil
 }
 
+// enforceTenantScope verifies the caller's authenticated tenant binding
+// permits a barrier operation against targetTenantID. A caller bound to the
+// system tenant passes: cross-tenant administrative flows, daemon-internal
+// maintenance, and embedded in-process hosts carry no tenant binding and
+// resolve to the system tenant via FromContext. A caller bound to any other
+// tenant may only target its own tenant.
+//
+// This is the service-layer tenant-isolation defense. Transport-level RBAC
+// (AuthorizeTenant + the ScopeTenantOnly rule on tenant_barrier:*
+// permissions) is the first gate, but in-process surfaces and any transport
+// that fails to bind the true target tenant must still fail closed here.
+func enforceTenantScope(ctx context.Context, targetTenantID, op string) error {
+	caller := FromContext(ctx)
+	if caller == SystemTenantID || caller == targetTenantID {
+		return nil
+	}
+	return &TenantScopeError{
+		CallerTenantID: caller,
+		TargetTenantID: targetTenantID,
+		Op:             op,
+	}
+}
+
 // TenantBarrierInit initializes the per-tenant barrier using the default
 // passphrase (software) seal strategy. It delegates to
 // TenantBarrierInitWithStrategy with seal.StrategyPassphrase for
 // backward compatibility with all existing callers.
 //
 // Authorization — who may call this — is enforced at the API/transport
-// layer, not here.
-func (s *TenantService) TenantBarrierInit(ctx context.Context, tenantID, passphrase string, threshold, shares int) error {
+// layer; tenant-scope containment is enforced here.
+func (s *TenantService) TenantBarrierInit(ctx context.Context, tenantID, passphrase string, threshold, shares int) (*TenantBarrierInitResult, error) {
 	return s.TenantBarrierInitWithStrategy(ctx, tenantID, passphrase, threshold, shares, seal.StrategyPassphrase)
 }
 
@@ -664,24 +806,34 @@ func (s *TenantService) TenantBarrierInitWithStrategy(
 	tenantID, passphrase string,
 	threshold, shares int,
 	strategyID seal.StrategyID,
-) error {
+) (*TenantBarrierInitResult, error) {
 	if strategyID == "" {
 		strategyID = seal.StrategyPassphrase
 	}
 	if tenantID == "" {
-		return ErrEmptyTenantID
+		return nil, ErrEmptyTenantID
+	}
+	if err := enforceTenantScope(ctx, tenantID, "initialize"); err != nil {
+		return nil, err
+	}
+
+	// Shamir takes a dedicated path: it cannot be resolved through the
+	// zero-arg strategy registry because it must carry the requested
+	// threshold/total, and its initialization RETURNS the generated shares.
+	if strategyID == seal.StrategyShamir {
+		return s.tenantBarrierInitShamir(ctx, tenantID, threshold, shares)
 	}
 
 	// The passphrase strategy requires caller-supplied key material.
 	// Hardware/cloud strategies wrap the root key via their own KEK;
 	// no passphrase is needed.
 	if seal.IsPassphraseStrategy(strategyID) && passphrase == "" {
-		return ErrEmptyPassphrase
+		return nil, ErrEmptyPassphrase
 	}
 
 	// Verify the tenant exists in metadata.
 	if _, err := s.GetTenant(ctx, tenantID); err != nil {
-		return err
+		return nil, err
 	}
 
 	// Resolve the sealing strategy from the injected registry when one is
@@ -690,7 +842,7 @@ func (s *TenantService) TenantBarrierInitWithStrategy(
 	// strategies must be registered via WithStrategyRegistry.
 	strategy, err := s.resolveStrategy(strategyID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// Build credentials. For the passphrase strategy the Secret carries
@@ -714,7 +866,7 @@ func (s *TenantService) TenantBarrierInitWithStrategy(
 		// a restart; the only difference is that the tenant's DEK is sealed
 		// with the resolved per-tenant strategy instead of the system's.
 		if _, regErr := s.registry.RegisterTenantPooledWithStrategy(ctx, tenantID, strategy); regErr != nil {
-			return &BarrierError{TenantID: tenantID, Op: "register", Err: regErr}
+			return nil, &BarrierError{TenantID: tenantID, Op: "register", Err: regErr}
 		}
 		s.logger.Info("tenant barrier registered",
 			slog.String("tenant_id", tenantID),
@@ -722,14 +874,87 @@ func (s *TenantService) TenantBarrierInitWithStrategy(
 	}
 
 	if err := s.registry.InitializeTenant(ctx, tenantID, creds); err != nil {
-		return &BarrierError{TenantID: tenantID, Op: "initialize", Err: err}
+		return nil, &BarrierError{TenantID: tenantID, Op: "initialize", Err: err}
 	}
 
 	s.logger.Info("tenant barrier initialized",
 		slog.String("tenant_id", tenantID),
 		slog.String("strategy", string(strategyID)))
 
-	return nil
+	return &TenantBarrierInitResult{
+		TenantID: tenantID,
+		Strategy: string(strategyID),
+	}, nil
+}
+
+// tenantBarrierInitShamir registers (when needed) and initializes a per-tenant
+// barrier with an M-of-N Shamir scheme, returning the generated shares. The
+// shares are returned to the caller exactly once and are never persisted;
+// subsequent unsealing requires resubmitting a quorum via TenantBarrierUnsealShare.
+//
+// threshold/total are validated by seal.NewShamirStrategy (threshold >= 2 and
+// <= total) inside RegisterTenantPooledShamir, so invalid parameters surface as
+// a register-phase BarrierError. A QuorumTTL of zero lets the barrier fall back
+// to the default unseal-share TTL.
+func (s *TenantService) tenantBarrierInitShamir(
+	ctx context.Context,
+	tenantID string,
+	threshold, total int,
+) (*TenantBarrierInitResult, error) {
+	if _, err := s.GetTenant(ctx, tenantID); err != nil {
+		return nil, err
+	}
+
+	if _, err := s.registry.GetTenant(tenantID); err != nil {
+		if _, regErr := s.registry.RegisterTenantPooledShamir(ctx, tenantID, threshold, total, 0); regErr != nil {
+			return nil, &BarrierError{TenantID: tenantID, Op: "register", Err: regErr}
+		}
+		s.logger.Info("tenant barrier registered",
+			slog.String("tenant_id", tenantID),
+			slog.String("strategy", string(seal.StrategyShamir)),
+			slog.Int("threshold", threshold),
+			slog.Int("total", total))
+	}
+
+	// Wire the ceremony distributor onto the tenant barrier before
+	// initialization so shares are sealed to enrolled Security Officers.
+	// Precedence: explicit injected distributor first; otherwise lazily
+	// resolve/create the tenant's own TenantCeremonyService. If neither is
+	// available the StorageBarrier returns ErrCeremonyDistributorNotConfigured.
+	tb, err := s.registry.GetTenant(tenantID)
+	if err != nil {
+		return nil, &BarrierError{TenantID: tenantID, Op: "get-tenant", Err: err}
+	}
+	if s.distributor != nil {
+		tb.Barrier().SetCeremonyDistributor(s.distributor)
+	} else if s.ceremonyCA != nil {
+		tsvc, tcErr := s.tenantCeremony(tenantID)
+		if tcErr != nil {
+			return nil, &BarrierError{TenantID: tenantID, Op: "ceremony-service", Err: tcErr}
+		}
+		tb.Barrier().SetCeremonyDistributor(tsvc)
+	}
+	// If neither distributor nor ceremonyCA is configured the barrier's
+	// distributor is nil; InitializeShamir returns
+	// ErrCeremonyDistributorNotConfigured automatically.
+
+	res, err := s.registry.InitializeTenantShamir(ctx, tenantID, seal.Credentials{})
+	if err != nil {
+		return nil, &BarrierError{TenantID: tenantID, Op: "initialize", Err: err}
+	}
+
+	s.logger.Info("tenant shamir barrier initialized",
+		slog.String("tenant_id", tenantID),
+		slog.Int("threshold", res.Threshold),
+		slog.Int("total", res.TotalShares))
+
+	return &TenantBarrierInitResult{
+		TenantID:    tenantID,
+		Strategy:    string(seal.StrategyShamir),
+		Threshold:   res.Threshold,
+		TotalShares: res.TotalShares,
+		ShareCount:  res.ShareCount,
+	}, nil
 }
 
 // resolveStrategy returns the SealingStrategy for the given ID.
@@ -775,6 +1000,9 @@ func (s *TenantService) TenantBarrierUnseal(ctx context.Context, tenantID string
 	if tenantID == "" {
 		return ErrEmptyTenantID
 	}
+	if err := enforceTenantScope(ctx, tenantID, "unseal"); err != nil {
+		return err
+	}
 
 	// Require caller-supplied key material. There is no derived fallback.
 	if len(key) == 0 {
@@ -797,16 +1025,73 @@ func (s *TenantService) TenantBarrierUnseal(ctx context.Context, tenantID string
 	return nil
 }
 
+// TenantBarrierUnsealShare submits a single Shamir share toward the per-tenant
+// barrier's quorum threshold. Once enough distinct shares have been submitted
+// the barrier is automatically unsealed and the quorum accumulator is reset.
+// The tenant must exist and its barrier must have been initialized with the
+// Shamir strategy; an empty share is rejected.
+func (s *TenantService) TenantBarrierUnsealShare(ctx context.Context, tenantID, share string) (*TenantBarrierUnsealProgress, error) {
+	if tenantID == "" {
+		return nil, ErrEmptyTenantID
+	}
+	if share == "" {
+		return nil, ErrEmptyShare
+	}
+	if err := enforceTenantScope(ctx, tenantID, "unseal-share"); err != nil {
+		return nil, err
+	}
+
+	if _, err := s.GetTenant(ctx, tenantID); err != nil {
+		return nil, err
+	}
+
+	prog, err := s.registry.UnsealTenantWithShare(ctx, tenantID, share)
+	if err != nil {
+		return nil, &BarrierError{TenantID: tenantID, Op: "unseal-share", Err: err}
+	}
+
+	if prog.Complete {
+		s.logger.Info("tenant barrier unsealed via shamir quorum",
+			slog.String("tenant_id", tenantID))
+	}
+
+	return &TenantBarrierUnsealProgress{
+		TenantID:  tenantID,
+		Required:  prog.Required,
+		Submitted: prog.Submitted,
+		Complete:  prog.Complete,
+		Sealed:    !prog.Complete,
+	}, nil
+}
+
 // TenantBarrierSeal seals the per-tenant barrier, refusing further reads
 // and writes against the tenant namespace until unsealed again. The tenant
 // must exist and its barrier must have been previously initialized.
+//
+// For Shamir-protected barriers this method returns
+// seal.ErrShamirBarrierRequiresQuorum wrapped in a BarrierError; callers must
+// use TenantBarrierShamirSealVote to collect the required quorum instead.
 func (s *TenantService) TenantBarrierSeal(ctx context.Context, tenantID string) error {
 	if tenantID == "" {
 		return ErrEmptyTenantID
 	}
+	if err := enforceTenantScope(ctx, tenantID, "seal"); err != nil {
+		return err
+	}
 
 	if _, err := s.GetTenant(ctx, tenantID); err != nil {
 		return err
+	}
+
+	// Gate Shamir barriers: sealing requires M-of-N quorum via seal votes.
+	if tb, tbErr := s.registry.GetTenant(tenantID); tbErr == nil {
+		if tb.Barrier().ActiveStrategy() == seal.StrategyShamir {
+			return &BarrierError{
+				TenantID: tenantID,
+				Op:       "seal",
+				Err:      seal.ErrShamirBarrierRequiresQuorum,
+			}
+		}
 	}
 
 	if err := s.registry.SealTenant(tenantID); err != nil {
@@ -826,6 +1111,9 @@ func (s *TenantService) TenantBarrierStatus(ctx context.Context, tenantID string
 	if tenantID == "" {
 		return nil, ErrEmptyTenantID
 	}
+	if err := enforceTenantScope(ctx, tenantID, "status"); err != nil {
+		return nil, err
+	}
 
 	if _, err := s.GetTenant(ctx, tenantID); err != nil {
 		return nil, err
@@ -844,11 +1132,13 @@ func (s *TenantService) TenantBarrierStatus(ctx context.Context, tenantID string
 	}
 
 	return &TenantBarrierStatus{
-		TenantID:       tenantID,
-		Sealed:         st.Sealed,
-		Initialized:    true,
-		Strategy:       string(st.Strategy),
-		HardwareBacked: st.HardwareBacked,
+		TenantID:        tenantID,
+		Sealed:          st.Sealed,
+		Initialized:     true,
+		Strategy:        string(st.Strategy),
+		HardwareBacked:  st.HardwareBacked,
+		ShamirThreshold: st.ShamirThreshold,
+		ShamirTotal:     st.ShamirTotal,
 	}, nil
 }
 
@@ -860,4 +1150,271 @@ func TenantIDFromKey(key string) string {
 		return ""
 	}
 	return key[len(metadataPrefix):]
+}
+
+// tenantCeremony returns the TenantCeremonyService for the given tenant,
+// constructing and registering it on first access. The backend priority is:
+//
+//  1. The tenant barrier's own StorageBarrier (when available and unsealed),
+//     so that officer records are stored encrypted under the barrier.
+//  2. The service-level store (s.store), scoped by the ceremony prefix, for
+//     the pre-init officer enrollment phase when the barrier doesn't exist yet.
+//     Officer registration must work BEFORE TenantBarrierInitWithStrategy is
+//     called (design §6.1, §10.1).
+//
+// ceremonyCA must be non-nil; callers should guard this before calling.
+func (s *TenantService) tenantCeremony(tenantID string) (*ceremony.TenantCeremonyService, error) {
+	if svc, ok := s.tenantCeremonies.Get(tenantID); ok {
+		return svc, nil
+	}
+	// Choose backend: prefer the tenant barrier's own storage when available
+	// so officer records are barrier-encrypted at rest. Fall back to the
+	// service-level store during the pre-init enrollment phase.
+	var backend seal.StorageBackend
+	if tb, err := s.registry.GetTenant(tenantID); err == nil {
+		backend = tb.Barrier()
+	} else {
+		backend = s.store
+	}
+	svc, err := ceremony.NewTenantCeremonyService(tenantID, backend, s.ceremonyCA, s.logger)
+	if err != nil {
+		return nil, err
+	}
+	s.tenantCeremonies.Set(tenantID, svc)
+	return svc, nil
+}
+
+// TenantBarrierOfficerRegister registers a Security Officer for the named
+// tenant's Shamir barrier. The officer's CSR is validated, signed by the
+// CeremonyCA, and the public enrollment record is persisted. No share bytes
+// are produced at this step; shares are sealed during
+// TenantBarrierInitWithStrategy(Shamir). Officers must be registered before
+// init so that SealAndDistribute can assign one share per enrolled officer.
+//
+// Returns ErrEmptyTenantID for an empty tenantID, ErrTenantNotFound when the
+// tenant does not exist, and BarrierError-wrapped errors from the ceremony layer.
+func (s *TenantService) TenantBarrierOfficerRegister(
+	ctx context.Context,
+	tenantID string,
+	req *ceremony.RegisterOfficerRequest,
+) (*ceremony.RegisterOfficerResult, error) {
+	if tenantID == "" {
+		return nil, ErrEmptyTenantID
+	}
+	if err := enforceTenantScope(ctx, tenantID, "officer-register"); err != nil {
+		return nil, err
+	}
+	if _, err := s.GetTenant(ctx, tenantID); err != nil {
+		return nil, err
+	}
+	if s.ceremonyCA == nil && s.distributor == nil {
+		return nil, &BarrierError{
+			TenantID: tenantID,
+			Op:       "officer-register",
+			Err:      seal.ErrCeremonyDistributorNotConfigured,
+		}
+	}
+	// When using a raw distributor override (test path), no per-tenant ceremony
+	// service is available for officer management. Require ceremonyCA.
+	if s.ceremonyCA == nil {
+		return nil, &BarrierError{
+			TenantID: tenantID,
+			Op:       "officer-register",
+			Err:      seal.ErrCeremonyDistributorNotConfigured,
+		}
+	}
+	tsvc, err := s.tenantCeremony(tenantID)
+	if err != nil {
+		return nil, &BarrierError{TenantID: tenantID, Op: "officer-register", Err: err}
+	}
+	result, err := tsvc.RegisterOfficer(ctx, *req)
+	if err != nil {
+		return nil, &BarrierError{TenantID: tenantID, Op: "officer-register", Err: err}
+	}
+	s.logger.Info("tenant barrier officer registered",
+		slog.String("tenant_id", tenantID),
+		slog.String("username", req.Username),
+		slog.Int("share_index", result.ShareIndex))
+	return result, nil
+}
+
+// TenantBarrierOfficerList returns all enrolled Security Officers for the
+// named tenant's barrier. Returns ErrEmptyTenantID, ErrTenantNotFound, or
+// a BarrierError when the ceremony service cannot be resolved.
+func (s *TenantService) TenantBarrierOfficerList(
+	ctx context.Context,
+	tenantID string,
+) ([]*ceremony.OfficerStatus, error) {
+	if tenantID == "" {
+		return nil, ErrEmptyTenantID
+	}
+	if err := enforceTenantScope(ctx, tenantID, "officer-list"); err != nil {
+		return nil, err
+	}
+	if _, err := s.GetTenant(ctx, tenantID); err != nil {
+		return nil, err
+	}
+	if s.ceremonyCA == nil {
+		return nil, &BarrierError{
+			TenantID: tenantID,
+			Op:       "officer-list",
+			Err:      seal.ErrCeremonyDistributorNotConfigured,
+		}
+	}
+	tsvc, err := s.tenantCeremony(tenantID)
+	if err != nil {
+		return nil, &BarrierError{TenantID: tenantID, Op: "officer-list", Err: err}
+	}
+	officers, err := tsvc.ListOfficers(ctx)
+	if err != nil {
+		return nil, &BarrierError{TenantID: tenantID, Op: "officer-list", Err: err}
+	}
+	return officers, nil
+}
+
+// TenantBarrierShareClaimBegin issues a challenge nonce to the named Security
+// Officer for the tenant barrier share claim handshake. The officer must
+// present a valid mTLS certificate whose thumbprint matches the registry.
+func (s *TenantService) TenantBarrierShareClaimBegin(
+	ctx context.Context,
+	tenantID, username, callerCertThumbprint string,
+) (*ceremony.ChallengeResponse, error) {
+	if tenantID == "" {
+		return nil, ErrEmptyTenantID
+	}
+	if err := enforceTenantScope(ctx, tenantID, "share-claim-begin"); err != nil {
+		return nil, err
+	}
+	if _, err := s.GetTenant(ctx, tenantID); err != nil {
+		return nil, err
+	}
+	if s.ceremonyCA == nil {
+		return nil, &BarrierError{
+			TenantID: tenantID,
+			Op:       "share-claim-begin",
+			Err:      seal.ErrCeremonyDistributorNotConfigured,
+		}
+	}
+	tsvc, err := s.tenantCeremony(tenantID)
+	if err != nil {
+		return nil, &BarrierError{TenantID: tenantID, Op: "share-claim-begin", Err: err}
+	}
+	challenge, err := tsvc.BeginClaimShare(ctx, username, callerCertThumbprint)
+	if err != nil {
+		return nil, &BarrierError{TenantID: tenantID, Op: "share-claim-begin", Err: err}
+	}
+	return challenge, nil
+}
+
+// TenantBarrierShareClaimComplete verifies the officer's nonce signature and
+// returns the share bytes exactly once via the officer's own mTLS session.
+// The share bytes in ShareClaimResult.ShareBytes must be wiped by the caller
+// after use. Returns ErrShareAlreadyClaimed on a second attempt.
+func (s *TenantService) TenantBarrierShareClaimComplete(
+	ctx context.Context,
+	tenantID, username, nonceHex string,
+	signature []byte,
+	callerCertThumbprint string,
+) (*ceremony.ShareClaimResult, error) {
+	if tenantID == "" {
+		return nil, ErrEmptyTenantID
+	}
+	if err := enforceTenantScope(ctx, tenantID, "share-claim-complete"); err != nil {
+		return nil, err
+	}
+	if _, err := s.GetTenant(ctx, tenantID); err != nil {
+		return nil, err
+	}
+	if s.ceremonyCA == nil {
+		return nil, &BarrierError{
+			TenantID: tenantID,
+			Op:       "share-claim-complete",
+			Err:      seal.ErrCeremonyDistributorNotConfigured,
+		}
+	}
+	tsvc, err := s.tenantCeremony(tenantID)
+	if err != nil {
+		return nil, &BarrierError{TenantID: tenantID, Op: "share-claim-complete", Err: err}
+	}
+	shareBytes, err := tsvc.CompleteClaimShare(ctx, username, nonceHex, signature, callerCertThumbprint)
+	if err != nil {
+		return nil, &BarrierError{TenantID: tenantID, Op: "share-claim-complete", Err: err}
+	}
+	// INV-5: do not log share bytes or nonce.
+	s.logger.Info("tenant officer share claimed",
+		slog.String("tenant_id", tenantID),
+		slog.String("username", username))
+	return &ceremony.ShareClaimResult{ShareBytes: shareBytes}, nil
+}
+
+// TenantBarrierOfficerClaimStatus returns a per-officer claim status snapshot
+// for the named tenant's barrier. Never includes share bytes.
+func (s *TenantService) TenantBarrierOfficerClaimStatus(
+	ctx context.Context,
+	tenantID string,
+) ([]*ceremony.OfficerStatus, error) {
+	if tenantID == "" {
+		return nil, ErrEmptyTenantID
+	}
+	if err := enforceTenantScope(ctx, tenantID, "officer-claim-status"); err != nil {
+		return nil, err
+	}
+	if _, err := s.GetTenant(ctx, tenantID); err != nil {
+		return nil, err
+	}
+	if s.ceremonyCA == nil {
+		return nil, &BarrierError{
+			TenantID: tenantID,
+			Op:       "officer-claim-status",
+			Err:      seal.ErrCeremonyDistributorNotConfigured,
+		}
+	}
+	tsvc, err := s.tenantCeremony(tenantID)
+	if err != nil {
+		return nil, &BarrierError{TenantID: tenantID, Op: "officer-claim-status", Err: err}
+	}
+	statuses, err := tsvc.OfficerClaimStatus(ctx)
+	if err != nil {
+		return nil, &BarrierError{TenantID: tenantID, Op: "officer-claim-status", Err: err}
+	}
+	return statuses, nil
+}
+
+// TenantBarrierShamirSealVote submits a Shamir share as a seal vote for the
+// named tenant's barrier. When the quorum threshold is met the barrier is
+// sealed automatically and all vote enclaves are destroyed.
+// Returns a BarrierError wrapping seal.ErrShamirNotConfigured when the tenant
+// barrier is not in Shamir mode, or seal.ErrSealed when already sealed.
+func (s *TenantService) TenantBarrierShamirSealVote(
+	ctx context.Context,
+	tenantID, share string,
+) (*TenantBarrierUnsealProgress, error) {
+	if tenantID == "" {
+		return nil, ErrEmptyTenantID
+	}
+	if err := enforceTenantScope(ctx, tenantID, "shamir-seal-vote"); err != nil {
+		return nil, err
+	}
+	if _, err := s.GetTenant(ctx, tenantID); err != nil {
+		return nil, err
+	}
+	tb, err := s.registry.GetTenant(tenantID)
+	if err != nil {
+		return nil, &BarrierError{TenantID: tenantID, Op: "shamir-seal-vote", Err: err}
+	}
+	prog, err := tb.Barrier().SubmitSealVote(ctx, share)
+	if err != nil {
+		return nil, &BarrierError{TenantID: tenantID, Op: "shamir-seal-vote", Err: err}
+	}
+	if prog.Complete {
+		s.logger.Info("tenant barrier sealed via shamir seal-vote quorum",
+			slog.String("tenant_id", tenantID))
+	}
+	return &TenantBarrierUnsealProgress{
+		TenantID:  tenantID,
+		Required:  prog.Required,
+		Submitted: prog.Submitted,
+		Complete:  prog.Complete,
+		Sealed:    prog.Complete,
+	}, nil
 }

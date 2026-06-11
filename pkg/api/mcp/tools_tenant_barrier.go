@@ -17,23 +17,44 @@ package mcp
 import (
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
+// tenantScopeAuthorizer authorizes a per-tenant barrier tool invocation
+// against the TRUE target tenant carried in the tool arguments (not the
+// caller's ambient tenant). The coarse mcpToolPermissions mapping enforced by
+// toolAuthzMiddleware only proves the caller holds the permission at all;
+// this fine-grained gate delegates to the tenant-scoped authorizer, whose
+// ScopeTenantOnly rule denies the system tenant and any cross-tenant access.
+// It mirrors authorizeTenantBarrierOp on the QUIC, gRPC, and REST servers.
+type tenantScopeAuthorizer func(ctx context.Context, tenantID string, perm permission.Permission) error
+
 // tenantBarrierTools returns the MCP tool registrations for per-tenant
-// barrier lifecycle: init, unseal, seal, and status.
-func tenantBarrierTools(svc tenant.TenantServicer) []mcpserver.ServerTool {
+// barrier lifecycle: init, unseal, seal, status, and Security Officer flows.
+// Every handler authorizes against the target tenant parsed from the tool
+// arguments via authorize before delegating to the tenant service.
+func tenantBarrierTools(svc tenant.TenantServicer, authorize tenantScopeAuthorizer) []mcpserver.ServerTool {
 	return []mcpserver.ServerTool{
-		{Tool: toolTenantBarrierInit(), Handler: handleTenantBarrierInit(svc)},
-		{Tool: toolTenantBarrierUnseal(), Handler: handleTenantBarrierUnseal(svc)},
-		{Tool: toolTenantBarrierSeal(), Handler: handleTenantBarrierSeal(svc)},
-		{Tool: toolTenantBarrierStatus(), Handler: handleTenantBarrierStatus(svc)},
+		{Tool: toolTenantBarrierInit(), Handler: handleTenantBarrierInit(svc, authorize)},
+		{Tool: toolTenantBarrierUnseal(), Handler: handleTenantBarrierUnseal(svc, authorize)},
+		{Tool: toolTenantBarrierUnsealShare(), Handler: handleTenantBarrierUnsealShare(svc, authorize)},
+		{Tool: toolTenantBarrierSeal(), Handler: handleTenantBarrierSeal(svc, authorize)},
+		{Tool: toolTenantBarrierStatus(), Handler: handleTenantBarrierStatus(svc, authorize)},
+		{Tool: toolTenantBarrierOfficerRegister(), Handler: handleTenantBarrierOfficerRegister(svc, authorize)},
+		{Tool: toolTenantBarrierOfficerList(), Handler: handleTenantBarrierOfficerList(svc, authorize)},
+		{Tool: toolTenantBarrierShareClaimBegin(), Handler: handleTenantBarrierShareClaimBegin(svc, authorize)},
+		{Tool: toolTenantBarrierShareClaimComplete(), Handler: handleTenantBarrierShareClaimComplete(svc, authorize)},
+		{Tool: toolTenantBarrierOfficerClaimStatus(), Handler: handleTenantBarrierOfficerClaimStatus(svc, authorize)},
+		{Tool: toolTenantBarrierShamirSealVote(), Handler: handleTenantBarrierShamirSealVote(svc, authorize)},
 	}
 }
 
@@ -67,11 +88,14 @@ func toolTenantBarrierInit() mcp.Tool {
 // handleTenantBarrierInit returns a tool handler that initializes the
 // per-tenant barrier for the given tenant. When the strategy field is empty
 // or omitted the passphrase (software) strategy is selected.
-func handleTenantBarrierInit(svc tenant.TenantServicer) mcpserver.ToolHandlerFunc {
+func handleTenantBarrierInit(svc tenant.TenantServicer, authorize tenantScopeAuthorizer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		tenantID := mcp.ParseString(req, "tenant_id", "")
 		if tenantID == "" {
 			return mcp.NewToolResultError("tenant_id is required"), nil
+		}
+		if err := authorize(ctx, tenantID, permission.TenantBarrierInit); err != nil {
+			return mcp.NewToolResultError("authorization denied: " + err.Error()), nil
 		}
 
 		passphrase := mcp.ParseString(req, "passphrase", "")
@@ -79,11 +103,25 @@ func handleTenantBarrierInit(svc tenant.TenantServicer) mcpserver.ToolHandlerFun
 		shares := mcp.ParseInt(req, "shares", 0)
 		strategy := mcp.ParseString(req, "strategy", "")
 
-		if err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, passphrase, threshold, shares, seal.StrategyID(strategy)); err != nil {
+		result, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, passphrase, threshold, shares, seal.StrategyID(strategy))
+		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_tenant_barrier_init", Err: err}
 		}
 
-		return mcp.NewToolResultText(`{"initialized":true}`), nil
+		// INV-1/INV-11: shares are NEVER returned in init responses.
+		// Security Officers claim their individual share via the SO claim flow.
+		resp := map[string]any{
+			"tenant_id":    result.TenantID,
+			"strategy":     result.Strategy,
+			"threshold":    result.Threshold,
+			"total_shares": result.TotalShares,
+			"share_count":  result.ShareCount,
+		}
+		data, jsonErr := json.Marshal(resp)
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_tenant_barrier_init", Err: jsonErr}
+		}
+		return mcp.NewToolResultText(string(data)), nil
 	}
 }
 
@@ -107,11 +145,14 @@ func toolTenantBarrierUnseal() mcp.Tool {
 
 // handleTenantBarrierUnseal returns a tool handler that unseals the
 // per-tenant barrier with the supplied key.
-func handleTenantBarrierUnseal(svc tenant.TenantServicer) mcpserver.ToolHandlerFunc {
+func handleTenantBarrierUnseal(svc tenant.TenantServicer, authorize tenantScopeAuthorizer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		tenantID := mcp.ParseString(req, "tenant_id", "")
 		if tenantID == "" {
 			return mcp.NewToolResultError("tenant_id is required"), nil
+		}
+		if err := authorize(ctx, tenantID, permission.TenantBarrierUnseal); err != nil {
+			return mcp.NewToolResultError("authorization denied: " + err.Error()), nil
 		}
 
 		var key []byte
@@ -132,6 +173,55 @@ func handleTenantBarrierUnseal(svc tenant.TenantServicer) mcpserver.ToolHandlerF
 }
 
 // ---------------------------------------------------------------------------
+// qrdb_tenant_barrier_unseal_share
+// ---------------------------------------------------------------------------
+
+// toolTenantBarrierUnsealShare defines the qrdb_tenant_barrier_unseal_share
+// tool schema.
+func toolTenantBarrierUnsealShare() mcp.Tool {
+	return mcp.NewTool("qrdb_tenant_barrier_unseal_share",
+		mcp.WithDescription("Submit a single Shamir share toward a per-tenant barrier's quorum threshold. The barrier unseals automatically once enough distinct shares are submitted."),
+		mcp.WithString("tenant_id",
+			mcp.Required(),
+			mcp.Description("The tenant whose Shamir barrier should receive the share."),
+		),
+		mcp.WithString("share",
+			mcp.Required(),
+			mcp.Description("A single Shamir share value generated at initialization."),
+		),
+	)
+}
+
+// handleTenantBarrierUnsealShare returns a tool handler that submits a single
+// Shamir share toward the per-tenant barrier's quorum and reports progress.
+func handleTenantBarrierUnsealShare(svc tenant.TenantServicer, authorize tenantScopeAuthorizer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		tenantID := mcp.ParseString(req, "tenant_id", "")
+		if tenantID == "" {
+			return mcp.NewToolResultError("tenant_id is required"), nil
+		}
+		if err := authorize(ctx, tenantID, permission.TenantBarrierUnseal); err != nil {
+			return mcp.NewToolResultError("authorization denied: " + err.Error()), nil
+		}
+		share := mcp.ParseString(req, "share", "")
+		if share == "" {
+			return mcp.NewToolResultError("share is required"), nil
+		}
+
+		progress, err := svc.TenantBarrierUnsealShare(ctx, tenantID, share)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_tenant_barrier_unseal_share", Err: err}
+		}
+
+		data, jsonErr := json.Marshal(progress)
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_tenant_barrier_unseal_share", Err: jsonErr}
+		}
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// ---------------------------------------------------------------------------
 // qrdb_tenant_barrier_seal
 // ---------------------------------------------------------------------------
 
@@ -148,11 +238,14 @@ func toolTenantBarrierSeal() mcp.Tool {
 
 // handleTenantBarrierSeal returns a tool handler that seals the per-tenant
 // barrier for the given tenant.
-func handleTenantBarrierSeal(svc tenant.TenantServicer) mcpserver.ToolHandlerFunc {
+func handleTenantBarrierSeal(svc tenant.TenantServicer, authorize tenantScopeAuthorizer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		tenantID := mcp.ParseString(req, "tenant_id", "")
 		if tenantID == "" {
 			return mcp.NewToolResultError("tenant_id is required"), nil
+		}
+		if err := authorize(ctx, tenantID, permission.TenantBarrierSeal); err != nil {
+			return mcp.NewToolResultError("authorization denied: " + err.Error()), nil
 		}
 
 		if err := svc.TenantBarrierSeal(ctx, tenantID); err != nil {
@@ -180,11 +273,14 @@ func toolTenantBarrierStatus() mcp.Tool {
 
 // handleTenantBarrierStatus returns a tool handler that reports the current
 // state of the per-tenant barrier as a JSON-encoded TenantBarrierStatus.
-func handleTenantBarrierStatus(svc tenant.TenantServicer) mcpserver.ToolHandlerFunc {
+func handleTenantBarrierStatus(svc tenant.TenantServicer, authorize tenantScopeAuthorizer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		tenantID := mcp.ParseString(req, "tenant_id", "")
 		if tenantID == "" {
 			return mcp.NewToolResultError("tenant_id is required"), nil
+		}
+		if err := authorize(ctx, tenantID, permission.TenantBarrierStatus); err != nil {
+			return mcp.NewToolResultError("authorization denied: " + err.Error()), nil
 		}
 
 		status, err := svc.TenantBarrierStatus(ctx, tenantID)
@@ -197,6 +293,369 @@ func handleTenantBarrierStatus(svc tenant.TenantServicer) mcpserver.ToolHandlerF
 			return nil, &ToolError{Tool: "qrdb_tenant_barrier_status", Err: jsonErr}
 		}
 
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// ---------------------------------------------------------------------------
+// qrdb_tenant_barrier_officer_register
+// ---------------------------------------------------------------------------
+
+// toolTenantBarrierOfficerRegister defines the qrdb_tenant_barrier_officer_register
+// tool schema.
+func toolTenantBarrierOfficerRegister() mcp.Tool {
+	return mcp.NewTool("qrdb_tenant_barrier_officer_register",
+		mcp.WithDescription("Register a Security Officer for a per-tenant Shamir barrier. The officer's CSR is signed and their share is sealed into a ceremony enclave pending their claim."),
+		mcp.WithString("tenant_id",
+			mcp.Required(),
+			mcp.Description("The tenant whose barrier the officer is being registered for."),
+		),
+		mcp.WithString("username",
+			mcp.Required(),
+			mcp.Description("The unique username for the Security Officer."),
+		),
+		mcp.WithString("csr_pem",
+			mcp.Required(),
+			mcp.Description("PEM-encoded Certificate Signing Request for the officer's mTLS client certificate."),
+		),
+		mcp.WithString("authenticator_type",
+			mcp.Description("Authenticator type for the officer (e.g. 'software', 'yubikey', 'tpm2'). Defaults to 'software'."),
+		),
+		mcp.WithString("authenticator_ref",
+			mcp.Description("Opaque reference string identifying the officer's authenticator device. Optional."),
+		),
+	)
+}
+
+// handleTenantBarrierOfficerRegister returns a tool handler that registers a
+// Security Officer for the per-tenant Shamir barrier.
+func handleTenantBarrierOfficerRegister(svc tenant.TenantServicer, authorize tenantScopeAuthorizer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		const tool = "qrdb_tenant_barrier_officer_register"
+
+		tenantID := mcp.ParseString(req, "tenant_id", "")
+		if tenantID == "" {
+			return mcp.NewToolResultError("tenant_id is required"), nil
+		}
+		if err := authorize(ctx, tenantID, permission.TenantBarrierOfficerRegister); err != nil {
+			return mcp.NewToolResultError("authorization denied: " + err.Error()), nil
+		}
+
+		username := mcp.ParseString(req, "username", "")
+		if username == "" {
+			return mcp.NewToolResultError("username is required"), nil
+		}
+		csrPEM := mcp.ParseString(req, "csr_pem", "")
+		if csrPEM == "" {
+			return mcp.NewToolResultError("csr_pem is required"), nil
+		}
+
+		result, err := svc.TenantBarrierOfficerRegister(ctx, tenantID, &ceremony.RegisterOfficerRequest{
+			Username:          username,
+			CSRPEM:            []byte(csrPEM),
+			AuthenticatorType: ceremony.AuthenticatorType(mcp.ParseString(req, "authenticator_type", "")),
+			AuthenticatorRef:  mcp.ParseString(req, "authenticator_ref", ""),
+		})
+		if err != nil {
+			return nil, &ToolError{Tool: tool, Err: err}
+		}
+
+		// INV-5: CertPEM is fine to return (public); share bytes are never in result.
+		data, jsonErr := json.Marshal(result)
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: tool, Err: jsonErr}
+		}
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// ---------------------------------------------------------------------------
+// qrdb_tenant_barrier_officer_list
+// ---------------------------------------------------------------------------
+
+// toolTenantBarrierOfficerList defines the qrdb_tenant_barrier_officer_list
+// tool schema.
+func toolTenantBarrierOfficerList() mcp.Tool {
+	return mcp.NewTool("qrdb_tenant_barrier_officer_list",
+		mcp.WithDescription("List enrolled Security Officers for a per-tenant Shamir barrier, including their claim status."),
+		mcp.WithString("tenant_id",
+			mcp.Required(),
+			mcp.Description("The tenant whose barrier officers should be listed."),
+		),
+	)
+}
+
+// handleTenantBarrierOfficerList returns a tool handler that lists enrolled
+// Security Officers for the per-tenant barrier.
+func handleTenantBarrierOfficerList(svc tenant.TenantServicer, authorize tenantScopeAuthorizer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		const tool = "qrdb_tenant_barrier_officer_list"
+
+		tenantID := mcp.ParseString(req, "tenant_id", "")
+		if tenantID == "" {
+			return mcp.NewToolResultError("tenant_id is required"), nil
+		}
+		if err := authorize(ctx, tenantID, permission.TenantBarrierOfficerList); err != nil {
+			return mcp.NewToolResultError("authorization denied: " + err.Error()), nil
+		}
+
+		officers, err := svc.TenantBarrierOfficerList(ctx, tenantID)
+		if err != nil {
+			return nil, &ToolError{Tool: tool, Err: err}
+		}
+
+		data, jsonErr := json.Marshal(officers)
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: tool, Err: jsonErr}
+		}
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// ---------------------------------------------------------------------------
+// qrdb_tenant_barrier_share_claim_begin
+// ---------------------------------------------------------------------------
+
+// toolTenantBarrierShareClaimBegin defines the qrdb_tenant_barrier_share_claim_begin
+// tool schema.
+func toolTenantBarrierShareClaimBegin() mcp.Tool {
+	return mcp.NewTool("qrdb_tenant_barrier_share_claim_begin",
+		mcp.WithDescription("Begin a Security Officer share-claim for a per-tenant barrier. Issues a challenge nonce that the officer must sign with their registered key to complete the claim."),
+		mcp.WithString("tenant_id",
+			mcp.Required(),
+			mcp.Description("The tenant whose barrier share the officer is claiming."),
+		),
+		mcp.WithString("username",
+			mcp.Required(),
+			mcp.Description("The Security Officer's username."),
+		),
+	)
+}
+
+// handleTenantBarrierShareClaimBegin returns a tool handler that begins the
+// per-tenant barrier share claim flow for the named Security Officer.
+// The caller must present a valid mTLS client certificate; its thumbprint is
+// bound to the challenge and verified during CompleteClaimShare.
+func handleTenantBarrierShareClaimBegin(svc tenant.TenantServicer, authorize tenantScopeAuthorizer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		const tool = "qrdb_tenant_barrier_share_claim_begin"
+
+		tenantID := mcp.ParseString(req, "tenant_id", "")
+		if tenantID == "" {
+			return mcp.NewToolResultError("tenant_id is required"), nil
+		}
+		// Identity-gated (permission.IdentityGated): the registered officer's
+		// mTLS certificate is the credential. The service layer enforces the
+		// binding authorization (registry membership + thumbprint match +
+		// nonce-signature verification); officers are not RBAC users.
+		if err := authorize(ctx, tenantID, permission.IdentityGated); err != nil {
+			return mcp.NewToolResultError("authorization denied: " + err.Error()), nil
+		}
+
+		username := mcp.ParseString(req, "username", "")
+		if username == "" {
+			return mcp.NewToolResultError("username is required"), nil
+		}
+
+		thumbprint, err := mcpCertThumbprint(ctx, tool)
+		if err != nil {
+			return nil, err
+		}
+
+		challenge, err := svc.TenantBarrierShareClaimBegin(ctx, tenantID, username, thumbprint)
+		if err != nil {
+			return nil, &ToolError{Tool: tool, Err: err}
+		}
+
+		// INV-5: return only the nonce hex and expiry; never share bytes.
+		resp := map[string]any{
+			"nonce_hex":  hex.EncodeToString(challenge.Nonce),
+			"expires_at": challenge.ExpiresAt.Unix(),
+		}
+		data, jsonErr := json.Marshal(resp)
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: tool, Err: jsonErr}
+		}
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// ---------------------------------------------------------------------------
+// qrdb_tenant_barrier_share_claim_complete
+// ---------------------------------------------------------------------------
+
+// toolTenantBarrierShareClaimComplete defines the qrdb_tenant_barrier_share_claim_complete
+// tool schema.
+func toolTenantBarrierShareClaimComplete() mcp.Tool {
+	return mcp.NewTool("qrdb_tenant_barrier_share_claim_complete",
+		mcp.WithDescription("Complete a Security Officer share-claim for a per-tenant barrier by submitting the signed challenge nonce. Returns the officer's encrypted share bytes on success."),
+		mcp.WithString("tenant_id",
+			mcp.Required(),
+			mcp.Description("The tenant whose barrier share the officer is claiming."),
+		),
+		mcp.WithString("username",
+			mcp.Required(),
+			mcp.Description("The Security Officer's username."),
+		),
+		mcp.WithString("nonce_hex",
+			mcp.Required(),
+			mcp.Description("The hex-encoded challenge nonce returned by qrdb_tenant_barrier_share_claim_begin."),
+		),
+		mcp.WithString("signature",
+			mcp.Required(),
+			mcp.Description("Base64-encoded signature of the nonce produced with the officer's registered private key."),
+		),
+	)
+}
+
+// handleTenantBarrierShareClaimComplete returns a tool handler that completes
+// the per-tenant barrier share claim flow. The caller must present the same
+// mTLS client certificate used in Begin; on success the officer's share bytes
+// are returned (INV-1/INV-11: only here, only once).
+func handleTenantBarrierShareClaimComplete(svc tenant.TenantServicer, authorize tenantScopeAuthorizer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		const tool = "qrdb_tenant_barrier_share_claim_complete"
+
+		tenantID := mcp.ParseString(req, "tenant_id", "")
+		if tenantID == "" {
+			return mcp.NewToolResultError("tenant_id is required"), nil
+		}
+		// Identity-gated (permission.IdentityGated): the registered officer's
+		// mTLS certificate is the credential. The service layer enforces the
+		// binding authorization (registry membership + thumbprint match +
+		// nonce-signature verification); officers are not RBAC users.
+		if err := authorize(ctx, tenantID, permission.IdentityGated); err != nil {
+			return mcp.NewToolResultError("authorization denied: " + err.Error()), nil
+		}
+
+		username := mcp.ParseString(req, "username", "")
+		if username == "" {
+			return mcp.NewToolResultError("username is required"), nil
+		}
+		nonceHex := mcp.ParseString(req, "nonce_hex", "")
+		if nonceHex == "" {
+			return mcp.NewToolResultError("nonce_hex is required"), nil
+		}
+		sigB64 := mcp.ParseString(req, "signature", "")
+		if sigB64 == "" {
+			return mcp.NewToolResultError("signature is required"), nil
+		}
+		sig, decErr := base64.StdEncoding.DecodeString(sigB64)
+		if decErr != nil {
+			return mcp.NewToolResultError("signature must be valid base64: " + decErr.Error()), nil
+		}
+
+		thumbprint, err := mcpCertThumbprint(ctx, tool)
+		if err != nil {
+			return nil, err
+		}
+
+		// INV-1/INV-11: share bytes are delivered only in this response,
+		// only to the claiming officer's own authenticated session.
+		result, err := svc.TenantBarrierShareClaimComplete(ctx, tenantID, username, nonceHex, sig, thumbprint)
+		if err != nil {
+			return nil, &ToolError{Tool: tool, Err: err}
+		}
+
+		data, jsonErr := json.Marshal(result)
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: tool, Err: jsonErr}
+		}
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// ---------------------------------------------------------------------------
+// qrdb_tenant_barrier_officer_claim_status
+// ---------------------------------------------------------------------------
+
+// toolTenantBarrierOfficerClaimStatus defines the qrdb_tenant_barrier_officer_claim_status
+// tool schema.
+func toolTenantBarrierOfficerClaimStatus() mcp.Tool {
+	return mcp.NewTool("qrdb_tenant_barrier_officer_claim_status",
+		mcp.WithDescription("Return per-officer share-claim status for all enrolled Security Officers on a per-tenant barrier."),
+		mcp.WithString("tenant_id",
+			mcp.Required(),
+			mcp.Description("The tenant whose barrier officer claim statuses should be returned."),
+		),
+	)
+}
+
+// handleTenantBarrierOfficerClaimStatus returns a tool handler that reports
+// the share-claim status for all enrolled Security Officers.
+func handleTenantBarrierOfficerClaimStatus(svc tenant.TenantServicer, authorize tenantScopeAuthorizer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		const tool = "qrdb_tenant_barrier_officer_claim_status"
+
+		tenantID := mcp.ParseString(req, "tenant_id", "")
+		if tenantID == "" {
+			return mcp.NewToolResultError("tenant_id is required"), nil
+		}
+		if err := authorize(ctx, tenantID, permission.TenantBarrierOfficerList); err != nil {
+			return mcp.NewToolResultError("authorization denied: " + err.Error()), nil
+		}
+
+		statuses, err := svc.TenantBarrierOfficerClaimStatus(ctx, tenantID)
+		if err != nil {
+			return nil, &ToolError{Tool: tool, Err: err}
+		}
+
+		data, jsonErr := json.Marshal(statuses)
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: tool, Err: jsonErr}
+		}
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// ---------------------------------------------------------------------------
+// qrdb_tenant_barrier_shamir_seal_vote
+// ---------------------------------------------------------------------------
+
+// toolTenantBarrierShamirSealVote defines the qrdb_tenant_barrier_shamir_seal_vote
+// tool schema.
+func toolTenantBarrierShamirSealVote() mcp.Tool {
+	return mcp.NewTool("qrdb_tenant_barrier_shamir_seal_vote",
+		mcp.WithDescription("Submit a Shamir seal vote (share) toward the quorum required to seal a per-tenant Shamir barrier. The barrier seals once enough distinct shares are submitted."),
+		mcp.WithString("tenant_id",
+			mcp.Required(),
+			mcp.Description("The tenant whose Shamir barrier should receive the seal vote."),
+		),
+		mcp.WithString("share",
+			mcp.Required(),
+			mcp.Description("A single Shamir share value contributed toward the seal-vote quorum."),
+		),
+	)
+}
+
+// handleTenantBarrierShamirSealVote returns a tool handler that submits a
+// Shamir seal-vote share for the per-tenant barrier.
+func handleTenantBarrierShamirSealVote(svc tenant.TenantServicer, authorize tenantScopeAuthorizer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		const tool = "qrdb_tenant_barrier_shamir_seal_vote"
+
+		tenantID := mcp.ParseString(req, "tenant_id", "")
+		if tenantID == "" {
+			return mcp.NewToolResultError("tenant_id is required"), nil
+		}
+		if err := authorize(ctx, tenantID, permission.TenantBarrierSealVote); err != nil {
+			return mcp.NewToolResultError("authorization denied: " + err.Error()), nil
+		}
+
+		share := mcp.ParseString(req, "share", "")
+		if share == "" {
+			return mcp.NewToolResultError("share is required"), nil
+		}
+
+		progress, err := svc.TenantBarrierShamirSealVote(ctx, tenantID, share)
+		if err != nil {
+			return nil, &ToolError{Tool: tool, Err: err}
+		}
+
+		data, jsonErr := json.Marshal(progress)
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: tool, Err: jsonErr}
+		}
 		return mcp.NewToolResultText(string(data)), nil
 	}
 }

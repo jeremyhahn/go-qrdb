@@ -84,6 +84,14 @@ type CeremonyService struct {
 	// ext holds Phase-4 custodian and auth-factor dependencies.
 	// Set via SetExtension after construction.
 	ext *CeremonyExtension
+
+	// recoveryShareStore holds recovery-scope Shamir share enclaves. Lazily
+	// initialized on first recovery officer registration or distribution.
+	recoveryShareStore *sealedShareStore
+
+	// recoveryRegistry holds recovery-scope officer enrollment metadata.
+	// Lazily initialized on first recovery officer registration.
+	recoveryRegistry *OfficerRegistry
 }
 
 // NewCeremonyService creates a new CeremonyService with the given
@@ -119,6 +127,33 @@ func NewCeremonyService(
 		challenges:        make(map[string]*ChallengeResponse),
 		thresholdRegistry: NewThresholdRegistry(),
 	}, nil
+}
+
+// CA returns the CeremonyCA used by this service. It is safe to call before
+// Initialize; the return value is nil until a CA has been set either via
+// Initialize or directly by lifecycle wiring that calls SetCA.
+func (s *CeremonyService) CA() CeremonyCA {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.ca
+}
+
+// SetCA wires the CeremonyCA used for officer CSR signing outside the full
+// initialization ceremony. Lifecycle wiring calls it so that daemon
+// deployments — where the node's cluster CA signs Security Officer client
+// certificates — can register officers without running Initialize. It never
+// overwrites a CA already set by Initialize: when a CA is present the call
+// is a no-op so a ceremony-established CA remains authoritative.
+func (s *CeremonyService) SetCA(ca CeremonyCA) {
+	if ca == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ca != nil {
+		return
+	}
+	s.ca = ca
 }
 
 // State returns the current ceremony state.
@@ -191,7 +226,7 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 	s.ca = ca
 
 	// Issue TLS server certificate.
-	tlsCert, err := ca.IssueCertificate(&IssueCertRequest{
+	tlsCert, err := ca.IssueCertificate(ctx, &IssueCertRequest{
 		CommonName:   s.config.Hostname,
 		SANs:         s.config.SANs,
 		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
@@ -204,7 +239,7 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 	}
 
 	// Issue SO certificate.
-	soCert, err := ca.IssueCertificate(&IssueCertRequest{
+	soCert, err := ca.IssueCertificate(ctx, &IssueCertRequest{
 		CommonName:   "Security Officer",
 		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
@@ -476,7 +511,7 @@ func (s *CeremonyService) SignCSRInit(
 		return nil, ErrInvalidRole
 	}
 
-	cert, err := s.ca.SignCSR(csrPEM, &SignCSROptions{
+	cert, err := s.ca.SignCSR(ctx, csrPEM, &SignCSROptions{
 		Profile:      profile.profile,
 		ValidityDays: profile.validityDays,
 		KeyUsage:     profile.keyUsage,
@@ -578,7 +613,7 @@ func (s *CeremonyService) initializeMofN(ctx context.Context, result *InitResult
 		}
 
 		// Sign the officer's CSR.
-		cert, err := s.ca.SignCSR(officer.CSRPEM, &SignCSROptions{
+		cert, err := s.ca.SignCSR(ctx, officer.CSRPEM, &SignCSROptions{
 			Profile:      "custodian",
 			ValidityDays: 365,
 			KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,

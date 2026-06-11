@@ -805,7 +805,7 @@ func TestE2E_BulkServerErr_RemainingMethods(t *testing.T) {
 	t.Run("tenant.BarrierInit", func(t *testing.T) {
 		srv, tr := startE2EServer(t)
 		serverErr(srv, "tenant.BarrierInit", "err")
-		if err := tr.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{TenantID: "t1"}); err == nil {
+		if _, err := tr.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{TenantID: "t1"}); err == nil {
 			t.Fatal("expected err")
 		}
 	})

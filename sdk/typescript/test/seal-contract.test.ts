@@ -148,14 +148,13 @@ describe('seal client – initialize (passphrase / none)', () => {
 describe('seal client – initializeShamir', () => {
     beforeEach(() => vi.unstubAllGlobals());
 
-    it('splits shares then mints a root token from a threshold subset', async () => {
+    it('POSTs share-free init and returns threshold+shareCount with no root token', async () => {
         const client = await connectedClient();
-        const shares = ['s1', 's2', 's3', 's4', 's5'];
         const { calls } = installRouter({
             'POST /v1/barrier/shamir/initialize': {
-                body: { shares, threshold: 3, total_shares: 5 },
+                // Server response is share-free: only threshold, total_shares, share_count.
+                body: { threshold: 3, total_shares: 5, share_count: 5 },
             },
-            'POST /v1/barrier/root-token': { body: { token: 'root-xyz', created_at: '2026-01-01T00:00:00Z' } },
         });
 
         const result = await client.seal.initializeShamir('', 3, 5);
@@ -164,37 +163,30 @@ describe('seal client – initializeShamir', () => {
         const initReq = calls.find((c) => c.path === '/v1/barrier/shamir/initialize');
         expect(initReq?.body).toEqual({ secret: '', threshold: 3, total_shares: 5 });
 
-        // Root token derived from exactly `threshold` shares.
+        // No root-token call is made: root-token generation requires a share
+        // quorum, and shares are only obtainable by SOs via the claim flow.
         const rtReq = calls.find((c) => c.path === '/v1/barrier/root-token');
-        expect(rtReq?.body).toEqual({ shares: ['s1', 's2', 's3'] });
+        expect(rtReq).toBeUndefined();
 
-        expect(result.rootToken).toBe('root-xyz');
-        expect(result.keyShares).toEqual(shares);
+        // Result carries threshold and shareCount — never keyShares or a token.
+        expect(result.rootToken).toBe('');
+        expect(result.threshold).toBe(3);
+        expect(result.shareCount).toBe(5);
+        // Confirm keyShares is not present on the result type at runtime.
+        expect((result as Record<string, unknown>)['keyShares']).toBeUndefined();
     });
 
-    it('still returns the key shares when root-token retries then succeeds', async () => {
-        vi.useFakeTimers();
-        try {
-            const client = await connectedClient();
-            const shares = ['a', 'b', 'c'];
-            installRouter({
-                'POST /v1/barrier/shamir/initialize': { body: { shares, threshold: 2, total_shares: 3 } },
-                'POST /v1/barrier/root-token': {
-                    failFirst: { times: 2, status: 500, body: { error: 'transitioning' } },
-                    body: { token: 'late-token', created_at: '2026-01-01T00:00:00Z' },
-                },
-            });
+    it('returns shareCount from total_shares fallback when share_count absent', async () => {
+        const client = await connectedClient();
+        installRouter({
+            'POST /v1/barrier/shamir/initialize': {
+                body: { threshold: 2, total_shares: 3 },
+            },
+        });
 
-            const promise = client.seal.initializeShamir('', 2, 3);
-            // Drive the retry backoff timers to completion.
-            await vi.runAllTimersAsync();
-            const result = await promise;
-
-            expect(result.keyShares).toEqual(shares);
-            expect(result.rootToken).toBe('late-token');
-        } finally {
-            vi.useRealTimers();
-        }
+        const result = await client.seal.initializeShamir('', 2, 3);
+        expect(result.threshold).toBe(2);
+        expect(result.shareCount).toBe(3);
     });
 });
 

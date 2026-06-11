@@ -1357,36 +1357,8 @@ func TestEmbedded_CeremonySubmitUnsealShare_ServiceReachable(t *testing.T) {
 }
 
 // ===========================================================================
-// ragChunkConfig / userAuthRecordToDomain / domainToUserAuthRecord pure functions
+// userAuthRecordToDomain / domainToUserAuthRecord pure functions
 // ===========================================================================
-
-func TestRagChunkConfig_Nil(t *testing.T) {
-	req := &transport.RAGIngestRequest{Text: "hello"}
-	got := ragChunkConfig(req)
-	if got != nil {
-		t.Errorf("expected nil for default request, got %+v", got)
-	}
-}
-
-func TestRagChunkConfig_NonNil(t *testing.T) {
-	req := &transport.RAGIngestRequest{
-		Text:          "hello",
-		ChunkStrategy: "sentence",
-		ChunkSize:     512,
-		ChunkOverlap:  50,
-		ChunkMinSize:  100,
-	}
-	got := ragChunkConfig(req)
-	if got == nil {
-		t.Fatal("expected non-nil ChunkConfig")
-	}
-	if got.Strategy != "sentence" {
-		t.Errorf("expected Strategy=sentence, got %q", got.Strategy)
-	}
-	if got.ChunkSize != 512 {
-		t.Errorf("expected ChunkSize=512, got %d", got.ChunkSize)
-	}
-}
 
 func TestUserAuthRecordToDomain_WithMetadata(t *testing.T) {
 	rec := &transport.AuthFactorAddRequest{
@@ -1640,41 +1612,9 @@ func TestEmbedded_WithRAGService_SetsNilField(t *testing.T) {
 	}
 }
 
-func TestEmbedded_RAGIngestDocument_NilService(t *testing.T) {
-	tr := newExtTransport(t)
-	_, err := tr.RAGIngestDocument(context.Background(), &transport.RAGIngestRequest{})
-	var ne *NilServiceError
-	if !errors.As(err, &ne) {
-		t.Fatalf("expected NilServiceError, got %T: %v", err, err)
-	}
-}
-
-func TestEmbedded_RAGQuery_NilService(t *testing.T) {
-	tr := newExtTransport(t)
-	_, err := tr.RAGQuery(context.Background(), &transport.RAGQueryRequest{})
-	var ne *NilServiceError
-	if !errors.As(err, &ne) {
-		t.Fatalf("expected NilServiceError, got %T: %v", err, err)
-	}
-}
-
-func TestEmbedded_RAGDeleteDocument_NilService(t *testing.T) {
-	tr := newExtTransport(t)
-	_, err := tr.RAGDeleteDocument(context.Background(), &transport.RAGDeleteDocumentRequest{})
-	var ne *NilServiceError
-	if !errors.As(err, &ne) {
-		t.Fatalf("expected NilServiceError, got %T: %v", err, err)
-	}
-}
-
-func TestEmbedded_RAGListDocuments_NilService(t *testing.T) {
-	tr := newExtTransport(t)
-	_, err := tr.RAGListDocuments(context.Background(), &transport.RAGListDocumentsRequest{})
-	var ne *NilServiceError
-	if !errors.As(err, &ne) {
-		t.Fatalf("expected NilServiceError, got %T: %v", err, err)
-	}
-}
+// RAG nil-service guards for RAGIngestDocument/RAGQuery/RAGDeleteDocument/
+// RAGListDocuments live in transport_rag_coverage_test.go (qrdb_vector tag),
+// since those methods are only compiled under that build tag.
 
 // ===========================================================================
 // UserAuthFactor nil-service guards

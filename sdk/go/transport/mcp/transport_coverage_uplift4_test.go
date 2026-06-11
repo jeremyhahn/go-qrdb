@@ -28,54 +28,6 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// RAGIngestDocument — all optional parameters path (56.5%)
-// ---------------------------------------------------------------------------
-
-func TestMCP_RAG_IngestDocument_AllParams(t *testing.T) {
-	tr, cleanup := connectRAGInProcess(t, newMinimalRAGSvc())
-	defer cleanup()
-
-	resp, err := tr.RAGIngestDocument(context.Background(), &transport.RAGIngestRequest{
-		DocumentID:    "doc-full",
-		Text:          "hello world",
-		Namespace:     "ns1",
-		Model:         "ada-002",
-		Provider:      "openai",
-		ChunkStrategy: "sentence",
-		ChunkSize:     512,
-		ChunkOverlap:  50,
-		Metadata:      map[string]string{"category": "test", "source": "api"},
-	})
-	if err != nil {
-		t.Fatalf("RAGIngestDocument with all params: %v", err)
-	}
-	if resp.DocumentID != "doc-full" {
-		t.Logf("unexpected DocumentID: %q", resp.DocumentID)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// RAGQuery — all optional parameters path (68.2%)
-// ---------------------------------------------------------------------------
-
-func TestMCP_RAG_Query_AllParams(t *testing.T) {
-	tr, cleanup := connectRAGInProcess(t, newMinimalRAGSvc())
-	defer cleanup()
-
-	_, err := tr.RAGQuery(context.Background(), &transport.RAGQueryRequest{
-		Query:     "what is QRDB",
-		Namespace: "ns1",
-		TopK:      5,
-		Model:     "ada-002",
-		Provider:  "openai",
-		Filter:    map[string]string{"type": "doc"},
-	})
-	if err != nil {
-		t.Logf("RAGQuery with all params: %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // CreateBackup — optional compression/encryption/encryption_key/shard_ids
 // (75.0%)
 // ---------------------------------------------------------------------------

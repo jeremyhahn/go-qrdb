@@ -137,14 +137,14 @@ func TestRESTBarrier_Status_Closed(t *testing.T) {
 func TestRESTBarrier_InitializeShamir_Success(t *testing.T) {
 	rt, rs, _ := newExtTransport(t)
 	rs.handle(exactPath(http.MethodPost, "/v1/barrier/shamir/initialize"), func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, &transport.BarrierInitializeShamirResponse{Shares: []string{"s1", "s2"}})
+		writeJSON(w, &transport.BarrierInitializeShamirResponse{ShareCount: 2, Threshold: 2, TotalShares: 2})
 	})
 	resp, err := rt.BarrierInitializeShamir(context.Background(), &transport.BarrierInitializeShamirRequest{})
 	if err != nil {
 		t.Fatalf("BarrierInitializeShamir: %v", err)
 	}
-	if len(resp.Shares) != 2 {
-		t.Fatalf("got %d shares", len(resp.Shares))
+	if resp.ShareCount != 2 {
+		t.Fatalf("got ShareCount=%d, want 2", resp.ShareCount)
 	}
 }
 
@@ -205,14 +205,14 @@ func TestRESTBarrier_UnsealWithShares_Closed(t *testing.T) {
 func TestRESTBarrier_Rekey_Success(t *testing.T) {
 	rt, rs, _ := newExtTransport(t)
 	rs.handle(exactPath(http.MethodPost, "/v1/barrier/rekey"), func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, &transport.BarrierRekeyResponse{Shares: []string{"new1", "new2"}})
+		writeJSON(w, &transport.BarrierRekeyResponse{ShareCount: 2, Threshold: 2, TotalShares: 2})
 	})
 	resp, err := rt.BarrierRekey(context.Background(), &transport.BarrierRekeyRequest{Threshold: 2, Total: 2})
 	if err != nil {
 		t.Fatalf("BarrierRekey: %v", err)
 	}
-	if len(resp.Shares) != 2 {
-		t.Fatalf("got %d shares", len(resp.Shares))
+	if resp.ShareCount != 2 {
+		t.Fatalf("got ShareCount=%d, want 2", resp.ShareCount)
 	}
 }
 
@@ -229,14 +229,14 @@ func TestRESTBarrier_Rekey_Closed(t *testing.T) {
 func TestRESTBarrier_GenerateRecoveryKeys_Success(t *testing.T) {
 	rt, rs, _ := newExtTransport(t)
 	rs.handle(exactPath(http.MethodPost, "/v1/barrier/recovery/generate"), func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, &transport.BarrierRecoveryKeysResponse{Keys: []string{"r1"}})
+		writeJSON(w, &transport.BarrierRecoveryKeysResponse{ShareCount: 1, Threshold: 1, Total: 1})
 	})
 	resp, err := rt.BarrierGenerateRecoveryKeys(context.Background(), &transport.BarrierGenerateRecoveryKeysRequest{})
 	if err != nil {
 		t.Fatalf("BarrierGenerateRecoveryKeys: %v", err)
 	}
-	if len(resp.Keys) != 1 {
-		t.Fatalf("got %d keys", len(resp.Keys))
+	if resp.ShareCount != 1 {
+		t.Fatalf("got ShareCount=%d, want 1", resp.ShareCount)
 	}
 }
 

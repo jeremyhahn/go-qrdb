@@ -508,3 +508,11 @@ func TestMapServiceError_WrappedNotLeaderError(t *testing.T) {
 		t.Fatalf("expected payload to contain 'not leader', got %q", string(payload))
 	}
 }
+
+// ClientCertRequiredError.Error() coverage.
+func TestClientCertRequiredError_Error(t *testing.T) {
+	e := &ClientCertRequiredError{}
+	if e.Error() == "" {
+		t.Fatal("expected non-empty error message")
+	}
+}

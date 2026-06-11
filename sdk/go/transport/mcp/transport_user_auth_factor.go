@@ -30,16 +30,17 @@ var _ transport.UserAuthFactorClient = (*Transport)(nil)
 // mcpFactorRecord matches the server-side MCP tool response shape, where
 // timestamps are RFC3339 strings and the credential is base64-encoded.
 type mcpFactorRecord struct {
-	ID           string            `json:"id"`
-	UserID       uint64            `json:"user_id"`
-	Type         string            `json:"type"`
-	Label        string            `json:"label,omitempty"`
-	Credential   string            `json:"credential"` // base64-encoded
-	Metadata     map[string]string `json:"metadata,omitempty"`
-	RegisteredAt string            `json:"registered_at"`
-	LastUsedAt   string            `json:"last_used_at,omitempty"`
-	RevokedAt    string            `json:"revoked_at,omitempty"`
-	CreatedBy    string            `json:"created_by,omitempty"`
+	ID             string            `json:"id"`
+	UserID         uint64            `json:"user_id"`
+	Type           string            `json:"type"`
+	Label          string            `json:"label,omitempty"`
+	Credential     string            `json:"credential"`                // base64-encoded
+	SPKICredential string            `json:"spki_credential,omitempty"` // base64-encoded
+	Metadata       map[string]string `json:"metadata,omitempty"`
+	RegisteredAt   string            `json:"registered_at"`
+	LastUsedAt     string            `json:"last_used_at,omitempty"`
+	RevokedAt      string            `json:"revoked_at,omitempty"`
+	CreatedBy      string            `json:"created_by,omitempty"`
 }
 
 func mcpRecordToTransport(r *mcpFactorRecord) transport.AuthFactorRecord {
@@ -55,6 +56,12 @@ func mcpRecordToTransport(r *mcpFactorRecord) transport.AuthFactorRecord {
 		decoded, err := base64.StdEncoding.DecodeString(r.Credential)
 		if err == nil {
 			out.Credential = decoded
+		}
+	}
+	if r.SPKICredential != "" {
+		decoded, err := base64.StdEncoding.DecodeString(r.SPKICredential)
+		if err == nil {
+			out.SPKICredential = decoded
 		}
 	}
 	out.RegisteredAt, _ = time.Parse(time.RFC3339, r.RegisteredAt)
@@ -82,6 +89,9 @@ func (t *Transport) AddAuthFactor(ctx context.Context, req *transport.AuthFactor
 		"label":          req.Label,
 		"credential_b64": base64.StdEncoding.EncodeToString(req.Credential),
 		"created_by":     req.CreatedBy,
+	}
+	if len(req.SPKICredential) > 0 {
+		args["spki_credential_b64"] = base64.StdEncoding.EncodeToString(req.SPKICredential)
 	}
 	if len(req.Metadata) > 0 {
 		mj, _ := json.Marshal(req.Metadata)
@@ -179,6 +189,9 @@ func (t *Transport) RotateAuthFactor(ctx context.Context, req *transport.AuthFac
 		"type":           req.NewFactor.Type,
 		"label":          req.NewFactor.Label,
 		"credential_b64": base64.StdEncoding.EncodeToString(req.NewFactor.Credential),
+	}
+	if len(req.NewFactor.SPKICredential) > 0 {
+		args["spki_credential_b64"] = base64.StdEncoding.EncodeToString(req.NewFactor.SPKICredential)
 	}
 	if len(req.NewFactor.Metadata) > 0 {
 		mj, _ := json.Marshal(req.NewFactor.Metadata)

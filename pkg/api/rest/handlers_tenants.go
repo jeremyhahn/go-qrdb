@@ -16,12 +16,15 @@ package rest
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -87,6 +90,34 @@ type tenantBarrierInitRequest struct {
 // fallback).
 type tenantBarrierUnsealRequest struct {
 	Key []byte `json:"key,omitempty"`
+}
+
+// tenantBarrierUnsealShareRequest is the JSON payload for
+// POST /v1/tenants/{id}/barrier/unseal-share. The share field carries a single
+// Shamir share toward the per-tenant quorum threshold and is required.
+type tenantBarrierUnsealShareRequest struct {
+	Share string `json:"share,omitempty"`
+}
+
+// tenantBarrierOfficerRegisterRequest is the JSON payload for
+// POST /v1/tenants/{id}/barrier/officers.
+type tenantBarrierOfficerRegisterRequest struct {
+	Username          string `json:"username"`
+	CSRPEM            string `json:"csr_pem"`
+	AuthenticatorType string `json:"authenticator_type,omitempty"`
+}
+
+// tenantBarrierShareClaimCompleteRequest is the JSON payload for
+// POST /v1/tenants/{id}/barrier/officers/{username}/claim/complete.
+type tenantBarrierShareClaimCompleteRequest struct {
+	NonceHex  string `json:"nonce_hex"`
+	Signature string `json:"signature"` // base64-encoded
+}
+
+// tenantBarrierSealVoteRequest is the JSON payload for
+// POST /v1/tenants/{id}/barrier/seal-vote.
+type tenantBarrierSealVoteRequest struct {
+	Share string `json:"share"`
 }
 
 // tenantResponse is the JSON representation of a tenant entity.
@@ -165,56 +196,98 @@ func (s *Server) handleListTenants(w http.ResponseWriter, r *http.Request) {
 // the URL path.
 //
 // Routes:
-//   - GET    /v1/tenants/{id}                 -> get tenant
-//   - DELETE /v1/tenants/{id}                 -> delete tenant
-//   - PUT    /v1/tenants/{id}                 -> update tenant
-//   - POST   /v1/tenants/{id}/quotas          -> set tenant quotas
-//   - POST   /v1/tenants/{id}/barrier/init    -> initialize tenant barrier
-//   - POST   /v1/tenants/{id}/barrier/unseal  -> unseal tenant barrier
-//   - POST   /v1/tenants/{id}/barrier/seal    -> seal tenant barrier
-//   - GET    /v1/tenants/{id}/barrier/status  -> tenant barrier status
+//   - GET    /v1/tenants/{id}                                                -> get tenant
+//   - DELETE /v1/tenants/{id}                                                -> delete tenant
+//   - PUT    /v1/tenants/{id}                                                -> update tenant
+//   - POST   /v1/tenants/{id}/quotas                                         -> set tenant quotas
+//   - POST   /v1/tenants/{id}/barrier/init                                   -> initialize tenant barrier
+//   - POST   /v1/tenants/{id}/barrier/unseal                                 -> unseal tenant barrier
+//   - POST   /v1/tenants/{id}/barrier/seal                                   -> seal tenant barrier
+//   - GET    /v1/tenants/{id}/barrier/status                                 -> tenant barrier status
+//   - POST   /v1/tenants/{id}/barrier/officers                               -> register SO
+//   - GET    /v1/tenants/{id}/barrier/officers                               -> list SOs
+//   - GET    /v1/tenants/{id}/barrier/officers/claim-status                  -> SO claim status
+//   - POST   /v1/tenants/{id}/barrier/officers/{username}/claim/begin        -> begin SO claim
+//   - POST   /v1/tenants/{id}/barrier/officers/{username}/claim/complete     -> complete SO claim
+//   - POST   /v1/tenants/{id}/barrier/seal-vote                              -> submit seal vote
 func (s *Server) handleTenantByID(w http.ResponseWriter, r *http.Request) {
 	if s.tenantSvc == nil {
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "tenant"})
 		return
 	}
 
-	// Strip "/v1/tenants/" prefix; remainder is "{id}", "{id}/quotas",
-	// "{id}/barrier/init", "{id}/barrier/unseal", "{id}/barrier/seal", or
-	// "{id}/barrier/status".
-	rest := strings.TrimPrefix(r.URL.Path, "/v1/tenants/")
-	if rest == "" {
+	// Strip "/v1/tenants/" prefix; remainder is "{id}" or "{id}/sub/path".
+	suffix := strings.TrimPrefix(r.URL.Path, "/v1/tenants/")
+	if suffix == "" {
 		writeErrorJSON(w, http.StatusBadRequest, &MissingParameterError{Param: "id"})
 		return
 	}
 
-	// GET /v1/tenants/{id}/barrier/status — the only GET sub-path; check
-	// before the bare-{id} GET dispatch below so the suffix is not treated
-	// as part of the tenant ID.
+	// GET sub-paths: /barrier/status, /barrier/officers, /barrier/officers/claim-status.
 	if r.Method == http.MethodGet {
-		if id, found := strings.CutSuffix(rest, "/barrier/status"); found && id != "" {
+		if id, found := strings.CutSuffix(suffix, "/barrier/status"); found && id != "" {
 			s.handleTenantBarrierStatus(w, r, id)
+			return
+		}
+		if id, found := strings.CutSuffix(suffix, "/barrier/officers/claim-status"); found && id != "" {
+			s.handleTenantBarrierOfficerClaimStatus(w, r, id)
+			return
+		}
+		if id, found := strings.CutSuffix(suffix, "/barrier/officers"); found && id != "" {
+			s.handleTenantBarrierOfficerList(w, r, id)
 			return
 		}
 	}
 
-	// POST sub-paths: /quotas, /barrier/init, /barrier/unseal, /barrier/seal.
+	// POST sub-paths.
 	if r.Method == http.MethodPost {
-		if id, found := strings.CutSuffix(rest, "/quotas"); found && id != "" {
+		if id, found := strings.CutSuffix(suffix, "/quotas"); found && id != "" {
 			s.handleSetTenantQuotas(w, r, id)
 			return
 		}
-		if id, found := strings.CutSuffix(rest, "/barrier/init"); found && id != "" {
+		if id, found := strings.CutSuffix(suffix, "/barrier/init"); found && id != "" {
 			s.handleTenantBarrierInit(w, r, id)
 			return
 		}
-		if id, found := strings.CutSuffix(rest, "/barrier/unseal"); found && id != "" {
+		if id, found := strings.CutSuffix(suffix, "/barrier/unseal-share"); found && id != "" {
+			s.handleTenantBarrierUnsealShare(w, r, id)
+			return
+		}
+		if id, found := strings.CutSuffix(suffix, "/barrier/unseal"); found && id != "" {
 			s.handleTenantBarrierUnseal(w, r, id)
 			return
 		}
-		if id, found := strings.CutSuffix(rest, "/barrier/seal"); found && id != "" {
+		if id, found := strings.CutSuffix(suffix, "/barrier/seal"); found && id != "" {
 			s.handleTenantBarrierSeal(w, r, id)
 			return
+		}
+		if id, found := strings.CutSuffix(suffix, "/barrier/seal-vote"); found && id != "" {
+			s.handleTenantBarrierSealVote(w, r, id)
+			return
+		}
+		if id, found := strings.CutSuffix(suffix, "/barrier/officers"); found && id != "" {
+			s.handleTenantBarrierOfficerRegister(w, r, id)
+			return
+		}
+		// /v1/tenants/{id}/barrier/officers/{username}/claim/begin|complete
+		// Pattern: suffix = "{id}/barrier/officers/{username}/claim/{action}"
+		if idx := strings.Index(suffix, "/barrier/officers/"); idx > 0 {
+			tenantID := suffix[:idx]
+			officerSuffix := suffix[idx+len("/barrier/officers/"):]
+			// officerSuffix = "{username}/claim/begin" or "{username}/claim/complete"
+			parts := strings.SplitN(officerSuffix, "/", 3)
+			if len(parts) == 3 && parts[1] == "claim" && tenantID != "" {
+				username := parts[0]
+				action := parts[2]
+				switch action {
+				case "begin":
+					s.handleTenantBarrierShareClaimBegin(w, r, tenantID, username)
+					return
+				case "complete":
+					s.handleTenantBarrierShareClaimComplete(w, r, tenantID, username)
+					return
+				}
+			}
 		}
 		w.Header().Set("Allow", "GET, DELETE, PUT")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -222,7 +295,7 @@ func (s *Server) handleTenantByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// GET /v1/tenants/{id}, DELETE /v1/tenants/{id}, PUT /v1/tenants/{id}
-	id := rest
+	id := suffix
 	handler, ok := tenantMethodHandlers[r.Method]
 	if !ok {
 		w.Header().Set("Allow", "GET, DELETE, PUT, POST")
@@ -387,12 +460,57 @@ func (s *Server) handleTenantBarrierInit(w http.ResponseWriter, r *http.Request,
 		writeErrorJSON(w, http.StatusForbidden, err)
 		return
 	}
-	if err := s.tenantSvc.TenantBarrierInitWithStrategy(ctx, id, req.Passphrase, req.Threshold, req.Shares, seal.StrategyID(req.Strategy)); err != nil {
+	result, err := s.tenantSvc.TenantBarrierInitWithStrategy(ctx, id, req.Passphrase, req.Threshold, req.Shares, seal.StrategyID(req.Strategy))
+	if err != nil {
 		writeErrorJSON(w, mapTenantError(err), err)
 		return
 	}
 
+	// INV-1: share bytes are never included in initialization responses.
+	// Security Officers retrieve their shares via the per-tenant claim
+	// handshake. Return share_count so callers know enrollment succeeded.
+	if result != nil && result.ShareCount > 0 {
+		writeJSON(w, map[string]interface{}{
+			"tenant_id":    result.TenantID,
+			"strategy":     result.Strategy,
+			"threshold":    result.Threshold,
+			"total_shares": result.TotalShares,
+			"share_count":  result.ShareCount,
+		})
+		return
+	}
+
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleTenantBarrierUnsealShare handles
+// POST /v1/tenants/{id}/barrier/unseal-share -- submits a single Shamir share
+// toward the per-tenant barrier's quorum threshold. The barrier unseals
+// automatically once the threshold is met. Returns 200 OK with the quorum
+// progress (a tenant.TenantBarrierUnsealProgress). The share is required.
+func (s *Server) handleTenantBarrierUnsealShare(w http.ResponseWriter, r *http.Request, id string) {
+	var req tenantBarrierUnsealShareRequest
+	if r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+			return
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
+	defer cancel()
+	if err := s.authorizeTenantBarrierOp(ctx, id, permission.TenantBarrierUnseal); err != nil {
+		writeErrorJSON(w, http.StatusForbidden, err)
+		return
+	}
+
+	progress, err := s.tenantSvc.TenantBarrierUnsealShare(ctx, id, req.Share)
+	if err != nil {
+		writeErrorJSON(w, mapTenantError(err), err)
+		return
+	}
+
+	writeJSON(w, progress)
 }
 
 // handleTenantBarrierUnseal handles POST /v1/tenants/{id}/barrier/unseal --
@@ -485,21 +603,261 @@ func tenantToResponse(info *tenant.TenantInfo) *tenantResponse {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Per-tenant barrier Security Officer handlers (§7.3 SO design, tenant surface)
+// ---------------------------------------------------------------------------
+
+// handleTenantBarrierOfficerRegister handles
+// POST /v1/tenants/{id}/barrier/officers -- registers a Security Officer for
+// the named tenant's barrier.
+// Required permission: tenant_barrier:officer_register (ScopeTenantOnly).
+func (s *Server) handleTenantBarrierOfficerRegister(w http.ResponseWriter, r *http.Request, id string) {
+	if err := s.authorizeTenantBarrierOp(r.Context(), id, permission.TenantBarrierOfficerRegister); err != nil {
+		writeErrorJSON(w, http.StatusForbidden, err)
+		return
+	}
+
+	var req tenantBarrierOfficerRegisterRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+		return
+	}
+	if req.Username == "" {
+		writeErrorJSON(w, http.StatusBadRequest, &ValidationError{Field: "username"})
+		return
+	}
+	if req.CSRPEM == "" {
+		writeErrorJSON(w, http.StatusBadRequest, &ValidationError{Field: "csr_pem"})
+		return
+	}
+
+	result, err := s.tenantSvc.TenantBarrierOfficerRegister(r.Context(), id, &ceremony.RegisterOfficerRequest{
+		Username:          req.Username,
+		CSRPEM:            []byte(req.CSRPEM),
+		AuthenticatorType: ceremony.AuthenticatorType(req.AuthenticatorType),
+	})
+	if err != nil {
+		writeErrorJSON(w, mapBarrierCeremonyHTTPError(err), err)
+		return
+	}
+
+	writeJSON(w, map[string]interface{}{
+		"cert_pem":    string(result.CertPEM),
+		"share_index": result.ShareIndex,
+	})
+}
+
+// handleTenantBarrierOfficerList handles
+// GET /v1/tenants/{id}/barrier/officers -- lists all enrolled Security Officers
+// for the named tenant's barrier.
+// Required permission: tenant_barrier:officer_list (ScopeTenantOnly).
+func (s *Server) handleTenantBarrierOfficerList(w http.ResponseWriter, r *http.Request, id string) {
+	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
+	defer cancel()
+	if err := s.authorizeTenantBarrierOp(ctx, id, permission.TenantBarrierOfficerList); err != nil {
+		writeErrorJSON(w, http.StatusForbidden, err)
+		return
+	}
+
+	officers, err := s.tenantSvc.TenantBarrierOfficerList(ctx, id)
+	if err != nil {
+		writeErrorJSON(w, mapBarrierCeremonyHTTPError(err), err)
+		return
+	}
+
+	writeJSON(w, map[string]interface{}{
+		"officers": tenantOfficerStatusesToResponse(officers),
+	})
+}
+
+// handleTenantBarrierOfficerClaimStatus handles
+// GET /v1/tenants/{id}/barrier/officers/claim-status -- returns a per-officer
+// claim status snapshot for the named tenant's barrier.
+// Required permission: tenant_barrier:officer_list (ScopeTenantOnly).
+func (s *Server) handleTenantBarrierOfficerClaimStatus(w http.ResponseWriter, r *http.Request, id string) {
+	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
+	defer cancel()
+	if err := s.authorizeTenantBarrierOp(ctx, id, permission.TenantBarrierOfficerList); err != nil {
+		writeErrorJSON(w, http.StatusForbidden, err)
+		return
+	}
+
+	officers, err := s.tenantSvc.TenantBarrierOfficerClaimStatus(ctx, id)
+	if err != nil {
+		writeErrorJSON(w, mapBarrierCeremonyHTTPError(err), err)
+		return
+	}
+
+	writeJSON(w, map[string]interface{}{
+		"officers": tenantOfficerStatusesToResponse(officers),
+	})
+}
+
+// handleTenantBarrierShareClaimBegin handles
+// POST /v1/tenants/{id}/barrier/officers/{username}/claim/begin -- issues a
+// challenge nonce to the named officer for the tenant barrier claim handshake.
+// Identity-gated (permission.IdentityGated): the registered officer's mTLS
+// certificate is the credential; the service enforces the per-tenant registry
+// lookup, thumbprint match, and nonce signature.
+func (s *Server) handleTenantBarrierShareClaimBegin(w http.ResponseWriter, r *http.Request, id, username string) {
+	if err := s.authorizeTenantBarrierOp(r.Context(), id, permission.IdentityGated); err != nil {
+		writeErrorJSON(w, http.StatusForbidden, err)
+		return
+	}
+
+	thumbprint, err := restCertThumbprint(r)
+	if err != nil {
+		writeErrorJSON(w, http.StatusUnauthorized, err)
+		return
+	}
+
+	challenge, err := s.tenantSvc.TenantBarrierShareClaimBegin(r.Context(), id, username, thumbprint)
+	if err != nil {
+		writeErrorJSON(w, mapBarrierCeremonyHTTPError(err), err)
+		return
+	}
+
+	writeJSON(w, map[string]interface{}{
+		"nonce_hex":  hex.EncodeToString(challenge.Nonce),
+		"expires_at": challenge.ExpiresAt.Format(time.RFC3339),
+	})
+}
+
+// handleTenantBarrierShareClaimComplete handles
+// POST /v1/tenants/{id}/barrier/officers/{username}/claim/complete -- verifies
+// the officer's nonce signature and returns the tenant barrier share bytes
+// exactly once (INV-1, INV-11).
+// Identity-gated (permission.IdentityGated): see handleTenantBarrierShareClaimBegin.
+func (s *Server) handleTenantBarrierShareClaimComplete(w http.ResponseWriter, r *http.Request, id, username string) {
+	if err := s.authorizeTenantBarrierOp(r.Context(), id, permission.IdentityGated); err != nil {
+		writeErrorJSON(w, http.StatusForbidden, err)
+		return
+	}
+
+	thumbprint, err := restCertThumbprint(r)
+	if err != nil {
+		writeErrorJSON(w, http.StatusUnauthorized, err)
+		return
+	}
+
+	var req tenantBarrierShareClaimCompleteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+		return
+	}
+	if req.NonceHex == "" {
+		writeErrorJSON(w, http.StatusBadRequest, &ValidationError{Field: "nonce_hex"})
+		return
+	}
+	if req.Signature == "" {
+		writeErrorJSON(w, http.StatusBadRequest, &ValidationError{Field: "signature"})
+		return
+	}
+
+	sigBytes, decErr := base64.StdEncoding.DecodeString(req.Signature)
+	if decErr != nil {
+		writeErrorJSON(w, http.StatusBadRequest, &ValidationError{Field: "signature"})
+		return
+	}
+
+	result, err := s.tenantSvc.TenantBarrierShareClaimComplete(r.Context(), id, username, req.NonceHex, sigBytes, thumbprint)
+	if err != nil {
+		writeErrorJSON(w, mapBarrierCeremonyHTTPError(err), err)
+		return
+	}
+
+	// INV-11: share_bytes appears only here, in the claiming officer's own session.
+	writeJSON(w, map[string]interface{}{
+		"share_bytes": base64.StdEncoding.EncodeToString(result.ShareBytes),
+	})
+}
+
+// handleTenantBarrierSealVote handles
+// POST /v1/tenants/{id}/barrier/seal-vote -- submits a Shamir share as a seal
+// vote for the named tenant's barrier. When the quorum threshold is met the
+// tenant barrier is sealed automatically.
+// Required permission: tenant_barrier:seal_vote (ScopeTenantOnly).
+func (s *Server) handleTenantBarrierSealVote(w http.ResponseWriter, r *http.Request, id string) {
+	if err := s.authorizeTenantBarrierOp(r.Context(), id, permission.TenantBarrierSealVote); err != nil {
+		writeErrorJSON(w, http.StatusForbidden, err)
+		return
+	}
+
+	var req tenantBarrierSealVoteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+		return
+	}
+	if req.Share == "" {
+		writeErrorJSON(w, http.StatusBadRequest, &ValidationError{Field: "share"})
+		return
+	}
+
+	progress, err := s.tenantSvc.TenantBarrierShamirSealVote(r.Context(), id, req.Share)
+	if err != nil {
+		writeErrorJSON(w, mapTenantError(err), err)
+		return
+	}
+
+	writeJSON(w, map[string]interface{}{
+		"required":  progress.Required,
+		"submitted": progress.Submitted,
+		"complete":  progress.Complete,
+	})
+}
+
+// tenantOfficerStatusesToResponse converts ceremony.OfficerStatus slice to
+// a JSON-serializable representation.
+func tenantOfficerStatusesToResponse(officers []*ceremony.OfficerStatus) []map[string]interface{} {
+	out := make([]map[string]interface{}, len(officers))
+	for i, o := range officers {
+		m := map[string]interface{}{
+			"username":        o.Username,
+			"cert_thumbprint": o.CertThumbprint,
+			"share_index":     o.ShareIndex,
+			"auth_factor":     o.AuthFactor,
+			"share_pending":   o.SharePending,
+		}
+		if !o.EnrolledAt.IsZero() {
+			m["enrolled_at"] = o.EnrolledAt.Format(time.RFC3339)
+		}
+		if !o.ClaimedAt.IsZero() {
+			m["claimed_at"] = o.ClaimedAt.Format(time.RFC3339)
+		}
+		out[i] = m
+	}
+	return out
+}
+
 // mapTenantError maps tenant domain errors to the appropriate HTTP status code.
 func mapTenantError(err error) int {
 	var se *tenant.StoreError
 	var be *tenant.BarrierError
 	var ite *tenant.InvalidTenantIDError
+	var ise *tenant.InvalidStrategyError
+	var tse *tenant.TenantScopeError
 
 	switch {
+	case errors.As(err, &tse):
+		return http.StatusForbidden
 	case errors.Is(err, tenant.ErrEmptyTenantID):
 		return http.StatusBadRequest
 	case errors.Is(err, tenant.ErrEmptyTenantName):
 		return http.StatusBadRequest
 	case errors.Is(err, tenant.ErrEmptyPassphrase):
 		return http.StatusBadRequest
+	case errors.Is(err, tenant.ErrEmptyShare):
+		return http.StatusBadRequest
+	case errors.Is(err, tenant.ErrSystemTenantMustBePrefix):
+		return http.StatusBadRequest
 	case errors.Is(err, tenant.ErrNilQuotas):
 		return http.StatusBadRequest
+	case errors.As(err, &ise):
+		return http.StatusBadRequest
+	case errors.Is(err, tenant.ErrBarrierIsolationUnavailable):
+		return http.StatusUnprocessableEntity
+	case errors.Is(err, tenant.ErrBarrierNotEnabled):
+		return http.StatusUnprocessableEntity
 	case errors.Is(err, tenant.ErrTenantAlreadyExists):
 		return http.StatusConflict
 	case errors.Is(err, tenant.ErrTenantHasData):

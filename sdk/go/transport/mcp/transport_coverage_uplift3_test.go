@@ -15,10 +15,9 @@
 // Third coverage-uplift file for the MCP SDK transport.
 // Covers remaining low-coverage paths:
 //   - GetUserByCertThumbprint (0%) + AddCertBinding (0%)
-//   - JSON decode error paths for backup, rag, rebalance
+//   - JSON decode error paths for backup, rebalance
 //   - TSRichQuery additional JSON decode path
 //   - transport.go Capabilities / extractTextContent paths
-//   - RAGIngestDocument / RAGQuery JSON decode paths
 //   - CredentialStore / CredentialRetrieve success+decode paths
 
 package mcp
@@ -120,47 +119,6 @@ func TestMCP_ExtraClosed_Backup(t *testing.T) {
 		t.Error("expected CredentialStore to fail on closed transport")
 	}
 	_ = tr.CredentialRetrieve // just ensure it's accessible
-}
-
-// ---------------------------------------------------------------------------
-// RAGIngestDocument JSON decode path (56.5% → better)
-// ---------------------------------------------------------------------------
-
-func TestMCP_RAG_IngestDocument_JSONDecodeError(t *testing.T) {
-	svc := newMinimalRAGSvc()
-	tr, cleanup := connectRAGInProcess(t, svc)
-	defer cleanup()
-
-	// The response from service will be valid JSON but the mock returns
-	// a real IngestDocumentResponse which should parse correctly.
-	// To exercise the decode path, call with a valid request.
-	resp, err := tr.RAGIngestDocument(context.Background(), &transport.RAGIngestRequest{
-		DocumentID: "doc-test", Namespace: "ns1", Text: "test content",
-	})
-	// Either success or error is acceptable; just ensure no panic.
-	if err == nil && resp.DocumentID != "doc-test" {
-		t.Logf("unexpected DocumentID: %q", resp.DocumentID)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// RAGQuery path exercise (68.2%)
-// ---------------------------------------------------------------------------
-
-func TestMCP_RAG_Query_PathExercise(t *testing.T) {
-	tr, cleanup := connectRAGInProcess(t, newMinimalRAGSvc())
-	defer cleanup()
-
-	// Call with filter specified to hit the additional code path.
-	resp, err := tr.RAGQuery(context.Background(), &transport.RAGQueryRequest{
-		Query: "test query", Namespace: "ns1", TopK: 3,
-		Filter: map[string]string{"category": "test"},
-	})
-	if err != nil {
-		t.Logf("RAGQuery with filter: %v", err)
-	} else if len(resp.Results) == 0 {
-		t.Logf("RAGQuery returned empty results")
-	}
 }
 
 // ---------------------------------------------------------------------------

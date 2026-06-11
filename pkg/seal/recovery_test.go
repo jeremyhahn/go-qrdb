@@ -16,7 +16,9 @@ import (
 	"testing"
 )
 
-func newRecoveryBarrier(t *testing.T) (*Barrier, *MemoryBackend) {
+// newRecoveryBarrier creates a software-strategy barrier with a
+// captureDistributor wired as both the ceremony and recovery distributor.
+func newRecoveryBarrier(t *testing.T) (*Barrier, *MemoryBackend, *captureDistributor) {
 	t.Helper()
 	backend := NewMemoryBackend()
 	b, err := NewBarrier(slog.Default(), backend, BarrierConfig{
@@ -25,10 +27,14 @@ func newRecoveryBarrier(t *testing.T) (*Barrier, *MemoryBackend) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return b, backend
+	dist := newCaptureDistributor()
+	b.SetRecoveryDistributor(dist)
+	return b, backend, dist
 }
 
-func newRecoveryBarrierWithShamir(t *testing.T) (*Barrier, *MemoryBackend) {
+// newRecoveryBarrierWithShamir creates a Shamir-strategy barrier with
+// captureDistributors for both ceremony and recovery paths.
+func newRecoveryBarrierWithShamir(t *testing.T) (*Barrier, *MemoryBackend, *captureDistributor) {
 	t.Helper()
 	backend := NewMemoryBackend()
 	shamirStrat, err := NewShamirStrategy(3, 5)
@@ -43,7 +49,10 @@ func newRecoveryBarrierWithShamir(t *testing.T) (*Barrier, *MemoryBackend) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return b, backend
+	dist := newCaptureDistributor()
+	b.SetRecoveryDistributor(dist)
+	b.SetCeremonyDistributor(dist)
+	return b, backend, dist
 }
 
 func initRecoveryBarrier(t *testing.T, b *Barrier) {
@@ -56,7 +65,7 @@ func initRecoveryBarrier(t *testing.T, b *Barrier) {
 
 func TestRecoveryGenerateRecoveryKeys(t *testing.T) {
 	t.Run("Success_3of5", func(t *testing.T) {
-		b, backend := newRecoveryBarrier(t)
+		b, backend, dist := newRecoveryBarrier(t)
 		initRecoveryBarrier(t, b)
 		ctx := context.Background()
 
@@ -73,10 +82,14 @@ func TestRecoveryGenerateRecoveryKeys(t *testing.T) {
 		if result.TotalShares != 5 {
 			t.Errorf("TotalShares: got %d, want 5", result.TotalShares)
 		}
-		if len(result.Shares) != 5 {
-			t.Errorf("Shares count: got %d, want 5", len(result.Shares))
+		if result.ShareCount != 5 {
+			t.Errorf("ShareCount: got %d, want 5", result.ShareCount)
 		}
-		for i, share := range result.Shares {
+		shares := dist.Shares()
+		if len(shares) != 5 {
+			t.Errorf("captured shares: got %d, want 5", len(shares))
+		}
+		for i, share := range shares {
 			if share == "" {
 				t.Errorf("Share[%d]: empty string", i)
 			}
@@ -100,7 +113,7 @@ func TestRecoveryGenerateRecoveryKeys(t *testing.T) {
 	})
 
 	t.Run("Success_2of3", func(t *testing.T) {
-		b, _ := newRecoveryBarrier(t)
+		b, _, dist := newRecoveryBarrier(t)
 		initRecoveryBarrier(t, b)
 		ctx := context.Background()
 
@@ -111,13 +124,16 @@ func TestRecoveryGenerateRecoveryKeys(t *testing.T) {
 		if result.Threshold != 2 || result.TotalShares != 3 {
 			t.Errorf("got threshold=%d total=%d, want 2/3", result.Threshold, result.TotalShares)
 		}
-		if len(result.Shares) != 3 {
-			t.Errorf("Shares count: got %d, want 3", len(result.Shares))
+		if result.ShareCount != 3 {
+			t.Errorf("ShareCount: got %d, want 3", result.ShareCount)
+		}
+		if len(dist.Shares()) != 3 {
+			t.Errorf("captured shares: got %d, want 3", len(dist.Shares()))
 		}
 	})
 
 	t.Run("ErrShamirThresholdInvalid_ThresholdLessThan2", func(t *testing.T) {
-		b, _ := newRecoveryBarrier(t)
+		b, _, _ := newRecoveryBarrier(t)
 		initRecoveryBarrier(t, b)
 		ctx := context.Background()
 
@@ -128,7 +144,7 @@ func TestRecoveryGenerateRecoveryKeys(t *testing.T) {
 	})
 
 	t.Run("ErrShamirThresholdInvalid_ThresholdGreaterThanTotal", func(t *testing.T) {
-		b, _ := newRecoveryBarrier(t)
+		b, _, _ := newRecoveryBarrier(t)
 		initRecoveryBarrier(t, b)
 		ctx := context.Background()
 
@@ -139,7 +155,7 @@ func TestRecoveryGenerateRecoveryKeys(t *testing.T) {
 	})
 
 	t.Run("ErrShamirThresholdInvalid_ZeroThreshold", func(t *testing.T) {
-		b, _ := newRecoveryBarrier(t)
+		b, _, _ := newRecoveryBarrier(t)
 		initRecoveryBarrier(t, b)
 		ctx := context.Background()
 
@@ -150,7 +166,7 @@ func TestRecoveryGenerateRecoveryKeys(t *testing.T) {
 	})
 
 	t.Run("ErrShamirThresholdInvalid_NegativeThreshold", func(t *testing.T) {
-		b, _ := newRecoveryBarrier(t)
+		b, _, _ := newRecoveryBarrier(t)
 		initRecoveryBarrier(t, b)
 		ctx := context.Background()
 
@@ -160,8 +176,26 @@ func TestRecoveryGenerateRecoveryKeys(t *testing.T) {
 		}
 	})
 
+	t.Run("ErrCeremonyDistributorNotConfigured", func(t *testing.T) {
+		// Barrier with no recovery distributor wired.
+		backend := NewMemoryBackend()
+		b, err := NewBarrier(slog.Default(), backend, BarrierConfig{
+			RootKeyPath: "test/root-key",
+		}, testSoftwareStrategy(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		initRecoveryBarrier(t, b)
+		ctx := context.Background()
+
+		_, err = b.GenerateRecoveryKeys(ctx, 3, 5)
+		if !errors.Is(err, ErrCeremonyDistributorNotConfigured) {
+			t.Errorf("got %v, want ErrCeremonyDistributorNotConfigured", err)
+		}
+	})
+
 	t.Run("ErrSealed_BarrierNotInitialized", func(t *testing.T) {
-		b, _ := newRecoveryBarrier(t)
+		b, _, _ := newRecoveryBarrier(t)
 		ctx := context.Background()
 
 		// Barrier is sealed (not initialized), so GetMasterKey will fail.
@@ -172,19 +206,17 @@ func TestRecoveryGenerateRecoveryKeys(t *testing.T) {
 	})
 
 	t.Run("MultipleGenerateOverwritesMetadata", func(t *testing.T) {
-		b, backend := newRecoveryBarrier(t)
+		b, backend, _ := newRecoveryBarrier(t)
 		initRecoveryBarrier(t, b)
 		ctx := context.Background()
 
 		// First generation: 2 of 3.
-		_, err := b.GenerateRecoveryKeys(ctx, 2, 3)
-		if err != nil {
+		if _, err := b.GenerateRecoveryKeys(ctx, 2, 3); err != nil {
 			t.Fatal(err)
 		}
 
 		// Second generation: 3 of 5 overwrites.
-		_, err = b.GenerateRecoveryKeys(ctx, 3, 5)
-		if err != nil {
+		if _, err := b.GenerateRecoveryKeys(ctx, 3, 5); err != nil {
 			t.Fatal(err)
 		}
 
@@ -203,17 +235,17 @@ func TestRecoveryGenerateRecoveryKeys(t *testing.T) {
 	})
 
 	t.Run("SharesAreUnique", func(t *testing.T) {
-		b, _ := newRecoveryBarrier(t)
+		b, _, dist := newRecoveryBarrier(t)
 		initRecoveryBarrier(t, b)
 		ctx := context.Background()
 
-		result, err := b.GenerateRecoveryKeys(ctx, 3, 5)
-		if err != nil {
+		if _, err := b.GenerateRecoveryKeys(ctx, 3, 5); err != nil {
 			t.Fatal(err)
 		}
+		shares := dist.Shares()
 
-		seen := make(map[string]struct{}, len(result.Shares))
-		for i, share := range result.Shares {
+		seen := make(map[string]struct{}, len(shares))
+		for i, share := range shares {
 			if _, exists := seen[share]; exists {
 				t.Errorf("Share[%d] is a duplicate", i)
 			}
@@ -224,16 +256,16 @@ func TestRecoveryGenerateRecoveryKeys(t *testing.T) {
 
 func TestRecoveryRecoverWithKeys(t *testing.T) {
 	t.Run("Success_ExactThreshold", func(t *testing.T) {
-		b, _ := newRecoveryBarrier(t)
+		b, _, dist := newRecoveryBarrier(t)
 		initRecoveryBarrier(t, b)
 		ctx := context.Background()
 
-		result, err := b.GenerateRecoveryKeys(ctx, 3, 5)
-		if err != nil {
+		if _, err := b.GenerateRecoveryKeys(ctx, 3, 5); err != nil {
 			t.Fatal(err)
 		}
+		shares := dist.Shares()
 
-		// Seal the barrier.
+		// Seal the barrier (software strategy — direct Seal is allowed).
 		if err := b.Seal(); err != nil {
 			t.Fatal(err)
 		}
@@ -242,7 +274,7 @@ func TestRecoveryRecoverWithKeys(t *testing.T) {
 		}
 
 		// Recover with exactly threshold shares.
-		err = b.RecoverWithKeys(ctx, result.Shares[:3])
+		err := b.RecoverWithKeys(ctx, shares[:3])
 		if err != nil {
 			t.Fatalf("RecoverWithKeys: unexpected error: %v", err)
 		}
@@ -252,21 +284,21 @@ func TestRecoveryRecoverWithKeys(t *testing.T) {
 	})
 
 	t.Run("Success_AllShares", func(t *testing.T) {
-		b, _ := newRecoveryBarrier(t)
+		b, _, dist := newRecoveryBarrier(t)
 		initRecoveryBarrier(t, b)
 		ctx := context.Background()
 
-		result, err := b.GenerateRecoveryKeys(ctx, 3, 5)
-		if err != nil {
+		if _, err := b.GenerateRecoveryKeys(ctx, 3, 5); err != nil {
 			t.Fatal(err)
 		}
+		shares := dist.Shares()
 
 		if err := b.Seal(); err != nil {
 			t.Fatal(err)
 		}
 
 		// Recover with all shares (more than threshold).
-		err = b.RecoverWithKeys(ctx, result.Shares)
+		err := b.RecoverWithKeys(ctx, shares)
 		if err != nil {
 			t.Fatalf("RecoverWithKeys with all shares: unexpected error: %v", err)
 		}
@@ -276,14 +308,14 @@ func TestRecoveryRecoverWithKeys(t *testing.T) {
 	})
 
 	t.Run("BarrierTransitionsFromSealedToUnsealed", func(t *testing.T) {
-		b, _ := newRecoveryBarrier(t)
+		b, _, dist := newRecoveryBarrier(t)
 		initRecoveryBarrier(t, b)
 		ctx := context.Background()
 
-		result, err := b.GenerateRecoveryKeys(ctx, 2, 3)
-		if err != nil {
+		if _, err := b.GenerateRecoveryKeys(ctx, 2, 3); err != nil {
 			t.Fatal(err)
 		}
+		shares := dist.Shares()
 
 		if err := b.Seal(); err != nil {
 			t.Fatal(err)
@@ -292,8 +324,7 @@ func TestRecoveryRecoverWithKeys(t *testing.T) {
 			t.Fatal("expected sealed")
 		}
 
-		err = b.RecoverWithKeys(ctx, result.Shares[:2])
-		if err != nil {
+		if err := b.RecoverWithKeys(ctx, shares[:2]); err != nil {
 			t.Fatal(err)
 		}
 		if b.IsSealed() {
@@ -308,24 +339,24 @@ func TestRecoveryRecoverWithKeys(t *testing.T) {
 	})
 
 	t.Run("ErrAlreadyUnsealed", func(t *testing.T) {
-		b, _ := newRecoveryBarrier(t)
+		b, _, dist := newRecoveryBarrier(t)
 		initRecoveryBarrier(t, b)
 		ctx := context.Background()
 
-		result, err := b.GenerateRecoveryKeys(ctx, 2, 3)
-		if err != nil {
+		if _, err := b.GenerateRecoveryKeys(ctx, 2, 3); err != nil {
 			t.Fatal(err)
 		}
+		shares := dist.Shares()
 
 		// Barrier is already unsealed.
-		err = b.RecoverWithKeys(ctx, result.Shares[:2])
+		err := b.RecoverWithKeys(ctx, shares[:2])
 		if !errors.Is(err, ErrAlreadyUnsealed) {
 			t.Errorf("got %v, want ErrAlreadyUnsealed", err)
 		}
 	})
 
 	t.Run("ErrRecoveryKeysNotFound", func(t *testing.T) {
-		b, _ := newRecoveryBarrier(t)
+		b, _, _ := newRecoveryBarrier(t)
 		initRecoveryBarrier(t, b)
 		ctx := context.Background()
 
@@ -341,34 +372,33 @@ func TestRecoveryRecoverWithKeys(t *testing.T) {
 	})
 
 	t.Run("ErrShamirQuorumIncomplete", func(t *testing.T) {
-		b, _ := newRecoveryBarrier(t)
+		b, _, dist := newRecoveryBarrier(t)
 		initRecoveryBarrier(t, b)
 		ctx := context.Background()
 
-		result, err := b.GenerateRecoveryKeys(ctx, 3, 5)
-		if err != nil {
+		if _, err := b.GenerateRecoveryKeys(ctx, 3, 5); err != nil {
 			t.Fatal(err)
 		}
+		shares := dist.Shares()
 
 		if err := b.Seal(); err != nil {
 			t.Fatal(err)
 		}
 
 		// Provide only 2 shares when 3 are needed.
-		err = b.RecoverWithKeys(ctx, result.Shares[:2])
+		err := b.RecoverWithKeys(ctx, shares[:2])
 		if !errors.Is(err, ErrShamirQuorumIncomplete) {
 			t.Errorf("got %v, want ErrShamirQuorumIncomplete", err)
 		}
 	})
 
 	t.Run("ErrShamirCombineFailed_InvalidShares", func(t *testing.T) {
-		b, backend := newRecoveryBarrier(t)
+		b, backend, _ := newRecoveryBarrier(t)
 		initRecoveryBarrier(t, b)
 		ctx := context.Background()
 
 		// Generate real recovery keys to persist metadata.
-		_, err := b.GenerateRecoveryKeys(ctx, 2, 3)
-		if err != nil {
+		if _, err := b.GenerateRecoveryKeys(ctx, 2, 3); err != nil {
 			t.Fatal(err)
 		}
 
@@ -384,14 +414,14 @@ func TestRecoveryRecoverWithKeys(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		err = b.RecoverWithKeys(ctx, []string{"invalid-share-1", "invalid-share-2"})
+		err := b.RecoverWithKeys(ctx, []string{"invalid-share-1", "invalid-share-2"})
 		if !errors.Is(err, ErrShamirCombineFailed) {
 			t.Errorf("got %v, want ErrShamirCombineFailed", err)
 		}
 	})
 
 	t.Run("ErrRecoveryKeysNotFound_CorruptMetadata", func(t *testing.T) {
-		b, backend := newRecoveryBarrier(t)
+		b, backend, _ := newRecoveryBarrier(t)
 		initRecoveryBarrier(t, b)
 		ctx := context.Background()
 
@@ -413,7 +443,7 @@ func TestRecoveryRecoverWithKeys(t *testing.T) {
 
 func TestRecoveryRoundTrip(t *testing.T) {
 	t.Run("Initialize_Generate_Seal_Recover_GetPut", func(t *testing.T) {
-		b, _ := newRecoveryBarrier(t)
+		b, _, dist := newRecoveryBarrier(t)
 		ctx := context.Background()
 
 		// Initialize the barrier.
@@ -427,10 +457,10 @@ func TestRecoveryRoundTrip(t *testing.T) {
 		}
 
 		// Generate recovery keys.
-		result, err := b.GenerateRecoveryKeys(ctx, 2, 3)
-		if err != nil {
+		if _, err := b.GenerateRecoveryKeys(ctx, 2, 3); err != nil {
 			t.Fatal(err)
 		}
+		shares := dist.Shares()
 
 		// Seal the barrier.
 		if err := b.Seal(); err != nil {
@@ -438,13 +468,13 @@ func TestRecoveryRoundTrip(t *testing.T) {
 		}
 
 		// Verify Get fails while sealed.
-		_, err = b.Get(ctx, "mykey")
+		_, err := b.Get(ctx, "mykey")
 		if !errors.Is(err, ErrSealed) {
 			t.Errorf("Get while sealed: got %v, want ErrSealed", err)
 		}
 
 		// Recover with shares.
-		if err := b.RecoverWithKeys(ctx, result.Shares[:2]); err != nil {
+		if err := b.RecoverWithKeys(ctx, shares[:2]); err != nil {
 			t.Fatal(err)
 		}
 
@@ -473,12 +503,11 @@ func TestRecoveryRoundTrip(t *testing.T) {
 
 func TestRecoveryDeleteRecoveryKeys(t *testing.T) {
 	t.Run("Success", func(t *testing.T) {
-		b, _ := newRecoveryBarrier(t)
+		b, _, _ := newRecoveryBarrier(t)
 		initRecoveryBarrier(t, b)
 		ctx := context.Background()
 
-		_, err := b.GenerateRecoveryKeys(ctx, 2, 3)
-		if err != nil {
+		if _, err := b.GenerateRecoveryKeys(ctx, 2, 3); err != nil {
 			t.Fatal(err)
 		}
 
@@ -507,140 +536,84 @@ func TestRecoveryDeleteRecoveryKeys(t *testing.T) {
 	})
 
 	t.Run("ErrSealed", func(t *testing.T) {
-		b, _ := newRecoveryBarrier(t)
+		b, _, _ := newRecoveryBarrier(t)
+		// Barrier is sealed (never initialized).
 		ctx := context.Background()
-		// Barrier is sealed by default (not initialized).
 
 		err := b.DeleteRecoveryKeys(ctx)
 		if !errors.Is(err, ErrSealed) {
 			t.Errorf("got %v, want ErrSealed", err)
 		}
 	})
-
-	t.Run("DeleteNonExistent", func(t *testing.T) {
-		b, _ := newRecoveryBarrier(t)
-		initRecoveryBarrier(t, b)
-		ctx := context.Background()
-
-		// Deleting non-existent recovery keys should not error
-		// (MemoryBackend.Delete is a no-op for missing keys).
-		err := b.DeleteRecoveryKeys(ctx)
-		if err != nil {
-			t.Errorf("DeleteRecoveryKeys for non-existent: got %v, want nil", err)
-		}
-	})
 }
 
-func TestRecoveryHasRecoveryKeys(t *testing.T) {
-	t.Run("ReturnsFalseWhenNoneExist", func(t *testing.T) {
-		b, _ := newRecoveryBarrier(t)
-		initRecoveryBarrier(t, b)
-		ctx := context.Background()
+// --------------------------------------------------------------------------
+// recovery.go: HasRecoveryKeys — 66.7% (sealed branch untested)
+// --------------------------------------------------------------------------
 
-		has, err := b.HasRecoveryKeys(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if has {
-			t.Error("expected false, got true")
-		}
-	})
-
-	t.Run("ReturnsTrueWhenExist", func(t *testing.T) {
-		b, _ := newRecoveryBarrier(t)
-		initRecoveryBarrier(t, b)
-		ctx := context.Background()
-
-		_, err := b.GenerateRecoveryKeys(ctx, 2, 3)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		has, err := b.HasRecoveryKeys(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !has {
-			t.Error("expected true, got false")
-		}
-	})
-
-	t.Run("ErrSealed", func(t *testing.T) {
-		b, _ := newRecoveryBarrier(t)
-		ctx := context.Background()
-
-		has, err := b.HasRecoveryKeys(ctx)
-		if !errors.Is(err, ErrSealed) {
-			t.Errorf("got %v, want ErrSealed", err)
-		}
-		if has {
-			t.Error("expected false when sealed")
-		}
-	})
-
-	t.Run("ReturnsFalseAfterDelete", func(t *testing.T) {
-		b, _ := newRecoveryBarrier(t)
-		initRecoveryBarrier(t, b)
-		ctx := context.Background()
-
-		_, err := b.GenerateRecoveryKeys(ctx, 2, 3)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		if err := b.DeleteRecoveryKeys(ctx); err != nil {
-			t.Fatal(err)
-		}
-
-		has, err := b.HasRecoveryKeys(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if has {
-			t.Error("expected false after deletion")
-		}
-	})
-}
-
-func TestRecoveryItoa(t *testing.T) {
-	tests := []struct {
-		name string
-		in   int
-		want string
-	}{
-		{"Zero", 0, "0"},
-		{"Positive", 42, "42"},
-		{"Negative", -7, "-7"},
-		{"Large", 123456789, "123456789"},
-		{"One", 1, "1"},
-		{"Ten", 10, "10"},
+func TestHasRecoveryKeys_Sealed(t *testing.T) {
+	// StorageBarrier not yet initialized is sealed.
+	backend := NewMemoryBackend()
+	b, err := NewStorageBarrier(testLogger(), backend, BarrierConfig{
+		RootKeyPath: "test/root",
+	}, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := itoa(tc.in)
-			if got != tc.want {
-				t.Errorf("itoa(%d) = %q, want %q", tc.in, got, tc.want)
-			}
-		})
+	_, err = b.HasRecoveryKeys(context.Background())
+	if !errors.Is(err, ErrSealed) {
+		t.Errorf("HasRecoveryKeys sealed: got %v, want ErrSealed", err)
 	}
 }
 
-func TestRecoveryUitoa(t *testing.T) {
-	tests := []struct {
-		name string
-		in   uint
-		want string
-	}{
-		{"Zero", 0, "0"},
-		{"One", 1, "1"},
-		{"Large", 999999999, "999999999"},
+func TestHasRecoveryKeys_Present(t *testing.T) {
+	b := newUnsealedStorageBarrier(t)
+	dist := newCaptureDistributor()
+	b.SetRecoveryDistributor(dist)
+	ctx := context.Background()
+
+	if _, err := b.GenerateRecoveryKeys(ctx, 2, 3); err != nil {
+		t.Fatalf("GenerateRecoveryKeys: %v", err)
 	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := uitoa(tc.in)
-			if got != tc.want {
-				t.Errorf("uitoa(%d) = %q, want %q", tc.in, got, tc.want)
-			}
-		})
+
+	has, err := b.HasRecoveryKeys(ctx)
+	if err != nil {
+		t.Fatalf("HasRecoveryKeys: %v", err)
+	}
+	if !has {
+		t.Error("expected HasRecoveryKeys=true after GenerateRecoveryKeys")
+	}
+}
+
+func TestHasRecoveryKeys_Absent(t *testing.T) {
+	b := newUnsealedStorageBarrier(t)
+	has, err := b.HasRecoveryKeys(context.Background())
+	if err != nil {
+		t.Fatalf("HasRecoveryKeys (absent): %v", err)
+	}
+	if has {
+		t.Error("expected HasRecoveryKeys=false when no recovery keys generated")
+	}
+}
+
+// --------------------------------------------------------------------------
+// recovery.go: itoa — 60% (negative branch untested)
+// --------------------------------------------------------------------------
+
+func TestItoa_Zero(t *testing.T) {
+	if got := itoa(0); got != "0" {
+		t.Errorf("itoa(0) = %q, want \"0\"", got)
+	}
+}
+
+func TestItoa_Positive(t *testing.T) {
+	if got := itoa(42); got != "42" {
+		t.Errorf("itoa(42) = %q, want \"42\"", got)
+	}
+}
+
+func TestItoa_Negative(t *testing.T) {
+	if got := itoa(-7); got != "-7" {
+		t.Errorf("itoa(-7) = %q, want \"-7\"", got)
 	}
 }

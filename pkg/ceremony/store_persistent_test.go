@@ -416,6 +416,13 @@ func (f *failingBackend) Put(_ context.Context, _ string, _ []byte) error {
 	return f.putErr
 }
 
+func (f *failingBackend) PutIfAbsent(_ context.Context, _ string, _ []byte) (bool, error) {
+	if f.putErr != nil {
+		return false, f.putErr
+	}
+	return true, nil
+}
+
 func (f *failingBackend) Delete(_ context.Context, _ string) error { return nil }
 
 func (f *failingBackend) List(_ context.Context, _ string) ([]string, error) {

@@ -881,3 +881,35 @@ func TestShareExchangeCoordinator_ContextCancellationStopsLoop(t *testing.T) {
 	// Should be able to stop cleanly regardless.
 	require.NoError(t, coord.Stop())
 }
+
+// --------------------------------------------------------------------------
+// share_exchange_coordinator.go: handleShareRequest — 90% (no-local-share path)
+// --------------------------------------------------------------------------
+
+func TestShareExchangeCoordinator_HandleShareRequest_NoLocalShare(t *testing.T) {
+	transport := newMockShareTransport()
+	cfg := ShareExchangeConfig{
+		NodeID:    1,
+		Logger:    testLogger(),
+		Threshold: 2,
+		Transport: transport,
+	}
+	c, err := NewShareExchangeCoordinator(cfg)
+	if err != nil {
+		t.Fatalf("NewShareExchangeCoordinator: %v", err)
+	}
+
+	// handleShareRequest is unexported but exercised via dispatchMessage.
+	// No local share is set — it must log and return without sending.
+	msg := &ShareExchangeMessage{
+		Type:       ShareMessageRequest,
+		FromNodeID: 2,
+		Epoch:      1,
+	}
+	c.dispatchMessage(context.Background(), msg)
+
+	// No response should have been sent since no local share was set.
+	if len(transport.sentMessages()) != 0 {
+		t.Errorf("expected no sent messages when local share is nil, got %d", len(transport.sentMessages()))
+	}
+}

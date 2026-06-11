@@ -18,11 +18,22 @@ package mcp
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"math/big"
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -87,14 +98,10 @@ func (m *mockBarrierService) BarrierInitializeShamir(ctx context.Context, secret
 	if m.initializeShamirFn != nil {
 		return m.initializeShamirFn(ctx, secret, threshold, totalShares)
 	}
-	shares := make([]string, totalShares)
-	for i := range shares {
-		shares[i] = "share-" + string(rune('A'+i))
-	}
 	return &service.ShamirInitInfo{
-		Shares:      shares,
 		Threshold:   threshold,
 		TotalShares: totalShares,
+		ShareCount:  totalShares,
 	}, nil
 }
 
@@ -120,14 +127,10 @@ func (m *mockBarrierService) BarrierRekey(ctx context.Context, threshold, total 
 	if m.rekeyFn != nil {
 		return m.rekeyFn(ctx, threshold, total)
 	}
-	shares := make([]string, total)
-	for i := range shares {
-		shares[i] = "new-share-" + string(rune('A'+i))
-	}
 	return &service.ShamirInitInfo{
-		Shares:      shares,
 		Threshold:   threshold,
 		TotalShares: total,
+		ShareCount:  total,
 	}, nil
 }
 
@@ -135,14 +138,10 @@ func (m *mockBarrierService) BarrierGenerateRecoveryKeys(ctx context.Context, th
 	if m.generateRecoveryKeysFn != nil {
 		return m.generateRecoveryKeysFn(ctx, threshold, total)
 	}
-	keys := make([]string, total)
-	for i := range keys {
-		keys[i] = "recovery-key-" + string(rune('A'+i))
-	}
 	return &service.RecoveryKeysInfo{
-		Keys:      keys,
-		Threshold: threshold,
-		Total:     total,
+		Threshold:  threshold,
+		Total:      total,
+		ShareCount: total,
 	}, nil
 }
 
@@ -176,6 +175,33 @@ func (m *mockBarrierService) BarrierGenerateRootToken(ctx context.Context, share
 		CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 	}, nil
 }
+func (m *mockBarrierService) BarrierOfficerRegister(_ context.Context, _ *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
+	return &service.BarrierOfficerRegisterResult{}, nil
+}
+func (m *mockBarrierService) BarrierOfficerList(_ context.Context) ([]*service.BarrierOfficerStatus, error) {
+	return nil, nil
+}
+func (m *mockBarrierService) BarrierOfficerClaimStatus(_ context.Context) ([]*service.BarrierOfficerStatus, error) {
+	return nil, nil
+}
+func (m *mockBarrierService) BarrierShareClaimBegin(_ context.Context, _, _ string) (*service.BarrierShareClaimChallenge, error) {
+	return &service.BarrierShareClaimChallenge{}, nil
+}
+func (m *mockBarrierService) BarrierShareClaimComplete(_ context.Context, _, _ string, _ []byte, _ string) (*service.BarrierShareClaimResult, error) {
+	return &service.BarrierShareClaimResult{}, nil
+}
+func (m *mockBarrierService) BarrierShamirSealVote(_ context.Context, _ string) (*service.UnsealShareProgress, error) {
+	return &service.UnsealShareProgress{}, nil
+}
+func (m *mockBarrierService) BarrierRecoveryOfficerRegister(_ context.Context, _ *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
+	return &service.BarrierOfficerRegisterResult{}, nil
+}
+func (m *mockBarrierService) BarrierRecoveryShareClaimBegin(_ context.Context, _, _ string) (*service.BarrierShareClaimChallenge, error) {
+	return &service.BarrierShareClaimChallenge{}, nil
+}
+func (m *mockBarrierService) BarrierRecoveryShareClaimComplete(_ context.Context, _, _ string, _ []byte, _ string) (*service.BarrierShareClaimResult, error) {
+	return &service.BarrierShareClaimResult{}, nil
+}
 
 // ---------------------------------------------------------------------------
 // barrierTools registration
@@ -199,6 +225,15 @@ func TestBarrierTools_Registration(t *testing.T) {
 		"qrdb_barrier_recovery_delete",
 		"qrdb_barrier_recovery_status",
 		"qrdb_barrier_root_token",
+		"qrdb_barrier_officer_register",
+		"qrdb_barrier_officer_list",
+		"qrdb_barrier_share_claim_begin",
+		"qrdb_barrier_share_claim_complete",
+		"qrdb_barrier_officer_claim_status",
+		"qrdb_barrier_shamir_seal_vote",
+		"qrdb_barrier_recovery_officer_register",
+		"qrdb_barrier_recovery_share_claim_begin",
+		"qrdb_barrier_recovery_share_claim_complete",
 	}
 
 	if len(tools) != len(expectedNames) {
@@ -414,16 +449,70 @@ func TestHandleBarrierStatus_Success(t *testing.T) {
 		t.Fatalf("handleBarrierStatus: %v", err)
 	}
 
+	// Decode against the canonical snake_case wire shape (mirrors the
+	// REST barrierStatusToResponse contract consumed by SDK clients).
 	text := resultText(t, result)
-	var info service.BarrierStatusInfo
-	if jsonErr := json.Unmarshal([]byte(text), &info); jsonErr != nil {
+	var wire struct {
+		Sealed          bool   `json:"sealed"`
+		Strategy        string `json:"strategy"`
+		HardwareBacked  bool   `json:"hardware_backed"`
+		InitializedAt   string `json:"initialized_at"`
+		ShamirThreshold int    `json:"shamir_threshold"`
+		ShamirTotal     int    `json:"shamir_total"`
+	}
+	if jsonErr := json.Unmarshal([]byte(text), &wire); jsonErr != nil {
 		t.Fatalf("unmarshal: %v", jsonErr)
 	}
-	if info.Sealed {
+	if wire.Sealed {
 		t.Error("expected sealed=false")
 	}
-	if info.Strategy != "shamir" {
-		t.Errorf("strategy: got %q, want %q", info.Strategy, "shamir")
+	if wire.Strategy != "shamir" {
+		t.Errorf("strategy: got %q, want %q", wire.Strategy, "shamir")
+	}
+	if wire.InitializedAt != "2026-01-01T00:00:00Z" {
+		t.Errorf("initialized_at: got %q, want %q", wire.InitializedAt, "2026-01-01T00:00:00Z")
+	}
+}
+
+func TestHandleBarrierStatus_ShamirFields(t *testing.T) {
+	svc := newMockBarrierService()
+	svc.statusFn = func(_ context.Context) (*service.BarrierStatusInfo, error) {
+		return &service.BarrierStatusInfo{
+			Sealed:          true,
+			Strategy:        "shamir",
+			ShamirThreshold: 2,
+			ShamirTotal:     3,
+		}, nil
+	}
+	handler := handleBarrierStatus(svc)
+
+	req := buildCallToolRequest(t, "qrdb_barrier_status", map[string]any{})
+
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleBarrierStatus: %v", err)
+	}
+
+	text := resultText(t, result)
+	var wire struct {
+		Sealed          bool   `json:"sealed"`
+		Strategy        string `json:"strategy"`
+		ShamirThreshold int    `json:"shamir_threshold"`
+		ShamirTotal     int    `json:"shamir_total"`
+	}
+	if jsonErr := json.Unmarshal([]byte(text), &wire); jsonErr != nil {
+		t.Fatalf("unmarshal: %v", jsonErr)
+	}
+	if wire.ShamirThreshold != 2 || wire.ShamirTotal != 3 {
+		t.Errorf("shamir M/N: got %d/%d, want 2/3", wire.ShamirThreshold, wire.ShamirTotal)
+	}
+	// initialized_at is omitted for an uninitialized barrier.
+	var raw map[string]any
+	if jsonErr := json.Unmarshal([]byte(text), &raw); jsonErr != nil {
+		t.Fatalf("unmarshal raw: %v", jsonErr)
+	}
+	if _, ok := raw["initialized_at"]; ok {
+		t.Error("expected initialized_at omitted for zero InitializedAt")
 	}
 }
 
@@ -469,19 +558,25 @@ func TestHandleBarrierShamirInitialize_Success(t *testing.T) {
 		t.Fatalf("handleBarrierShamirInitialize: %v", err)
 	}
 
+	// Decode against the canonical snake_case wire shape produced by
+	// shamirInitInfoToWire (consumed by SDK clients).
 	text := resultText(t, result)
-	var info service.ShamirInitInfo
-	if jsonErr := json.Unmarshal([]byte(text), &info); jsonErr != nil {
+	var wire struct {
+		Threshold   int `json:"threshold"`
+		TotalShares int `json:"total_shares"`
+		ShareCount  int `json:"share_count"`
+	}
+	if jsonErr := json.Unmarshal([]byte(text), &wire); jsonErr != nil {
 		t.Fatalf("unmarshal: %v", jsonErr)
 	}
-	if info.Threshold != 2 {
-		t.Errorf("threshold: got %d, want %d", info.Threshold, 2)
+	if wire.Threshold != 2 {
+		t.Errorf("threshold: got %d, want %d", wire.Threshold, 2)
 	}
-	if info.TotalShares != 3 {
-		t.Errorf("total_shares: got %d, want %d", info.TotalShares, 3)
+	if wire.TotalShares != 3 {
+		t.Errorf("total_shares: got %d, want %d", wire.TotalShares, 3)
 	}
-	if len(info.Shares) != 3 {
-		t.Errorf("shares: got %d, want %d", len(info.Shares), 3)
+	if wire.ShareCount != 3 {
+		t.Errorf("share_count: got %d, want %d", wire.ShareCount, 3)
 	}
 }
 
@@ -708,16 +803,22 @@ func TestHandleBarrierRekey_Success(t *testing.T) {
 		t.Fatalf("handleBarrierRekey: %v", err)
 	}
 
+	// Decode against the canonical snake_case wire shape produced by
+	// shamirInitInfoToWire (consumed by SDK clients).
 	text := resultText(t, result)
-	var info service.ShamirInitInfo
-	if jsonErr := json.Unmarshal([]byte(text), &info); jsonErr != nil {
+	var wire struct {
+		Threshold   int `json:"threshold"`
+		TotalShares int `json:"total_shares"`
+		ShareCount  int `json:"share_count"`
+	}
+	if jsonErr := json.Unmarshal([]byte(text), &wire); jsonErr != nil {
 		t.Fatalf("unmarshal: %v", jsonErr)
 	}
-	if info.Threshold != 3 {
-		t.Errorf("threshold: got %d, want %d", info.Threshold, 3)
+	if wire.Threshold != 3 {
+		t.Errorf("threshold: got %d, want %d", wire.Threshold, 3)
 	}
-	if info.TotalShares != 5 {
-		t.Errorf("total_shares: got %d, want %d", info.TotalShares, 5)
+	if wire.TotalShares != 5 {
+		t.Errorf("total_shares: got %d, want %d", wire.TotalShares, 5)
 	}
 }
 
@@ -796,19 +897,24 @@ func TestHandleBarrierRecoveryGenerate_Success(t *testing.T) {
 		t.Fatalf("handleBarrierRecoveryGenerate: %v", err)
 	}
 
+	// Decode against the canonical snake_case wire shape.
 	text := resultText(t, result)
-	var info service.RecoveryKeysInfo
-	if jsonErr := json.Unmarshal([]byte(text), &info); jsonErr != nil {
+	var wire struct {
+		Threshold  int `json:"threshold"`
+		Total      int `json:"total"`
+		ShareCount int `json:"share_count"`
+	}
+	if jsonErr := json.Unmarshal([]byte(text), &wire); jsonErr != nil {
 		t.Fatalf("unmarshal: %v", jsonErr)
 	}
-	if info.Threshold != 2 {
-		t.Errorf("threshold: got %d, want %d", info.Threshold, 2)
+	if wire.Threshold != 2 {
+		t.Errorf("threshold: got %d, want %d", wire.Threshold, 2)
 	}
-	if info.Total != 4 {
-		t.Errorf("total: got %d, want %d", info.Total, 4)
+	if wire.Total != 4 {
+		t.Errorf("total: got %d, want %d", wire.Total, 4)
 	}
-	if len(info.Keys) != 4 {
-		t.Errorf("keys: got %d, want %d", len(info.Keys), 4)
+	if wire.ShareCount != 4 {
+		t.Errorf("share_count: got %d, want %d", wire.ShareCount, 4)
 	}
 }
 
@@ -1121,5 +1227,692 @@ func TestCeremonyCANotConfiguredError(t *testing.T) {
 	err := ErrCeremonyCANotConfigured
 	if err.Error() != "mcp: ceremony CA not configured" {
 		t.Errorf("error message: got %q", err.Error())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ctxWithFakeTLS — injects a self-signed cert as the mTLS peer cert in ctx
+// ---------------------------------------------------------------------------
+
+func ctxWithFakeTLS() context.Context {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		panic("ctxWithFakeTLS: generate key: " + err.Error())
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "test-officer"},
+		NotBefore:    time.Now().Add(-time.Minute),
+		NotAfter:     time.Now().Add(time.Hour),
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		panic("ctxWithFakeTLS: create cert: " + err.Error())
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		panic("ctxWithFakeTLS: parse cert: " + err.Error())
+	}
+	state := &tls.ConnectionState{PeerCertificates: []*x509.Certificate{cert}}
+	return auth.WithTLSState(context.Background(), state)
+}
+
+// ---------------------------------------------------------------------------
+// extMockMCPBarrierService — wraps mockBarrierService with configurable SO fns
+// ---------------------------------------------------------------------------
+
+type extMockMCPBarrierService struct {
+	*mockBarrierService
+	officerRegisterFn         func(ctx context.Context, req *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error)
+	officerListFn             func(ctx context.Context) ([]*service.BarrierOfficerStatus, error)
+	officerClaimStatusFn      func(ctx context.Context) ([]*service.BarrierOfficerStatus, error)
+	shareClaimBeginFn         func(ctx context.Context, username, thumbprint string) (*service.BarrierShareClaimChallenge, error)
+	shareClaimCompleteFn      func(ctx context.Context, username, nonceHex string, sig []byte, thumbprint string) (*service.BarrierShareClaimResult, error)
+	shamirSealVoteFn          func(ctx context.Context, share string) (*service.UnsealShareProgress, error)
+	recoveryOfficerRegisterFn func(ctx context.Context, req *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error)
+	recoveryClaimBeginFn      func(ctx context.Context, username, thumbprint string) (*service.BarrierShareClaimChallenge, error)
+	recoveryClaimCompleteFn   func(ctx context.Context, username, nonceHex string, sig []byte, thumbprint string) (*service.BarrierShareClaimResult, error)
+}
+
+func newExtMCPBarrierSvc() *extMockMCPBarrierService {
+	return &extMockMCPBarrierService{mockBarrierService: newMockBarrierService()}
+}
+
+var _ service.BarrierServicer = (*extMockMCPBarrierService)(nil)
+
+func (e *extMockMCPBarrierService) BarrierOfficerRegister(ctx context.Context, req *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
+	if e.officerRegisterFn != nil {
+		return e.officerRegisterFn(ctx, req)
+	}
+	return e.mockBarrierService.BarrierOfficerRegister(ctx, req)
+}
+func (e *extMockMCPBarrierService) BarrierOfficerList(ctx context.Context) ([]*service.BarrierOfficerStatus, error) {
+	if e.officerListFn != nil {
+		return e.officerListFn(ctx)
+	}
+	return e.mockBarrierService.BarrierOfficerList(ctx)
+}
+func (e *extMockMCPBarrierService) BarrierOfficerClaimStatus(ctx context.Context) ([]*service.BarrierOfficerStatus, error) {
+	if e.officerClaimStatusFn != nil {
+		return e.officerClaimStatusFn(ctx)
+	}
+	return e.mockBarrierService.BarrierOfficerClaimStatus(ctx)
+}
+func (e *extMockMCPBarrierService) BarrierShareClaimBegin(ctx context.Context, username, thumbprint string) (*service.BarrierShareClaimChallenge, error) {
+	if e.shareClaimBeginFn != nil {
+		return e.shareClaimBeginFn(ctx, username, thumbprint)
+	}
+	return e.mockBarrierService.BarrierShareClaimBegin(ctx, username, thumbprint)
+}
+func (e *extMockMCPBarrierService) BarrierShareClaimComplete(ctx context.Context, username, nonceHex string, sig []byte, thumbprint string) (*service.BarrierShareClaimResult, error) {
+	if e.shareClaimCompleteFn != nil {
+		return e.shareClaimCompleteFn(ctx, username, nonceHex, sig, thumbprint)
+	}
+	return e.mockBarrierService.BarrierShareClaimComplete(ctx, username, nonceHex, sig, thumbprint)
+}
+func (e *extMockMCPBarrierService) BarrierShamirSealVote(ctx context.Context, share string) (*service.UnsealShareProgress, error) {
+	if e.shamirSealVoteFn != nil {
+		return e.shamirSealVoteFn(ctx, share)
+	}
+	return e.mockBarrierService.BarrierShamirSealVote(ctx, share)
+}
+func (e *extMockMCPBarrierService) BarrierRecoveryOfficerRegister(ctx context.Context, req *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
+	if e.recoveryOfficerRegisterFn != nil {
+		return e.recoveryOfficerRegisterFn(ctx, req)
+	}
+	return e.mockBarrierService.BarrierRecoveryOfficerRegister(ctx, req)
+}
+func (e *extMockMCPBarrierService) BarrierRecoveryShareClaimBegin(ctx context.Context, username, thumbprint string) (*service.BarrierShareClaimChallenge, error) {
+	if e.recoveryClaimBeginFn != nil {
+		return e.recoveryClaimBeginFn(ctx, username, thumbprint)
+	}
+	return e.mockBarrierService.BarrierRecoveryShareClaimBegin(ctx, username, thumbprint)
+}
+func (e *extMockMCPBarrierService) BarrierRecoveryShareClaimComplete(ctx context.Context, username, nonceHex string, sig []byte, thumbprint string) (*service.BarrierShareClaimResult, error) {
+	if e.recoveryClaimCompleteFn != nil {
+		return e.recoveryClaimCompleteFn(ctx, username, nonceHex, sig, thumbprint)
+	}
+	return e.mockBarrierService.BarrierRecoveryShareClaimComplete(ctx, username, nonceHex, sig, thumbprint)
+}
+
+// ---------------------------------------------------------------------------
+// System barrier SO MCP handler tests
+// ---------------------------------------------------------------------------
+
+func TestHandleBarrierOfficerRegister_MCP_MissingUsername(t *testing.T) {
+	svc := newExtMCPBarrierSvc()
+	handler := handleBarrierOfficerRegister(svc)
+
+	req := buildCallToolRequest(t, "qrdb_barrier_officer_register", map[string]any{
+		"csr_pem": "csr-data",
+	})
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true for missing username")
+	}
+}
+
+func TestHandleBarrierOfficerRegister_MCP_MissingCSR(t *testing.T) {
+	svc := newExtMCPBarrierSvc()
+	handler := handleBarrierOfficerRegister(svc)
+
+	req := buildCallToolRequest(t, "qrdb_barrier_officer_register", map[string]any{
+		"username": "alice",
+	})
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true for missing csr_pem")
+	}
+}
+
+func TestHandleBarrierOfficerRegister_MCP_Success(t *testing.T) {
+	svc := newExtMCPBarrierSvc()
+	svc.officerRegisterFn = func(_ context.Context, req *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
+		if req.Username != "alice" {
+			t.Fatalf("username = %q, want alice", req.Username)
+		}
+		return &service.BarrierOfficerRegisterResult{CertPEM: []byte("signed-cert"), ShareIndex: 1}, nil
+	}
+	handler := handleBarrierOfficerRegister(svc)
+
+	req := buildCallToolRequest(t, "qrdb_barrier_officer_register", map[string]any{
+		"username": "alice",
+		"csr_pem":  "csr-data",
+	})
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %s", resultText(t, result))
+	}
+}
+
+func TestHandleBarrierOfficerRegister_MCP_ServiceError(t *testing.T) {
+	svc := newExtMCPBarrierSvc()
+	svc.officerRegisterFn = func(_ context.Context, _ *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
+		return nil, service.ErrCeremonyNotConfigured
+	}
+	handler := handleBarrierOfficerRegister(svc)
+
+	req := buildCallToolRequest(t, "qrdb_barrier_officer_register", map[string]any{
+		"username": "alice",
+		"csr_pem":  "csr-data",
+	})
+	_, err := handler(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected ToolError")
+	}
+	var te *ToolError
+	if !errors.As(err, &te) {
+		t.Fatalf("expected *ToolError, got %T", err)
+	}
+}
+
+func TestHandleBarrierOfficerList_MCP_Success(t *testing.T) {
+	now := time.Date(2026, 1, 2, 3, 0, 0, 0, time.UTC)
+	svc := newExtMCPBarrierSvc()
+	svc.officerListFn = func(_ context.Context) ([]*service.BarrierOfficerStatus, error) {
+		return []*service.BarrierOfficerStatus{
+			{Username: "alice", ShareIndex: 1, EnrolledAt: now},
+		}, nil
+	}
+	handler := handleBarrierOfficerList(svc)
+
+	req := buildCallToolRequest(t, "qrdb_barrier_officer_list", map[string]any{})
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %s", resultText(t, result))
+	}
+	text := resultText(t, result)
+	var resp map[string]interface{}
+	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
+		t.Fatalf("unmarshal: %v", jsonErr)
+	}
+	officers, ok := resp["officers"].([]interface{})
+	if !ok || len(officers) != 1 {
+		t.Fatalf("expected 1 officer in officers array, got %v", resp["officers"])
+	}
+}
+
+func TestHandleBarrierOfficerList_MCP_ServiceError(t *testing.T) {
+	svc := newExtMCPBarrierSvc()
+	svc.officerListFn = func(_ context.Context) ([]*service.BarrierOfficerStatus, error) {
+		return nil, ceremony.ErrInsufficientOfficers
+	}
+	handler := handleBarrierOfficerList(svc)
+
+	req := buildCallToolRequest(t, "qrdb_barrier_officer_list", map[string]any{})
+	_, err := handler(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected ToolError")
+	}
+	var te *ToolError
+	if !errors.As(err, &te) {
+		t.Fatalf("expected *ToolError, got %T", err)
+	}
+}
+
+func TestHandleBarrierOfficerClaimStatus_MCP_Success(t *testing.T) {
+	now := time.Date(2026, 2, 3, 4, 0, 0, 0, time.UTC)
+	svc := newExtMCPBarrierSvc()
+	svc.officerClaimStatusFn = func(_ context.Context) ([]*service.BarrierOfficerStatus, error) {
+		return []*service.BarrierOfficerStatus{
+			{Username: "bob", ShareIndex: 2, ClaimedAt: now},
+		}, nil
+	}
+	handler := handleBarrierOfficerClaimStatus(svc)
+
+	req := buildCallToolRequest(t, "qrdb_barrier_officer_claim_status", map[string]any{})
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %s", resultText(t, result))
+	}
+}
+
+func TestHandleBarrierOfficerClaimStatus_MCP_ServiceError(t *testing.T) {
+	svc := newExtMCPBarrierSvc()
+	svc.officerClaimStatusFn = func(_ context.Context) ([]*service.BarrierOfficerStatus, error) {
+		return nil, ceremony.ErrOfficerNotFound
+	}
+	handler := handleBarrierOfficerClaimStatus(svc)
+
+	req := buildCallToolRequest(t, "qrdb_barrier_officer_claim_status", map[string]any{})
+	_, err := handler(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected ToolError")
+	}
+	var te *ToolError
+	if !errors.As(err, &te) {
+		t.Fatalf("expected *ToolError, got %T", err)
+	}
+}
+
+// handleBarrierShareClaimBegin — mcpCertThumbprint error (no TLS in ctx).
+
+func TestHandleBarrierShareClaimBegin_MCP_MissingUsername(t *testing.T) {
+	svc := newExtMCPBarrierSvc()
+	handler := handleBarrierShareClaimBegin(svc)
+
+	req := buildCallToolRequest(t, "qrdb_barrier_share_claim_begin", map[string]any{})
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true for missing username")
+	}
+}
+
+func TestHandleBarrierShareClaimBegin_MCP_MissingCert(t *testing.T) {
+	svc := newExtMCPBarrierSvc()
+	handler := handleBarrierShareClaimBegin(svc)
+
+	req := buildCallToolRequest(t, "qrdb_barrier_share_claim_begin", map[string]any{
+		"username": "alice",
+	})
+	// context.Background() has no TLS state → mcpCertThumbprint returns ToolError.
+	_, err := handler(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected ToolError for missing client cert")
+	}
+	var te *ToolError
+	if !errors.As(err, &te) {
+		t.Fatalf("expected *ToolError, got %T", err)
+	}
+}
+
+func TestHandleBarrierShareClaimBegin_MCP_ServiceError(t *testing.T) {
+	svc := newExtMCPBarrierSvc()
+	svc.shareClaimBeginFn = func(_ context.Context, _, _ string) (*service.BarrierShareClaimChallenge, error) {
+		return nil, ceremony.ErrOfficerNotFound
+	}
+	handler := handleBarrierShareClaimBegin(svc)
+
+	req := buildCallToolRequest(t, "qrdb_barrier_share_claim_begin", map[string]any{
+		"username": "alice",
+	})
+	_, err := handler(ctxWithFakeTLS(), req)
+	if err == nil {
+		t.Fatal("expected ToolError")
+	}
+	var te *ToolError
+	if !errors.As(err, &te) {
+		t.Fatalf("expected *ToolError, got %T", err)
+	}
+}
+
+func TestHandleBarrierShareClaimBegin_MCP_Success(t *testing.T) {
+	expires := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	svc := newExtMCPBarrierSvc()
+	svc.shareClaimBeginFn = func(_ context.Context, _, _ string) (*service.BarrierShareClaimChallenge, error) {
+		return &service.BarrierShareClaimChallenge{NonceHex: "deadbeef", ExpiresAt: expires}, nil
+	}
+	handler := handleBarrierShareClaimBegin(svc)
+
+	req := buildCallToolRequest(t, "qrdb_barrier_share_claim_begin", map[string]any{
+		"username": "alice",
+	})
+	result, err := handler(ctxWithFakeTLS(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %s", resultText(t, result))
+	}
+}
+
+// handleBarrierShareClaimComplete tests.
+
+func TestHandleBarrierShareClaimComplete_MCP_MissingUsername(t *testing.T) {
+	svc := newExtMCPBarrierSvc()
+	handler := handleBarrierShareClaimComplete(svc)
+
+	req := buildCallToolRequest(t, "qrdb_barrier_share_claim_complete", map[string]any{
+		"nonce_hex": "aabb",
+		"signature": base64.StdEncoding.EncodeToString([]byte("sig")),
+	})
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true for missing username")
+	}
+}
+
+func TestHandleBarrierShareClaimComplete_MCP_MissingNonce(t *testing.T) {
+	svc := newExtMCPBarrierSvc()
+	handler := handleBarrierShareClaimComplete(svc)
+
+	req := buildCallToolRequest(t, "qrdb_barrier_share_claim_complete", map[string]any{
+		"username":  "alice",
+		"signature": base64.StdEncoding.EncodeToString([]byte("sig")),
+	})
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true for missing nonce_hex")
+	}
+}
+
+func TestHandleBarrierShareClaimComplete_MCP_MissingSignature(t *testing.T) {
+	svc := newExtMCPBarrierSvc()
+	handler := handleBarrierShareClaimComplete(svc)
+
+	req := buildCallToolRequest(t, "qrdb_barrier_share_claim_complete", map[string]any{
+		"username":  "alice",
+		"nonce_hex": "aabb",
+	})
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true for missing signature")
+	}
+}
+
+func TestHandleBarrierShareClaimComplete_MCP_BadBase64(t *testing.T) {
+	svc := newExtMCPBarrierSvc()
+	handler := handleBarrierShareClaimComplete(svc)
+
+	req := buildCallToolRequest(t, "qrdb_barrier_share_claim_complete", map[string]any{
+		"username":  "alice",
+		"nonce_hex": "aabb",
+		"signature": "!!!not-base64!!!",
+	})
+	// mcpCertThumbprint is called before base64 decode, so we inject a valid cert.
+	result, err := handler(ctxWithFakeTLS(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true for bad base64 signature")
+	}
+}
+
+func TestHandleBarrierShareClaimComplete_MCP_MissingCert(t *testing.T) {
+	svc := newExtMCPBarrierSvc()
+	handler := handleBarrierShareClaimComplete(svc)
+
+	sig := base64.StdEncoding.EncodeToString([]byte("sig"))
+	req := buildCallToolRequest(t, "qrdb_barrier_share_claim_complete", map[string]any{
+		"username":  "alice",
+		"nonce_hex": "aabb",
+		"signature": sig,
+	})
+	// No TLS state in context → mcpCertThumbprint returns ToolError.
+	_, err := handler(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected ToolError for missing client cert")
+	}
+	var te *ToolError
+	if !errors.As(err, &te) {
+		t.Fatalf("expected *ToolError, got %T", err)
+	}
+}
+
+func TestHandleBarrierShareClaimComplete_MCP_ServiceError(t *testing.T) {
+	svc := newExtMCPBarrierSvc()
+	svc.shareClaimCompleteFn = func(_ context.Context, _, _ string, _ []byte, _ string) (*service.BarrierShareClaimResult, error) {
+		return nil, ceremony.ErrCertThumbprintMismatch
+	}
+	handler := handleBarrierShareClaimComplete(svc)
+
+	sig := base64.StdEncoding.EncodeToString([]byte("sig"))
+	req := buildCallToolRequest(t, "qrdb_barrier_share_claim_complete", map[string]any{
+		"username":  "alice",
+		"nonce_hex": "aabb",
+		"signature": sig,
+	})
+	_, err := handler(ctxWithFakeTLS(), req)
+	if err == nil {
+		t.Fatal("expected ToolError")
+	}
+	var te *ToolError
+	if !errors.As(err, &te) {
+		t.Fatalf("expected *ToolError, got %T", err)
+	}
+}
+
+func TestHandleBarrierShareClaimComplete_MCP_Success(t *testing.T) {
+	shareBytes := []byte("shamir-share-bytes")
+	svc := newExtMCPBarrierSvc()
+	svc.shareClaimCompleteFn = func(_ context.Context, _, _ string, _ []byte, _ string) (*service.BarrierShareClaimResult, error) {
+		return &service.BarrierShareClaimResult{ShareIndex: 1, ShareBytes: shareBytes}, nil
+	}
+	handler := handleBarrierShareClaimComplete(svc)
+
+	sig := base64.StdEncoding.EncodeToString([]byte("sig"))
+	req := buildCallToolRequest(t, "qrdb_barrier_share_claim_complete", map[string]any{
+		"username":  "alice",
+		"nonce_hex": "aabb",
+		"signature": sig,
+	})
+	result, err := handler(ctxWithFakeTLS(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %s", resultText(t, result))
+	}
+}
+
+// handleBarrierShamirSealVote tests.
+
+func TestHandleBarrierShamirSealVote_MCP_MissingShare(t *testing.T) {
+	svc := newExtMCPBarrierSvc()
+	handler := handleBarrierShamirSealVote(svc)
+
+	req := buildCallToolRequest(t, "qrdb_barrier_shamir_seal_vote", map[string]any{})
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true for missing share")
+	}
+}
+
+func TestHandleBarrierShamirSealVote_MCP_Success(t *testing.T) {
+	svc := newExtMCPBarrierSvc()
+	svc.shamirSealVoteFn = func(_ context.Context, _ string) (*service.UnsealShareProgress, error) {
+		return &service.UnsealShareProgress{Required: 3, Submitted: 1, Complete: false}, nil
+	}
+	handler := handleBarrierShamirSealVote(svc)
+
+	req := buildCallToolRequest(t, "qrdb_barrier_shamir_seal_vote", map[string]any{
+		"share": "abc123",
+	})
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %s", resultText(t, result))
+	}
+}
+
+func TestHandleBarrierShamirSealVote_MCP_ServiceError(t *testing.T) {
+	svc := newExtMCPBarrierSvc()
+	svc.shamirSealVoteFn = func(_ context.Context, _ string) (*service.UnsealShareProgress, error) {
+		return nil, seal.ErrSealVoteVerificationFailed
+	}
+	handler := handleBarrierShamirSealVote(svc)
+
+	req := buildCallToolRequest(t, "qrdb_barrier_shamir_seal_vote", map[string]any{
+		"share": "abc",
+	})
+	_, err := handler(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected ToolError")
+	}
+	var te *ToolError
+	if !errors.As(err, &te) {
+		t.Fatalf("expected *ToolError, got %T", err)
+	}
+}
+
+// Recovery officer tests.
+
+func TestHandleBarrierRecoveryOfficerRegister_MCP_Success(t *testing.T) {
+	svc := newExtMCPBarrierSvc()
+	svc.recoveryOfficerRegisterFn = func(_ context.Context, _ *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
+		return &service.BarrierOfficerRegisterResult{CertPEM: []byte("recovery-cert"), ShareIndex: 2}, nil
+	}
+	handler := handleBarrierRecoveryOfficerRegister(svc)
+
+	req := buildCallToolRequest(t, "qrdb_barrier_recovery_officer_register", map[string]any{
+		"username": "recov-officer",
+		"csr_pem":  "csr-data",
+	})
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %s", resultText(t, result))
+	}
+}
+
+func TestHandleBarrierRecoveryOfficerRegister_MCP_MissingUsername(t *testing.T) {
+	svc := newExtMCPBarrierSvc()
+	handler := handleBarrierRecoveryOfficerRegister(svc)
+
+	req := buildCallToolRequest(t, "qrdb_barrier_recovery_officer_register", map[string]any{
+		"csr_pem": "csr-data",
+	})
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true for missing username")
+	}
+}
+
+func TestHandleBarrierRecoveryShareClaimBegin_MCP_MissingCert(t *testing.T) {
+	svc := newExtMCPBarrierSvc()
+	handler := handleBarrierRecoveryShareClaimBegin(svc)
+
+	req := buildCallToolRequest(t, "qrdb_barrier_recovery_share_claim_begin", map[string]any{
+		"username": "alice",
+	})
+	_, err := handler(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected ToolError for missing client cert")
+	}
+	var te *ToolError
+	if !errors.As(err, &te) {
+		t.Fatalf("expected *ToolError, got %T", err)
+	}
+}
+
+func TestHandleBarrierRecoveryShareClaimBegin_MCP_Success(t *testing.T) {
+	expires := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	svc := newExtMCPBarrierSvc()
+	svc.recoveryClaimBeginFn = func(_ context.Context, _, _ string) (*service.BarrierShareClaimChallenge, error) {
+		return &service.BarrierShareClaimChallenge{NonceHex: "cc00ff", ExpiresAt: expires}, nil
+	}
+	handler := handleBarrierRecoveryShareClaimBegin(svc)
+
+	req := buildCallToolRequest(t, "qrdb_barrier_recovery_share_claim_begin", map[string]any{
+		"username": "alice",
+	})
+	result, err := handler(ctxWithFakeTLS(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %s", resultText(t, result))
+	}
+}
+
+func TestHandleBarrierRecoveryShareClaimComplete_MCP_MissingCert(t *testing.T) {
+	svc := newExtMCPBarrierSvc()
+	handler := handleBarrierRecoveryShareClaimComplete(svc)
+
+	sig := base64.StdEncoding.EncodeToString([]byte("sig"))
+	req := buildCallToolRequest(t, "qrdb_barrier_recovery_share_claim_complete", map[string]any{
+		"username":  "alice",
+		"nonce_hex": "aabb",
+		"signature": sig,
+	})
+	_, err := handler(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected ToolError for missing client cert")
+	}
+	var te *ToolError
+	if !errors.As(err, &te) {
+		t.Fatalf("expected *ToolError, got %T", err)
+	}
+}
+
+func TestHandleBarrierRecoveryShareClaimComplete_MCP_Success(t *testing.T) {
+	svc := newExtMCPBarrierSvc()
+	svc.recoveryClaimCompleteFn = func(_ context.Context, _, _ string, _ []byte, _ string) (*service.BarrierShareClaimResult, error) {
+		return &service.BarrierShareClaimResult{ShareIndex: 2, ShareBytes: []byte("recovery-share")}, nil
+	}
+	handler := handleBarrierRecoveryShareClaimComplete(svc)
+
+	sig := base64.StdEncoding.EncodeToString([]byte("sig"))
+	req := buildCallToolRequest(t, "qrdb_barrier_recovery_share_claim_complete", map[string]any{
+		"username":  "alice",
+		"nonce_hex": "aabb",
+		"signature": sig,
+	})
+	result, err := handler(ctxWithFakeTLS(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %s", resultText(t, result))
+	}
+}
+
+// mcpCertThumbprint success path (covered via ShareClaimBegin above, but also
+// test the Error() method on mcpClientCertRequiredError directly).
+
+func TestMCPClientCertRequiredError(t *testing.T) {
+	e := &mcpClientCertRequiredError{}
+	if e.Error() == "" {
+		t.Fatal("expected non-empty error message")
+	}
+}
+
+func TestMCPCertThumbprint_Success(t *testing.T) {
+	ctx := ctxWithFakeTLS()
+	thumb, err := mcpCertThumbprint(ctx, "test-tool")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if thumb == "" {
+		t.Fatal("expected non-empty thumbprint")
+	}
+}
+
+func TestMCPCertThumbprint_MissingTLS(t *testing.T) {
+	_, err := mcpCertThumbprint(context.Background(), "test-tool")
+	if err == nil {
+		t.Fatal("expected ToolError for missing TLS state")
+	}
+	var te *ToolError
+	if !errors.As(err, &te) {
+		t.Fatalf("expected *ToolError, got %T", err)
 	}
 }

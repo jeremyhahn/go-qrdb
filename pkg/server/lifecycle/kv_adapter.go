@@ -19,11 +19,79 @@ import (
 	"errors"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // Compile-time interface check.
 var _ kvstore.KVStore = (*kvStoreAdapter)(nil)
+
+// ErrNoTransactionService is returned by kvSealBackend.PutIfAbsent when the
+// node was built without a TransactionServicer. Every lifecycle-built node
+// wires one; this error only surfaces on a hand-rolled construction.
+var ErrNoTransactionService = errors.New("lifecycle: transaction service required for PutIfAbsent")
+
+// kvSealBackend adapts a kvstore.KVStore to a seal.StorageBackend by adding a
+// no-op Close. The underlying KV is owned by the node lifecycle, so closing it
+// here would be incorrect; the StorageBackend contract's Close is satisfied as
+// a no-op. This lets KV-backed services (custodian groups, Shamir shares) reuse
+// the replicated KV store through the seal.StorageBackend interface.
+//
+// tx provides the Raft-consensus compare-and-set used by PutIfAbsent. The
+// wrapped KV is the replicated store, so an in-process lock cannot make a
+// check-then-write atomic across nodes — the transaction service can.
+type kvSealBackend struct {
+	kvstore.KVStore
+	tx service.TransactionServicer
+}
+
+// Close is a no-op: the wrapped KV store is owned by the node lifecycle.
+func (kvSealBackend) Close() error { return nil }
+
+// PutIfAbsent atomically stores data under key only if the key is absent,
+// using a transaction applied through Raft consensus. The precondition
+// "key version == 0" holds exactly when the key has never been written, so
+// the Put executes only for the first writer; every concurrent writer on any
+// node observes Succeeded=false. This gives linearizable cross-node
+// uniqueness — the guarantee an in-process lock cannot provide.
+func (b kvSealBackend) PutIfAbsent(ctx context.Context, key string, data []byte) (bool, error) {
+	if b.tx == nil {
+		return false, ErrNoTransactionService
+	}
+	resp, err := b.tx.Execute(ctx,
+		[]service.Compare{{
+			Key:     []byte(key),
+			Target:  service.CompareVersion,
+			Result:  service.CompareEqual,
+			Version: 0, // version 0 ⇒ key has never been written (absent)
+		}},
+		[]service.Op{{
+			Type:  service.OpPut,
+			Key:   []byte(key),
+			Value: data,
+		}},
+		nil,
+	)
+	if err != nil {
+		return false, err
+	}
+	return resp.Succeeded, nil
+}
+
+// Get adapts the kvstore.KVStore missing-key convention (nil, nil) to the
+// seal.StorageBackend contract, which signals a missing key with
+// seal.ErrSecretNotFound. Services built on StorageBackend (custodian groups,
+// shares) rely on a not-found error to distinguish "absent" from "empty value".
+func (b kvSealBackend) Get(ctx context.Context, key string) ([]byte, error) {
+	data, err := b.KVStore.Get(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	if data == nil {
+		return nil, seal.ErrSecretNotFound
+	}
+	return data, nil
+}
 
 // kvStoreAdapter adapts service.KVServicer to the kvstore.KVStore interface
 // so that internal stores (user, role, cert) can use the replicated KV

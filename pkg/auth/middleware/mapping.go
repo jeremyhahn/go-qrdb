@@ -143,20 +143,49 @@ var grpcPermissions = map[string]permission.Permission{
 	pb.QRDBService_RevokeCert_FullMethodName:   permission.CertsRevoke,
 	pb.QRDBService_ListCerts_FullMethodName:    permission.CertsList,
 
-	// Per-tenant barrier (JSON-over-gRPC TenantBarrierService; no generated
-	// pb stub, so the full method names are string literals). These carry
-	// the tenant-only permissions whose ScopeTenantOnly rule denies the
-	// system tenant and any cross-tenant access. The handler enforces the
+	// Per-tenant barrier (qrdb.v1.TenantBarrierService). These carry the
+	// tenant-only permissions whose ScopeTenantOnly rule denies the system
+	// tenant and any cross-tenant access. The handler enforces the
 	// fine-grained gate against the request's tenant_id; this coarse
 	// mapping ensures the caller holds the permission at all.
-	"/qrdb.v1.TenantBarrierService/Init":   permission.TenantBarrierInit,
-	"/qrdb.v1.TenantBarrierService/Unseal": permission.TenantBarrierUnseal,
-	"/qrdb.v1.TenantBarrierService/Seal":   permission.TenantBarrierSeal,
-	"/qrdb.v1.TenantBarrierService/Status": permission.TenantBarrierStatus,
+	pb.TenantBarrierService_Init_FullMethodName:            permission.TenantBarrierInit,
+	pb.TenantBarrierService_Unseal_FullMethodName:          permission.TenantBarrierUnseal,
+	pb.TenantBarrierService_UnsealShare_FullMethodName:     permission.TenantBarrierUnseal,
+	pb.TenantBarrierService_Seal_FullMethodName:            permission.TenantBarrierSeal,
+	pb.TenantBarrierService_Status_FullMethodName:          permission.TenantBarrierStatus,
+	pb.TenantBarrierService_OfficerRegister_FullMethodName: permission.TenantBarrierOfficerRegister,
+	pb.TenantBarrierService_OfficerList_FullMethodName:     permission.TenantBarrierOfficerList,
+	// Share-claim routes are identity-gated: the enrolled officer's mTLS
+	// certificate is the credential, and the handler enforces the binding
+	// authorization (registry lookup, thumbprint match, nonce signature).
+	// Officers are ceremony-registry principals, not RBAC users, so no role
+	// permission can authorize them. See permission.IdentityGated.
+	pb.TenantBarrierService_ShareClaimBegin_FullMethodName:    permission.IdentityGated,
+	pb.TenantBarrierService_ShareClaimComplete_FullMethodName: permission.IdentityGated,
+	pb.TenantBarrierService_OfficerClaimStatus_FullMethodName: permission.TenantBarrierOfficerList,
+	pb.TenantBarrierService_ShamirSealVote_FullMethodName:     permission.TenantBarrierSealVote,
 
-	// Audit service (JSON-over-gRPC, hand-rolled ServiceDesc; registered in
-	// server.Start when an audit logger is configured).
-	"/qrdb.v1.AuditService/Query": permission.AuditQuery,
+	// Audit service (registered in server.Start when an audit logger is
+	// configured).
+	pb.AuditService_Query_FullMethodName: permission.AuditQuery,
+
+	// AuthFactor (factor-type challenge/response lifecycle; mirrors the
+	// REST /v1/authfactors/* and QUIC authfactor.* mappings).
+	pb.AuthFactorService_EnrollFactor_FullMethodName:    permission.AuthFactorEnroll,
+	pb.AuthFactorService_ChallengeFactor_FullMethodName: permission.AuthFactorChallenge,
+	pb.AuthFactorService_VerifyFactor_FullMethodName:    permission.AuthFactorVerify,
+	pb.AuthFactorService_ListFactors_FullMethodName:     permission.AuthFactorList,
+	pb.AuthFactorService_RevokeFactor_FullMethodName:    permission.AuthFactorRevoke,
+
+	// Per-user auth-factor management (mirrors the REST /v1/users/factors/*
+	// and QUIC userauthfactor.* mappings).
+	pb.UserAuthFactorService_Add_FullMethodName:     permission.UserAuthFactorsAdd,
+	pb.UserAuthFactorService_List_FullMethodName:    permission.UserAuthFactorsList,
+	pb.UserAuthFactorService_Get_FullMethodName:     permission.UserAuthFactorsGet,
+	pb.UserAuthFactorService_Remove_FullMethodName:  permission.UserAuthFactorsRemove,
+	pb.UserAuthFactorService_Rotate_FullMethodName:  permission.UserAuthFactorsRotate,
+	pb.UserAuthFactorService_Relabel_FullMethodName: permission.UserAuthFactorsRelabel,
+	pb.UserAuthFactorService_Login_FullMethodName:   permission.UserAuthFactorsLogin,
 
 	// Barrier management (mirrors restPermissions /v1/barrier/*).
 	pb.QRDBService_BarrierInitialize_FullMethodName:         permission.SealBootstrap,
@@ -172,17 +201,33 @@ var grpcPermissions = map[string]permission.Permission{
 	pb.QRDBService_BarrierRecoveryDelete_FullMethodName:     permission.SealGenerateRecovery,
 	pb.QRDBService_BarrierRecoveryStatus_FullMethodName:     permission.SealStatus,
 	pb.QRDBService_BarrierRootToken_FullMethodName:          permission.SealBootstrap,
+	// Barrier Security Officer management (SO registration and share claim).
+	pb.QRDBService_BarrierOfficerRegister_FullMethodName: permission.SealOfficerRegister,
+	pb.QRDBService_BarrierOfficerList_FullMethodName:     permission.SealOfficerList,
+	// Officer share-claim routes are identity-gated (see permission.IdentityGated):
+	// the registered officer's mTLS certificate is the credential, and the
+	// handler enforces registry lookup, thumbprint match, and nonce signature.
+	pb.QRDBService_BarrierShareClaimBegin_FullMethodName:            permission.IdentityGated,
+	pb.QRDBService_BarrierShareClaimComplete_FullMethodName:         permission.IdentityGated,
+	pb.QRDBService_BarrierOfficerClaimStatus_FullMethodName:         permission.SealOfficerList,
+	pb.QRDBService_BarrierShamirSealVote_FullMethodName:             permission.SealSubmitSealVote,
+	pb.QRDBService_BarrierRecoveryOfficerRegister_FullMethodName:    permission.SealOfficerRegister,
+	pb.QRDBService_BarrierRecoveryShareClaimBegin_FullMethodName:    permission.IdentityGated,
+	pb.QRDBService_BarrierRecoveryShareClaimComplete_FullMethodName: permission.IdentityGated,
 
 	// Ceremony management.
-	pb.QRDBService_CeremonyInitialize_FullMethodName:            permission.CeremonyInitialize,
-	pb.QRDBService_CeremonyStatus_FullMethodName:                permission.CeremonyStatus,
-	pb.QRDBService_CeremonyClaimCertBegin_FullMethodName:        permission.CeremonyClaimCert,
-	pb.QRDBService_CeremonyClaimCertComplete_FullMethodName:     permission.CeremonyClaimCert,
-	pb.QRDBService_CeremonyClaimShare_FullMethodName:            permission.CeremonyClaimShareComplete,
+	pb.QRDBService_CeremonyInitialize_FullMethodName:        permission.CeremonyInitialize,
+	pb.QRDBService_CeremonyStatus_FullMethodName:            permission.CeremonyStatus,
+	pb.QRDBService_CeremonyClaimCertBegin_FullMethodName:    permission.CeremonyClaimCert,
+	pb.QRDBService_CeremonyClaimCertComplete_FullMethodName: permission.CeremonyClaimCert,
+	// Custodian share-claim routes are identity-gated (see
+	// permission.IdentityGated): the handler verifies the enrolled
+	// custodian's factor challenge response.
+	pb.QRDBService_CeremonyClaimShare_FullMethodName:            permission.IdentityGated,
 	pb.QRDBService_CeremonySignCSR_FullMethodName:               permission.CeremonySignCSR,
 	pb.QRDBService_CeremonyEnrollExternalOfficer_FullMethodName: permission.CeremonyEnrollCustodian,
-	pb.QRDBService_CeremonyClaimShareBegin_FullMethodName:       permission.CeremonyClaimShareBegin,
-	pb.QRDBService_CeremonyClaimShareComplete_FullMethodName:    permission.CeremonyClaimShareComplete,
+	pb.QRDBService_CeremonyClaimShareBegin_FullMethodName:       permission.IdentityGated,
+	pb.QRDBService_CeremonyClaimShareComplete_FullMethodName:    permission.IdentityGated,
 	pb.QRDBService_CeremonySubmitUnsealShare_FullMethodName:     permission.BarrierUnsealShare,
 
 	// Tenant management.
@@ -390,19 +435,28 @@ var restPermissions = map[string]permission.Permission{
 	"DELETE /v1/barrier/recovery":           permission.SealGenerateRecovery,
 	"GET /v1/barrier/recovery/status":       permission.SealStatus,
 	"POST /v1/barrier/root-token":           permission.SealBootstrap,
+	// Barrier Security Officer registration and share claim.
+	"POST /v1/barrier/officers":             permission.SealOfficerRegister,
+	"GET /v1/barrier/officers":              permission.SealOfficerList,
+	"GET /v1/barrier/officers/claim-status": permission.SealOfficerList,
+	"POST /v1/barrier/shamir/seal-vote":     permission.SealSubmitSealVote,
+	"POST /v1/barrier/recovery/officers":    permission.SealOfficerRegister,
 
 	// Ceremony management (previously missing — security gap closed)
-	"POST /v1/ceremony/initialize":           permission.CeremonyInitialize,
-	"GET /v1/ceremony/status":                permission.CeremonyStatus,
-	"POST /v1/ceremony/claim-cert/begin":     permission.CeremonyClaimCert,
-	"POST /v1/ceremony/claim-cert/complete":  permission.CeremonyClaimCert,
-	"POST /v1/ceremony/claim-share":          permission.CeremonyClaimShareComplete,
+	"POST /v1/ceremony/initialize":          permission.CeremonyInitialize,
+	"GET /v1/ceremony/status":               permission.CeremonyStatus,
+	"POST /v1/ceremony/claim-cert/begin":    permission.CeremonyClaimCert,
+	"POST /v1/ceremony/claim-cert/complete": permission.CeremonyClaimCert,
+	// Custodian share-claim routes are identity-gated (see
+	// permission.IdentityGated): the handler verifies the enrolled
+	// custodian's factor challenge response.
+	"POST /v1/ceremony/claim-share":          permission.IdentityGated,
 	"POST /v1/ceremony/sign-csr":             permission.CeremonySignCSR,
 	"POST /v1/init/enroll-external-officer":  permission.CeremonyEnrollCustodian,
 	"POST /v1/ceremony/enroll-custodian":     permission.CeremonyEnrollCustodian,
 	"POST /v1/ceremony/revoke-custodian":     permission.CeremonyRevokeCustodian,
-	"POST /v1/ceremony/claim-share/begin":    permission.CeremonyClaimShareBegin,
-	"POST /v1/ceremony/claim-share/complete": permission.CeremonyClaimShareComplete,
+	"POST /v1/ceremony/claim-share/begin":    permission.IdentityGated,
+	"POST /v1/ceremony/claim-share/complete": permission.IdentityGated,
 	"POST /v1/barrier/unseal-share":          permission.BarrierUnsealShare,
 
 	// Audit (Phase 6 — handler stubs pending)
@@ -499,11 +553,21 @@ var restPathParamPermissions = map[string]permission.Permission{
 	"POST /users/{id}/disable":                   permission.UsersDisable,
 	"POST /users/{id}/cert-bindings":             permission.UsersAddCertBinding,
 	"GET /users/by-cert-thumbprint/{thumbprint}": permission.UsersGetByCertThumbprint,
+	"GET /users/by-username/{username}":          permission.UsersRead,
 
 	// Role management (per-role routes dispatched via the /roles/ prefix).
 	"GET /roles/{id}":    permission.RolesRead,
 	"PUT /roles/{id}":    permission.RolesUpdate,
 	"DELETE /roles/{id}": permission.RolesDelete,
+
+	// Barrier officer claim routes (per-username path parameter). These are
+	// identity-gated (see permission.IdentityGated): the registered officer's
+	// mTLS certificate is the credential, and the handler enforces registry
+	// lookup, thumbprint match, and nonce signature.
+	"POST /v1/barrier/officers/{username}/claim/begin":             permission.IdentityGated,
+	"POST /v1/barrier/officers/{username}/claim/complete":          permission.IdentityGated,
+	"POST /v1/barrier/recovery/officers/{username}/claim/begin":    permission.IdentityGated,
+	"POST /v1/barrier/recovery/officers/{username}/claim/complete": permission.IdentityGated,
 
 	// Tenant management (per-tenant routes dispatched via /v1/tenants/).
 	// The per-tenant barrier sub-routes (/v1/tenants/{id}/barrier/*) are NOT
@@ -759,15 +823,39 @@ var quicPermissions = map[string]permission.Permission{
 	"barrier.RecoverWithKeys":  permission.SealRecoverWithKeys,
 	"barrier.RootToken":        permission.SealBootstrap,
 
+	// Barrier Security Officer (system barrier SO distribution). Share-claim
+	// routes are identity-gated (see permission.IdentityGated): the registered
+	// officer's mTLS certificate is the credential, and the handler enforces
+	// registry lookup, thumbprint match, and nonce signature.
+	"barrier.OfficerRegister":            permission.SealOfficerRegister,
+	"barrier.OfficerList":                permission.SealOfficerList,
+	"barrier.ShareClaimBegin":            permission.IdentityGated,
+	"barrier.ShareClaimComplete":         permission.IdentityGated,
+	"barrier.OfficerClaimStatus":         permission.SealOfficerList,
+	"barrier.ShamirSealVote":             permission.SealSubmitSealVote,
+	"barrier.RecoveryOfficerRegister":    permission.SealOfficerRegister,
+	"barrier.RecoveryShareClaimBegin":    permission.IdentityGated,
+	"barrier.RecoveryShareClaimComplete": permission.IdentityGated,
+
 	// Per-tenant barrier (parity with REST/gRPC TenantBarrierService). These
 	// carry the tenant-scoped (ScopeTenantOnly) permissions; the handler
 	// additionally enforces the fine-grained gate against the request's
 	// tenant_id. Without these mappings the QUIC authorizer treats the
 	// methods as public.
-	"tenant.BarrierInit":   permission.TenantBarrierInit,
-	"tenant.BarrierUnseal": permission.TenantBarrierUnseal,
-	"tenant.BarrierSeal":   permission.TenantBarrierSeal,
-	"tenant.BarrierStatus": permission.TenantBarrierStatus,
+	"tenant.BarrierInit":        permission.TenantBarrierInit,
+	"tenant.BarrierUnseal":      permission.TenantBarrierUnseal,
+	"tenant.BarrierUnsealShare": permission.TenantBarrierUnseal,
+	"tenant.BarrierSeal":        permission.TenantBarrierSeal,
+	"tenant.BarrierStatus":      permission.TenantBarrierStatus,
+	// Per-tenant barrier SO distribution. Share-claim routes are
+	// identity-gated (see permission.IdentityGated); the handler enforces
+	// the per-tenant registry lookup, thumbprint match, and nonce signature.
+	"tenant.BarrierOfficerRegister":    permission.TenantBarrierOfficerRegister,
+	"tenant.BarrierOfficerList":        permission.TenantBarrierOfficerList,
+	"tenant.BarrierShareClaimBegin":    permission.IdentityGated,
+	"tenant.BarrierShareClaimComplete": permission.IdentityGated,
+	"tenant.BarrierOfficerClaimStatus": permission.TenantBarrierOfficerList,
+	"tenant.BarrierShamirSealVote":     permission.TenantBarrierSealVote,
 
 	// Shard control.
 	"admin.StartShard":    permission.AdminStartShard,
@@ -793,12 +881,14 @@ var quicPermissions = map[string]permission.Permission{
 	"barrier.ShamirUnsealShare":  permission.BarrierUnsealShare,
 	"barrier.ShamirUnsealShares": permission.BarrierUnsealShare,
 
-	// Ceremony management.
+	// Ceremony management. Custodian share-claim routes are identity-gated
+	// (see permission.IdentityGated): the handler verifies the enrolled
+	// custodian's factor challenge response.
 	"ceremony.ClaimCertBegin":     permission.CeremonyClaimCert,
 	"ceremony.ClaimCertComplete":  permission.CeremonyClaimCert,
-	"ceremony.ClaimShare":         permission.CeremonyClaimShareComplete,
-	"ceremony.ClaimShareBegin":    permission.CeremonyClaimShareBegin,
-	"ceremony.ClaimShareComplete": permission.CeremonyClaimShareComplete,
+	"ceremony.ClaimShare":         permission.IdentityGated,
+	"ceremony.ClaimShareBegin":    permission.IdentityGated,
+	"ceremony.ClaimShareComplete": permission.IdentityGated,
 	"ceremony.SubmitUnsealShare":  permission.BarrierUnsealShare,
 	"ceremony.Initialize":         permission.CeremonyInitialize,
 	"ceremony.SignCSR":            permission.CeremonySignCSR,
@@ -1063,10 +1153,20 @@ var mcpPermissions = map[string]permission.Permission{
 	// Per-tenant barrier (tenant-scoped, ScopeTenantOnly). The MCP handler must
 	// additionally enforce the fine-grained gate against the request's tenant;
 	// this coarse mapping ensures the caller holds the permission at all.
-	"qrdb_tenant_barrier_init":   permission.TenantBarrierInit,
-	"qrdb_tenant_barrier_unseal": permission.TenantBarrierUnseal,
-	"qrdb_tenant_barrier_seal":   permission.TenantBarrierSeal,
-	"qrdb_tenant_barrier_status": permission.TenantBarrierStatus,
+	"qrdb_tenant_barrier_init":         permission.TenantBarrierInit,
+	"qrdb_tenant_barrier_unseal":       permission.TenantBarrierUnseal,
+	"qrdb_tenant_barrier_unseal_share": permission.TenantBarrierUnseal,
+	"qrdb_tenant_barrier_seal":         permission.TenantBarrierSeal,
+	"qrdb_tenant_barrier_status":       permission.TenantBarrierStatus,
+	// Share-claim tools are identity-gated (see permission.IdentityGated);
+	// the handler enforces the per-tenant registry lookup, thumbprint match,
+	// and nonce signature.
+	"qrdb_tenant_barrier_officer_register":     permission.TenantBarrierOfficerRegister,
+	"qrdb_tenant_barrier_officer_list":         permission.TenantBarrierOfficerList,
+	"qrdb_tenant_barrier_share_claim_begin":    permission.IdentityGated,
+	"qrdb_tenant_barrier_share_claim_complete": permission.IdentityGated,
+	"qrdb_tenant_barrier_officer_claim_status": permission.TenantBarrierOfficerList,
+	"qrdb_tenant_barrier_shamir_seal_vote":     permission.TenantBarrierSealVote,
 
 	// Global barrier management (mirrors restPermissions /v1/barrier/* exactly).
 	"qrdb_barrier_initialize":           permission.SealBootstrap,
@@ -1082,16 +1182,32 @@ var mcpPermissions = map[string]permission.Permission{
 	"qrdb_barrier_recovery_delete":      permission.SealGenerateRecovery,
 	"qrdb_barrier_recovery_status":      permission.SealStatus,
 	"qrdb_barrier_root_token":           permission.SealBootstrap,
+	// Barrier Security Officer tools (system barrier SO distribution).
+	// Share-claim tools are identity-gated (see permission.IdentityGated):
+	// the registered officer's mTLS certificate is the credential, and the
+	// handler enforces registry lookup, thumbprint match, and nonce signature.
+	"qrdb_barrier_officer_register":              permission.SealOfficerRegister,
+	"qrdb_barrier_officer_list":                  permission.SealOfficerList,
+	"qrdb_barrier_share_claim_begin":             permission.IdentityGated,
+	"qrdb_barrier_share_claim_complete":          permission.IdentityGated,
+	"qrdb_barrier_officer_claim_status":          permission.SealOfficerList,
+	"qrdb_barrier_shamir_seal_vote":              permission.SealSubmitSealVote,
+	"qrdb_barrier_recovery_officer_register":     permission.SealOfficerRegister,
+	"qrdb_barrier_recovery_share_claim_begin":    permission.IdentityGated,
+	"qrdb_barrier_recovery_share_claim_complete": permission.IdentityGated,
 
 	// Ceremony management (mirrors restPermissions /v1/ceremony/*).
-	"qrdb_ceremony_initialize":           permission.CeremonyInitialize,
-	"qrdb_ceremony_status":               permission.CeremonyStatus,
-	"qrdb_ceremony_claim_cert_begin":     permission.CeremonyClaimCert,
-	"qrdb_ceremony_claim_cert_complete":  permission.CeremonyClaimCert,
-	"qrdb_ceremony_claim_share":          permission.CeremonyClaimShareComplete,
+	"qrdb_ceremony_initialize":          permission.CeremonyInitialize,
+	"qrdb_ceremony_status":              permission.CeremonyStatus,
+	"qrdb_ceremony_claim_cert_begin":    permission.CeremonyClaimCert,
+	"qrdb_ceremony_claim_cert_complete": permission.CeremonyClaimCert,
+	// Custodian share-claim tools are identity-gated (see
+	// permission.IdentityGated): the handler verifies the enrolled
+	// custodian's factor challenge response.
+	"qrdb_ceremony_claim_share":          permission.IdentityGated,
 	"qrdb_ceremony_sign_csr":             permission.CeremonySignCSR,
-	"qrdb_ceremony_claim_share_begin":    permission.CeremonyClaimShareBegin,
-	"qrdb_ceremony_claim_share_complete": permission.CeremonyClaimShareComplete,
+	"qrdb_ceremony_claim_share_begin":    permission.IdentityGated,
+	"qrdb_ceremony_claim_share_complete": permission.IdentityGated,
 	"qrdb_ceremony_submit_unseal_share":  permission.BarrierUnsealShare,
 
 	// Credentials.

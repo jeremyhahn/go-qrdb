@@ -22,23 +22,23 @@ Wire types: [`sdk/go/transport/barrier_types.go`](../../sdk/go/transport/barrier
 
 ```
 barrier status
-barrier init           --barrier-strategy <none|software|shamir>
-                       [--secret <pp>]               (required for software/shamir; rejected for none)
-                       [--so-pin <pin>]              (optional; rejected when --barrier-strategy=none)
-                       [--user-pin <pin>]            (optional; requires --so-pin)
-barrier init-shamir    --secret <pp>
+barrier init           --barrier-strategy <none|passphrase|shamir>
+                       [--passphrase <pp>]           (required for passphrase/shamir; rejected for none)
+                       [--so-pin <pin>]              (optional; requires --user-pin; rejected for none)
+                       [--user-pin <pin>]            (optional; requires --so-pin; rejected for none)
+barrier init-shamir    --passphrase <pp>
                        --threshold N
                        --total M
-                       [--so-pin <pin>]
-                       [--user-pin <pin>]            (requires --so-pin)
-barrier unseal         --secret <pp>                 (software / single-secret only)
+                       [--so-pin <pin>]              (optional; requires --user-pin)
+                       [--user-pin <pin>]            (optional; requires --so-pin)
+barrier unseal         --passphrase <pp>             (passphrase / single-secret only)
 barrier unseal-shares  --share <s1> [--share <s2> ...]   (repeatable)
                        | --shares-file <path>        ('-' = stdin)
 barrier seal           [--so-pin <pin>]
                        [-y | --assume-yes]
-barrier rekey          --secret <new-pp>
-                       [--so-pin <pin>]              (NO --user-pin on rekey)
-                       [--threshold N --total M]     (paired; Shamir share regeneration)
+barrier rekey          [--so-pin <pin>]              (NO --user-pin on rekey)
+                       [--threshold N --total M]     (paired; Shamir share regeneration;
+                                                      no secret material on the wire)
 barrier recovery generate
                        --threshold N
                        --total M
@@ -61,7 +61,7 @@ flags. Override via the root flag or, where supported, env vars
 
 ---
 
-## 2. Architectural concept: `--secret` is **not** a PIN
+## 2. Architectural concept: `--passphrase` is **not** a PIN
 
 This is the single most important distinction in the barrier surface.
 Two completely separate credential classes share the verb tree and
@@ -69,18 +69,19 @@ they must never be conflated.
 
 | Concern | Flag | Purpose | Backend |
 |---------|------|---------|---------|
-| **Strategy wrapping passphrase** | `--secret` | Material the barrier strategy uses to derive (software → Argon2id) or seed (shamir) the master key. The `none` strategy ignores it entirely. | `pkg/seal` strategies |
+| **Strategy wrapping passphrase** | `--passphrase` | Material the barrier strategy uses to derive (passphrase → Argon2id) or seed (shamir) the master key. The `none` strategy ignores it entirely. | `pkg/seal` strategies |
 | **Compliance-gating PIN** | `--so-pin`, `--user-pin` | Two-PIN administrative-authorisation primitive aligned with FIPS 140-3 IG / PCI-DSS v4. Gates rekey, seal, and recovery operations. | `pkg/pin.PINBackend` |
 
 The two concerns are orthogonal:
 
-* The `software` strategy with `--secret=<pp>` and no PIN backend is a
-  valid (dev / single-operator) configuration.
-* The `software` strategy with `--secret=<pp>` **and** `--so-pin` +
-  `--user-pin` is the FIPS-aligned production posture.
-* The `none` strategy intentionally forbids **both** `--secret` and
-  `--so-pin`/`--user-pin` because the barrier is a passthrough — there
-  is nothing to wrap and nothing to gate.
+* The `passphrase` strategy with `--passphrase=<pp>` and no PIN backend
+  is a valid (dev / single-operator) configuration.
+* The `passphrase` strategy with `--passphrase=<pp>` **and** `--so-pin`
+  + `--user-pin` is the FIPS-aligned production posture.
+* The `none` strategy rejects `--passphrase` because the barrier is a
+  passthrough — there is nothing to wrap. It also rejects both PIN
+  flags with the typed `PINsNotAllowedError` because no PIN store
+  exists for a passthrough barrier.
 
 The dual-control rule on the PIN pair (`--so-pin` requires
 `--user-pin`, and vice versa) is enforced **at the CLI** before any RPC
@@ -114,9 +115,9 @@ init` ceremony, which provisions the barrier *plus* the CA, the admin
 client cert, and IAM bootstrap roles.
 
 ```bash
-qrdb barrier init --barrier-strategy software --secret '<passphrase>'
+qrdb barrier init --barrier-strategy passphrase --passphrase '<passphrase>'
 qrdb barrier init --barrier-strategy none
-qrdb barrier init --barrier-strategy software --secret '<pp>' \
+qrdb barrier init --barrier-strategy passphrase --passphrase '<pp>' \
                   --so-pin SO12345 --user-pin USR12345
 ```
 
@@ -125,19 +126,23 @@ Validation (see `validateBarrierInitFlags` in
 
 | Rule | Error |
 |------|-------|
-| `--barrier-strategy` unset or unknown | `InvalidArgError` |
-| `--secret` empty for `software`/`shamir` | `MissingArgError` |
-| `--secret` supplied with `--barrier-strategy=none` | `InvalidArgError` |
-| `--so-pin`/`--user-pin` with `--barrier-strategy=none` | `PINsNotAllowedError` |
+| `--barrier-strategy` unknown | `InvalidArgError` (must be `none`, `passphrase`, or `shamir`) |
+| `--passphrase` empty for `passphrase`/`shamir` | `MissingArgError` |
+| `--passphrase` supplied with `--barrier-strategy=none` | `InvalidArgError` |
+| `--so-pin` or `--user-pin` with `--barrier-strategy=none` | `PINsNotAllowedError` (no PIN store for the passthrough strategy) |
 | `--user-pin` without `--so-pin` | `InvalidArgError` |
+| `--so-pin` without `--user-pin` | `InvalidArgError` (FIPS 140-3 / PCI-DSS v4 dual-control) |
 
 ### 3.3 `barrier init-shamir`
 
 Splits the master secret into `--total` shares with `--threshold`
-required to unseal. Shares are printed once; capture them out-of-band.
+required to unseal. The response is **share-free** (INV-1): shares are
+sealed server-side to the enrolled Security Officers' enclaves, and
+each officer retrieves theirs exactly once via the
+`barrier officer claim-begin` / `claim-complete` mTLS ceremony.
 
 ```bash
-qrdb barrier init-shamir --secret '<seed>' --threshold 3 --total 5
+qrdb barrier init-shamir --passphrase '<seed>' --threshold 3 --total 5
 ```
 
 | Rule | Error |
@@ -145,14 +150,15 @@ qrdb barrier init-shamir --secret '<seed>' --threshold 3 --total 5
 | `--threshold < 2` | `InvalidArgError` |
 | `--total < --threshold` | `InvalidArgError` |
 | `--user-pin` without `--so-pin` | `InvalidArgError` |
+| `--so-pin` without `--user-pin` | `InvalidArgError` (FIPS 140-3 / PCI-DSS v4 dual-control) |
 
 ### 3.4 `barrier unseal`
 
-Replay the strategy passphrase for the **software / single-secret**
+Replay the strategy passphrase for the **passphrase / single-secret**
 case. Shamir unseal lives on the next verb.
 
 ```bash
-qrdb barrier unseal --secret '<passphrase>'
+qrdb barrier unseal --passphrase '<passphrase>'
 ```
 
 ### 3.5 `barrier unseal-shares`
@@ -185,17 +191,27 @@ deployments without a PIN backend ignore the field.
 
 ### 3.7 `barrier rekey`
 
-Rotate the master key. `--secret` carries the **new** wrapping
-passphrase; the server replaces the previously sealed material.
+Generate a fresh unseal key and M-of-N Shamir share set. The root key
+itself is **not** rotated — the server generates a new random unseal
+key, AEAD-re-wraps the root key under it, and splits the new unseal key
+to the officers, **cryptographically revoking every previously
+distributed share** (see [../seal/shamir.md](../seal/shamir.md#rekey)).
+The server requires the barrier to be unsealed and the Shamir strategy
+to be configured; otherwise it returns `ErrSealed` /
+`ErrShamirNotConfigured`. New shares are sealed to the enrolled
+Security Officers' enclaves (share-free response); claim history resets
+so each officer claims again.
 
 ```bash
-qrdb barrier rekey --secret '<new-pp>' --so-pin SO12345
-qrdb barrier rekey --secret '<new-pp>' --threshold 3 --total 5
+qrdb barrier rekey --so-pin SO12345
+qrdb barrier rekey --threshold 3 --total 5
 ```
 
 The Shamir flags are **paired**: supplying one without the other is an
-error. When omitted, the existing share layout is preserved and only
-the wrapping material rotates. **Note**: `barrier rekey` accepts only
+error; when both are omitted the configured M/N is reused. Rekey
+carries **no secret material** on the wire — the server derives
+everything itself (the former `new_secret` wire field was dead and has
+been removed; proto field 4 is reserved). `barrier rekey` accepts only
 `--so-pin`; user-PIN rotation is a separate ceremony because the wire
 request has no `UserPin` field.
 
@@ -215,6 +231,63 @@ Restore the barrier by submitting M-of-N recovery keys.
 ```bash
 qrdb barrier recovery recover --share key-a --share key-b --share key-c
 ```
+
+---
+
+## 3.10 Security Officer verbs (`barrier officer`, `barrier shamir-seal-vote`, `barrier recovery officer`)
+
+These verbs implement the **Security Officer share-distribution model**
+(see [../seal/shamir.md](../seal/shamir.md) and
+[../seal/so-share-distribution-design.md](../seal/so-share-distribution-design.md)):
+Shamir shares are never returned from init/rekey responses — each share
+is sealed server-side to an enrolled officer, who claims it exactly
+once over mTLS. Because this claim ceremony is the **only** way an
+officer ever holds a share under the INV-1 share-free contract, these
+verbs are part of the **canonical four-CLI surface** (promoted 2026-06;
+see `08-bootstrap-auth-architecture.md` §6). qrdb is the reference
+implementation; the xkmsctl / quicbaas / platformctl mirrors are
+pending.
+
+```
+barrier officer register        --username <u> --csr-file <path>
+                                [--authenticator-type <t>] [--authenticator-ref <r>]
+barrier officer list
+barrier officer claim-status
+barrier officer claim-begin     --username <u>
+barrier officer claim-complete  --username <u> --nonce-hex <hex> --sig-file <path>
+barrier shamir-seal-vote        --share <s>
+barrier recovery officer register        --username <u> --csr-file <path>
+                                         [--authenticator-type <t>] [--authenticator-ref <r>]
+barrier recovery officer claim-begin     --username <u>
+barrier recovery officer claim-complete  --username <u> --nonce-hex <hex> --sig-file <path>
+```
+
+* **`officer register`** — submits the officer's PEM CSR; the ceremony
+  CA signs it and binds the officer to the certificate thumbprint. The
+  response carries the signed certificate and the officer's share
+  index — never share bytes.
+* **`officer claim-begin` / `claim-complete`** — the two-step
+  mTLS-authenticated claim: `claim-begin` returns a challenge nonce;
+  the officer signs it with their registered private key (raw signature
+  bytes in `--sig-file`) and `claim-complete` returns the share bytes
+  exactly once, after which the server-side enclave is destroyed.
+* **`shamir-seal-vote`** — a Shamir barrier cannot be sealed by a
+  single administrator (`barrier seal` returns
+  `ErrShamirBarrierRequiresQuorum`); M officers each submit their share
+  as a seal vote, and the barrier seals when the quorum completes.
+* **`recovery officer …`** — the same register/claim ceremony for the
+  independent recovery-share officer registry populated by
+  `barrier recovery generate`.
+
+```bash
+qrdb barrier officer register --username alice --csr-file alice.csr
+qrdb barrier officer claim-begin --username alice
+qrdb barrier officer claim-complete --username alice --nonce-hex <nonce> --sig-file alice.sig
+qrdb barrier shamir-seal-vote --share '<share>'
+```
+
+The verb tree and flag set are pinned by `TestOfficerBarrierVerbTree`
+([`cmd/qrdb/barrier_officer_cmd_test.go`](../../cmd/qrdb/barrier_officer_cmd_test.go)).
 
 ---
 
@@ -240,7 +313,7 @@ flowchart LR
 Two routes share the same operator-facing flags but reach different
 server subsystems:
 
-* `--secret` → `Strategy` (Argon2id-derived wrapping key or Shamir
+* `--passphrase` → `Strategy` (Argon2id-derived wrapping key or Shamir
   seed; `none` ignores it).
 * `--so-pin` / `--user-pin` → `PINBackend` (compliance gating for
   rekey / seal / recovery-generate).

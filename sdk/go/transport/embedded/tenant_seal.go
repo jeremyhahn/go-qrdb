@@ -52,10 +52,12 @@ func (t *Transport) TenantBarrierStatus(ctx context.Context, req *transport.Tena
 		return nil, err
 	}
 	return &transport.TenantBarrierStatusResponse{
-		TenantID:       status.TenantID,
-		Sealed:         status.Sealed,
-		Initialized:    status.Initialized,
-		Strategy:       status.Strategy,
-		HardwareBacked: status.HardwareBacked,
+		TenantID:        status.TenantID,
+		Sealed:          status.Sealed,
+		Initialized:     status.Initialized,
+		Strategy:        status.Strategy,
+		HardwareBacked:  status.HardwareBacked,
+		ShamirThreshold: status.ShamirThreshold,
+		ShamirTotal:     status.ShamirTotal,
 	}, nil
 }

@@ -75,7 +75,7 @@ determine whether to render the corresponding views.
 | `UserClient`           | 7       | create, get, update, delete, list, enable, disable |
 | `RoleClient`           | 8       | create, get, update, delete, list, assign, unassign, listPermissions |
 | `CertClient`           | 4       | generate, export, revoke, list               |
-| `SealClient`           | 4       | bootstrap, unseal, seal, status              |
+| `SealClient`           | 5       | initialize, initializeShamir, unseal, seal, status |
 | `WizardClient`         | 4       | isFirstRun, saveState, loadState, getConfigDir |
 | `EmbeddedServerClient` | 3       | startEmbedded, stopEmbedded, isEmbedded      |
 

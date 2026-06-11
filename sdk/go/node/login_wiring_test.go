@@ -69,9 +69,9 @@ func TestPrincipalRoles_Empty(t *testing.T) {
 func newMemoryNodeWithUser(t *testing.T, nodeOpts ...NodeOption) *Node {
 	t.Helper()
 	cfg := qrdbconfig.DefaultConfig()
-	// Ephemeral in-memory store, requested explicitly (an empty data dir no
-	// longer implies memory).
-	cfg.Raft.DataDir = ""
+	// In-memory primary storage; vector storage still requires a disk directory
+	// so use t.TempDir() to keep all artifacts inside the test sandbox.
+	cfg.Raft.DataDir = t.TempDir()
 	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendMemory)}}
 	cfg.Protocols.REST = false
 	cfg.Protocols.GRPC = false

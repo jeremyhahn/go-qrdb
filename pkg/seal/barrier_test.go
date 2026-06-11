@@ -172,6 +172,14 @@ func (f *failingPutBackend) Put(ctx context.Context, key string, data []byte) er
 	return f.inner.Put(ctx, key, data)
 }
 
+func (f *failingPutBackend) PutIfAbsent(ctx context.Context, key string, data []byte) (bool, error) {
+	f.putCalls++
+	if key == f.failKey {
+		return false, f.failErr
+	}
+	return f.inner.PutIfAbsent(ctx, key, data)
+}
+
 // fakeShamirStrategy is registered under StrategyShamir but is NOT a
 // *ShamirStrategy, which triggers the second type assertion failure
 // in Barrier.ShamirStrategy().
@@ -1432,19 +1440,21 @@ func TestBarrier_UnsealDirect_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewBarrier: %v", err)
 	}
+	dist := newCaptureDistributor()
+	b.SetCeremonyDistributor(dist)
 
-	result, err := b.InitializeShamir(context.Background(), Credentials{})
-	if err != nil {
+	if _, err := b.InitializeShamir(context.Background(), Credentials{}); err != nil {
 		t.Fatalf("InitializeShamir: %v", err)
 	}
+	shares := dist.Shares()
 
 	// Seal, then unseal with shares to trigger unsealDirect.
+	ctx := context.Background()
 	if err := b.Seal(); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
 
-	err = b.UnsealWithShares(context.Background(), result.Shares[:2])
-	if err != nil {
+	if err := b.UnsealWithShares(ctx, shares[:2]); err != nil {
 		t.Fatalf("UnsealWithShares: %v", err)
 	}
 	if b.IsSealed() {
@@ -1464,7 +1474,7 @@ func TestBarrier_UnsealDirect_NoShamirStrategy(t *testing.T) {
 	}
 
 	rootKey := make([]byte, 32)
-	err := b.unsealDirect(rootKey)
+	err := b.unsealDirect(context.Background(), rootKey)
 	if !errors.Is(err, ErrShamirNotConfigured) {
 		t.Fatalf("expected ErrShamirNotConfigured, got %v", err)
 	}
@@ -1486,7 +1496,7 @@ func TestBarrier_UnsealDirect_EncryptorError(t *testing.T) {
 	b.strategies[StrategyShamir] = failStrat
 
 	rootKey := make([]byte, 32)
-	err = b.unsealDirect(rootKey)
+	err = b.unsealDirect(context.Background(), rootKey)
 	if err == nil {
 		t.Fatal("expected error from BarrierEncryptor failure")
 	}
@@ -1809,5 +1819,323 @@ func TestBarrier_SeedInvocationCounterOnUnseal(t *testing.T) {
 	// nEntries data keys), so the count must be at least nEntries.
 	if got := counter2.Count(); got < nEntries {
 		t.Fatalf("counter2.Count() = %d after unseal, want >= %d", got, nEntries)
+	}
+}
+
+// newUnsealedStorageBarrier creates a *StorageBarrier (not the testBarrier stub)
+// that is fully initialized and unsealed. Used for StorageBarrier-specific tests.
+func newUnsealedStorageBarrier(t *testing.T) *StorageBarrier {
+	t.Helper()
+	backend := NewMemoryBackend()
+	b, err := NewStorageBarrier(testLogger(), backend, BarrierConfig{
+		RootKeyPath: "test/root-key",
+	}, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatalf("NewStorageBarrier: %v", err)
+	}
+	if err := b.Initialize(context.Background(), Credentials{Secret: "pw"}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	return b
+}
+
+// --------------------------------------------------------------------------
+// barrier.go: StorageBarrier.PutIfAbsent — 0%
+// --------------------------------------------------------------------------
+
+func TestStorageBarrier_PutIfAbsent_Sealed(t *testing.T) {
+	backend := NewMemoryBackend()
+	b, err := NewStorageBarrier(testLogger(), backend, BarrierConfig{
+		RootKeyPath: "test/root-key",
+	}, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Barrier not initialized — sealed state.
+	_, err = b.PutIfAbsent(context.Background(), "key", []byte("value"))
+	if !errors.Is(err, ErrSealed) {
+		t.Errorf("PutIfAbsent sealed: got %v, want ErrSealed", err)
+	}
+}
+
+func TestStorageBarrier_PutIfAbsent_Success(t *testing.T) {
+	b := newUnsealedStorageBarrier(t)
+	ctx := context.Background()
+
+	// First call should succeed (key absent).
+	stored, err := b.PutIfAbsent(ctx, "pia-key", []byte("value"))
+	if err != nil {
+		t.Fatalf("PutIfAbsent (first): %v", err)
+	}
+	if !stored {
+		t.Error("PutIfAbsent: expected true on first call (key absent)")
+	}
+
+	// Verify value is readable.
+	got, err := b.Get(ctx, "pia-key")
+	if err != nil {
+		t.Fatalf("Get after PutIfAbsent: %v", err)
+	}
+	if !bytes.Equal(got, []byte("value")) {
+		t.Errorf("Get after PutIfAbsent: got %q, want %q", got, "value")
+	}
+}
+
+func TestStorageBarrier_PutIfAbsent_KeyAlreadyExists(t *testing.T) {
+	b := newUnsealedStorageBarrier(t)
+	ctx := context.Background()
+
+	if err := b.Put(ctx, "pia-dup", []byte("original")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	stored, err := b.PutIfAbsent(ctx, "pia-dup", []byte("new-value"))
+	if err != nil {
+		t.Fatalf("PutIfAbsent (duplicate): %v", err)
+	}
+	if stored {
+		t.Error("PutIfAbsent: expected false when key already exists")
+	}
+
+	// Original value must be unchanged.
+	got, err := b.Get(ctx, "pia-dup")
+	if err != nil {
+		t.Fatalf("Get after failed PutIfAbsent: %v", err)
+	}
+	if !bytes.Equal(got, []byte("original")) {
+		t.Errorf("value changed after PutIfAbsent no-op: got %q", got)
+	}
+}
+
+// --------------------------------------------------------------------------
+// barrier.go: barrier.persistMetadata — 75%
+// (JSON marshal error cannot happen with barrierMetadata; test Put error)
+// --------------------------------------------------------------------------
+
+func TestPersistMetadata_PutError(t *testing.T) {
+	fb := newFailingBackend()
+	cfg := BarrierConfig{RootKeyPath: "test/root"}
+	b, err := NewStorageBarrier(testLogger(), fb, cfg, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	// Initialize without errors to set up the barrier.
+	if err := b.Initialize(ctx, Credentials{Secret: "pw"}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	// Seal and inject a Put error so the next Initialize (on a fresh backend)
+	// triggers persistMetadata failure. Instead, we test persistMetadata
+	// directly via Initialize on a fresh barrier with a backend that fails Put.
+	fb2 := newFailingBackend()
+	cfg2 := BarrierConfig{RootKeyPath: "test/root2"}
+	b2, err := NewStorageBarrier(testLogger(), fb2, cfg2, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Inject a Put error that fires only for the metadata key.
+	// The PutIfAbsent for root key will succeed; the Put for .meta will fail.
+	fb2.putErr = errStorageInject
+
+	err = b2.Initialize(ctx, Credentials{Secret: "pw"})
+	// Initialize will fail on either PutIfAbsent (root key write) or persistMetadata.
+	// Either error is acceptable — what matters is that Initialize returns an error.
+	if err == nil {
+		t.Fatal("expected error when Put fails during Initialize/persistMetadata")
+	}
+}
+
+// --------------------------------------------------------------------------
+// barrier.go: loadInitializedAt — 72.7%
+// (getErr != nil && err != ErrSecretNotFound branch)
+// --------------------------------------------------------------------------
+
+func TestLoadInitializedAt_GetError(t *testing.T) {
+	fb := newFailingBackend()
+	cfg := BarrierConfig{RootKeyPath: "test/root"}
+	b, err := NewStorageBarrier(testLogger(), fb, cfg, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := b.Initialize(ctx, Credentials{Secret: "pw"}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	// Inject a Get error. The next Status() call will trigger initializedAtOrPersisted
+	// → loadInitializedAt with the get error, which is silently handled (returns zero time).
+	fb.getErr = errStorageInject
+
+	status := b.Status()
+	// The barrier is unsealed (initialized just above), so InitializedAt should
+	// be the in-memory value, not from the failing backend read.
+	_ = status // just verify no panic
+}
+
+// Test the cold-boot path: a fresh barrier over an existing store reads
+// loadInitializedAt when Status() is called (no in-memory timestamp).
+func TestLoadInitializedAt_CorruptJSON(t *testing.T) {
+	backend := NewMemoryBackend()
+	ctx := context.Background()
+
+	// First barrier: initialize so metadata is stored.
+	cfg := BarrierConfig{RootKeyPath: "test/root"}
+	b1, err := NewStorageBarrier(testLogger(), backend, cfg, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b1.Initialize(ctx, Credentials{Secret: "pw"}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	// Corrupt the metadata blob in the backend directly.
+	metaKey := b1.metadataPath()
+	if err := backend.Put(ctx, metaKey, []byte("not-valid-json")); err != nil {
+		t.Fatalf("corrupt metadata: %v", err)
+	}
+
+	// Second barrier over the same backend (simulates cold boot).
+	b2, err := NewStorageBarrier(testLogger(), backend, cfg, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// initializedAtOrPersisted calls loadInitializedAt which returns jsonErr.
+	// Status() must not panic and must return a valid status.
+	status := b2.Status()
+	_ = status // zero InitializedAt is fine after corrupt metadata
+}
+
+// --------------------------------------------------------------------------
+// barrier.go: restoreInitializedAt — 70%
+// (err path: loadInitializedAt returns a non-ErrSecretNotFound error)
+// --------------------------------------------------------------------------
+
+// metaFailBackend wraps a MemoryBackend and returns an error only when
+// Get is called for the metadata path (the key ending in ".meta").
+type metaFailBackend struct {
+	inner   *MemoryBackend
+	metaErr error
+}
+
+func (m *metaFailBackend) Get(ctx context.Context, key string) ([]byte, error) {
+	if m.metaErr != nil && len(key) >= len(metadataPathSuffix) &&
+		key[len(key)-len(metadataPathSuffix):] == metadataPathSuffix {
+		return nil, m.metaErr
+	}
+	return m.inner.Get(ctx, key)
+}
+func (m *metaFailBackend) Put(ctx context.Context, key string, data []byte) error {
+	return m.inner.Put(ctx, key, data)
+}
+func (m *metaFailBackend) PutIfAbsent(ctx context.Context, key string, data []byte) (bool, error) {
+	return m.inner.PutIfAbsent(ctx, key, data)
+}
+func (m *metaFailBackend) Delete(ctx context.Context, key string) error {
+	return m.inner.Delete(ctx, key)
+}
+func (m *metaFailBackend) List(ctx context.Context, prefix string) ([]string, error) {
+	return m.inner.List(ctx, prefix)
+}
+func (m *metaFailBackend) Scan(ctx context.Context, prefix string, fn func(string, []byte) error) error {
+	return m.inner.Scan(ctx, prefix, fn)
+}
+func (m *metaFailBackend) Exists(ctx context.Context, key string) (bool, error) {
+	return m.inner.Exists(ctx, key)
+}
+func (m *metaFailBackend) Close() error { return m.inner.Close() }
+
+func TestRestoreInitializedAt_LoadError(t *testing.T) {
+	// Use a backend that fails GET only on the metadata path so Unseal
+	// (which reads the root key blob) succeeds but loadInitializedAt fails.
+	// restoreInitializedAt catches the error, logs a warning, and falls
+	// back to time.Now() so Unseal still succeeds.
+	mfb := &metaFailBackend{
+		inner:   NewMemoryBackend(),
+		metaErr: errors.New("injected metadata read error"),
+	}
+	cfg := BarrierConfig{RootKeyPath: "test/root"}
+	b, err := NewStorageBarrier(testLogger(), mfb, cfg, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	// Initialize: this writes the root key AND metadata. The metadata Put
+	// succeeds here because metaFailBackend only fails on Get.
+	if err := b.Initialize(ctx, Credentials{Secret: "pw"}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if err := b.Seal(); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+
+	// Unseal calls restoreInitializedAt, which calls loadInitializedAt.
+	// loadInitializedAt tries to Get the metadata key and gets an error.
+	// restoreInitializedAt logs it and falls back to time.Now() —
+	// Unseal must still succeed.
+	if err := b.Unseal(ctx, Credentials{Secret: "pw"}); err != nil {
+		t.Fatalf("Unseal with metadata Get error: %v", err)
+	}
+	if b.IsSealed() {
+		t.Error("expected barrier unsealed after Unseal despite metadata error")
+	}
+}
+
+// --------------------------------------------------------------------------
+// barrier.go: barrier.Initialize — 76.5%
+// (Seal error in the lost-race branch path)
+// --------------------------------------------------------------------------
+
+func TestBarrierInitialize_PutIfAbsentFails(t *testing.T) {
+	// Use a backend whose PutIfAbsent always returns an error.
+	fb := newFailingBackend()
+	cfg := BarrierConfig{RootKeyPath: "test/root"}
+	b, err := NewStorageBarrier(testLogger(), fb, cfg, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	// PutIfAbsent will fail because fb.putErr is set.
+	fb.putErr = errStorageInject
+
+	err = b.Initialize(ctx, Credentials{Secret: "pw"})
+	if err == nil {
+		t.Fatal("expected error when PutIfAbsent fails")
+	}
+}
+
+// --------------------------------------------------------------------------
+// barrier.go: initializedAtOrPersisted — 80%
+// (persisted != zero path from warm boot)
+// --------------------------------------------------------------------------
+
+func TestInitializedAtOrPersisted_WarmBoot(t *testing.T) {
+	backend := NewMemoryBackend()
+	ctx := context.Background()
+	cfg := BarrierConfig{RootKeyPath: "test/root"}
+
+	// Initialize a barrier so metadata is persisted.
+	b1, err := NewStorageBarrier(testLogger(), backend, cfg, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b1.Initialize(ctx, Credentials{Secret: "pw"}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	// A second barrier over the same backend simulates a warm boot (process restart).
+	// Its in-memory initializedAt is zero, so initializedAtOrPersisted reads from storage.
+	b2, err := NewStorageBarrier(testLogger(), backend, cfg, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	status := b2.Status()
+	if status.InitializedAt.IsZero() {
+		t.Error("warm-boot barrier should report non-zero InitializedAt from persisted metadata")
 	}
 }

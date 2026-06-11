@@ -111,12 +111,29 @@ func (s *sealedShareStore) Claimed(username string) bool {
 
 // DestroyAll destroys all remaining sealed shares, wiping share data
 // from memory. This should be called during cleanup or when the
-// ceremony is abandoned.
+// ceremony is abandoned. Claim history is preserved; use Reset to begin
+// a fresh distribution round.
 func (s *sealedShareStore) DestroyAll() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for username, sec := range s.shares {
 		sec.Destroy()
 		delete(s.shares, username)
+	}
+}
+
+// Reset destroys all remaining sealed shares AND clears the claim
+// history, preparing the store for a fresh distribution round. Rekey
+// flows must use Reset (not DestroyAll) so officers who claimed shares
+// in the prior round can claim their newly distributed shares.
+func (s *sealedShareStore) Reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for username, sec := range s.shares {
+		sec.Destroy()
+		delete(s.shares, username)
+	}
+	for username := range s.claimed {
+		delete(s.claimed, username)
 	}
 }

@@ -14,8 +14,8 @@
 
 // Package authfactors defines the common Factor interface and shared types for
 // hardware and software authentication devices used in custodian enrollment and
-// Shamir share unseal ceremonies. Three sub-packages provide concrete
-// implementations: pkcs11, piv, and fido2.
+// Shamir share unseal ceremonies. Four sub-packages provide concrete
+// implementations: pkcs11, piv, fido2, and mtls (certificate-possession).
 package authfactors
 
 import (
@@ -25,9 +25,10 @@ import (
 
 // Factor represents a hardware or software authentication device.
 // Implementations provide enrollment, challenge issuance, and response
-// verification. The three supported factor types are PKCS#11, PIV, and FIDO2.
+// verification. The four supported factor types are PKCS#11, PIV, FIDO2, and
+// mTLS (certificate-key possession proof).
 type Factor interface {
-	// Name returns the canonical factor type identifier ("pkcs11", "piv", "fido2").
+	// Name returns the canonical factor type identifier ("pkcs11", "piv", "fido2", "mtls").
 	Name() string
 
 	// Enroll produces a public credential from a user-initiated enrollment

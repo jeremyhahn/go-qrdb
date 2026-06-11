@@ -203,8 +203,12 @@ func TestDefaultConfig_TLSDefaults(t *testing.T) {
 	if !cfg.TLS.Enabled {
 		t.Error("TLS.Enabled: got false, want true")
 	}
-	if cfg.TLS.ClientAuth != "require_and_verify" {
-		t.Errorf("TLS.ClientAuth: got %q, want %q", cfg.TLS.ClientAuth, "require_and_verify")
+	// ClientAuth defaults to empty ("derive from auth posture"): a non-empty
+	// default is indistinguishable from an explicit operator selection and
+	// would force RequireAndVerifyClientCert on every listener, making
+	// cert-exempt endpoints like /health unreachable without a client cert.
+	if cfg.TLS.ClientAuth != "" {
+		t.Errorf("TLS.ClientAuth: got %q, want empty (auth-derived)", cfg.TLS.ClientAuth)
 	}
 	if cfg.TLS.MinVersion != "TLS1.3" {
 		t.Errorf("TLS.MinVersion: got %q, want %q", cfg.TLS.MinVersion, "TLS1.3")
@@ -387,8 +391,8 @@ tls:
 	if cfg.Logging.Level != "info" {
 		t.Errorf("Level: got %q, want default %q", cfg.Logging.Level, "info")
 	}
-	if cfg.TLS.ClientAuth != "require_and_verify" {
-		t.Errorf("ClientAuth: got %q, want default %q", cfg.TLS.ClientAuth, "require_and_verify")
+	if cfg.TLS.ClientAuth != "" {
+		t.Errorf("ClientAuth: got %q, want default empty (auth-derived)", cfg.TLS.ClientAuth)
 	}
 	if cfg.TLS.MinVersion != "TLS1.3" {
 		t.Errorf("MinVersion: got %q, want default %q", cfg.TLS.MinVersion, "TLS1.3")
@@ -1290,8 +1294,11 @@ func TestLoad_EmptyFile_InheritsDefaults(t *testing.T) {
 	if !cfg.TLS.Enabled {
 		t.Error("TLS.Enabled: got false, want true")
 	}
-	if cfg.TLS.ClientAuth != "require_and_verify" {
-		t.Errorf("TLS.ClientAuth: got %q, want %q", cfg.TLS.ClientAuth, "require_and_verify")
+	// A file that omits tls.client_auth must yield the empty auth-derived
+	// default so the daemon can distinguish "operator chose a mode" from
+	// "derive the mode from the auth posture".
+	if cfg.TLS.ClientAuth != "" {
+		t.Errorf("TLS.ClientAuth: got %q, want empty (auth-derived)", cfg.TLS.ClientAuth)
 	}
 }
 
@@ -1873,17 +1880,20 @@ func TestTLSConfig_Validate_AllValidMinVersions(t *testing.T) {
 func TestDefaultConfig_TLSDefaults_ClientAuthAndMinVersion(t *testing.T) {
 	cfg := DefaultConfig()
 
-	if cfg.TLS.ClientAuth != "require_and_verify" {
-		t.Errorf("TLS.ClientAuth: got %q, want %q", cfg.TLS.ClientAuth, "require_and_verify")
+	// ClientAuth must default to empty: the daemon treats any non-empty value
+	// as an explicit operator selection and applies it to every listener,
+	// which makes cert-exempt endpoints like /health unreachable without a
+	// client certificate. Empty means "derive from the auth posture"
+	// (VerifyClientCertIfGiven when auth is enabled, NoClientCert otherwise).
+	if cfg.TLS.ClientAuth != "" {
+		t.Errorf("TLS.ClientAuth: got %q, want empty (auth-derived)", cfg.TLS.ClientAuth)
 	}
 	if cfg.TLS.MinVersion != "TLS1.3" {
 		t.Errorf("TLS.MinVersion: got %q, want %q", cfg.TLS.MinVersion, "TLS1.3")
 	}
 
-	// Verify the helper methods return correct crypto/tls values for defaults.
-	if cfg.TLS.CryptoTLSClientAuth() != tls.RequireAndVerifyClientCert {
-		t.Errorf("CryptoTLSClientAuth: got %v, want RequireAndVerifyClientCert", cfg.TLS.CryptoTLSClientAuth())
-	}
+	// Verify the helper method returns the correct crypto/tls value for the
+	// MinVersion default.
 	if cfg.TLS.CryptoTLSMinVersion() != tls.VersionTLS13 {
 		t.Errorf("CryptoTLSMinVersion: got %d, want %d (TLS 1.3)", cfg.TLS.CryptoTLSMinVersion(), tls.VersionTLS13)
 	}

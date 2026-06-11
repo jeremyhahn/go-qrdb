@@ -206,6 +206,28 @@ var (
 	// is attempted while the underlying barrier is sealed.
 	ErrSealStoreBarrierSealed = errors.New("qrdb/seal: sealstore barrier is sealed")
 
+	// ErrShamirBarrierRequiresQuorum is returned when a single-admin seal is
+	// attempted on a Shamir-protected barrier. Use SubmitSealVote instead.
+	ErrShamirBarrierRequiresQuorum = errors.New("seal: shamir barrier requires seal-vote quorum")
+
+	// ErrCeremonyDistributorNotConfigured is returned when an operation
+	// requires a CeremonyDistributor but none has been set on the barrier.
+	ErrCeremonyDistributorNotConfigured = errors.New("seal: ceremony distributor not configured")
+
+	// ErrSealVoteVerificationFailed is returned when the reconstructed secret
+	// from seal-vote shares does not verify against the barrier's root key.
+	ErrSealVoteVerificationFailed = errors.New("seal: seal vote verification failed")
+
+	// ErrWrappedRootKeyCorrupt is returned when the wrapped root key blob
+	// (the root key AEAD-encrypted under the current unseal key) fails to
+	// deserialize or has an unexpected format.
+	ErrWrappedRootKeyCorrupt = errors.New("qrdb/seal: wrapped root key blob corrupted")
+
+	// ErrUnsealKeyMismatch is returned when the unseal key reconstructed from
+	// Shamir shares fails to decrypt the wrapped root key. The submitted
+	// shares are wrong, or they were revoked by a prior rekey.
+	ErrUnsealKeyMismatch = errors.New("qrdb/seal: reconstructed unseal key failed to decrypt the wrapped root key (wrong shares, or shares revoked by a prior rekey)")
+
 	// ErrPoolNotConfigured is returned by RegisterTenant when called
 	// with a nil StorageBackend on a registry that has no volume pool
 	// attached. Callers must either supply a backend explicitly or
@@ -224,6 +246,13 @@ var (
 	// volume pool but no PerTenantRegistry attached. Both must be
 	// configured for the pooled-tenant flow to work.
 	ErrPerTenantRegistryNotConfigured = errors.New("qrdb/seal: per-tenant pebble registry not configured")
+
+	// ErrTenantPathEscapesPool is returned when a tenant id, used as a
+	// path segment under a volume-pool root, resolves outside that root
+	// (path traversal, e.g. a "../.." component). The tenant service
+	// rejects such ids at creation; this is the fail-closed defense at
+	// the filesystem sink.
+	ErrTenantPathEscapesPool = errors.New("qrdb/seal: tenant path escapes volume pool root")
 )
 
 // GetError is returned when a barrier Get operation fails during decryption.

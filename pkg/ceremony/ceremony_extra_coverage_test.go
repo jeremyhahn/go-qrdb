@@ -457,6 +457,13 @@ func (b *errorableBackend) Put(ctx context.Context, key string, data []byte) err
 	return b.inner.Put(ctx, key, data)
 }
 
+func (b *errorableBackend) PutIfAbsent(ctx context.Context, key string, data []byte) (bool, error) {
+	if b.failPut {
+		return false, errInjectedBackend
+	}
+	return b.inner.PutIfAbsent(ctx, key, data)
+}
+
 func (b *errorableBackend) Delete(ctx context.Context, key string) error {
 	if b.failDelete {
 		return errInjectedBackend

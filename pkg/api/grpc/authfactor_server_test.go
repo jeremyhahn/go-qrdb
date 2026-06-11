@@ -18,15 +18,14 @@ package grpc
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"testing"
 	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/wrapperspb"
 
+	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
@@ -95,20 +94,6 @@ func (m *mockAuthFactorService) RevokeFactor(ctx context.Context, enrollmentID s
 		return m.revokeFn(ctx, enrollmentID)
 	}
 	return nil
-}
-
-// ---------------------------------------------------------------------------
-// Helpers: encode/invoke handlers directly
-// ---------------------------------------------------------------------------
-
-// callHandler is a helper that builds a wrapperspb.BytesValue from a struct,
-// calls the given handler function, and returns the response.
-func marshalBytesValue(t interface{ Fatalf(string, ...any) }, v any) *wrapperspb.BytesValue {
-	b, err := json.Marshal(v)
-	if err != nil {
-		t.Fatalf("marshalBytesValue: %v", err)
-	}
-	return wrapperspb.Bytes(b)
 }
 
 // ---------------------------------------------------------------------------
@@ -188,19 +173,12 @@ func TestMapAuthFactorGRPCError_AllTypes(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// enrollFactorHandler
+// authFactorServer.EnrollFactor
 // ---------------------------------------------------------------------------
 
 func TestEnrollFactorHandler_MissingSubject(t *testing.T) {
-	svc := newMockAuthFactorService()
-	srv := &authFactorServer{svc: svc}
-
-	payload := marshalBytesValue(t, grpcEnrollFactorRequest{FactorName: "piv"})
-	dec := func(v any) error {
-		v.(*wrapperspb.BytesValue).Value = payload.Value
-		return nil
-	}
-	_, err := enrollFactorHandler(srv, context.Background(), dec, nil)
+	srv := &authFactorServer{svc: newMockAuthFactorService()}
+	_, err := srv.EnrollFactor(context.Background(), &pb.EnrollFactorRequest{FactorName: "piv"})
 	if err == nil {
 		t.Fatal("expected error for missing subject")
 	}
@@ -211,15 +189,8 @@ func TestEnrollFactorHandler_MissingSubject(t *testing.T) {
 }
 
 func TestEnrollFactorHandler_MissingFactorName(t *testing.T) {
-	svc := newMockAuthFactorService()
-	srv := &authFactorServer{svc: svc}
-
-	payload := marshalBytesValue(t, grpcEnrollFactorRequest{Subject: "alice"})
-	dec := func(v any) error {
-		v.(*wrapperspb.BytesValue).Value = payload.Value
-		return nil
-	}
-	_, err := enrollFactorHandler(srv, context.Background(), dec, nil)
+	srv := &authFactorServer{svc: newMockAuthFactorService()}
+	_, err := srv.EnrollFactor(context.Background(), &pb.EnrollFactorRequest{Subject: "alice"})
 	if err == nil {
 		t.Fatal("expected error for missing factor_name")
 	}
@@ -230,31 +201,19 @@ func TestEnrollFactorHandler_MissingFactorName(t *testing.T) {
 }
 
 func TestEnrollFactorHandler_Success(t *testing.T) {
-	svc := newMockAuthFactorService()
-	srv := &authFactorServer{svc: svc}
-
-	payload := marshalBytesValue(t, grpcEnrollFactorRequest{FactorName: "pkcs11", Subject: "alice"})
-	dec := func(v any) error {
-		v.(*wrapperspb.BytesValue).Value = payload.Value
-		return nil
-	}
-	resp, err := enrollFactorHandler(srv, context.Background(), dec, nil)
+	srv := &authFactorServer{svc: newMockAuthFactorService()}
+	resp, err := srv.EnrollFactor(context.Background(), &pb.EnrollFactorRequest{
+		FactorName: "pkcs11",
+		Subject:    "alice",
+	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	bv, ok := resp.(*wrapperspb.BytesValue)
-	if !ok {
-		t.Fatalf("expected *wrapperspb.BytesValue, got %T", resp)
+	if resp.EnrollmentId != "enroll-1" {
+		t.Errorf("expected enrollment_id 'enroll-1', got %q", resp.EnrollmentId)
 	}
-	var out grpcEnrollFactorResponse
-	if err := json.Unmarshal(bv.GetValue(), &out); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if out.EnrollmentID != "enroll-1" {
-		t.Errorf("expected enrollment_id 'enroll-1', got %q", out.EnrollmentID)
-	}
-	if out.FactorName != "pkcs11" {
-		t.Errorf("expected factor_name 'pkcs11', got %q", out.FactorName)
+	if resp.FactorName != "pkcs11" {
+		t.Errorf("expected factor_name 'pkcs11', got %q", resp.FactorName)
 	}
 }
 
@@ -264,13 +223,10 @@ func TestEnrollFactorHandler_ServiceError(t *testing.T) {
 		return nil, &authfactors.FactorNotFoundError{Name: "bad-factor"}
 	}
 	srv := &authFactorServer{svc: svc}
-
-	payload := marshalBytesValue(t, grpcEnrollFactorRequest{FactorName: "bad-factor", Subject: "alice"})
-	dec := func(v any) error {
-		v.(*wrapperspb.BytesValue).Value = payload.Value
-		return nil
-	}
-	_, err := enrollFactorHandler(srv, context.Background(), dec, nil)
+	_, err := srv.EnrollFactor(context.Background(), &pb.EnrollFactorRequest{
+		FactorName: "bad-factor",
+		Subject:    "alice",
+	})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -281,19 +237,12 @@ func TestEnrollFactorHandler_ServiceError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// challengeFactorHandler
+// authFactorServer.ChallengeFactor
 // ---------------------------------------------------------------------------
 
 func TestChallengeFactorHandler_MissingEnrollmentID(t *testing.T) {
-	svc := newMockAuthFactorService()
-	srv := &authFactorServer{svc: svc}
-
-	payload := marshalBytesValue(t, grpcChallengeFactorRequest{})
-	dec := func(v any) error {
-		v.(*wrapperspb.BytesValue).Value = payload.Value
-		return nil
-	}
-	_, err := challengeFactorHandler(srv, context.Background(), dec, nil)
+	srv := &authFactorServer{svc: newMockAuthFactorService()}
+	_, err := srv.ChallengeFactor(context.Background(), &pb.ChallengeFactorRequest{})
 	if err == nil {
 		t.Fatal("expected error for missing enrollment_id")
 	}
@@ -304,28 +253,15 @@ func TestChallengeFactorHandler_MissingEnrollmentID(t *testing.T) {
 }
 
 func TestChallengeFactorHandler_Success(t *testing.T) {
-	svc := newMockAuthFactorService()
-	srv := &authFactorServer{svc: svc}
-
-	payload := marshalBytesValue(t, grpcChallengeFactorRequest{EnrollmentID: "enroll-1"})
-	dec := func(v any) error {
-		v.(*wrapperspb.BytesValue).Value = payload.Value
-		return nil
-	}
-	resp, err := challengeFactorHandler(srv, context.Background(), dec, nil)
+	srv := &authFactorServer{svc: newMockAuthFactorService()}
+	resp, err := srv.ChallengeFactor(context.Background(), &pb.ChallengeFactorRequest{
+		EnrollmentId: "enroll-1",
+	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	bv, ok := resp.(*wrapperspb.BytesValue)
-	if !ok {
-		t.Fatalf("expected *wrapperspb.BytesValue, got %T", resp)
-	}
-	var out grpcChallengeFactorResponse
-	if err := json.Unmarshal(bv.GetValue(), &out); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if out.ChallengeID != "challenge-1" {
-		t.Errorf("expected challenge_id 'challenge-1', got %q", out.ChallengeID)
+	if resp.ChallengeId != "challenge-1" {
+		t.Errorf("expected challenge_id 'challenge-1', got %q", resp.ChallengeId)
 	}
 }
 
@@ -335,13 +271,9 @@ func TestChallengeFactorHandler_NotFound(t *testing.T) {
 		return nil, &authfactors.EnrollmentNotFoundError{EnrollmentID: "missing"}
 	}
 	srv := &authFactorServer{svc: svc}
-
-	payload := marshalBytesValue(t, grpcChallengeFactorRequest{EnrollmentID: "missing"})
-	dec := func(v any) error {
-		v.(*wrapperspb.BytesValue).Value = payload.Value
-		return nil
-	}
-	_, err := challengeFactorHandler(srv, context.Background(), dec, nil)
+	_, err := srv.ChallengeFactor(context.Background(), &pb.ChallengeFactorRequest{
+		EnrollmentId: "missing",
+	})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -352,19 +284,14 @@ func TestChallengeFactorHandler_NotFound(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// verifyFactorHandler
+// authFactorServer.VerifyFactor
 // ---------------------------------------------------------------------------
 
 func TestVerifyFactorHandler_MissingChallengeID(t *testing.T) {
-	svc := newMockAuthFactorService()
-	srv := &authFactorServer{svc: svc}
-
-	payload := marshalBytesValue(t, grpcVerifyFactorRequest{Value: []byte("sig")})
-	dec := func(v any) error {
-		v.(*wrapperspb.BytesValue).Value = payload.Value
-		return nil
-	}
-	_, err := verifyFactorHandler(srv, context.Background(), dec, nil)
+	srv := &authFactorServer{svc: newMockAuthFactorService()}
+	_, err := srv.VerifyFactor(context.Background(), &pb.VerifyFactorRequest{
+		Value: []byte("sig"),
+	})
 	if err == nil {
 		t.Fatal("expected error for missing challenge_id")
 	}
@@ -375,28 +302,16 @@ func TestVerifyFactorHandler_MissingChallengeID(t *testing.T) {
 }
 
 func TestVerifyFactorHandler_Success(t *testing.T) {
-	svc := newMockAuthFactorService()
-	srv := &authFactorServer{svc: svc}
-
-	payload := marshalBytesValue(t, grpcVerifyFactorRequest{ChallengeID: "challenge-1", Value: []byte("sig")})
-	dec := func(v any) error {
-		v.(*wrapperspb.BytesValue).Value = payload.Value
-		return nil
-	}
-	resp, err := verifyFactorHandler(srv, context.Background(), dec, nil)
+	srv := &authFactorServer{svc: newMockAuthFactorService()}
+	resp, err := srv.VerifyFactor(context.Background(), &pb.VerifyFactorRequest{
+		ChallengeId: "challenge-1",
+		Value:       []byte("sig"),
+	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	bv, ok := resp.(*wrapperspb.BytesValue)
-	if !ok {
-		t.Fatalf("expected *wrapperspb.BytesValue, got %T", resp)
-	}
-	var out map[string]string
-	if err := json.Unmarshal(bv.GetValue(), &out); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if out["status"] != "verified" {
-		t.Errorf("expected status 'verified', got %q", out["status"])
+	if resp == nil {
+		t.Fatal("expected non-nil empty response")
 	}
 }
 
@@ -406,13 +321,10 @@ func TestVerifyFactorHandler_VerificationFailed(t *testing.T) {
 		return &authfactors.VerificationFailedError{FactorName: "piv", Reason: "bad sig"}
 	}
 	srv := &authFactorServer{svc: svc}
-
-	payload := marshalBytesValue(t, grpcVerifyFactorRequest{ChallengeID: "c1", Value: []byte("bad")})
-	dec := func(v any) error {
-		v.(*wrapperspb.BytesValue).Value = payload.Value
-		return nil
-	}
-	_, err := verifyFactorHandler(srv, context.Background(), dec, nil)
+	_, err := srv.VerifyFactor(context.Background(), &pb.VerifyFactorRequest{
+		ChallengeId: "c1",
+		Value:       []byte("bad"),
+	})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -428,13 +340,10 @@ func TestVerifyFactorHandler_FactorDisabled(t *testing.T) {
 		return authfactors.ErrFactorDisabled
 	}
 	srv := &authFactorServer{svc: svc}
-
-	payload := marshalBytesValue(t, grpcVerifyFactorRequest{ChallengeID: "c1", Value: []byte("v")})
-	dec := func(v any) error {
-		v.(*wrapperspb.BytesValue).Value = payload.Value
-		return nil
-	}
-	_, err := verifyFactorHandler(srv, context.Background(), dec, nil)
+	_, err := srv.VerifyFactor(context.Background(), &pb.VerifyFactorRequest{
+		ChallengeId: "c1",
+		Value:       []byte("v"),
+	})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -445,7 +354,7 @@ func TestVerifyFactorHandler_FactorDisabled(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// listFactorsHandler
+// authFactorServer.ListFactors
 // ---------------------------------------------------------------------------
 
 func TestListFactorsHandler_Success(t *testing.T) {
@@ -457,26 +366,12 @@ func TestListFactorsHandler_Success(t *testing.T) {
 		}, nil
 	}
 	srv := &authFactorServer{svc: svc}
-
-	payload := marshalBytesValue(t, grpcListFactorsRequest{Subject: "alice"})
-	dec := func(v any) error {
-		v.(*wrapperspb.BytesValue).Value = payload.Value
-		return nil
-	}
-	resp, err := listFactorsHandler(srv, context.Background(), dec, nil)
+	resp, err := srv.ListFactors(context.Background(), &pb.ListFactorsRequest{Subject: "alice"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	bv, ok := resp.(*wrapperspb.BytesValue)
-	if !ok {
-		t.Fatalf("expected *wrapperspb.BytesValue, got %T", resp)
-	}
-	var out grpcListFactorsResponse
-	if err := json.Unmarshal(bv.GetValue(), &out); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if out.Total != 2 {
-		t.Errorf("expected Total=2, got %d", out.Total)
+	if resp.Total != 2 {
+		t.Errorf("expected Total=2, got %d", resp.Total)
 	}
 }
 
@@ -489,25 +384,14 @@ func TestListFactorsHandler_WithRevokedAt(t *testing.T) {
 		}, nil
 	}
 	srv := &authFactorServer{svc: svc}
-
-	payload := marshalBytesValue(t, grpcListFactorsRequest{})
-	dec := func(v any) error {
-		v.(*wrapperspb.BytesValue).Value = payload.Value
-		return nil
-	}
-	resp, err := listFactorsHandler(srv, context.Background(), dec, nil)
+	resp, err := srv.ListFactors(context.Background(), &pb.ListFactorsRequest{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	bv := resp.(*wrapperspb.BytesValue)
-	var out grpcListFactorsResponse
-	if err := json.Unmarshal(bv.GetValue(), &out); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+	if resp.Total != 1 {
+		t.Fatalf("expected 1 enrollment, got %d", resp.Total)
 	}
-	if out.Total != 1 {
-		t.Fatalf("expected 1 enrollment, got %d", out.Total)
-	}
-	if out.Enrollments[0].RevokedAt == "" {
+	if resp.Enrollments[0].RevokedAt == "" {
 		t.Error("expected RevokedAt to be set")
 	}
 }
@@ -518,13 +402,7 @@ func TestListFactorsHandler_ServiceError(t *testing.T) {
 		return nil, errors.New("db error")
 	}
 	srv := &authFactorServer{svc: svc}
-
-	payload := marshalBytesValue(t, grpcListFactorsRequest{})
-	dec := func(v any) error {
-		v.(*wrapperspb.BytesValue).Value = payload.Value
-		return nil
-	}
-	_, err := listFactorsHandler(srv, context.Background(), dec, nil)
+	_, err := srv.ListFactors(context.Background(), &pb.ListFactorsRequest{})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -535,19 +413,12 @@ func TestListFactorsHandler_ServiceError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// revokeFactorHandler
+// authFactorServer.RevokeFactor
 // ---------------------------------------------------------------------------
 
 func TestRevokeFactorHandler_MissingEnrollmentID(t *testing.T) {
-	svc := newMockAuthFactorService()
-	srv := &authFactorServer{svc: svc}
-
-	payload := marshalBytesValue(t, grpcRevokeFactorRequest{})
-	dec := func(v any) error {
-		v.(*wrapperspb.BytesValue).Value = payload.Value
-		return nil
-	}
-	_, err := revokeFactorHandler(srv, context.Background(), dec, nil)
+	srv := &authFactorServer{svc: newMockAuthFactorService()}
+	_, err := srv.RevokeFactor(context.Background(), &pb.RevokeFactorRequest{})
 	if err == nil {
 		t.Fatal("expected error for missing enrollment_id")
 	}
@@ -568,29 +439,17 @@ func TestRevokeFactorHandler_Success(t *testing.T) {
 		return nil
 	}
 	srv := &authFactorServer{svc: svc}
-
-	payload := marshalBytesValue(t, grpcRevokeFactorRequest{EnrollmentID: "enroll-1"})
-	dec := func(v any) error {
-		v.(*wrapperspb.BytesValue).Value = payload.Value
-		return nil
-	}
-	resp, err := revokeFactorHandler(srv, context.Background(), dec, nil)
+	resp, err := srv.RevokeFactor(context.Background(), &pb.RevokeFactorRequest{
+		EnrollmentId: "enroll-1",
+	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !called {
 		t.Error("expected RevokeFactor to be called")
 	}
-	bv, ok := resp.(*wrapperspb.BytesValue)
-	if !ok {
-		t.Fatalf("expected *wrapperspb.BytesValue, got %T", resp)
-	}
-	var out map[string]string
-	if err := json.Unmarshal(bv.GetValue(), &out); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if out["status"] != "revoked" {
-		t.Errorf("expected status 'revoked', got %q", out["status"])
+	if resp == nil {
+		t.Fatal("expected non-nil empty response")
 	}
 }
 
@@ -600,13 +459,9 @@ func TestRevokeFactorHandler_NotFound(t *testing.T) {
 		return &authfactors.EnrollmentNotFoundError{EnrollmentID: "missing"}
 	}
 	srv := &authFactorServer{svc: svc}
-
-	payload := marshalBytesValue(t, grpcRevokeFactorRequest{EnrollmentID: "missing"})
-	dec := func(v any) error {
-		v.(*wrapperspb.BytesValue).Value = payload.Value
-		return nil
-	}
-	_, err := revokeFactorHandler(srv, context.Background(), dec, nil)
+	_, err := srv.RevokeFactor(context.Background(), &pb.RevokeFactorRequest{
+		EnrollmentId: "missing",
+	})
 	if err == nil {
 		t.Fatal("expected error")
 	}

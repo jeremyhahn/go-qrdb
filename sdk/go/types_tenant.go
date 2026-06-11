@@ -20,6 +20,13 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
+// TenantStoreResolver maps a tenant ID to the kvstore.KVStore that backs that
+// tenant's IAM data. Barrier-isolated tenants route through their own
+// TenantBarrier; prefix/system tenants use the shared system store.
+// Resolution fails closed (ErrTenantSealed) for a sealed barrier tenant.
+// (Aliases pkg/tenant.StoreResolver.)
+type TenantStoreResolver = tenant.StoreResolver
+
 // ContextWithTenant returns a context that binds the given tenant ID as the
 // target tenant for tenant-aware operations such as RBAC().Authorize. The
 // RBAC authorizer derives the request's target tenant from the context; bind

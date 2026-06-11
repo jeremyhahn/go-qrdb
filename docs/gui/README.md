@@ -95,28 +95,48 @@ The desktop build embeds the compiled frontend assets:
 var assets embed.FS
 ```
 
-The Wails application registers 17 Go binding objects, each wrapping a
-domain of the Go SDK:
+The Wails application registers 25 Go binding objects, each wrapping a
+domain of the Go SDK (the authoritative list is `guiBindings.bindList()`
+in `cmd/qrdb/gui_desktop_bindings.go`, pinned by
+`TestGUIBindings_AllBindingsPresent`):
 
-| Binding                | Domain              | Service Interface Used       |
-|------------------------|---------------------|------------------------------|
-| `ConnectionBinding`    | Transport lifecycle | `sdk.Client`                 |
-| `EmbeddedServerBinding`| In-process server  | `server.Server`              |
-| `WizardBinding`        | Setup wizard       | Local file I/O               |
-| `KVBinding`            | Key-value CRUD     | `sdk.KVClient`               |
-| `AdminBinding`         | Cluster admin      | `sdk.AdminClient`            |
-| `MVCCBinding`          | MVCC operations    | `sdk.MVCCClient`             |
-| `TransactionBinding`   | Transactions       | `sdk.TransactionClient`      |
-| `BatchBinding`         | Batch operations   | `sdk.BatchClient`            |
-| `WatchBinding`         | Real-time events   | `sdk.WatchClient`            |
-| `LeaseBinding`         | Distributed leases | `sdk.LeaseClient`            |
-| `IndexBinding`         | Secondary indexes  | `sdk.IndexClient`            |
-| `TimeSeriesBinding`    | Time-series data   | `sdk.TimeSeriesClient`       |
-| `VectorBinding`        | Vector database    | `sdk.VectorClient`           |
-| `UserBinding`          | User management    | `sdk.UserClient`             |
-| `RoleBinding`          | Role management    | `sdk.RoleClient`             |
-| `CertBinding`          | Certificates       | `sdk.CertClient`             |
-| `SealBinding`          | Seal/unseal        | `sdk.SealClient`             |
+| Binding                    | Domain                  | Service Interface Used       |
+|----------------------------|-------------------------|------------------------------|
+| `ConnectionBinding`        | Transport lifecycle     | `sdk.Client`                 |
+| `ConnectionManagerBinding` | Connection profiles     | `sdk.Client` (multi-profile) |
+| `EmbeddedServerBinding`    | In-process server       | `server.Server`              |
+| `KVBinding`                | Key-value CRUD          | `sdk.KVClient`               |
+| `AdminBinding`             | Cluster admin           | `sdk.AdminClient`            |
+| `MVCCBinding`              | MVCC operations         | `sdk.MVCCClient`             |
+| `TransactionBinding`       | Transactions            | `sdk.TransactionClient`      |
+| `BatchBinding`             | Batch operations        | `sdk.BatchClient`            |
+| `WatchBinding`             | Real-time events        | `sdk.WatchClient`            |
+| `LeaseBinding`             | Distributed leases      | `sdk.LeaseClient`            |
+| `IndexBinding`             | Secondary indexes       | `sdk.IndexClient`            |
+| `TimeSeriesBinding`        | Time-series data        | `sdk.TimeSeriesClient`       |
+| `VectorBinding`            | Vector database         | `sdk.VectorClient`           |
+| `UserBinding`              | User management         | `sdk.UserClient`             |
+| `RoleBinding`              | Role management         | `sdk.RoleClient`             |
+| `CertBinding`              | Certificates            | `sdk.CertClient`             |
+| `DatabaseBinding`          | Database management     | `sdk` Database client        |
+| `CollectionBinding`        | Collection management   | `sdk` Collections client     |
+| `SQLBinding`               | SQL queries             | SQL engine                   |
+| `SealBinding`              | Seal/unseal             | `sdk.SealClient`             |
+| `ConfigBinding`            | App config state        | Local file I/O               |
+| `TenantBinding`            | Tenant management       | `sdk` Tenants client         |
+| `BackupBinding`            | Backup/restore          | `sdk` Backup client          |
+| `OfficerBinding`           | Security Officer ceremony | `sdk` Barrier + Tenants clients |
+| `DaemonBinding`            | Local qrdbd lifecycle   | `os/exec` process control    |
+
+`OfficerBinding` exposes the Security Officer share-distribution
+ceremony to the desktop GUI: system and tenant officer
+enrollment (CSR-based), claim status, the two-step
+challenge/signature share claim, quorum seal votes, and the
+recovery-officer mirror. PEM material crosses the Wails IPC boundary as
+plain strings (local DTOs convert to/from the transport's `[]byte`
+fields) so certificates and CSRs are not base64-mangled by
+`encoding/json`. See [../seal/shamir.md](../seal/shamir.md) for the
+ceremony contract.
 
 Watch events are delivered to the frontend in real time via Wails
 `runtime.EventsEmit`, which the Svelte watch store subscribes to using
@@ -231,12 +251,14 @@ ServerMode --> [Remote] --> ConnectionConfig --> Summary --> Complete
 | Dashboard        | Cluster health, node status, shard overview    |
 | Cluster          | Peer membership, add/remove members            |
 | Databases        | Create, drop, configure databases and protocols |
-| Seal Manager     | Initialize, seal, unseal, rotate, rekey        |
+| Seal Manager     | Initialize, seal, unseal, rotate, rekey; for Shamir barriers a Security Officers panel handles CSR enrollment, claim status, and quorum seal votes (single-admin seal is blocked) |
+| Tenants          | Tenant lifecycle, per-tenant barrier strategy and officer management |
 | Users            | Create, edit, enable/disable user accounts     |
 | Roles            | Create, edit, assign/unassign roles            |
 | Certificates     | Generate, export, revoke client certificates   |
 | Audit Log        | Browse and search audit trail entries          |
 | Settings         | Server configuration and preferences           |
+| Daemon           | Start/stop the local `qrdbd` process; shown only for **external** profiles on desktop builds — embedded ("Local Server") profiles run in-process and hide this panel |
 
 #### Database Protocol Configuration
 

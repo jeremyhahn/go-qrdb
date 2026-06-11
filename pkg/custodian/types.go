@@ -35,6 +35,9 @@ const (
 
 	// FactorMethodSoftware is a software-backed key (tests/non-hardware deployments).
 	FactorMethodSoftware FactorMethod = "software"
+
+	// FactorMethodMTLS is an mTLS certificate-key possession factor.
+	FactorMethodMTLS FactorMethod = "mtls"
 )
 
 // Custodian is the persistent public metadata record for an enrolled

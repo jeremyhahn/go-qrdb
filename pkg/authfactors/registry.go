@@ -20,11 +20,16 @@ import (
 )
 
 // FactorRegistry maps a factor name (e.g., "fido2", "piv", "pkcs11", "mtls")
-// to a concrete Factor implementation. Higher-level binaries compose a
-// registry at startup: qrdb provides a default registry containing the
-// software-only factors (mTLS), and consumers like go-quicbaas inject
-// hardware-backed factors from go-xkms via WithFactorRegistry on the qrdb
-// server constructor.
+// to a concrete Factor implementation. NewFactorRegistry returns an empty
+// registry; there are no default entries. Consumers (go-quicbaas / xkmsd)
+// register go-xkms hardware factor plugins (fido2, piv, pkcs11, mtls) and
+// inject the populated registry via server.WithFactorRegistry. When no
+// explicit server.WithAuthFactorService is supplied, the server and the SDK
+// node builders construct the unified AuthFactorService from the registry
+// automatically so every transport exposes the enrollment/challenge/verify
+// surface. mTLS authentication uses this factor ("mtls") for ceremony/enrollment
+// possession proofs; the login resolution path (auth.LoginResolver FactorVerifiers)
+// handles mTLS session identity separately.
 //
 // FactorRegistry is safe for concurrent use; Register / Unregister take a
 // short write lock and Lookup / List take a short read lock.

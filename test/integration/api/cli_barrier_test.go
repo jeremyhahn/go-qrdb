@@ -50,19 +50,25 @@ func TestCLIMultiProtocolBarrierStatus(t *testing.T) {
 
 // TestCLIMultiProtocolBarrierInitAndSealCycle tests the full barrier
 // seal/unseal lifecycle against the dedicated Shamir-seal server:
-// status (unsealed) → seal → status (sealed) → unseal-shares → status
-// (unsealed). The barrier is initialized + unsealed by the qrdbd-shamir
-// bootstrap, so this test exercises the seal/unseal half of the cycle and
-// drives unseal via Shamir shares (threshold M-of-N), not a software
-// passphrase. Uses a single protocol per subtest to avoid concurrent
-// barrier state mutations.
+// status (unsealed) → seal-vote quorum → status (sealed) → unseal-shares
+// → status (unsealed). The barrier is initialized by the qrdbd-shamir
+// bootstrap, which registers three Security Officers and claims their
+// shares into the shares file, so this test exercises the quorum-gated
+// seal half of the cycle (single-admin `barrier seal` is rejected for
+// Shamir barriers) and drives unseal via Shamir shares (threshold
+// M-of-N), not a software passphrase. Uses a single protocol per subtest
+// to avoid concurrent barrier state mutations.
 func TestCLIMultiProtocolBarrierInitAndSealCycle(t *testing.T) {
 	cfg := LoadTestConfig()
 	requireCLI(t, cfg)
 
-	// Load the Shamir shares captured by the qrdbd-shamir bootstrap so we
-	// can replay enough of them (>= threshold) to unseal.
+	// Load the Shamir shares claimed by the qrdbd-shamir bootstrap's
+	// Security Officers so we can replay enough of them (>= threshold)
+	// for both the seal-vote quorum and unseal.
 	shares := loadShamirShares(t, cfg)
+	if len(shares) < 2 {
+		t.Fatalf("need at least threshold (2) shares from the bootstrap shares file, got %d", len(shares))
+	}
 
 	shamir := cfg.shamirConfig()
 
@@ -84,17 +90,32 @@ func TestCLIMultiProtocolBarrierInitAndSealCycle(t *testing.T) {
 			assertContains(t, output, `"sealed": false`,
 				fmt.Sprintf("[%s] shamir barrier should be unsealed at start", proto))
 
-			// Step 2: Seal the barrier.
+			// Step 2a: Single-admin seal must be rejected on a Shamir
+			// barrier (ErrShamirBarrierRequiresQuorum) — sealing requires
+			// M distinct Security Officer share votes.
 			stdout, stderr, err = execCLIWithShamirProtocol(t, cfg, proto,
 				"barrier", "seal", "--assume-yes")
-			if err != nil {
+			if err == nil {
 				t.Logf("stdout: %s", stdout)
 				t.Logf("stderr: %s", stderr)
-				t.Fatalf("[%s] barrier seal failed: %v", proto, err)
+				t.Fatalf("[%s] barrier seal should be rejected on a shamir barrier (quorum required)", proto)
+			}
+
+			// Step 2b: Seal the barrier via the SO seal-vote quorum. The
+			// dedicated server is configured with threshold 2; submit two
+			// distinct shares so the quorum completes on the second vote.
+			for i, share := range shares[:2] {
+				stdout, stderr, err = execCLIWithShamirProtocol(t, cfg, proto,
+					"barrier", "shamir-seal-vote", "--share", share, "--output", "json")
+				if err != nil {
+					t.Logf("stdout: %s", stdout)
+					t.Logf("stderr: %s", stderr)
+					t.Fatalf("[%s] barrier shamir-seal-vote %d failed: %v", proto, i+1, err)
+				}
 			}
 			output = stdout + stderr
-			assertContains(t, output, "OK",
-				fmt.Sprintf("[%s] barrier seal should return OK", proto))
+			assertContains(t, output, `"complete": true`,
+				fmt.Sprintf("[%s] final seal vote should report quorum complete", proto))
 
 			// Step 3: Verify barrier is sealed.
 			stdout, stderr, err = execCLIWithShamirProtocol(t, cfg, proto,

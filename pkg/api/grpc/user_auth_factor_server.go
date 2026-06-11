@@ -16,49 +16,23 @@ package grpc
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/wrapperspb"
 
+	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
-// ---------------------------------------------------------------------------
-// User auth factor gRPC service (M14)
-//
-// JSON-over-gRPC pattern, matching the existing AuthFactorService server in
-// authfactor_server.go. Service name: qrdb.v1.UserAuthFactorService.
-// ---------------------------------------------------------------------------
-
-// userAuthFactorServer is the gRPC handler bundle for the M14 user-side
-// auth factor service.
+// userAuthFactorServer implements the generated pb.UserAuthFactorServiceServer.
 type userAuthFactorServer struct {
+	pb.UnimplementedUserAuthFactorServiceServer
+
 	svc service.UserAuthFactorServicer
-}
-
-// userAuthFactorServiceIface is the marker type required by grpc.ServiceDesc.
-type userAuthFactorServiceIface interface{}
-
-// UserAuthFactorServiceDesc is the gRPC service descriptor.
-var UserAuthFactorServiceDesc = grpc.ServiceDesc{
-	ServiceName: "qrdb.v1.UserAuthFactorService",
-	HandlerType: (*userAuthFactorServiceIface)(nil),
-	Methods: []grpc.MethodDesc{
-		{MethodName: "Add", Handler: userFactorAddHandler},
-		{MethodName: "List", Handler: userFactorListHandler},
-		{MethodName: "Get", Handler: userFactorGetHandler},
-		{MethodName: "Remove", Handler: userFactorRemoveHandler},
-		{MethodName: "Rotate", Handler: userFactorRotateHandler},
-		{MethodName: "Relabel", Handler: userFactorRelabelHandler},
-		{MethodName: "Login", Handler: userFactorLoginHandler},
-	},
-	Streams: []grpc.StreamDesc{},
 }
 
 // RegisterUserAuthFactorService registers the user-side auth factor service
@@ -67,395 +41,142 @@ func RegisterUserAuthFactorService(srv *grpc.Server, svc service.UserAuthFactorS
 	if svc == nil {
 		return
 	}
-	srv.RegisterService(&UserAuthFactorServiceDesc, &userAuthFactorServer{svc: svc})
+	pb.RegisterUserAuthFactorServiceServer(srv, &userAuthFactorServer{svc: svc})
 }
 
-// ---------------------------------------------------------------------------
-// Wire types — JSON shapes matching transport.AuthFactor* on the SDK side.
-// ---------------------------------------------------------------------------
-
-// GRPCUserAuthFactorRecord is the JSON wire shape for an auth.AuthFactor.
-type GRPCUserAuthFactorRecord struct {
-	ID           string            `json:"id"`
-	UserID       uint64            `json:"user_id"`
-	Type         string            `json:"type"`
-	Label        string            `json:"label,omitempty"`
-	Credential   []byte            `json:"credential"`
-	Metadata     map[string]string `json:"metadata,omitempty"`
-	RegisteredAt string            `json:"registered_at"`
-	LastUsedAt   string            `json:"last_used_at,omitempty"`
-	RevokedAt    string            `json:"revoked_at,omitempty"`
-	CreatedBy    string            `json:"created_by,omitempty"`
-}
-
-// GRPCUserAuthFactorAddRequest is the wire shape for Add.
-type GRPCUserAuthFactorAddRequest struct {
-	UserID     uint64            `json:"user_id"`
-	Type       string            `json:"type"`
-	Label      string            `json:"label,omitempty"`
-	Credential []byte            `json:"credential"`
-	Metadata   map[string]string `json:"metadata,omitempty"`
-	CreatedBy  string            `json:"created_by,omitempty"`
-}
-
-// GRPCUserAuthFactorAddResponse is the wire shape for Add response.
-type GRPCUserAuthFactorAddResponse struct {
-	Factor GRPCUserAuthFactorRecord `json:"factor"`
-}
-
-// GRPCUserAuthFactorListRequest is the wire shape for List.
-type GRPCUserAuthFactorListRequest struct {
-	UserID uint64 `json:"user_id"`
-}
-
-// GRPCUserAuthFactorListResponse is the wire shape for List response.
-type GRPCUserAuthFactorListResponse struct {
-	Factors []GRPCUserAuthFactorRecord `json:"factors"`
-	Total   int                        `json:"total"`
-}
-
-// GRPCUserAuthFactorGetRequest is the wire shape for Get.
-type GRPCUserAuthFactorGetRequest struct {
-	FactorID string `json:"factor_id"`
-}
-
-// GRPCUserAuthFactorGetResponse is the wire shape for Get response.
-type GRPCUserAuthFactorGetResponse struct {
-	Factor GRPCUserAuthFactorRecord `json:"factor"`
-}
-
-// GRPCUserAuthFactorRemoveRequest is the wire shape for Remove.
-type GRPCUserAuthFactorRemoveRequest struct {
-	FactorID string `json:"factor_id"`
-	Force    bool   `json:"force,omitempty"`
-}
-
-// GRPCUserAuthFactorRemoveResponse is the wire shape for Remove response.
-type GRPCUserAuthFactorRemoveResponse struct {
-	Status string `json:"status"`
-}
-
-// GRPCUserAuthFactorRotateRequest is the wire shape for Rotate.
-type GRPCUserAuthFactorRotateRequest struct {
-	OldFactorID string                       `json:"old_factor_id"`
-	NewFactor   GRPCUserAuthFactorAddRequest `json:"new_factor"`
-}
-
-// GRPCUserAuthFactorRotateResponse is the wire shape for Rotate response.
-type GRPCUserAuthFactorRotateResponse struct {
-	NewFactor GRPCUserAuthFactorRecord `json:"new_factor"`
-}
-
-// GRPCUserAuthFactorRelabelRequest is the wire shape for Relabel.
-type GRPCUserAuthFactorRelabelRequest struct {
-	FactorID string `json:"factor_id"`
-	Label    string `json:"label"`
-}
-
-// GRPCUserAuthFactorRelabelResponse is the wire shape for Relabel response.
-type GRPCUserAuthFactorRelabelResponse struct {
-	Factor GRPCUserAuthFactorRecord `json:"factor"`
-}
-
-// GRPCUserAuthFactorLoginRequest is the wire shape for Login.
-type GRPCUserAuthFactorLoginRequest struct {
-	Type      string `json:"type"`
-	LookupKey []byte `json:"lookup_key"`
-}
-
-// GRPCUserAuthFactorLoginResponse is the wire shape for Login response.
-type GRPCUserAuthFactorLoginResponse struct {
-	UserID   uint64                   `json:"user_id"`
-	Username string                   `json:"username"`
-	Email    string                   `json:"email,omitempty"`
-	TenantID string                   `json:"tenant_id,omitempty"`
-	Roles    []string                 `json:"roles,omitempty"`
-	Active   bool                     `json:"active"`
-	Factor   GRPCUserAuthFactorRecord `json:"factor"`
-}
-
-// ---------------------------------------------------------------------------
-// Helper conversions
-// ---------------------------------------------------------------------------
-
-func userFactorToWire(f *auth.AuthFactor) GRPCUserAuthFactorRecord {
-	if f == nil {
-		return GRPCUserAuthFactorRecord{}
+// Add handles the UserAuthFactorService.Add RPC.
+func (s *userAuthFactorServer) Add(ctx context.Context, req *pb.UserAuthFactorAddRequest) (*pb.UserAuthFactorAddResponse, error) {
+	factor := userFactorFromAddProto(req)
+	if err := s.svc.Add(ctx, req.GetUserId(), factor); err != nil {
+		return nil, mapUserAuthFactorGRPCError(err)
 	}
-	r := GRPCUserAuthFactorRecord{
-		ID:           f.ID,
-		UserID:       f.UserID,
-		Type:         string(f.Type),
-		Label:        f.Label,
-		Credential:   f.Credential,
-		Metadata:     f.Metadata,
-		RegisteredAt: f.RegisteredAt.Format(time.RFC3339),
-		CreatedBy:    f.CreatedBy,
+	return &pb.UserAuthFactorAddResponse{Factor: userFactorToProto(factor)}, nil
+}
+
+// List handles the UserAuthFactorService.List RPC.
+func (s *userAuthFactorServer) List(ctx context.Context, req *pb.UserAuthFactorListRequest) (*pb.UserAuthFactorListResponse, error) {
+	factors, err := s.svc.List(ctx, req.GetUserId())
+	if err != nil {
+		return nil, mapUserAuthFactorGRPCError(err)
+	}
+	resp := &pb.UserAuthFactorListResponse{
+		Factors: make([]*pb.UserAuthFactorRecord, len(factors)),
+		Total:   int32(len(factors)), //nolint:gosec // factor count is bounded
+	}
+	for i, f := range factors {
+		resp.Factors[i] = userFactorToProto(f)
+	}
+	return resp, nil
+}
+
+// Get handles the UserAuthFactorService.Get RPC.
+func (s *userAuthFactorServer) Get(ctx context.Context, req *pb.UserAuthFactorGetRequest) (*pb.UserAuthFactorGetResponse, error) {
+	factor, err := s.svc.Get(ctx, req.GetFactorId())
+	if err != nil {
+		return nil, mapUserAuthFactorGRPCError(err)
+	}
+	return &pb.UserAuthFactorGetResponse{Factor: userFactorToProto(factor)}, nil
+}
+
+// Remove handles the UserAuthFactorService.Remove RPC.
+func (s *userAuthFactorServer) Remove(ctx context.Context, req *pb.UserAuthFactorRemoveRequest) (*pb.UserAuthFactorRemoveResponse, error) {
+	if err := s.svc.Remove(ctx, req.GetFactorId(), req.GetForce()); err != nil {
+		return nil, mapUserAuthFactorGRPCError(err)
+	}
+	return &pb.UserAuthFactorRemoveResponse{Status: "revoked"}, nil
+}
+
+// Rotate handles the UserAuthFactorService.Rotate RPC.
+func (s *userAuthFactorServer) Rotate(ctx context.Context, req *pb.UserAuthFactorRotateRequest) (*pb.UserAuthFactorRotateResponse, error) {
+	newFactor := userFactorFromNewFactorProto(req.GetNewFactor())
+	if err := s.svc.Rotate(ctx, req.GetOldFactorId(), newFactor); err != nil {
+		return nil, mapUserAuthFactorGRPCError(err)
+	}
+	return &pb.UserAuthFactorRotateResponse{NewFactor: userFactorToProto(newFactor)}, nil
+}
+
+// Relabel handles the UserAuthFactorService.Relabel RPC.
+func (s *userAuthFactorServer) Relabel(ctx context.Context, req *pb.UserAuthFactorRelabelRequest) (*pb.UserAuthFactorRelabelResponse, error) {
+	if err := s.svc.Relabel(ctx, req.GetFactorId(), req.GetLabel()); err != nil {
+		return nil, mapUserAuthFactorGRPCError(err)
+	}
+	factor, err := s.svc.Get(ctx, req.GetFactorId())
+	if err != nil {
+		return nil, mapUserAuthFactorGRPCError(err)
+	}
+	return &pb.UserAuthFactorRelabelResponse{Factor: userFactorToProto(factor)}, nil
+}
+
+// Login handles the UserAuthFactorService.Login RPC.
+func (s *userAuthFactorServer) Login(ctx context.Context, req *pb.UserAuthFactorLoginRequest) (*pb.UserAuthFactorLoginResponse, error) {
+	factor, err := s.svc.LookupByCredentialKey(ctx, auth.AuthFactorType(req.GetType()), req.GetLookupKey())
+	if err != nil {
+		return nil, mapUserAuthFactorGRPCError(err)
+	}
+	return &pb.UserAuthFactorLoginResponse{
+		UserId: factor.UserID,
+		Active: true,
+		Factor: userFactorToProto(factor),
+	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Proto conversion helpers
+// ---------------------------------------------------------------------------
+
+// userFactorToProto converts an auth.AuthFactor to its protobuf wire shape.
+func userFactorToProto(f *auth.AuthFactor) *pb.UserAuthFactorRecord {
+	if f == nil {
+		return &pb.UserAuthFactorRecord{}
+	}
+	r := &pb.UserAuthFactorRecord{
+		Id:             f.ID,
+		UserId:         f.UserID,
+		Type:           string(f.Type),
+		Label:          f.Label,
+		Credential:     f.Credential,
+		SpkiCredential: f.SPKICredential,
+		Metadata:       f.Metadata,
+		RegisteredAt:   f.RegisteredAt.UTC().Format(time.RFC3339),
+		CreatedBy:      f.CreatedBy,
 	}
 	if f.LastUsedAt != nil {
-		r.LastUsedAt = f.LastUsedAt.Format(time.RFC3339)
+		r.LastUsedAt = f.LastUsedAt.UTC().Format(time.RFC3339)
 	}
 	if f.RevokedAt != nil {
-		r.RevokedAt = f.RevokedAt.Format(time.RFC3339)
+		r.RevokedAt = f.RevokedAt.UTC().Format(time.RFC3339)
 	}
 	return r
 }
 
-func userFactorFromAddWire(req *GRPCUserAuthFactorAddRequest) *auth.AuthFactor {
+// userFactorFromAddProto constructs an auth.AuthFactor from an Add request.
+func userFactorFromAddProto(req *pb.UserAuthFactorAddRequest) *auth.AuthFactor {
 	return &auth.AuthFactor{
-		UserID:     req.UserID,
-		Type:       auth.AuthFactorType(req.Type),
-		Label:      req.Label,
-		Credential: req.Credential,
-		Metadata:   req.Metadata,
-		CreatedBy:  req.CreatedBy,
+		UserID:         req.GetUserId(),
+		Type:           auth.AuthFactorType(req.GetType()),
+		Label:          req.GetLabel(),
+		Credential:     req.GetCredential(),
+		SPKICredential: req.GetSpkiCredential(),
+		Metadata:       req.GetMetadata(),
+		CreatedBy:      req.GetCreatedBy(),
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Handlers
-// ---------------------------------------------------------------------------
-
-func userFactorAddHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
-	s := srv.(*userAuthFactorServer)
-	req := new(wrapperspb.BytesValue)
-	if err := dec(req); err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "decode: %v", err)
+// userFactorFromNewFactorProto constructs an auth.AuthFactor from a Rotate
+// new-factor message.
+func userFactorFromNewFactorProto(req *pb.UserAuthFactorNewFactor) *auth.AuthFactor {
+	if req == nil {
+		return &auth.AuthFactor{}
 	}
-	var r GRPCUserAuthFactorAddRequest
-	if err := json.Unmarshal(req.GetValue(), &r); err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "unmarshal: %v", err)
+	return &auth.AuthFactor{
+		UserID:         req.GetUserId(),
+		Type:           auth.AuthFactorType(req.GetType()),
+		Label:          req.GetLabel(),
+		Credential:     req.GetCredential(),
+		SPKICredential: req.GetSpkiCredential(),
+		Metadata:       req.GetMetadata(),
+		CreatedBy:      req.GetCreatedBy(),
 	}
-	factor := userFactorFromAddWire(&r)
-	if err := s.svc.Add(ctx, r.UserID, factor); err != nil {
-		return nil, mapUserAuthFactorGRPCError(err)
-	}
-	out, _ := json.Marshal(GRPCUserAuthFactorAddResponse{Factor: userFactorToWire(factor)})
-	return wrapperspb.Bytes(out), nil
-}
-
-func userFactorListHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
-	s := srv.(*userAuthFactorServer)
-	req := new(wrapperspb.BytesValue)
-	if err := dec(req); err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "decode: %v", err)
-	}
-	var r GRPCUserAuthFactorListRequest
-	if err := json.Unmarshal(req.GetValue(), &r); err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "unmarshal: %v", err)
-	}
-	factors, err := s.svc.List(ctx, r.UserID)
-	if err != nil {
-		return nil, mapUserAuthFactorGRPCError(err)
-	}
-	resp := GRPCUserAuthFactorListResponse{
-		Factors: make([]GRPCUserAuthFactorRecord, len(factors)),
-		Total:   len(factors),
-	}
-	for i, f := range factors {
-		resp.Factors[i] = userFactorToWire(f)
-	}
-	out, _ := json.Marshal(resp)
-	return wrapperspb.Bytes(out), nil
-}
-
-func userFactorGetHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
-	s := srv.(*userAuthFactorServer)
-	req := new(wrapperspb.BytesValue)
-	if err := dec(req); err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "decode: %v", err)
-	}
-	var r GRPCUserAuthFactorGetRequest
-	if err := json.Unmarshal(req.GetValue(), &r); err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "unmarshal: %v", err)
-	}
-	factor, err := s.svc.Get(ctx, r.FactorID)
-	if err != nil {
-		return nil, mapUserAuthFactorGRPCError(err)
-	}
-	out, _ := json.Marshal(GRPCUserAuthFactorGetResponse{Factor: userFactorToWire(factor)})
-	return wrapperspb.Bytes(out), nil
-}
-
-func userFactorRemoveHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
-	s := srv.(*userAuthFactorServer)
-	req := new(wrapperspb.BytesValue)
-	if err := dec(req); err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "decode: %v", err)
-	}
-	var r GRPCUserAuthFactorRemoveRequest
-	if err := json.Unmarshal(req.GetValue(), &r); err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "unmarshal: %v", err)
-	}
-	if err := s.svc.Remove(ctx, r.FactorID, r.Force); err != nil {
-		return nil, mapUserAuthFactorGRPCError(err)
-	}
-	out, _ := json.Marshal(GRPCUserAuthFactorRemoveResponse{Status: "revoked"})
-	return wrapperspb.Bytes(out), nil
-}
-
-func userFactorRotateHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
-	s := srv.(*userAuthFactorServer)
-	req := new(wrapperspb.BytesValue)
-	if err := dec(req); err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "decode: %v", err)
-	}
-	var r GRPCUserAuthFactorRotateRequest
-	if err := json.Unmarshal(req.GetValue(), &r); err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "unmarshal: %v", err)
-	}
-	newFactor := userFactorFromAddWire(&r.NewFactor)
-	if err := s.svc.Rotate(ctx, r.OldFactorID, newFactor); err != nil {
-		return nil, mapUserAuthFactorGRPCError(err)
-	}
-	out, _ := json.Marshal(GRPCUserAuthFactorRotateResponse{NewFactor: userFactorToWire(newFactor)})
-	return wrapperspb.Bytes(out), nil
-}
-
-func userFactorRelabelHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
-	s := srv.(*userAuthFactorServer)
-	req := new(wrapperspb.BytesValue)
-	if err := dec(req); err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "decode: %v", err)
-	}
-	var r GRPCUserAuthFactorRelabelRequest
-	if err := json.Unmarshal(req.GetValue(), &r); err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "unmarshal: %v", err)
-	}
-	if err := s.svc.Relabel(ctx, r.FactorID, r.Label); err != nil {
-		return nil, mapUserAuthFactorGRPCError(err)
-	}
-	factor, err := s.svc.Get(ctx, r.FactorID)
-	if err != nil {
-		return nil, mapUserAuthFactorGRPCError(err)
-	}
-	out, _ := json.Marshal(GRPCUserAuthFactorRelabelResponse{Factor: userFactorToWire(factor)})
-	return wrapperspb.Bytes(out), nil
-}
-
-func userFactorLoginHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
-	s := srv.(*userAuthFactorServer)
-	req := new(wrapperspb.BytesValue)
-	if err := dec(req); err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "decode: %v", err)
-	}
-	var r GRPCUserAuthFactorLoginRequest
-	if err := json.Unmarshal(req.GetValue(), &r); err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "unmarshal: %v", err)
-	}
-	factor, err := s.svc.LookupByCredentialKey(ctx, auth.AuthFactorType(r.Type), r.LookupKey)
-	if err != nil {
-		return nil, mapUserAuthFactorGRPCError(err)
-	}
-	resp := GRPCUserAuthFactorLoginResponse{
-		UserID: factor.UserID,
-		Active: true,
-		Factor: userFactorToWire(factor),
-	}
-	out, _ := json.Marshal(resp)
-	return wrapperspb.Bytes(out), nil
-}
-
-// ---------------------------------------------------------------------------
-// Client helpers (used by SDK transport)
-// ---------------------------------------------------------------------------
-
-// UserAuthFactorAddUnary invokes Add over a gRPC connection.
-func UserAuthFactorAddUnary(ctx context.Context, conn *grpc.ClientConn, req *GRPCUserAuthFactorAddRequest) (*GRPCUserAuthFactorAddResponse, error) {
-	b, _ := json.Marshal(req)
-	resp := new(wrapperspb.BytesValue)
-	if err := conn.Invoke(ctx, "/qrdb.v1.UserAuthFactorService/Add", wrapperspb.Bytes(b), resp); err != nil {
-		return nil, err
-	}
-	out := new(GRPCUserAuthFactorAddResponse)
-	if err := json.Unmarshal(resp.GetValue(), out); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-// UserAuthFactorListUnary invokes List over a gRPC connection.
-func UserAuthFactorListUnary(ctx context.Context, conn *grpc.ClientConn, req *GRPCUserAuthFactorListRequest) (*GRPCUserAuthFactorListResponse, error) {
-	b, _ := json.Marshal(req)
-	resp := new(wrapperspb.BytesValue)
-	if err := conn.Invoke(ctx, "/qrdb.v1.UserAuthFactorService/List", wrapperspb.Bytes(b), resp); err != nil {
-		return nil, err
-	}
-	out := new(GRPCUserAuthFactorListResponse)
-	if err := json.Unmarshal(resp.GetValue(), out); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-// UserAuthFactorGetUnary invokes Get over a gRPC connection.
-func UserAuthFactorGetUnary(ctx context.Context, conn *grpc.ClientConn, req *GRPCUserAuthFactorGetRequest) (*GRPCUserAuthFactorGetResponse, error) {
-	b, _ := json.Marshal(req)
-	resp := new(wrapperspb.BytesValue)
-	if err := conn.Invoke(ctx, "/qrdb.v1.UserAuthFactorService/Get", wrapperspb.Bytes(b), resp); err != nil {
-		return nil, err
-	}
-	out := new(GRPCUserAuthFactorGetResponse)
-	if err := json.Unmarshal(resp.GetValue(), out); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-// UserAuthFactorRemoveUnary invokes Remove over a gRPC connection.
-func UserAuthFactorRemoveUnary(ctx context.Context, conn *grpc.ClientConn, req *GRPCUserAuthFactorRemoveRequest) (*GRPCUserAuthFactorRemoveResponse, error) {
-	b, _ := json.Marshal(req)
-	resp := new(wrapperspb.BytesValue)
-	if err := conn.Invoke(ctx, "/qrdb.v1.UserAuthFactorService/Remove", wrapperspb.Bytes(b), resp); err != nil {
-		return nil, err
-	}
-	out := new(GRPCUserAuthFactorRemoveResponse)
-	if err := json.Unmarshal(resp.GetValue(), out); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-// UserAuthFactorRotateUnary invokes Rotate over a gRPC connection.
-func UserAuthFactorRotateUnary(ctx context.Context, conn *grpc.ClientConn, req *GRPCUserAuthFactorRotateRequest) (*GRPCUserAuthFactorRotateResponse, error) {
-	b, _ := json.Marshal(req)
-	resp := new(wrapperspb.BytesValue)
-	if err := conn.Invoke(ctx, "/qrdb.v1.UserAuthFactorService/Rotate", wrapperspb.Bytes(b), resp); err != nil {
-		return nil, err
-	}
-	out := new(GRPCUserAuthFactorRotateResponse)
-	if err := json.Unmarshal(resp.GetValue(), out); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-// UserAuthFactorRelabelUnary invokes Relabel over a gRPC connection.
-func UserAuthFactorRelabelUnary(ctx context.Context, conn *grpc.ClientConn, req *GRPCUserAuthFactorRelabelRequest) (*GRPCUserAuthFactorRelabelResponse, error) {
-	b, _ := json.Marshal(req)
-	resp := new(wrapperspb.BytesValue)
-	if err := conn.Invoke(ctx, "/qrdb.v1.UserAuthFactorService/Relabel", wrapperspb.Bytes(b), resp); err != nil {
-		return nil, err
-	}
-	out := new(GRPCUserAuthFactorRelabelResponse)
-	if err := json.Unmarshal(resp.GetValue(), out); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-// UserAuthFactorLoginUnary invokes Login over a gRPC connection.
-func UserAuthFactorLoginUnary(ctx context.Context, conn *grpc.ClientConn, req *GRPCUserAuthFactorLoginRequest) (*GRPCUserAuthFactorLoginResponse, error) {
-	b, _ := json.Marshal(req)
-	resp := new(wrapperspb.BytesValue)
-	if err := conn.Invoke(ctx, "/qrdb.v1.UserAuthFactorService/Login", wrapperspb.Bytes(b), resp); err != nil {
-		return nil, err
-	}
-	out := new(GRPCUserAuthFactorLoginResponse)
-	if err := json.Unmarshal(resp.GetValue(), out); err != nil {
-		return nil, err
-	}
-	return out, nil
 }
 
 // mapUserAuthFactorGRPCError maps an auth-package error into a gRPC status.

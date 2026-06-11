@@ -26,6 +26,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	grpcpkg "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	tenantpkg "github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -40,10 +41,11 @@ import (
 // ---------------------------------------------------------------------------
 
 type fakeTenantServicer struct {
-	initFn   func(ctx context.Context, id, passphrase string, threshold, shares int) error
-	unsealFn func(ctx context.Context, id string, key []byte) error
-	sealFn   func(ctx context.Context, id string) error
-	statusFn func(ctx context.Context, id string) (*tenantpkg.TenantBarrierStatus, error)
+	initFn        func(ctx context.Context, id, passphrase string, threshold, shares int) error
+	unsealFn      func(ctx context.Context, id string, key []byte) error
+	unsealShareFn func(ctx context.Context, id, share string) (*tenantpkg.TenantBarrierUnsealProgress, error)
+	sealFn        func(ctx context.Context, id string) error
+	statusFn      func(ctx context.Context, id string) (*tenantpkg.TenantBarrierStatus, error)
 }
 
 var _ tenantpkg.TenantServicer = (*fakeTenantServicer)(nil)
@@ -66,11 +68,21 @@ func (f *fakeTenantServicer) UpdateTenant(_ context.Context, id string, _ tenant
 func (f *fakeTenantServicer) UpdateQuotas(_ context.Context, id string, q *quota.Quotas) (*tenantpkg.TenantInfo, error) {
 	return &tenantpkg.TenantInfo{ID: id, Quotas: q}, nil
 }
-func (f *fakeTenantServicer) TenantBarrierInitWithStrategy(ctx context.Context, id, passphrase string, threshold, shares int, _ seal.StrategyID) error {
-	return f.TenantBarrierInit(ctx, id, passphrase, threshold, shares)
+func (f *fakeTenantServicer) TenantBarrierInitWithStrategy(ctx context.Context, id, passphrase string, threshold, shares int, _ seal.StrategyID) (*tenantpkg.TenantBarrierInitResult, error) {
+	if err := f.callInitFn(ctx, id, passphrase, threshold, shares); err != nil {
+		return nil, err
+	}
+	return &tenantpkg.TenantBarrierInitResult{TenantID: id}, nil
 }
 
-func (f *fakeTenantServicer) TenantBarrierInit(ctx context.Context, id, passphrase string, threshold, shares int) error {
+func (f *fakeTenantServicer) TenantBarrierInit(ctx context.Context, id, passphrase string, threshold, shares int) (*tenantpkg.TenantBarrierInitResult, error) {
+	if err := f.callInitFn(ctx, id, passphrase, threshold, shares); err != nil {
+		return nil, err
+	}
+	return &tenantpkg.TenantBarrierInitResult{TenantID: id}, nil
+}
+
+func (f *fakeTenantServicer) callInitFn(ctx context.Context, id, passphrase string, threshold, shares int) error {
 	if f.initFn != nil {
 		return f.initFn(ctx, id, passphrase, threshold, shares)
 	}
@@ -81,6 +93,12 @@ func (f *fakeTenantServicer) TenantBarrierUnseal(ctx context.Context, id string,
 		return f.unsealFn(ctx, id, key)
 	}
 	return nil
+}
+func (f *fakeTenantServicer) TenantBarrierUnsealShare(ctx context.Context, id, share string) (*tenantpkg.TenantBarrierUnsealProgress, error) {
+	if f.unsealShareFn != nil {
+		return f.unsealShareFn(ctx, id, share)
+	}
+	return &tenantpkg.TenantBarrierUnsealProgress{TenantID: id}, nil
 }
 func (f *fakeTenantServicer) TenantBarrierSeal(ctx context.Context, id string) error {
 	if f.sealFn != nil {
@@ -102,6 +120,25 @@ func (f *fakeTenantServicer) DecrementQuotaUsage(_ context.Context, _ string, _ 
 }
 func (f *fakeTenantServicer) GetQuotaUsage(_ context.Context, _ string, _ quota.Resource) (int64, error) {
 	return 0, nil
+}
+
+func (f *fakeTenantServicer) TenantBarrierOfficerRegister(_ context.Context, _ string, _ *ceremony.RegisterOfficerRequest) (*ceremony.RegisterOfficerResult, error) {
+	return &ceremony.RegisterOfficerResult{}, nil
+}
+func (f *fakeTenantServicer) TenantBarrierOfficerList(_ context.Context, _ string) ([]*ceremony.OfficerStatus, error) {
+	return nil, nil
+}
+func (f *fakeTenantServicer) TenantBarrierOfficerClaimStatus(_ context.Context, _ string) ([]*ceremony.OfficerStatus, error) {
+	return nil, nil
+}
+func (f *fakeTenantServicer) TenantBarrierShareClaimBegin(_ context.Context, _, _, _ string) (*ceremony.ChallengeResponse, error) {
+	return &ceremony.ChallengeResponse{}, nil
+}
+func (f *fakeTenantServicer) TenantBarrierShareClaimComplete(_ context.Context, _, _, _ string, _ []byte, _ string) (*ceremony.ShareClaimResult, error) {
+	return &ceremony.ShareClaimResult{}, nil
+}
+func (f *fakeTenantServicer) TenantBarrierShamirSealVote(_ context.Context, _, _ string) (*tenantpkg.TenantBarrierUnsealProgress, error) {
+	return &tenantpkg.TenantBarrierUnsealProgress{}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -167,7 +204,7 @@ func TestTransport_TenantBarrierInit_Success(t *testing.T) {
 	tr, cleanup := connectBareTransport(t, addr)
 	defer cleanup()
 
-	err := tr.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{
+	_, err := tr.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{
 		TenantID: "acme", Threshold: 3, Shares: 5,
 	})
 	if err != nil {
@@ -180,7 +217,7 @@ func TestTransport_TenantBarrierInit_Success(t *testing.T) {
 
 func TestTransport_TenantBarrierInit_NilRequest(t *testing.T) {
 	tr := &Transport{config: &transport.Config{}}
-	err := tr.TenantBarrierInit(context.Background(), nil)
+	_, err := tr.TenantBarrierInit(context.Background(), nil)
 	if err == nil {
 		t.Fatal("expected error for nil request")
 	}
@@ -189,7 +226,7 @@ func TestTransport_TenantBarrierInit_NilRequest(t *testing.T) {
 func TestTransport_TenantBarrierInit_AfterClose(t *testing.T) {
 	tr := &Transport{config: &transport.Config{}}
 	tr.closed.Store(true)
-	err := tr.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{TenantID: "acme"})
+	_, err := tr.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{TenantID: "acme"})
 	if err == nil {
 		t.Fatal("expected ClosedError")
 	}
@@ -211,7 +248,7 @@ func TestTransport_TenantBarrierInit_ServerError(t *testing.T) {
 	tr, cleanup := connectBareTransport(t, addr)
 	defer cleanup()
 
-	err := tr.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{TenantID: "missing"})
+	_, err := tr.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{TenantID: "missing"})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -449,18 +486,23 @@ func TestTransport_TenantBarrierStatus_ServerError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Sentinel error types
+// Nil-request guard
 // ---------------------------------------------------------------------------
 
-func TestErrNilRequest_Error(t *testing.T) {
-	if got := (errNilRequest{}).Error(); got != "tenant barrier: nil request" {
-		t.Errorf("unexpected message: %q", got)
-	}
-}
+func TestTenantBarrier_NilRequest(t *testing.T) {
+	addr, stop := startTenantBarrierServer(t, &fakeTenantServicer{})
+	defer stop()
+	tr, cleanup := connectBareTransport(t, addr)
+	defer cleanup()
 
-func TestErrEmptyResponse_Error(t *testing.T) {
-	if got := (errEmptyResponse{}).Error(); got != "tenant barrier: empty response" {
-		t.Errorf("unexpected message: %q", got)
+	_, err := tr.TenantBarrierInit(context.Background(), nil)
+	var nre *transport.NilRequestError
+	if !errors.As(err, &nre) {
+		t.Fatalf("expected *transport.NilRequestError, got %T: %v", err, err)
+	}
+	var re *transport.RequestError
+	if !errors.As(err, &re) || re.Method != "TenantBarrierInit" {
+		t.Errorf("expected RequestError carrying method TenantBarrierInit, got %v", err)
 	}
 }
 

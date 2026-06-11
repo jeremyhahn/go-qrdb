@@ -91,6 +91,14 @@ type FinishLoginRequest struct {
 	// LookupKey is the canonical credential lookup key for the factor.
 	LookupKey []byte `json:"lookupKey"`
 
+	// AltLookupKeys are ordered fallback lookup keys tried when LookupKey
+	// does not resolve. The canonical use is mTLS / PIV login: LookupKey
+	// carries the renewal-stable SPKI key and AltLookupKeys carries the
+	// legacy SHA-256(cert) key so factors enrolled before SPKI indexing
+	// keep resolving. Fallback happens inside one FinishLogin call because
+	// the login session is consumed before resolution.
+	AltLookupKeys [][]byte `json:"altLookupKeys,omitempty"`
+
 	// Signature is the type-specific proof produced by the hardware.
 	Signature []byte `json:"signature"`
 

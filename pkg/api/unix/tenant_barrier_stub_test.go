@@ -17,6 +17,7 @@ package unix
 import (
 	"context"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -69,17 +70,22 @@ func (s *stubTenantBarrierSvc) UpdateQuotas(_ context.Context, _ string, _ *quot
 }
 
 // TenantBarrierInit records arguments and returns the configured error.
-func (s *stubTenantBarrierSvc) TenantBarrierInit(_ context.Context, tenantID, _ string, threshold, shares int) error {
+func (s *stubTenantBarrierSvc) TenantBarrierInit(_ context.Context, tenantID, _ string, threshold, shares int) (*tenant.TenantBarrierInitResult, error) {
 	s.initCalled = true
 	s.lastInitID = tenantID
 	s.lastInitT = threshold
 	s.lastInitS = shares
-	return s.initErr
+	return nil, s.initErr
 }
 
 // TenantBarrierInitWithStrategy delegates to TenantBarrierInit for test simplicity.
-func (s *stubTenantBarrierSvc) TenantBarrierInitWithStrategy(ctx context.Context, tenantID, passphrase string, threshold, shares int, _ seal.StrategyID) error {
+func (s *stubTenantBarrierSvc) TenantBarrierInitWithStrategy(ctx context.Context, tenantID, passphrase string, threshold, shares int, _ seal.StrategyID) (*tenant.TenantBarrierInitResult, error) {
 	return s.TenantBarrierInit(ctx, tenantID, passphrase, threshold, shares)
+}
+
+// TenantBarrierUnsealShare is a no-op stub.
+func (s *stubTenantBarrierSvc) TenantBarrierUnsealShare(_ context.Context, _, _ string) (*tenant.TenantBarrierUnsealProgress, error) {
+	return nil, nil
 }
 
 // TenantBarrierUnseal records arguments and returns the configured error.
@@ -128,6 +134,36 @@ func (s *stubTenantBarrierSvc) DecrementQuotaUsage(_ context.Context, _ string, 
 // GetQuotaUsage is a no-op stub.
 func (s *stubTenantBarrierSvc) GetQuotaUsage(_ context.Context, _ string, _ quota.Resource) (int64, error) {
 	return 0, nil
+}
+
+// TenantBarrierOfficerRegister is a no-op stub.
+func (s *stubTenantBarrierSvc) TenantBarrierOfficerRegister(_ context.Context, _ string, _ *ceremony.RegisterOfficerRequest) (*ceremony.RegisterOfficerResult, error) {
+	return &ceremony.RegisterOfficerResult{}, nil
+}
+
+// TenantBarrierOfficerList is a no-op stub.
+func (s *stubTenantBarrierSvc) TenantBarrierOfficerList(_ context.Context, _ string) ([]*ceremony.OfficerStatus, error) {
+	return nil, nil
+}
+
+// TenantBarrierShareClaimBegin is a no-op stub.
+func (s *stubTenantBarrierSvc) TenantBarrierShareClaimBegin(_ context.Context, _, _, _ string) (*ceremony.ChallengeResponse, error) {
+	return &ceremony.ChallengeResponse{}, nil
+}
+
+// TenantBarrierShareClaimComplete is a no-op stub.
+func (s *stubTenantBarrierSvc) TenantBarrierShareClaimComplete(_ context.Context, _, _, _ string, _ []byte, _ string) (*ceremony.ShareClaimResult, error) {
+	return &ceremony.ShareClaimResult{}, nil
+}
+
+// TenantBarrierOfficerClaimStatus is a no-op stub.
+func (s *stubTenantBarrierSvc) TenantBarrierOfficerClaimStatus(_ context.Context, _ string) ([]*ceremony.OfficerStatus, error) {
+	return nil, nil
+}
+
+// TenantBarrierShamirSealVote is a no-op stub.
+func (s *stubTenantBarrierSvc) TenantBarrierShamirSealVote(_ context.Context, _, _ string) (*tenant.TenantBarrierUnsealProgress, error) {
+	return &tenant.TenantBarrierUnsealProgress{}, nil
 }
 
 // Compile-time interface check.

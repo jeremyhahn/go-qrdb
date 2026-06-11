@@ -16,9 +16,10 @@ package grpc
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
-	grpcpkg "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
+	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -35,24 +36,29 @@ func (t *Transport) EnrollFactor(ctx context.Context, req *transport.EnrollFacto
 		return nil, &transport.ClosedError{}
 	}
 
-	grpcReq := &grpcpkg.GRPCEnrollFactorRequest{
-		FactorName:   req.FactorName,
-		Subject:      req.Subject,
-		TenantID:     req.TenantID,
-		MethodParams: req.MethodParams,
+	pbReq := &pb.EnrollFactorRequest{
+		FactorName: req.FactorName,
+		Subject:    req.Subject,
+		TenantId:   req.TenantID,
+	}
+	if len(req.MethodParams) > 0 {
+		pbReq.MethodParams = make(map[string]string, len(req.MethodParams))
+		for k, v := range req.MethodParams {
+			pbReq.MethodParams[k] = anyToString(v)
+		}
 	}
 
-	resp, err := grpcpkg.EnrollFactorUnary(ctx, t.conn, grpcReq)
+	resp, err := pb.NewAuthFactorServiceClient(t.conn).EnrollFactor(ctx, pbReq)
 	if err != nil {
 		return nil, mapGRPCError("EnrollFactor", err)
 	}
 
-	enrolledAt, _ := time.Parse(time.RFC3339, resp.EnrolledAt)
+	enrolledAt, _ := time.Parse(time.RFC3339, resp.GetEnrolledAt())
 	return &transport.EnrollFactorResponse{
-		EnrollmentID: resp.EnrollmentID,
-		FactorName:   resp.FactorName,
-		UserID:       resp.UserID,
-		TenantID:     resp.TenantID,
+		EnrollmentID: resp.GetEnrollmentId(),
+		FactorName:   resp.GetFactorName(),
+		UserID:       resp.GetUserId(),
+		TenantID:     resp.GetTenantId(),
 		EnrolledAt:   enrolledAt,
 	}, nil
 }
@@ -63,22 +69,24 @@ func (t *Transport) ChallengeFactor(ctx context.Context, req *transport.Challeng
 		return nil, &transport.ClosedError{}
 	}
 
-	grpcReq := &grpcpkg.GRPCChallengeFactorRequest{
-		EnrollmentID: req.EnrollmentID,
-	}
-
-	resp, err := grpcpkg.ChallengeFactorUnary(ctx, t.conn, grpcReq)
+	resp, err := pb.NewAuthFactorServiceClient(t.conn).ChallengeFactor(ctx, &pb.ChallengeFactorRequest{
+		EnrollmentId: req.EnrollmentID,
+	})
 	if err != nil {
 		return nil, mapGRPCError("ChallengeFactor", err)
 	}
 
-	expiresAt, _ := time.Parse(time.RFC3339, resp.ExpiresAt)
+	expiresAt, _ := time.Parse(time.RFC3339, resp.GetExpiresAt())
+	methodData := make(map[string]any, len(resp.GetMethodData()))
+	for k, v := range resp.GetMethodData() {
+		methodData[k] = v
+	}
 	return &transport.ChallengeFactorResponse{
-		ChallengeID:  resp.ChallengeID,
-		EnrollmentID: resp.EnrollmentID,
-		Nonce:        resp.Nonce,
+		ChallengeID:  resp.GetChallengeId(),
+		EnrollmentID: resp.GetEnrollmentId(),
+		Nonce:        resp.GetNonce(),
 		ExpiresAt:    expiresAt,
-		MethodData:   resp.MethodData,
+		MethodData:   methodData,
 	}, nil
 }
 
@@ -88,14 +96,13 @@ func (t *Transport) VerifyFactor(ctx context.Context, req *transport.VerifyFacto
 		return &transport.ClosedError{}
 	}
 
-	grpcReq := &grpcpkg.GRPCVerifyFactorRequest{
+	_, err := pb.NewAuthFactorServiceClient(t.conn).VerifyFactor(ctx, &pb.VerifyFactorRequest{
 		FactorName:  req.FactorName,
-		ChallengeID: req.ChallengeID,
+		ChallengeId: req.ChallengeID,
 		Value:       req.Value,
 		Metadata:    req.Metadata,
-	}
-
-	return mapGRPCError("VerifyFactor", grpcpkg.VerifyFactorUnary(ctx, t.conn, grpcReq))
+	})
+	return mapGRPCError("VerifyFactor", err)
 }
 
 // ListFactors lists enrolled auth factors via gRPC.
@@ -104,34 +111,34 @@ func (t *Transport) ListFactors(ctx context.Context, req *transport.ListFactorsR
 		return nil, &transport.ClosedError{}
 	}
 
-	grpcReq := &grpcpkg.GRPCListFactorsRequest{}
+	pbReq := &pb.ListFactorsRequest{}
 	if req != nil {
-		grpcReq.Subject = req.Subject
+		pbReq.Subject = req.Subject
 	}
 
-	resp, err := grpcpkg.ListFactorsUnary(ctx, t.conn, grpcReq)
+	resp, err := pb.NewAuthFactorServiceClient(t.conn).ListFactors(ctx, pbReq)
 	if err != nil {
 		return nil, mapGRPCError("ListFactors", err)
 	}
 
-	entries := make([]transport.EnrollmentEntry, len(resp.Enrollments))
-	for i, e := range resp.Enrollments {
+	entries := make([]transport.EnrollmentEntry, len(resp.GetEnrollments()))
+	for i, e := range resp.GetEnrollments() {
 		entries[i] = transport.EnrollmentEntry{
-			EnrollmentID: e.EnrollmentID,
-			FactorName:   e.FactorName,
-			UserID:       e.UserID,
-			TenantID:     e.TenantID,
+			EnrollmentID: e.GetEnrollmentId(),
+			FactorName:   e.GetFactorName(),
+			UserID:       e.GetUserId(),
+			TenantID:     e.GetTenantId(),
 		}
-		entries[i].EnrolledAt, _ = time.Parse(time.RFC3339, e.EnrolledAt)
-		if e.RevokedAt != "" {
-			revokedAt, _ := time.Parse(time.RFC3339, e.RevokedAt)
+		entries[i].EnrolledAt, _ = time.Parse(time.RFC3339, e.GetEnrolledAt())
+		if rv := e.GetRevokedAt(); rv != "" {
+			revokedAt, _ := time.Parse(time.RFC3339, rv)
 			entries[i].RevokedAt = &revokedAt
 		}
 	}
 
 	return &transport.ListFactorsResponse{
 		Enrollments: entries,
-		Total:       resp.Total,
+		Total:       int(resp.GetTotal()),
 	}, nil
 }
 
@@ -141,9 +148,18 @@ func (t *Transport) RevokeFactor(ctx context.Context, req *transport.RevokeFacto
 		return &transport.ClosedError{}
 	}
 
-	grpcReq := &grpcpkg.GRPCRevokeFactorRequest{
-		EnrollmentID: req.EnrollmentID,
-	}
+	_, err := pb.NewAuthFactorServiceClient(t.conn).RevokeFactor(ctx, &pb.RevokeFactorRequest{
+		EnrollmentId: req.EnrollmentID,
+	})
+	return mapGRPCError("RevokeFactor", err)
+}
 
-	return mapGRPCError("RevokeFactor", grpcpkg.RevokeFactorUnary(ctx, t.conn, grpcReq))
+// anyToString converts any value to a string for protobuf map<string,string>
+// fields. Strings are returned verbatim; all other types are JSON-encoded.
+func anyToString(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	b, _ := json.Marshal(v)
+	return string(b)
 }

@@ -113,6 +113,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 	objstore "github.com/jeremyhahn/go-qrdb/pkg/storage/objstore"
 	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
+	qrdbpool "github.com/jeremyhahn/go-qrdb/pkg/storage/pool"
 	"github.com/jeremyhahn/go-qrdb/pkg/store"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
@@ -265,14 +266,29 @@ type nodeSealSubsystem struct {
 	barrierRegistry *seal.BarrierRegistry
 	sealStore       *pebbleStorage.PebbleStorage
 	sealDataDir     string
+	// volumePool is non-nil when the config declares at least one volume pool.
+	// It is closed during node shutdown after the per-tenant registry is
+	// drained, mirroring the daemon's shutdown ordering.
+	volumePool *qrdbpool.VolumePoolSubsystem
 }
 
-// close releases the seal store. Safe to call when sealStore is nil.
+// close releases the seal store and the volume-pool state store (in that
+// order, matching the daemon's shutdown path). The per-tenant registry is
+// closed separately via closeVolumePool so callers can log progress.
+// Safe to call when sealStore is nil.
 func (s *nodeSealSubsystem) close() error {
-	if s == nil || s.sealStore == nil {
+	if s == nil {
 		return nil
 	}
-	return s.sealStore.Close()
+	var firstErr error
+	if s.sealStore != nil {
+		firstErr = s.sealStore.Close()
+		s.sealStore = nil
+	}
+	if err := s.volumePool.Close(); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	return firstErr
 }
 
 // ---------------------------------------------------------------------------
@@ -325,6 +341,10 @@ type Node struct {
 	sealStore       *pebbleStorage.PebbleStorage
 	barrier         *seal.StorageBarrier
 	barrierRegistry *seal.BarrierRegistry
+	// volumePool is non-nil when the config declares at least one volume pool.
+	// Its PerTenantRegistry is drained before the sealStore is closed on
+	// shutdown, mirroring cmd/qrdbd/start.go's shutdown ordering.
+	volumePool *qrdbpool.VolumePoolSubsystem
 	// credCoreSvc is the *credentials.CredentialService built during the seal
 	// subsystem phase. It is kept here so completeBoot can thread it into
 	// lifecycle.BuildServices.Infra.CredentialCoreSvc without needing to
@@ -354,6 +374,14 @@ type Node struct {
 	// guaranteeing enroll-writes are visible to login-reads. Nil until
 	// buildLoginOpts runs (only when a User service is present).
 	loginFactorSvc service.UserAuthFactorServicer
+
+	// authFactorSvc is the custodian enrollment/challenge/verify service shared
+	// by the embedded transport and the multi-protocol server so both see the
+	// same in-memory challenge cache and the same persisted enrollment records.
+	// Populated in wireClientAndServer from the caller-supplied
+	// server.WithAuthFactorService or constructed automatically from
+	// server.WithFactorRegistry when no explicit service is supplied.
+	authFactorSvc service.AuthFactorServicer
 
 	// pendingStandalone is non-nil when the node was constructed with a sealed
 	// barrier from a passphrase-missing or Shamir strategy. Unseal consumes it
@@ -617,6 +645,13 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 }
 
 // Close tears down all node resources in LIFO order. Nil fields are skipped.
+//
+// All barriers (system and per-tenant) are sealed before their references
+// are dropped so unsealed DEKs and root keys held in memguard enclaves are
+// wiped deterministically rather than waiting on GC finalizers. Embedded
+// composers that want mlocked memory purged synchronously at process exit
+// must additionally arm secure.EnablePurge at startup and invoke
+// secure.Purge on shutdown, mirroring cmd/qrdbd/main.go.
 func (n *Node) Close() error {
 	var firstErr error
 
@@ -642,9 +677,35 @@ func (n *Node) Close() error {
 		record(n.host.Close())
 		n.host = nil
 	}
+	// Seal before dropping references: Seal zeroes the EpochBarrier root
+	// key and DEKs and is idempotent, so a still-sealed barrier is a no-op.
+	// SealAll covers the system barrier registered in the registry; the
+	// direct barrier seal handles registry-less configurations.
+	if n.barrierRegistry != nil {
+		record(n.barrierRegistry.SealAll())
+	} else if n.barrier != nil {
+		record(n.barrier.Seal())
+	}
 	n.barrier = nil
 	n.barrierRegistry = nil
 	n.credCoreSvc = nil
+	// Drain per-tenant Pebble instances before closing the volume-pool state
+	// store. Mirrors cmd/qrdbd/start.go shutdown ordering.
+	if n.volumePool != nil && n.volumePool.PerTenantRegistry != nil {
+		closed := n.volumePool.PerTenantRegistry.List()
+		if err := n.volumePool.PerTenantRegistry.CloseAll(context.Background()); err != nil {
+			n.logger.Error("per-tenant pebble close-all failed",
+				slog.Any("error", err),
+				slog.Int("count", len(closed)))
+		} else if len(closed) > 0 {
+			n.logger.Info("closed per-tenant pebbles on shutdown",
+				slog.Int("count", len(closed)))
+		}
+	}
+	if n.volumePool != nil {
+		record(n.volumePool.Close())
+		n.volumePool = nil
+	}
 	if n.sealStore != nil {
 		record(n.sealStore.Close())
 		n.sealStore = nil
@@ -722,6 +783,7 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 		n.barrierRegistry = sub.barrierRegistry
 		n.sealStore = sub.sealStore
 		n.credCoreSvc = sub.credCoreSvc
+		n.volumePool = sub.volumePool
 
 		// Build the sealed-window service graph (barrier + ceremony +
 		// credential only) so they are accessible even before full boot.
@@ -870,6 +932,7 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 		n.barrierRegistry = sub.barrierRegistry
 		n.sealStore = sub.sealStore
 		n.credCoreSvc = sub.credCoreSvc
+		n.volumePool = sub.volumePool
 
 		sealNode, sealNodeErr := lifecycle.BuildSealServicesOnly(ctx, lifecycle.Infra{
 			DataDir:           dataDir,
@@ -1050,12 +1113,29 @@ func buildNodeSealSubsystem(ctx context.Context, cfg *qrdbconfig.Config, dataDir
 		return nil, &StorageCreateError{Backend: "seal-registry", Err: regErr}
 	}
 
+	// Build the volume-pool subsystem when the config declares pools. This
+	// mirrors the daemon's initVolumePoolSubsystem path (cmd/qrdbd/start.go)
+	// so embedders (go-quicbaas, go-xkms) get per-tenant barrier isolation
+	// without requiring the daemon binary.
+	vp, vpErr := qrdbpool.BuildVolumePoolSubsystem(dataDir, cfg.Storage.VolumePools, log)
+	if vpErr != nil {
+		_ = sealStore.Close()
+		return nil, &StorageCreateError{Backend: "volume-pool", Err: vpErr}
+	}
+	if vp != nil {
+		barrierRegistry.Attach(
+			seal.WithVolumePool(vp.Manager, vp.StateStore, vp.DefaultPoolName),
+			seal.WithPerTenantRegistry(vp.PerTenantRegistry),
+		)
+	}
+
 	return &nodeSealSubsystem{
 		barrier:         barrier,
 		credCoreSvc:     credCoreSvc,
 		barrierRegistry: barrierRegistry,
 		sealStore:       sealStore,
 		sealDataDir:     sealDataDir,
+		volumePool:      vp,
 	}, nil
 }
 
@@ -1140,9 +1220,27 @@ func attemptAutoUnseal(ctx context.Context, barrier *seal.StorageBarrier, sealCf
 // and multi-protocol server. Used by both standalone and clustered builders
 // after the service graph is ready.
 func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node, cfg *qrdbconfig.Config, callerOpts []server.ServerOption) error {
-	// Resolve the caller-supplied audit logger so the same instance backs
-	// both the multi-protocol server and the in-process client.Audit().
-	n.auditLogger = server.ResolveCryptoOptions(callerOpts...).AuditLogger
+	// Resolve caller-supplied crypto options once so the same instances back
+	// both the multi-protocol server and the in-process transport.
+	crypto := server.ResolveCryptoOptions(callerOpts...)
+	n.auditLogger = crypto.AuditLogger
+
+	// Wire the AuthFactorService. If the caller supplied one explicitly via
+	// server.WithAuthFactorService it is already in crypto.AuthFactorService.
+	// If they supplied only a FactorRegistry, construct the service now so the
+	// embedded transport and all wire protocol servers share one instance.
+	if crypto.AuthFactorService != nil {
+		n.authFactorSvc = crypto.AuthFactorService
+	} else if crypto.FactorRegistry != nil {
+		svc, err := service.NewAuthFactorService(service.AuthFactorServiceConfig{
+			Factors: crypto.FactorRegistry.All(),
+			KV:      svcNode.KV,
+		})
+		if err != nil {
+			return &AuthFactorWiringError{Err: err}
+		}
+		n.authFactorSvc = svc
+	}
 
 	// Build in-process transport.
 	// RBAC posture mirrors the standalone daemon EXACTLY
@@ -1177,6 +1275,9 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	allOpts := buildServerOpts(svcNode, callerOpts)
 	if n.barrier != nil {
 		allOpts = append(allOpts, server.WithSealedWindowProbe(n.barrier))
+	}
+	if n.authFactorSvc != nil {
+		allOpts = append(allOpts, server.WithAuthFactorService(n.authFactorSvc))
 	}
 	srv := server.New(serverCfg, svcNode.KV, svcNode.Admin, allOpts...)
 	if err := srv.Start(); err != nil {
@@ -1237,8 +1338,17 @@ func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node, strictSoD bool) ([]emb
 	if svcNode.Barrier != nil {
 		opts = append(opts, embedded.WithBarrierService(svcNode.Barrier))
 	}
+	if svcNode.CustodianGroup != nil {
+		opts = append(opts, embedded.WithCustodianGroupService(svcNode.CustodianGroup))
+	}
+	if svcNode.Share != nil {
+		opts = append(opts, embedded.WithShareService(svcNode.Share))
+	}
 	if n.auditLogger != nil {
 		opts = append(opts, embedded.WithAuditLogger(n.auditLogger))
+	}
+	if n.authFactorSvc != nil {
+		opts = append(opts, embedded.WithAuthFactorService(n.authFactorSvc))
 	}
 
 	// Wire the unified-login ceremony only when a user model is present.
@@ -1584,11 +1694,28 @@ func buildNodeServerConfig(cfg *qrdbconfig.Config) *qrdbconfig.Config {
 	return &serverCfg
 }
 
-// closeSeal closes the seal store and clears the seal references.
+// closeSeal seals all barriers, closes the seal store and the volume-pool
+// state store, and clears all seal-layer references. Called on error paths
+// before the node is returned to the caller. Sealing first matters on the
+// post-auto-unseal failure paths: the barrier may hold live key material in
+// memguard enclaves, and Seal wipes it deterministically (idempotent when
+// the barrier never unsealed).
 func (n *Node) closeSeal() {
+	if n.barrierRegistry != nil {
+		_ = n.barrierRegistry.SealAll()
+	} else if n.barrier != nil {
+		_ = n.barrier.Seal()
+	}
 	n.barrier = nil
 	n.barrierRegistry = nil
 	n.credCoreSvc = nil
+	if n.volumePool != nil {
+		if n.volumePool.PerTenantRegistry != nil {
+			_ = n.volumePool.PerTenantRegistry.CloseAll(context.Background())
+		}
+		_ = n.volumePool.Close()
+		n.volumePool = nil
+	}
 	if n.sealStore != nil {
 		_ = n.sealStore.Close()
 		n.sealStore = nil
@@ -1623,6 +1750,20 @@ func (n *Node) AdminService() service.AdminServicer {
 // completed the boot.
 func (n *Node) UserAuthFactorService() service.UserAuthFactorServicer {
 	return n.loginFactorSvc
+}
+
+// AuthFactorService returns the AuthFactorService instance shared by the
+// embedded transport and all wire protocol servers. Composers (e.g.
+// go-quicbaas) use this to enroll hardware factors (FIDO2/PIV/PKCS#11)
+// into the SAME service instance that the API surface verifies against,
+// eliminating the class of bug where an enrollment is never visible to
+// the challenge/verify path.
+//
+// Returns nil when the node was constructed without a FactorRegistry or
+// explicit WithAuthFactorService option, or before wireClientAndServer
+// completes (sealed state).
+func (n *Node) AuthFactorService() service.AuthFactorServicer {
+	return n.authFactorSvc
 }
 
 // UserService returns the node's UserServicer. Convenience accessor that

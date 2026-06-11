@@ -16,6 +16,7 @@ package quic
 
 import (
 	"context"
+	"time"
 
 	"google.golang.org/protobuf/proto"
 
@@ -86,10 +87,12 @@ func (t *Transport) BarrierStatus(ctx context.Context) (*transport.BarrierStatus
 		return nil, &unmarshalError{Err: err}
 	}
 	return &transport.BarrierStatusResponse{
-		Sealed:         resp.GetSealed(),
-		Strategy:       resp.GetStrategy(),
-		HardwareBacked: resp.GetHardwareBacked(),
-		InitializedAt:  resp.GetInitializedAt(),
+		Sealed:          resp.GetSealed(),
+		Strategy:        resp.GetStrategy(),
+		HardwareBacked:  resp.GetHardwareBacked(),
+		InitializedAt:   resp.GetInitializedAt(),
+		ShamirThreshold: int(resp.GetShamirThreshold()),
+		ShamirTotal:     int(resp.GetShamirTotal()),
 	}, nil
 }
 
@@ -113,14 +116,14 @@ func (t *Transport) BarrierInitializeShamir(ctx context.Context, req *transport.
 	if err != nil {
 		return nil, err
 	}
-	var resp pb.BarrierShamirInitializeResponse
+	var resp pb.BarrierShamirOperationResponse
 	if err := proto.Unmarshal(respBytes, &resp); err != nil {
 		return nil, &unmarshalError{Err: err}
 	}
 	return &transport.BarrierInitializeShamirResponse{
-		Shares:      resp.GetShares(),
 		Threshold:   int(resp.GetThreshold()),
 		TotalShares: int(resp.GetTotalShares()),
+		ShareCount:  int(resp.GetShareCount()),
 	}, nil
 }
 
@@ -185,14 +188,14 @@ func (t *Transport) BarrierRekey(ctx context.Context, req *transport.BarrierReke
 	if err != nil {
 		return nil, err
 	}
-	var resp pb.BarrierShamirInitializeResponse
+	var resp pb.BarrierShamirOperationResponse
 	if err := proto.Unmarshal(respBytes, &resp); err != nil {
 		return nil, &unmarshalError{Err: err}
 	}
 	return &transport.BarrierRekeyResponse{
-		Shares:      resp.GetShares(),
 		Threshold:   int(resp.GetThreshold()),
 		TotalShares: int(resp.GetTotalShares()),
+		ShareCount:  int(resp.GetShareCount()),
 	}, nil
 }
 
@@ -219,9 +222,9 @@ func (t *Transport) BarrierGenerateRecoveryKeys(ctx context.Context, req *transp
 		return nil, &unmarshalError{Err: err}
 	}
 	return &transport.BarrierRecoveryKeysResponse{
-		Keys:      resp.GetKeys(),
-		Threshold: int(resp.GetThreshold()),
-		Total:     int(resp.GetTotal()),
+		Threshold:  int(resp.GetThreshold()),
+		Total:      int(resp.GetTotal()),
+		ShareCount: int(resp.GetShareCount()),
 	}, nil
 }
 
@@ -291,4 +294,268 @@ func (t *Transport) BarrierGenerateRootToken(ctx context.Context, req *transport
 		Token:     resp.GetToken(),
 		CreatedAt: resp.GetCreatedAt(),
 	}, nil
+}
+
+// OfficerRegister registers a Security Officer for the system barrier.
+func (t *Transport) OfficerRegister(ctx context.Context, req *transport.OfficerRegisterRequest) (*transport.OfficerRegisterResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	payload, err := proto.Marshal(&pb.BarrierOfficerRegisterRequest{
+		Username:          req.Username,
+		CsrPem:            req.CSRPEM,
+		AuthenticatorType: req.AuthenticatorType,
+		AuthenticatorRef:  req.AuthenticatorRef,
+	})
+	if err != nil {
+		return nil, &marshalError{Err: err}
+	}
+	respBytes, err := t.call(ctx, "barrier.OfficerRegister", payload)
+	if err != nil {
+		return nil, err
+	}
+	var resp pb.BarrierOfficerRegisterResponse
+	if err := proto.Unmarshal(respBytes, &resp); err != nil {
+		return nil, &unmarshalError{Err: err}
+	}
+	return &transport.OfficerRegisterResponse{
+		CertPEM:    resp.GetCertPem(),
+		ShareIndex: int(resp.GetShareIndex()),
+	}, nil
+}
+
+// OfficerList returns all enrolled Security Officers for the system barrier.
+func (t *Transport) OfficerList(ctx context.Context) ([]*transport.OfficerStatus, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	respBytes, err := t.call(ctx, "barrier.OfficerList", nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp pb.BarrierOfficerListResponse
+	if err := proto.Unmarshal(respBytes, &resp); err != nil {
+		return nil, &unmarshalError{Err: err}
+	}
+	return quicProtoToOfficerStatusSlice(resp.GetOfficers()), nil
+}
+
+// OfficerClaimStatus returns a per-officer claim status snapshot for the
+// system barrier. Never includes share bytes.
+func (t *Transport) OfficerClaimStatus(ctx context.Context) ([]*transport.OfficerStatus, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	respBytes, err := t.call(ctx, "barrier.OfficerClaimStatus", nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp pb.BarrierOfficerClaimStatusResponse
+	if err := proto.Unmarshal(respBytes, &resp); err != nil {
+		return nil, &unmarshalError{Err: err}
+	}
+	return quicProtoToOfficerStatusSlice(resp.GetOfficers()), nil
+}
+
+// ShareClaimBegin issues a challenge nonce to the named Security Officer for
+// the system barrier share claim handshake.
+func (t *Transport) ShareClaimBegin(ctx context.Context, req *transport.ShareClaimBeginRequest) (*transport.ShareClaimBeginResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	payload, err := proto.Marshal(&pb.BarrierShareClaimBeginRequest{
+		Username: req.Username,
+	})
+	if err != nil {
+		return nil, &marshalError{Err: err}
+	}
+	respBytes, err := t.call(ctx, "barrier.ShareClaimBegin", payload)
+	if err != nil {
+		return nil, err
+	}
+	var resp pb.BarrierShareClaimBeginResponse
+	if err := proto.Unmarshal(respBytes, &resp); err != nil {
+		return nil, &unmarshalError{Err: err}
+	}
+	expiresAt, parseErr := time.Parse(time.RFC3339, resp.GetExpiresAt())
+	if parseErr != nil {
+		expiresAt = time.Time{}
+	}
+	return &transport.ShareClaimBeginResponse{
+		NonceHex:  resp.GetNonceHex(),
+		ExpiresAt: expiresAt,
+	}, nil
+}
+
+// ShareClaimComplete verifies the Security Officer's nonce signature and
+// returns the system barrier share bytes exactly once.
+func (t *Transport) ShareClaimComplete(ctx context.Context, req *transport.ShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	payload, err := proto.Marshal(&pb.BarrierShareClaimCompleteRequest{
+		Username:  req.Username,
+		NonceHex:  req.NonceHex,
+		Signature: req.Signature,
+	})
+	if err != nil {
+		return nil, &marshalError{Err: err}
+	}
+	respBytes, err := t.call(ctx, "barrier.ShareClaimComplete", payload)
+	if err != nil {
+		return nil, err
+	}
+	var resp pb.BarrierShareClaimCompleteResponse
+	if err := proto.Unmarshal(respBytes, &resp); err != nil {
+		return nil, &unmarshalError{Err: err}
+	}
+	return &transport.ShareClaimCompleteResponse{
+		ShareIndex: int(resp.GetShareIndex()),
+		ShareBytes: resp.GetShareBytes(),
+	}, nil
+}
+
+// ShamirSealVote submits a Shamir share as a seal vote for the system
+// barrier. When the quorum threshold is met the barrier is sealed automatically.
+func (t *Transport) ShamirSealVote(ctx context.Context, req *transport.ShamirSealVoteRequest) (*transport.ShamirSealVoteResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	payload, err := proto.Marshal(&pb.BarrierShamirSealVoteRequest{
+		Share: req.Share,
+	})
+	if err != nil {
+		return nil, &marshalError{Err: err}
+	}
+	respBytes, err := t.call(ctx, "barrier.ShamirSealVote", payload)
+	if err != nil {
+		return nil, err
+	}
+	var resp pb.BarrierShamirSealVoteResponse
+	if err := proto.Unmarshal(respBytes, &resp); err != nil {
+		return nil, &unmarshalError{Err: err}
+	}
+	return &transport.ShamirSealVoteResponse{
+		Required:  int(resp.GetRequired()),
+		Submitted: int(resp.GetSubmitted()),
+		Complete:  resp.GetComplete(),
+	}, nil
+}
+
+// RecoveryOfficerRegister registers a Security Officer for recovery key
+// distribution.
+func (t *Transport) RecoveryOfficerRegister(ctx context.Context, req *transport.OfficerRegisterRequest) (*transport.OfficerRegisterResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	payload, err := proto.Marshal(&pb.BarrierOfficerRegisterRequest{
+		Username:          req.Username,
+		CsrPem:            req.CSRPEM,
+		AuthenticatorType: req.AuthenticatorType,
+		AuthenticatorRef:  req.AuthenticatorRef,
+	})
+	if err != nil {
+		return nil, &marshalError{Err: err}
+	}
+	respBytes, err := t.call(ctx, "barrier.RecoveryOfficerRegister", payload)
+	if err != nil {
+		return nil, err
+	}
+	var resp pb.BarrierOfficerRegisterResponse
+	if err := proto.Unmarshal(respBytes, &resp); err != nil {
+		return nil, &unmarshalError{Err: err}
+	}
+	return &transport.OfficerRegisterResponse{
+		CertPEM:    resp.GetCertPem(),
+		ShareIndex: int(resp.GetShareIndex()),
+	}, nil
+}
+
+// RecoveryShareClaimBegin issues a challenge nonce to the named recovery
+// officer for the recovery share claim handshake.
+func (t *Transport) RecoveryShareClaimBegin(ctx context.Context, req *transport.ShareClaimBeginRequest) (*transport.ShareClaimBeginResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	payload, err := proto.Marshal(&pb.BarrierShareClaimBeginRequest{
+		Username: req.Username,
+	})
+	if err != nil {
+		return nil, &marshalError{Err: err}
+	}
+	respBytes, err := t.call(ctx, "barrier.RecoveryShareClaimBegin", payload)
+	if err != nil {
+		return nil, err
+	}
+	var resp pb.BarrierShareClaimBeginResponse
+	if err := proto.Unmarshal(respBytes, &resp); err != nil {
+		return nil, &unmarshalError{Err: err}
+	}
+	expiresAt, parseErr := time.Parse(time.RFC3339, resp.GetExpiresAt())
+	if parseErr != nil {
+		expiresAt = time.Time{}
+	}
+	return &transport.ShareClaimBeginResponse{
+		NonceHex:  resp.GetNonceHex(),
+		ExpiresAt: expiresAt,
+	}, nil
+}
+
+// RecoveryShareClaimComplete verifies the recovery officer's nonce signature
+// and returns the recovery share bytes exactly once.
+func (t *Transport) RecoveryShareClaimComplete(ctx context.Context, req *transport.ShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	payload, err := proto.Marshal(&pb.BarrierShareClaimCompleteRequest{
+		Username:  req.Username,
+		NonceHex:  req.NonceHex,
+		Signature: req.Signature,
+	})
+	if err != nil {
+		return nil, &marshalError{Err: err}
+	}
+	respBytes, err := t.call(ctx, "barrier.RecoveryShareClaimComplete", payload)
+	if err != nil {
+		return nil, err
+	}
+	var resp pb.BarrierShareClaimCompleteResponse
+	if err := proto.Unmarshal(respBytes, &resp); err != nil {
+		return nil, &unmarshalError{Err: err}
+	}
+	return &transport.ShareClaimCompleteResponse{
+		ShareIndex: int(resp.GetShareIndex()),
+		ShareBytes: resp.GetShareBytes(),
+	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Conversion helpers
+// ---------------------------------------------------------------------------
+
+// quicProtoToOfficerStatusSlice converts a slice of proto OfficerStatus
+// messages to transport OfficerStatus values.
+func quicProtoToOfficerStatusSlice(officers []*pb.OfficerStatus) []*transport.OfficerStatus {
+	out := make([]*transport.OfficerStatus, len(officers))
+	for i, o := range officers {
+		s := &transport.OfficerStatus{
+			Username:       o.GetUsername(),
+			CertThumbprint: o.GetCertThumbprint(),
+			ShareIndex:     int(o.GetShareIndex()),
+			AuthFactor:     o.GetAuthFactor(),
+			SharePending:   o.GetSharePending(),
+		}
+		if raw := o.GetEnrolledAt(); raw != "" {
+			if t, err := time.Parse(time.RFC3339, raw); err == nil {
+				s.EnrolledAt = t
+			}
+		}
+		if raw := o.GetClaimedAt(); raw != "" {
+			if t, err := time.Parse(time.RFC3339, raw); err == nil {
+				s.ClaimedAt = t
+			}
+		}
+		out[i] = s
+	}
+	return out
 }

@@ -17,6 +17,7 @@ package rest
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -25,8 +26,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -92,15 +95,19 @@ func (m *mockTenantService) UpdateQuotas(ctx context.Context, tenantID string, q
 	return nil, nil
 }
 
-func (m *mockTenantService) TenantBarrierInit(ctx context.Context, tenantID, passphrase string, threshold, shares int) error {
+func (m *mockTenantService) TenantBarrierInit(ctx context.Context, tenantID, passphrase string, threshold, shares int) (*tenant.TenantBarrierInitResult, error) {
 	if m.tenantBarrierInitFn != nil {
-		return m.tenantBarrierInitFn(ctx, tenantID, passphrase, threshold, shares)
+		return nil, m.tenantBarrierInitFn(ctx, tenantID, passphrase, threshold, shares)
 	}
-	return nil
+	return nil, nil
 }
 
-func (m *mockTenantService) TenantBarrierInitWithStrategy(ctx context.Context, tenantID, passphrase string, threshold, shares int, _ seal.StrategyID) error {
+func (m *mockTenantService) TenantBarrierInitWithStrategy(ctx context.Context, tenantID, passphrase string, threshold, shares int, _ seal.StrategyID) (*tenant.TenantBarrierInitResult, error) {
 	return m.TenantBarrierInit(ctx, tenantID, passphrase, threshold, shares)
+}
+
+func (m *mockTenantService) TenantBarrierUnsealShare(_ context.Context, _, _ string) (*tenant.TenantBarrierUnsealProgress, error) {
+	return nil, nil
 }
 
 func (m *mockTenantService) TenantBarrierUnseal(ctx context.Context, tenantID string, key []byte) error {
@@ -131,6 +138,24 @@ func (m *mockTenantService) DecrementQuotaUsage(_ context.Context, _ string, _ q
 }
 func (m *mockTenantService) GetQuotaUsage(_ context.Context, _ string, _ quota.Resource) (int64, error) {
 	return 0, nil
+}
+func (m *mockTenantService) TenantBarrierOfficerRegister(_ context.Context, _ string, _ *ceremony.RegisterOfficerRequest) (*ceremony.RegisterOfficerResult, error) {
+	return &ceremony.RegisterOfficerResult{}, nil
+}
+func (m *mockTenantService) TenantBarrierOfficerList(_ context.Context, _ string) ([]*ceremony.OfficerStatus, error) {
+	return nil, nil
+}
+func (m *mockTenantService) TenantBarrierShareClaimBegin(_ context.Context, _, _, _ string) (*ceremony.ChallengeResponse, error) {
+	return &ceremony.ChallengeResponse{}, nil
+}
+func (m *mockTenantService) TenantBarrierShareClaimComplete(_ context.Context, _, _, _ string, _ []byte, _ string) (*ceremony.ShareClaimResult, error) {
+	return &ceremony.ShareClaimResult{}, nil
+}
+func (m *mockTenantService) TenantBarrierOfficerClaimStatus(_ context.Context, _ string) ([]*ceremony.OfficerStatus, error) {
+	return nil, nil
+}
+func (m *mockTenantService) TenantBarrierShamirSealVote(_ context.Context, _, _ string) (*tenant.TenantBarrierUnsealProgress, error) {
+	return &tenant.TenantBarrierUnsealProgress{}, nil
 }
 
 // Compile-time interface check.
@@ -631,7 +656,13 @@ func TestMapTenantError_AllCodes(t *testing.T) {
 	}{
 		{"empty id", tenant.ErrEmptyTenantID, http.StatusBadRequest},
 		{"empty name", tenant.ErrEmptyTenantName, http.StatusBadRequest},
+		{"empty share", tenant.ErrEmptyShare, http.StatusBadRequest},
+		{"system tenant prefix", tenant.ErrSystemTenantMustBePrefix, http.StatusBadRequest},
+		{"invalid strategy", &tenant.InvalidStrategyError{Strategy: "bogus"}, http.StatusBadRequest},
+		{"tenant scope denied", &tenant.TenantScopeError{CallerTenantID: "a", TargetTenantID: "b", Op: "seal"}, http.StatusForbidden},
 		{"nil quotas", tenant.ErrNilQuotas, http.StatusBadRequest},
+		{"barrier isolation unavailable", tenant.ErrBarrierIsolationUnavailable, http.StatusUnprocessableEntity},
+		{"barrier not enabled", tenant.ErrBarrierNotEnabled, http.StatusUnprocessableEntity},
 		{"already exists", tenant.ErrTenantAlreadyExists, http.StatusConflict},
 		{"not found", tenant.ErrTenantNotFound, http.StatusNotFound},
 		{"invalid id", &tenant.InvalidTenantIDError{TenantID: "x", Reason: "bad"}, http.StatusBadRequest},
@@ -1164,4 +1195,477 @@ func TestHandleTenantBarrierStatus_BarrierError(t *testing.T) {
 	srv.dispatch(rec, req)
 
 	assertStatus(t, rec, http.StatusInternalServerError)
+}
+
+// ---------------------------------------------------------------------------
+// extMockTenantService — wraps mockTenantService with configurable SO fns
+// ---------------------------------------------------------------------------
+
+type extMockTenantService struct {
+	*mockTenantService
+	officerRegisterFn    func(ctx context.Context, tenantID string, req *ceremony.RegisterOfficerRequest) (*ceremony.RegisterOfficerResult, error)
+	officerListFn        func(ctx context.Context, tenantID string) ([]*ceremony.OfficerStatus, error)
+	officerClaimStatusFn func(ctx context.Context, tenantID string) ([]*ceremony.OfficerStatus, error)
+	claimBeginFn         func(ctx context.Context, tenantID, username, thumbprint string) (*ceremony.ChallengeResponse, error)
+	claimCompleteFn      func(ctx context.Context, tenantID, username, nonceHex string, sig []byte, thumbprint string) (*ceremony.ShareClaimResult, error)
+	shamirSealVoteFn     func(ctx context.Context, tenantID, share string) (*tenant.TenantBarrierUnsealProgress, error)
+}
+
+func newExtTenantSvc() *extMockTenantService {
+	return &extMockTenantService{mockTenantService: &mockTenantService{}}
+}
+
+var _ tenant.TenantServicer = (*extMockTenantService)(nil)
+
+func (e *extMockTenantService) TenantBarrierOfficerRegister(ctx context.Context, tenantID string, req *ceremony.RegisterOfficerRequest) (*ceremony.RegisterOfficerResult, error) {
+	if e.officerRegisterFn != nil {
+		return e.officerRegisterFn(ctx, tenantID, req)
+	}
+	return e.mockTenantService.TenantBarrierOfficerRegister(ctx, tenantID, req)
+}
+
+func (e *extMockTenantService) TenantBarrierOfficerList(ctx context.Context, tenantID string) ([]*ceremony.OfficerStatus, error) {
+	if e.officerListFn != nil {
+		return e.officerListFn(ctx, tenantID)
+	}
+	return e.mockTenantService.TenantBarrierOfficerList(ctx, tenantID)
+}
+
+func (e *extMockTenantService) TenantBarrierOfficerClaimStatus(ctx context.Context, tenantID string) ([]*ceremony.OfficerStatus, error) {
+	if e.officerClaimStatusFn != nil {
+		return e.officerClaimStatusFn(ctx, tenantID)
+	}
+	return e.mockTenantService.TenantBarrierOfficerClaimStatus(ctx, tenantID)
+}
+
+func (e *extMockTenantService) TenantBarrierShareClaimBegin(ctx context.Context, tenantID, username, thumbprint string) (*ceremony.ChallengeResponse, error) {
+	if e.claimBeginFn != nil {
+		return e.claimBeginFn(ctx, tenantID, username, thumbprint)
+	}
+	return e.mockTenantService.TenantBarrierShareClaimBegin(ctx, tenantID, username, thumbprint)
+}
+
+func (e *extMockTenantService) TenantBarrierShareClaimComplete(ctx context.Context, tenantID, username, nonceHex string, sig []byte, thumbprint string) (*ceremony.ShareClaimResult, error) {
+	if e.claimCompleteFn != nil {
+		return e.claimCompleteFn(ctx, tenantID, username, nonceHex, sig, thumbprint)
+	}
+	return e.mockTenantService.TenantBarrierShareClaimComplete(ctx, tenantID, username, nonceHex, sig, thumbprint)
+}
+
+func (e *extMockTenantService) TenantBarrierShamirSealVote(ctx context.Context, tenantID, share string) (*tenant.TenantBarrierUnsealProgress, error) {
+	if e.shamirSealVoteFn != nil {
+		return e.shamirSealVoteFn(ctx, tenantID, share)
+	}
+	return e.mockTenantService.TenantBarrierShamirSealVote(ctx, tenantID, share)
+}
+
+// Delegation pass-through methods (all other TenantServicer methods).
+
+func (e *extMockTenantService) CreateTenant(ctx context.Context, id, name string, isolationType tenant.IsolationType) (*tenant.TenantInfo, error) {
+	return e.mockTenantService.CreateTenant(ctx, id, name, isolationType)
+}
+func (e *extMockTenantService) GetTenant(ctx context.Context, tenantID string) (*tenant.TenantInfo, error) {
+	return e.mockTenantService.GetTenant(ctx, tenantID)
+}
+func (e *extMockTenantService) ListTenants(ctx context.Context) ([]tenant.TenantInfo, error) {
+	return e.mockTenantService.ListTenants(ctx)
+}
+func (e *extMockTenantService) DeleteTenant(ctx context.Context, tenantID string) error {
+	return e.mockTenantService.DeleteTenant(ctx, tenantID)
+}
+func (e *extMockTenantService) UpdateTenant(ctx context.Context, tenantID string, patch tenant.TenantPatch) (*tenant.TenantInfo, error) {
+	return e.mockTenantService.UpdateTenant(ctx, tenantID, patch)
+}
+func (e *extMockTenantService) UpdateQuotas(ctx context.Context, tenantID string, quotas *quota.Quotas) (*tenant.TenantInfo, error) {
+	return e.mockTenantService.UpdateQuotas(ctx, tenantID, quotas)
+}
+func (e *extMockTenantService) TenantBarrierInit(ctx context.Context, tenantID, passphrase string, threshold, shares int) (*tenant.TenantBarrierInitResult, error) {
+	return e.mockTenantService.TenantBarrierInit(ctx, tenantID, passphrase, threshold, shares)
+}
+func (e *extMockTenantService) TenantBarrierInitWithStrategy(ctx context.Context, tenantID, passphrase string, threshold, shares int, sid seal.StrategyID) (*tenant.TenantBarrierInitResult, error) {
+	return e.mockTenantService.TenantBarrierInitWithStrategy(ctx, tenantID, passphrase, threshold, shares, sid)
+}
+func (e *extMockTenantService) TenantBarrierUnseal(ctx context.Context, tenantID string, key []byte) error {
+	return e.mockTenantService.TenantBarrierUnseal(ctx, tenantID, key)
+}
+func (e *extMockTenantService) TenantBarrierUnsealShare(ctx context.Context, tenantID, share string) (*tenant.TenantBarrierUnsealProgress, error) {
+	return e.mockTenantService.TenantBarrierUnsealShare(ctx, tenantID, share)
+}
+func (e *extMockTenantService) TenantBarrierSeal(ctx context.Context, tenantID string) error {
+	return e.mockTenantService.TenantBarrierSeal(ctx, tenantID)
+}
+func (e *extMockTenantService) TenantBarrierStatus(ctx context.Context, tenantID string) (*tenant.TenantBarrierStatus, error) {
+	return e.mockTenantService.TenantBarrierStatus(ctx, tenantID)
+}
+func (e *extMockTenantService) IncrementQuotaUsage(ctx context.Context, tenantID string, r quota.Resource, delta int64) (*tenant.TenantInfo, error) {
+	return e.mockTenantService.IncrementQuotaUsage(ctx, tenantID, r, delta)
+}
+func (e *extMockTenantService) DecrementQuotaUsage(ctx context.Context, tenantID string, r quota.Resource, delta int64) (*tenant.TenantInfo, error) {
+	return e.mockTenantService.DecrementQuotaUsage(ctx, tenantID, r, delta)
+}
+func (e *extMockTenantService) GetQuotaUsage(ctx context.Context, tenantID string, r quota.Resource) (int64, error) {
+	return e.mockTenantService.GetQuotaUsage(ctx, tenantID, r)
+}
+
+// ---------------------------------------------------------------------------
+// tenantOfficerStatusesToResponse — zero / non-zero ClaimedAt paths
+// ---------------------------------------------------------------------------
+
+func TestTenantOfficerStatusesToResponse_Fields(t *testing.T) {
+	now := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+	officers := []*ceremony.OfficerStatus{
+		{
+			Username:       "carol",
+			CertThumbprint: "ghi789",
+			ShareIndex:     1,
+			AuthFactor:     "software",
+			SharePending:   true,
+			EnrolledAt:     now,
+			ClaimedAt:      time.Time{}, // zero — must NOT appear
+		},
+		{
+			Username:       "dave",
+			CertThumbprint: "jkl012",
+			ShareIndex:     2,
+			AuthFactor:     "piv",
+			SharePending:   false,
+			EnrolledAt:     now,
+			ClaimedAt:      now, // non-zero — must appear
+		},
+	}
+
+	resp := tenantOfficerStatusesToResponse(officers)
+	if len(resp) != 2 {
+		t.Fatalf("len = %d, want 2", len(resp))
+	}
+	if _, ok := resp[0]["claimed_at"]; ok {
+		t.Fatal("claimed_at present for unclaimed officer")
+	}
+	if resp[0]["username"] != "carol" {
+		t.Fatalf("username = %v, want carol", resp[0]["username"])
+	}
+	if _, ok := resp[1]["claimed_at"]; !ok {
+		t.Fatal("claimed_at missing for claimed officer")
+	}
+	if resp[1]["username"] != "dave" {
+		t.Fatalf("username = %v, want dave", resp[1]["username"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tenant barrier SO handlers
+// ---------------------------------------------------------------------------
+
+func TestHandleTenantBarrierOfficerRegister_Success(t *testing.T) {
+	svc := newExtTenantSvc()
+	svc.officerRegisterFn = func(_ context.Context, tenantID string, req *ceremony.RegisterOfficerRequest) (*ceremony.RegisterOfficerResult, error) {
+		if tenantID != "acme" {
+			t.Fatalf("tenantID = %q, want acme", tenantID)
+		}
+		return &ceremony.RegisterOfficerResult{CertPEM: []byte("tenant-cert"), ShareIndex: 1}, nil
+	}
+	srv := newTenantServer(svc)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/barrier/officers",
+		strings.NewReader(`{"username":"officer1","csr_pem":"csr-data"}`))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusOK)
+	var resp map[string]interface{}
+	decodeJSON(t, rec, &resp)
+	if resp["cert_pem"] != "tenant-cert" {
+		t.Fatalf("cert_pem = %v, want tenant-cert", resp["cert_pem"])
+	}
+}
+
+func TestHandleTenantBarrierOfficerRegister_MissingUsername(t *testing.T) {
+	srv := newTenantServer(newExtTenantSvc())
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/barrier/officers",
+		strings.NewReader(`{"csr_pem":"csr-data"}`))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusBadRequest)
+}
+
+func TestHandleTenantBarrierOfficerRegister_MissingCSR(t *testing.T) {
+	srv := newTenantServer(newExtTenantSvc())
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/barrier/officers",
+		strings.NewReader(`{"username":"officer1"}`))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusBadRequest)
+}
+
+func TestHandleTenantBarrierOfficerRegister_ServiceError(t *testing.T) {
+	svc := newExtTenantSvc()
+	svc.officerRegisterFn = func(_ context.Context, _ string, _ *ceremony.RegisterOfficerRequest) (*ceremony.RegisterOfficerResult, error) {
+		return nil, service.ErrCeremonyNotConfigured
+	}
+	srv := newTenantServer(svc)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/barrier/officers",
+		strings.NewReader(`{"username":"officer1","csr_pem":"csr-data"}`))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusUnprocessableEntity)
+}
+
+func TestHandleTenantBarrierOfficerList_Success(t *testing.T) {
+	now := time.Date(2026, 2, 3, 4, 0, 0, 0, time.UTC)
+	svc := newExtTenantSvc()
+	svc.officerListFn = func(_ context.Context, _ string) ([]*ceremony.OfficerStatus, error) {
+		return []*ceremony.OfficerStatus{
+			{Username: "officer1", ShareIndex: 1, EnrolledAt: now},
+		}, nil
+	}
+	srv := newTenantServer(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/tenants/acme/barrier/officers", nil)
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusOK)
+	var resp map[string]interface{}
+	decodeJSON(t, rec, &resp)
+	officers, ok := resp["officers"].([]interface{})
+	if !ok || len(officers) != 1 {
+		t.Fatalf("expected 1 officer, got %v", resp["officers"])
+	}
+}
+
+func TestHandleTenantBarrierOfficerList_ServiceError(t *testing.T) {
+	svc := newExtTenantSvc()
+	svc.officerListFn = func(_ context.Context, _ string) ([]*ceremony.OfficerStatus, error) {
+		return nil, ceremony.ErrInsufficientOfficers
+	}
+	srv := newTenantServer(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/tenants/acme/barrier/officers", nil)
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusUnprocessableEntity)
+}
+
+func TestHandleTenantBarrierOfficerClaimStatus_Success(t *testing.T) {
+	now := time.Date(2026, 4, 5, 6, 0, 0, 0, time.UTC)
+	svc := newExtTenantSvc()
+	svc.officerClaimStatusFn = func(_ context.Context, _ string) ([]*ceremony.OfficerStatus, error) {
+		return []*ceremony.OfficerStatus{
+			{Username: "officer1", ClaimedAt: now},
+		}, nil
+	}
+	srv := newTenantServer(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/tenants/acme/barrier/officers/claim-status", nil)
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusOK)
+}
+
+func TestHandleTenantBarrierOfficerClaimStatus_ServiceError(t *testing.T) {
+	svc := newExtTenantSvc()
+	svc.officerClaimStatusFn = func(_ context.Context, _ string) ([]*ceremony.OfficerStatus, error) {
+		return nil, ceremony.ErrOfficerNotFound
+	}
+	srv := newTenantServer(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/tenants/acme/barrier/officers/claim-status", nil)
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusNotFound)
+}
+
+// handleTenantBarrierShareClaimBegin — missing cert path (no TLS).
+
+func TestHandleTenantBarrierShareClaimBegin_MissingCert(t *testing.T) {
+	srv := newTenantServer(newExtTenantSvc())
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/barrier/officers/officer1/claim/begin", nil)
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusUnauthorized)
+}
+
+func TestHandleTenantBarrierShareClaimBegin_ServiceError(t *testing.T) {
+	svc := newExtTenantSvc()
+	svc.claimBeginFn = func(_ context.Context, _, _, _ string) (*ceremony.ChallengeResponse, error) {
+		return nil, ceremony.ErrOfficerNotFound
+	}
+	srv := &Server{tenantSvc: svc}
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	injectFakeTLS(req)
+	rec := httptest.NewRecorder()
+	srv.handleTenantBarrierShareClaimBegin(rec, req, "acme", "officer1")
+
+	assertStatus(t, rec, http.StatusNotFound)
+}
+
+func TestHandleTenantBarrierShareClaimBegin_Success(t *testing.T) {
+	expires := time.Date(2026, 6, 2, 10, 0, 0, 0, time.UTC)
+	svc := newExtTenantSvc()
+	svc.claimBeginFn = func(_ context.Context, _, _, _ string) (*ceremony.ChallengeResponse, error) {
+		return &ceremony.ChallengeResponse{Nonce: []byte{0xde, 0xad, 0xbe, 0xef}, ExpiresAt: expires}, nil
+	}
+	srv := &Server{tenantSvc: svc}
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	injectFakeTLS(req)
+	rec := httptest.NewRecorder()
+	srv.handleTenantBarrierShareClaimBegin(rec, req, "acme", "officer1")
+
+	assertStatus(t, rec, http.StatusOK)
+	var resp map[string]interface{}
+	decodeJSON(t, rec, &resp)
+	if resp["nonce_hex"] == nil {
+		t.Fatal("nonce_hex missing from tenant claim-begin response")
+	}
+}
+
+// handleTenantBarrierShareClaimComplete tests.
+
+func TestHandleTenantBarrierShareClaimComplete_MissingCert(t *testing.T) {
+	srv := newTenantServer(newExtTenantSvc())
+
+	sig := base64.StdEncoding.EncodeToString([]byte("sig"))
+	body := `{"nonce_hex":"aabb","signature":"` + sig + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/barrier/officers/officer1/claim/complete", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusUnauthorized)
+}
+
+func TestHandleTenantBarrierShareClaimComplete_MissingNonce(t *testing.T) {
+	srv := &Server{tenantSvc: newExtTenantSvc()}
+
+	sig := base64.StdEncoding.EncodeToString([]byte("sig"))
+	body := `{"signature":"` + sig + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	injectFakeTLS(req)
+	rec := httptest.NewRecorder()
+	srv.handleTenantBarrierShareClaimComplete(rec, req, "acme", "officer1")
+
+	assertStatus(t, rec, http.StatusBadRequest)
+}
+
+func TestHandleTenantBarrierShareClaimComplete_MissingSignature(t *testing.T) {
+	srv := &Server{tenantSvc: newExtTenantSvc()}
+
+	body := `{"nonce_hex":"aabb"}`
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	injectFakeTLS(req)
+	rec := httptest.NewRecorder()
+	srv.handleTenantBarrierShareClaimComplete(rec, req, "acme", "officer1")
+
+	assertStatus(t, rec, http.StatusBadRequest)
+}
+
+func TestHandleTenantBarrierShareClaimComplete_BadBase64(t *testing.T) {
+	srv := &Server{tenantSvc: newExtTenantSvc()}
+
+	body := `{"nonce_hex":"aabb","signature":"!!!bad-base64!!!"}`
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	injectFakeTLS(req)
+	rec := httptest.NewRecorder()
+	srv.handleTenantBarrierShareClaimComplete(rec, req, "acme", "officer1")
+
+	assertStatus(t, rec, http.StatusBadRequest)
+}
+
+func TestHandleTenantBarrierShareClaimComplete_ServiceError(t *testing.T) {
+	svc := newExtTenantSvc()
+	svc.claimCompleteFn = func(_ context.Context, _, _, _ string, _ []byte, _ string) (*ceremony.ShareClaimResult, error) {
+		return nil, ceremony.ErrCertThumbprintMismatch
+	}
+	srv := &Server{tenantSvc: svc}
+
+	sig := base64.StdEncoding.EncodeToString([]byte("sig"))
+	body := `{"nonce_hex":"aabb","signature":"` + sig + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	injectFakeTLS(req)
+	rec := httptest.NewRecorder()
+	srv.handleTenantBarrierShareClaimComplete(rec, req, "acme", "officer1")
+
+	assertStatus(t, rec, http.StatusForbidden)
+}
+
+func TestHandleTenantBarrierShareClaimComplete_Success(t *testing.T) {
+	shareBytes := []byte("tenant-share-bytes")
+	svc := newExtTenantSvc()
+	svc.claimCompleteFn = func(_ context.Context, _, _, _ string, _ []byte, _ string) (*ceremony.ShareClaimResult, error) {
+		return &ceremony.ShareClaimResult{ShareBytes: shareBytes}, nil
+	}
+	srv := &Server{tenantSvc: svc}
+
+	sig := base64.StdEncoding.EncodeToString([]byte("valid-sig"))
+	body := `{"nonce_hex":"aabb","signature":"` + sig + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	injectFakeTLS(req)
+	rec := httptest.NewRecorder()
+	srv.handleTenantBarrierShareClaimComplete(rec, req, "acme", "officer1")
+
+	assertStatus(t, rec, http.StatusOK)
+	// INV-11: share_bytes must appear exactly here in the claiming officer's response.
+	var resp map[string]interface{}
+	decodeJSON(t, rec, &resp)
+	if _, ok := resp["share_bytes"]; !ok {
+		t.Fatal("share_bytes missing from tenant claim-complete response")
+	}
+}
+
+// handleTenantBarrierSealVote tests.
+
+func TestHandleTenantBarrierSealVote_MissingShare(t *testing.T) {
+	srv := newTenantServer(newExtTenantSvc())
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/barrier/seal-vote",
+		strings.NewReader(`{}`))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusBadRequest)
+}
+
+func TestHandleTenantBarrierSealVote_Success(t *testing.T) {
+	svc := newExtTenantSvc()
+	svc.shamirSealVoteFn = func(_ context.Context, _, _ string) (*tenant.TenantBarrierUnsealProgress, error) {
+		return &tenant.TenantBarrierUnsealProgress{Required: 3, Submitted: 1, Complete: false}, nil
+	}
+	srv := newTenantServer(svc)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/barrier/seal-vote",
+		strings.NewReader(`{"share":"shamir-share-abc"}`))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusOK)
+}
+
+func TestHandleTenantBarrierSealVote_ServiceError(t *testing.T) {
+	svc := newExtTenantSvc()
+	svc.shamirSealVoteFn = func(_ context.Context, _, _ string) (*tenant.TenantBarrierUnsealProgress, error) {
+		return nil, seal.ErrSealVoteVerificationFailed
+	}
+	srv := newTenantServer(svc)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/barrier/seal-vote",
+		strings.NewReader(`{"share":"abc"}`))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	// SealVote service errors route through mapTenantError (non-standard errors → 500).
+	if rec.Code == http.StatusOK {
+		t.Fatalf("expected non-200 status on seal vote service error, got %d", rec.Code)
+	}
 }

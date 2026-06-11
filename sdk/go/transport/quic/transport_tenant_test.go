@@ -188,7 +188,7 @@ func TestTransport_UpdateTenantQuotas_Closed(t *testing.T) {
 
 func TestTransport_TenantBarrierInit_Closed(t *testing.T) {
 	tr := newClosedTenantTransport(t)
-	err := tr.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{TenantID: "acme"})
+	_, err := tr.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{TenantID: "acme"})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -256,7 +256,7 @@ func newOpenTenantTransport(t *testing.T) *Transport {
 
 func TestTransport_TenantBarrierInit_NilRequest(t *testing.T) {
 	tr := newOpenTenantTransport(t)
-	err := tr.TenantBarrierInit(context.Background(), nil)
+	_, err := tr.TenantBarrierInit(context.Background(), nil)
 	if err == nil {
 		t.Fatal("expected error")
 	}

@@ -614,3 +614,12 @@ type BatchIndexError struct {
 func (e *BatchIndexError) Error() string {
 	return "transport: batch response missing result at index " + strconv.Itoa(e.Index)
 }
+
+// NilRequestError is returned (wrapped in a RequestError carrying the
+// operation name) when a client method receives a nil request pointer.
+type NilRequestError struct{}
+
+// Error returns a human-readable description.
+func (e *NilRequestError) Error() string {
+	return "transport: nil request"
+}

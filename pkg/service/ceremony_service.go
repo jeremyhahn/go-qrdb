@@ -227,6 +227,16 @@ func NewCeremonyService(c *ceremony.CeremonyService) CeremonyServicer {
 	return &CeremonyService{ceremony: c}
 }
 
+// CeremonyServiceCore extracts the underlying *ceremony.CeremonyService from
+// the given CeremonyServicer when it is backed by one. The bool return is
+// false for any other implementation.
+func CeremonyServiceCore(svc CeremonyServicer) (*ceremony.CeremonyService, bool) {
+	if cs, ok := svc.(*CeremonyService); ok {
+		return cs.ceremony, true
+	}
+	return nil, false
+}
+
 // CeremonyInitialize performs the initialization ceremony by delegating
 // to the underlying CeremonyService's Initialize method and mapping the
 // result to the service-layer CeremonyInitResult type.

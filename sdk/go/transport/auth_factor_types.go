@@ -52,6 +52,11 @@ type AuthFactorRecord struct {
 	// Credential is the canonical lookup-key bytes for this factor.
 	Credential []byte `json:"credential"`
 
+	// SPKICredential is the optional renewal-stable secondary lookup key:
+	// SHA-256 of the certificate's SubjectPublicKeyInfo for mtls / piv
+	// factors. Empty for fido2 and pre-SPKI enrolments.
+	SPKICredential []byte `json:"spki_credential,omitempty"`
+
 	// Metadata is type-specific data (vendor / AAGUID / cert serial / slot).
 	Metadata map[string]string `json:"metadata,omitempty"`
 
@@ -81,6 +86,11 @@ type AuthFactorAddRequest struct {
 
 	// Credential is the canonical lookup-key bytes for the factor.
 	Credential []byte `json:"credential"`
+
+	// SPKICredential is the optional renewal-stable secondary lookup key:
+	// SHA-256 of the certificate's SubjectPublicKeyInfo for mtls / piv
+	// factors. Empty for fido2.
+	SPKICredential []byte `json:"spki_credential,omitempty"`
 
 	// Metadata is type-specific data.
 	Metadata map[string]string `json:"metadata,omitempty"`

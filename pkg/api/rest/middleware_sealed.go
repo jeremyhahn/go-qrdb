@@ -47,6 +47,10 @@ var SealedWindowAllowlist = []string{
 	"/v1/barrier/recovery/generate",
 	"/v1/barrier/recovery/recover",
 	"/v1/barrier/recovery/status",
+	"/v1/barrier/officers",
+	"/v1/barrier/officers/",
+	"/v1/barrier/recovery/officers",
+	"/v1/barrier/recovery/officers/",
 	"/v1/init/",
 	"/v1/bootstrap/",
 }

@@ -79,25 +79,6 @@ func TestMCP_CeremonyCustodian_SubmitUnsealShare_WithFactorResponse(t *testing.T
 }
 
 // ---------------------------------------------------------------------------
-// RAGListDocuments optional paths (82.4%)
-// ---------------------------------------------------------------------------
-
-func TestMCP_RAG_ListDocuments_WithPagination(t *testing.T) {
-	tr, cleanup := connectRAGInProcess(t, newMinimalRAGSvc())
-	defer cleanup()
-
-	resp, err := tr.RAGListDocuments(context.Background(), &transport.RAGListDocumentsRequest{
-		Namespace: "ns1",
-		Limit:     10,
-		Offset:    5,
-	})
-	if err != nil {
-		t.Fatalf("RAGListDocuments with pagination: %v", err)
-	}
-	_ = resp
-}
-
-// ---------------------------------------------------------------------------
 // ExecuteRebalance optional paths (80.0%) - with moves
 // ---------------------------------------------------------------------------
 

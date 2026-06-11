@@ -205,12 +205,13 @@ func (s *Server) resolveUserAuthFactorLogin(ctx context.Context, req *transport.
 // userAuthFactorFromRequest builds an auth.AuthFactor from a wire request.
 func userAuthFactorFromRequest(req *transport.AuthFactorAddRequest) *auth.AuthFactor {
 	return &auth.AuthFactor{
-		UserID:     req.UserID,
-		Type:       auth.AuthFactorType(req.Type),
-		Label:      req.Label,
-		Credential: req.Credential,
-		Metadata:   req.Metadata,
-		CreatedBy:  req.CreatedBy,
+		UserID:         req.UserID,
+		Type:           auth.AuthFactorType(req.Type),
+		Label:          req.Label,
+		Credential:     req.Credential,
+		SPKICredential: req.SPKICredential,
+		Metadata:       req.Metadata,
+		CreatedBy:      req.CreatedBy,
 	}
 }
 
@@ -220,16 +221,17 @@ func userAuthFactorToRecord(f *auth.AuthFactor) transport.AuthFactorRecord {
 		return transport.AuthFactorRecord{}
 	}
 	return transport.AuthFactorRecord{
-		ID:           f.ID,
-		UserID:       f.UserID,
-		Type:         string(f.Type),
-		Label:        f.Label,
-		Credential:   f.Credential,
-		Metadata:     f.Metadata,
-		RegisteredAt: f.RegisteredAt,
-		LastUsedAt:   f.LastUsedAt,
-		RevokedAt:    f.RevokedAt,
-		CreatedBy:    f.CreatedBy,
+		ID:             f.ID,
+		UserID:         f.UserID,
+		Type:           string(f.Type),
+		Label:          f.Label,
+		Credential:     f.Credential,
+		SPKICredential: f.SPKICredential,
+		Metadata:       f.Metadata,
+		RegisteredAt:   f.RegisteredAt,
+		LastUsedAt:     f.LastUsedAt,
+		RevokedAt:      f.RevokedAt,
+		CreatedBy:      f.CreatedBy,
 	}
 }
 

@@ -16,12 +16,16 @@ package mcp
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"strings"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
@@ -50,6 +54,16 @@ func barrierTools(svc service.BarrierServicer, pinBackend pin.PINBackend) []mcps
 		{Tool: toolBarrierRecoveryDelete(), Handler: handleBarrierRecoveryDelete(svc)},
 		{Tool: toolBarrierRecoveryStatus(), Handler: handleBarrierRecoveryStatus(svc)},
 		{Tool: toolBarrierRootToken(), Handler: handleBarrierRootToken(svc)},
+		// Security Officer distribution tools.
+		{Tool: toolBarrierOfficerRegister(), Handler: handleBarrierOfficerRegister(svc)},
+		{Tool: toolBarrierOfficerList(), Handler: handleBarrierOfficerList(svc)},
+		{Tool: toolBarrierShareClaimBegin(), Handler: handleBarrierShareClaimBegin(svc)},
+		{Tool: toolBarrierShareClaimComplete(), Handler: handleBarrierShareClaimComplete(svc)},
+		{Tool: toolBarrierOfficerClaimStatus(), Handler: handleBarrierOfficerClaimStatus(svc)},
+		{Tool: toolBarrierShamirSealVote(), Handler: handleBarrierShamirSealVote(svc)},
+		{Tool: toolBarrierRecoveryOfficerRegister(), Handler: handleBarrierRecoveryOfficerRegister(svc)},
+		{Tool: toolBarrierRecoveryShareClaimBegin(), Handler: handleBarrierRecoveryShareClaimBegin(svc)},
+		{Tool: toolBarrierRecoveryShareClaimComplete(), Handler: handleBarrierRecoveryShareClaimComplete(svc)},
 	}
 }
 
@@ -163,7 +177,10 @@ func toolBarrierStatus() mcp.Tool {
 }
 
 // handleBarrierStatus returns a tool handler that delegates to
-// svc.BarrierStatus.
+// svc.BarrierStatus. The result is rendered with the canonical snake_case
+// wire keys (sealed, strategy, hardware_backed, initialized_at,
+// shamir_threshold, shamir_total) so SDK clients can decode it into
+// transport.BarrierStatusResponse, matching the REST representation.
 func handleBarrierStatus(svc service.BarrierServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		status, err := svc.BarrierStatus(ctx)
@@ -171,7 +188,22 @@ func handleBarrierStatus(svc service.BarrierServicer) mcpserver.ToolHandlerFunc 
 			return nil, &ToolError{Tool: "qrdb_barrier_status", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(status)
+		resp := map[string]any{
+			"sealed":          status.Sealed,
+			"strategy":        status.Strategy,
+			"hardware_backed": status.HardwareBacked,
+		}
+		if !status.InitializedAt.IsZero() {
+			resp["initialized_at"] = status.InitializedAt.Format(time.RFC3339)
+		}
+		if status.ShamirThreshold > 0 {
+			resp["shamir_threshold"] = status.ShamirThreshold
+		}
+		if status.ShamirTotal > 0 {
+			resp["shamir_total"] = status.ShamirTotal
+		}
+
+		data, jsonErr := json.Marshal(resp)
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_barrier_status", Err: jsonErr}
 		}
@@ -239,7 +271,7 @@ func handleBarrierShamirInitialize(svc service.BarrierServicer, pinBackend pin.P
 			return nil, &ToolError{Tool: "qrdb_barrier_shamir_initialize", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(info)
+		data, jsonErr := json.Marshal(shamirInitInfoToWire(info))
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_barrier_shamir_initialize", Err: jsonErr}
 		}
@@ -361,7 +393,7 @@ func handleBarrierRekey(svc service.BarrierServicer, pinBackend pin.PINBackend) 
 			return nil, &ToolError{Tool: "qrdb_barrier_rekey", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(info)
+		data, jsonErr := json.Marshal(shamirInitInfoToWire(info))
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_barrier_rekey", Err: jsonErr}
 		}
@@ -415,7 +447,11 @@ func handleBarrierRecoveryGenerate(svc service.BarrierServicer, pinBackend pin.P
 			return nil, &ToolError{Tool: "qrdb_barrier_recovery_generate", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(info)
+		data, jsonErr := json.Marshal(map[string]any{
+			"threshold":   info.Threshold,
+			"total":       info.Total,
+			"share_count": info.ShareCount,
+		})
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_barrier_recovery_generate", Err: jsonErr}
 		}
@@ -540,11 +576,401 @@ func handleBarrierRootToken(svc service.BarrierServicer) mcpserver.ToolHandlerFu
 			return nil, &ToolError{Tool: "qrdb_barrier_root_token", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(info)
+		data, jsonErr := json.Marshal(map[string]any{
+			"token":      info.Token,
+			"created_at": info.CreatedAt.Format(time.RFC3339),
+		})
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_barrier_root_token", Err: jsonErr}
 		}
 
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// shamirInitInfoToWire converts a ShamirInitInfo to the canonical snake_case
+// wire keys (threshold, total_shares, share_count) shared with the REST
+// representation so SDK clients can decode the result into
+// transport.BarrierInitializeShamirResponse / BarrierRekeyResponse.
+func shamirInitInfoToWire(info *service.ShamirInitInfo) map[string]any {
+	return map[string]any{
+		"threshold":    info.Threshold,
+		"total_shares": info.TotalShares,
+		"share_count":  info.ShareCount,
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Barrier Security Officer MCP tools
+// ---------------------------------------------------------------------------
+
+// mcpCertThumbprint extracts the mTLS peer certificate thumbprint from the
+// context. Returns a ToolError when no peer certificate is present (INV-5:
+// no share bytes, nonces, or signatures in any log line).
+func mcpCertThumbprint(ctx context.Context, toolName string) (string, error) {
+	tlsState := auth.TLSStateFromContext(ctx)
+	if tlsState == nil || len(tlsState.PeerCertificates) == 0 {
+		return "", &ToolError{Tool: toolName, Err: &mcpClientCertRequiredError{}}
+	}
+	return ceremony.CertThumbprint(tlsState.PeerCertificates[0].Raw), nil
+}
+
+// mcpClientCertRequiredError is returned when a share-claim MCP tool requires
+// a verified mTLS client certificate but the connection carries none.
+type mcpClientCertRequiredError struct{}
+
+// Error returns a human-readable description.
+func (e *mcpClientCertRequiredError) Error() string {
+	return "mcp: client certificate required for share claim"
+}
+
+// toolBarrierOfficerRegister defines the qrdb_barrier_officer_register tool.
+func toolBarrierOfficerRegister() mcp.Tool {
+	return mcp.NewTool("qrdb_barrier_officer_register",
+		mcp.WithDescription("Register a Security Officer for the system barrier."),
+		mcp.WithString("username", mcp.Required(), mcp.Description("Unique identifier for the officer.")),
+		mcp.WithString("csr_pem", mcp.Required(), mcp.Description("PEM-encoded certificate signing request.")),
+		mcp.WithString("authenticator_type", mcp.Description("Authenticator type (software, piv, fido2).")),
+		mcp.WithString("authenticator_ref", mcp.Description("Opaque reference within the authenticator.")),
+	)
+}
+
+// handleBarrierOfficerRegister returns a tool handler that registers a Security
+// Officer for the system barrier.
+func handleBarrierOfficerRegister(svc service.BarrierServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		username := mcp.ParseString(req, "username", "")
+		if username == "" {
+			return mcp.NewToolResultError("username is required"), nil
+		}
+		csrPEM := mcp.ParseString(req, "csr_pem", "")
+		if csrPEM == "" {
+			return mcp.NewToolResultError("csr_pem is required"), nil
+		}
+
+		result, err := svc.BarrierOfficerRegister(ctx, &service.BarrierOfficerRegisterRequest{
+			Username:          username,
+			CSRPEM:            []byte(csrPEM),
+			AuthenticatorType: mcp.ParseString(req, "authenticator_type", ""),
+			AuthenticatorRef:  mcp.ParseString(req, "authenticator_ref", ""),
+		})
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_barrier_officer_register", Err: err}
+		}
+
+		data, jsonErr := json.Marshal(map[string]interface{}{
+			"cert_pem":    string(result.CertPEM),
+			"share_index": result.ShareIndex,
+		})
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_barrier_officer_register", Err: jsonErr}
+		}
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// toolBarrierOfficerList defines the qrdb_barrier_officer_list tool.
+func toolBarrierOfficerList() mcp.Tool {
+	return mcp.NewTool("qrdb_barrier_officer_list",
+		mcp.WithDescription("List all enrolled Security Officers for the system barrier."),
+	)
+}
+
+// handleBarrierOfficerList returns a tool handler that lists system barrier officers.
+func handleBarrierOfficerList(svc service.BarrierServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		officers, err := svc.BarrierOfficerList(ctx)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_barrier_officer_list", Err: err}
+		}
+
+		data, jsonErr := json.Marshal(map[string]interface{}{"officers": officers})
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_barrier_officer_list", Err: jsonErr}
+		}
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// toolBarrierShareClaimBegin defines the qrdb_barrier_share_claim_begin tool.
+func toolBarrierShareClaimBegin() mcp.Tool {
+	return mcp.NewTool("qrdb_barrier_share_claim_begin",
+		mcp.WithDescription("Issue a challenge nonce to a Security Officer for the system barrier share claim handshake. Requires mTLS client certificate."),
+		mcp.WithString("username", mcp.Required(), mcp.Description("Officer username.")),
+	)
+}
+
+// handleBarrierShareClaimBegin returns a tool handler that issues a challenge nonce.
+func handleBarrierShareClaimBegin(svc service.BarrierServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		username := mcp.ParseString(req, "username", "")
+		if username == "" {
+			return mcp.NewToolResultError("username is required"), nil
+		}
+
+		thumbprint, err := mcpCertThumbprint(ctx, "qrdb_barrier_share_claim_begin")
+		if err != nil {
+			return nil, err
+		}
+
+		challenge, err := svc.BarrierShareClaimBegin(ctx, username, thumbprint)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_barrier_share_claim_begin", Err: err}
+		}
+
+		data, jsonErr := json.Marshal(map[string]interface{}{
+			"nonce_hex":  challenge.NonceHex,
+			"expires_at": challenge.ExpiresAt,
+		})
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_barrier_share_claim_begin", Err: jsonErr}
+		}
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// toolBarrierShareClaimComplete defines the qrdb_barrier_share_claim_complete tool.
+func toolBarrierShareClaimComplete() mcp.Tool {
+	return mcp.NewTool("qrdb_barrier_share_claim_complete",
+		mcp.WithDescription("Verify the officer's nonce signature and retrieve their system barrier share. Requires mTLS client certificate. INV-11: share bytes returned only once."),
+		mcp.WithString("username", mcp.Required(), mcp.Description("Officer username.")),
+		mcp.WithString("nonce_hex", mcp.Required(), mcp.Description("Nonce hex from claim-begin response.")),
+		mcp.WithString("signature", mcp.Required(), mcp.Description("Base64-encoded signature over the nonce.")),
+	)
+}
+
+// handleBarrierShareClaimComplete returns a tool handler that completes the share
+// claim handshake (INV-11: share bytes returned exactly once).
+func handleBarrierShareClaimComplete(svc service.BarrierServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		username := mcp.ParseString(req, "username", "")
+		if username == "" {
+			return mcp.NewToolResultError("username is required"), nil
+		}
+		nonceHex := mcp.ParseString(req, "nonce_hex", "")
+		if nonceHex == "" {
+			return mcp.NewToolResultError("nonce_hex is required"), nil
+		}
+		sigStr := mcp.ParseString(req, "signature", "")
+		if sigStr == "" {
+			return mcp.NewToolResultError("signature is required"), nil
+		}
+
+		thumbprint, err := mcpCertThumbprint(ctx, "qrdb_barrier_share_claim_complete")
+		if err != nil {
+			return nil, err
+		}
+
+		sigBytes, decErr := base64.StdEncoding.DecodeString(sigStr)
+		if decErr != nil {
+			return mcp.NewToolResultError("signature must be valid base64"), nil
+		}
+
+		result, err := svc.BarrierShareClaimComplete(ctx, username, nonceHex, sigBytes, thumbprint)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_barrier_share_claim_complete", Err: err}
+		}
+
+		// INV-11: share_bytes appears only here.
+		data, jsonErr := json.Marshal(map[string]interface{}{
+			"share_index": result.ShareIndex,
+			"share_bytes": base64.StdEncoding.EncodeToString(result.ShareBytes),
+		})
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_barrier_share_claim_complete", Err: jsonErr}
+		}
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// toolBarrierOfficerClaimStatus defines the qrdb_barrier_officer_claim_status tool.
+func toolBarrierOfficerClaimStatus() mcp.Tool {
+	return mcp.NewTool("qrdb_barrier_officer_claim_status",
+		mcp.WithDescription("Return per-officer claim status for the system barrier (no share bytes)."),
+	)
+}
+
+// handleBarrierOfficerClaimStatus returns a tool handler for officer claim status.
+func handleBarrierOfficerClaimStatus(svc service.BarrierServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		officers, err := svc.BarrierOfficerClaimStatus(ctx)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_barrier_officer_claim_status", Err: err}
+		}
+
+		data, jsonErr := json.Marshal(map[string]interface{}{"officers": officers})
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_barrier_officer_claim_status", Err: jsonErr}
+		}
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// toolBarrierShamirSealVote defines the qrdb_barrier_shamir_seal_vote tool.
+func toolBarrierShamirSealVote() mcp.Tool {
+	return mcp.NewTool("qrdb_barrier_shamir_seal_vote",
+		mcp.WithDescription("Submit a Shamir share as a seal vote. When the quorum threshold is met the system barrier is sealed."),
+		mcp.WithString("share", mcp.Required(), mcp.Description("A Shamir share value.")),
+	)
+}
+
+// handleBarrierShamirSealVote returns a tool handler that submits a seal vote.
+func handleBarrierShamirSealVote(svc service.BarrierServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		share := mcp.ParseString(req, "share", "")
+		if share == "" {
+			return mcp.NewToolResultError("share is required"), nil
+		}
+
+		progress, err := svc.BarrierShamirSealVote(ctx, share)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_barrier_shamir_seal_vote", Err: err}
+		}
+
+		data, jsonErr := json.Marshal(progress)
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_barrier_shamir_seal_vote", Err: jsonErr}
+		}
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// toolBarrierRecoveryOfficerRegister defines the
+// qrdb_barrier_recovery_officer_register tool.
+func toolBarrierRecoveryOfficerRegister() mcp.Tool {
+	return mcp.NewTool("qrdb_barrier_recovery_officer_register",
+		mcp.WithDescription("Register a Security Officer for recovery key distribution."),
+		mcp.WithString("username", mcp.Required(), mcp.Description("Unique identifier for the recovery officer.")),
+		mcp.WithString("csr_pem", mcp.Required(), mcp.Description("PEM-encoded certificate signing request.")),
+		mcp.WithString("authenticator_type", mcp.Description("Authenticator type (software, piv, fido2).")),
+		mcp.WithString("authenticator_ref", mcp.Description("Opaque reference within the authenticator.")),
+	)
+}
+
+// handleBarrierRecoveryOfficerRegister returns a tool handler that registers a
+// recovery officer.
+func handleBarrierRecoveryOfficerRegister(svc service.BarrierServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		username := mcp.ParseString(req, "username", "")
+		if username == "" {
+			return mcp.NewToolResultError("username is required"), nil
+		}
+		csrPEM := mcp.ParseString(req, "csr_pem", "")
+		if csrPEM == "" {
+			return mcp.NewToolResultError("csr_pem is required"), nil
+		}
+
+		result, err := svc.BarrierRecoveryOfficerRegister(ctx, &service.BarrierOfficerRegisterRequest{
+			Username:          username,
+			CSRPEM:            []byte(csrPEM),
+			AuthenticatorType: mcp.ParseString(req, "authenticator_type", ""),
+			AuthenticatorRef:  mcp.ParseString(req, "authenticator_ref", ""),
+		})
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_barrier_recovery_officer_register", Err: err}
+		}
+
+		data, jsonErr := json.Marshal(map[string]interface{}{
+			"cert_pem":    string(result.CertPEM),
+			"share_index": result.ShareIndex,
+		})
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_barrier_recovery_officer_register", Err: jsonErr}
+		}
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// toolBarrierRecoveryShareClaimBegin defines the
+// qrdb_barrier_recovery_share_claim_begin tool.
+func toolBarrierRecoveryShareClaimBegin() mcp.Tool {
+	return mcp.NewTool("qrdb_barrier_recovery_share_claim_begin",
+		mcp.WithDescription("Issue a challenge nonce to a recovery officer for the recovery share claim handshake. Requires mTLS client certificate."),
+		mcp.WithString("username", mcp.Required(), mcp.Description("Recovery officer username.")),
+	)
+}
+
+// handleBarrierRecoveryShareClaimBegin returns a tool handler that issues a
+// challenge nonce to a recovery officer.
+func handleBarrierRecoveryShareClaimBegin(svc service.BarrierServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		username := mcp.ParseString(req, "username", "")
+		if username == "" {
+			return mcp.NewToolResultError("username is required"), nil
+		}
+
+		thumbprint, err := mcpCertThumbprint(ctx, "qrdb_barrier_recovery_share_claim_begin")
+		if err != nil {
+			return nil, err
+		}
+
+		challenge, err := svc.BarrierRecoveryShareClaimBegin(ctx, username, thumbprint)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_barrier_recovery_share_claim_begin", Err: err}
+		}
+
+		data, jsonErr := json.Marshal(map[string]interface{}{
+			"nonce_hex":  challenge.NonceHex,
+			"expires_at": challenge.ExpiresAt,
+		})
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_barrier_recovery_share_claim_begin", Err: jsonErr}
+		}
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// toolBarrierRecoveryShareClaimComplete defines the
+// qrdb_barrier_recovery_share_claim_complete tool.
+func toolBarrierRecoveryShareClaimComplete() mcp.Tool {
+	return mcp.NewTool("qrdb_barrier_recovery_share_claim_complete",
+		mcp.WithDescription("Verify a recovery officer's nonce signature and retrieve their recovery share. Requires mTLS client certificate. INV-11: share bytes returned only once."),
+		mcp.WithString("username", mcp.Required(), mcp.Description("Recovery officer username.")),
+		mcp.WithString("nonce_hex", mcp.Required(), mcp.Description("Nonce hex from claim-begin response.")),
+		mcp.WithString("signature", mcp.Required(), mcp.Description("Base64-encoded signature over the nonce.")),
+	)
+}
+
+// handleBarrierRecoveryShareClaimComplete returns a tool handler that completes
+// the recovery share claim handshake (INV-11: share bytes returned exactly once).
+func handleBarrierRecoveryShareClaimComplete(svc service.BarrierServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		username := mcp.ParseString(req, "username", "")
+		if username == "" {
+			return mcp.NewToolResultError("username is required"), nil
+		}
+		nonceHex := mcp.ParseString(req, "nonce_hex", "")
+		if nonceHex == "" {
+			return mcp.NewToolResultError("nonce_hex is required"), nil
+		}
+		sigStr := mcp.ParseString(req, "signature", "")
+		if sigStr == "" {
+			return mcp.NewToolResultError("signature is required"), nil
+		}
+
+		thumbprint, err := mcpCertThumbprint(ctx, "qrdb_barrier_recovery_share_claim_complete")
+		if err != nil {
+			return nil, err
+		}
+
+		sigBytes, decErr := base64.StdEncoding.DecodeString(sigStr)
+		if decErr != nil {
+			return mcp.NewToolResultError("signature must be valid base64"), nil
+		}
+
+		result, err := svc.BarrierRecoveryShareClaimComplete(ctx, username, nonceHex, sigBytes, thumbprint)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_barrier_recovery_share_claim_complete", Err: err}
+		}
+
+		// INV-11: share_bytes appears only here.
+		data, jsonErr := json.Marshal(map[string]interface{}{
+			"share_index": result.ShareIndex,
+			"share_bytes": base64.StdEncoding.EncodeToString(result.ShareBytes),
+		})
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_barrier_recovery_share_claim_complete", Err: jsonErr}
+		}
 		return mcp.NewToolResultText(string(data)), nil
 	}
 }

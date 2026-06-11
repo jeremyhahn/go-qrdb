@@ -501,3 +501,49 @@ func TestNamespacedBackend_IsolationBetweenNamespaces(t *testing.T) {
 		t.Errorf("ns2 expected ns2-val, got %s", string(val2))
 	}
 }
+
+// --------------------------------------------------------------------------
+// tenant_barrier.go: TenantBarrier.PutIfAbsent — 0%
+// --------------------------------------------------------------------------
+
+func TestTenantBarrier_PutIfAbsent_Sealed(t *testing.T) {
+	backend := NewMemoryBackend()
+	tb, err := NewTenantBarrier("t1", testLogger(), backend, BarrierConfig{}, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Barrier not yet initialized — sealed.
+	_, err = tb.PutIfAbsent(context.Background(), "k", []byte("v"))
+	if !errors.Is(err, ErrSealed) {
+		t.Errorf("TenantBarrier.PutIfAbsent sealed: got %v, want ErrSealed", err)
+	}
+}
+
+func TestTenantBarrier_PutIfAbsent_Success(t *testing.T) {
+	backend := NewMemoryBackend()
+	tb, err := NewTenantBarrier("t2", testLogger(), backend, BarrierConfig{}, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := tb.Initialize(ctx, Credentials{Secret: "pw"}); err != nil {
+		t.Fatal(err)
+	}
+
+	stored, err := tb.PutIfAbsent(ctx, "pia-tenant", []byte("val"))
+	if err != nil {
+		t.Fatalf("TenantBarrier.PutIfAbsent: %v", err)
+	}
+	if !stored {
+		t.Error("expected stored=true on first call")
+	}
+
+	// Second call must not overwrite.
+	stored, err = tb.PutIfAbsent(ctx, "pia-tenant", []byte("other"))
+	if err != nil {
+		t.Fatalf("TenantBarrier.PutIfAbsent (dup): %v", err)
+	}
+	if stored {
+		t.Error("expected stored=false for duplicate")
+	}
+}

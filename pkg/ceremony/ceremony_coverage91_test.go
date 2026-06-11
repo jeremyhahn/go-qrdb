@@ -544,6 +544,10 @@ func (b *listThenFailBackend) Put(ctx context.Context, key string, data []byte) 
 	return b.inner.Put(ctx, key, data)
 }
 
+func (b *listThenFailBackend) PutIfAbsent(ctx context.Context, key string, data []byte) (bool, error) {
+	return b.inner.PutIfAbsent(ctx, key, data)
+}
+
 func (b *listThenFailBackend) Delete(ctx context.Context, key string) error {
 	return b.inner.Delete(ctx, key)
 }

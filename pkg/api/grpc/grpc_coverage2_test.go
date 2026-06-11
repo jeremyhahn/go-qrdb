@@ -18,7 +18,6 @@ package grpc
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net"
 	"testing"
@@ -28,11 +27,11 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/wrapperspb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/lock"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
@@ -912,11 +911,7 @@ func TestAuditService_Query_NilLogger(t *testing.T) {
 	conn, cleanup := startServerWithAudit(t, nil)
 	defer cleanup()
 
-	ctx := context.Background()
-	filterJSON, _ := json.Marshal(audit.Filter{})
-	req := wrapperspb.Bytes(filterJSON)
-	resp := new(wrapperspb.BytesValue)
-	err := conn.Invoke(ctx, "/qrdb.v1.AuditService/Query", req, resp)
+	_, err := pb.NewAuditServiceClient(conn).Query(context.Background(), &pb.AuditQueryRequest{})
 	if err == nil {
 		t.Fatal("expected error from nil audit logger, got nil")
 	}
@@ -930,14 +925,12 @@ func TestAuditService_Query_EmptyFilter(t *testing.T) {
 	conn, cleanup := startServerWithAudit(t, &mockAuditLogger{})
 	defer cleanup()
 
-	ctx := context.Background()
-	req := wrapperspb.Bytes([]byte{})
-	resp := new(wrapperspb.BytesValue)
-	if err := conn.Invoke(ctx, "/qrdb.v1.AuditService/Query", req, resp); err != nil {
+	resp, err := pb.NewAuditServiceClient(conn).Query(context.Background(), &pb.AuditQueryRequest{})
+	if err != nil {
 		t.Fatalf("Query failed: %v", err)
 	}
-	if len(resp.GetValue()) == 0 {
-		t.Fatal("expected non-empty response JSON")
+	if resp == nil {
+		t.Fatal("expected non-nil response")
 	}
 }
 
@@ -954,20 +947,14 @@ func TestAuditService_Query_WithFilter(t *testing.T) {
 	conn, cleanup := startServerWithAudit(t, logger)
 	defer cleanup()
 
-	f := audit.Filter{Action: "barrier.init"}
-	filterJSON, _ := json.Marshal(f)
-	req := wrapperspb.Bytes(filterJSON)
-	resp := new(wrapperspb.BytesValue)
-	if err := conn.Invoke(context.Background(), "/qrdb.v1.AuditService/Query", req, resp); err != nil {
+	resp, err := pb.NewAuditServiceClient(conn).Query(context.Background(), &pb.AuditQueryRequest{
+		Action: "barrier.init",
+	})
+	if err != nil {
 		t.Fatalf("Query failed: %v", err)
 	}
-
-	var page audit.Page
-	if err := json.Unmarshal(resp.GetValue(), &page); err != nil {
-		t.Fatalf("unmarshal page: %v", err)
-	}
-	if page.Total != 1 {
-		t.Fatalf("expected total 1, got %d", page.Total)
+	if resp.Total != 1 {
+		t.Fatalf("expected total 1, got %d", resp.Total)
 	}
 }
 
@@ -976,9 +963,7 @@ func TestAuditService_Query_ServiceError(t *testing.T) {
 	conn, cleanup := startServerWithAudit(t, logger)
 	defer cleanup()
 
-	req := wrapperspb.Bytes([]byte(`{}`))
-	resp := new(wrapperspb.BytesValue)
-	err := conn.Invoke(context.Background(), "/qrdb.v1.AuditService/Query", req, resp)
+	_, err := pb.NewAuditServiceClient(conn).Query(context.Background(), &pb.AuditQueryRequest{})
 	if err == nil {
 		t.Fatal("expected error from query, got nil")
 	}
@@ -988,33 +973,17 @@ func TestAuditService_Query_ServiceError(t *testing.T) {
 	}
 }
 
-func TestAuditService_Query_InvalidFilterJSON(t *testing.T) {
-	conn, cleanup := startServerWithAudit(t, &mockAuditLogger{})
-	defer cleanup()
-
-	req := wrapperspb.Bytes([]byte(`not-valid-json`))
-	resp := new(wrapperspb.BytesValue)
-	err := conn.Invoke(context.Background(), "/qrdb.v1.AuditService/Query", req, resp)
-	if err == nil {
-		t.Fatal("expected error for invalid JSON filter, got nil")
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.InvalidArgument {
-		t.Fatalf("expected InvalidArgument, got %s", st.Code())
-	}
-}
-
-func TestQueryAuditUnary_Success(t *testing.T) {
+func TestAuditService_Query_RoundTrip(t *testing.T) {
 	logger := &mockAuditLogger{queryResult: &audit.Page{Total: 0}}
 	conn, cleanup := startServerWithAudit(t, logger)
 	defer cleanup()
 
-	page, err := QueryAuditUnary(context.Background(), conn, audit.Filter{})
+	resp, err := pb.NewAuditServiceClient(conn).Query(context.Background(), &pb.AuditQueryRequest{})
 	if err != nil {
-		t.Fatalf("QueryAuditUnary failed: %v", err)
+		t.Fatalf("Query failed: %v", err)
 	}
-	if page == nil {
-		t.Fatal("expected non-nil page")
+	if resp == nil {
+		t.Fatal("expected non-nil response")
 	}
 }
 
@@ -1022,15 +991,10 @@ func TestQueryAuditUnary_Success(t *testing.T) {
 // TenantBarrierService tests (0% coverage)
 // ---------------------------------------------------------------------------
 
-// startServerWithTenantSvc2 is a variant of startServerWithAll that uses a
-// mock tenant service which satisfies tenant.TenantServicer. We reuse the
-// mockTenantService from service_tenant_test.go only when that file is
-// compiled. Under just `codec_json && raft` that file is excluded, so we
-// define a minimal inline tenant service here.
-
+// startGRPCWithTenantBarrier starts a full gRPC server with the tenant barrier
+// service registered via WithTenantService and returns a client connection.
 func startGRPCWithTenantBarrier(t *testing.T, tenantSvc *mockTenantBarrierOnlySvc) (*grpc.ClientConn, func()) {
 	t.Helper()
-	// Use WithTenantService so the tenant barrier service is registered inside Start().
 	srv := NewServer(newMockKVService(), newMockAdminService(), "127.0.0.1:0",
 		WithTenantService(tenantSvc))
 	if err := srv.Start(); err != nil {
@@ -1052,13 +1016,10 @@ func TestTenantBarrierService_Init_Success(t *testing.T) {
 	conn, cleanup := startGRPCWithTenantBarrier(t, svc)
 	defer cleanup()
 
-	req := &GRPCTenantBarrierInitRequest{
-		TenantID:   "acme",
-		Passphrase: "secret",
-		Threshold:  2,
-		Shares:     3,
-	}
-	if err := TenantBarrierInitUnary(context.Background(), conn, req); err != nil {
+	_, err := pb.NewTenantBarrierServiceClient(conn).Init(context.Background(), &pb.TenantBarrierInitRequest{
+		TenantId: "acme", Passphrase: "secret", Threshold: 2, Shares: 3,
+	})
+	if err != nil {
 		t.Fatalf("TenantBarrierInit failed: %v", err)
 	}
 }
@@ -1068,8 +1029,9 @@ func TestTenantBarrierService_Init_EmptyTenantID(t *testing.T) {
 	conn, cleanup := startGRPCWithTenantBarrier(t, svc)
 	defer cleanup()
 
-	req := &GRPCTenantBarrierInitRequest{TenantID: "", Passphrase: "secret"}
-	err := TenantBarrierInitUnary(context.Background(), conn, req)
+	_, err := pb.NewTenantBarrierServiceClient(conn).Init(context.Background(), &pb.TenantBarrierInitRequest{
+		TenantId: "", Passphrase: "secret",
+	})
 	if err == nil {
 		t.Fatal("expected error for empty tenant_id, got nil")
 	}
@@ -1085,8 +1047,9 @@ func TestTenantBarrierService_Init_ServiceError(t *testing.T) {
 	conn, cleanup := startGRPCWithTenantBarrier(t, svc)
 	defer cleanup()
 
-	req := &GRPCTenantBarrierInitRequest{TenantID: "acme", Passphrase: "s"}
-	err := TenantBarrierInitUnary(context.Background(), conn, req)
+	_, err := pb.NewTenantBarrierServiceClient(conn).Init(context.Background(), &pb.TenantBarrierInitRequest{
+		TenantId: "acme", Passphrase: "s",
+	})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -1097,8 +1060,10 @@ func TestTenantBarrierService_Unseal_Success(t *testing.T) {
 	conn, cleanup := startGRPCWithTenantBarrier(t, svc)
 	defer cleanup()
 
-	req := &GRPCTenantBarrierUnsealRequest{TenantID: "acme", Share: []byte("share1")}
-	if err := TenantBarrierUnsealUnary(context.Background(), conn, req); err != nil {
+	_, err := pb.NewTenantBarrierServiceClient(conn).Unseal(context.Background(), &pb.TenantBarrierUnsealRequest{
+		TenantId: "acme", Key: []byte("share1"),
+	})
+	if err != nil {
 		t.Fatalf("TenantBarrierUnseal failed: %v", err)
 	}
 }
@@ -1108,9 +1073,11 @@ func TestTenantBarrierService_Unseal_UseKeyFallback(t *testing.T) {
 	conn, cleanup := startGRPCWithTenantBarrier(t, svc)
 	defer cleanup()
 
-	// When Key is empty, Share is used.
-	req := &GRPCTenantBarrierUnsealRequest{TenantID: "acme", Key: nil, Share: []byte("share-val")}
-	if err := TenantBarrierUnsealUnary(context.Background(), conn, req); err != nil {
+	// Pass the share value via the Key field (the proto Unseal only has Key).
+	_, err := pb.NewTenantBarrierServiceClient(conn).Unseal(context.Background(), &pb.TenantBarrierUnsealRequest{
+		TenantId: "acme", Key: []byte("share-val"),
+	})
+	if err != nil {
 		t.Fatalf("TenantBarrierUnseal (key fallback) failed: %v", err)
 	}
 }
@@ -1120,8 +1087,7 @@ func TestTenantBarrierService_Unseal_EmptyTenantID(t *testing.T) {
 	conn, cleanup := startGRPCWithTenantBarrier(t, svc)
 	defer cleanup()
 
-	req := &GRPCTenantBarrierUnsealRequest{TenantID: ""}
-	err := TenantBarrierUnsealUnary(context.Background(), conn, req)
+	_, err := pb.NewTenantBarrierServiceClient(conn).Unseal(context.Background(), &pb.TenantBarrierUnsealRequest{TenantId: ""})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -1137,8 +1103,10 @@ func TestTenantBarrierService_Unseal_ServiceError(t *testing.T) {
 	conn, cleanup := startGRPCWithTenantBarrier(t, svc)
 	defer cleanup()
 
-	req := &GRPCTenantBarrierUnsealRequest{TenantID: "acme", Share: []byte("s")}
-	if err := TenantBarrierUnsealUnary(context.Background(), conn, req); err == nil {
+	_, err := pb.NewTenantBarrierServiceClient(conn).Unseal(context.Background(), &pb.TenantBarrierUnsealRequest{
+		TenantId: "acme", Key: []byte("s"),
+	})
+	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
 }
@@ -1148,8 +1116,8 @@ func TestTenantBarrierService_Seal_Success(t *testing.T) {
 	conn, cleanup := startGRPCWithTenantBarrier(t, svc)
 	defer cleanup()
 
-	req := &GRPCTenantBarrierSealRequest{TenantID: "acme"}
-	if err := TenantBarrierSealUnary(context.Background(), conn, req); err != nil {
+	_, err := pb.NewTenantBarrierServiceClient(conn).Seal(context.Background(), &pb.TenantBarrierSealRequest{TenantId: "acme"})
+	if err != nil {
 		t.Fatalf("TenantBarrierSeal failed: %v", err)
 	}
 }
@@ -1159,8 +1127,7 @@ func TestTenantBarrierService_Seal_EmptyTenantID(t *testing.T) {
 	conn, cleanup := startGRPCWithTenantBarrier(t, svc)
 	defer cleanup()
 
-	req := &GRPCTenantBarrierSealRequest{TenantID: ""}
-	err := TenantBarrierSealUnary(context.Background(), conn, req)
+	_, err := pb.NewTenantBarrierServiceClient(conn).Seal(context.Background(), &pb.TenantBarrierSealRequest{TenantId: ""})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -1176,8 +1143,8 @@ func TestTenantBarrierService_Seal_ServiceError(t *testing.T) {
 	conn, cleanup := startGRPCWithTenantBarrier(t, svc)
 	defer cleanup()
 
-	req := &GRPCTenantBarrierSealRequest{TenantID: "acme"}
-	if err := TenantBarrierSealUnary(context.Background(), conn, req); err == nil {
+	_, err := pb.NewTenantBarrierServiceClient(conn).Seal(context.Background(), &pb.TenantBarrierSealRequest{TenantId: "acme"})
+	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
 }
@@ -1187,18 +1154,17 @@ func TestTenantBarrierService_Status_Success(t *testing.T) {
 	conn, cleanup := startGRPCWithTenantBarrier(t, svc)
 	defer cleanup()
 
-	req := &GRPCTenantBarrierStatusRequest{TenantID: "acme"}
-	resp, err := TenantBarrierStatusUnary(context.Background(), conn, req)
+	resp, err := pb.NewTenantBarrierServiceClient(conn).Status(context.Background(), &pb.TenantBarrierStatusRequest{TenantId: "acme"})
 	if err != nil {
 		t.Fatalf("TenantBarrierStatus failed: %v", err)
 	}
 	if resp == nil {
 		t.Fatal("expected non-nil response")
 	}
-	if resp.TenantID != "acme" {
-		t.Fatalf("expected tenant_id 'acme', got %q", resp.TenantID)
+	if resp.GetTenantId() != "acme" {
+		t.Fatalf("expected tenant_id 'acme', got %q", resp.GetTenantId())
 	}
-	if !resp.Initialized {
+	if !resp.GetInitialized() {
 		t.Fatal("expected initialized=true")
 	}
 }
@@ -1208,8 +1174,7 @@ func TestTenantBarrierService_Status_EmptyTenantID(t *testing.T) {
 	conn, cleanup := startGRPCWithTenantBarrier(t, svc)
 	defer cleanup()
 
-	req := &GRPCTenantBarrierStatusRequest{TenantID: ""}
-	_, err := TenantBarrierStatusUnary(context.Background(), conn, req)
+	_, err := pb.NewTenantBarrierServiceClient(conn).Status(context.Background(), &pb.TenantBarrierStatusRequest{TenantId: ""})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -1225,8 +1190,7 @@ func TestTenantBarrierService_Status_ServiceError(t *testing.T) {
 	conn, cleanup := startGRPCWithTenantBarrier(t, svc)
 	defer cleanup()
 
-	req := &GRPCTenantBarrierStatusRequest{TenantID: "acme"}
-	_, err := TenantBarrierStatusUnary(context.Background(), conn, req)
+	_, err := pb.NewTenantBarrierServiceClient(conn).Status(context.Background(), &pb.TenantBarrierStatusRequest{TenantId: "acme"})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -1237,13 +1201,6 @@ func TestTenantBarrierService_NilSvc_NotRegistered(t *testing.T) {
 	grpcSrv := grpc.NewServer()
 	RegisterTenantBarrierService(grpcSrv, nil, nil)
 	grpcSrv.Stop()
-}
-
-func TestEmptyJSONObject(t *testing.T) {
-	b := emptyJSONObject()
-	if string(b) != "{}" {
-		t.Fatalf("expected '{}', got %q", string(b))
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1290,11 +1247,14 @@ func (m *mockTenantBarrierOnlySvc) DecrementQuotaUsage(_ context.Context, _ stri
 func (m *mockTenantBarrierOnlySvc) GetQuotaUsage(_ context.Context, _ string, _ quota.Resource) (int64, error) {
 	return 0, nil
 }
-func (m *mockTenantBarrierOnlySvc) TenantBarrierInit(_ context.Context, _, _ string, _, _ int) error {
-	return m.barrierInitErr
+func (m *mockTenantBarrierOnlySvc) TenantBarrierInit(_ context.Context, _, _ string, _, _ int) (*tenantpkg.TenantBarrierInitResult, error) {
+	return nil, m.barrierInitErr
 }
-func (m *mockTenantBarrierOnlySvc) TenantBarrierInitWithStrategy(_ context.Context, _, _ string, _, _ int, _ seal.StrategyID) error {
-	return m.barrierInitErr
+func (m *mockTenantBarrierOnlySvc) TenantBarrierInitWithStrategy(_ context.Context, _, _ string, _, _ int, _ seal.StrategyID) (*tenantpkg.TenantBarrierInitResult, error) {
+	return nil, m.barrierInitErr
+}
+func (m *mockTenantBarrierOnlySvc) TenantBarrierUnsealShare(_ context.Context, _, _ string) (*tenantpkg.TenantBarrierUnsealProgress, error) {
+	return nil, nil
 }
 func (m *mockTenantBarrierOnlySvc) TenantBarrierUnseal(_ context.Context, _ string, _ []byte) error {
 	return m.barrierUnsealErr
@@ -1313,6 +1273,24 @@ func (m *mockTenantBarrierOnlySvc) TenantBarrierStatus(_ context.Context, tenant
 		Strategy:    "software",
 	}, nil
 }
+func (m *mockTenantBarrierOnlySvc) TenantBarrierOfficerRegister(_ context.Context, _ string, _ *ceremony.RegisterOfficerRequest) (*ceremony.RegisterOfficerResult, error) {
+	return &ceremony.RegisterOfficerResult{}, nil
+}
+func (m *mockTenantBarrierOnlySvc) TenantBarrierOfficerList(_ context.Context, _ string) ([]*ceremony.OfficerStatus, error) {
+	return nil, nil
+}
+func (m *mockTenantBarrierOnlySvc) TenantBarrierShareClaimBegin(_ context.Context, _, _, _ string) (*ceremony.ChallengeResponse, error) {
+	return &ceremony.ChallengeResponse{}, nil
+}
+func (m *mockTenantBarrierOnlySvc) TenantBarrierShareClaimComplete(_ context.Context, _, _, _ string, _ []byte, _ string) (*ceremony.ShareClaimResult, error) {
+	return &ceremony.ShareClaimResult{}, nil
+}
+func (m *mockTenantBarrierOnlySvc) TenantBarrierOfficerClaimStatus(_ context.Context, _ string) ([]*ceremony.OfficerStatus, error) {
+	return nil, nil
+}
+func (m *mockTenantBarrierOnlySvc) TenantBarrierShamirSealVote(_ context.Context, _, _ string) (*tenantpkg.TenantBarrierUnsealProgress, error) {
+	return &tenantpkg.TenantBarrierUnsealProgress{}, nil
+}
 
 // ---------------------------------------------------------------------------
 // UserAuthFactor service tests (0% coverage)
@@ -1329,21 +1307,20 @@ func TestUserAuthFactor_Add_Success(t *testing.T) {
 	conn, cleanup := startServerWithUserAuthFactor(t, svc)
 	defer cleanup()
 
-	req := &GRPCUserAuthFactorAddRequest{
-		UserID:     42,
+	resp, err := pb.NewUserAuthFactorServiceClient(conn).Add(context.Background(), &pb.UserAuthFactorAddRequest{
+		UserId:     42,
 		Type:       "totp",
 		Label:      "my-device",
 		Credential: []byte("secret"),
-	}
-	resp, err := UserAuthFactorAddUnary(context.Background(), conn, req)
+	})
 	if err != nil {
 		t.Fatalf("UserAuthFactorAdd failed: %v", err)
 	}
 	if resp == nil {
 		t.Fatal("expected non-nil response")
 	}
-	if resp.Factor.UserID != 42 {
-		t.Fatalf("expected user_id 42, got %d", resp.Factor.UserID)
+	if resp.Factor.UserId != 42 {
+		t.Fatalf("expected user_id 42, got %d", resp.Factor.UserId)
 	}
 }
 
@@ -1353,8 +1330,11 @@ func TestUserAuthFactor_Add_Error(t *testing.T) {
 	conn, cleanup := startServerWithUserAuthFactor(t, svc)
 	defer cleanup()
 
-	req := &GRPCUserAuthFactorAddRequest{UserID: 42, Type: "totp", Credential: []byte("s")}
-	_, err := UserAuthFactorAddUnary(context.Background(), conn, req)
+	_, err := pb.NewUserAuthFactorServiceClient(conn).Add(context.Background(), &pb.UserAuthFactorAddRequest{
+		UserId:     42,
+		Type:       "totp",
+		Credential: []byte("s"),
+	})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -1369,8 +1349,9 @@ func TestUserAuthFactor_List_Success(t *testing.T) {
 	conn, cleanup := startServerWithUserAuthFactor(t, svc)
 	defer cleanup()
 
-	req := &GRPCUserAuthFactorListRequest{UserID: 42}
-	resp, err := UserAuthFactorListUnary(context.Background(), conn, req)
+	resp, err := pb.NewUserAuthFactorServiceClient(conn).List(context.Background(), &pb.UserAuthFactorListRequest{
+		UserId: 42,
+	})
 	if err != nil {
 		t.Fatalf("UserAuthFactorList failed: %v", err)
 	}
@@ -1385,8 +1366,9 @@ func TestUserAuthFactor_List_Error(t *testing.T) {
 	conn, cleanup := startServerWithUserAuthFactor(t, svc)
 	defer cleanup()
 
-	req := &GRPCUserAuthFactorListRequest{UserID: 99}
-	_, err := UserAuthFactorListUnary(context.Background(), conn, req)
+	_, err := pb.NewUserAuthFactorServiceClient(conn).List(context.Background(), &pb.UserAuthFactorListRequest{
+		UserId: 99,
+	})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -1401,13 +1383,14 @@ func TestUserAuthFactor_Get_Success(t *testing.T) {
 	conn, cleanup := startServerWithUserAuthFactor(t, svc)
 	defer cleanup()
 
-	req := &GRPCUserAuthFactorGetRequest{FactorID: "factor-1"}
-	resp, err := UserAuthFactorGetUnary(context.Background(), conn, req)
+	resp, err := pb.NewUserAuthFactorServiceClient(conn).Get(context.Background(), &pb.UserAuthFactorGetRequest{
+		FactorId: "factor-1",
+	})
 	if err != nil {
 		t.Fatalf("UserAuthFactorGet failed: %v", err)
 	}
-	if resp.Factor.ID != "factor-1" {
-		t.Fatalf("expected ID 'factor-1', got %q", resp.Factor.ID)
+	if resp.Factor.Id != "factor-1" {
+		t.Fatalf("expected ID 'factor-1', got %q", resp.Factor.Id)
 	}
 }
 
@@ -1417,8 +1400,9 @@ func TestUserAuthFactor_Get_Error(t *testing.T) {
 	conn, cleanup := startServerWithUserAuthFactor(t, svc)
 	defer cleanup()
 
-	req := &GRPCUserAuthFactorGetRequest{FactorID: "missing"}
-	_, err := UserAuthFactorGetUnary(context.Background(), conn, req)
+	_, err := pb.NewUserAuthFactorServiceClient(conn).Get(context.Background(), &pb.UserAuthFactorGetRequest{
+		FactorId: "missing",
+	})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -1433,8 +1417,10 @@ func TestUserAuthFactor_Remove_Success(t *testing.T) {
 	conn, cleanup := startServerWithUserAuthFactor(t, svc)
 	defer cleanup()
 
-	req := &GRPCUserAuthFactorRemoveRequest{FactorID: "factor-1", Force: false}
-	resp, err := UserAuthFactorRemoveUnary(context.Background(), conn, req)
+	resp, err := pb.NewUserAuthFactorServiceClient(conn).Remove(context.Background(), &pb.UserAuthFactorRemoveRequest{
+		FactorId: "factor-1",
+		Force:    false,
+	})
 	if err != nil {
 		t.Fatalf("UserAuthFactorRemove failed: %v", err)
 	}
@@ -1449,8 +1435,9 @@ func TestUserAuthFactor_Remove_Error(t *testing.T) {
 	conn, cleanup := startServerWithUserAuthFactor(t, svc)
 	defer cleanup()
 
-	req := &GRPCUserAuthFactorRemoveRequest{FactorID: "factor-1"}
-	_, err := UserAuthFactorRemoveUnary(context.Background(), conn, req)
+	_, err := pb.NewUserAuthFactorServiceClient(conn).Remove(context.Background(), &pb.UserAuthFactorRemoveRequest{
+		FactorId: "factor-1",
+	})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -1465,15 +1452,14 @@ func TestUserAuthFactor_Rotate_Success(t *testing.T) {
 	conn, cleanup := startServerWithUserAuthFactor(t, svc)
 	defer cleanup()
 
-	req := &GRPCUserAuthFactorRotateRequest{
-		OldFactorID: "factor-1",
-		NewFactor: GRPCUserAuthFactorAddRequest{
-			UserID:     42,
+	resp, err := pb.NewUserAuthFactorServiceClient(conn).Rotate(context.Background(), &pb.UserAuthFactorRotateRequest{
+		OldFactorId: "factor-1",
+		NewFactor: &pb.UserAuthFactorNewFactor{
+			UserId:     42,
 			Type:       "totp",
 			Credential: []byte("new-secret"),
 		},
-	}
-	resp, err := UserAuthFactorRotateUnary(context.Background(), conn, req)
+	})
 	if err != nil {
 		t.Fatalf("UserAuthFactorRotate failed: %v", err)
 	}
@@ -1488,11 +1474,10 @@ func TestUserAuthFactor_Rotate_Error(t *testing.T) {
 	conn, cleanup := startServerWithUserAuthFactor(t, svc)
 	defer cleanup()
 
-	req := &GRPCUserAuthFactorRotateRequest{
-		OldFactorID: "missing",
-		NewFactor:   GRPCUserAuthFactorAddRequest{UserID: 42, Credential: []byte("s")},
-	}
-	_, err := UserAuthFactorRotateUnary(context.Background(), conn, req)
+	_, err := pb.NewUserAuthFactorServiceClient(conn).Rotate(context.Background(), &pb.UserAuthFactorRotateRequest{
+		OldFactorId: "missing",
+		NewFactor:   &pb.UserAuthFactorNewFactor{UserId: 42, Credential: []byte("s")},
+	})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -1503,8 +1488,10 @@ func TestUserAuthFactor_Relabel_Success(t *testing.T) {
 	conn, cleanup := startServerWithUserAuthFactor(t, svc)
 	defer cleanup()
 
-	req := &GRPCUserAuthFactorRelabelRequest{FactorID: "factor-1", Label: "new-label"}
-	resp, err := UserAuthFactorRelabelUnary(context.Background(), conn, req)
+	resp, err := pb.NewUserAuthFactorServiceClient(conn).Relabel(context.Background(), &pb.UserAuthFactorRelabelRequest{
+		FactorId: "factor-1",
+		Label:    "new-label",
+	})
 	if err != nil {
 		t.Fatalf("UserAuthFactorRelabel failed: %v", err)
 	}
@@ -1519,8 +1506,10 @@ func TestUserAuthFactor_Relabel_Error(t *testing.T) {
 	conn, cleanup := startServerWithUserAuthFactor(t, svc)
 	defer cleanup()
 
-	req := &GRPCUserAuthFactorRelabelRequest{FactorID: "factor-1", Label: "label"}
-	_, err := UserAuthFactorRelabelUnary(context.Background(), conn, req)
+	_, err := pb.NewUserAuthFactorServiceClient(conn).Relabel(context.Background(), &pb.UserAuthFactorRelabelRequest{
+		FactorId: "factor-1",
+		Label:    "label",
+	})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -1535,13 +1524,15 @@ func TestUserAuthFactor_Login_Success(t *testing.T) {
 	conn, cleanup := startServerWithUserAuthFactor(t, svc)
 	defer cleanup()
 
-	req := &GRPCUserAuthFactorLoginRequest{Type: "totp", LookupKey: []byte("key")}
-	resp, err := UserAuthFactorLoginUnary(context.Background(), conn, req)
+	resp, err := pb.NewUserAuthFactorServiceClient(conn).Login(context.Background(), &pb.UserAuthFactorLoginRequest{
+		Type:      "totp",
+		LookupKey: []byte("key"),
+	})
 	if err != nil {
 		t.Fatalf("UserAuthFactorLogin failed: %v", err)
 	}
-	if resp.UserID != 42 {
-		t.Fatalf("expected user_id 42, got %d", resp.UserID)
+	if resp.UserId != 42 {
+		t.Fatalf("expected user_id 42, got %d", resp.UserId)
 	}
 	if !resp.Active {
 		t.Fatal("expected active=true")
@@ -1554,8 +1545,10 @@ func TestUserAuthFactor_Login_Error(t *testing.T) {
 	conn, cleanup := startServerWithUserAuthFactor(t, svc)
 	defer cleanup()
 
-	req := &GRPCUserAuthFactorLoginRequest{Type: "unknown", LookupKey: []byte("key")}
-	_, err := UserAuthFactorLoginUnary(context.Background(), conn, req)
+	_, err := pb.NewUserAuthFactorServiceClient(conn).Login(context.Background(), &pb.UserAuthFactorLoginRequest{
+		Type:      "unknown",
+		LookupKey: []byte("key"),
+	})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -1614,8 +1607,10 @@ func TestUserAuthFactor_Relabel_GetError(t *testing.T) {
 	conn, cleanup := startServerWithUserAuthFactor(t, svc)
 	defer cleanup()
 
-	req := &GRPCUserAuthFactorRelabelRequest{FactorID: "factor-1", Label: "lbl"}
-	_, err := UserAuthFactorRelabelUnary(context.Background(), conn, req)
+	_, err := pb.NewUserAuthFactorServiceClient(conn).Relabel(context.Background(), &pb.UserAuthFactorRelabelRequest{
+		FactorId: "factor-1",
+		Label:    "lbl",
+	})
 	if err == nil {
 		t.Fatal("expected error from Get after Relabel, got nil")
 	}

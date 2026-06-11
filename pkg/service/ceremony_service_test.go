@@ -83,7 +83,7 @@ func (ca *testCeremonyCA) CABundle() ([]byte, error) {
 
 // IssueCertificate generates a new key pair and issues a certificate
 // signed by the test CA.
-func (ca *testCeremonyCA) IssueCertificate(req *ceremony.IssueCertRequest) (*ceremony.IssuedCert, error) {
+func (ca *testCeremonyCA) IssueCertificate(_ context.Context, req *ceremony.IssueCertRequest) (*ceremony.IssuedCert, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, err
@@ -124,7 +124,7 @@ func (ca *testCeremonyCA) IssueCertificate(req *ceremony.IssueCertRequest) (*cer
 }
 
 // SignCSR signs a PEM-encoded CSR with the test CA.
-func (ca *testCeremonyCA) SignCSR(csrPEM []byte, opts *ceremony.SignCSROptions) (*x509.Certificate, error) {
+func (ca *testCeremonyCA) SignCSR(_ context.Context, csrPEM []byte, opts *ceremony.SignCSROptions) (*x509.Certificate, error) {
 	block, _ := pem.Decode(csrPEM)
 	if block == nil {
 		return nil, ceremony.ErrInvalidCSR

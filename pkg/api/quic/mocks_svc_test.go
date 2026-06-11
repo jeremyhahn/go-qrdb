@@ -85,7 +85,7 @@ func (m *mockBarrierService) BarrierInitializeShamir(ctx context.Context, secret
 	if m.barrierInitializeShamirFn != nil {
 		return m.barrierInitializeShamirFn(ctx, secret, threshold, totalShares)
 	}
-	return &service.ShamirInitInfo{Shares: []string{"share1", "share2", "share3"}, Threshold: threshold, TotalShares: totalShares}, nil
+	return &service.ShamirInitInfo{Threshold: threshold, TotalShares: totalShares, ShareCount: totalShares}, nil
 }
 
 func (m *mockBarrierService) BarrierUnsealWithShare(ctx context.Context, share string) (*service.UnsealShareProgress, error) {
@@ -106,14 +106,14 @@ func (m *mockBarrierService) BarrierRekey(ctx context.Context, threshold, total 
 	if m.barrierRekeyFn != nil {
 		return m.barrierRekeyFn(ctx, threshold, total)
 	}
-	return &service.ShamirInitInfo{Shares: []string{"new1", "new2"}, Threshold: threshold, TotalShares: total}, nil
+	return &service.ShamirInitInfo{Threshold: threshold, TotalShares: total, ShareCount: total}, nil
 }
 
 func (m *mockBarrierService) BarrierGenerateRecoveryKeys(ctx context.Context, threshold, total int) (*service.RecoveryKeysInfo, error) {
 	if m.barrierGenRecoveryKeysFn != nil {
 		return m.barrierGenRecoveryKeysFn(ctx, threshold, total)
 	}
-	return &service.RecoveryKeysInfo{Keys: []string{"key1", "key2"}, Threshold: threshold, Total: total}, nil
+	return &service.RecoveryKeysInfo{Threshold: threshold, Total: total, ShareCount: total}, nil
 }
 
 func (m *mockBarrierService) BarrierRecoverWithKeys(ctx context.Context, keys []string) error {
@@ -142,6 +142,33 @@ func (m *mockBarrierService) BarrierGenerateRootToken(ctx context.Context, share
 		return m.barrierGenerateRootTokenFn(ctx, shares)
 	}
 	return &service.RootTokenInfo{Token: "root-token-hex", CreatedAt: time.Now()}, nil
+}
+func (m *mockBarrierService) BarrierOfficerRegister(_ context.Context, _ *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
+	return &service.BarrierOfficerRegisterResult{}, nil
+}
+func (m *mockBarrierService) BarrierOfficerList(_ context.Context) ([]*service.BarrierOfficerStatus, error) {
+	return nil, nil
+}
+func (m *mockBarrierService) BarrierOfficerClaimStatus(_ context.Context) ([]*service.BarrierOfficerStatus, error) {
+	return nil, nil
+}
+func (m *mockBarrierService) BarrierShareClaimBegin(_ context.Context, _, _ string) (*service.BarrierShareClaimChallenge, error) {
+	return &service.BarrierShareClaimChallenge{}, nil
+}
+func (m *mockBarrierService) BarrierShareClaimComplete(_ context.Context, _, _ string, _ []byte, _ string) (*service.BarrierShareClaimResult, error) {
+	return &service.BarrierShareClaimResult{}, nil
+}
+func (m *mockBarrierService) BarrierShamirSealVote(_ context.Context, _ string) (*service.UnsealShareProgress, error) {
+	return &service.UnsealShareProgress{}, nil
+}
+func (m *mockBarrierService) BarrierRecoveryOfficerRegister(_ context.Context, _ *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
+	return &service.BarrierOfficerRegisterResult{}, nil
+}
+func (m *mockBarrierService) BarrierRecoveryShareClaimBegin(_ context.Context, _, _ string) (*service.BarrierShareClaimChallenge, error) {
+	return &service.BarrierShareClaimChallenge{}, nil
+}
+func (m *mockBarrierService) BarrierRecoveryShareClaimComplete(_ context.Context, _, _ string, _ []byte, _ string) (*service.BarrierShareClaimResult, error) {
+	return &service.BarrierShareClaimResult{}, nil
 }
 
 // ---------------------------------------------------------------------------

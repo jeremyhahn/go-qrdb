@@ -309,7 +309,7 @@ func validateRegisterRequest(req RegisterRequest) error {
 		return ErrEmptyShareBytes
 	}
 	switch req.Method {
-	case FactorMethodPKCS11, FactorMethodPIV, FactorMethodFIDO2, FactorMethodSoftware:
+	case FactorMethodPKCS11, FactorMethodPIV, FactorMethodFIDO2, FactorMethodSoftware, FactorMethodMTLS:
 	default:
 		return ErrInvalidMethod
 	}

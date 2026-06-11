@@ -38,13 +38,24 @@ const legacyDefaultTenantID = "default"
 //
 // Additionally, any id containing a control character (byte < 0x20) or the
 // unit-separator byte (0x1f) used as the scoped-key separator is rejected with
-// an *InvalidTenantIDCharError regardless of the internal-call bypass.
+// an *InvalidTenantIDCharError regardless of the internal-call bypass, as is
+// any id containing a path separator ('/' or '\') or equal to "." or ".." —
+// tenant ids become filesystem path segments under barrier isolation
+// (volume-pool directories), so a path-traversal id like "../../x" must be
+// rejected before it ever reaches a filepath.Join sink.
 func validateReservedTenantID(ctx context.Context, id string) error {
 	// Charset check applies to ALL callers — even internal calls must not
-	// create a tenant whose id would corrupt scoped storage keys.
+	// create a tenant whose id would corrupt scoped storage keys or escape
+	// its volume-pool directory.
 	for _, b := range []byte(id) {
-		if b < 0x20 {
+		if b < 0x20 || b == '/' || b == '\\' {
 			return &InvalidTenantIDCharError{TenantID: id, Byte: b}
+		}
+	}
+	if id == "." || id == ".." {
+		return &InvalidTenantIDError{
+			TenantID: id,
+			Reason:   "id must not be a relative path segment",
 		}
 	}
 

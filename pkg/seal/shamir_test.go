@@ -44,8 +44,9 @@ func testSoftwareStrategy(t *testing.T) *SoftwareStrategy {
 }
 
 // newShamirTestBarrier creates a barrier with a SoftwareStrategy for
-// credential-mode Shamir tests.
-func newShamirTestBarrier(t *testing.T) *Barrier {
+// credential-mode Shamir tests. A captureDistributor is wired so that
+// InitializeShamir succeeds; retrieve shares via the returned distributor.
+func newShamirTestBarrier(t *testing.T) (*Barrier, *captureDistributor) {
 	t.Helper()
 	store := NewMemoryBackend()
 	strategy := testSoftwareStrategy(t)
@@ -59,12 +60,15 @@ func newShamirTestBarrier(t *testing.T) *Barrier {
 	if err != nil {
 		t.Fatalf("NewBarrier: %v", err)
 	}
-	return b
+	dist := newCaptureDistributor()
+	b.SetCeremonyDistributor(dist)
+	return b, dist
 }
 
 // newShamirTestBarrierDirect creates a barrier with both ShamirStrategy and
 // SoftwareStrategy for direct-mode tests where the root key itself is split.
-func newShamirTestBarrierDirect(t *testing.T) *Barrier {
+// A captureDistributor is wired; retrieve shares via the returned distributor.
+func newShamirTestBarrierDirect(t *testing.T) (*Barrier, *captureDistributor) {
 	t.Helper()
 	store := NewMemoryBackend()
 	shamirStrat, err := NewShamirStrategy(2, 3)
@@ -83,13 +87,15 @@ func newShamirTestBarrierDirect(t *testing.T) *Barrier {
 	if err != nil {
 		t.Fatalf("NewBarrier: %v", err)
 	}
-	return b
+	dist := newCaptureDistributor()
+	b.SetCeremonyDistributor(dist)
+	return b, dist
 }
 
 // ---------- InitializeShamir tests ----------
 
 func TestShamirInitializeShamir_CredentialMode_Success(t *testing.T) {
-	b := newShamirTestBarrier(t)
+	b, dist := newShamirTestBarrier(t)
 	ctx := context.Background()
 	creds := Credentials{Secret: "test-password"}
 
@@ -104,8 +110,11 @@ func TestShamirInitializeShamir_CredentialMode_Success(t *testing.T) {
 	if result.TotalShares != 5 {
 		t.Errorf("expected TotalShares=5, got %d", result.TotalShares)
 	}
-	if len(result.Shares) != 5 {
-		t.Errorf("expected 5 shares, got %d", len(result.Shares))
+	if result.ShareCount != 5 {
+		t.Errorf("expected ShareCount=5, got %d", result.ShareCount)
+	}
+	if len(dist.Shares()) != 5 {
+		t.Errorf("expected 5 captured shares, got %d", len(dist.Shares()))
 	}
 
 	if b.IsSealed() {
@@ -114,7 +123,7 @@ func TestShamirInitializeShamir_CredentialMode_Success(t *testing.T) {
 }
 
 func TestShamirInitializeShamir_DirectMode_Success(t *testing.T) {
-	b := newShamirTestBarrierDirect(t)
+	b, dist := newShamirTestBarrierDirect(t)
 	ctx := context.Background()
 
 	result, err := b.InitializeShamir(ctx, Credentials{})
@@ -128,12 +137,39 @@ func TestShamirInitializeShamir_DirectMode_Success(t *testing.T) {
 	if result.TotalShares != 3 {
 		t.Errorf("expected TotalShares=3, got %d", result.TotalShares)
 	}
-	if len(result.Shares) != 3 {
-		t.Errorf("expected 3 shares, got %d", len(result.Shares))
+	if result.ShareCount != 3 {
+		t.Errorf("expected ShareCount=3, got %d", result.ShareCount)
+	}
+	if len(dist.Shares()) != 3 {
+		t.Errorf("expected 3 captured shares, got %d", len(dist.Shares()))
 	}
 
 	if b.IsSealed() {
 		t.Error("expected barrier to be unsealed after InitializeShamir (direct)")
+	}
+}
+
+func TestShamirInitializeShamir_NoCeremonyDistributor(t *testing.T) {
+	store := NewMemoryBackend()
+	shamirStrat, err := NewShamirStrategy(2, 3)
+	if err != nil {
+		t.Fatalf("NewShamirStrategy: %v", err)
+	}
+	b, err := NewBarrier(testLogger(), store, BarrierConfig{
+		RootKeyPath: "test/root-key",
+		Shamir: &ShamirConfig{
+			Threshold:   2,
+			TotalShares: 3,
+		},
+		PreferenceOrder: []StrategyID{StrategyShamir},
+	}, shamirStrat, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatalf("NewBarrier: %v", err)
+	}
+	// No SetCeremonyDistributor call.
+	_, gotErr := b.InitializeShamir(context.Background(), Credentials{})
+	if !errors.Is(gotErr, ErrCeremonyDistributorNotConfigured) {
+		t.Errorf("got %v, want ErrCeremonyDistributorNotConfigured", gotErr)
 	}
 }
 
@@ -175,6 +211,8 @@ func TestShamirInitializeShamir_ThresholdInvalid(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewBarrier: %v", err)
 			}
+			dist := newCaptureDistributor()
+			b.SetCeremonyDistributor(dist)
 
 			_, err = b.InitializeShamir(context.Background(), Credentials{Secret: "pw"})
 			if err != ErrShamirThresholdInvalid {
@@ -185,7 +223,7 @@ func TestShamirInitializeShamir_ThresholdInvalid(t *testing.T) {
 }
 
 func TestShamirInitializeShamir_DirectMode_AlreadyInitialized(t *testing.T) {
-	b := newShamirTestBarrierDirect(t)
+	b, _ := newShamirTestBarrierDirect(t)
 	ctx := context.Background()
 
 	_, err := b.InitializeShamir(ctx, Credentials{})
@@ -217,6 +255,8 @@ func TestShamirInitializeShamir_DirectMode_BaseExistsError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewBarrier: %v", err)
 	}
+	dist := newCaptureDistributor()
+	b.SetCeremonyDistributor(dist)
 
 	// Make Exists fail.
 	fb.existErr = errors.New("exists failed")
@@ -233,7 +273,7 @@ func TestShamirInitializeShamir_DirectMode_BaseExistsError(t *testing.T) {
 // ---------- UnsealWithShare tests ----------
 
 func TestShamirUnsealWithShare_IncrementalUnseal(t *testing.T) {
-	b := newShamirTestBarrier(t)
+	b, dist := newShamirTestBarrier(t)
 	ctx := context.Background()
 	creds := Credentials{Secret: "test-password"}
 
@@ -241,13 +281,14 @@ func TestShamirUnsealWithShare_IncrementalUnseal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InitializeShamir: %v", err)
 	}
+	shares := dist.Shares()
 
 	if err := b.Seal(); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
 
 	for i := 0; i < result.Threshold-1; i++ {
-		prog, err := b.UnsealWithShare(ctx, result.Shares[i])
+		prog, err := b.UnsealWithShare(ctx, shares[i])
 		if err != nil {
 			t.Fatalf("UnsealWithShare(%d): %v", i, err)
 		}
@@ -259,7 +300,7 @@ func TestShamirUnsealWithShare_IncrementalUnseal(t *testing.T) {
 		}
 	}
 
-	prog, err := b.UnsealWithShare(ctx, result.Shares[result.Threshold-1])
+	prog, err := b.UnsealWithShare(ctx, shares[result.Threshold-1])
 	if err != nil {
 		t.Fatalf("UnsealWithShare (final): %v", err)
 	}
@@ -272,25 +313,25 @@ func TestShamirUnsealWithShare_IncrementalUnseal(t *testing.T) {
 }
 
 func TestShamirUnsealWithShare_DuplicateShare(t *testing.T) {
-	b := newShamirTestBarrier(t)
+	b, dist := newShamirTestBarrier(t)
 	ctx := context.Background()
 	creds := Credentials{Secret: "test-password"}
 
-	result, err := b.InitializeShamir(ctx, creds)
-	if err != nil {
+	if _, err := b.InitializeShamir(ctx, creds); err != nil {
 		t.Fatalf("InitializeShamir: %v", err)
 	}
+	shares := dist.Shares()
 
 	if err := b.Seal(); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
 
-	_, err = b.UnsealWithShare(ctx, result.Shares[0])
+	_, err := b.UnsealWithShare(ctx, shares[0])
 	if err != nil {
 		t.Fatalf("first UnsealWithShare: %v", err)
 	}
 
-	_, err = b.UnsealWithShare(ctx, result.Shares[0])
+	_, err = b.UnsealWithShare(ctx, shares[0])
 	if err != ErrShamirDuplicateShare {
 		t.Errorf("expected ErrShamirDuplicateShare, got %v", err)
 	}
@@ -312,40 +353,40 @@ func TestShamirUnsealWithShare_NotConfigured(t *testing.T) {
 }
 
 func TestShamirUnsealWithShare_AlreadyUnsealed(t *testing.T) {
-	b := newShamirTestBarrier(t)
+	b, dist := newShamirTestBarrier(t)
 	ctx := context.Background()
 	creds := Credentials{Secret: "test-password"}
 
-	result, err := b.InitializeShamir(ctx, creds)
-	if err != nil {
+	if _, err := b.InitializeShamir(ctx, creds); err != nil {
 		t.Fatalf("InitializeShamir: %v", err)
 	}
+	shares := dist.Shares()
 
-	_, err = b.UnsealWithShare(ctx, result.Shares[0])
+	_, err := b.UnsealWithShare(ctx, shares[0])
 	if err != ErrAlreadyUnsealed {
 		t.Errorf("expected ErrAlreadyUnsealed, got %v", err)
 	}
 }
 
 func TestShamirUnsealWithShare_DirectMode(t *testing.T) {
-	b := newShamirTestBarrierDirect(t)
+	b, dist := newShamirTestBarrierDirect(t)
 	ctx := context.Background()
 
-	result, err := b.InitializeShamir(ctx, Credentials{})
-	if err != nil {
+	if _, err := b.InitializeShamir(ctx, Credentials{}); err != nil {
 		t.Fatalf("InitializeShamir: %v", err)
 	}
+	shares := dist.Shares()
 
 	if err := b.Seal(); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
 
-	_, err = b.UnsealWithShare(ctx, result.Shares[0])
+	_, err := b.UnsealWithShare(ctx, shares[0])
 	if err != nil {
 		t.Fatalf("UnsealWithShare(0): %v", err)
 	}
 
-	prog, err := b.UnsealWithShare(ctx, result.Shares[1])
+	prog, err := b.UnsealWithShare(ctx, shares[1])
 	if err != nil {
 		t.Fatalf("UnsealWithShare(1): %v", err)
 	}
@@ -358,12 +399,11 @@ func TestShamirUnsealWithShare_DirectMode(t *testing.T) {
 }
 
 func TestShamirUnsealWithShare_CombineFails(t *testing.T) {
-	b := newShamirTestBarrier(t)
+	b, _ := newShamirTestBarrier(t)
 	ctx := context.Background()
 	creds := Credentials{Secret: "test-password"}
 
-	_, err := b.InitializeShamir(ctx, creds)
-	if err != nil {
+	if _, err := b.InitializeShamir(ctx, creds); err != nil {
 		t.Fatalf("InitializeShamir: %v", err)
 	}
 
@@ -373,14 +413,14 @@ func TestShamirUnsealWithShare_CombineFails(t *testing.T) {
 
 	// Submit 3 garbage shares that will pass dedup but fail Combine.
 	for i := 0; i < 2; i++ {
-		_, err = b.UnsealWithShare(ctx, "garbage-share-"+string(rune('a'+i)))
+		_, err := b.UnsealWithShare(ctx, "garbage-share-"+string(rune('a'+i)))
 		if err != nil {
 			t.Fatalf("UnsealWithShare(%d): %v", i, err)
 		}
 	}
 
 	// The third share meets the threshold and triggers Combine which should fail.
-	_, err = b.UnsealWithShare(ctx, "garbage-share-c")
+	_, err := b.UnsealWithShare(ctx, "garbage-share-c")
 	if err == nil {
 		t.Fatal("expected error from Combine with garbage shares")
 	}
@@ -392,7 +432,7 @@ func TestShamirUnsealWithShare_CombineFails(t *testing.T) {
 // ---------- UnsealWithShares tests ----------
 
 func TestShamirUnsealWithShares_BatchUnseal(t *testing.T) {
-	b := newShamirTestBarrier(t)
+	b, dist := newShamirTestBarrier(t)
 	ctx := context.Background()
 	creds := Credentials{Secret: "test-password"}
 
@@ -400,12 +440,13 @@ func TestShamirUnsealWithShares_BatchUnseal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InitializeShamir: %v", err)
 	}
+	shares := dist.Shares()
 
 	if err := b.Seal(); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
 
-	err = b.UnsealWithShares(ctx, result.Shares[:result.Threshold])
+	err = b.UnsealWithShares(ctx, shares[:result.Threshold])
 	if err != nil {
 		t.Fatalf("UnsealWithShares: %v", err)
 	}
@@ -416,7 +457,7 @@ func TestShamirUnsealWithShares_BatchUnseal(t *testing.T) {
 }
 
 func TestShamirUnsealWithShares_QuorumIncomplete(t *testing.T) {
-	b := newShamirTestBarrier(t)
+	b, dist := newShamirTestBarrier(t)
 	ctx := context.Background()
 	creds := Credentials{Secret: "test-password"}
 
@@ -424,12 +465,13 @@ func TestShamirUnsealWithShares_QuorumIncomplete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InitializeShamir: %v", err)
 	}
+	shares := dist.Shares()
 
 	if err := b.Seal(); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
 
-	err = b.UnsealWithShares(ctx, result.Shares[:result.Threshold-1])
+	err = b.UnsealWithShares(ctx, shares[:result.Threshold-1])
 	if err != ErrShamirQuorumIncomplete {
 		t.Errorf("expected ErrShamirQuorumIncomplete, got %v", err)
 	}
@@ -451,7 +493,7 @@ func TestShamirUnsealWithShares_NotConfigured(t *testing.T) {
 }
 
 func TestShamirUnsealWithShares_AlreadyUnsealed(t *testing.T) {
-	b := newShamirTestBarrier(t)
+	b, dist := newShamirTestBarrier(t)
 	ctx := context.Background()
 	creds := Credentials{Secret: "test-password"}
 
@@ -459,27 +501,29 @@ func TestShamirUnsealWithShares_AlreadyUnsealed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InitializeShamir: %v", err)
 	}
+	shares := dist.Shares()
 
-	err = b.UnsealWithShares(ctx, result.Shares[:result.Threshold])
+	err = b.UnsealWithShares(ctx, shares[:result.Threshold])
 	if err != ErrAlreadyUnsealed {
 		t.Errorf("expected ErrAlreadyUnsealed, got %v", err)
 	}
 }
 
 func TestShamirUnsealWithShares_DirectMode(t *testing.T) {
-	b := newShamirTestBarrierDirect(t)
+	b, dist := newShamirTestBarrierDirect(t)
 	ctx := context.Background()
 
 	result, err := b.InitializeShamir(ctx, Credentials{})
 	if err != nil {
 		t.Fatalf("InitializeShamir: %v", err)
 	}
+	shares := dist.Shares()
 
 	if err := b.Seal(); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
 
-	err = b.UnsealWithShares(ctx, result.Shares[:result.Threshold])
+	err = b.UnsealWithShares(ctx, shares[:result.Threshold])
 	if err != nil {
 		t.Fatalf("UnsealWithShares (direct): %v", err)
 	}
@@ -490,12 +534,11 @@ func TestShamirUnsealWithShares_DirectMode(t *testing.T) {
 }
 
 func TestShamirUnsealWithShares_CombineFails(t *testing.T) {
-	b := newShamirTestBarrier(t)
+	b, _ := newShamirTestBarrier(t)
 	ctx := context.Background()
 	creds := Credentials{Secret: "test-password"}
 
-	_, err := b.InitializeShamir(ctx, creds)
-	if err != nil {
+	if _, err := b.InitializeShamir(ctx, creds); err != nil {
 		t.Fatalf("InitializeShamir: %v", err)
 	}
 
@@ -504,7 +547,7 @@ func TestShamirUnsealWithShares_CombineFails(t *testing.T) {
 	}
 
 	// Provide enough garbage shares to meet the threshold.
-	err = b.UnsealWithShares(ctx, []string{"bad-1", "bad-2", "bad-3"})
+	err := b.UnsealWithShares(ctx, []string{"bad-1", "bad-2", "bad-3"})
 	if err == nil {
 		t.Fatal("expected error from Combine with garbage shares")
 	}
@@ -521,11 +564,11 @@ func TestShamirUnsealWithShares_CombineFails(t *testing.T) {
 // and persists them to the sealed envelope.
 func TestShamirInitializeShamir_DirectMode_RequestParamsOverride(t *testing.T) {
 	tests := []struct {
-		name              string
-		bootThreshold     int
-		bootTotal         int
-		requestThreshold  int
-		requestTotal      int
+		name             string
+		bootThreshold    int
+		bootTotal        int
+		requestThreshold int
+		requestTotal     int
 	}{
 		{"3-of-5 overrides 2-of-3", 2, 3, 3, 5},
 		{"2-of-4 overrides 3-of-6", 3, 6, 2, 4},
@@ -549,6 +592,8 @@ func TestShamirInitializeShamir_DirectMode_RequestParamsOverride(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewBarrier: %v", err)
 			}
+			dist := newCaptureDistributor()
+			b.SetCeremonyDistributor(dist)
 
 			// Simulate "request wins" — service layer calls SetShamirConfig.
 			b.SetShamirConfig(&ShamirConfig{
@@ -567,8 +612,11 @@ func TestShamirInitializeShamir_DirectMode_RequestParamsOverride(t *testing.T) {
 			if result.TotalShares != tc.requestTotal {
 				t.Errorf("result.TotalShares = %d, want %d", result.TotalShares, tc.requestTotal)
 			}
-			if len(result.Shares) != tc.requestTotal {
-				t.Errorf("len(Shares) = %d, want %d", len(result.Shares), tc.requestTotal)
+			if result.ShareCount != tc.requestTotal {
+				t.Errorf("result.ShareCount = %d, want %d", result.ShareCount, tc.requestTotal)
+			}
+			if len(dist.Shares()) != tc.requestTotal {
+				t.Errorf("len(dist.Shares()) = %d, want %d", len(dist.Shares()), tc.requestTotal)
 			}
 
 			// In-memory strategy must reflect the new params.
@@ -590,7 +638,7 @@ func TestShamirInitializeShamir_DirectMode_RequestParamsOverride(t *testing.T) {
 // when config threshold/total match the boot ShamirStrategy, the sealed
 // envelope is not unnecessarily rewritten but the result is still correct.
 func TestShamirInitializeShamir_DirectMode_FallbackToBootConfig(t *testing.T) {
-	b := newShamirTestBarrierDirect(t)
+	b, dist := newShamirTestBarrierDirect(t)
 	// Config already matches the boot strategy (2-of-3). No override needed.
 	result, err := b.InitializeShamir(context.Background(), Credentials{})
 	if err != nil {
@@ -602,8 +650,11 @@ func TestShamirInitializeShamir_DirectMode_FallbackToBootConfig(t *testing.T) {
 	if result.TotalShares != 3 {
 		t.Errorf("TotalShares = %d, want 3", result.TotalShares)
 	}
-	if len(result.Shares) != 3 {
-		t.Errorf("len(Shares) = %d, want 3", len(result.Shares))
+	if result.ShareCount != 3 {
+		t.Errorf("ShareCount = %d, want 3", result.ShareCount)
+	}
+	if len(dist.Shares()) != 3 {
+		t.Errorf("len(dist.Shares()) = %d, want 3", len(dist.Shares()))
 	}
 }
 
@@ -612,7 +663,7 @@ func TestShamirInitializeShamir_DirectMode_FallbackToBootConfig(t *testing.T) {
 // TestBarrierStatus_ShamirFields_ShamirStrategy verifies that Status() exposes
 // ShamirThreshold/ShamirTotal from the registered ShamirStrategy.
 func TestBarrierStatus_ShamirFields_ShamirStrategy(t *testing.T) {
-	b := newShamirTestBarrierDirect(t)
+	b, _ := newShamirTestBarrierDirect(t)
 	ctx := context.Background()
 
 	_, err := b.InitializeShamir(ctx, Credentials{})
@@ -648,6 +699,8 @@ func TestBarrierStatus_ShamirFields_AfterOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewBarrier: %v", err)
 	}
+	dist := newCaptureDistributor()
+	b.SetCeremonyDistributor(dist)
 
 	// Override to 3-of-5 via SetShamirConfig.
 	b.SetShamirConfig(&ShamirConfig{Threshold: 3, TotalShares: 5})
@@ -693,7 +746,7 @@ func TestBarrierStatus_ShamirFields_NonShamirBarrier(t *testing.T) {
 // ---------- loadOrCreateAccumulator tests ----------
 
 func TestShamirLoadOrCreateAccumulator_CreatesNew(t *testing.T) {
-	b := newShamirTestBarrier(t)
+	b, _ := newShamirTestBarrier(t)
 
 	acc := b.loadOrCreateAccumulator(3, 5, 5*time.Minute)
 	if acc == nil {
@@ -713,7 +766,7 @@ func TestShamirLoadOrCreateAccumulator_CreatesNew(t *testing.T) {
 }
 
 func TestShamirLoadOrCreateAccumulator_ReusesExisting(t *testing.T) {
-	b := newShamirTestBarrier(t)
+	b, _ := newShamirTestBarrier(t)
 
 	acc1 := b.loadOrCreateAccumulator(3, 5, 5*time.Minute)
 	acc2 := b.loadOrCreateAccumulator(3, 5, 5*time.Minute)
@@ -733,7 +786,7 @@ func TestShamirLoadOrCreateAccumulator_ReusesExisting(t *testing.T) {
 }
 
 func TestShamirLoadOrCreateAccumulator_ReplacesExpired(t *testing.T) {
-	b := newShamirTestBarrier(t)
+	b, _ := newShamirTestBarrier(t)
 
 	// Create an accumulator with zero TTL (immediately expired).
 	acc1 := b.loadOrCreateAccumulator(3, 5, 0)
@@ -757,5 +810,51 @@ func TestShamirLoadOrCreateAccumulator_ReplacesExpired(t *testing.T) {
 	}
 	if prog.Submitted != 1 {
 		t.Errorf("expected Submitted=1, got %d", prog.Submitted)
+	}
+}
+
+// --------------------------------------------------------------------------
+// shamir.go: updateSealedShamirParams — 76.2%
+// (exercises the params-differ path in initializeShamirDirect)
+// --------------------------------------------------------------------------
+
+func TestUpdateSealedShamirParams_ParamsDiffer(t *testing.T) {
+	// Build a Shamir barrier where the request threshold/total differ from
+	// the boot-time ShamirStrategy (2-of-3 vs 3-of-5). This triggers the
+	// updateSealedShamirParams branch in initializeShamirDirect.
+	backend := NewMemoryBackend()
+	shamirStrat, err := NewShamirStrategy(2, 3) // boot-time: 2-of-3
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Configure the barrier to request 3-of-5 at init time.
+	b, err := NewBarrier(testLogger(), backend, BarrierConfig{
+		RootKeyPath:     "test/root-key",
+		Shamir:          &ShamirConfig{Threshold: 3, TotalShares: 5}, // request: 3-of-5
+		PreferenceOrder: []StrategyID{StrategyShamir},
+	}, testSoftwareStrategy(t), shamirStrat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dist := newCaptureDistributor()
+	b.SetCeremonyDistributor(dist)
+	ctx := context.Background()
+
+	params, err := b.InitializeShamir(ctx, Credentials{})
+	if err != nil {
+		t.Fatalf("InitializeShamir with differing params: %v", err)
+	}
+	if params.Threshold != 3 || params.TotalShares != 5 {
+		t.Errorf("expected 3-of-5 params, got %d-of-%d", params.Threshold, params.TotalShares)
+	}
+
+	// Verify the in-memory strategy was updated.
+	strat := b.ShamirStrategy()
+	if strat == nil {
+		t.Fatal("expected non-nil ShamirStrategy after update")
+	}
+	if strat.Threshold() != 3 || strat.TotalShares() != 5 {
+		t.Errorf("in-memory strategy: expected 3-of-5, got %d-of-%d", strat.Threshold(), strat.TotalShares())
 	}
 }

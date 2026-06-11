@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/dek"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -62,12 +63,16 @@ func (m *mockTenantServicer) ListTenants(_ context.Context) ([]tenant.TenantInfo
 	return nil, nil
 }
 func (m *mockTenantServicer) DeleteTenant(_ context.Context, _ string) error { return nil }
-func (m *mockTenantServicer) TenantBarrierInit(_ context.Context, _, _ string, _, _ int) error {
-	return nil
+func (m *mockTenantServicer) TenantBarrierInit(_ context.Context, _, _ string, _, _ int) (*tenant.TenantBarrierInitResult, error) {
+	return nil, nil
 }
 
-func (m *mockTenantServicer) TenantBarrierInitWithStrategy(_ context.Context, _, _ string, _, _ int, _ seal.StrategyID) error {
-	return nil
+func (m *mockTenantServicer) TenantBarrierInitWithStrategy(_ context.Context, _, _ string, _, _ int, _ seal.StrategyID) (*tenant.TenantBarrierInitResult, error) {
+	return nil, nil
+}
+
+func (m *mockTenantServicer) TenantBarrierUnsealShare(_ context.Context, _, _ string) (*tenant.TenantBarrierUnsealProgress, error) {
+	return nil, nil
 }
 func (m *mockTenantServicer) TenantBarrierUnseal(_ context.Context, _ string, _ []byte) error {
 	return nil
@@ -86,6 +91,30 @@ func (m *mockTenantServicer) DecrementQuotaUsage(_ context.Context, _ string, _ 
 }
 func (m *mockTenantServicer) GetQuotaUsage(_ context.Context, _ string, _ quota.Resource) (int64, error) {
 	return 0, nil
+}
+
+func (m *mockTenantServicer) TenantBarrierOfficerRegister(_ context.Context, _ string, _ *ceremony.RegisterOfficerRequest) (*ceremony.RegisterOfficerResult, error) {
+	return nil, nil
+}
+
+func (m *mockTenantServicer) TenantBarrierOfficerList(_ context.Context, _ string) ([]*ceremony.OfficerStatus, error) {
+	return nil, nil
+}
+
+func (m *mockTenantServicer) TenantBarrierShareClaimBegin(_ context.Context, _, _, _ string) (*ceremony.ChallengeResponse, error) {
+	return nil, nil
+}
+
+func (m *mockTenantServicer) TenantBarrierShareClaimComplete(_ context.Context, _, _, _ string, _ []byte, _ string) (*ceremony.ShareClaimResult, error) {
+	return nil, nil
+}
+
+func (m *mockTenantServicer) TenantBarrierOfficerClaimStatus(_ context.Context, _ string) ([]*ceremony.OfficerStatus, error) {
+	return nil, nil
+}
+
+func (m *mockTenantServicer) TenantBarrierShamirSealVote(_ context.Context, _, _ string) (*tenant.TenantBarrierUnsealProgress, error) {
+	return nil, nil
 }
 
 // Compile-time interface check.

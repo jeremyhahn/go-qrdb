@@ -96,6 +96,10 @@ func vectorConsistencyToProto(level uint8) pb.ConsistencyLevel {
 		return pb.ConsistencyLevel_CONSISTENCY_LEVEL_LINEARIZABLE
 	case transport.ConsistencyEventual:
 		return pb.ConsistencyLevel_CONSISTENCY_LEVEL_EVENTUAL
+	case transport.ConsistencyFollower:
+		// No dedicated wire value yet; remote clients receive the closest
+		// non-blocking semantic (local read) instead of a leader round-trip.
+		return pb.ConsistencyLevel_CONSISTENCY_LEVEL_EVENTUAL
 	default:
 		// ConsistencyStrong (0) and any unrecognized value → STRONG.
 		return pb.ConsistencyLevel_CONSISTENCY_LEVEL_STRONG
@@ -115,6 +119,10 @@ func protoConsistency(opts ...transport.ReadOption) pb.ConsistencyLevel {
 		case transport.ConsistencyLinearizable:
 			return pb.ConsistencyLevel_CONSISTENCY_LEVEL_LINEARIZABLE
 		case transport.ConsistencyEventual:
+			return pb.ConsistencyLevel_CONSISTENCY_LEVEL_EVENTUAL
+		case transport.ConsistencyFollower:
+			// No dedicated wire value yet; map to the closest non-blocking
+			// semantic so remote clients never hang on a leader round-trip.
 			return pb.ConsistencyLevel_CONSISTENCY_LEVEL_EVENTUAL
 		}
 	}

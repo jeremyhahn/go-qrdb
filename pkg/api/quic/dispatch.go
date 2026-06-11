@@ -191,6 +191,16 @@ func (s *Server) buildHandlers() {
 	s.handlers["barrier.RecoveryDelete"] = s.handleBarrierRecoveryDelete
 	s.handlers["barrier.RecoveryStatus"] = s.handleBarrierRecoveryStatus
 	s.handlers["barrier.RootToken"] = s.handleBarrierRootToken
+	// Barrier Security Officer (system barrier SO distribution).
+	s.handlers["barrier.OfficerRegister"] = s.handleBarrierOfficerRegister
+	s.handlers["barrier.OfficerList"] = s.handleBarrierOfficerList
+	s.handlers["barrier.ShareClaimBegin"] = s.handleBarrierShareClaimBegin
+	s.handlers["barrier.ShareClaimComplete"] = s.handleBarrierShareClaimComplete
+	s.handlers["barrier.OfficerClaimStatus"] = s.handleBarrierOfficerClaimStatus
+	s.handlers["barrier.ShamirSealVote"] = s.handleBarrierShamirSealVote
+	s.handlers["barrier.RecoveryOfficerRegister"] = s.handleBarrierRecoveryOfficerRegister
+	s.handlers["barrier.RecoveryShareClaimBegin"] = s.handleBarrierRecoveryShareClaimBegin
+	s.handlers["barrier.RecoveryShareClaimComplete"] = s.handleBarrierRecoveryShareClaimComplete
 
 	// Ceremony
 	s.handlers["ceremony.Initialize"] = s.handleCeremonyInitialize
@@ -225,12 +235,19 @@ func (s *Server) buildHandlers() {
 		s.handlers["credential.Retrieve"] = s.handleCredentialRetrieve
 	}
 
-	// Per-tenant barrier lifecycle
+	// Per-tenant barrier lifecycle and SO distribution.
 	if s.tenantSvc != nil {
 		s.handlers["tenant.BarrierInit"] = s.handleTenantBarrierInit
 		s.handlers["tenant.BarrierUnseal"] = s.handleTenantBarrierUnseal
+		s.handlers["tenant.BarrierUnsealShare"] = s.handleTenantBarrierUnsealShare
 		s.handlers["tenant.BarrierSeal"] = s.handleTenantBarrierSeal
 		s.handlers["tenant.BarrierStatus"] = s.handleTenantBarrierStatus
+		s.handlers["tenant.BarrierOfficerRegister"] = s.handleTenantBarrierOfficerRegister
+		s.handlers["tenant.BarrierOfficerList"] = s.handleTenantBarrierOfficerList
+		s.handlers["tenant.BarrierShareClaimBegin"] = s.handleTenantBarrierShareClaimBegin
+		s.handlers["tenant.BarrierShareClaimComplete"] = s.handleTenantBarrierShareClaimComplete
+		s.handlers["tenant.BarrierOfficerClaimStatus"] = s.handleTenantBarrierOfficerClaimStatus
+		s.handlers["tenant.BarrierShamirSealVote"] = s.handleTenantBarrierShamirSealVote
 	}
 
 	// Backup management

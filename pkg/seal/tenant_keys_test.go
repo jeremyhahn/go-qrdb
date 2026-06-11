@@ -585,3 +585,35 @@ func TestTenantKeyManager_ClearCacheReleasesKeys(t *testing.T) {
 		t.Errorf("expected empty cache after ClearCache, found %d entries", count)
 	}
 }
+
+// --------------------------------------------------------------------------
+// tenant_keys.go: cacheDEK — 42.9%
+// (error branch: secure.NewSecret on empty DEK)
+// cacheDEK is unexported; exercise it via GetTenantDEK which calls it on
+// the success path, and via a second GetTenantDEK call which exercises
+// the "swap existing Secret" branch.
+// --------------------------------------------------------------------------
+
+func TestCacheDEK_SwapExisting(t *testing.T) {
+	// Two successive GetTenantDEK calls for the same tenant exercise the
+	// LoadAndSwap branch that destroys the previous cached Secret.
+	b := newUnsealedBarrier(t)
+	store := newMemoryKVStore()
+	tkm, err := NewTenantKeyManager(b, store)
+	if err != nil {
+		t.Fatalf("NewTenantKeyManager: %v", err)
+	}
+
+	ctx := context.Background()
+	// First call generates and caches a DEK.
+	_, err = tkm.GetTenantDEK(ctx, "cache-tenant")
+	if err != nil {
+		t.Fatalf("GetTenantDEK (1st): %v", err)
+	}
+	// Clear the cache so the second call re-enters generateAndStoreDEK
+	// …but GetTenantDEK checks the store first. Use RotateTenantDEK which
+	// always generates and caches a fresh DEK, exercising Swap over existing.
+	if err := tkm.RotateTenantDEK(ctx, "cache-tenant"); err != nil {
+		t.Fatalf("RotateTenantDEK (triggers cacheDEK swap): %v", err)
+	}
+}

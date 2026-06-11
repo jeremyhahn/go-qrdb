@@ -542,6 +542,9 @@ func soPermissions() []permission.Permission {
 		permission.SealStatus, permission.SealRotateRootKey, permission.SealRekey,
 		permission.SealGenerateRecovery, permission.SealRecoverWithKeys,
 		permission.SealInitializeShamir,
+		// Security Officer operations (SO-exclusive)
+		permission.SealOfficerRegister, permission.SealOfficerList,
+		permission.SealSubmitSealVote,
 		// Ceremony (SO-exclusive)
 		permission.CeremonyInitialize, permission.CeremonyEnrollCustodian,
 		permission.CeremonyRevokeCustodian, permission.CeremonyClaimCert,
@@ -627,6 +630,9 @@ func adminPermissions() []permission.Permission {
 		// though the perm is present in the role).
 		permission.TenantBarrierInit, permission.TenantBarrierUnseal,
 		permission.TenantBarrierSeal,
+		// Per-tenant Security Officer management (ScopeTenantOnly: tenant admin
+		// registers and lists officers for their OWN tenant's barrier only).
+		permission.TenantBarrierOfficerRegister, permission.TenantBarrierOfficerList,
 		// User management
 		permission.UsersCreate, permission.UsersRead, permission.UsersUpdate,
 		permission.UsersDelete, permission.UsersList, permission.UsersEnable,
@@ -659,6 +665,22 @@ func adminPermissions() []permission.Permission {
 		permission.SecretsList,
 		permission.TrustRead, permission.TrustWrite,
 		permission.ACMERead, permission.ACMEWrite,
+		// Broker data-plane families (ScopeTenantOnly). A tenant admin owns the
+		// full lifecycle of their OWN tenant's data-plane surfaces, so each whole
+		// family is granted via a resource:* whole-segment wildcard (expanded
+		// against concrete resource:action checks by the RBAC authorizer). The
+		// system tenant is structurally denied these by the ScopeTenantOnly rule
+		// even though the wildcard is present in the role. Without these grants a
+		// human tenant-admin's USER token resolves no data-plane scopes and is
+		// denied every broker data-plane operation.
+		permission.ObjStoreAll,
+		permission.OrchestratorAll,
+		permission.SchedulerAll,
+		permission.MessagingAll,
+		permission.ParametersAll,
+		permission.DynamicSecretsAll,
+		permission.ProjectAll,
+		permission.OllamaAll,
 	}
 	sort.Slice(perms, func(i, j int) bool { return perms[i] < perms[j] })
 	return perms
@@ -667,7 +689,11 @@ func adminPermissions() []permission.Permission {
 // operatorPermissions returns the permission set for the Operator built-in role.
 // Operators perform routine crypto operations and maintenance. They can sign,
 // encrypt, and decrypt using existing keys, and seal/unseal the barrier, but
-// cannot create/delete keys or manage tenants.
+// cannot create/delete keys or manage tenants. Operators are also the non-admin
+// humans who USE the broker data-plane services: they hold the day-to-day verbs
+// of the eight broker data-plane families (objstore, orchestrator, scheduler,
+// messaging, parameters, dynamic_secrets, project, ollama) — but NOT each
+// family's administrative / governance verbs, which remain Admin-only.
 func operatorPermissions() []permission.Permission {
 	perms := []permission.Permission{
 		// Cryptographic operations
@@ -725,6 +751,83 @@ func operatorPermissions() []permission.Permission {
 		permission.AdminHealth, permission.AdminStatus,
 		// Audit (read)
 		permission.AuditRead,
+		// Broker data-plane families (ScopeTenantOnly): day-to-day, non-admin
+		// verbs only. Operators are non-admin humans who USE the BaaS services;
+		// they create/read/update/delete THEIR OWN data objects but do NOT hold
+		// the administrative / governance verbs of each family (those remain
+		// Admin-only via the resource:* wildcards in adminPermissions). The
+		// concrete perms are enumerated deliberately — operator is NEVER granted
+		// a resource:* wildcard, which would sweep in admin verbs such as
+		// objstore:admin or dynamic_secrets:role_*. The ScopeTenantOnly rule in
+		// pkg/auth/rbac still confines these to the operator's OWN tenant.
+		//
+		// Object storage: full object lifecycle on the operator's own objects.
+		// Excluded: objstore:admin (backend admin/GC/repair/compaction),
+		// objstore:write_policy + objstore:tenant_quota_write (governance), and
+		// objstore:replicate + objstore:migrate (cross-backend data movement —
+		// conservatively reserved to Admin).
+		permission.ObjStorePut, permission.ObjStoreGet, permission.ObjStoreDelete,
+		permission.ObjStoreList, permission.ObjStoreHead, permission.ObjStoreCopy,
+		permission.ObjStoreArchive, permission.ObjStoreRestore,
+		permission.ObjStoreVerify, permission.ObjStoreBatch,
+		permission.ObjStoreReadPolicy, permission.ObjStoreReadBackend,
+		permission.ObjStoreReadStats, permission.ObjStoreTenantUsage,
+		permission.ObjStoreTenantQuotaRead,
+		// Orchestrator: all 32 concrete verbs. Operators run the full
+		// orchestration data plane day-to-day — spawning/observing sessions,
+		// authoring workflows, dispatching and completing tasks, managing the
+		// agent fleet (including removing dead/stuck agents), reading/writing the
+		// shared cache, and broadcasting drain/reload to the fleet. Workflow
+		// authoring (orchestrator:workflow_write), removing dead agents
+		// (orchestrator:agent_remove), and fleet broadcast
+		// (orchestrator:broadcast) are operational verbs, not governance.
+		// The concrete verbs are enumerated deliberately rather than granting the
+		// orchestrator:* wildcard, so any future admin-only orchestrator verb does
+		// NOT silently accrue to operator (that wildcard stays Admin-only).
+		permission.OrchestratorSpawn, permission.OrchestratorPrompt,
+		permission.OrchestratorStatus, permission.OrchestratorClose,
+		permission.OrchestratorList, permission.OrchestratorTaskCreate,
+		permission.OrchestratorTaskRead, permission.OrchestratorTaskList,
+		permission.OrchestratorTaskClaim, permission.OrchestratorTaskComplete,
+		permission.OrchestratorTaskDecompose, permission.OrchestratorArtifactSubmit,
+		permission.OrchestratorArtifactRead, permission.OrchestratorJobStart,
+		permission.OrchestratorJobRead, permission.OrchestratorJobList,
+		permission.OrchestratorJobCancel, permission.OrchestratorBackendList,
+		permission.OrchestratorDiscover, permission.OrchestratorHook,
+		permission.OrchestratorWorkflowRead, permission.OrchestratorWorkflowWrite,
+		permission.OrchestratorHealth, permission.OrchestratorInference,
+		permission.OrchestratorAgentRegister, permission.OrchestratorAgentRead,
+		permission.OrchestratorAgentList, permission.OrchestratorAgentRemove,
+		permission.OrchestratorAgentHeartbeat, permission.OrchestratorCacheRead,
+		permission.OrchestratorCacheWrite, permission.OrchestratorBroadcast,
+		// Messaging: full channel lifecycle + pub/sub on the operator's own
+		// channels (delete is a day-to-day op on the user's own data object).
+		permission.MessagingChannelCreate, permission.MessagingChannelRead,
+		permission.MessagingChannelList, permission.MessagingChannelDelete,
+		permission.MessagingPublish, permission.MessagingSubscribe,
+		permission.MessagingUnsubscribe, permission.MessagingWatch,
+		permission.MessagingStats,
+		// Scheduler: full job lifecycle on the operator's own jobs.
+		permission.SchedulerCreate, permission.SchedulerRead, permission.SchedulerList,
+		permission.SchedulerUpdate, permission.SchedulerDelete,
+		permission.SchedulerTrigger, permission.SchedulerPause,
+		permission.SchedulerResume, permission.SchedulerCancel,
+		permission.SchedulerHistory, permission.SchedulerStatus,
+		// Parameters: full CRUD + search on the operator's own parameters.
+		permission.ParametersRead, permission.ParametersWrite,
+		permission.ParametersDelete, permission.ParametersList,
+		permission.ParametersSearch,
+		// Dynamic secrets: issue and manage leases. Excluded: all
+		// dynamic_secrets:role_* (role definition management is governance).
+		permission.DynamicSecretsGenerate, permission.DynamicSecretsLeaseRenew,
+		permission.DynamicSecretsLeaseRevoke, permission.DynamicSecretsLeaseList,
+		// Project: full project lifecycle. Excluded: project:grant + project:revoke
+		// (granting/revoking other agents' project roles is governance).
+		permission.ProjectCreate, permission.ProjectRead, permission.ProjectList,
+		permission.ProjectUpdate, permission.ProjectDelete,
+		// Ollama: inference + read-only model inspection.
+		permission.OllamaHealth, permission.OllamaModelList,
+		permission.OllamaModelInfo, permission.OllamaEmbed,
 	}
 	sort.Slice(perms, func(i, j int) bool { return perms[i] < perms[j] })
 	return perms
@@ -748,6 +851,30 @@ func userPermissions() []permission.Permission {
 		permission.PasswordsRead, permission.PasswordsLock, permission.PasswordsUnlock,
 		// System health (all roles can check health)
 		permission.AdminHealth, permission.AdminStatus,
+		// Orchestrator: the consumer slice (17 verbs). End users are CONSUMERS of
+		// the orchestration data plane: they spawn/observe/close their own
+		// sessions, prompt and run inference, submit and track their own tasks
+		// (create/read/list/decompose) and jobs (start/read/list/cancel), read
+		// their own artifacts, and read workflows + health. This is the read +
+		// own-work slice, NOT the operator/fleet slice.
+		//
+		// Deliberately EXCLUDED from user (these are operator+ verbs):
+		//   - Worker verbs: task_claim, task_complete, artifact_submit (a user
+		//     submits work, it does not execute the worker side of the queue).
+		//   - Agent fleet verbs: agent_register/read/list/remove/heartbeat (fleet
+		//     membership and lifecycle are operations, not consumption).
+		//   - Shared cache: cache_read, cache_write (cross-session shared state).
+		//   - Fleet control: broadcast (drain/reload the fleet).
+		//   - Authoring/topology: workflow_write, discover, hook, backend_list.
+		permission.OrchestratorSpawn, permission.OrchestratorPrompt,
+		permission.OrchestratorStatus, permission.OrchestratorClose,
+		permission.OrchestratorList, permission.OrchestratorTaskCreate,
+		permission.OrchestratorTaskRead, permission.OrchestratorTaskList,
+		permission.OrchestratorTaskDecompose, permission.OrchestratorArtifactRead,
+		permission.OrchestratorJobStart, permission.OrchestratorJobRead,
+		permission.OrchestratorJobList, permission.OrchestratorJobCancel,
+		permission.OrchestratorWorkflowRead, permission.OrchestratorHealth,
+		permission.OrchestratorInference,
 	}
 	sort.Slice(perms, func(i, j int) bool { return perms[i] < perms[j] })
 	return perms
@@ -777,6 +904,22 @@ func auditorPermissions() []permission.Permission {
 		permission.CeremonyStatus,
 		// Auth factor listing
 		permission.AuthFactorList,
+		// Orchestrator: read-only METADATA slice (11 verbs). Auditors observe the
+		// shape and state of the orchestration data plane — session status/list,
+		// task read/list, job read/list, workflow read, agent read/list, backend
+		// list, and health — for compliance review.
+		//
+		// Deliberately EXCLUDED (FIPS 140-3 AS10.10, auditors are metadata-only):
+		//   - orchestrator:artifact_read and orchestrator:cache_read return tenant
+		//     DATA PAYLOADS, not system state; auditors never read payload data.
+		//   - All write/exec verbs (inference, prompt, spawn, task_create, ...) —
+		//     auditors cannot modify any state.
+		permission.OrchestratorStatus, permission.OrchestratorList,
+		permission.OrchestratorTaskRead, permission.OrchestratorTaskList,
+		permission.OrchestratorJobRead, permission.OrchestratorJobList,
+		permission.OrchestratorWorkflowRead, permission.OrchestratorAgentRead,
+		permission.OrchestratorAgentList, permission.OrchestratorBackendList,
+		permission.OrchestratorHealth,
 	}
 	sort.Slice(perms, func(i, j int) bool { return perms[i] < perms[j] })
 	return perms
@@ -784,10 +927,15 @@ func auditorPermissions() []permission.Permission {
 
 // custodianPermissions returns the permission set for the Custodian built-in role.
 // Custodians hold a single Shamir share and can ONLY submit that share during
-// barrier unseal. All other operations are denied (FIPS 140-3 AS10.06).
+// barrier unseal or tenant barrier operations. All other operations are denied
+// (FIPS 140-3 AS10.06).
 func custodianPermissions() []permission.Permission {
 	return []permission.Permission{
 		permission.BarrierUnsealShare,
+		// Tenant SO operations (ScopeTenantOnly: a tenant custodian may claim
+		// their share and submit seal votes for their OWN tenant's barrier).
+		permission.TenantBarrierClaimShare,
+		permission.TenantBarrierSealVote,
 	}
 }
 

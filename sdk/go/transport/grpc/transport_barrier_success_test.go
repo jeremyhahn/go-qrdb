@@ -44,7 +44,7 @@ func (f *fakeBarrierServicer) BarrierStatus(_ context.Context) (*service.Barrier
 	return &service.BarrierStatusInfo{Sealed: false, Strategy: "passphrase", InitializedAt: time.Unix(1700000000, 0)}, nil
 }
 func (f *fakeBarrierServicer) BarrierInitializeShamir(_ context.Context, _ string, threshold, total int) (*service.ShamirInitInfo, error) {
-	return &service.ShamirInitInfo{Shares: []string{"s1", "s2"}, Threshold: threshold, TotalShares: total}, nil
+	return &service.ShamirInitInfo{ShareCount: 2, Threshold: threshold, TotalShares: total}, nil
 }
 func (f *fakeBarrierServicer) BarrierUnsealWithShare(_ context.Context, _ string) (*service.UnsealShareProgress, error) {
 	return &service.UnsealShareProgress{Required: 2, Submitted: 1, Complete: false}, nil
@@ -54,10 +54,37 @@ func (f *fakeBarrierServicer) BarrierUnsealWithShares(_ context.Context, _ []str
 }
 
 func (f *fakeBarrierServicer) BarrierRekey(_ context.Context, threshold, total int) (*service.ShamirInitInfo, error) {
-	return &service.ShamirInitInfo{Shares: []string{"s1"}, Threshold: threshold, TotalShares: total}, nil
+	return &service.ShamirInitInfo{ShareCount: 1, Threshold: threshold, TotalShares: total}, nil
 }
 func (f *fakeBarrierServicer) BarrierGenerateRecoveryKeys(_ context.Context, threshold, total int) (*service.RecoveryKeysInfo, error) {
-	return &service.RecoveryKeysInfo{Keys: []string{"r1"}, Threshold: threshold, Total: total}, nil
+	return &service.RecoveryKeysInfo{ShareCount: 1, Threshold: threshold, Total: total}, nil
+}
+func (f *fakeBarrierServicer) BarrierOfficerRegister(_ context.Context, _ *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
+	return &service.BarrierOfficerRegisterResult{}, nil
+}
+func (f *fakeBarrierServicer) BarrierOfficerList(_ context.Context) ([]*service.BarrierOfficerStatus, error) {
+	return nil, nil
+}
+func (f *fakeBarrierServicer) BarrierOfficerClaimStatus(_ context.Context) ([]*service.BarrierOfficerStatus, error) {
+	return nil, nil
+}
+func (f *fakeBarrierServicer) BarrierShareClaimBegin(_ context.Context, _, _ string) (*service.BarrierShareClaimChallenge, error) {
+	return &service.BarrierShareClaimChallenge{}, nil
+}
+func (f *fakeBarrierServicer) BarrierShareClaimComplete(_ context.Context, _, _ string, _ []byte, _ string) (*service.BarrierShareClaimResult, error) {
+	return &service.BarrierShareClaimResult{}, nil
+}
+func (f *fakeBarrierServicer) BarrierShamirSealVote(_ context.Context, _ string) (*service.UnsealShareProgress, error) {
+	return &service.UnsealShareProgress{}, nil
+}
+func (f *fakeBarrierServicer) BarrierRecoveryOfficerRegister(_ context.Context, _ *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
+	return &service.BarrierOfficerRegisterResult{}, nil
+}
+func (f *fakeBarrierServicer) BarrierRecoveryShareClaimBegin(_ context.Context, _, _ string) (*service.BarrierShareClaimChallenge, error) {
+	return &service.BarrierShareClaimChallenge{}, nil
+}
+func (f *fakeBarrierServicer) BarrierRecoveryShareClaimComplete(_ context.Context, _, _ string, _ []byte, _ string) (*service.BarrierShareClaimResult, error) {
+	return &service.BarrierShareClaimResult{}, nil
 }
 func (f *fakeBarrierServicer) BarrierRecoverWithKeys(_ context.Context, _ []string) error { return nil }
 func (f *fakeBarrierServicer) BarrierDeleteRecoveryKeys(_ context.Context) error          { return nil }
@@ -125,8 +152,8 @@ func TestGRPCBarrier_InitializeShamir_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BarrierInitializeShamir: %v", err)
 	}
-	if len(resp.Shares) != 2 {
-		t.Fatalf("got %d shares", len(resp.Shares))
+	if resp.ShareCount != 2 {
+		t.Fatalf("got ShareCount=%d, want 2", resp.ShareCount)
 	}
 }
 
@@ -181,8 +208,8 @@ func TestGRPCBarrier_GenerateRecoveryKeys_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BarrierGenerateRecoveryKeys: %v", err)
 	}
-	if len(resp.Keys) == 0 {
-		t.Fatal("expected at least one key")
+	if resp.ShareCount == 0 && resp.Threshold == 0 {
+		t.Fatal("expected non-empty recovery key response")
 	}
 }
 

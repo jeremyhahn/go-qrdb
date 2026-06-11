@@ -300,46 +300,6 @@ func TestE2E_Embedding_ListModels_UnmarshalError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// RAG unmarshal-error paths
-// ---------------------------------------------------------------------------
-
-func TestE2E_RAG_IngestDocument_UnmarshalError(t *testing.T) {
-	srv, tr := startE2EServer(t)
-	srv.SetResponder("rag.IngestDocument", func(_ []byte) (uint16, []byte) {
-		return wire.StatusOK, []byte("bad-proto")
-	})
-	_, err := tr.RAGIngestDocument(context.Background(), &transport.RAGIngestRequest{DocumentID: "d1"})
-	assertQuicRequestError(t, err)
-}
-
-func TestE2E_RAG_Query_UnmarshalError(t *testing.T) {
-	srv, tr := startE2EServer(t)
-	srv.SetResponder("rag.Query", func(_ []byte) (uint16, []byte) {
-		return wire.StatusOK, []byte("bad-proto")
-	})
-	_, err := tr.RAGQuery(context.Background(), &transport.RAGQueryRequest{Query: "x"})
-	assertQuicRequestError(t, err)
-}
-
-func TestE2E_RAG_DeleteDocument_UnmarshalError(t *testing.T) {
-	srv, tr := startE2EServer(t)
-	srv.SetResponder("rag.DeleteDocument", func(_ []byte) (uint16, []byte) {
-		return wire.StatusOK, []byte("bad-proto")
-	})
-	_, err := tr.RAGDeleteDocument(context.Background(), &transport.RAGDeleteDocumentRequest{DocumentID: "d1"})
-	assertQuicRequestError(t, err)
-}
-
-func TestE2E_RAG_ListDocuments_UnmarshalError(t *testing.T) {
-	srv, tr := startE2EServer(t)
-	srv.SetResponder("rag.ListDocuments", func(_ []byte) (uint16, []byte) {
-		return wire.StatusOK, []byte("bad-proto")
-	})
-	_, err := tr.RAGListDocuments(context.Background(), &transport.RAGListDocumentsRequest{Namespace: "ns1"})
-	assertQuicRequestError(t, err)
-}
-
-// ---------------------------------------------------------------------------
 // Additional closed-path guards for methods at 88.9% coverage
 // (those methods have 2 uncovered statements: the closed return)
 // Note: most are already covered in transport_closed_test.go; these cover
@@ -409,24 +369,6 @@ func TestQUICExtraClosed_Embedding(t *testing.T) {
 	}
 	if _, err := tr.ListEmbeddingModels(context.Background(), "p"); !errorAs(err, &ce) {
 		t.Errorf("ListEmbeddingModels: %v", err)
-	}
-}
-
-func TestQUICExtraClosed_RAG(t *testing.T) {
-	tr := newClosedTransport()
-	var ce *transport.ClosedError
-
-	if _, err := tr.RAGIngestDocument(context.Background(), &transport.RAGIngestRequest{}); !errorAs(err, &ce) {
-		t.Errorf("RAGIngestDocument: %v", err)
-	}
-	if _, err := tr.RAGQuery(context.Background(), &transport.RAGQueryRequest{}); !errorAs(err, &ce) {
-		t.Errorf("RAGQuery: %v", err)
-	}
-	if _, err := tr.RAGDeleteDocument(context.Background(), &transport.RAGDeleteDocumentRequest{}); !errorAs(err, &ce) {
-		t.Errorf("RAGDeleteDocument: %v", err)
-	}
-	if _, err := tr.RAGListDocuments(context.Background(), &transport.RAGListDocumentsRequest{}); !errorAs(err, &ce) {
-		t.Errorf("RAGListDocuments: %v", err)
 	}
 }
 

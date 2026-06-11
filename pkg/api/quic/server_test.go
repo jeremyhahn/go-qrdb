@@ -266,7 +266,12 @@ func TestBuildHandlers_RegistersAllMethods_NoExtras(t *testing.T) {
 		"barrier.ShamirVerify": true, "barrier.Rekey": true,
 		"barrier.RecoveryGenerate": true, "barrier.RecoveryRecover": true,
 		"barrier.RecoveryDelete": true, "barrier.RecoveryStatus": true,
-		"barrier.RootToken": true,
+		"barrier.RootToken":       true,
+		"barrier.OfficerRegister": true, "barrier.OfficerList": true,
+		"barrier.ShareClaimBegin": true, "barrier.ShareClaimComplete": true,
+		"barrier.OfficerClaimStatus": true, "barrier.RecoveryOfficerRegister": true,
+		"barrier.RecoveryShareClaimBegin": true, "barrier.RecoveryShareClaimComplete": true,
+		"barrier.ShamirSealVote": true,
 		// Ceremony
 		"ceremony.Initialize": true, "ceremony.Status": true,
 		"ceremony.ClaimCertBegin": true, "ceremony.ClaimCertComplete": true,

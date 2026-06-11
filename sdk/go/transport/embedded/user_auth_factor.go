@@ -41,6 +41,9 @@ func userAuthRecordToDomain(rec *transport.AuthFactorAddRequest, userID uint64) 
 		Credential: append([]byte(nil), rec.Credential...),
 		CreatedBy:  rec.CreatedBy,
 	}
+	if len(rec.SPKICredential) > 0 {
+		out.SPKICredential = append([]byte(nil), rec.SPKICredential...)
+	}
 	if len(rec.Metadata) > 0 {
 		out.Metadata = make(map[string]string, len(rec.Metadata))
 		for k, v := range rec.Metadata {
@@ -66,6 +69,9 @@ func domainToUserAuthRecord(f *auth.AuthFactor) transport.AuthFactorRecord {
 		LastUsedAt:   f.LastUsedAt,
 		RevokedAt:    f.RevokedAt,
 		CreatedBy:    f.CreatedBy,
+	}
+	if len(f.SPKICredential) > 0 {
+		out.SPKICredential = append([]byte(nil), f.SPKICredential...)
 	}
 	if len(f.Metadata) > 0 {
 		out.Metadata = make(map[string]string, len(f.Metadata))

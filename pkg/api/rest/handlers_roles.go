@@ -36,7 +36,7 @@ import (
 type createRoleRequest struct {
 	ID          string   `json:"id,omitempty"`
 	Name        string   `json:"name"`
-	TenantID    string   `json:"tenantID"`
+	TenantID    string   `json:"tenant_id"`
 	Permissions []string `json:"permissions"`
 }
 
@@ -48,27 +48,31 @@ type updateRoleRequest struct {
 
 // assignRoleRequest is the JSON payload for POST /roles/assign and
 // POST /roles/unassign.
+//
+// The user ID is a uint64 Snowflake that exceeds JavaScript's
+// Number.MAX_SAFE_INTEGER, so it is encoded as a JSON string
+// (proto3 JSON convention) to avoid precision loss in JS clients.
 type assignRoleRequest struct {
-	UserID uint64 `json:"userID"`
-	RoleID string `json:"roleID"`
+	UserID uint64 `json:"user_id,string"`
+	RoleID string `json:"role_id"`
 }
 
 // roleResponse is the JSON representation of a role entity.
 type roleResponse struct {
 	ID          string   `json:"id"`
 	Name        string   `json:"name"`
-	TenantID    string   `json:"tenantID"`
+	TenantID    string   `json:"tenant_id"`
 	Permissions []string `json:"permissions"`
 	System      bool     `json:"system"`
-	CreatedAt   string   `json:"createdAt"`
-	UpdatedAt   string   `json:"updatedAt"`
+	CreatedAt   string   `json:"created_at"`
+	UpdatedAt   string   `json:"updated_at"`
 }
 
 // listRolesResponse is the JSON payload returned by GET /roles/list.
 type listRolesResponse struct {
 	Roles   []*roleResponse `json:"roles"`
 	Total   int             `json:"total"`
-	HasMore bool            `json:"hasMore"`
+	HasMore bool            `json:"has_more"`
 }
 
 // permissionCategoryResponse is the JSON representation of a permission

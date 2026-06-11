@@ -118,6 +118,10 @@ type AEADProvider = quicraftseal.AEADProvider
 // SymmetricAlgorithm identifies a symmetric encryption algorithm.
 type SymmetricAlgorithm = quicraftseal.SymmetricAlgorithm
 
+// AlgAES256GCM selects AES-256-GCM (32-byte key, 12-byte nonce). Used as the
+// fixed algorithm for the unseal-key root-key wrap.
+const AlgAES256GCM = quicraftseal.AlgAES256GCM
+
 // NewInvocationCounter creates an InMemoryInvocationCounter.
 var NewInvocationCounter = quicraftseal.NewInvocationCounter
 

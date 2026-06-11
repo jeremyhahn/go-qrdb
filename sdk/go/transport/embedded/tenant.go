@@ -16,7 +16,9 @@ package embedded
 
 import (
 	"context"
+	"encoding/hex"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -194,18 +196,33 @@ func (t *Transport) DeleteTenant(ctx context.Context, tenantID string) error {
 	return t.tenantSvc.DeleteTenant(ctx, tenantID)
 }
 
-// TenantBarrierInit initializes a per-tenant barrier by delegating to
-// the TenantServicer using the strategy field from the request. When
-// Strategy is empty the passphrase (software) strategy is used.
-func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.TenantBarrierInitRequest) error {
+// TenantBarrierInit initializes a per-tenant barrier by delegating to the
+// TenantServicer using the strategy field from the request. When Strategy is
+// empty the passphrase (software) strategy is used. For the Shamir strategy
+// the response carries the generated M-of-N shares; for none/passphrase the
+// share fields are empty.
+func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.TenantBarrierInitRequest) (*transport.TenantBarrierInitResponse, error) {
 	if t.closed.Load() {
-		return &transport.ClosedError{}
+		return nil, &transport.ClosedError{}
 	}
 	if t.tenantSvc == nil {
-		return &NilServiceError{Service: "TenantServicer"}
+		return nil, &NilServiceError{Service: "TenantServicer"}
 	}
 
-	return t.tenantSvc.TenantBarrierInitWithStrategy(ctx, req.TenantID, req.Passphrase, req.Threshold, req.Shares, seal.StrategyID(req.Strategy))
+	result, err := t.tenantSvc.TenantBarrierInitWithStrategy(ctx, req.TenantID, req.Passphrase, req.Threshold, req.Shares, seal.StrategyID(req.Strategy))
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		return &transport.TenantBarrierInitResponse{TenantID: req.TenantID, Strategy: req.Strategy}, nil
+	}
+	return &transport.TenantBarrierInitResponse{
+		TenantID:    result.TenantID,
+		Strategy:    result.Strategy,
+		ShareCount:  result.ShareCount,
+		Threshold:   result.Threshold,
+		TotalShares: result.TotalShares,
+	}, nil
 }
 
 // TenantBarrierUnseal unseals a per-tenant barrier by delegating to
@@ -225,4 +242,164 @@ func (t *Transport) TenantBarrierUnseal(ctx context.Context, req *transport.Tena
 	}
 
 	return t.tenantSvc.TenantBarrierUnseal(ctx, req.TenantID, key)
+}
+
+// TenantBarrierUnsealShare submits a single Shamir share toward a per-tenant
+// barrier's quorum threshold by delegating to the TenantServicer.
+func (t *Transport) TenantBarrierUnsealShare(ctx context.Context, req *transport.TenantBarrierUnsealShareRequest) (*transport.TenantBarrierUnsealProgress, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.tenantSvc == nil {
+		return nil, &NilServiceError{Service: "TenantServicer"}
+	}
+
+	progress, err := t.tenantSvc.TenantBarrierUnsealShare(ctx, req.TenantID, req.Share)
+	if err != nil {
+		return nil, err
+	}
+	if progress == nil {
+		return &transport.TenantBarrierUnsealProgress{TenantID: req.TenantID}, nil
+	}
+	return &transport.TenantBarrierUnsealProgress{
+		TenantID:  progress.TenantID,
+		Required:  progress.Required,
+		Submitted: progress.Submitted,
+		Complete:  progress.Complete,
+		Sealed:    progress.Sealed,
+	}, nil
+}
+
+// TenantBarrierOfficerRegister registers a Security Officer for the named
+// tenant's barrier by delegating to the injected TenantServicer.
+func (t *Transport) TenantBarrierOfficerRegister(ctx context.Context, req *transport.TenantOfficerRegisterRequest) (*transport.OfficerRegisterResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.tenantSvc == nil {
+		return nil, &NilServiceError{Service: "TenantServicer"}
+	}
+	result, err := t.tenantSvc.TenantBarrierOfficerRegister(ctx, req.TenantID, &ceremony.RegisterOfficerRequest{
+		Username:          req.Username,
+		CSRPEM:            req.CSRPEM,
+		AuthenticatorType: ceremony.AuthenticatorType(req.AuthenticatorType),
+		AuthenticatorRef:  req.AuthenticatorRef,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &transport.OfficerRegisterResponse{
+		CertPEM:    result.CertPEM,
+		ShareIndex: result.ShareIndex,
+	}, nil
+}
+
+// TenantBarrierOfficerList returns all enrolled Security Officers for the
+// named tenant's barrier by delegating to the injected TenantServicer.
+func (t *Transport) TenantBarrierOfficerList(ctx context.Context, tenantID string) ([]*transport.OfficerStatus, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.tenantSvc == nil {
+		return nil, &NilServiceError{Service: "TenantServicer"}
+	}
+	officers, err := t.tenantSvc.TenantBarrierOfficerList(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	return embeddedCeremonyOfficerStatusesToTransport(officers), nil
+}
+
+// TenantBarrierOfficerClaimStatus returns a per-officer claim status snapshot
+// for the named tenant's barrier by delegating to the injected TenantServicer.
+func (t *Transport) TenantBarrierOfficerClaimStatus(ctx context.Context, tenantID string) ([]*transport.OfficerStatus, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.tenantSvc == nil {
+		return nil, &NilServiceError{Service: "TenantServicer"}
+	}
+	officers, err := t.tenantSvc.TenantBarrierOfficerClaimStatus(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	return embeddedCeremonyOfficerStatusesToTransport(officers), nil
+}
+
+// TenantBarrierShareClaimBegin issues a challenge nonce to the named Security
+// Officer for the tenant barrier share claim handshake by delegating to the
+// injected TenantServicer.
+func (t *Transport) TenantBarrierShareClaimBegin(ctx context.Context, req *transport.TenantShareClaimBeginRequest) (*transport.ShareClaimBeginResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.tenantSvc == nil {
+		return nil, &NilServiceError{Service: "TenantServicer"}
+	}
+	challenge, err := t.tenantSvc.TenantBarrierShareClaimBegin(ctx, req.TenantID, req.Username, "")
+	if err != nil {
+		return nil, err
+	}
+	return &transport.ShareClaimBeginResponse{
+		NonceHex:  hex.EncodeToString(challenge.Nonce),
+		ExpiresAt: challenge.ExpiresAt,
+	}, nil
+}
+
+// TenantBarrierShareClaimComplete verifies the Security Officer's nonce
+// signature and returns the tenant barrier share bytes exactly once by
+// delegating to the injected TenantServicer.
+func (t *Transport) TenantBarrierShareClaimComplete(ctx context.Context, req *transport.TenantShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.tenantSvc == nil {
+		return nil, &NilServiceError{Service: "TenantServicer"}
+	}
+	result, err := t.tenantSvc.TenantBarrierShareClaimComplete(ctx, req.TenantID, req.Username, req.NonceHex, req.Signature, "")
+	if err != nil {
+		return nil, err
+	}
+	return &transport.ShareClaimCompleteResponse{
+		ShareIndex: result.ShareIndex,
+		ShareBytes: result.ShareBytes,
+	}, nil
+}
+
+// TenantBarrierShamirSealVote submits a Shamir share as a seal vote for the
+// named tenant's barrier by delegating to the injected TenantServicer.
+func (t *Transport) TenantBarrierShamirSealVote(ctx context.Context, req *transport.TenantShamirSealVoteRequest) (*transport.ShamirSealVoteResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.tenantSvc == nil {
+		return nil, &NilServiceError{Service: "TenantServicer"}
+	}
+	progress, err := t.tenantSvc.TenantBarrierShamirSealVote(ctx, req.TenantID, req.Share)
+	if err != nil {
+		return nil, err
+	}
+	return &transport.ShamirSealVoteResponse{
+		Required:  progress.Required,
+		Submitted: progress.Submitted,
+		Complete:  progress.Complete,
+	}, nil
+}
+
+// embeddedCeremonyOfficerStatusesToTransport converts ceremony layer officer
+// status records to the transport layer representation.
+func embeddedCeremonyOfficerStatusesToTransport(officers []*ceremony.OfficerStatus) []*transport.OfficerStatus {
+	out := make([]*transport.OfficerStatus, len(officers))
+	for i, o := range officers {
+		out[i] = &transport.OfficerStatus{
+			Username:       o.Username,
+			CertThumbprint: o.CertThumbprint,
+			ShareIndex:     o.ShareIndex,
+			AuthFactor:     o.AuthFactor,
+			EnrolledAt:     o.EnrolledAt,
+			ClaimedAt:      o.ClaimedAt,
+			SharePending:   o.SharePending,
+		}
+	}
+	return out
 }

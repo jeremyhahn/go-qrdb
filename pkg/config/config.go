@@ -305,7 +305,12 @@ type TLSConfig struct {
 	KeyFile string `yaml:"key_file"`
 
 	// ClientAuth specifies the client authentication mode.
-	// Valid values: "none", "request", "require", "require_and_verify" (default).
+	// Valid values: "none", "request", "require", "require_and_verify".
+	// Empty means "derive from the auth posture": the daemon selects
+	// VerifyClientCertIfGiven when auth is enabled (so public endpoints
+	// like /health remain reachable without a client certificate) and
+	// NoClientCert when auth is disabled. Setting any explicit value
+	// overrides that derivation on every listener, including /health.
 	ClientAuth string `yaml:"client_auth"`
 
 	// MinVersion specifies the minimum TLS version. Default is "TLS1.3".
@@ -793,8 +798,12 @@ func DefaultConfig() *Config {
 			Backend: "pebble",
 		},
 		TLS: TLSConfig{
-			Enabled:    true,
-			ClientAuth: "require_and_verify",
+			Enabled: true,
+			// ClientAuth is intentionally left empty: a non-empty value is
+			// treated by the daemon as an explicit operator selection and
+			// disables the auth-derived mTLS mode (VerifyClientCertIfGiven
+			// when auth is enabled), which would make cert-exempt endpoints
+			// like /health unreachable without a client certificate.
 			MinVersion: "TLS1.3",
 		},
 		Unix: UnixConfig{

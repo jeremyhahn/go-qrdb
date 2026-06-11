@@ -137,6 +137,42 @@ func (m *mockBarrierService) BarrierGenerateRootToken(ctx context.Context, share
 	return &service.RootTokenInfo{}, nil
 }
 
+func (m *mockBarrierService) BarrierOfficerRegister(_ context.Context, _ *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
+	return &service.BarrierOfficerRegisterResult{}, nil
+}
+
+func (m *mockBarrierService) BarrierOfficerList(_ context.Context) ([]*service.BarrierOfficerStatus, error) {
+	return nil, nil
+}
+
+func (m *mockBarrierService) BarrierOfficerClaimStatus(_ context.Context) ([]*service.BarrierOfficerStatus, error) {
+	return nil, nil
+}
+
+func (m *mockBarrierService) BarrierShareClaimBegin(_ context.Context, _, _ string) (*service.BarrierShareClaimChallenge, error) {
+	return &service.BarrierShareClaimChallenge{}, nil
+}
+
+func (m *mockBarrierService) BarrierShareClaimComplete(_ context.Context, _, _ string, _ []byte, _ string) (*service.BarrierShareClaimResult, error) {
+	return &service.BarrierShareClaimResult{}, nil
+}
+
+func (m *mockBarrierService) BarrierShamirSealVote(_ context.Context, _ string) (*service.UnsealShareProgress, error) {
+	return &service.UnsealShareProgress{}, nil
+}
+
+func (m *mockBarrierService) BarrierRecoveryOfficerRegister(_ context.Context, _ *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
+	return &service.BarrierOfficerRegisterResult{}, nil
+}
+
+func (m *mockBarrierService) BarrierRecoveryShareClaimBegin(_ context.Context, _, _ string) (*service.BarrierShareClaimChallenge, error) {
+	return &service.BarrierShareClaimChallenge{}, nil
+}
+
+func (m *mockBarrierService) BarrierRecoveryShareClaimComplete(_ context.Context, _, _ string, _ []byte, _ string) (*service.BarrierShareClaimResult, error) {
+	return &service.BarrierShareClaimResult{}, nil
+}
+
 // newBarrierTransport creates a transport with the given barrier service
 // injected via the WithBarrierService option.
 func newBarrierTransport(t *testing.T, svc service.BarrierServicer) *Transport {
@@ -444,7 +480,7 @@ func TestEmbeddedBarrier_ShamirInitialize(t *testing.T) {
 				t.Errorf("expected totalShares 5, got %d", totalShares)
 			}
 			return &service.ShamirInitInfo{
-				Shares:      []string{"share-1", "share-2", "share-3", "share-4", "share-5"},
+				ShareCount:  5,
 				Threshold:   3,
 				TotalShares: 5,
 			}, nil
@@ -460,8 +496,8 @@ func TestEmbeddedBarrier_ShamirInitialize(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
-	if len(resp.Shares) != 5 {
-		t.Errorf("expected 5 shares, got %d", len(resp.Shares))
+	if resp.ShareCount != 5 {
+		t.Errorf("expected ShareCount=5, got %d", resp.ShareCount)
 	}
 	if resp.Threshold != 3 {
 		t.Errorf("expected threshold 3, got %d", resp.Threshold)
@@ -662,7 +698,7 @@ func TestEmbeddedBarrier_Rekey(t *testing.T) {
 				t.Errorf("expected total=5, got %d", total)
 			}
 			return &service.ShamirInitInfo{
-				Shares:      []string{"new-1", "new-2", "new-3", "new-4", "new-5"},
+				ShareCount:  5,
 				Threshold:   2,
 				TotalShares: 5,
 			}, nil
@@ -677,8 +713,8 @@ func TestEmbeddedBarrier_Rekey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
-	if len(resp.Shares) != 5 {
-		t.Errorf("expected 5 shares, got %d", len(resp.Shares))
+	if resp.ShareCount != 5 {
+		t.Errorf("expected ShareCount=5, got %d", resp.ShareCount)
 	}
 	if resp.Threshold != 2 {
 		t.Errorf("expected threshold=2, got %d", resp.Threshold)
@@ -745,9 +781,9 @@ func TestEmbeddedBarrier_RecoveryGenerate(t *testing.T) {
 				t.Errorf("expected total=3, got %d", total)
 			}
 			return &service.RecoveryKeysInfo{
-				Keys:      []string{"rk-1", "rk-2", "rk-3"},
-				Threshold: 2,
-				Total:     3,
+				ShareCount: 3,
+				Threshold:  2,
+				Total:      3,
 			}, nil
 		},
 	}
@@ -760,8 +796,8 @@ func TestEmbeddedBarrier_RecoveryGenerate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
-	if len(resp.Keys) != 3 {
-		t.Errorf("expected 3 keys, got %d", len(resp.Keys))
+	if resp.ShareCount != 3 {
+		t.Errorf("expected ShareCount=3, got %d", resp.ShareCount)
 	}
 	if resp.Threshold != 2 {
 		t.Errorf("expected threshold=2, got %d", resp.Threshold)
@@ -1185,7 +1221,7 @@ func TestEmbeddedBarrier_Request_BarrierInitializeShamir(t *testing.T) {
 	svc := &mockBarrierService{
 		barrierInitializeShamirFn: func(_ context.Context, _ string, _, _ int) (*service.ShamirInitInfo, error) {
 			return &service.ShamirInitInfo{
-				Shares:      []string{"a", "b", "c"},
+				ShareCount:  3,
 				Threshold:   2,
 				TotalShares: 3,
 			}, nil
@@ -1202,8 +1238,8 @@ func TestEmbeddedBarrier_Request_BarrierInitializeShamir(t *testing.T) {
 	if resp == nil {
 		t.Fatal("expected non-nil response")
 	}
-	if len(resp.Shares) != 3 {
-		t.Errorf("expected 3 shares, got %d", len(resp.Shares))
+	if resp.ShareCount != 3 {
+		t.Errorf("expected ShareCount=3, got %d", resp.ShareCount)
 	}
 }
 
@@ -1283,7 +1319,7 @@ func TestEmbeddedBarrier_Request_BarrierRekey(t *testing.T) {
 	svc := &mockBarrierService{
 		barrierRekeyFn: func(_ context.Context, _, _ int) (*service.ShamirInitInfo, error) {
 			return &service.ShamirInitInfo{
-				Shares:      []string{"r1", "r2"},
+				ShareCount:  2,
 				Threshold:   1,
 				TotalShares: 2,
 			}, nil
@@ -1300,8 +1336,8 @@ func TestEmbeddedBarrier_Request_BarrierRekey(t *testing.T) {
 	if resp == nil {
 		t.Fatal("expected non-nil response")
 	}
-	if len(resp.Shares) != 2 {
-		t.Errorf("expected 2 shares, got %d", len(resp.Shares))
+	if resp.ShareCount != 2 {
+		t.Errorf("expected ShareCount=2, got %d", resp.ShareCount)
 	}
 }
 
@@ -1319,9 +1355,9 @@ func TestEmbeddedBarrier_Request_BarrierGenerateRecoveryKeys(t *testing.T) {
 	svc := &mockBarrierService{
 		barrierGenRecoveryKeysFn: func(_ context.Context, _, _ int) (*service.RecoveryKeysInfo, error) {
 			return &service.RecoveryKeysInfo{
-				Keys:      []string{"k1", "k2"},
-				Threshold: 1,
-				Total:     2,
+				ShareCount: 2,
+				Threshold:  1,
+				Total:      2,
 			}, nil
 		},
 	}
@@ -1336,8 +1372,8 @@ func TestEmbeddedBarrier_Request_BarrierGenerateRecoveryKeys(t *testing.T) {
 	if resp == nil {
 		t.Fatal("expected non-nil response")
 	}
-	if len(resp.Keys) != 2 {
-		t.Errorf("expected 2 keys, got %d", len(resp.Keys))
+	if resp.ShareCount != 2 {
+		t.Errorf("expected ShareCount=2, got %d", resp.ShareCount)
 	}
 }
 

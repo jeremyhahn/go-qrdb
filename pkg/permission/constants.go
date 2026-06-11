@@ -400,6 +400,18 @@ const (
 	// BarrierUnsealShare grants access to submit a single Shamir share toward unseal quorum.
 	// This is the sole permission granted to the Custodian role.
 	BarrierUnsealShare Permission = "barrier:unseal-share"
+
+	// SealOfficerRegister grants a system admin the ability to register a Security
+	// Officer for the system barrier.
+	SealOfficerRegister Permission = "seal:officer_register"
+
+	// SealOfficerList grants access to list registered Security Officers and their
+	// claim status for the system barrier.
+	SealOfficerList Permission = "seal:officer_list"
+
+	// SealSubmitSealVote grants a Security Officer the ability to submit a seal vote
+	// (share) to collectively seal a Shamir-protected system barrier.
+	SealSubmitSealVote Permission = "seal:submit_seal_vote"
 )
 
 // ---------------------------------------------------------------------------
@@ -424,6 +436,27 @@ const (
 	// CeremonyStatus grants access to query ceremony state (SO, Admin, Operator, Auditor).
 	CeremonyStatus Permission = "ceremony:status"
 )
+
+// ---------------------------------------------------------------------------
+// Identity-gated sentinel
+// ---------------------------------------------------------------------------
+
+// IdentityGated is a sentinel permission used as a transport permission-map
+// value for endpoints whose authorization is enforced at the handler layer
+// rather than by the RBAC policy decision point. The auth middleware requires
+// an authenticated identity for these endpoints and then passes the request
+// through without a role-permission check; the handler performs the binding
+// authorization (officer/custodian registry lookup, certificate-thumbprint
+// match, and nonce-signature or factor verification). This is the Vault
+// posture for share-claim flows: possession of the enrolled credential is the
+// authorization, and no RBAC user record is required — Security Officers are
+// registered in the ceremony registry during the sealed window, before the
+// Raft-backed user store exists.
+//
+// IdentityGated is deliberately NOT registered in the permission registry: it
+// can never be granted to a role, never appears in All(), ByResource, or the
+// UI catalog, and grant-validation paths reject it as unregistered.
+const IdentityGated Permission = "identity:gated"
 
 // ---------------------------------------------------------------------------
 // Audit permissions
@@ -492,6 +525,24 @@ const (
 	// barrier state leaks isolation metadata, so the system tenant and any
 	// cross-tenant access are denied.
 	TenantBarrierStatus Permission = "tenant_barrier:status"
+
+	// TenantBarrierOfficerRegister grants a tenant-admin the ability to register
+	// a Security Officer for their tenant's barrier. Tenant-scoped (ScopeTenantOnly).
+	TenantBarrierOfficerRegister Permission = "tenant_barrier:officer_register"
+
+	// TenantBarrierOfficerList grants access to list Security Officers for a tenant
+	// barrier. Tenant-scoped (ScopeTenantOnly).
+	TenantBarrierOfficerList Permission = "tenant_barrier:officer_list"
+
+	// TenantBarrierClaimShare grants a tenant Security Officer the ability to claim
+	// their Shamir share from the tenant barrier. Tenant-scoped (ScopeTenantOnly).
+	// The handler additionally enforces that the caller's mTLS cert thumbprint matches
+	// the officer record (identity-gated, not just role-gated).
+	TenantBarrierClaimShare Permission = "tenant_barrier:claim_share"
+
+	// TenantBarrierSealVote grants a tenant Security Officer the ability to submit
+	// a seal vote for their tenant's barrier. Tenant-scoped (ScopeTenantOnly).
+	TenantBarrierSealVote Permission = "tenant_barrier:seal_vote"
 )
 
 // Database management permissions. A database is a logical engine/storage
@@ -769,6 +820,7 @@ var categories = []Category{
 			SealBootstrap, SealUnseal, SealSeal, SealStatus,
 			SealRotateRootKey, SealRekey, SealGenerateRecovery,
 			SealRecoverWithKeys, SealInitializeShamir, BarrierUnsealShare,
+			SealOfficerRegister, SealOfficerList, SealSubmitSealVote,
 		},
 	},
 	{
@@ -802,6 +854,8 @@ var categories = []Category{
 			TenantsCreate, TenantsRead, TenantsUpdate, TenantsDelete, TenantsList,
 			TenantsListCross, TenantsCreateCross, TenantsApprove,
 			TenantBarrierInit, TenantBarrierUnseal, TenantBarrierSeal, TenantBarrierStatus,
+			TenantBarrierOfficerRegister, TenantBarrierOfficerList,
+			TenantBarrierClaimShare, TenantBarrierSealVote,
 		},
 	},
 	{

@@ -10,6 +10,7 @@ package seal
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
@@ -552,5 +553,87 @@ func TestBarrierRegistry_SystemBarrier_Accessor(t *testing.T) {
 
 	if reg.SystemBarrier() != system {
 		t.Error("SystemBarrier() should return the same barrier passed to constructor")
+	}
+}
+
+// --------------------------------------------------------------------------
+// barrier_registry.go: InitializeTenantShamir — 75%
+// (GetTenant error path)
+// --------------------------------------------------------------------------
+
+func TestBarrierRegistry_InitializeTenantShamir_TenantNotFound(t *testing.T) {
+	reg := newTestRegistry(t)
+	_, err := reg.InitializeTenantShamir(context.Background(), "nonexistent", Credentials{})
+	if !errors.Is(err, ErrTenantNotFound) {
+		t.Errorf("InitializeTenantShamir(unknown): got %v, want ErrTenantNotFound", err)
+	}
+}
+
+// --------------------------------------------------------------------------
+// barrier_registry.go: UnsealTenantWithShare — 75%
+// (GetTenant error path)
+// --------------------------------------------------------------------------
+
+func TestBarrierRegistry_UnsealTenantWithShare_TenantNotFound(t *testing.T) {
+	reg := newTestRegistry(t)
+	_, err := reg.UnsealTenantWithShare(context.Background(), "nonexistent", "share-val")
+	if !errors.Is(err, ErrTenantNotFound) {
+		t.Errorf("UnsealTenantWithShare(unknown): got %v, want ErrTenantNotFound", err)
+	}
+}
+
+// --------------------------------------------------------------------------
+// barrier_registry.go: SealAll — 75%
+// (exercises the happy-path with registered tenants)
+// --------------------------------------------------------------------------
+
+func TestBarrierRegistry_SealAll_Success(t *testing.T) {
+	reg := newTestRegistry(t)
+	ctx := context.Background()
+
+	// Register two tenants.
+	for _, id := range []string{"tenant-seal-1", "tenant-seal-2"} {
+		_, err := reg.RegisterTenant(ctx, id, NewMemoryBackend(), BarrierConfig{
+			RootKeyPath: "t/root-key",
+		}, testSoftwareStrategy(t))
+		if err != nil {
+			t.Fatalf("RegisterTenant(%s): %v", id, err)
+		}
+	}
+
+	if err := reg.SealAll(); err != nil {
+		t.Fatalf("SealAll: %v", err)
+	}
+
+	// All registered tenant barriers and the system barrier should now be sealed.
+	for _, id := range []string{"tenant-seal-1", "tenant-seal-2"} {
+		tb, err := reg.GetTenant(id)
+		if err != nil {
+			t.Fatalf("GetTenant(%s): %v", id, err)
+		}
+		if !tb.IsSealed() {
+			t.Errorf("tenant %s: expected sealed after SealAll", id)
+		}
+	}
+}
+
+// --------------------------------------------------------------------------
+// barrier_registry.go: Close — 75%
+// (exercises close with registered tenants)
+// --------------------------------------------------------------------------
+
+func TestBarrierRegistry_Close_Success(t *testing.T) {
+	reg := newTestRegistry(t)
+	ctx := context.Background()
+
+	_, err := reg.RegisterTenant(ctx, "close-tenant", NewMemoryBackend(), BarrierConfig{
+		RootKeyPath: "t/root-key",
+	}, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatalf("RegisterTenant: %v", err)
+	}
+
+	if err := reg.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
 	}
 }

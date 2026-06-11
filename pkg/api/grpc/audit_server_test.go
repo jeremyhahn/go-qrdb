@@ -18,7 +18,6 @@ package grpc
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net"
 	"testing"
@@ -28,8 +27,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/wrapperspb"
 
+	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 )
 
@@ -93,13 +92,12 @@ func startAuditTestServer(t *testing.T, logger audit.AuditLogger) (*grpc.ClientC
 }
 
 // ---------------------------------------------------------------------------
-// auditServiceServer.query – nil logger
+// auditServer.Query — nil logger
 // ---------------------------------------------------------------------------
 
 func TestAuditQuery_NilLogger(t *testing.T) {
-	srv := &auditServiceServer{auditLogger: nil}
-	req := wrapperspb.Bytes([]byte(`{}`))
-	_, err := srv.query(context.Background(), req)
+	srv := &auditServer{auditLogger: nil}
+	_, err := srv.Query(context.Background(), &pb.AuditQueryRequest{})
 	if err == nil {
 		t.Fatal("expected error for nil auditLogger")
 	}
@@ -110,31 +108,26 @@ func TestAuditQuery_NilLogger(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// auditServiceServer.query – success with empty filter
+// auditServer.Query — success with empty filter
 // ---------------------------------------------------------------------------
 
 func TestAuditQuery_Success_EmptyFilter(t *testing.T) {
 	logger := &mockAuditLogger{}
-	srv := &auditServiceServer{auditLogger: logger}
-	req := wrapperspb.Bytes(nil) // zero-length: skip unmarshal
-	resp, err := srv.query(context.Background(), req)
+	srv := &auditServer{auditLogger: logger}
+	resp, err := srv.Query(context.Background(), &pb.AuditQueryRequest{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if resp == nil {
 		t.Fatal("expected non-nil response")
 	}
-	var page audit.Page
-	if err := json.Unmarshal(resp.GetValue(), &page); err != nil {
-		t.Fatalf("unmarshal response: %v", err)
-	}
-	if page.Total != 1 {
-		t.Errorf("expected Total=1, got %d", page.Total)
+	if resp.Total != 1 {
+		t.Errorf("expected Total=1, got %d", resp.Total)
 	}
 }
 
 // ---------------------------------------------------------------------------
-// auditServiceServer.query – success with filter fields
+// auditServer.Query — success with filter fields
 // ---------------------------------------------------------------------------
 
 func TestAuditQuery_Success_WithFilter(t *testing.T) {
@@ -145,13 +138,13 @@ func TestAuditQuery_Success_WithFilter(t *testing.T) {
 			return &audit.Page{Events: []audit.AuditEvent{}, Total: 0}, nil
 		},
 	}
-	srv := &auditServiceServer{auditLogger: logger}
+	srv := &auditServer{auditLogger: logger}
 
-	f := audit.Filter{Actor: "bob", Resource: "user:alice", Limit: 50}
-	filterBytes, _ := json.Marshal(f)
-
-	req := wrapperspb.Bytes(filterBytes)
-	resp, err := srv.query(context.Background(), req)
+	resp, err := srv.Query(context.Background(), &pb.AuditQueryRequest{
+		Actor:    "bob",
+		Resource: "user:alice",
+		Limit:    50,
+	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -170,16 +163,17 @@ func TestAuditQuery_Success_WithFilter(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// auditServiceServer.query – invalid filter JSON
+// auditServer.Query — invalid from_rfc3339
 // ---------------------------------------------------------------------------
 
-func TestAuditQuery_InvalidFilterJSON(t *testing.T) {
+func TestAuditQuery_InvalidFromRFC3339(t *testing.T) {
 	logger := &mockAuditLogger{}
-	srv := &auditServiceServer{auditLogger: logger}
-	req := wrapperspb.Bytes([]byte(`{not-json`))
-	_, err := srv.query(context.Background(), req)
+	srv := &auditServer{auditLogger: logger}
+	_, err := srv.Query(context.Background(), &pb.AuditQueryRequest{
+		FromRfc3339: "not-a-timestamp",
+	})
 	if err == nil {
-		t.Fatal("expected error for invalid JSON filter")
+		t.Fatal("expected error for invalid from_rfc3339")
 	}
 	st, _ := status.FromError(err)
 	if st.Code() != codes.InvalidArgument {
@@ -188,7 +182,26 @@ func TestAuditQuery_InvalidFilterJSON(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// auditServiceServer.query – service error
+// auditServer.Query — invalid to_rfc3339
+// ---------------------------------------------------------------------------
+
+func TestAuditQuery_InvalidToRFC3339(t *testing.T) {
+	logger := &mockAuditLogger{}
+	srv := &auditServer{auditLogger: logger}
+	_, err := srv.Query(context.Background(), &pb.AuditQueryRequest{
+		ToRfc3339: "not-a-timestamp",
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid to_rfc3339")
+	}
+	st, _ := status.FromError(err)
+	if st.Code() != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument, got %s", st.Code())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// auditServer.Query — service error
 // ---------------------------------------------------------------------------
 
 func TestAuditQuery_ServiceError(t *testing.T) {
@@ -197,9 +210,8 @@ func TestAuditQuery_ServiceError(t *testing.T) {
 			return nil, errors.New("storage unavailable")
 		},
 	}
-	srv := &auditServiceServer{auditLogger: logger}
-	req := wrapperspb.Bytes(nil)
-	_, err := srv.query(context.Background(), req)
+	srv := &auditServer{auditLogger: logger}
+	_, err := srv.Query(context.Background(), &pb.AuditQueryRequest{})
 	if err == nil {
 		t.Fatal("expected error from service")
 	}
@@ -210,15 +222,12 @@ func TestAuditQuery_ServiceError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// RegisterAuditService + auditQueryHandler over real gRPC round-trip
+// RegisterAuditService + native proto round-trip
 // ---------------------------------------------------------------------------
 
 func TestRegisterAuditService_NilLogger(t *testing.T) {
-	// When logger is nil the query method returns Unimplemented, so we test
-	// the handler path directly.
-	srv := &auditServiceServer{auditLogger: nil}
-	req := wrapperspb.Bytes([]byte(`{}`))
-	_, err := srv.query(context.Background(), req)
+	srv := &auditServer{auditLogger: nil}
+	_, err := srv.Query(context.Background(), &pb.AuditQueryRequest{})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -232,7 +241,7 @@ func TestRegisterAuditService_RoundTrip(t *testing.T) {
 	logger := &mockAuditLogger{
 		queryFn: func(_ context.Context, _ audit.Filter) (*audit.Page, error) {
 			return &audit.Page{
-				Events: []audit.AuditEvent{{Actor: "alice", Action: "seal"}},
+				Events: []audit.AuditEvent{{Actor: "alice", Action: "seal", Timestamp: time.Now()}},
 				Total:  1,
 			}, nil
 		},
@@ -240,41 +249,52 @@ func TestRegisterAuditService_RoundTrip(t *testing.T) {
 	conn, cleanup := startAuditTestServer(t, logger)
 	defer cleanup()
 
-	filterBytes, _ := json.Marshal(audit.Filter{Actor: "alice"})
-	req := wrapperspb.Bytes(filterBytes)
-	resp := new(wrapperspb.BytesValue)
-	err := conn.Invoke(context.Background(), "/qrdb.v1.AuditService/Query", req, resp)
+	resp, err := pb.NewAuditServiceClient(conn).Query(context.Background(), &pb.AuditQueryRequest{
+		Actor: "alice",
+	})
 	if err != nil {
 		t.Fatalf("invoke error: %v", err)
 	}
-	var page audit.Page
-	if err := json.Unmarshal(resp.GetValue(), &page); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+	if resp.Total != 1 {
+		t.Errorf("expected Total=1, got %d", resp.Total)
 	}
-	if page.Total != 1 {
-		t.Errorf("expected Total=1, got %d", page.Total)
-	}
-	if len(page.Events) != 1 || page.Events[0].Actor != "alice" {
-		t.Errorf("unexpected events: %+v", page.Events)
+	if len(resp.Events) != 1 || resp.Events[0].Actor != "alice" {
+		t.Errorf("unexpected events: %+v", resp.Events)
 	}
 }
 
 // ---------------------------------------------------------------------------
-// RegisterAuditService – nil logger still registers but returns Unimplemented
+// RegisterAuditService — nil logger skips registration; calls surface
+// Unimplemented ("unknown service") like the other optional registrars
 // ---------------------------------------------------------------------------
 
 func TestRegisterAuditService_NilLogger_RoundTrip(t *testing.T) {
 	conn, cleanup := startAuditTestServer(t, nil)
 	defer cleanup()
 
-	req := wrapperspb.Bytes([]byte(`{}`))
-	resp := new(wrapperspb.BytesValue)
-	err := conn.Invoke(context.Background(), "/qrdb.v1.AuditService/Query", req, resp)
+	_, err := pb.NewAuditServiceClient(conn).Query(context.Background(), &pb.AuditQueryRequest{})
 	if err == nil {
 		t.Fatal("expected error for nil logger")
 	}
 	st, _ := status.FromError(err)
 	if st.Code() != codes.Unimplemented {
 		t.Fatalf("expected Unimplemented, got %s", st.Code())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// auditAttrString helper
+// ---------------------------------------------------------------------------
+
+func TestAuditAttrString_String(t *testing.T) {
+	if got := auditAttrString("hello"); got != "hello" {
+		t.Errorf("expected 'hello', got %q", got)
+	}
+}
+
+func TestAuditAttrString_NonString(t *testing.T) {
+	got := auditAttrString(42)
+	if got != "42" {
+		t.Errorf("expected '42', got %q", got)
 	}
 }

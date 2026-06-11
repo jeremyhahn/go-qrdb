@@ -19,6 +19,7 @@ import (
 	"strconv"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
+	qrdbpool "github.com/jeremyhahn/go-qrdb/pkg/storage/pool"
 )
 
 // errNoCertsInPEM is returned when a PEM file contains no valid
@@ -540,6 +541,22 @@ func (e *SealedListenerStartupError) Unwrap() error {
 	return e.Err
 }
 
+// CeremonyCAError is returned when the ceremony CA cannot be built
+// from the node's TLS bundle (CA certificate or key parse failure).
+type CeremonyCAError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *CeremonyCAError) Error() string {
+	return "cli: ceremony CA construction failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *CeremonyCAError) Unwrap() error {
+	return e.Err
+}
+
 // DataPlaneStartupError is returned when post-unseal data-plane
 // initialization fails (state machine factory, host construction,
 // or lifecycle.BuildServices).
@@ -575,68 +592,22 @@ func (e *UnsealWaitError) Unwrap() error {
 	return e.Err
 }
 
-// VolumePoolStorageError is returned when the volume-pool state
-// store (the dedicated Pebble that persists round-robin cursors)
-// fails to open.
-type VolumePoolStorageError struct {
-	Err error
-}
+// VolumePoolStorageError is returned when the volume-pool state store (the
+// dedicated Pebble that persists round-robin cursors) fails to open. Aliased
+// from pkg/storage/pool so the canonical type is shared with the SDK node
+// builder.
+type VolumePoolStorageError = qrdbpool.VolumePoolStorageError
 
-// Error returns a human-readable description.
-func (e *VolumePoolStorageError) Error() string {
-	return "cli: volume pool state store: " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *VolumePoolStorageError) Unwrap() error { return e.Err }
-
-// VolumePoolRegisterError is returned when objstore's pool.Manager
-// rejects a Register call (typically duplicate name or empty
-// candidates).
-type VolumePoolRegisterError struct {
-	Name string
-	Err  error
-}
-
-// Error returns a human-readable description.
-func (e *VolumePoolRegisterError) Error() string {
-	return "cli: volume pool register " + strconv.Quote(e.Name) + ": " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *VolumePoolRegisterError) Unwrap() error { return e.Err }
+// VolumePoolRegisterError is returned when objstore's pool.Manager rejects a
+// Register call (typically duplicate name or empty candidates). Aliased from
+// pkg/storage/pool.
+type VolumePoolRegisterError = qrdbpool.VolumePoolRegisterError
 
 // VolumePoolStrategyError is returned when a volume-pool YAML config
-// references an unknown strategy name.
-type VolumePoolStrategyError struct {
-	Strategy string
-	Err      error
-}
+// references an unknown strategy name. Aliased from pkg/storage/pool.
+type VolumePoolStrategyError = qrdbpool.VolumePoolStrategyError
 
-// Error returns a human-readable description.
-func (e *VolumePoolStrategyError) Error() string {
-	if e.Err != nil {
-		return "cli: volume pool strategy " + strconv.Quote(e.Strategy) + ": " + e.Err.Error()
-	}
-	return "cli: volume pool strategy " + strconv.Quote(e.Strategy) + ": unsupported"
-}
-
-// Unwrap returns the underlying error.
-func (e *VolumePoolStrategyError) Unwrap() error { return e.Err }
-
-// VolumePoolPathError is returned when one of the configured local
-// paths cannot be created or wrapped as an objstore Backend.
-type VolumePoolPathError struct {
-	Pool string
-	Path string
-	Err  error
-}
-
-// Error returns a human-readable description.
-func (e *VolumePoolPathError) Error() string {
-	return "cli: volume pool " + strconv.Quote(e.Pool) + " path " +
-		strconv.Quote(e.Path) + ": " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *VolumePoolPathError) Unwrap() error { return e.Err }
+// VolumePoolPathError is returned when one of the configured local paths
+// cannot be created or wrapped as an objstore Backend. Aliased from
+// pkg/storage/pool.
+type VolumePoolPathError = qrdbpool.VolumePoolPathError

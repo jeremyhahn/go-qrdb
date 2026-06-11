@@ -1510,14 +1510,200 @@ export interface SealStatus {
 }
 
 /**
- * Result of a seal bootstrap operation containing the root token and
- * generated key shares.
+ * Result of a Shamir barrier initialization or rekey. The root token is
+ * returned once; shares are never included here — each Security Officer
+ * claims their own share via the officer claim flow.
  */
 export interface BootstrapResult {
     /** Administrative root token. */
     readonly rootToken: string;
-    /** Shamir key shares (base64-encoded). */
-    readonly keyShares: readonly string[];
+    /** Minimum number of shares required to unseal (M in M-of-N). */
+    readonly threshold: number;
+    /** Total number of shares distributed to enrolled officers. */
+    readonly shareCount: number;
+}
+
+// ---------------------------------------------------------------------------
+// Security Officer (SO) and share-claim types
+// ---------------------------------------------------------------------------
+
+/**
+ * Authenticator type for a Security Officer. "software" means the officer's
+ * private key is a PEM-encoded software key; "pkcs11" / "piv" / "fido2"
+ * indicate hardware-backed keys routed through the xkms extension.
+ */
+export type AuthenticatorType = 'software' | 'pkcs11' | 'piv' | 'fido2';
+
+/**
+ * Request to register a Security Officer for a barrier (system or tenant).
+ * The admin submits the officer's CSR; the server signs it with the
+ * ceremony CA and returns the signed certificate PEM + share index.
+ */
+export interface OfficerRegisterRequest {
+    /** Unique username for the Security Officer. */
+    readonly username: string;
+    /** PEM-encoded Certificate Signing Request from the officer. */
+    readonly csrPem: string;
+    /** Authenticator type used by the officer. Defaults to "software". */
+    readonly authenticatorType?: AuthenticatorType;
+    /** Optional authenticator reference (e.g. PKCS#11 slot ID). */
+    readonly authenticatorRef?: string;
+}
+
+/**
+ * Response from registering a Security Officer. The signed certificate PEM
+ * must be transmitted to the officer out of band. No share bytes are present.
+ */
+export interface OfficerRegisterResponse {
+    /** PEM-encoded certificate signed by the ceremony CA. */
+    readonly certPem: string;
+    /**
+     * Share index assigned to this officer (1-based, order of registration).
+     * Informational only; the share itself is never returned here.
+     */
+    readonly shareIndex: number;
+}
+
+/**
+ * Non-secret status view of an enrolled Security Officer. Contains only
+ * public metadata; no share bytes are ever present.
+ */
+export interface OfficerStatus {
+    /** Officer username. */
+    readonly username: string;
+    /** SHA-256 thumbprint of the officer's mTLS certificate. */
+    readonly certThumbprint: string;
+    /** 1-based share index assigned at registration time. */
+    readonly shareIndex: number;
+    /** Authenticator type registered for this officer. */
+    readonly authFactor: string;
+    /** ISO-8601 timestamp when the officer was enrolled. */
+    readonly enrolledAt: string;
+    /**
+     * ISO-8601 timestamp when the officer successfully claimed their share.
+     * Empty string when the share has not yet been claimed.
+     */
+    readonly claimedAt: string;
+    /**
+     * True when a share is sealed in the store and awaiting claim.
+     * False after the share has been claimed or destroyed.
+     */
+    readonly sharePending: boolean;
+}
+
+/** Request to begin a share claim challenge for the named officer. */
+export interface ShareClaimBeginRequest {
+    /** Username of the officer initiating the claim. */
+    readonly username: string;
+}
+
+/**
+ * Challenge nonce issued by the server as the first step of share claim.
+ * The officer must sign this nonce with their private key and present the
+ * signature in the claim-complete call.
+ */
+export interface ShareClaimBeginResponse {
+    /**
+     * 32-byte random nonce encoded as a hexadecimal string. The officer
+     * must sign exactly these bytes (not the hex string) with their key.
+     */
+    readonly nonceHex: string;
+    /** ISO-8601 timestamp when this nonce expires (5-minute TTL). */
+    readonly expiresAt: string;
+}
+
+/** Request to complete a share claim by presenting the signed nonce. */
+export interface ShareClaimCompleteRequest {
+    /** Username of the officer completing the claim. */
+    readonly username: string;
+    /** The nonce hex string from the begin response. */
+    readonly nonceHex: string;
+    /**
+     * Base64-encoded DER-encoded signature over the raw nonce bytes,
+     * produced by the officer's private key.
+     */
+    readonly signature: string;
+}
+
+/**
+ * Response from a successful share claim. Returned EXACTLY ONCE per officer
+ * per initialization round. The server destroys the share enclave immediately
+ * after returning this response. The share bytes must never be persisted to
+ * localStorage or any client-side store.
+ */
+export interface ShareClaimCompleteResponse {
+    /** The officer's assigned share index (1-based). */
+    readonly shareIndex: number;
+    /**
+     * The raw share bytes encoded as a base64 string. This is the ONLY
+     * place share bytes appear on the wire; they are not included in any
+     * other response type.
+     */
+    readonly shareBytes: string;
+}
+
+/** Request to submit a Shamir share as a seal vote. */
+export interface ShamirSealVoteRequest {
+    /** The Shamir share value to submit as a seal vote. */
+    readonly share: string;
+}
+
+/**
+ * Progress of a Shamir seal-vote quorum. When `complete` is true, the
+ * required threshold of votes has been reached and the barrier has been
+ * sealed.
+ */
+export interface ShamirSealVoteResponse {
+    /** Number of distinct votes required to seal the barrier. */
+    readonly required: number;
+    /** Number of distinct votes submitted so far. */
+    readonly submitted: number;
+    /** True when the quorum threshold has been met and the barrier is sealed. */
+    readonly complete: boolean;
+}
+
+// Tenant-scoped variants (include tenantId as the first field).
+
+/** Request to register a Security Officer for a tenant's barrier. */
+export interface TenantOfficerRegisterRequest {
+    /** Target tenant identifier. */
+    readonly tenantId: string;
+    /** Unique username for the Security Officer. */
+    readonly username: string;
+    /** PEM-encoded Certificate Signing Request from the officer. */
+    readonly csrPem: string;
+    /** Authenticator type used by the officer. */
+    readonly authenticatorType?: AuthenticatorType;
+    /** Optional authenticator reference. */
+    readonly authenticatorRef?: string;
+}
+
+/** Request to begin a share claim challenge for a tenant-barrier officer. */
+export interface TenantShareClaimBeginRequest {
+    /** Target tenant identifier. */
+    readonly tenantId: string;
+    /** Username of the officer initiating the claim. */
+    readonly username: string;
+}
+
+/** Request to complete a share claim for a tenant-barrier officer. */
+export interface TenantShareClaimCompleteRequest {
+    /** Target tenant identifier. */
+    readonly tenantId: string;
+    /** Username of the officer completing the claim. */
+    readonly username: string;
+    /** The nonce hex string from the begin response. */
+    readonly nonceHex: string;
+    /** Base64-encoded signature over the raw nonce bytes. */
+    readonly signature: string;
+}
+
+/** Request to submit a seal vote for a tenant barrier. */
+export interface TenantShamirSealVoteRequest {
+    /** Target tenant identifier. */
+    readonly tenantId: string;
+    /** The Shamir share value to submit as a seal vote. */
+    readonly share: string;
 }
 
 /** Progress of an unseal operation after providing a share. */
@@ -1866,8 +2052,8 @@ export interface TenantInfo {
     /** Human-readable tenant name. */
     readonly name: string;
     /**
-     * Physical isolation strategy. Defaults to `"barrier"` when not
-     * explicitly set (back-compat with pre-isolation-type records).
+     * Physical isolation strategy. Pre-isolation-type records report
+     * `"prefix"` (barrier isolation is strictly opt-in).
      */
     readonly isolationType?: TenantIsolationType;
     /** Resource quotas for this tenant, if configured. */
@@ -1885,7 +2071,9 @@ export interface CreateTenantRequest {
     /** Human-readable name for the new tenant. */
     readonly name: string;
     /**
-     * Physical isolation strategy. Defaults to `"barrier"` when omitted.
+     * Physical isolation strategy. Defaults to `"prefix"` when omitted
+     * (barrier isolation is strictly opt-in and requires the seal
+     * subsystem to be enabled on the server).
      */
     readonly isolationType?: TenantIsolationType;
 }
@@ -1947,6 +2135,72 @@ export interface TenantBarrierUnsealRequest {
     readonly share: string;
     /** Optional unseal key (used when share alone is insufficient). */
     readonly key: string;
+}
+
+/**
+ * Response from initializing a tenant's encryption barrier. For all
+ * strategies, no share bytes are returned here — shares are distributed to
+ * Security Officers through the officer claim flow. For "none" and
+ * "passphrase" strategies the server returns 204 No Content and the SDK
+ * synthesizes a response containing only the tenant id and strategy.
+ */
+export interface TenantBarrierInitResponse {
+    /** Target tenant identifier. */
+    readonly tenantId: string;
+    /** Active sealing strategy: "none", "passphrase", or "shamir". */
+    readonly strategy: string;
+    /** Number of shares required to unseal (Shamir only). */
+    readonly threshold?: number;
+    /** Total number of shares distributed to enrolled officers (Shamir only). */
+    readonly totalShares?: number;
+    /**
+     * Number of share enclaves sealed and ready for officer claim (Shamir only).
+     * Always equals the number of enrolled officers at init time.
+     */
+    readonly shareCount?: number;
+}
+
+/** Request to submit a single Shamir unseal share for a tenant barrier. */
+export interface TenantBarrierUnsealShareRequest {
+    /** Target tenant identifier. */
+    readonly tenantId: string;
+    /** A single Shamir key share. */
+    readonly share: string;
+}
+
+/** Quorum progress after submitting a tenant barrier unseal share. */
+export interface TenantBarrierUnsealProgress {
+    /** Target tenant identifier. */
+    readonly tenantId: string;
+    /** Number of distinct shares required to reconstruct the barrier key. */
+    readonly required: number;
+    /** Number of distinct shares submitted so far. */
+    readonly submitted: number;
+    /** Whether the quorum has been met (all required shares submitted). */
+    readonly complete: boolean;
+    /** Whether the tenant barrier is still sealed after this share. */
+    readonly sealed: boolean;
+}
+
+/** Current seal state of a tenant's encryption barrier. */
+export interface TenantBarrierStatusResponse {
+    /** Target tenant identifier. */
+    readonly tenantId: string;
+    /** Whether the tenant barrier is currently sealed. */
+    readonly sealed: boolean;
+    /** Whether the tenant barrier has been initialized. */
+    readonly initialized: boolean;
+    /**
+     * Active sealing strategy: "none", "passphrase", or "shamir". Empty string
+     * when the barrier has not yet been initialized.
+     */
+    readonly strategy: string;
+    /** Whether the active seal strategy is backed by a hardware device. */
+    readonly hardwareBacked: boolean;
+    /** Shamir shares required to unseal. Omitted or 0 when not Shamir. */
+    readonly shamirThreshold?: number;
+    /** Total Shamir shares generated. Omitted or 0 when not Shamir. */
+    readonly shamirTotal?: number;
 }
 
 /** Request to update tenant quotas. */

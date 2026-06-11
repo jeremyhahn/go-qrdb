@@ -18,7 +18,7 @@ import (
 	"context"
 	"time"
 
-	grpcpkg "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
+	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -30,18 +30,19 @@ func (t *Transport) AddAuthFactor(ctx context.Context, req *transport.AuthFactor
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
-	resp, err := grpcpkg.UserAuthFactorAddUnary(ctx, t.conn, &grpcpkg.GRPCUserAuthFactorAddRequest{
-		UserID:     req.UserID,
-		Type:       req.Type,
-		Label:      req.Label,
-		Credential: req.Credential,
-		Metadata:   req.Metadata,
-		CreatedBy:  req.CreatedBy,
+	resp, err := pb.NewUserAuthFactorServiceClient(t.conn).Add(ctx, &pb.UserAuthFactorAddRequest{
+		UserId:         req.UserID,
+		Type:           req.Type,
+		Label:          req.Label,
+		Credential:     req.Credential,
+		SpkiCredential: req.SPKICredential,
+		Metadata:       req.Metadata,
+		CreatedBy:      req.CreatedBy,
 	})
 	if err != nil {
 		return nil, mapGRPCError("AddAuthFactor", err)
 	}
-	return &transport.AuthFactorAddResponse{Factor: userFactorWireToTransport(&resp.Factor)}, nil
+	return &transport.AuthFactorAddResponse{Factor: pbUserFactorToTransport(resp.GetFactor())}, nil
 }
 
 // ListAuthFactors invokes UserAuthFactorService.List via gRPC.
@@ -49,18 +50,18 @@ func (t *Transport) ListAuthFactors(ctx context.Context, req *transport.AuthFact
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
-	resp, err := grpcpkg.UserAuthFactorListUnary(ctx, t.conn, &grpcpkg.GRPCUserAuthFactorListRequest{
-		UserID: req.UserID,
+	resp, err := pb.NewUserAuthFactorServiceClient(t.conn).List(ctx, &pb.UserAuthFactorListRequest{
+		UserId: req.UserID,
 	})
 	if err != nil {
 		return nil, mapGRPCError("ListAuthFactors", err)
 	}
 	out := transport.AuthFactorListResponse{
-		Factors: make([]transport.AuthFactorRecord, len(resp.Factors)),
-		Total:   resp.Total,
+		Factors: make([]transport.AuthFactorRecord, len(resp.GetFactors())),
+		Total:   int(resp.GetTotal()),
 	}
-	for i := range resp.Factors {
-		out.Factors[i] = userFactorWireToTransport(&resp.Factors[i])
+	for i, f := range resp.GetFactors() {
+		out.Factors[i] = pbUserFactorToTransport(f)
 	}
 	return &out, nil
 }
@@ -70,13 +71,13 @@ func (t *Transport) GetAuthFactor(ctx context.Context, req *transport.AuthFactor
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
-	resp, err := grpcpkg.UserAuthFactorGetUnary(ctx, t.conn, &grpcpkg.GRPCUserAuthFactorGetRequest{
-		FactorID: req.FactorID,
+	resp, err := pb.NewUserAuthFactorServiceClient(t.conn).Get(ctx, &pb.UserAuthFactorGetRequest{
+		FactorId: req.FactorID,
 	})
 	if err != nil {
 		return nil, mapGRPCError("GetAuthFactor", err)
 	}
-	return &transport.AuthFactorGetResponse{Factor: userFactorWireToTransport(&resp.Factor)}, nil
+	return &transport.AuthFactorGetResponse{Factor: pbUserFactorToTransport(resp.GetFactor())}, nil
 }
 
 // RemoveAuthFactor invokes UserAuthFactorService.Remove via gRPC.
@@ -84,14 +85,14 @@ func (t *Transport) RemoveAuthFactor(ctx context.Context, req *transport.AuthFac
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
-	resp, err := grpcpkg.UserAuthFactorRemoveUnary(ctx, t.conn, &grpcpkg.GRPCUserAuthFactorRemoveRequest{
-		FactorID: req.FactorID,
+	resp, err := pb.NewUserAuthFactorServiceClient(t.conn).Remove(ctx, &pb.UserAuthFactorRemoveRequest{
+		FactorId: req.FactorID,
 		Force:    req.Force,
 	})
 	if err != nil {
 		return nil, mapGRPCError("RemoveAuthFactor", err)
 	}
-	return &transport.AuthFactorRemoveResponse{Status: resp.Status}, nil
+	return &transport.AuthFactorRemoveResponse{Status: resp.GetStatus()}, nil
 }
 
 // RotateAuthFactor invokes UserAuthFactorService.Rotate via gRPC.
@@ -99,21 +100,22 @@ func (t *Transport) RotateAuthFactor(ctx context.Context, req *transport.AuthFac
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
-	resp, err := grpcpkg.UserAuthFactorRotateUnary(ctx, t.conn, &grpcpkg.GRPCUserAuthFactorRotateRequest{
-		OldFactorID: req.OldFactorID,
-		NewFactor: grpcpkg.GRPCUserAuthFactorAddRequest{
-			UserID:     req.NewFactor.UserID,
-			Type:       req.NewFactor.Type,
-			Label:      req.NewFactor.Label,
-			Credential: req.NewFactor.Credential,
-			Metadata:   req.NewFactor.Metadata,
-			CreatedBy:  req.NewFactor.CreatedBy,
+	resp, err := pb.NewUserAuthFactorServiceClient(t.conn).Rotate(ctx, &pb.UserAuthFactorRotateRequest{
+		OldFactorId: req.OldFactorID,
+		NewFactor: &pb.UserAuthFactorNewFactor{
+			UserId:         req.NewFactor.UserID,
+			Type:           req.NewFactor.Type,
+			Label:          req.NewFactor.Label,
+			Credential:     req.NewFactor.Credential,
+			SpkiCredential: req.NewFactor.SPKICredential,
+			Metadata:       req.NewFactor.Metadata,
+			CreatedBy:      req.NewFactor.CreatedBy,
 		},
 	})
 	if err != nil {
 		return nil, mapGRPCError("RotateAuthFactor", err)
 	}
-	return &transport.AuthFactorRotateResponse{NewFactor: userFactorWireToTransport(&resp.NewFactor)}, nil
+	return &transport.AuthFactorRotateResponse{NewFactor: pbUserFactorToTransport(resp.GetNewFactor())}, nil
 }
 
 // RelabelAuthFactor invokes UserAuthFactorService.Relabel via gRPC.
@@ -121,14 +123,14 @@ func (t *Transport) RelabelAuthFactor(ctx context.Context, req *transport.AuthFa
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
-	resp, err := grpcpkg.UserAuthFactorRelabelUnary(ctx, t.conn, &grpcpkg.GRPCUserAuthFactorRelabelRequest{
-		FactorID: req.FactorID,
+	resp, err := pb.NewUserAuthFactorServiceClient(t.conn).Relabel(ctx, &pb.UserAuthFactorRelabelRequest{
+		FactorId: req.FactorID,
 		Label:    req.Label,
 	})
 	if err != nil {
 		return nil, mapGRPCError("RelabelAuthFactor", err)
 	}
-	return &transport.AuthFactorRelabelResponse{Factor: userFactorWireToTransport(&resp.Factor)}, nil
+	return &transport.AuthFactorRelabelResponse{Factor: pbUserFactorToTransport(resp.GetFactor())}, nil
 }
 
 // LoginAuthFactor invokes UserAuthFactorService.Login via gRPC.
@@ -136,7 +138,7 @@ func (t *Transport) LoginAuthFactor(ctx context.Context, req *transport.AuthFact
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
-	resp, err := grpcpkg.UserAuthFactorLoginUnary(ctx, t.conn, &grpcpkg.GRPCUserAuthFactorLoginRequest{
+	resp, err := pb.NewUserAuthFactorServiceClient(t.conn).Login(ctx, &pb.UserAuthFactorLoginRequest{
 		Type:      req.Type,
 		LookupKey: req.LookupKey,
 	})
@@ -144,36 +146,40 @@ func (t *Transport) LoginAuthFactor(ctx context.Context, req *transport.AuthFact
 		return nil, mapGRPCError("LoginAuthFactor", err)
 	}
 	return &transport.AuthFactorLoginResponse{
-		UserID:   resp.UserID,
-		Username: resp.Username,
-		Email:    resp.Email,
-		TenantID: resp.TenantID,
-		Roles:    resp.Roles,
-		Active:   resp.Active,
-		Factor:   userFactorWireToTransport(&resp.Factor),
+		UserID:   resp.GetUserId(),
+		Username: resp.GetUsername(),
+		Email:    resp.GetEmail(),
+		TenantID: resp.GetTenantId(),
+		Roles:    resp.GetRoles(),
+		Active:   resp.GetActive(),
+		Factor:   pbUserFactorToTransport(resp.GetFactor()),
 	}, nil
 }
 
-// userFactorWireToTransport translates a gRPC wire record into the SDK
-// transport shape, parsing RFC3339 timestamps.
-func userFactorWireToTransport(r *grpcpkg.GRPCUserAuthFactorRecord) transport.AuthFactorRecord {
-	out := transport.AuthFactorRecord{
-		ID:         r.ID,
-		UserID:     r.UserID,
-		Type:       r.Type,
-		Label:      r.Label,
-		Credential: r.Credential,
-		Metadata:   r.Metadata,
-		CreatedBy:  r.CreatedBy,
+// pbUserFactorToTransport translates a protobuf UserAuthFactorRecord into the
+// SDK transport shape, parsing RFC3339 timestamps.
+func pbUserFactorToTransport(r *pb.UserAuthFactorRecord) transport.AuthFactorRecord {
+	if r == nil {
+		return transport.AuthFactorRecord{}
 	}
-	out.RegisteredAt, _ = time.Parse(time.RFC3339, r.RegisteredAt)
-	if r.LastUsedAt != "" {
-		if ts, err := time.Parse(time.RFC3339, r.LastUsedAt); err == nil {
+	out := transport.AuthFactorRecord{
+		ID:             r.GetId(),
+		UserID:         r.GetUserId(),
+		Type:           r.GetType(),
+		Label:          r.GetLabel(),
+		Credential:     r.GetCredential(),
+		SPKICredential: r.GetSpkiCredential(),
+		Metadata:       r.GetMetadata(),
+		CreatedBy:      r.GetCreatedBy(),
+	}
+	out.RegisteredAt, _ = time.Parse(time.RFC3339, r.GetRegisteredAt())
+	if lu := r.GetLastUsedAt(); lu != "" {
+		if ts, err := time.Parse(time.RFC3339, lu); err == nil {
 			out.LastUsedAt = &ts
 		}
 	}
-	if r.RevokedAt != "" {
-		if ts, err := time.Parse(time.RFC3339, r.RevokedAt); err == nil {
+	if rv := r.GetRevokedAt(); rv != "" {
+		if ts, err := time.Parse(time.RFC3339, rv); err == nil {
 			out.RevokedAt = &ts
 		}
 	}

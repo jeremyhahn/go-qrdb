@@ -232,6 +232,38 @@ func TestIsRegistered_NotExists(t *testing.T) {
 	}
 }
 
+// TestIdentityGated_NotRegistered guards the identity-gated sentinel's core
+// invariant: it must never be registered, so it can never be granted to a
+// role, validated as a grant, or surfaced in the permission catalog. Claim
+// routes mapped to IdentityGated are authorized at the handler layer
+// (registry membership + thumbprint + signature/factor verification), not by
+// the RBAC policy decision point.
+func TestIdentityGated_NotRegistered(t *testing.T) {
+	if IsRegistered(IdentityGated) {
+		t.Fatalf("IsRegistered(%q): the identity-gated sentinel must never be registered", IdentityGated)
+	}
+}
+
+// TestIdentityGated_NotInAll verifies the sentinel never appears in the
+// grantable-permission catalog returned by All().
+func TestIdentityGated_NotInAll(t *testing.T) {
+	for _, p := range All() {
+		if p == IdentityGated {
+			t.Fatalf("All() contains the identity-gated sentinel %q; it must never be grantable", IdentityGated)
+		}
+	}
+}
+
+// TestIdentityGated_NotInByResource verifies the sentinel never appears in
+// the resource-grouped catalog used by the UI.
+func TestIdentityGated_NotInByResource(t *testing.T) {
+	for _, p := range ByResource(Resource(IdentityGated)) {
+		if p == IdentityGated {
+			t.Fatalf("ByResource(%q) contains the identity-gated sentinel %q", Resource(IdentityGated), IdentityGated)
+		}
+	}
+}
+
 func TestRegister_Custom(t *testing.T) {
 	custom := Permission("test_custom:do_thing")
 
@@ -482,7 +514,12 @@ func TestAll_TotalCount(t *testing.T) {
 	// + 1 permissions:resolve perm = 218 total.
 	// + 14 broker-domain perms (4 secrets + 2 trust + 2 acme + 3 mcp
 	//   + 3 agent:runtime) = 232 total.
-	const expectedTotal = 232
+	// + 96 broker data-plane perms (20 objstore + 32 orchestrator
+	//   + 9 messaging + 11 scheduler + 5 parameters + 8 dynamic_secrets
+	//   + 7 project + 4 ollama) = 328 total.
+	// + 7 SO share-distribution perms (3 seal:officer_*/submit_seal_vote
+	//   + 4 tenant_barrier:officer_*/claim_share/seal_vote) = 335 total.
+	const expectedTotal = 335
 	all := All()
 	if len(all) != expectedTotal {
 		t.Fatalf("All() count: got %d, want %d", len(all), expectedTotal)

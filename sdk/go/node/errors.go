@@ -138,3 +138,20 @@ func (e *LoginWiringError) Error() string {
 
 // Unwrap returns the underlying error.
 func (e *LoginWiringError) Unwrap() error { return e.Err }
+
+// AuthFactorWiringError indicates that the AuthFactorService could not be
+// constructed from the caller-supplied FactorRegistry. This prevents a
+// misconfigured enrollment/challenge/verify surface from silently
+// degrading to "not supported" across the embedded transport and all
+// wire protocol servers.
+type AuthFactorWiringError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *AuthFactorWiringError) Error() string {
+	return "node: failed to wire AuthFactorService from FactorRegistry: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *AuthFactorWiringError) Unwrap() error { return e.Err }

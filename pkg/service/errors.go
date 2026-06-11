@@ -591,6 +591,20 @@ func (e *BarrierNotConfiguredError) Error() string {
 	return "service: barrier service not configured"
 }
 
+// ErrCeremonyNotConfigured is returned when a Security Officer operation is
+// attempted but no CeremonyService has been wired into the BarrierService.
+// Use NewBarrierServiceWithCeremony to enable officer registration and share
+// claim operations.
+var ErrCeremonyNotConfigured = &ceremonyNotConfiguredError{}
+
+// ceremonyNotConfiguredError is the concrete type behind ErrCeremonyNotConfigured.
+type ceremonyNotConfiguredError struct{}
+
+// Error returns a human-readable description.
+func (e *ceremonyNotConfiguredError) Error() string {
+	return "service: ceremony service not configured; use NewBarrierServiceWithCeremony"
+}
+
 // BarrierManagerNotConfiguredError is returned when a barrier operation is
 // attempted but no DatabaseBarrierManager has been configured on the
 // database service.

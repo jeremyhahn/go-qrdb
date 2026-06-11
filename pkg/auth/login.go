@@ -17,7 +17,9 @@ package auth
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/hex"
+	"errors"
 	"time"
 )
 
@@ -135,6 +137,37 @@ func (r *LoginResolver) Resolve(ctx context.Context, t AuthFactorType, lookupKey
 	return principal, factor, nil
 }
 
+// ResolveFirst tries each lookup key in order and returns the first
+// successful resolution. A FactorNotFoundError on one key advances to the
+// next key; any other error (revoked factor, unsupported type, store
+// failure) aborts immediately so security-relevant failures are never
+// masked by a fallback. When every key misses, the final
+// FactorNotFoundError is returned.
+//
+// The canonical caller is the embedded login transport, which resolves a
+// renewal-stable SPKI key first and falls back to the legacy
+// SHA-256(cert.Raw) key for factors enrolled before SPKI indexing existed.
+// The fallback must happen inside one resolution call because the login
+// session is consumed by the transport before resolution.
+func (r *LoginResolver) ResolveFirst(ctx context.Context, t AuthFactorType, lookupKeys ...[]byte) (*Principal, *AuthFactor, error) {
+	if len(lookupKeys) == 0 {
+		return nil, nil, &InvalidFactorError{Reason: "no lookup keys supplied"}
+	}
+	var lastErr error
+	for _, key := range lookupKeys {
+		principal, factor, err := r.Resolve(ctx, t, key)
+		if err == nil {
+			return principal, factor, nil
+		}
+		var notFound *FactorNotFoundError
+		if !errors.As(err, &notFound) {
+			return nil, nil, err
+		}
+		lastErr = err
+	}
+	return nil, nil, lastErr
+}
+
 // CredentialKey is a small helper that hashes raw certificate / blob bytes
 // down to the canonical 32-byte lookup key used by the mtls and piv
 // factor types. It is exported so caller code in xkms can produce keys
@@ -151,4 +184,21 @@ func CredentialKey(blob []byte) []byte {
 // in storage indices.
 func CredentialKeyHex(blob []byte) string {
 	return hex.EncodeToString(CredentialKey(blob))
+}
+
+// SPKICredentialKey derives the renewal-stable secondary lookup key for
+// certificate-based factors (mtls, piv): SHA-256 over the certificate's
+// RawSubjectPublicKeyInfo. It is the raw-byte counterpart of
+// user.ComputeSPKIThumbprint (which base64url-encodes the same digest) —
+// THE single SPKI binding algorithm for the whole stack.
+//
+// Because the digest covers only the public key, a certificate renewed
+// with the same keypair yields the same SPKICredentialKey, keeping login
+// working across renewals.
+func SPKICredentialKey(cert *x509.Certificate) []byte {
+	if cert == nil || len(cert.RawSubjectPublicKeyInfo) == 0 {
+		return nil
+	}
+	sum := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
+	return sum[:]
 }

@@ -230,6 +230,38 @@ var (
 	// ErrInvalidShareIndex is returned when ShareIndex is outside the
 	// valid 1..N range.
 	ErrInvalidShareIndex = errors.New("ceremony: invalid share index")
+
+	// ErrCertThumbprintMismatch is returned when the caller's mTLS certificate
+	// thumbprint does not match the officer's registered CertThumbprint.
+	ErrCertThumbprintMismatch = errors.New("ceremony: certificate thumbprint mismatch")
+
+	// ErrInsufficientOfficers is returned when fewer than threshold officers
+	// are enrolled for a SealAndDistribute operation.
+	ErrInsufficientOfficers = errors.New("ceremony: insufficient officers enrolled for threshold")
+
+	// ErrOfficerCountMismatch is returned when the total share count does not
+	// equal the number of enrolled officers.
+	ErrOfficerCountMismatch = errors.New("ceremony: total shares must equal enrolled officer count")
+
+	// ErrOfficerNotFound is returned when the requested officer is not enrolled
+	// in the registry.
+	ErrOfficerNotFound = errors.New("ceremony: officer not found")
+
+	// ErrNoPendingShare is returned when a claim is attempted but no sealed
+	// share exists for the officer (share was never distributed or was already claimed).
+	ErrNoPendingShare = errors.New("ceremony: no pending share for officer")
+
+	// ErrNilBackend is returned when a nil StorageBackend is provided to a
+	// constructor that requires one.
+	ErrNilBackend = errors.New("ceremony: nil storage backend provided")
+
+	// ErrNilCA is returned when a nil CeremonyCA is provided to a constructor
+	// that requires one.
+	ErrNilCA = errors.New("ceremony: nil CA provided")
+
+	// ErrEmptyTenantID is returned when an empty tenant ID is provided to
+	// TenantCeremonyService or ScopeTenant.
+	ErrEmptyTenantID = errors.New("ceremony: tenant ID must not be empty")
 )
 
 // OfficerRegistryError wraps an error from persistent-registry operations.
@@ -290,6 +322,36 @@ func (e *CertEncodeError) Error() string {
 
 // Unwrap returns the underlying error.
 func (e *CertEncodeError) Unwrap() error {
+	return e.Err
+}
+
+// CACertParseError wraps an error from CA certificate parsing.
+type CACertParseError struct {
+	Err error
+}
+
+// Error returns a human-readable description of the CA certificate parse failure.
+func (e *CACertParseError) Error() string {
+	return fmt.Sprintf("ceremony: CA certificate parse failed: %v", e.Err)
+}
+
+// Unwrap returns the underlying error.
+func (e *CACertParseError) Unwrap() error {
+	return e.Err
+}
+
+// CAKeyParseError wraps an error from CA private key parsing.
+type CAKeyParseError struct {
+	Err error
+}
+
+// Error returns a human-readable description of the CA key parse failure.
+func (e *CAKeyParseError) Error() string {
+	return fmt.Sprintf("ceremony: CA key parse failed: %v", e.Err)
+}
+
+// Unwrap returns the underlying error.
+func (e *CAKeyParseError) Unwrap() error {
 	return e.Err
 }
 

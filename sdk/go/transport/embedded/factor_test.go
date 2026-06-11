@@ -545,3 +545,146 @@ func TestFactorClient_Verify_CrossUserDenied(t *testing.T) {
 		t.Errorf("expected *transport.FactorNotFoundError, got %T", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// PKCS#11 factor type — IsValid / round-trip / Enroll / Verify
+// ---------------------------------------------------------------------------
+
+func TestFactorType_PKCS11_IsValid(t *testing.T) {
+	if !transport.FactorTypePKCS11.IsValid() {
+		t.Fatalf("FactorTypePKCS11.IsValid() = false, want true")
+	}
+	if transport.FactorTypePKCS11.String() != "pkcs11" {
+		t.Fatalf("FactorTypePKCS11.String() = %q, want %q", transport.FactorTypePKCS11.String(), "pkcs11")
+	}
+}
+
+func TestFactorType_UnknownInvalid(t *testing.T) {
+	for _, s := range []string{"", "PKCS11", "totp", "hardware"} {
+		if transport.FactorType(s).IsValid() {
+			t.Fatalf("FactorType(%q).IsValid() = true, want false", s)
+		}
+	}
+}
+
+func TestFactorTypeToDomain_PKCS11(t *testing.T) {
+	got := factorTypeToDomain(transport.FactorTypePKCS11)
+	if got != auth.AuthFactorPKCS11 {
+		t.Fatalf("factorTypeToDomain(PKCS11) = %q, want %q", got, auth.AuthFactorPKCS11)
+	}
+}
+
+func TestFactorTypeFromDomain_PKCS11(t *testing.T) {
+	got := factorTypeFromDomain(auth.AuthFactorPKCS11)
+	if got != transport.FactorTypePKCS11 {
+		t.Fatalf("factorTypeFromDomain(PKCS11) = %q, want %q", got, transport.FactorTypePKCS11)
+	}
+}
+
+func TestFactorTypeToDomain_PKCS11_RoundTrip(t *testing.T) {
+	original := transport.FactorTypePKCS11
+	domain := factorTypeToDomain(original)
+	back := factorTypeFromDomain(domain)
+	if back != original {
+		t.Fatalf("round-trip failed: %q -> %q -> %q", original, domain, back)
+	}
+}
+
+func TestFactorClient_Enroll_PKCS11(t *testing.T) {
+	tr := newFactorTransport(t)
+	fc := tr.FactorClient()
+
+	err := fc.Enroll(context.Background(), 5, transport.Factor{
+		Type:       transport.FactorTypePKCS11,
+		Label:      "hsm-slot-0",
+		Credential: []byte("pkcs11-spki-sha256-32bytesxxxxxxxxxx"),
+		Metadata: map[string]string{
+			"public_key_pem": "fake-pem-placeholder",
+			"slot":           "0",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Enroll pkcs11: %v", err)
+	}
+
+	listed, err := fc.List(context.Background(), 5)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(listed) != 1 {
+		t.Fatalf("expected 1 factor, got %d", len(listed))
+	}
+	if listed[0].Type != transport.FactorTypePKCS11 {
+		t.Fatalf("expected type pkcs11, got %q", listed[0].Type)
+	}
+	if listed[0].Label != "hsm-slot-0" {
+		t.Fatalf("expected label hsm-slot-0, got %q", listed[0].Label)
+	}
+}
+
+func TestFactorClient_Verify_PKCS11_Happy(t *testing.T) {
+	verifier := &mockVerifier{
+		typ: transport.FactorTypePKCS11,
+		verifyF: func(_ context.Context, _ *auth.AuthFactor, _ transport.VerifyChallenge) error {
+			return nil
+		},
+	}
+	tr := newFactorTransport(t, WithFactorVerifier(verifier))
+	fc := tr.FactorClient()
+
+	if err := fc.Enroll(context.Background(), 7, transport.Factor{
+		Type:       transport.FactorTypePKCS11,
+		Credential: []byte("pkcs11-spki-hash"),
+	}); err != nil {
+		t.Fatalf("enroll: %v", err)
+	}
+	listed, _ := fc.List(context.Background(), 7)
+	target := listed[0].ID
+
+	got, err := fc.Verify(context.Background(), 7, transport.VerifyChallenge{
+		FactorID:  target,
+		Type:      transport.FactorTypePKCS11,
+		Nonce:     []byte("nonce"),
+		Signature: []byte("sig"),
+	})
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if got.Type != transport.FactorTypePKCS11 {
+		t.Fatalf("expected type pkcs11, got %q", got.Type)
+	}
+}
+
+func TestFactorClient_Verify_PKCS11_Rejected(t *testing.T) {
+	verifier := &mockVerifier{
+		typ: transport.FactorTypePKCS11,
+		verifyF: func(_ context.Context, _ *auth.AuthFactor, _ transport.VerifyChallenge) error {
+			return errors.New("bad signature")
+		},
+	}
+	tr := newFactorTransport(t, WithFactorVerifier(verifier))
+	fc := tr.FactorClient()
+
+	if err := fc.Enroll(context.Background(), 8, transport.Factor{
+		Type:       transport.FactorTypePKCS11,
+		Credential: []byte("pkcs11-cred"),
+	}); err != nil {
+		t.Fatalf("enroll: %v", err)
+	}
+	listed, _ := fc.List(context.Background(), 8)
+	target := listed[0].ID
+
+	_, err := fc.Verify(context.Background(), 8, transport.VerifyChallenge{
+		FactorID:  target,
+		Type:      transport.FactorTypePKCS11,
+		Nonce:     []byte("n"),
+		Signature: []byte("bad"),
+	})
+	if err == nil {
+		t.Fatal("expected verification failure")
+	}
+	var ve *transport.FactorVerificationError
+	if !errors.As(err, &ve) {
+		t.Errorf("expected *transport.FactorVerificationError, got %T", err)
+	}
+}

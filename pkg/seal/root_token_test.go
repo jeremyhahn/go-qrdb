@@ -9,6 +9,7 @@
 package seal
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -19,15 +20,15 @@ import (
 
 func TestRootTokenGenerateDirectMode(t *testing.T) {
 	t.Run("Success", func(t *testing.T) {
-		b, _ := newRecoveryBarrierWithShamir(t)
+		b, _, dist := newRecoveryBarrierWithShamir(t)
 		ctx := context.Background()
 
-		initResult, err := b.InitializeShamir(ctx, Credentials{})
-		if err != nil {
+		if _, err := b.InitializeShamir(ctx, Credentials{}); err != nil {
 			t.Fatal(err)
 		}
+		shares := dist.Shares()
 
-		token, err := b.GenerateRootToken(ctx, initResult.Shares[:3])
+		token, err := b.GenerateRootToken(ctx, shares[:3])
 		if err != nil {
 			t.Fatalf("GenerateRootToken: unexpected error: %v", err)
 		}
@@ -52,16 +53,16 @@ func TestRootTokenGenerateDirectMode(t *testing.T) {
 	})
 
 	t.Run("Success_AllShares", func(t *testing.T) {
-		b, _ := newRecoveryBarrierWithShamir(t)
+		b, _, dist := newRecoveryBarrierWithShamir(t)
 		ctx := context.Background()
 
-		initResult, err := b.InitializeShamir(ctx, Credentials{})
-		if err != nil {
+		if _, err := b.InitializeShamir(ctx, Credentials{}); err != nil {
 			t.Fatal(err)
 		}
+		shares := dist.Shares()
 
 		// Providing all 5 shares should also work.
-		token, err := b.GenerateRootToken(ctx, initResult.Shares)
+		token, err := b.GenerateRootToken(ctx, shares)
 		if err != nil {
 			t.Fatalf("GenerateRootToken with all shares: %v", err)
 		}
@@ -71,20 +72,20 @@ func TestRootTokenGenerateDirectMode(t *testing.T) {
 	})
 
 	t.Run("DifferentTokensEachCall", func(t *testing.T) {
-		b, _ := newRecoveryBarrierWithShamir(t)
+		b, _, dist := newRecoveryBarrierWithShamir(t)
 		ctx := context.Background()
 
-		initResult, err := b.InitializeShamir(ctx, Credentials{})
+		if _, err := b.InitializeShamir(ctx, Credentials{}); err != nil {
+			t.Fatal(err)
+		}
+		shares := dist.Shares()
+
+		token1, err := b.GenerateRootToken(ctx, shares[:3])
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		token1, err := b.GenerateRootToken(ctx, initResult.Shares[:3])
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		token2, err := b.GenerateRootToken(ctx, initResult.Shares[:3])
+		token2, err := b.GenerateRootToken(ctx, shares[:3])
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -108,20 +109,26 @@ func TestRootTokenGenerateCredentialMode(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		dist := newCaptureDistributor()
+		b.SetCeremonyDistributor(dist)
 
 		ctx := context.Background()
 		password := "credential-mode-password"
 
 		// Initialize using Shamir credential mode.
-		initResult, err := b.InitializeShamir(ctx, Credentials{Secret: password})
+		result, err := b.InitializeShamir(ctx, Credentials{Secret: password})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(initResult.Shares) != 3 {
-			t.Fatalf("init shares: got %d, want 3", len(initResult.Shares))
+		if result.ShareCount != 3 {
+			t.Fatalf("ShareCount: got %d, want 3", result.ShareCount)
+		}
+		shares := dist.Shares()
+		if len(shares) != 3 {
+			t.Fatalf("captured shares: got %d, want 3", len(shares))
 		}
 
-		token, err := b.GenerateRootToken(ctx, initResult.Shares[:2])
+		token, err := b.GenerateRootToken(ctx, shares[:2])
 		if err != nil {
 			t.Fatalf("GenerateRootToken (credential mode): %v", err)
 		}
@@ -137,7 +144,7 @@ func TestRootTokenGenerateCredentialMode(t *testing.T) {
 func TestRootTokenErrors(t *testing.T) {
 	t.Run("ErrShamirNotConfigured", func(t *testing.T) {
 		// Barrier with no Shamir config.
-		b, _ := newRecoveryBarrier(t)
+		b, _, _ := newRecoveryBarrier(t)
 		initializeBarrier(t, b)
 		ctx := context.Background()
 
@@ -148,47 +155,45 @@ func TestRootTokenErrors(t *testing.T) {
 	})
 
 	t.Run("ErrShamirQuorumIncomplete", func(t *testing.T) {
-		b, _ := newRecoveryBarrierWithShamir(t)
+		b, _, dist := newRecoveryBarrierWithShamir(t)
 		ctx := context.Background()
 
-		initResult, err := b.InitializeShamir(ctx, Credentials{})
-		if err != nil {
+		if _, err := b.InitializeShamir(ctx, Credentials{}); err != nil {
 			t.Fatal(err)
 		}
+		shares := dist.Shares()
 
 		// Provide only 2 shares when 3 are needed.
-		_, err = b.GenerateRootToken(ctx, initResult.Shares[:2])
+		_, err := b.GenerateRootToken(ctx, shares[:2])
 		if !errors.Is(err, ErrShamirQuorumIncomplete) {
 			t.Errorf("got %v, want ErrShamirQuorumIncomplete", err)
 		}
 	})
 
 	t.Run("ErrShamirQuorumIncomplete_EmptyShares", func(t *testing.T) {
-		b, _ := newRecoveryBarrierWithShamir(t)
+		b, _, _ := newRecoveryBarrierWithShamir(t)
 		ctx := context.Background()
 
-		_, err := b.InitializeShamir(ctx, Credentials{})
-		if err != nil {
+		if _, err := b.InitializeShamir(ctx, Credentials{}); err != nil {
 			t.Fatal(err)
 		}
 
-		_, err = b.GenerateRootToken(ctx, []string{})
+		_, err := b.GenerateRootToken(ctx, []string{})
 		if !errors.Is(err, ErrShamirQuorumIncomplete) {
 			t.Errorf("got %v, want ErrShamirQuorumIncomplete", err)
 		}
 	})
 
 	t.Run("ErrShamirCombineFailed_InvalidShares", func(t *testing.T) {
-		b, _ := newRecoveryBarrierWithShamir(t)
+		b, _, _ := newRecoveryBarrierWithShamir(t)
 		ctx := context.Background()
 
-		_, err := b.InitializeShamir(ctx, Credentials{})
-		if err != nil {
+		if _, err := b.InitializeShamir(ctx, Credentials{}); err != nil {
 			t.Fatal(err)
 		}
 
 		// Provide garbage share values.
-		_, err = b.GenerateRootToken(ctx, []string{"bad1", "bad2", "bad3"})
+		_, err := b.GenerateRootToken(ctx, []string{"bad1", "bad2", "bad3"})
 		if !errors.Is(err, ErrShamirCombineFailed) {
 			t.Errorf("got %v, want ErrShamirCombineFailed", err)
 		}
@@ -198,20 +203,20 @@ func TestRootTokenErrors(t *testing.T) {
 		// Initialize a Shamir barrier, then corrupt the root key blob.
 		// GenerateRootToken will reconstruct a valid secret from shares,
 		// but verifyDirectMode will fail when unmarshaling the blob.
-		b, backend := newRecoveryBarrierWithShamir(t)
+		b, backend, dist := newRecoveryBarrierWithShamir(t)
 		ctx := context.Background()
 
-		initResult, err := b.InitializeShamir(ctx, Credentials{})
-		if err != nil {
+		if _, err := b.InitializeShamir(ctx, Credentials{}); err != nil {
 			t.Fatal(err)
 		}
+		shares := dist.Shares()
 
 		// Corrupt the root key blob.
 		if err := backend.Put(ctx, "test/root-key", []byte("corrupt-json")); err != nil {
 			t.Fatal(err)
 		}
 
-		_, err = b.GenerateRootToken(ctx, initResult.Shares[:3])
+		_, err := b.GenerateRootToken(ctx, shares[:3])
 		if !errors.Is(err, ErrRootTokenVerificationFailed) {
 			t.Errorf("got %v, want ErrRootTokenVerificationFailed", err)
 		}
@@ -222,11 +227,10 @@ func TestRootTokenVerifyDirectMode(t *testing.T) {
 	t.Run("ErrRootTokenVerificationFailed_CorruptBlob", func(t *testing.T) {
 		// Initialize a Shamir barrier, then corrupt the root key blob
 		// so that JSON unmarshal fails inside verifyDirectMode.
-		b, backend := newRecoveryBarrierWithShamir(t)
+		b, backend, _ := newRecoveryBarrierWithShamir(t)
 		ctx := context.Background()
 
-		_, err := b.InitializeShamir(ctx, Credentials{})
-		if err != nil {
+		if _, err := b.InitializeShamir(ctx, Credentials{}); err != nil {
 			t.Fatal(err)
 		}
 
@@ -237,33 +241,59 @@ func TestRootTokenVerifyDirectMode(t *testing.T) {
 
 		// Any key bytes will create a valid encryptor, but blob unmarshal fails.
 		rootKey := make([]byte, 32)
-		_, err = b.verifyDirectMode(ctx, rootKey)
+		_, err := b.verifyDirectMode(ctx, rootKey)
 		if !errors.Is(err, ErrRootTokenVerificationFailed) {
 			t.Errorf("got %v, want ErrRootTokenVerificationFailed", err)
 		}
 	})
 
-	t.Run("Success_ValidRootKey", func(t *testing.T) {
-		b, _ := newRecoveryBarrierWithShamir(t)
+	t.Run("Success_ValidUnsealKey", func(t *testing.T) {
+		b, _, dist := newRecoveryBarrierWithShamir(t)
 		ctx := context.Background()
 
-		_, err := b.InitializeShamir(ctx, Credentials{})
-		if err != nil {
+		if _, err := b.InitializeShamir(ctx, Credentials{}); err != nil {
 			t.Fatal(err)
 		}
 
-		// Get the actual master key (root key).
+		// Reconstruct the unseal key from the distributed shares; that is
+		// the secret verifyDirectMode accepts in unseal-key mode.
+		unsealKey := combineShareValues(t, dist.Shares()[:3], 3, 5)
+
+		rootKey, err := b.verifyDirectMode(ctx, unsealKey)
+		if err != nil {
+			t.Fatalf("verifyDirectMode with correct unseal key: %v", err)
+		}
+		if len(rootKey) != 32 {
+			t.Errorf("root key length: got %d, want 32", len(rootKey))
+		}
+
+		// The unwrap must yield the REAL root key.
+		masterKey, err := b.GetMasterKey()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(rootKey, masterKey) {
+			t.Error("verifyDirectMode did not return the barrier root key")
+		}
+	})
+
+	t.Run("ErrRootTokenVerificationFailed_RootKeyIsNotUnsealKey", func(t *testing.T) {
+		// With unseal-key indirection, the root key itself must NOT verify:
+		// only the unseal key decrypts the wrapped blob.
+		b, _, _ := newRecoveryBarrierWithShamir(t)
+		ctx := context.Background()
+
+		if _, err := b.InitializeShamir(ctx, Credentials{}); err != nil {
+			t.Fatal(err)
+		}
+
 		masterKey, err := b.GetMasterKey()
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		dek, err := b.verifyDirectMode(ctx, masterKey)
-		if err != nil {
-			t.Fatalf("verifyDirectMode with correct root key: %v", err)
-		}
-		if len(dek) != 32 {
-			t.Errorf("DEK length: got %d, want 32", len(dek))
+		if _, err := b.verifyDirectMode(ctx, masterKey); !errors.Is(err, ErrRootTokenVerificationFailed) {
+			t.Errorf("got %v, want ErrRootTokenVerificationFailed", err)
 		}
 	})
 }
@@ -413,10 +443,11 @@ func TestRootTokenVerifyDirectModeStrategyCheck(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		dist := newCaptureDistributor()
+		b.SetCeremonyDistributor(dist)
 
 		ctx := context.Background()
-		_, err = b.InitializeShamir(ctx, Credentials{})
-		if err != nil {
+		if _, err := b.InitializeShamir(ctx, Credentials{}); err != nil {
 			t.Fatal(err)
 		}
 
@@ -442,4 +473,49 @@ func TestRootTokenVerifyDirectModeStrategyCheck(t *testing.T) {
 			t.Errorf("got %v, want ErrRootTokenVerificationFailed", err)
 		}
 	})
+}
+
+// --------------------------------------------------------------------------
+// root_token.go: verifySecretAndGetRootKey — 75%
+// (verifyCredentialMode path: no ShamirStrategy registered)
+// --------------------------------------------------------------------------
+
+func TestVerifySecretAndGetRootKey_CredentialMode(t *testing.T) {
+	// Build a software-strategy barrier (NO ShamirStrategy registered) with a
+	// Shamir config so GenerateRootToken is reachable. In this mode,
+	// verifySecretAndGetRootKey uses verifyCredentialMode (ShamirStrategy() == nil).
+	//
+	// We use InitializeShamir in credential mode (no ShamirStrategy) which
+	// first calls Initialize internally, then splits the credential secret.
+	backend := NewMemoryBackend()
+	sw := testSoftwareStrategy(t)
+	b, err := NewBarrier(testLogger(), backend, BarrierConfig{
+		RootKeyPath:     "test/root-key",
+		Shamir:          &ShamirConfig{Threshold: 2, TotalShares: 3},
+		PreferenceOrder: []StrategyID{StrategyPassphrase},
+	}, sw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dist := newCaptureDistributor()
+	b.SetCeremonyDistributor(dist)
+	ctx := context.Background()
+
+	// InitializeShamir in credential mode: no ShamirStrategy is registered,
+	// so the credential secret ("the-password") is split. The barrier is
+	// also initialized inside InitializeShamir.
+	if _, err := b.InitializeShamir(ctx, Credentials{Secret: "the-password"}); err != nil {
+		t.Fatalf("InitializeShamir (credential mode): %v", err)
+	}
+	shares := dist.Shares()
+
+	// GenerateRootToken reconstructs the secret from shares and calls
+	// verifySecretAndGetRootKey → verifyCredentialMode (no ShamirStrategy).
+	token, err := b.GenerateRootToken(ctx, shares[:2])
+	if err != nil {
+		t.Fatalf("GenerateRootToken (credential mode): %v", err)
+	}
+	if token == nil || token.Token == "" {
+		t.Error("expected non-empty root token")
+	}
 }

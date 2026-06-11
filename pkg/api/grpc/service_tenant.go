@@ -195,16 +195,30 @@ func mapTenantError(err error) error {
 	var se *tenant.StoreError
 	var be *tenant.BarrierError
 	var ite *tenant.InvalidTenantIDError
+	var ise *tenant.InvalidStrategyError
+	var tse *tenant.TenantScopeError
 
 	switch {
+	case errors.As(err, &tse):
+		return status.Error(codes.PermissionDenied, err.Error())
 	case errors.Is(err, tenant.ErrEmptyTenantID):
 		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, tenant.ErrEmptyTenantName):
 		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, tenant.ErrEmptyPassphrase):
 		return status.Error(codes.InvalidArgument, err.Error())
+	case errors.Is(err, tenant.ErrEmptyShare):
+		return status.Error(codes.InvalidArgument, err.Error())
+	case errors.Is(err, tenant.ErrSystemTenantMustBePrefix):
+		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, tenant.ErrNilQuotas):
 		return status.Error(codes.InvalidArgument, err.Error())
+	case errors.As(err, &ise):
+		return status.Error(codes.InvalidArgument, err.Error())
+	case errors.Is(err, tenant.ErrBarrierIsolationUnavailable):
+		return status.Error(codes.FailedPrecondition, err.Error())
+	case errors.Is(err, tenant.ErrBarrierNotEnabled):
+		return status.Error(codes.FailedPrecondition, err.Error())
 	case errors.Is(err, tenant.ErrTenantAlreadyExists):
 		return status.Error(codes.AlreadyExists, err.Error())
 	case errors.Is(err, tenant.ErrTenantHasData):

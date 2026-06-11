@@ -18,13 +18,15 @@ import (
 
 const recoveryMetaKey = "recovery-meta"
 
-// RecoveryKeyResult contains the output of recovery key generation. The
-// Shares must be distributed to custodians for safekeeping. They are NOT
-// persisted in storage -- only the metadata (threshold and total) is stored.
+// RecoveryKeyResult contains the output of recovery key generation.
+// Shares are sealed to enrolled recovery officers via the CeremonyDistributor
+// and are never returned in this struct. Only metadata (threshold, total, and
+// the officer share count) is reported. The share values are NOT persisted in
+// storage.
 type RecoveryKeyResult struct {
-	Shares      []string `json:"shares"`
-	Threshold   int      `json:"threshold"`
-	TotalShares int      `json:"total_shares"`
+	ShareCount  int `json:"share_count"`
+	Threshold   int `json:"threshold"`
+	TotalShares int `json:"total_shares"`
 }
 
 // recoveryMeta is the metadata persisted alongside the recovery key
@@ -36,14 +38,22 @@ type recoveryMeta struct {
 }
 
 // GenerateRecoveryKeys generates a set of Shamir recovery shares from the
-// barrier's root key. The shares are returned to the caller for distribution
-// to custodians. Only the recovery metadata (threshold and total count) is
-// persisted in the barrier's underlying storage.
+// barrier's root key and seals them to the enrolled recovery officers via the
+// recoveryDistributor. No share bytes are returned to the caller; only the
+// metadata (threshold, total, share count) is reported.
+// Only the recovery metadata (threshold and total count) is persisted in the
+// barrier's underlying storage.
+//
+// ErrCeremonyDistributorNotConfigured is returned when no recovery distributor
+// has been wired via SetRecoveryDistributor.
 //
 // The barrier must be unsealed.
 func (b *StorageBarrier) GenerateRecoveryKeys(ctx context.Context, threshold, total int) (*RecoveryKeyResult, error) {
 	if threshold < 2 || total < threshold {
 		return nil, ErrShamirThresholdInvalid
+	}
+	if b.recoveryDistributor == nil {
+		return nil, ErrCeremonyDistributorNotConfigured
 	}
 
 	rootKey, err := b.GetMasterKey()
@@ -51,11 +61,6 @@ func (b *StorageBarrier) GenerateRecoveryKeys(ctx context.Context, threshold, to
 		return nil, err
 	}
 	defer secure.Wipe(rootKey)
-
-	shares, err := shamir.Split(rootKey, threshold, total)
-	if err != nil {
-		return nil, ErrShamirSplitFailed
-	}
 
 	// Persist only the metadata (not the share values).
 	meta := &recoveryMeta{
@@ -70,13 +75,9 @@ func (b *StorageBarrier) GenerateRecoveryKeys(ctx context.Context, threshold, to
 		return nil, err
 	}
 
-	result := &RecoveryKeyResult{
-		Shares:      make([]string, len(shares)),
-		Threshold:   threshold,
-		TotalShares: total,
-	}
-	for i, share := range shares {
-		result.Shares[i] = share.Value
+	shareCount, err := b.recoveryDistributor.SealAndDistribute(ctx, rootKey, threshold, total)
+	if err != nil {
+		return nil, err
 	}
 
 	emitAudit(b.config.AuditLogger, "generate-recovery-keys", "barrier",
@@ -85,7 +86,11 @@ func (b *StorageBarrier) GenerateRecoveryKeys(ctx context.Context, threshold, to
 			"total":     itoa(total),
 		})
 
-	return result, nil
+	return &RecoveryKeyResult{
+		ShareCount:  shareCount,
+		Threshold:   threshold,
+		TotalShares: total,
+	}, nil
 }
 
 // RecoverWithKeys unseals the barrier using recovery shares that were

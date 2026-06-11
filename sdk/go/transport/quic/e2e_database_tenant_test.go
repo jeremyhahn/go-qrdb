@@ -279,7 +279,7 @@ func TestE2E_TenantBarrierInit_HappyPath(t *testing.T) {
 	srv.SetResponder("tenant.BarrierInit", func(_ []byte) (uint16, []byte) {
 		return wire.StatusOK, nil
 	})
-	if err := tr.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{
+	if _, err := tr.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{
 		TenantID: "t1", Threshold: 2, Shares: 3,
 	}); err != nil {
 		t.Fatalf("TenantBarrierInit: %v", err)

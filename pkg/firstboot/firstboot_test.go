@@ -107,9 +107,14 @@ func (f *fakeTenants) UpdateTenant(_ context.Context, _ string, _ tenant.TenantP
 func (f *fakeTenants) UpdateQuotas(_ context.Context, _ string, _ *quota.Quotas) (*tenant.TenantInfo, error) {
 	return nil, nil
 }
-func (f *fakeTenants) TenantBarrierInit(_ context.Context, _, _ string, _, _ int) error { return nil }
-func (f *fakeTenants) TenantBarrierInitWithStrategy(_ context.Context, _, _ string, _, _ int, _ seal.StrategyID) error {
-	return nil
+func (f *fakeTenants) TenantBarrierInit(_ context.Context, _, _ string, _, _ int) (*tenant.TenantBarrierInitResult, error) {
+	return nil, nil
+}
+func (f *fakeTenants) TenantBarrierInitWithStrategy(_ context.Context, _, _ string, _, _ int, _ seal.StrategyID) (*tenant.TenantBarrierInitResult, error) {
+	return nil, nil
+}
+func (f *fakeTenants) TenantBarrierUnsealShare(_ context.Context, _, _ string) (*tenant.TenantBarrierUnsealProgress, error) {
+	return nil, nil
 }
 func (f *fakeTenants) TenantBarrierUnseal(_ context.Context, _ string, _ []byte) error {
 	return nil

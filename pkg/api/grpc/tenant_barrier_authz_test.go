@@ -22,8 +22,8 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/wrapperspb"
 
+	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
@@ -87,8 +87,8 @@ func ctxWithIdentity(tenantID string) context.Context {
 func TestTenantBarrierGate_TenantAdmin_OwnTenant_Allowed(t *testing.T) {
 	srv := newBarrierGateServer()
 	ctx := ctxWithIdentity("acme")
-	req := wrapperspb.Bytes([]byte(`{"tenant_id":"acme","passphrase":"pw"}`))
-	if _, err := srv.init(ctx, req); err != nil {
+	req := &pb.TenantBarrierInitRequest{TenantId: "acme", Passphrase: "pw"}
+	if _, err := srv.Init(ctx, req); err != nil {
 		t.Fatalf("tenant admin init own barrier: %v", err)
 	}
 }
@@ -98,8 +98,8 @@ func TestTenantBarrierGate_TenantAdmin_OwnTenant_Allowed(t *testing.T) {
 func TestTenantBarrierGate_TenantAdmin_CrossTenant_Denied(t *testing.T) {
 	srv := newBarrierGateServer()
 	ctx := ctxWithIdentity("acme")
-	req := wrapperspb.Bytes([]byte(`{"tenant_id":"bob-corp","passphrase":"pw"}`))
-	_, err := srv.init(ctx, req)
+	req := &pb.TenantBarrierInitRequest{TenantId: "bob-corp", Passphrase: "pw"}
+	_, err := srv.Init(ctx, req)
 	if err == nil {
 		t.Fatal("cross-tenant init must be denied")
 	}
@@ -115,8 +115,8 @@ func TestTenantBarrierGate_SystemAdmin_Denied(t *testing.T) {
 	srv := newBarrierGateServer()
 	ctx := ctxWithIdentity(tenantpkg.SystemTenantID)
 	for _, target := range []string{"acme", tenantpkg.SystemTenantID} {
-		req := wrapperspb.Bytes([]byte(`{"tenant_id":"` + target + `","passphrase":"pw"}`))
-		_, err := srv.init(ctx, req)
+		req := &pb.TenantBarrierInitRequest{TenantId: target, Passphrase: "pw"}
+		_, err := srv.Init(ctx, req)
 		if err == nil {
 			t.Fatalf("system admin init on %q must be denied", target)
 		}

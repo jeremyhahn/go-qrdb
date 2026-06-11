@@ -114,7 +114,7 @@ type coverageCeremonyCA struct{}
 
 var _ ceremony.CeremonyCA = (*coverageCeremonyCA)(nil)
 
-func (m *coverageCeremonyCA) SignCSR(_ []byte, _ *ceremony.SignCSROptions) (*x509.Certificate, error) {
+func (m *coverageCeremonyCA) SignCSR(_ context.Context, _ []byte, _ *ceremony.SignCSROptions) (*x509.Certificate, error) {
 	return nil, nil
 }
 func (m *coverageCeremonyCA) CACertificate() (*x509.Certificate, error) {
@@ -123,7 +123,7 @@ func (m *coverageCeremonyCA) CACertificate() (*x509.Certificate, error) {
 func (m *coverageCeremonyCA) CABundle() ([]byte, error) {
 	return []byte("ca-bundle"), nil
 }
-func (m *coverageCeremonyCA) IssueCertificate(_ *ceremony.IssueCertRequest) (*ceremony.IssuedCert, error) {
+func (m *coverageCeremonyCA) IssueCertificate(_ context.Context, _ *ceremony.IssueCertRequest) (*ceremony.IssuedCert, error) {
 	return &ceremony.IssuedCert{
 		CertPEM: []byte("cert-pem"),
 		KeyPEM:  []byte("key-pem"),

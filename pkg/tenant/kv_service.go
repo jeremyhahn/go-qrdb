@@ -21,6 +21,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -397,20 +398,26 @@ func (s *kvTenantService) GetQuotaUsage(ctx context.Context, tenantID string, re
 
 // TenantBarrierInit returns ErrBarrierNotEnabled. The seal subsystem is not
 // configured when this service implementation is in use.
-func (s *kvTenantService) TenantBarrierInit(_ context.Context, _, _ string, _, _ int) error {
-	return ErrBarrierNotEnabled
+func (s *kvTenantService) TenantBarrierInit(_ context.Context, _, _ string, _, _ int) (*TenantBarrierInitResult, error) {
+	return nil, ErrBarrierNotEnabled
 }
 
 // TenantBarrierInitWithStrategy returns ErrBarrierNotEnabled. The seal
 // subsystem is not configured when this service implementation is in use.
-func (s *kvTenantService) TenantBarrierInitWithStrategy(_ context.Context, _, _ string, _, _ int, _ seal.StrategyID) error {
-	return ErrBarrierNotEnabled
+func (s *kvTenantService) TenantBarrierInitWithStrategy(_ context.Context, _, _ string, _, _ int, _ seal.StrategyID) (*TenantBarrierInitResult, error) {
+	return nil, ErrBarrierNotEnabled
 }
 
 // TenantBarrierUnseal returns ErrBarrierNotEnabled. The seal subsystem is not
 // configured when this service implementation is in use.
 func (s *kvTenantService) TenantBarrierUnseal(_ context.Context, _ string, _ []byte) error {
 	return ErrBarrierNotEnabled
+}
+
+// TenantBarrierUnsealShare returns ErrBarrierNotEnabled. The seal subsystem is
+// not configured when this service implementation is in use.
+func (s *kvTenantService) TenantBarrierUnsealShare(_ context.Context, _, _ string) (*TenantBarrierUnsealProgress, error) {
+	return nil, ErrBarrierNotEnabled
 }
 
 // TenantBarrierSeal returns ErrBarrierNotEnabled. The seal subsystem is not
@@ -422,5 +429,41 @@ func (s *kvTenantService) TenantBarrierSeal(_ context.Context, _ string) error {
 // TenantBarrierStatus returns ErrBarrierNotEnabled. The seal subsystem is not
 // configured when this service implementation is in use.
 func (s *kvTenantService) TenantBarrierStatus(_ context.Context, _ string) (*TenantBarrierStatus, error) {
+	return nil, ErrBarrierNotEnabled
+}
+
+// TenantBarrierOfficerRegister returns ErrBarrierNotEnabled. The seal
+// subsystem is not configured when this service implementation is in use.
+func (s *kvTenantService) TenantBarrierOfficerRegister(_ context.Context, _ string, _ *ceremony.RegisterOfficerRequest) (*ceremony.RegisterOfficerResult, error) {
+	return nil, ErrBarrierNotEnabled
+}
+
+// TenantBarrierOfficerList returns ErrBarrierNotEnabled. The seal subsystem
+// is not configured when this service implementation is in use.
+func (s *kvTenantService) TenantBarrierOfficerList(_ context.Context, _ string) ([]*ceremony.OfficerStatus, error) {
+	return nil, ErrBarrierNotEnabled
+}
+
+// TenantBarrierShareClaimBegin returns ErrBarrierNotEnabled. The seal
+// subsystem is not configured when this service implementation is in use.
+func (s *kvTenantService) TenantBarrierShareClaimBegin(_ context.Context, _, _, _ string) (*ceremony.ChallengeResponse, error) {
+	return nil, ErrBarrierNotEnabled
+}
+
+// TenantBarrierShareClaimComplete returns ErrBarrierNotEnabled. The seal
+// subsystem is not configured when this service implementation is in use.
+func (s *kvTenantService) TenantBarrierShareClaimComplete(_ context.Context, _, _, _ string, _ []byte, _ string) (*ceremony.ShareClaimResult, error) {
+	return nil, ErrBarrierNotEnabled
+}
+
+// TenantBarrierOfficerClaimStatus returns ErrBarrierNotEnabled. The seal
+// subsystem is not configured when this service implementation is in use.
+func (s *kvTenantService) TenantBarrierOfficerClaimStatus(_ context.Context, _ string) ([]*ceremony.OfficerStatus, error) {
+	return nil, ErrBarrierNotEnabled
+}
+
+// TenantBarrierShamirSealVote returns ErrBarrierNotEnabled. The seal
+// subsystem is not configured when this service implementation is in use.
+func (s *kvTenantService) TenantBarrierShamirSealVote(_ context.Context, _, _ string) (*TenantBarrierUnsealProgress, error) {
 	return nil, ErrBarrierNotEnabled
 }

@@ -443,6 +443,7 @@ var consistencyMap = map[transport.ConsistencyLevel]consistency.Level{
 	transport.ConsistencyStrong:       consistency.Strong,
 	transport.ConsistencyLinearizable: consistency.Linearizable,
 	transport.ConsistencyEventual:     consistency.Eventual,
+	transport.ConsistencyFollower:     consistency.FollowerRead,
 }
 
 // mapConsistencyLevel converts a transport-layer ConsistencyLevel to the

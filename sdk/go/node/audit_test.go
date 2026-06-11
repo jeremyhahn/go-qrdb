@@ -32,10 +32,13 @@ import (
 
 // newMemoryNodeConfig returns a DefaultConfig wired for an ephemeral
 // in-memory backend with all protocol servers disabled so Start() does not
-// bind any ports.
-func newMemoryNodeConfig() *qrdbconfig.Config {
+// bind any ports. A temporary directory is provided as DataDir for subsystems
+// (e.g. vector storage) that require a disk path even when the primary storage
+// backend is in-memory.
+func newMemoryNodeConfig(t *testing.T) *qrdbconfig.Config {
+	t.Helper()
 	cfg := qrdbconfig.DefaultConfig()
-	cfg.Raft.DataDir = ""
+	cfg.Raft.DataDir = t.TempDir()
 	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendMemory)}}
 	cfg.Protocols.REST = false
 	cfg.Protocols.GRPC = false
@@ -50,7 +53,7 @@ func newMemoryNodeConfig() *qrdbconfig.Config {
 // transport: an event emitted through client.Audit().EmitAudit is retrievable
 // through client.Audit().QueryAudit against the same node's logger.
 func TestNodeAuditClient_EmitAndQueryRoundTrip(t *testing.T) {
-	cfg := newMemoryNodeConfig()
+	cfg := newMemoryNodeConfig(t)
 
 	// A queryable in-memory logger keeps the test fast and host-clean.
 	logger := audit.NewRingBuffer(64)
@@ -97,7 +100,7 @@ func TestNodeAuditClient_EmitAndQueryRoundTrip(t *testing.T) {
 // to nil when the node was built without an AuditLogger, so callers can fall
 // back rather than receiving a logger-less client.
 func TestNodeAuditClient_NilWithoutLogger(t *testing.T) {
-	cfg := newMemoryNodeConfig()
+	cfg := newMemoryNodeConfig(t)
 
 	n, err := NewStandaloneNode(context.Background(), cfg, nil)
 	require.NoError(t, err)

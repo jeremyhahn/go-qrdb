@@ -452,7 +452,7 @@ service QRDBService {
     rpc BarrierStatus(google.protobuf.Empty) returns (BarrierStatusResponse);
 
     // BarrierShamirInitialize initializes the barrier with Shamir secret sharing.
-    rpc BarrierShamirInitialize(BarrierShamirInitializeRequest) returns (BarrierShamirInitializeResponse);
+    rpc BarrierShamirInitialize(BarrierShamirInitializeRequest) returns (BarrierShamirOperationResponse);
 
     // BarrierShamirUnsealShare submits a single Shamir share toward the unseal threshold.
     rpc BarrierShamirUnsealShare(BarrierShamirUnsealShareRequest) returns (BarrierShamirUnsealShareResponse);
@@ -461,7 +461,39 @@ service QRDBService {
     rpc BarrierShamirUnsealShares(BarrierShamirUnsealSharesRequest) returns (google.protobuf.Empty);
 
     // BarrierRekey generates new Shamir shares with the specified parameters.
-    rpc BarrierRekey(BarrierRekeyRequest) returns (BarrierShamirInitializeResponse);
+    rpc BarrierRekey(BarrierRekeyRequest) returns (BarrierShamirOperationResponse);
+
+    // -----------------------------------------------------------------------
+    // Barrier Security Officer management (system barrier)
+    // -----------------------------------------------------------------------
+
+    // BarrierOfficerRegister registers a new Security Officer for the system barrier.
+    rpc BarrierOfficerRegister(BarrierOfficerRegisterRequest) returns (BarrierOfficerRegisterResponse);
+
+    // BarrierOfficerList lists all registered Security Officers for the system barrier.
+    rpc BarrierOfficerList(google.protobuf.Empty) returns (BarrierOfficerListResponse);
+
+    // BarrierShareClaimBegin starts the share claim handshake for the calling SO.
+    rpc BarrierShareClaimBegin(BarrierShareClaimBeginRequest) returns (BarrierShareClaimBeginResponse);
+
+    // BarrierShareClaimComplete completes the share claim handshake and returns
+    // the share exactly once. Only callable by the SO's own mTLS session.
+    rpc BarrierShareClaimComplete(BarrierShareClaimCompleteRequest) returns (BarrierShareClaimCompleteResponse);
+
+    // BarrierOfficerClaimStatus returns per-officer claim status (no share data).
+    rpc BarrierOfficerClaimStatus(google.protobuf.Empty) returns (BarrierOfficerClaimStatusResponse);
+
+    // BarrierShamirSealVote submits a share as a seal vote (Shamir barriers only).
+    rpc BarrierShamirSealVote(BarrierShamirSealVoteRequest) returns (BarrierShamirSealVoteResponse);
+
+    // BarrierRecoveryOfficerRegister registers an SO for recovery key distribution.
+    rpc BarrierRecoveryOfficerRegister(BarrierOfficerRegisterRequest) returns (BarrierOfficerRegisterResponse);
+
+    // BarrierRecoveryShareClaimBegin starts the recovery share claim handshake.
+    rpc BarrierRecoveryShareClaimBegin(BarrierShareClaimBeginRequest) returns (BarrierShareClaimBeginResponse);
+
+    // BarrierRecoveryShareClaimComplete completes the recovery share claim handshake.
+    rpc BarrierRecoveryShareClaimComplete(BarrierShareClaimCompleteRequest) returns (BarrierShareClaimCompleteResponse);
 
     // BarrierRecoveryGenerate generates recovery keys for disaster recovery.
     rpc BarrierRecoveryGenerate(BarrierRecoveryGenerateRequest) returns (BarrierRecoveryKeysResponse);
@@ -2262,11 +2294,15 @@ message BarrierUnsealRequest {
 }
 
 // BarrierStatusResponse describes the current barrier state.
+// shamir_threshold and shamir_total carry the configured M-of-N quorum
+// when the barrier uses the Shamir strategy and are zero otherwise.
 message BarrierStatusResponse {
     bool sealed = 1;
     string strategy = 2;
     bool hardware_backed = 3;
     string initialized_at = 4;
+    int32 shamir_threshold = 5;
+    int32 shamir_total = 6;
 }
 
 // BarrierShamirInitializeRequest initializes the barrier with Shamir secret sharing.
@@ -2281,11 +2317,15 @@ message BarrierShamirInitializeRequest {
     string user_pin = 5;
 }
 
-// BarrierShamirInitializeResponse returns the generated key shares.
-message BarrierShamirInitializeResponse {
-    repeated string shares = 1;
-    int32 threshold = 2;
+// BarrierShamirOperationResponse is the share-free result of a Shamir
+// initialization or rekey. Raw share bytes are never returned; shares are
+// distributed directly to enrolled Security Officers via the claim flow.
+message BarrierShamirOperationResponse {
+    reserved 1;
+    reserved "shares";
+    int32 threshold   = 2;
     int32 total_shares = 3;
+    int32 share_count  = 4;
 }
 
 // BarrierShamirUnsealShareRequest submits a single Shamir share.
@@ -2311,12 +2351,15 @@ message BarrierShamirUnsealSharesRequest {
 // administrative operation when the server has a pin.PINBackend
 // configured with a SO PIN set. When the backend is unconfigured or no
 // SO PIN has been set, this field is ignored (preserves dev-mode flows).
-// new_secret optionally rotates the strategy wrapping passphrase.
+//
+// Field 4 (new_secret) was a dead passphrase-rotation field the server
+// never read; rekey is Shamir-only and derives everything server-side.
 message BarrierRekeyRequest {
+    reserved 4;
+    reserved "new_secret";
     int32 threshold = 1;
     int32 total = 2;
     string so_pin = 3;
-    string new_secret = 4;
 }
 
 // BarrierRecoveryGenerateRequest generates recovery keys.
@@ -2330,11 +2373,94 @@ message BarrierRecoveryGenerateRequest {
     string so_pin = 3;
 }
 
-// BarrierRecoveryKeysResponse returns generated recovery keys.
+// BarrierRecoveryKeysResponse is the share-free result of recovery key
+// generation. Raw share bytes are never returned; shares are distributed
+// directly to enrolled recovery Security Officers via the claim flow.
 message BarrierRecoveryKeysResponse {
-    repeated string keys = 1;
-    int32 threshold = 2;
-    int32 total = 3;
+    reserved 1;
+    reserved "keys";
+    int32 threshold   = 2;
+    int32 total       = 3;
+    int32 share_count = 4;
+}
+
+// BarrierOfficerRegisterRequest carries the parameters for registering a new
+// Security Officer against the system barrier.
+message BarrierOfficerRegisterRequest {
+    string username           = 1;
+    bytes  csr_pem            = 2;
+    string authenticator_type = 3;
+    string authenticator_ref  = 4;
+}
+
+// BarrierOfficerRegisterResponse carries the signed certificate for the newly
+// registered Security Officer.
+message BarrierOfficerRegisterResponse {
+    bytes cert_pem   = 1;
+    int32 share_index = 2;
+}
+
+// BarrierOfficerListResponse carries the list of registered Security Officers
+// for the system barrier.
+message BarrierOfficerListResponse {
+    repeated OfficerStatus officers = 1;
+}
+
+// OfficerStatus is a non-secret view of an enrolled Security Officer. No share
+// material is present.
+message OfficerStatus {
+    string username        = 1;
+    string cert_thumbprint = 2;
+    int32  share_index     = 3;
+    string auth_factor     = 4;
+    string enrolled_at     = 5;  // RFC3339
+    string claimed_at      = 6;  // RFC3339; empty = unclaimed
+    bool   share_pending   = 7;
+}
+
+// BarrierShareClaimBeginRequest starts the share claim handshake for the
+// named Security Officer.
+message BarrierShareClaimBeginRequest {
+    string username = 1;
+}
+
+// BarrierShareClaimBeginResponse carries the challenge nonce for the SO to sign.
+message BarrierShareClaimBeginResponse {
+    string nonce_hex  = 1;
+    string expires_at = 2;  // RFC3339
+}
+
+// BarrierShareClaimCompleteRequest carries the signed nonce to complete the
+// share claim handshake.
+message BarrierShareClaimCompleteRequest {
+    string username  = 1;
+    string nonce_hex = 2;
+    bytes  signature = 3;
+}
+
+// BarrierShareClaimCompleteResponse carries the SO's share bytes. This is the
+// ONLY proto message that contains share_bytes on the wire.
+message BarrierShareClaimCompleteResponse {
+    int32 share_index = 1;
+    bytes share_bytes = 2;
+}
+
+// BarrierShamirSealVoteRequest carries a Shamir share submitted as a seal vote.
+message BarrierShamirSealVoteRequest {
+    string share = 1;
+}
+
+// BarrierShamirSealVoteResponse reports the quorum progress of a seal vote.
+message BarrierShamirSealVoteResponse {
+    int32 required  = 1;
+    int32 submitted = 2;
+    bool  complete  = 3;
+}
+
+// BarrierOfficerClaimStatusResponse carries per-officer claim status for the
+// system barrier. Never includes share bytes.
+message BarrierOfficerClaimStatusResponse {
+    repeated OfficerStatus officers = 1;
 }
 
 // BarrierRecoveryRecoverRequest unseals the barrier using recovery keys.
@@ -3028,4 +3154,504 @@ message CeremonySubmitUnsealShareResponse {
     int32 submitted = 1;
     int32 required  = 2;
     bool  unsealed  = 3;
+}
+
+// ===========================================================================
+// TenantBarrierService — per-tenant barrier lifecycle (none/passphrase/shamir)
+//
+// Each tenant barrier is independent of the system barrier and may use a
+// different strategy. Service-layer authorization (caller must be a tenant
+// admin of the target tenant; the system tenant is denied) is enforced by the
+// interceptors; the handlers delegate to pkg/tenant.TenantServicer.
+// ===========================================================================
+service TenantBarrierService {
+    // Init initializes a tenant barrier with the selected strategy. For the
+    // Shamir strategy the share_count field indicates how many officer shares
+    // were sealed; shares are never returned in the response.
+    rpc Init(TenantBarrierInitRequest) returns (TenantBarrierInitResponse);
+
+    // Unseal unseals a tenant barrier using a single key (passphrase strategy).
+    rpc Unseal(TenantBarrierUnsealRequest) returns (google.protobuf.Empty);
+
+    // UnsealShare submits one Shamir share toward the tenant quorum threshold,
+    // auto-unsealing once enough distinct shares have been submitted.
+    rpc UnsealShare(TenantBarrierUnsealShareRequest) returns (TenantBarrierUnsealProgress);
+
+    // Seal seals a tenant barrier.
+    rpc Seal(TenantBarrierSealRequest) returns (google.protobuf.Empty);
+
+    // Status reports a tenant barrier's sealed/initialized state and strategy.
+    rpc Status(TenantBarrierStatusRequest) returns (TenantBarrierStatusResponse);
+
+    // OfficerRegister enrolls a Security Officer for this tenant's barrier.
+    // Only valid for Shamir-strategy tenant barriers.
+    rpc OfficerRegister(TenantBarrierOfficerRegisterRequest) returns (TenantBarrierOfficerRegisterResponse);
+
+    // OfficerList returns the enrolled officers for this tenant's barrier.
+    rpc OfficerList(TenantBarrierOfficerListRequest) returns (TenantBarrierOfficerListResponse);
+
+    // ShareClaimBegin issues a challenge nonce to the named officer as the
+    // first step of the two-phase share claim flow.
+    rpc ShareClaimBegin(TenantBarrierShareClaimBeginRequest) returns (TenantBarrierShareClaimBeginResponse);
+
+    // ShareClaimComplete verifies the signed nonce and returns the share bytes
+    // exactly once, then destroys the enclave.
+    rpc ShareClaimComplete(TenantBarrierShareClaimCompleteRequest) returns (TenantBarrierShareClaimCompleteResponse);
+
+    // OfficerClaimStatus returns per-officer claim status for admin visibility.
+    rpc OfficerClaimStatus(TenantBarrierOfficerClaimStatusRequest) returns (TenantBarrierOfficerClaimStatusResponse);
+
+    // ShamirSealVote submits one share toward the quorum-gated seal threshold.
+    rpc ShamirSealVote(TenantBarrierShamirSealVoteRequest) returns (TenantBarrierShamirSealVoteResponse);
+}
+
+// TenantBarrierInitRequest initializes the barrier for tenant_id.
+message TenantBarrierInitRequest {
+    string tenant_id  = 1;
+    string passphrase = 2;
+    int32  threshold  = 3;
+    int32  shares     = 4;
+    string strategy   = 5;
+}
+
+// TenantBarrierInitResponse carries the init outcome. For the Shamir strategy
+// share_count indicates how many officer shares were sealed into enclaves;
+// share bytes are never returned in the wire response.
+message TenantBarrierInitResponse {
+    string tenant_id    = 1;
+    string strategy     = 2;
+    reserved 3;
+    reserved "shares";
+    int32  threshold    = 4;
+    int32  total_shares = 5;
+    int32  share_count  = 6;
+}
+
+// TenantBarrierUnsealRequest carries single-key unseal material.
+message TenantBarrierUnsealRequest {
+    string tenant_id = 1;
+    bytes  key       = 2;
+}
+
+// TenantBarrierUnsealShareRequest carries one Shamir share.
+message TenantBarrierUnsealShareRequest {
+    string tenant_id = 1;
+    string share     = 2;
+}
+
+// TenantBarrierUnsealProgress reports quorum progress for a Shamir unseal.
+message TenantBarrierUnsealProgress {
+    string tenant_id = 1;
+    int32  required  = 2;
+    int32  submitted = 3;
+    bool   complete  = 4;
+    bool   sealed    = 5;
+}
+
+// TenantBarrierSealRequest seals the barrier for tenant_id.
+message TenantBarrierSealRequest {
+    string tenant_id = 1;
+}
+
+// TenantBarrierStatusRequest queries the barrier state for tenant_id.
+message TenantBarrierStatusRequest {
+    string tenant_id = 1;
+}
+
+// TenantBarrierStatusResponse reports the per-tenant barrier state.
+message TenantBarrierStatusResponse {
+    string tenant_id        = 1;
+    bool   sealed           = 2;
+    bool   initialized      = 3;
+    string strategy         = 4;
+    bool   hardware_backed  = 5;
+    int32  shamir_threshold = 6;
+    int32  shamir_total     = 7;
+}
+
+// TenantBarrierOfficerRegisterRequest enrolls a Security Officer for a
+// Shamir-strategy tenant barrier.
+message TenantBarrierOfficerRegisterRequest {
+    string tenant_id          = 1;
+    string username           = 2;
+    bytes  csr_pem            = 3;
+    string authenticator_type = 4;
+}
+
+// TenantBarrierOfficerRegisterResponse carries the signed officer certificate
+// and the share index assigned to the new officer.
+message TenantBarrierOfficerRegisterResponse {
+    bytes cert_pem    = 1;
+    int32 share_index = 2;
+}
+
+// TenantBarrierOfficerListRequest selects the tenant whose officers to list.
+message TenantBarrierOfficerListRequest {
+    string tenant_id = 1;
+}
+
+// TenantBarrierOfficerListResponse carries the per-officer status snapshots.
+message TenantBarrierOfficerListResponse {
+    repeated OfficerStatus officers = 1;
+}
+
+// TenantBarrierShareClaimBeginRequest initiates the two-phase share claim for
+// a Security Officer on a Shamir-strategy tenant barrier.
+message TenantBarrierShareClaimBeginRequest {
+    string tenant_id              = 1;
+    string username               = 2;
+    string caller_cert_thumbprint = 3;
+}
+
+// TenantBarrierShareClaimBeginResponse carries the challenge nonce.
+message TenantBarrierShareClaimBeginResponse {
+    string nonce_hex = 1;
+    int64  expires   = 2;
+}
+
+// TenantBarrierShareClaimCompleteRequest completes the two-phase share claim
+// by presenting the signed nonce.
+message TenantBarrierShareClaimCompleteRequest {
+    string tenant_id              = 1;
+    string username               = 2;
+    string nonce_hex              = 3;
+    bytes  signature              = 4;
+    string caller_cert_thumbprint = 5;
+}
+
+// TenantBarrierShareClaimCompleteResponse carries the share bytes for the
+// claiming officer. The enclave is destroyed after this response is sent.
+message TenantBarrierShareClaimCompleteResponse {
+    bytes share_bytes = 1;
+}
+
+// TenantBarrierOfficerClaimStatusRequest selects the tenant whose claim
+// status to query.
+message TenantBarrierOfficerClaimStatusRequest {
+    string tenant_id = 1;
+}
+
+// TenantBarrierOfficerClaimStatusResponse carries per-officer claim status
+// snapshots for admin visibility.
+message TenantBarrierOfficerClaimStatusResponse {
+    repeated OfficerStatus officers = 1;
+}
+
+// TenantBarrierShamirSealVoteRequest submits one Shamir share toward the
+// quorum-gated seal threshold for a tenant barrier.
+message TenantBarrierShamirSealVoteRequest {
+    string tenant_id   = 1;
+    string share_value = 2;
+}
+
+// TenantBarrierShamirSealVoteResponse reports quorum progress toward a seal.
+message TenantBarrierShamirSealVoteResponse {
+    int32 required  = 1;
+    int32 submitted = 2;
+    bool  complete  = 3;
+}
+
+// ===========================================================================
+// AuditService — compliance-grade audit query (qrdb.v1.AuditService)
+//
+// Query returns a paginated page of audit events matching a filter.
+// Authorization: requires "audit:query" permission.
+// ===========================================================================
+service AuditService {
+    // Query returns audit events matching the supplied filter.
+    rpc Query(AuditQueryRequest) returns (AuditQueryResponse);
+}
+
+// AuditQueryRequest carries the filter criteria for an audit query.
+message AuditQueryRequest {
+    // from_rfc3339 and to_rfc3339 bound the query time range (RFC3339, optional).
+    string from_rfc3339 = 1;
+    string to_rfc3339   = 2;
+
+    // actor filters to events by a specific actor identity.
+    string actor     = 3;
+    // resource filters to events on a specific resource.
+    string resource  = 4;
+    // action filters to a specific action.
+    string action    = 5;
+    // outcome filters to a result prefix ("success", "failure").
+    string outcome   = 6;
+    // tenant_id filters to events for a specific tenant.
+    string tenant_id = 7;
+    // limit caps the number of events returned (default 100, max 1000).
+    int32  limit     = 8;
+    // cursor is an opaque pagination token from a previous AuditQueryResponse.
+    string cursor    = 9;
+}
+
+// AuditQueryResponse carries a paginated page of audit events.
+message AuditQueryResponse {
+    // events contains the matching audit events in chronological order.
+    repeated AuditEvent events = 1;
+    // next is an opaque cursor for the next page; empty when exhausted.
+    string next  = 2;
+    // total is the total count of matching events, or -1 if unknown.
+    int32  total = 3;
+}
+
+// AuditEvent is a single compliance-grade structured audit record.
+message AuditEvent {
+    // timestamp_rfc3339 is the UTC time of the event (RFC3339).
+    string timestamp_rfc3339            = 1;
+    string actor                        = 2;
+    string tenant_id                    = 3;
+    string role                         = 4;
+    string resource                     = 5;
+    string action                       = 6;
+    string outcome                      = 7;
+    map<string, string> attributes      = 8;
+    string client_ip                    = 9;
+    string request_id                   = 10;
+    string prev_hash                    = 11;
+}
+
+// ===========================================================================
+// AuthFactorService — custodian hardware-factor enrollment/challenge/verify
+// (qrdb.v1.AuthFactorService)
+//
+// This service manages the lifecycle of hardware auth factors (FIDO2, PIV,
+// PKCS#11) for ceremony custodians. Authorization is per-method; see the
+// permission constants in pkg/permission.
+// ===========================================================================
+service AuthFactorService {
+    // EnrollFactor enrolls a custodian in the given auth factor type.
+    rpc EnrollFactor(EnrollFactorRequest) returns (EnrollFactorResponse);
+
+    // ChallengeFactor issues a challenge for a previously enrolled factor.
+    rpc ChallengeFactor(ChallengeFactorRequest) returns (ChallengeFactorResponse);
+
+    // VerifyFactor verifies the custodian's challenge response.
+    rpc VerifyFactor(VerifyFactorRequest) returns (google.protobuf.Empty);
+
+    // ListFactors lists enrolled auth factors, optionally filtered by subject.
+    rpc ListFactors(ListFactorsRequest) returns (ListFactorsResponse);
+
+    // RevokeFactor permanently revokes an enrollment.
+    rpc RevokeFactor(RevokeFactorRequest) returns (google.protobuf.Empty);
+}
+
+// EnrollFactorRequest carries the enrollment parameters.
+message EnrollFactorRequest {
+    string              factor_name   = 1;
+    string              subject       = 2;
+    string              tenant_id     = 3;
+    map<string, string> method_params = 4;
+}
+
+// EnrollFactorResponse carries the enrollment result.
+message EnrollFactorResponse {
+    string              enrollment_id = 1;
+    string              factor_name   = 2;
+    string              user_id       = 3;
+    string              tenant_id     = 4;
+    map<string, string> metadata      = 5;
+    // enrolled_at is an RFC3339 timestamp.
+    string              enrolled_at   = 6;
+}
+
+// ChallengeFactorRequest carries the enrollment ID to challenge.
+message ChallengeFactorRequest {
+    string enrollment_id = 1;
+}
+
+// ChallengeFactorResponse carries the challenge payload.
+message ChallengeFactorResponse {
+    string challenge_id  = 1;
+    string enrollment_id = 2;
+    bytes  nonce         = 3;
+    // expires_at is an RFC3339 timestamp.
+    string expires_at    = 4;
+    // method_data carries algorithm-specific challenge context.
+    map<string, string> method_data = 5;
+}
+
+// VerifyFactorRequest carries the challenge response.
+message VerifyFactorRequest {
+    string              factor_name  = 1;
+    string              challenge_id = 2;
+    bytes               value        = 3;
+    map<string, string> metadata     = 4;
+}
+
+// ListFactorsRequest optionally filters by subject.
+message ListFactorsRequest {
+    string subject = 1;
+}
+
+// EnrollmentEntry is a single enrollment list entry.
+message EnrollmentEntry {
+    string              enrollment_id = 1;
+    string              factor_name   = 2;
+    string              user_id       = 3;
+    string              tenant_id     = 4;
+    map<string, string> metadata      = 5;
+    // enrolled_at and revoked_at are RFC3339 timestamps.
+    string              enrolled_at   = 6;
+    string              revoked_at    = 7;
+}
+
+// ListFactorsResponse carries the enrollments list.
+message ListFactorsResponse {
+    repeated EnrollmentEntry enrollments = 1;
+    int32                    total       = 2;
+}
+
+// RevokeFactorRequest carries the enrollment ID to revoke.
+message RevokeFactorRequest {
+    string enrollment_id = 1;
+}
+
+// ===========================================================================
+// UserAuthFactorService — user-side auth factor management (M14)
+// (qrdb.v1.UserAuthFactorService)
+//
+// This service manages auth factors stored in the QRDB auth layer
+// (TOTP, passkey, etc.) for end-users. Authorization is per-method.
+// ===========================================================================
+service UserAuthFactorService {
+    // Add registers a new auth factor for a user.
+    rpc Add(UserAuthFactorAddRequest) returns (UserAuthFactorAddResponse);
+
+    // List returns all auth factors for a user.
+    rpc List(UserAuthFactorListRequest) returns (UserAuthFactorListResponse);
+
+    // Get retrieves a single auth factor by ID.
+    rpc Get(UserAuthFactorGetRequest) returns (UserAuthFactorGetResponse);
+
+    // Remove deletes an auth factor.
+    rpc Remove(UserAuthFactorRemoveRequest) returns (UserAuthFactorRemoveResponse);
+
+    // Rotate atomically replaces one factor with another.
+    rpc Rotate(UserAuthFactorRotateRequest) returns (UserAuthFactorRotateResponse);
+
+    // Relabel updates the human-readable label of a factor.
+    rpc Relabel(UserAuthFactorRelabelRequest) returns (UserAuthFactorRelabelResponse);
+
+    // Login looks up the auth factor matching a credential key and returns
+    // the associated user identity.
+    rpc Login(UserAuthFactorLoginRequest) returns (UserAuthFactorLoginResponse);
+}
+
+// UserAuthFactorRecord is the wire shape for a single auth factor.
+message UserAuthFactorRecord {
+    string              id            = 1;
+    uint64              user_id       = 2;
+    string              type          = 3;
+    string              label         = 4;
+    bytes               credential    = 5;
+    map<string, string> metadata      = 6;
+    // Timestamps are RFC3339 strings; last_used_at and revoked_at are empty
+    // when not set.
+    string              registered_at = 7;
+    string              last_used_at  = 8;
+    string              revoked_at    = 9;
+    string              created_by    = 10;
+    // Optional renewal-stable secondary lookup key: SHA-256 of the
+    // certificate's SubjectPublicKeyInfo for mtls / piv factors.
+    bytes               spki_credential = 11;
+}
+
+// UserAuthFactorAddRequest carries the registration parameters.
+message UserAuthFactorAddRequest {
+    uint64              user_id    = 1;
+    string              type       = 2;
+    string              label      = 3;
+    bytes               credential = 4;
+    map<string, string> metadata   = 5;
+    string              created_by = 6;
+    // Optional renewal-stable secondary lookup key (mtls / piv).
+    bytes               spki_credential = 7;
+}
+
+// UserAuthFactorAddResponse carries the newly registered factor.
+message UserAuthFactorAddResponse {
+    UserAuthFactorRecord factor = 1;
+}
+
+// UserAuthFactorListRequest carries the user ID to list factors for.
+message UserAuthFactorListRequest {
+    uint64 user_id = 1;
+}
+
+// UserAuthFactorListResponse carries the factors list.
+message UserAuthFactorListResponse {
+    repeated UserAuthFactorRecord factors = 1;
+    int32                         total   = 2;
+}
+
+// UserAuthFactorGetRequest carries the factor ID to retrieve.
+message UserAuthFactorGetRequest {
+    string factor_id = 1;
+}
+
+// UserAuthFactorGetResponse carries the retrieved factor.
+message UserAuthFactorGetResponse {
+    UserAuthFactorRecord factor = 1;
+}
+
+// UserAuthFactorRemoveRequest carries the factor ID to remove.
+message UserAuthFactorRemoveRequest {
+    string factor_id = 1;
+    bool   force     = 2;
+}
+
+// UserAuthFactorRemoveResponse reports the removal outcome.
+message UserAuthFactorRemoveResponse {
+    string status = 1;
+}
+
+// UserAuthFactorNewFactor carries the registration parameters for Rotate.
+message UserAuthFactorNewFactor {
+    uint64              user_id    = 1;
+    string              type       = 2;
+    string              label      = 3;
+    bytes               credential = 4;
+    map<string, string> metadata   = 5;
+    string              created_by = 6;
+    // Optional renewal-stable secondary lookup key (mtls / piv).
+    bytes               spki_credential = 7;
+}
+
+// UserAuthFactorRotateRequest atomically replaces one factor with another.
+message UserAuthFactorRotateRequest {
+    string               old_factor_id = 1;
+    UserAuthFactorNewFactor new_factor = 2;
+}
+
+// UserAuthFactorRotateResponse carries the new factor after rotation.
+message UserAuthFactorRotateResponse {
+    UserAuthFactorRecord new_factor = 1;
+}
+
+// UserAuthFactorRelabelRequest carries the factor ID and new label.
+message UserAuthFactorRelabelRequest {
+    string factor_id = 1;
+    string label     = 2;
+}
+
+// UserAuthFactorRelabelResponse carries the updated factor.
+message UserAuthFactorRelabelResponse {
+    UserAuthFactorRecord factor = 1;
+}
+
+// UserAuthFactorLoginRequest carries the factor type and credential lookup key.
+message UserAuthFactorLoginRequest {
+    string type       = 1;
+    bytes  lookup_key = 2;
+}
+
+// UserAuthFactorLoginResponse carries the authenticated user identity.
+message UserAuthFactorLoginResponse {
+    uint64               user_id   = 1;
+    string               username  = 2;
+    string               email     = 3;
+    string               tenant_id = 4;
+    repeated string      roles     = 5;
+    bool                 active    = 6;
+    UserAuthFactorRecord factor    = 7;
 }

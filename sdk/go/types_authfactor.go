@@ -36,6 +36,10 @@ const (
 
 	// AuthFactorPIV is the PIV smartcard authentication factor.
 	AuthFactorPIV = auth.AuthFactorPIV
+
+	// AuthFactorPKCS11 is the PKCS#11 / HSM hardware key authentication factor.
+	// The credential lookup key is SHA-256(SubjectPublicKeyInfo DER), 32 bytes.
+	AuthFactorPKCS11 = auth.AuthFactorPKCS11
 )
 
 // Factor provenance constants.

@@ -101,6 +101,64 @@ func TestMemguardShareStore_DestroyAll(t *testing.T) {
 	assert.False(t, store.Exists("charlie"))
 }
 
+func TestMemguardShareStore_Reset_ClearsClaimHistory(t *testing.T) {
+	store := newSealedShareStore()
+
+	err := store.Store("alice", []byte(`share-round-1`))
+	require.NoError(t, err)
+
+	// Round 1 claim.
+	_, err = store.Claim("alice")
+	require.NoError(t, err)
+	assert.True(t, store.Claimed("alice"))
+
+	// Reset for a new round (rekey): claim history must be cleared so the
+	// officer can claim their newly distributed share.
+	store.Reset()
+	assert.False(t, store.Exists("alice"))
+	assert.False(t, store.Claimed("alice"))
+
+	// Round 2: store and claim succeed.
+	err = store.Store("alice", []byte(`share-round-2`))
+	require.NoError(t, err)
+	got, err := store.Claim("alice")
+	require.NoError(t, err)
+	assert.Equal(t, []byte(`share-round-2`), got)
+}
+
+func TestMemguardShareStore_Reset_DestroysUnclaimedShares(t *testing.T) {
+	store := newSealedShareStore()
+
+	err := store.Store("alice", []byte(`share-a`))
+	require.NoError(t, err)
+	err = store.Store("bob", []byte(`share-b`))
+	require.NoError(t, err)
+
+	store.Reset()
+
+	assert.False(t, store.Exists("alice"))
+	assert.False(t, store.Exists("bob"))
+
+	// Claiming after Reset without a fresh Store reports not-found (NOT
+	// already-claimed).
+	_, err = store.Claim("alice")
+	assert.ErrorIs(t, err, ErrShareNotFound)
+}
+
+func TestMemguardShareStore_DestroyAll_PreservesClaimHistory(t *testing.T) {
+	store := newSealedShareStore()
+
+	err := store.Store("alice", []byte(`share-a`))
+	require.NoError(t, err)
+	_, err = store.Claim("alice")
+	require.NoError(t, err)
+
+	store.DestroyAll()
+
+	// DestroyAll is a cleanup, not a new round: claim history survives.
+	assert.True(t, store.Claimed("alice"))
+}
+
 func TestMemguardShareStore_StoreMultipleClaimOne(t *testing.T) {
 	store := newSealedShareStore()
 

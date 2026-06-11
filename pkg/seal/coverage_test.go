@@ -267,7 +267,7 @@ func TestRecoveryStrategy_BarrierEncryptor_NilDelegate(t *testing.T) {
 // --------------------------------------------------------------------------
 
 func TestRecoverWithKeys_ShamirStrategyPath(t *testing.T) {
-	b, _ := newRecoveryBarrierWithShamir(t)
+	b, _, dist := newRecoveryBarrierWithShamir(t)
 	ctx := context.Background()
 
 	// Initialize via Shamir.
@@ -275,16 +275,15 @@ func TestRecoverWithKeys_ShamirStrategyPath(t *testing.T) {
 	if shamirCfg == nil {
 		t.Fatal("expected Shamir config")
 	}
-	result, err := b.InitializeShamir(ctx, Credentials{})
-	if err != nil {
+	if _, err := b.InitializeShamir(ctx, Credentials{}); err != nil {
 		t.Fatal(err)
 	}
 
 	// Generate recovery keys while unsealed.
-	recResult, err := b.GenerateRecoveryKeys(ctx, 2, 3)
-	if err != nil {
+	if _, err := b.GenerateRecoveryKeys(ctx, 2, 3); err != nil {
 		t.Fatal(err)
 	}
+	recShares := dist.Shares()
 
 	// Seal the barrier.
 	if err := b.Seal(); err != nil {
@@ -294,11 +293,9 @@ func TestRecoverWithKeys_ShamirStrategyPath(t *testing.T) {
 		t.Fatal("barrier should be sealed")
 	}
 
-	_ = result // ensure init result is used
-
 	// Recover using recovery keys (this exercises the ShamirStrategy path
 	// in RecoverWithKeys, not the recoverWithSoftwareStrategy fallback).
-	if err := b.RecoverWithKeys(ctx, recResult.Shares[:2]); err != nil {
+	if err := b.RecoverWithKeys(ctx, recShares[:2]); err != nil {
 		t.Fatalf("RecoverWithKeys via Shamir path: %v", err)
 	}
 	if b.IsSealed() {
@@ -452,19 +449,22 @@ func TestStorageBarrier_UnsealDirect_AlreadyInitialized(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, err := NewBarrier(slog.Default(), backend, BarrierConfig{
-		RootKeyPath: "test/root-key",
-		Shamir:      &ShamirConfig{Threshold: 2, TotalShares: 3},
+		RootKeyPath:     "test/root-key",
+		Shamir:          &ShamirConfig{Threshold: 2, TotalShares: 3},
+		PreferenceOrder: []StrategyID{StrategyShamir},
 	}, shamirStrat)
 	if err != nil {
 		t.Fatal(err)
 	}
+	dist := newCaptureDistributor()
+	b.SetCeremonyDistributor(dist)
 	ctx := context.Background()
 
 	// Initialize via Shamir (this calls barrier.Initialize internally).
-	result, err := b.InitializeShamir(ctx, Credentials{})
-	if err != nil {
+	if _, err := b.InitializeShamir(ctx, Credentials{}); err != nil {
 		t.Fatal(err)
 	}
+	shares := dist.Shares()
 
 	// Seal the barrier.
 	if err := b.Seal(); err != nil {
@@ -473,7 +473,7 @@ func TestStorageBarrier_UnsealDirect_AlreadyInitialized(t *testing.T) {
 
 	// UnsealWithShares calls unsealDirect. Since the EpochBarrier is already
 	// initialized, it will follow the "already init" path.
-	if err := b.UnsealWithShares(ctx, result.Shares[:2]); err != nil {
+	if err := b.UnsealWithShares(ctx, shares[:2]); err != nil {
 		t.Fatalf("UnsealWithShares: %v", err)
 	}
 	if b.IsSealed() {
@@ -526,16 +526,18 @@ func TestRecoverWithSoftwareStrategy_StrategyNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	dist := newCaptureDistributor()
+	b.SetRecoveryDistributor(dist)
 	ctx := context.Background()
 	if err := b.Initialize(ctx, Credentials{Secret: "pw"}); err != nil {
 		t.Fatal(err)
 	}
 
 	// Generate recovery keys.
-	recResult, err := b.GenerateRecoveryKeys(ctx, 2, 3)
-	if err != nil {
+	if _, err := b.GenerateRecoveryKeys(ctx, 2, 3); err != nil {
 		t.Fatal(err)
 	}
+	recShares := dist.Shares()
 
 	// Tamper with the sealed root key blob to reference an unknown strategy.
 	blob, _ := backend.Get(ctx, "test/root-key")
@@ -545,17 +547,15 @@ func TestRecoverWithSoftwareStrategy_StrategyNotFound(t *testing.T) {
 	tamperedBlob, _ := json.Marshal(&sealed)
 	_ = backend.Put(ctx, "test/root-key", tamperedBlob)
 
-	// Seal the barrier.
+	// Seal the barrier (software strategy — direct seal is allowed).
 	if err := b.Seal(); err != nil {
 		t.Fatal(err)
 	}
 
-	// Remove the software strategy so the ShamirStrategy path is NOT taken.
-	// (no ShamirStrategy means it falls through to recoverWithSoftwareStrategy)
 	// recoverWithSoftwareStrategy loads the sealed blob and looks up sealed.Strategy
 	// in the barrier's strategy map. Since we changed it to "nonexistent",
 	// it should return ErrStrategyNotFound.
-	err = b.RecoverWithKeys(ctx, recResult.Shares[:2])
+	err = b.RecoverWithKeys(ctx, recShares[:2])
 	if !errors.Is(err, ErrStrategyNotFound) {
 		t.Errorf("recoverWithSoftwareStrategy: got %v, want ErrStrategyNotFound", err)
 	}
@@ -573,17 +573,20 @@ func TestGenerateRootToken_VerifyDirectMode_NonShamirStrategy(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, err := NewBarrier(slog.Default(), backend, BarrierConfig{
-		RootKeyPath: "test/root-key",
-		Shamir:      &ShamirConfig{Threshold: 2, TotalShares: 3},
+		RootKeyPath:     "test/root-key",
+		Shamir:          &ShamirConfig{Threshold: 2, TotalShares: 3},
+		PreferenceOrder: []StrategyID{StrategyShamir},
 	}, shamirStrat)
 	if err != nil {
 		t.Fatal(err)
 	}
+	dist := newCaptureDistributor()
+	b.SetCeremonyDistributor(dist)
 	ctx := context.Background()
-	result, err := b.InitializeShamir(ctx, Credentials{})
-	if err != nil {
+	if _, err := b.InitializeShamir(ctx, Credentials{}); err != nil {
 		t.Fatal(err)
 	}
+	shares := dist.Shares()
 
 	// Tamper with sealed root key to change strategy from "shamir" to something else.
 	blob, _ := backend.Get(ctx, "test/root-key")
@@ -593,7 +596,7 @@ func TestGenerateRootToken_VerifyDirectMode_NonShamirStrategy(t *testing.T) {
 	tamperedBlob, _ := json.Marshal(&sealed)
 	_ = backend.Put(ctx, "test/root-key", tamperedBlob)
 
-	_, err = b.GenerateRootToken(ctx, result.Shares[:2])
+	_, err = b.GenerateRootToken(ctx, shares[:2])
 	if !errors.Is(err, ErrRootTokenVerificationFailed) {
 		t.Errorf("verifyDirectMode with non-shamir strategy: got %v, want ErrRootTokenVerificationFailed", err)
 	}
@@ -606,22 +609,25 @@ func TestGenerateRootToken_VerifyDirectMode_CorruptBlob(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, err := NewBarrier(slog.Default(), backend, BarrierConfig{
-		RootKeyPath: "test/root-key",
-		Shamir:      &ShamirConfig{Threshold: 2, TotalShares: 3},
+		RootKeyPath:     "test/root-key",
+		Shamir:          &ShamirConfig{Threshold: 2, TotalShares: 3},
+		PreferenceOrder: []StrategyID{StrategyShamir},
 	}, shamirStrat)
 	if err != nil {
 		t.Fatal(err)
 	}
+	dist := newCaptureDistributor()
+	b.SetCeremonyDistributor(dist)
 	ctx := context.Background()
-	result, err := b.InitializeShamir(ctx, Credentials{})
-	if err != nil {
+	if _, err := b.InitializeShamir(ctx, Credentials{}); err != nil {
 		t.Fatal(err)
 	}
+	shares := dist.Shares()
 
 	// Corrupt the sealed root key blob.
 	_ = backend.Put(ctx, "test/root-key", []byte("not-json"))
 
-	_, err = b.GenerateRootToken(ctx, result.Shares[:2])
+	_, err = b.GenerateRootToken(ctx, shares[:2])
 	if !errors.Is(err, ErrRootTokenVerificationFailed) {
 		t.Errorf("verifyDirectMode with corrupt blob: got %v, want ErrRootTokenVerificationFailed", err)
 	}
@@ -718,6 +724,12 @@ func (e *errorBackend) Get(_ context.Context, _ string) ([]byte, error) {
 }
 func (e *errorBackend) Put(_ context.Context, _ string, _ []byte) error {
 	return e.putErr
+}
+func (e *errorBackend) PutIfAbsent(_ context.Context, _ string, _ []byte) (bool, error) {
+	if e.putErr != nil {
+		return false, e.putErr
+	}
+	return true, nil
 }
 func (e *errorBackend) Delete(_ context.Context, _ string) error {
 	return e.deleteErr

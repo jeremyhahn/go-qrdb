@@ -32,26 +32,77 @@
 package unix
 
 import (
-	grpcpkg "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
+	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 )
 
-// TenantBarrierInitRequest is the JSON-encoded init payload for Unix callers.
-// It mirrors grpcpkg.GRPCTenantBarrierInitRequest for type consistency with
-// the gRPC service registered on the Unix socket.
-type TenantBarrierInitRequest = grpcpkg.GRPCTenantBarrierInitRequest
+// The per-tenant barrier wire types are the canonical qrdb.v1 protobuf
+// messages. These Unix-package aliases let callers that talk to the Unix
+// endpoint reference them without importing the qrdbv1 package directly.
 
-// TenantBarrierUnsealRequest is the JSON-encoded unseal payload for Unix
-// callers. It mirrors grpcpkg.GRPCTenantBarrierUnsealRequest.
-type TenantBarrierUnsealRequest = grpcpkg.GRPCTenantBarrierUnsealRequest
+// TenantBarrierInitRequest is the protobuf init payload for Unix callers.
+type TenantBarrierInitRequest = pb.TenantBarrierInitRequest
 
-// TenantBarrierSealRequest is the JSON-encoded seal payload for Unix
-// callers. It mirrors grpcpkg.GRPCTenantBarrierSealRequest.
-type TenantBarrierSealRequest = grpcpkg.GRPCTenantBarrierSealRequest
+// TenantBarrierInitResponse is the protobuf init response for Unix callers.
+// Share bytes are never present; Security Officers claim their shares via the
+// OfficerRegister / ShareClaimBegin / ShareClaimComplete flow.
+type TenantBarrierInitResponse = pb.TenantBarrierInitResponse
 
-// TenantBarrierStatusRequest is the JSON-encoded status query for Unix
-// callers. It mirrors grpcpkg.GRPCTenantBarrierStatusRequest.
-type TenantBarrierStatusRequest = grpcpkg.GRPCTenantBarrierStatusRequest
+// TenantBarrierUnsealRequest is the protobuf single-key unseal payload.
+type TenantBarrierUnsealRequest = pb.TenantBarrierUnsealRequest
 
-// TenantBarrierStatusResponse is the JSON-encoded status response returned
-// to Unix callers. It mirrors grpcpkg.GRPCTenantBarrierStatusResponse.
-type TenantBarrierStatusResponse = grpcpkg.GRPCTenantBarrierStatusResponse
+// TenantBarrierUnsealShareRequest is the protobuf Shamir-share unseal payload.
+type TenantBarrierUnsealShareRequest = pb.TenantBarrierUnsealShareRequest
+
+// TenantBarrierUnsealProgress is the protobuf Shamir quorum-progress response.
+type TenantBarrierUnsealProgress = pb.TenantBarrierUnsealProgress
+
+// TenantBarrierSealRequest is the protobuf seal payload.
+type TenantBarrierSealRequest = pb.TenantBarrierSealRequest
+
+// TenantBarrierStatusRequest is the protobuf status query.
+type TenantBarrierStatusRequest = pb.TenantBarrierStatusRequest
+
+// TenantBarrierStatusResponse is the protobuf status response.
+type TenantBarrierStatusResponse = pb.TenantBarrierStatusResponse
+
+// ---------------------------------------------------------------------------
+// Security Officer wire types
+// ---------------------------------------------------------------------------
+
+// TenantBarrierOfficerRegisterRequest is the protobuf SO registration request.
+type TenantBarrierOfficerRegisterRequest = pb.TenantBarrierOfficerRegisterRequest
+
+// TenantBarrierOfficerRegisterResponse is the protobuf SO registration response.
+type TenantBarrierOfficerRegisterResponse = pb.TenantBarrierOfficerRegisterResponse
+
+// TenantBarrierOfficerListRequest is the protobuf SO list request.
+type TenantBarrierOfficerListRequest = pb.TenantBarrierOfficerListRequest
+
+// TenantBarrierOfficerListResponse is the protobuf SO list response.
+type TenantBarrierOfficerListResponse = pb.TenantBarrierOfficerListResponse
+
+// TenantBarrierShareClaimBeginRequest is the protobuf share-claim begin request.
+type TenantBarrierShareClaimBeginRequest = pb.TenantBarrierShareClaimBeginRequest
+
+// TenantBarrierShareClaimBeginResponse is the protobuf share-claim begin response.
+type TenantBarrierShareClaimBeginResponse = pb.TenantBarrierShareClaimBeginResponse
+
+// TenantBarrierShareClaimCompleteRequest is the protobuf share-claim complete request.
+type TenantBarrierShareClaimCompleteRequest = pb.TenantBarrierShareClaimCompleteRequest
+
+// TenantBarrierShareClaimCompleteResponse is the protobuf share-claim complete
+// response. This is the sole wire surface where share bytes appear
+// (INV-1/INV-11) — only in the claiming officer's own authenticated session.
+type TenantBarrierShareClaimCompleteResponse = pb.TenantBarrierShareClaimCompleteResponse
+
+// TenantBarrierOfficerClaimStatusRequest is the protobuf officer claim status request.
+type TenantBarrierOfficerClaimStatusRequest = pb.TenantBarrierOfficerClaimStatusRequest
+
+// TenantBarrierOfficerClaimStatusResponse is the protobuf officer claim status response.
+type TenantBarrierOfficerClaimStatusResponse = pb.TenantBarrierOfficerClaimStatusResponse
+
+// TenantBarrierShamirSealVoteRequest is the protobuf Shamir seal-vote request.
+type TenantBarrierShamirSealVoteRequest = pb.TenantBarrierShamirSealVoteRequest
+
+// TenantBarrierShamirSealVoteResponse is the protobuf Shamir seal-vote response.
+type TenantBarrierShamirSealVoteResponse = pb.TenantBarrierShamirSealVoteResponse

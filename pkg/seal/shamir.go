@@ -23,13 +23,21 @@ import (
 // (direct mode). Otherwise, the credential secret is split and used to
 // unseal a password-protected root key (credential mode).
 //
+// In both modes the generated shares are sealed to the enrolled Security
+// Officers via the CeremonyDistributor; they are never returned in the
+// response. ErrCeremonyDistributorNotConfigured is returned when no
+// distributor has been wired via SetCeremonyDistributor.
+//
 // The threshold and total share counts come from b.config.Shamir, which the
 // service layer populates via SetShamirConfig before calling this method.
 // Callers that omit threshold/total in their request should preserve the
 // existing config values rather than overwriting with zeros.
-func (b *StorageBarrier) InitializeShamir(ctx context.Context, creds Credentials) (*ShamirInitResult, error) {
+func (b *StorageBarrier) InitializeShamir(ctx context.Context, creds Credentials) (*ShamirInitParams, error) {
 	if b.config.Shamir == nil {
 		return nil, ErrShamirNotConfigured
+	}
+	if b.distributor == nil {
+		return nil, ErrCeremonyDistributorNotConfigured
 	}
 
 	threshold := b.config.Shamir.Threshold
@@ -45,39 +53,37 @@ func (b *StorageBarrier) InitializeShamir(ctx context.Context, creds Credentials
 	}
 
 	// Credential mode: initialize barrier with the credential, then
-	// split the credential secret into Shamir shares.
+	// split the credential secret and seal shares to officers.
 	if err := b.Initialize(ctx, creds); err != nil {
 		return nil, err
 	}
 
-	shares, err := shamir.Split([]byte(creds.Secret), threshold, total)
+	secret := []byte(creds.Secret)
+
+	shareCount, err := b.distributor.SealAndDistribute(ctx, secret, threshold, total)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrShamirSplitFailed, err)
+		return nil, err
 	}
 
-	result := &ShamirInitResult{
-		Shares:      make([]string, len(shares)),
+	return &ShamirInitParams{
 		Threshold:   threshold,
 		TotalShares: total,
-	}
-	for i, share := range shares {
-		result.Shares[i] = share.Value
-	}
-
-	return result, nil
+		ShareCount:  shareCount,
+	}, nil
 }
 
 // initializeShamirDirect initializes the barrier when a ShamirStrategy is
 // registered. The EpochBarrier generates the root key during Initialize; we
-// then read it back in memory, split it into M-of-N shares with the in-memory
-// ShareSplitter, and return those shares to the Security Officers. The shares
-// are NEVER persisted — only the key-material-free SealedRootKey envelope is
-// stored. Unsealing later requires the SOs to re-submit their shares via
-// UnsealWithShare.
+// then read it back in memory, AEAD-wrap it under a fresh random unseal key
+// (see unsealkey.go), and split the UNSEAL KEY — not the root key — into
+// M-of-N shares. Each share is sealed to an enrolled Security Officer's
+// ceremony enclave via the CeremonyDistributor. No share bytes are returned
+// to the caller. The indirection lets Rekey cryptographically revoke all
+// previously distributed shares by re-wrapping under a new unseal key.
 //
 // threshold and total come from the caller (b.config.Shamir after SetShamirConfig),
 // not from the boot-time ShamirStrategy, so that the request parameters win.
-func (b *StorageBarrier) initializeShamirDirect(ctx context.Context, shamirStrat *ShamirStrategy, threshold, total int) (*ShamirInitResult, error) {
+func (b *StorageBarrier) initializeShamirDirect(ctx context.Context, shamirStrat *ShamirStrategy, threshold, total int) (*ShamirInitParams, error) {
 	exists, err := b.base.Exists(ctx, b.config.RootKeyPath)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrCorruptRootKey, err)
@@ -92,18 +98,13 @@ func (b *StorageBarrier) initializeShamirDirect(ctx context.Context, shamirStrat
 		return nil, err
 	}
 
-	// Read the root key back in memory and split it. Nothing is written to
-	// storage; the shares exist only in the returned result.
+	// Read the root key back in memory so it can be wrapped under the
+	// unseal key below. It is wiped before this function returns.
 	rootKey, err := b.GetMasterKey()
 	if err != nil {
 		return nil, err
 	}
 	defer secure.Wipe(rootKey)
-
-	shareVals, err := NewShamirShareSplitter().Split(rootKey, threshold, total)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrShamirSplitFailed, err)
-	}
 
 	// When the request parameters differ from the boot-time strategy, update
 	// the persisted sealed envelope and replace the in-memory strategy so
@@ -114,10 +115,33 @@ func (b *StorageBarrier) initializeShamirDirect(ctx context.Context, shamirStrat
 		}
 	}
 
-	return &ShamirInitResult{
-		Shares:      shareVals,
+	// Unseal-key indirection: wrap the root key under a fresh unseal key and
+	// persist the wrapped blob BEFORE distributing, so any claimed share set
+	// always has a blob to unwrap. The unseal key — not the root key — is
+	// what gets split to the officers; the distributor wipes it on return.
+	unsealKey, err := generateUnsealKey()
+	if err != nil {
+		return nil, err
+	}
+	defer secure.Wipe(unsealKey)
+
+	wrappedBlob, err := b.wrapRootKey(unsealKey, rootKey)
+	if err != nil {
+		return nil, err
+	}
+	if err := b.base.Put(ctx, b.wrappedRootKeyPath(), wrappedBlob); err != nil {
+		return nil, err
+	}
+
+	shareCount, err := b.distributor.SealAndDistribute(ctx, unsealKey, threshold, total)
+	if err != nil {
+		return nil, err
+	}
+
+	return &ShamirInitParams{
 		Threshold:   threshold,
 		TotalShares: total,
+		ShareCount:  shareCount,
 	}, nil
 }
 
@@ -202,8 +226,9 @@ func (b *StorageBarrier) UnsealWithShare(ctx context.Context, shareValue string)
 	acc.Reset()
 
 	if strat := b.ShamirStrategy(); strat != nil {
-		// Direct mode: the reconstructed secret IS the root key.
-		if err := b.unsealDirect(secret); err != nil {
+		// Direct mode: the reconstructed secret is the unseal key (or, on
+		// legacy barriers, the root key itself); unsealDirect resolves it.
+		if err := b.unsealDirect(ctx, secret); err != nil {
 			return nil, err
 		}
 	} else {
@@ -273,7 +298,7 @@ func (b *StorageBarrier) UnsealWithShares(ctx context.Context, shareValues []str
 	defer secure.Wipe(secret)
 
 	if strat := b.ShamirStrategy(); strat != nil {
-		return b.unsealDirect(secret)
+		return b.unsealDirect(ctx, secret)
 	}
 
 	return b.Unseal(ctx, Credentials{Secret: string(secret)})

@@ -25,6 +25,8 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -298,9 +300,9 @@ func TestHandleBarrierShamirInitialize_Success(t *testing.T) {
 	barrierSvc := &mockBarrierService{
 		barrierInitializeShamirFn: func(_ context.Context, secret string, threshold, total int) (*service.ShamirInitInfo, error) {
 			return &service.ShamirInitInfo{
-				Shares:      []string{"share1", "share2", "share3"},
 				Threshold:   threshold,
 				TotalShares: total,
+				ShareCount:  total,
 			}, nil
 		},
 	}
@@ -312,12 +314,13 @@ func TestHandleBarrierShamirInitialize_Success(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	var initResp pb.BarrierShamirInitializeResponse
+	// BarrierShamirOperationResponse: shares omitted (INV-1/INV-11).
+	var initResp pb.BarrierShamirOperationResponse
 	if err := proto.Unmarshal(resp, &initResp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(initResp.GetShares()) != 3 {
-		t.Errorf("expected 3 shares, got %d", len(initResp.GetShares()))
+	if initResp.GetShareCount() != 3 {
+		t.Errorf("expected share_count=3, got %d", initResp.GetShareCount())
 	}
 	if initResp.GetThreshold() != 2 {
 		t.Errorf("expected threshold 2, got %d", initResp.GetThreshold())
@@ -506,9 +509,9 @@ func TestHandleBarrierRekey_Success(t *testing.T) {
 	barrierSvc := &mockBarrierService{
 		barrierRekeyFn: func(_ context.Context, threshold, total int) (*service.ShamirInitInfo, error) {
 			return &service.ShamirInitInfo{
-				Shares:      []string{"new1", "new2", "new3"},
 				Threshold:   threshold,
 				TotalShares: total,
+				ShareCount:  total,
 			}, nil
 		},
 	}
@@ -518,12 +521,13 @@ func TestHandleBarrierRekey_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	var rekeyResp pb.BarrierShamirInitializeResponse
+	// BarrierShamirOperationResponse: shares omitted (INV-1/INV-11).
+	var rekeyResp pb.BarrierShamirOperationResponse
 	if err := proto.Unmarshal(resp, &rekeyResp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(rekeyResp.GetShares()) != 3 {
-		t.Errorf("expected 3 shares, got %d", len(rekeyResp.GetShares()))
+	if rekeyResp.GetShareCount() != 3 {
+		t.Errorf("expected share_count=3, got %d", rekeyResp.GetShareCount())
 	}
 }
 
@@ -568,7 +572,7 @@ func TestHandleBarrierRecoveryGenerate_NilService(t *testing.T) {
 func TestHandleBarrierRecoveryGenerate_Success(t *testing.T) {
 	barrierSvc := &mockBarrierService{
 		barrierGenRecoveryKeysFn: func(_ context.Context, threshold, total int) (*service.RecoveryKeysInfo, error) {
-			return &service.RecoveryKeysInfo{Keys: []string{"k1", "k2"}, Threshold: threshold, Total: total}, nil
+			return &service.RecoveryKeysInfo{Threshold: threshold, Total: total, ShareCount: total}, nil
 		},
 	}
 	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithBarrierService(barrierSvc))
@@ -581,8 +585,8 @@ func TestHandleBarrierRecoveryGenerate_Success(t *testing.T) {
 	if err := proto.Unmarshal(resp, &genResp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(genResp.GetKeys()) != 2 {
-		t.Errorf("expected 2 keys, got %d", len(genResp.GetKeys()))
+	if genResp.GetShareCount() != 2 {
+		t.Errorf("expected share_count=2, got %d", genResp.GetShareCount())
 	}
 }
 
@@ -815,6 +819,879 @@ func TestHandleBarrierRootToken_UnmarshalError(t *testing.T) {
 	_, err := srv.handleBarrierRootToken(context.Background(), []byte{0xff, 0xfe})
 	if err == nil {
 		t.Fatal("expected unmarshal error")
+	}
+	var ue *UnmarshalError
+	if !errors.As(err, &ue) {
+		t.Fatalf("expected *UnmarshalError, got %T", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// extMockQUICBarrierService — extends mockBarrierService with SO fn overrides
+// ---------------------------------------------------------------------------
+
+type extMockQUICBarrierService struct {
+	*mockBarrierService
+	officerRegisterFn            func(ctx context.Context, req *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error)
+	officerListFn                func(ctx context.Context) ([]*service.BarrierOfficerStatus, error)
+	officerClaimStatusFn         func(ctx context.Context) ([]*service.BarrierOfficerStatus, error)
+	shareClaimBeginFn            func(ctx context.Context, username, thumbprint string) (*service.BarrierShareClaimChallenge, error)
+	shareClaimCompleteFn         func(ctx context.Context, username, nonceHex string, sig []byte, thumbprint string) (*service.BarrierShareClaimResult, error)
+	shamirSealVoteFn             func(ctx context.Context, share string) (*service.UnsealShareProgress, error)
+	recoveryOfficerRegisterFn    func(ctx context.Context, req *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error)
+	recoveryShareClaimBeginFn    func(ctx context.Context, username, thumbprint string) (*service.BarrierShareClaimChallenge, error)
+	recoveryShareClaimCompleteFn func(ctx context.Context, username, nonceHex string, sig []byte, thumbprint string) (*service.BarrierShareClaimResult, error)
+}
+
+func newExtQUICBarrierSvc() *extMockQUICBarrierService {
+	return &extMockQUICBarrierService{mockBarrierService: &mockBarrierService{}}
+}
+
+var _ service.BarrierServicer = (*extMockQUICBarrierService)(nil)
+
+func (e *extMockQUICBarrierService) BarrierOfficerRegister(ctx context.Context, req *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
+	if e.officerRegisterFn != nil {
+		return e.officerRegisterFn(ctx, req)
+	}
+	return e.mockBarrierService.BarrierOfficerRegister(ctx, req)
+}
+
+func (e *extMockQUICBarrierService) BarrierOfficerList(ctx context.Context) ([]*service.BarrierOfficerStatus, error) {
+	if e.officerListFn != nil {
+		return e.officerListFn(ctx)
+	}
+	return e.mockBarrierService.BarrierOfficerList(ctx)
+}
+
+func (e *extMockQUICBarrierService) BarrierOfficerClaimStatus(ctx context.Context) ([]*service.BarrierOfficerStatus, error) {
+	if e.officerClaimStatusFn != nil {
+		return e.officerClaimStatusFn(ctx)
+	}
+	return e.mockBarrierService.BarrierOfficerClaimStatus(ctx)
+}
+
+func (e *extMockQUICBarrierService) BarrierShareClaimBegin(ctx context.Context, username, thumbprint string) (*service.BarrierShareClaimChallenge, error) {
+	if e.shareClaimBeginFn != nil {
+		return e.shareClaimBeginFn(ctx, username, thumbprint)
+	}
+	return e.mockBarrierService.BarrierShareClaimBegin(ctx, username, thumbprint)
+}
+
+func (e *extMockQUICBarrierService) BarrierShareClaimComplete(ctx context.Context, username, nonceHex string, sig []byte, thumbprint string) (*service.BarrierShareClaimResult, error) {
+	if e.shareClaimCompleteFn != nil {
+		return e.shareClaimCompleteFn(ctx, username, nonceHex, sig, thumbprint)
+	}
+	return e.mockBarrierService.BarrierShareClaimComplete(ctx, username, nonceHex, sig, thumbprint)
+}
+
+func (e *extMockQUICBarrierService) BarrierShamirSealVote(ctx context.Context, share string) (*service.UnsealShareProgress, error) {
+	if e.shamirSealVoteFn != nil {
+		return e.shamirSealVoteFn(ctx, share)
+	}
+	return e.mockBarrierService.BarrierShamirSealVote(ctx, share)
+}
+
+func (e *extMockQUICBarrierService) BarrierRecoveryOfficerRegister(ctx context.Context, req *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
+	if e.recoveryOfficerRegisterFn != nil {
+		return e.recoveryOfficerRegisterFn(ctx, req)
+	}
+	return e.mockBarrierService.BarrierRecoveryOfficerRegister(ctx, req)
+}
+
+func (e *extMockQUICBarrierService) BarrierRecoveryShareClaimBegin(ctx context.Context, username, thumbprint string) (*service.BarrierShareClaimChallenge, error) {
+	if e.recoveryShareClaimBeginFn != nil {
+		return e.recoveryShareClaimBeginFn(ctx, username, thumbprint)
+	}
+	return e.mockBarrierService.BarrierRecoveryShareClaimBegin(ctx, username, thumbprint)
+}
+
+func (e *extMockQUICBarrierService) BarrierRecoveryShareClaimComplete(ctx context.Context, username, nonceHex string, sig []byte, thumbprint string) (*service.BarrierShareClaimResult, error) {
+	if e.recoveryShareClaimCompleteFn != nil {
+		return e.recoveryShareClaimCompleteFn(ctx, username, nonceHex, sig, thumbprint)
+	}
+	return e.mockBarrierService.BarrierRecoveryShareClaimComplete(ctx, username, nonceHex, sig, thumbprint)
+}
+
+// ---------------------------------------------------------------------------
+// quicCertThumbprint (system barrier variant) tests
+// ---------------------------------------------------------------------------
+
+func TestQuicCertThumbprint_MissingTLS(t *testing.T) {
+	_, err := quicCertThumbprint(context.Background())
+	if err == nil {
+		t.Fatal("expected ClientCertRequiredError")
+	}
+	var ce *ClientCertRequiredError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected *ClientCertRequiredError, got %T", err)
+	}
+}
+
+func TestQuicCertThumbprint_Success(t *testing.T) {
+	ctx := ctxWithFakeTLSQuic()
+	thumb, err := quicCertThumbprint(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if thumb == "" {
+		t.Fatal("expected non-empty thumbprint")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// quicBarrierOfficerStatusesToProto tests
+// ---------------------------------------------------------------------------
+
+func TestQuicBarrierOfficerStatusesToProto_Fields(t *testing.T) {
+	now := time.Date(2026, 4, 5, 6, 0, 0, 0, time.UTC)
+	officers := []*service.BarrierOfficerStatus{
+		{
+			Username:       "alice",
+			CertThumbprint: "abc123",
+			ShareIndex:     1,
+			AuthFactor:     "software",
+			SharePending:   true,
+			EnrolledAt:     now,
+			ClaimedAt:      time.Time{}, // zero — ClaimedAt should be empty
+		},
+		{
+			Username:   "bob",
+			ShareIndex: 2,
+			EnrolledAt: now,
+			ClaimedAt:  now, // non-zero — ClaimedAt should be set
+		},
+	}
+
+	out := quicBarrierOfficerStatusesToProto(officers)
+	if len(out) != 2 {
+		t.Fatalf("len = %d, want 2", len(out))
+	}
+
+	if out[0].GetUsername() != "alice" {
+		t.Fatalf("username = %q, want alice", out[0].GetUsername())
+	}
+	if out[0].GetClaimedAt() != "" {
+		t.Fatalf("claimed_at present for unclaimed officer: %q", out[0].GetClaimedAt())
+	}
+	if out[0].GetSharePending() != true {
+		t.Fatal("share_pending should be true")
+	}
+
+	if out[1].GetClaimedAt() == "" {
+		t.Fatal("claimed_at empty for claimed officer")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handleBarrierOfficerRegister tests
+// ---------------------------------------------------------------------------
+
+func TestHandleBarrierOfficerRegister_QUIC_NilService(t *testing.T) {
+	srv := newTestServer(&mockKVService{}, &mockAdminService{})
+	payload, _ := proto.Marshal(&pb.BarrierOfficerRegisterRequest{
+		Username: "officer1",
+		CsrPem:   []byte("csr-pem"),
+	})
+	_, err := srv.handleBarrierOfficerRegister(context.Background(), payload)
+	if err == nil {
+		t.Fatal("expected ServiceNotConfiguredError")
+	}
+	var snce *ServiceNotConfiguredError
+	if !errors.As(err, &snce) {
+		t.Fatalf("expected *ServiceNotConfiguredError, got %T", err)
+	}
+}
+
+func TestHandleBarrierOfficerRegister_QUIC_Success(t *testing.T) {
+	svc := newExtQUICBarrierSvc()
+	svc.officerRegisterFn = func(_ context.Context, req *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
+		if req.Username != "officer1" {
+			t.Fatalf("username = %q, want officer1", req.Username)
+		}
+		return &service.BarrierOfficerRegisterResult{
+			CertPEM:    []byte("officer-cert-pem"),
+			ShareIndex: 2,
+		}, nil
+	}
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithBarrierService(svc))
+
+	payload, _ := proto.Marshal(&pb.BarrierOfficerRegisterRequest{
+		Username: "officer1",
+		CsrPem:   []byte("csr-pem"),
+	})
+	resp, err := srv.handleBarrierOfficerRegister(context.Background(), payload)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var out pb.BarrierOfficerRegisterResponse
+	if protoErr := proto.Unmarshal(resp, &out); protoErr != nil {
+		t.Fatalf("unmarshal: %v", protoErr)
+	}
+	if string(out.GetCertPem()) != "officer-cert-pem" {
+		t.Fatalf("cert_pem = %q, want officer-cert-pem", out.GetCertPem())
+	}
+	if out.GetShareIndex() != 2 {
+		t.Fatalf("share_index = %d, want 2", out.GetShareIndex())
+	}
+}
+
+func TestHandleBarrierOfficerRegister_QUIC_ServiceError(t *testing.T) {
+	svc := newExtQUICBarrierSvc()
+	svc.officerRegisterFn = func(_ context.Context, _ *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
+		return nil, ceremony.ErrInsufficientOfficers
+	}
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithBarrierService(svc))
+
+	payload, _ := proto.Marshal(&pb.BarrierOfficerRegisterRequest{Username: "officer1"})
+	_, err := srv.handleBarrierOfficerRegister(context.Background(), payload)
+	if err == nil {
+		t.Fatal("expected error from service")
+	}
+	if !errors.Is(err, ceremony.ErrInsufficientOfficers) {
+		t.Fatalf("expected ErrInsufficientOfficers, got %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handleBarrierOfficerList tests
+// ---------------------------------------------------------------------------
+
+func TestHandleBarrierOfficerList_QUIC_NilService(t *testing.T) {
+	srv := newTestServer(&mockKVService{}, &mockAdminService{})
+	_, err := srv.handleBarrierOfficerList(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected ServiceNotConfiguredError")
+	}
+	var snce *ServiceNotConfiguredError
+	if !errors.As(err, &snce) {
+		t.Fatalf("expected *ServiceNotConfiguredError, got %T", err)
+	}
+}
+
+func TestHandleBarrierOfficerList_QUIC_Success(t *testing.T) {
+	now := time.Date(2026, 1, 2, 3, 0, 0, 0, time.UTC)
+	svc := newExtQUICBarrierSvc()
+	svc.officerListFn = func(_ context.Context) ([]*service.BarrierOfficerStatus, error) {
+		return []*service.BarrierOfficerStatus{
+			{Username: "alice", ShareIndex: 1, EnrolledAt: now},
+		}, nil
+	}
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithBarrierService(svc))
+
+	resp, err := srv.handleBarrierOfficerList(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var out pb.BarrierOfficerListResponse
+	if protoErr := proto.Unmarshal(resp, &out); protoErr != nil {
+		t.Fatalf("unmarshal: %v", protoErr)
+	}
+	if len(out.GetOfficers()) != 1 {
+		t.Fatalf("officers len = %d, want 1", len(out.GetOfficers()))
+	}
+	if out.GetOfficers()[0].GetUsername() != "alice" {
+		t.Fatalf("username = %q, want alice", out.GetOfficers()[0].GetUsername())
+	}
+}
+
+func TestHandleBarrierOfficerList_QUIC_ServiceError(t *testing.T) {
+	svc := newExtQUICBarrierSvc()
+	svc.officerListFn = func(_ context.Context) ([]*service.BarrierOfficerStatus, error) {
+		return nil, ceremony.ErrOfficerNotFound
+	}
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithBarrierService(svc))
+
+	_, err := srv.handleBarrierOfficerList(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected error from service")
+	}
+	if !errors.Is(err, ceremony.ErrOfficerNotFound) {
+		t.Fatalf("expected ErrOfficerNotFound, got %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handleBarrierOfficerClaimStatus tests
+// ---------------------------------------------------------------------------
+
+func TestHandleBarrierOfficerClaimStatus_QUIC_NilService(t *testing.T) {
+	srv := newTestServer(&mockKVService{}, &mockAdminService{})
+	_, err := srv.handleBarrierOfficerClaimStatus(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected ServiceNotConfiguredError")
+	}
+}
+
+func TestHandleBarrierOfficerClaimStatus_QUIC_Success(t *testing.T) {
+	now := time.Date(2026, 2, 3, 4, 0, 0, 0, time.UTC)
+	svc := newExtQUICBarrierSvc()
+	svc.officerClaimStatusFn = func(_ context.Context) ([]*service.BarrierOfficerStatus, error) {
+		return []*service.BarrierOfficerStatus{
+			{Username: "bob", ShareIndex: 2, EnrolledAt: now, ClaimedAt: now},
+		}, nil
+	}
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithBarrierService(svc))
+
+	resp, err := srv.handleBarrierOfficerClaimStatus(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var out pb.BarrierOfficerClaimStatusResponse
+	if protoErr := proto.Unmarshal(resp, &out); protoErr != nil {
+		t.Fatalf("unmarshal: %v", protoErr)
+	}
+	if len(out.GetOfficers()) != 1 {
+		t.Fatalf("officers len = %d, want 1", len(out.GetOfficers()))
+	}
+	if out.GetOfficers()[0].GetClaimedAt() == "" {
+		t.Fatal("claimed_at empty for claimed officer")
+	}
+}
+
+func TestHandleBarrierOfficerClaimStatus_QUIC_ServiceError(t *testing.T) {
+	svc := newExtQUICBarrierSvc()
+	svc.officerClaimStatusFn = func(_ context.Context) ([]*service.BarrierOfficerStatus, error) {
+		return nil, ceremony.ErrOfficerNotFound
+	}
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithBarrierService(svc))
+
+	_, err := srv.handleBarrierOfficerClaimStatus(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected error from service")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handleBarrierShareClaimBegin tests
+// ---------------------------------------------------------------------------
+
+func TestHandleBarrierShareClaimBegin_QUIC_NilService(t *testing.T) {
+	srv := newTestServer(&mockKVService{}, &mockAdminService{})
+	payload, _ := proto.Marshal(&pb.BarrierShareClaimBeginRequest{Username: "officer1"})
+	_, err := srv.handleBarrierShareClaimBegin(context.Background(), payload)
+	if err == nil {
+		t.Fatal("expected ServiceNotConfiguredError")
+	}
+}
+
+func TestHandleBarrierShareClaimBegin_QUIC_MissingCert(t *testing.T) {
+	svc := newExtQUICBarrierSvc()
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithBarrierService(svc))
+
+	payload, _ := proto.Marshal(&pb.BarrierShareClaimBeginRequest{Username: "officer1"})
+	_, err := srv.handleBarrierShareClaimBegin(context.Background(), payload)
+	if err == nil {
+		t.Fatal("expected ClientCertRequiredError")
+	}
+	var ce *ClientCertRequiredError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected *ClientCertRequiredError, got %T", err)
+	}
+}
+
+func TestHandleBarrierShareClaimBegin_QUIC_Success(t *testing.T) {
+	expires := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	svc := newExtQUICBarrierSvc()
+	svc.shareClaimBeginFn = func(_ context.Context, username, _ string) (*service.BarrierShareClaimChallenge, error) {
+		if username != "officer1" {
+			t.Fatalf("username = %q, want officer1", username)
+		}
+		return &service.BarrierShareClaimChallenge{
+			NonceHex:  "deadbeef",
+			ExpiresAt: expires,
+		}, nil
+	}
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithBarrierService(svc))
+
+	payload, _ := proto.Marshal(&pb.BarrierShareClaimBeginRequest{Username: "officer1"})
+	resp, err := srv.handleBarrierShareClaimBegin(ctxWithFakeTLSQuic(), payload)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var out pb.BarrierShareClaimBeginResponse
+	if protoErr := proto.Unmarshal(resp, &out); protoErr != nil {
+		t.Fatalf("unmarshal: %v", protoErr)
+	}
+	if out.GetNonceHex() != "deadbeef" {
+		t.Fatalf("nonce_hex = %q, want deadbeef", out.GetNonceHex())
+	}
+	if out.GetExpiresAt() == "" {
+		t.Fatal("expires_at should be set")
+	}
+}
+
+func TestHandleBarrierShareClaimBegin_QUIC_ServiceError(t *testing.T) {
+	svc := newExtQUICBarrierSvc()
+	svc.shareClaimBeginFn = func(_ context.Context, _, _ string) (*service.BarrierShareClaimChallenge, error) {
+		return nil, ceremony.ErrOfficerNotFound
+	}
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithBarrierService(svc))
+
+	payload, _ := proto.Marshal(&pb.BarrierShareClaimBeginRequest{Username: "officer1"})
+	_, err := srv.handleBarrierShareClaimBegin(ctxWithFakeTLSQuic(), payload)
+	if err == nil {
+		t.Fatal("expected error from service")
+	}
+	if !errors.Is(err, ceremony.ErrOfficerNotFound) {
+		t.Fatalf("expected ErrOfficerNotFound, got %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handleBarrierShareClaimComplete tests
+// ---------------------------------------------------------------------------
+
+func TestHandleBarrierShareClaimComplete_QUIC_NilService(t *testing.T) {
+	srv := newTestServer(&mockKVService{}, &mockAdminService{})
+	payload, _ := proto.Marshal(&pb.BarrierShareClaimCompleteRequest{
+		Username:  "officer1",
+		NonceHex:  "aabb",
+		Signature: []byte("sig"),
+	})
+	_, err := srv.handleBarrierShareClaimComplete(context.Background(), payload)
+	if err == nil {
+		t.Fatal("expected ServiceNotConfiguredError")
+	}
+}
+
+func TestHandleBarrierShareClaimComplete_QUIC_MissingCert(t *testing.T) {
+	svc := newExtQUICBarrierSvc()
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithBarrierService(svc))
+
+	payload, _ := proto.Marshal(&pb.BarrierShareClaimCompleteRequest{
+		Username:  "officer1",
+		NonceHex:  "aabb",
+		Signature: []byte("sig"),
+	})
+	_, err := srv.handleBarrierShareClaimComplete(context.Background(), payload)
+	if err == nil {
+		t.Fatal("expected ClientCertRequiredError")
+	}
+	var ce *ClientCertRequiredError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected *ClientCertRequiredError, got %T", err)
+	}
+}
+
+func TestHandleBarrierShareClaimComplete_QUIC_Success(t *testing.T) {
+	shareBytes := []byte("system-share-bytes")
+	svc := newExtQUICBarrierSvc()
+	svc.shareClaimCompleteFn = func(_ context.Context, username, nonceHex string, sig []byte, _ string) (*service.BarrierShareClaimResult, error) {
+		if username != "officer1" {
+			t.Fatalf("username = %q, want officer1", username)
+		}
+		return &service.BarrierShareClaimResult{
+			ShareIndex: 1,
+			ShareBytes: shareBytes,
+		}, nil
+	}
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithBarrierService(svc))
+
+	payload, _ := proto.Marshal(&pb.BarrierShareClaimCompleteRequest{
+		Username:  "officer1",
+		NonceHex:  "deadbeef",
+		Signature: []byte("sig"),
+	})
+	resp, err := srv.handleBarrierShareClaimComplete(ctxWithFakeTLSQuic(), payload)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var out pb.BarrierShareClaimCompleteResponse
+	if protoErr := proto.Unmarshal(resp, &out); protoErr != nil {
+		t.Fatalf("unmarshal: %v", protoErr)
+	}
+	// INV-11: share_bytes must appear exactly in the claim-complete response.
+	if len(out.GetShareBytes()) == 0 {
+		t.Fatal("share_bytes missing from claim-complete response")
+	}
+	if out.GetShareIndex() != 1 {
+		t.Fatalf("share_index = %d, want 1", out.GetShareIndex())
+	}
+}
+
+func TestHandleBarrierShareClaimComplete_QUIC_ServiceError(t *testing.T) {
+	svc := newExtQUICBarrierSvc()
+	svc.shareClaimCompleteFn = func(_ context.Context, _, _ string, _ []byte, _ string) (*service.BarrierShareClaimResult, error) {
+		return nil, ceremony.ErrCertThumbprintMismatch
+	}
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithBarrierService(svc))
+
+	payload, _ := proto.Marshal(&pb.BarrierShareClaimCompleteRequest{
+		Username:  "officer1",
+		NonceHex:  "aabb",
+		Signature: []byte("sig"),
+	})
+	_, err := srv.handleBarrierShareClaimComplete(ctxWithFakeTLSQuic(), payload)
+	if err == nil {
+		t.Fatal("expected error from service")
+	}
+	if !errors.Is(err, ceremony.ErrCertThumbprintMismatch) {
+		t.Fatalf("expected ErrCertThumbprintMismatch, got %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handleBarrierShamirSealVote tests
+// ---------------------------------------------------------------------------
+
+func TestHandleBarrierShamirSealVote_QUIC_NilService(t *testing.T) {
+	srv := newTestServer(&mockKVService{}, &mockAdminService{})
+	payload, _ := proto.Marshal(&pb.BarrierShamirSealVoteRequest{Share: "share-abc"})
+	_, err := srv.handleBarrierShamirSealVote(context.Background(), payload)
+	if err == nil {
+		t.Fatal("expected ServiceNotConfiguredError")
+	}
+}
+
+func TestHandleBarrierShamirSealVote_QUIC_Success(t *testing.T) {
+	svc := newExtQUICBarrierSvc()
+	svc.shamirSealVoteFn = func(_ context.Context, share string) (*service.UnsealShareProgress, error) {
+		if share != "share-abc" {
+			t.Fatalf("share = %q, want share-abc", share)
+		}
+		return &service.UnsealShareProgress{Required: 3, Submitted: 1, Complete: false}, nil
+	}
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithBarrierService(svc))
+
+	payload, _ := proto.Marshal(&pb.BarrierShamirSealVoteRequest{Share: "share-abc"})
+	resp, err := srv.handleBarrierShamirSealVote(context.Background(), payload)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var out pb.BarrierShamirSealVoteResponse
+	if protoErr := proto.Unmarshal(resp, &out); protoErr != nil {
+		t.Fatalf("unmarshal: %v", protoErr)
+	}
+	if out.GetRequired() != 3 {
+		t.Fatalf("required = %d, want 3", out.GetRequired())
+	}
+	if out.GetSubmitted() != 1 {
+		t.Fatalf("submitted = %d, want 1", out.GetSubmitted())
+	}
+	if out.GetComplete() {
+		t.Fatal("complete should be false")
+	}
+}
+
+func TestHandleBarrierShamirSealVote_QUIC_ServiceError(t *testing.T) {
+	svc := newExtQUICBarrierSvc()
+	svc.shamirSealVoteFn = func(_ context.Context, _ string) (*service.UnsealShareProgress, error) {
+		return nil, seal.ErrSealVoteVerificationFailed
+	}
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithBarrierService(svc))
+
+	payload, _ := proto.Marshal(&pb.BarrierShamirSealVoteRequest{Share: "bad-share"})
+	_, err := srv.handleBarrierShamirSealVote(context.Background(), payload)
+	if err == nil {
+		t.Fatal("expected error from service")
+	}
+	if !errors.Is(err, seal.ErrSealVoteVerificationFailed) {
+		t.Fatalf("expected ErrSealVoteVerificationFailed, got %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handleBarrierRecoveryOfficerRegister tests
+// ---------------------------------------------------------------------------
+
+func TestHandleBarrierRecoveryOfficerRegister_QUIC_NilService(t *testing.T) {
+	srv := newTestServer(&mockKVService{}, &mockAdminService{})
+	payload, _ := proto.Marshal(&pb.BarrierOfficerRegisterRequest{Username: "recovery-officer"})
+	_, err := srv.handleBarrierRecoveryOfficerRegister(context.Background(), payload)
+	if err == nil {
+		t.Fatal("expected ServiceNotConfiguredError")
+	}
+}
+
+func TestHandleBarrierRecoveryOfficerRegister_QUIC_Success(t *testing.T) {
+	svc := newExtQUICBarrierSvc()
+	svc.recoveryOfficerRegisterFn = func(_ context.Context, req *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
+		return &service.BarrierOfficerRegisterResult{
+			CertPEM:    []byte("recovery-cert-pem"),
+			ShareIndex: 3,
+		}, nil
+	}
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithBarrierService(svc))
+
+	payload, _ := proto.Marshal(&pb.BarrierOfficerRegisterRequest{
+		Username: "recovery-officer",
+		CsrPem:   []byte("recovery-csr"),
+	})
+	resp, err := srv.handleBarrierRecoveryOfficerRegister(context.Background(), payload)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var out pb.BarrierOfficerRegisterResponse
+	if protoErr := proto.Unmarshal(resp, &out); protoErr != nil {
+		t.Fatalf("unmarshal: %v", protoErr)
+	}
+	if string(out.GetCertPem()) != "recovery-cert-pem" {
+		t.Fatalf("cert_pem = %q, want recovery-cert-pem", out.GetCertPem())
+	}
+}
+
+func TestHandleBarrierRecoveryOfficerRegister_QUIC_ServiceError(t *testing.T) {
+	svc := newExtQUICBarrierSvc()
+	svc.recoveryOfficerRegisterFn = func(_ context.Context, _ *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
+		return nil, errors.New("recovery register failed")
+	}
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithBarrierService(svc))
+
+	payload, _ := proto.Marshal(&pb.BarrierOfficerRegisterRequest{Username: "recovery-officer"})
+	_, err := srv.handleBarrierRecoveryOfficerRegister(context.Background(), payload)
+	if err == nil {
+		t.Fatal("expected error from service")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handleBarrierRecoveryShareClaimBegin tests
+// ---------------------------------------------------------------------------
+
+func TestHandleBarrierRecoveryShareClaimBegin_QUIC_NilService(t *testing.T) {
+	srv := newTestServer(&mockKVService{}, &mockAdminService{})
+	payload, _ := proto.Marshal(&pb.BarrierShareClaimBeginRequest{Username: "rec-officer"})
+	_, err := srv.handleBarrierRecoveryShareClaimBegin(context.Background(), payload)
+	if err == nil {
+		t.Fatal("expected ServiceNotConfiguredError")
+	}
+}
+
+func TestHandleBarrierRecoveryShareClaimBegin_QUIC_MissingCert(t *testing.T) {
+	svc := newExtQUICBarrierSvc()
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithBarrierService(svc))
+
+	payload, _ := proto.Marshal(&pb.BarrierShareClaimBeginRequest{Username: "rec-officer"})
+	_, err := srv.handleBarrierRecoveryShareClaimBegin(context.Background(), payload)
+	if err == nil {
+		t.Fatal("expected ClientCertRequiredError")
+	}
+	var ce *ClientCertRequiredError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected *ClientCertRequiredError, got %T", err)
+	}
+}
+
+func TestHandleBarrierRecoveryShareClaimBegin_QUIC_Success(t *testing.T) {
+	expires := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	svc := newExtQUICBarrierSvc()
+	svc.recoveryShareClaimBeginFn = func(_ context.Context, username, _ string) (*service.BarrierShareClaimChallenge, error) {
+		return &service.BarrierShareClaimChallenge{
+			NonceHex:  "cafebabe",
+			ExpiresAt: expires,
+		}, nil
+	}
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithBarrierService(svc))
+
+	payload, _ := proto.Marshal(&pb.BarrierShareClaimBeginRequest{Username: "rec-officer"})
+	resp, err := srv.handleBarrierRecoveryShareClaimBegin(ctxWithFakeTLSQuic(), payload)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var out pb.BarrierShareClaimBeginResponse
+	if protoErr := proto.Unmarshal(resp, &out); protoErr != nil {
+		t.Fatalf("unmarshal: %v", protoErr)
+	}
+	if out.GetNonceHex() != "cafebabe" {
+		t.Fatalf("nonce_hex = %q, want cafebabe", out.GetNonceHex())
+	}
+}
+
+func TestHandleBarrierRecoveryShareClaimBegin_QUIC_ServiceError(t *testing.T) {
+	svc := newExtQUICBarrierSvc()
+	svc.recoveryShareClaimBeginFn = func(_ context.Context, _, _ string) (*service.BarrierShareClaimChallenge, error) {
+		return nil, ceremony.ErrNoPendingShare
+	}
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithBarrierService(svc))
+
+	payload, _ := proto.Marshal(&pb.BarrierShareClaimBeginRequest{Username: "rec-officer"})
+	_, err := srv.handleBarrierRecoveryShareClaimBegin(ctxWithFakeTLSQuic(), payload)
+	if err == nil {
+		t.Fatal("expected error from service")
+	}
+	if !errors.Is(err, ceremony.ErrNoPendingShare) {
+		t.Fatalf("expected ErrNoPendingShare, got %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handleBarrierRecoveryShareClaimComplete tests
+// ---------------------------------------------------------------------------
+
+func TestHandleBarrierRecoveryShareClaimComplete_QUIC_NilService(t *testing.T) {
+	srv := newTestServer(&mockKVService{}, &mockAdminService{})
+	payload, _ := proto.Marshal(&pb.BarrierShareClaimCompleteRequest{
+		Username:  "rec-officer",
+		NonceHex:  "aabb",
+		Signature: []byte("sig"),
+	})
+	_, err := srv.handleBarrierRecoveryShareClaimComplete(context.Background(), payload)
+	if err == nil {
+		t.Fatal("expected ServiceNotConfiguredError")
+	}
+}
+
+func TestHandleBarrierRecoveryShareClaimComplete_QUIC_MissingCert(t *testing.T) {
+	svc := newExtQUICBarrierSvc()
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithBarrierService(svc))
+
+	payload, _ := proto.Marshal(&pb.BarrierShareClaimCompleteRequest{
+		Username:  "rec-officer",
+		NonceHex:  "aabb",
+		Signature: []byte("sig"),
+	})
+	_, err := srv.handleBarrierRecoveryShareClaimComplete(context.Background(), payload)
+	if err == nil {
+		t.Fatal("expected ClientCertRequiredError")
+	}
+	var ce *ClientCertRequiredError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected *ClientCertRequiredError, got %T", err)
+	}
+}
+
+func TestHandleBarrierRecoveryShareClaimComplete_QUIC_Success(t *testing.T) {
+	recoveryShareBytes := []byte("recovery-share-bytes")
+	svc := newExtQUICBarrierSvc()
+	svc.recoveryShareClaimCompleteFn = func(_ context.Context, _, _ string, _ []byte, _ string) (*service.BarrierShareClaimResult, error) {
+		return &service.BarrierShareClaimResult{
+			ShareIndex: 3,
+			ShareBytes: recoveryShareBytes,
+		}, nil
+	}
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithBarrierService(svc))
+
+	payload, _ := proto.Marshal(&pb.BarrierShareClaimCompleteRequest{
+		Username:  "rec-officer",
+		NonceHex:  "cafebabe",
+		Signature: []byte("valid-sig"),
+	})
+	resp, err := srv.handleBarrierRecoveryShareClaimComplete(ctxWithFakeTLSQuic(), payload)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var out pb.BarrierShareClaimCompleteResponse
+	if protoErr := proto.Unmarshal(resp, &out); protoErr != nil {
+		t.Fatalf("unmarshal: %v", protoErr)
+	}
+	// INV-11: share_bytes appears only in claim-complete.
+	if len(out.GetShareBytes()) == 0 {
+		t.Fatal("share_bytes missing from recovery claim-complete response")
+	}
+	if out.GetShareIndex() != 3 {
+		t.Fatalf("share_index = %d, want 3", out.GetShareIndex())
+	}
+}
+
+func TestHandleBarrierRecoveryShareClaimComplete_QUIC_ServiceError(t *testing.T) {
+	svc := newExtQUICBarrierSvc()
+	svc.recoveryShareClaimCompleteFn = func(_ context.Context, _, _ string, _ []byte, _ string) (*service.BarrierShareClaimResult, error) {
+		return nil, ceremony.ErrShareAlreadyClaimed
+	}
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithBarrierService(svc))
+
+	payload, _ := proto.Marshal(&pb.BarrierShareClaimCompleteRequest{
+		Username:  "rec-officer",
+		NonceHex:  "aabb",
+		Signature: []byte("sig"),
+	})
+	_, err := srv.handleBarrierRecoveryShareClaimComplete(ctxWithFakeTLSQuic(), payload)
+	if err == nil {
+		t.Fatal("expected error from service")
+	}
+	if !errors.Is(err, ceremony.ErrShareAlreadyClaimed) {
+		t.Fatalf("expected ErrShareAlreadyClaimed, got %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// UnmarshalError paths — corrupt protobuf payloads hit the unmarshal branch
+// ---------------------------------------------------------------------------
+
+func TestHandleBarrierOfficerRegister_QUIC_UnmarshalError(t *testing.T) {
+	svc := newExtQUICBarrierSvc()
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithBarrierService(svc))
+	_, err := srv.handleBarrierOfficerRegister(context.Background(), []byte{0xff, 0xfe})
+	if err == nil {
+		t.Fatal("expected UnmarshalError")
+	}
+	var ue *UnmarshalError
+	if !errors.As(err, &ue) {
+		t.Fatalf("expected *UnmarshalError, got %T", err)
+	}
+}
+
+func TestHandleBarrierShareClaimBegin_QUIC_UnmarshalError(t *testing.T) {
+	svc := newExtQUICBarrierSvc()
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithBarrierService(svc))
+	_, err := srv.handleBarrierShareClaimBegin(context.Background(), []byte{0xff, 0xfe})
+	if err == nil {
+		t.Fatal("expected UnmarshalError")
+	}
+	var ue *UnmarshalError
+	if !errors.As(err, &ue) {
+		t.Fatalf("expected *UnmarshalError, got %T", err)
+	}
+}
+
+func TestHandleBarrierShareClaimComplete_QUIC_UnmarshalError(t *testing.T) {
+	svc := newExtQUICBarrierSvc()
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithBarrierService(svc))
+	_, err := srv.handleBarrierShareClaimComplete(context.Background(), []byte{0xff, 0xfe})
+	if err == nil {
+		t.Fatal("expected UnmarshalError")
+	}
+	var ue *UnmarshalError
+	if !errors.As(err, &ue) {
+		t.Fatalf("expected *UnmarshalError, got %T", err)
+	}
+}
+
+func TestHandleBarrierShamirSealVote_QUIC_UnmarshalError(t *testing.T) {
+	svc := newExtQUICBarrierSvc()
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithBarrierService(svc))
+	_, err := srv.handleBarrierShamirSealVote(context.Background(), []byte{0xff, 0xfe})
+	if err == nil {
+		t.Fatal("expected UnmarshalError")
+	}
+	var ue *UnmarshalError
+	if !errors.As(err, &ue) {
+		t.Fatalf("expected *UnmarshalError, got %T", err)
+	}
+}
+
+func TestHandleBarrierRecoveryOfficerRegister_QUIC_UnmarshalError(t *testing.T) {
+	svc := newExtQUICBarrierSvc()
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithBarrierService(svc))
+	_, err := srv.handleBarrierRecoveryOfficerRegister(context.Background(), []byte{0xff, 0xfe})
+	if err == nil {
+		t.Fatal("expected UnmarshalError")
+	}
+	var ue *UnmarshalError
+	if !errors.As(err, &ue) {
+		t.Fatalf("expected *UnmarshalError, got %T", err)
+	}
+}
+
+func TestHandleBarrierRecoveryShareClaimBegin_QUIC_UnmarshalError(t *testing.T) {
+	svc := newExtQUICBarrierSvc()
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithBarrierService(svc))
+	_, err := srv.handleBarrierRecoveryShareClaimBegin(context.Background(), []byte{0xff, 0xfe})
+	if err == nil {
+		t.Fatal("expected UnmarshalError")
+	}
+	var ue *UnmarshalError
+	if !errors.As(err, &ue) {
+		t.Fatalf("expected *UnmarshalError, got %T", err)
+	}
+}
+
+func TestHandleBarrierRecoveryShareClaimComplete_QUIC_UnmarshalError(t *testing.T) {
+	svc := newExtQUICBarrierSvc()
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithBarrierService(svc))
+	_, err := srv.handleBarrierRecoveryShareClaimComplete(context.Background(), []byte{0xff, 0xfe})
+	if err == nil {
+		t.Fatal("expected UnmarshalError")
 	}
 	var ue *UnmarshalError
 	if !errors.As(err, &ue) {

@@ -117,3 +117,12 @@ type nilRequestError struct {
 func (e *nilRequestError) Error() string {
 	return "mcp transport: " + e.Method + ": nil request"
 }
+
+// mcpMissingTenantIDError is returned when a tenant-scoped MCP method is
+// called without a tenant identifier.
+type mcpMissingTenantIDError struct{}
+
+// Error returns a human-readable description.
+func (e *mcpMissingTenantIDError) Error() string {
+	return "mcp transport: missing tenant_id"
+}

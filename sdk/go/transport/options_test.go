@@ -110,6 +110,7 @@ func TestConsistencyLevel_String(t *testing.T) {
 		{ConsistencyStrong, "strong"},
 		{ConsistencyLinearizable, "linearizable"},
 		{ConsistencyEventual, "eventual"},
+		{ConsistencyFollower, "follower"},
 		{ConsistencyLevel(99), "unknown"},
 	}
 	for _, tt := range tests {
@@ -127,7 +128,8 @@ func TestConsistencyLevel_IsValid(t *testing.T) {
 		{ConsistencyStrong, true},
 		{ConsistencyLinearizable, true},
 		{ConsistencyEventual, true},
-		{ConsistencyLevel(3), false},
+		{ConsistencyFollower, true},
+		{ConsistencyLevel(4), false},
 		{ConsistencyLevel(255), false},
 	}
 	for _, tt := range tests {
@@ -148,6 +150,7 @@ func TestParseConsistencyLevel(t *testing.T) {
 		{"", ConsistencyLinearizable, false},
 		{"eventual", ConsistencyEventual, false},
 		{"stale", ConsistencyEventual, false},
+		{"follower", ConsistencyFollower, false},
 		{"invalid", 0, true},
 		{"STRONG", 0, true},
 	}

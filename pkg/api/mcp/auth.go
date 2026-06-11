@@ -23,6 +23,7 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 )
 
 // authHTTPContext authenticates the mTLS peer of an incoming MCP HTTP request
@@ -43,6 +44,20 @@ func (s *Server) authHTTPContext(ctx context.Context, r *http.Request) context.C
 		return ctx
 	}
 	return authCtx
+}
+
+// authorizeTenantBarrierOp authorizes a per-tenant barrier tool invocation
+// against the TRUE target tenant carried in the tool arguments (not the
+// caller's ambient tenant). It delegates to the tenant-scoped authorizer,
+// whose ScopeTenantOnly rule denies the system tenant and any cross-tenant
+// access. When no auth middleware is configured the gate is a no-op, matching
+// the rest of the server's unauthenticated-mode behavior. It mirrors
+// authorizeTenantBarrierOp on the QUIC, gRPC, and REST servers.
+func (s *Server) authorizeTenantBarrierOp(ctx context.Context, tenantID string, perm permission.Permission) error {
+	if s.authMW == nil {
+		return nil
+	}
+	return s.authMW.AuthorizeTenant(ctx, tenantID, perm)
 }
 
 // toolAuthzMiddleware returns an mcp-go tool-handler middleware that authorizes

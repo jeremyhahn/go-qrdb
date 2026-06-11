@@ -40,6 +40,11 @@ type EncryptionBarrier = seal.EncryptionBarrier
 // TenantKeyManager manages per-tenant DEK derivation.
 type TenantKeyManager = seal.TenantKeyManager
 
+// CeremonyDistributor seals Shamir share material to enrolled Security
+// Officers. Implementations split the share secret and seal one share to
+// each officer's enclave; the secret is wiped before either method returns.
+type CeremonyDistributor = seal.CeremonyDistributor
+
 // ---------------------------------------------------------------------------
 // Strategy types (re-exported from go-quicraft via pkg/seal)
 // ---------------------------------------------------------------------------
@@ -252,6 +257,10 @@ var NewStorageAdapter = seal.NewStorageAdapter
 
 // NewShamirShareAccumulator creates a new share accumulator for Shamir quorum.
 var NewShamirShareAccumulator = seal.NewShamirShareAccumulator
+
+// NewShamirShareSplitter creates a ShareSplitter that divides a secret into
+// threshold-of-total Shamir shares.
+var NewShamirShareSplitter = seal.NewShamirShareSplitter
 
 // NewInvocationCounter creates a new invocation counter.
 var NewInvocationCounter = seal.NewInvocationCounter

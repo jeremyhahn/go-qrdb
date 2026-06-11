@@ -148,6 +148,9 @@ func (b *listOkGetFailBackend) Get(_ context.Context, _ string) ([]byte, error) 
 func (b *listOkGetFailBackend) Put(ctx context.Context, key string, data []byte) error {
 	return b.inner.Put(ctx, key, data)
 }
+func (b *listOkGetFailBackend) PutIfAbsent(ctx context.Context, key string, data []byte) (bool, error) {
+	return b.inner.PutIfAbsent(ctx, key, data)
+}
 func (b *listOkGetFailBackend) Delete(ctx context.Context, key string) error {
 	return b.inner.Delete(ctx, key)
 }
@@ -178,6 +181,9 @@ func (b *disappearingBackend) Get(ctx context.Context, key string) ([]byte, erro
 }
 func (b *disappearingBackend) Put(ctx context.Context, key string, data []byte) error {
 	return b.inner.Put(ctx, key, data)
+}
+func (b *disappearingBackend) PutIfAbsent(ctx context.Context, key string, data []byte) (bool, error) {
+	return b.inner.PutIfAbsent(ctx, key, data)
 }
 func (b *disappearingBackend) Delete(ctx context.Context, key string) error {
 	return b.inner.Delete(ctx, key)

@@ -60,14 +60,43 @@ type restTenantBarrierUnsealRequest struct {
 	Key []byte `json:"key,omitempty"`
 }
 
+// restTenantBarrierInitResponse is the on-wire JSON returned by the init
+// endpoint for the Shamir strategy. For none/passphrase the server returns
+// 204 No Content and this struct is never decoded.
+type restTenantBarrierInitResponse struct {
+	TenantID    string `json:"tenant_id"`
+	Strategy    string `json:"strategy"`
+	ShareCount  int    `json:"share_count,omitempty"`
+	Threshold   int    `json:"threshold,omitempty"`
+	TotalShares int    `json:"total_shares,omitempty"`
+}
+
+// restTenantBarrierUnsealShareRequest is the on-wire JSON for the
+// unseal-share endpoint. Share carries a single Shamir share string.
+type restTenantBarrierUnsealShareRequest struct {
+	Share string `json:"share"`
+}
+
+// restTenantBarrierUnsealProgress is the on-wire JSON returned by the
+// unseal-share endpoint.
+type restTenantBarrierUnsealProgress struct {
+	TenantID  string `json:"tenant_id"`
+	Required  int    `json:"required"`
+	Submitted int    `json:"submitted"`
+	Complete  bool   `json:"complete"`
+	Sealed    bool   `json:"sealed"`
+}
+
 // restTenantBarrierStatus is the on-wire JSON returned by the status endpoint.
 // It mirrors tenant.TenantBarrierStatus on the server side.
 type restTenantBarrierStatus struct {
-	TenantID       string `json:"tenant_id"`
-	Sealed         bool   `json:"sealed"`
-	Initialized    bool   `json:"initialized"`
-	Strategy       string `json:"strategy"`
-	HardwareBacked bool   `json:"hardware_backed"`
+	TenantID        string `json:"tenant_id"`
+	Sealed          bool   `json:"sealed"`
+	Initialized     bool   `json:"initialized"`
+	Strategy        string `json:"strategy"`
+	HardwareBacked  bool   `json:"hardware_backed"`
+	ShamirThreshold int    `json:"shamir_threshold,omitempty"`
+	ShamirTotal     int    `json:"shamir_total,omitempty"`
 }
 
 // toTenantInfo converts the flat REST payload into the transport-side
@@ -225,15 +254,18 @@ func (t *Transport) UpdateTenantQuotas(ctx context.Context, req *transport.Updat
 
 // TenantBarrierInit initializes a per-tenant barrier.
 // Maps to POST /v1/tenants/{id}/barrier/init.
-func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.TenantBarrierInitRequest) error {
+// For the Shamir strategy the server returns 200 with a JSON body carrying the
+// generated shares; for none/passphrase it returns 204 No Content and the
+// response is populated from the request fields.
+func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.TenantBarrierInitRequest) (*transport.TenantBarrierInitResponse, error) {
 	if t.closed.Load() {
-		return &transport.ClosedError{}
+		return nil, &transport.ClosedError{}
 	}
 	if req == nil {
-		return &transport.RequestError{Method: "TenantBarrierInit", Err: &nilRequestError{}}
+		return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: &nilRequestError{}}
 	}
 	if req.TenantID == "" {
-		return &transport.RequestError{Method: "TenantBarrierInit", Err: &emptyTenantIDError{}}
+		return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: &emptyTenantIDError{}}
 	}
 	wireReq := restTenantBarrierInitRequest{
 		Passphrase: req.Passphrase,
@@ -241,8 +273,87 @@ func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.Tenant
 		Shares:     req.Shares,
 		Strategy:   req.Strategy,
 	}
+	data, err := json.Marshal(wireReq)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: &jsonEncodeError{Err: err}}
+	}
 	path := "/v1/tenants/" + url.PathEscape(req.TenantID) + "/barrier/init"
-	return t.postJSONNoContent(ctx, "TenantBarrierInit", path, wireReq)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, t.baseURL+path, bytes.NewReader(data))
+	if err != nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: err}
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := t.client.Do(httpReq)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: err}
+	}
+	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}()
+	if resp.StatusCode == http.StatusNoContent {
+		// none/passphrase strategy: no body, populate from request.
+		return &transport.TenantBarrierInitResponse{TenantID: req.TenantID, Strategy: req.Strategy}, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, t.decodeErrorResponse("TenantBarrierInit", resp)
+	}
+	var wire restTenantBarrierInitResponse
+	if err := json.NewDecoder(resp.Body).Decode(&wire); err != nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: &jsonDecodeError{Err: err}}
+	}
+	return &transport.TenantBarrierInitResponse{
+		TenantID:    wire.TenantID,
+		Strategy:    wire.Strategy,
+		ShareCount:  wire.ShareCount,
+		Threshold:   wire.Threshold,
+		TotalShares: wire.TotalShares,
+	}, nil
+}
+
+// TenantBarrierUnsealShare submits a single Shamir share toward a per-tenant
+// barrier's quorum threshold.
+// Maps to POST /v1/tenants/{id}/barrier/unseal-share.
+func (t *Transport) TenantBarrierUnsealShare(ctx context.Context, req *transport.TenantBarrierUnsealShareRequest) (*transport.TenantBarrierUnsealProgress, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierUnsealShare", Err: &nilRequestError{}}
+	}
+	if req.TenantID == "" {
+		return nil, &transport.RequestError{Method: "TenantBarrierUnsealShare", Err: &emptyTenantIDError{}}
+	}
+	wireReq := restTenantBarrierUnsealShareRequest{Share: req.Share}
+	data, err := json.Marshal(wireReq)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierUnsealShare", Err: &jsonEncodeError{Err: err}}
+	}
+	path := "/v1/tenants/" + url.PathEscape(req.TenantID) + "/barrier/unseal-share"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, t.baseURL+path, bytes.NewReader(data))
+	if err != nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierUnsealShare", Err: err}
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := t.client.Do(httpReq)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierUnsealShare", Err: err}
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, t.decodeErrorResponse("TenantBarrierUnsealShare", resp)
+	}
+	var wire restTenantBarrierUnsealProgress
+	if err := json.NewDecoder(resp.Body).Decode(&wire); err != nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierUnsealShare", Err: &jsonDecodeError{Err: err}}
+	}
+	return &transport.TenantBarrierUnsealProgress{
+		TenantID:  wire.TenantID,
+		Required:  wire.Required,
+		Submitted: wire.Submitted,
+		Complete:  wire.Complete,
+		Sealed:    wire.Sealed,
+	}, nil
 }
 
 // TenantBarrierUnseal unseals a per-tenant barrier.
@@ -334,12 +445,147 @@ func (t *Transport) TenantBarrierStatus(ctx context.Context, req *transport.Tena
 		tenantID = req.TenantID
 	}
 	return &transport.TenantBarrierStatusResponse{
-		TenantID:       tenantID,
-		Sealed:         wire.Sealed,
-		Initialized:    wire.Initialized,
-		Strategy:       wire.Strategy,
-		HardwareBacked: wire.HardwareBacked,
+		TenantID:        tenantID,
+		Sealed:          wire.Sealed,
+		Initialized:     wire.Initialized,
+		Strategy:        wire.Strategy,
+		HardwareBacked:  wire.HardwareBacked,
+		ShamirThreshold: wire.ShamirThreshold,
+		ShamirTotal:     wire.ShamirTotal,
 	}, nil
+}
+
+// TenantBarrierOfficerRegister registers a Security Officer for the named
+// tenant's barrier. Maps to POST /v1/tenants/{id}/barrier/officers.
+func (t *Transport) TenantBarrierOfficerRegister(ctx context.Context, req *transport.TenantOfficerRegisterRequest) (*transport.OfficerRegisterResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if req == nil || req.TenantID == "" {
+		return nil, &transport.RequestError{Method: "TenantBarrierOfficerRegister", Err: &emptyTenantIDError{}}
+	}
+	path := "/v1/tenants/" + url.PathEscape(req.TenantID) + "/barrier/officers"
+	var resp transport.OfficerRegisterResponse
+	if err := t.postJSONDecode(ctx, "TenantBarrierOfficerRegister", path, req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// TenantBarrierOfficerList returns all enrolled Security Officers for the
+// named tenant's barrier. Maps to GET /v1/tenants/{id}/barrier/officers.
+func (t *Transport) TenantBarrierOfficerList(ctx context.Context, tenantID string) ([]*transport.OfficerStatus, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if tenantID == "" {
+		return nil, &transport.RequestError{Method: "TenantBarrierOfficerList", Err: &emptyTenantIDError{}}
+	}
+	path := "/v1/tenants/" + url.PathEscape(tenantID) + "/barrier/officers"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, t.baseURL+path, nil)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierOfficerList", Err: err}
+	}
+	resp, err := t.client.Do(httpReq)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierOfficerList", Err: err}
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, t.decodeErrorResponse("TenantBarrierOfficerList", resp)
+	}
+	var wire struct {
+		Officers []*transport.OfficerStatus `json:"officers"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&wire); err != nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierOfficerList", Err: &jsonDecodeError{Err: err}}
+	}
+	return wire.Officers, nil
+}
+
+// TenantBarrierOfficerClaimStatus returns a per-officer claim status snapshot
+// for the named tenant's barrier.
+// Maps to GET /v1/tenants/{id}/barrier/officers/claim-status.
+func (t *Transport) TenantBarrierOfficerClaimStatus(ctx context.Context, tenantID string) ([]*transport.OfficerStatus, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if tenantID == "" {
+		return nil, &transport.RequestError{Method: "TenantBarrierOfficerClaimStatus", Err: &emptyTenantIDError{}}
+	}
+	path := "/v1/tenants/" + url.PathEscape(tenantID) + "/barrier/officers/claim-status"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, t.baseURL+path, nil)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierOfficerClaimStatus", Err: err}
+	}
+	resp, err := t.client.Do(httpReq)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierOfficerClaimStatus", Err: err}
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, t.decodeErrorResponse("TenantBarrierOfficerClaimStatus", resp)
+	}
+	var wire struct {
+		Officers []*transport.OfficerStatus `json:"officers"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&wire); err != nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierOfficerClaimStatus", Err: &jsonDecodeError{Err: err}}
+	}
+	return wire.Officers, nil
+}
+
+// TenantBarrierShareClaimBegin issues a challenge nonce to the named Security
+// Officer for the tenant barrier share claim handshake.
+// Maps to POST /v1/tenants/{id}/barrier/officers/{username}/claim/begin.
+func (t *Transport) TenantBarrierShareClaimBegin(ctx context.Context, req *transport.TenantShareClaimBeginRequest) (*transport.ShareClaimBeginResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if req == nil || req.TenantID == "" {
+		return nil, &transport.RequestError{Method: "TenantBarrierShareClaimBegin", Err: &emptyTenantIDError{}}
+	}
+	path := "/v1/tenants/" + url.PathEscape(req.TenantID) + "/barrier/officers/" + url.PathEscape(req.Username) + "/claim/begin"
+	var resp transport.ShareClaimBeginResponse
+	if err := t.postJSONDecode(ctx, "TenantBarrierShareClaimBegin", path, req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// TenantBarrierShareClaimComplete verifies the Security Officer's nonce
+// signature and returns the tenant barrier share bytes exactly once.
+// Maps to POST /v1/tenants/{id}/barrier/officers/{username}/claim/complete.
+func (t *Transport) TenantBarrierShareClaimComplete(ctx context.Context, req *transport.TenantShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if req == nil || req.TenantID == "" {
+		return nil, &transport.RequestError{Method: "TenantBarrierShareClaimComplete", Err: &emptyTenantIDError{}}
+	}
+	path := "/v1/tenants/" + url.PathEscape(req.TenantID) + "/barrier/officers/" + url.PathEscape(req.Username) + "/claim/complete"
+	var resp transport.ShareClaimCompleteResponse
+	if err := t.postJSONDecode(ctx, "TenantBarrierShareClaimComplete", path, req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// TenantBarrierShamirSealVote submits a Shamir share as a seal vote for the
+// named tenant's barrier. Maps to POST /v1/tenants/{id}/barrier/seal-vote.
+func (t *Transport) TenantBarrierShamirSealVote(ctx context.Context, req *transport.TenantShamirSealVoteRequest) (*transport.ShamirSealVoteResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if req == nil || req.TenantID == "" {
+		return nil, &transport.RequestError{Method: "TenantBarrierShamirSealVote", Err: &emptyTenantIDError{}}
+	}
+	path := "/v1/tenants/" + url.PathEscape(req.TenantID) + "/barrier/seal-vote"
+	var resp transport.ShamirSealVoteResponse
+	if err := t.postJSONDecode(ctx, "TenantBarrierShamirSealVote", path, req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
 }
 
 // postJSONNoContent encodes payload as JSON, POSTs it to path, and accepts

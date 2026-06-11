@@ -126,3 +126,90 @@ func TestStrategyRegistry_DefaultPrepopulated(t *testing.T) {
 		}
 	}
 }
+
+// --------------------------------------------------------------------------
+// strategy_registry.go: Error() methods on typed errors — 0%
+// --------------------------------------------------------------------------
+
+func TestStrategyRegisterError_Error(t *testing.T) {
+	e := &StrategyRegisterError{Reason: "nil factory"}
+	msg := e.Error()
+	if msg == "" {
+		t.Error("StrategyRegisterError.Error() should return non-empty string")
+	}
+	if !containsSubstr(msg, "nil factory") {
+		t.Errorf("expected reason in error message, got: %s", msg)
+	}
+}
+
+func TestStrategyAlreadyRegisteredError_Error(t *testing.T) {
+	e := &StrategyAlreadyRegisteredError{Name: StrategyPassphrase}
+	msg := e.Error()
+	if msg == "" {
+		t.Error("StrategyAlreadyRegisteredError.Error() should return non-empty string")
+	}
+	if !containsSubstr(msg, string(StrategyPassphrase)) {
+		t.Errorf("expected strategy name in error message, got: %s", msg)
+	}
+}
+
+func TestStrategyNotRegisteredError_Error_Empty(t *testing.T) {
+	// Available is empty — exercises the joinNames("") branch.
+	e := &StrategyNotRegisteredError{Name: "unknown", Available: nil}
+	msg := e.Error()
+	if msg == "" {
+		t.Error("StrategyNotRegisteredError.Error() should return non-empty string")
+	}
+	if !containsSubstr(msg, "unknown") {
+		t.Errorf("expected name in error message, got: %s", msg)
+	}
+}
+
+func TestStrategyNotRegisteredError_Error_WithAvailable(t *testing.T) {
+	e := &StrategyNotRegisteredError{
+		Name:      "unknown",
+		Available: []StrategyID{StrategyPassphrase, StrategyNone},
+	}
+	msg := e.Error()
+	if !containsSubstr(msg, string(StrategyPassphrase)) {
+		t.Errorf("expected available names in error message, got: %s", msg)
+	}
+}
+
+// joinNames is package-private; exercise it indirectly via
+// StrategyNotRegisteredError.Error() with multiple available names.
+func TestJoinNames_ViaRegistryLookup(t *testing.T) {
+	r := NewDefaultStrategyRegistry()
+	// LookupFactory for a missing name triggers StrategyNotRegisteredError.Error()
+	// which calls joinNames with the registered names.
+	_, err := r.LookupFactory("nonexistent")
+	if err == nil {
+		t.Fatal("expected error for nonexistent strategy")
+	}
+	var e *StrategyNotRegisteredError
+	if !errors.As(err, &e) {
+		t.Fatalf("expected *StrategyNotRegisteredError, got %T: %v", err, err)
+	}
+	// Calling Error() exercises joinNames with multiple entries.
+	msg := e.Error()
+	if msg == "" {
+		t.Error("Error() should return non-empty string")
+	}
+}
+
+// --------------------------------------------------------------------------
+// Helpers
+// --------------------------------------------------------------------------
+
+// containsSubstr is a helper that avoids importing strings in the test file.
+func containsSubstr(s, substr string) bool {
+	if len(substr) == 0 {
+		return true
+	}
+	for i := 0; i+len(substr) <= len(s); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}

@@ -35,6 +35,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -487,54 +488,110 @@ func startNode(t *testing.T, binary string, args []string, prefix string) *exec.
 }
 
 // reservedPorts tracks every port handed out by allocatePorts /
-// allocateTCPPorts for the lifetime of the test process. A single allocate
-// call holds its listeners open simultaneously so ports are distinct WITHIN
-// the call, but each call closes its listeners before returning — so the OS
-// can re-hand a previously-returned port to a LATER call. When a node is then
-// started with ports drawn from several separate allocate calls (admin, grpc,
-// mysql, pgsql, ...), two of its servers can collide on the same port and the
-// second fails to bind ("address already in use"). Reserving every handed-out
-// port across calls (and re-rolling on a hit) eliminates that race for every
-// call site at once. TCP and UDP share the table: skipping a number that the
-// other protocol used is harmless and keeps the logic simple.
+// allocateTCPPorts for the lifetime of the test process, and
+// nextCandidatePort draws candidates sequentially from a window BELOW the
+// kernel's ephemeral port range (/proc/sys/net/ipv4/ip_local_port_range).
+//
+// Two distinct races motivated this design:
+//
+//  1. Intra-process re-hand: an allocate call that closes its listeners
+//     before returning lets the OS re-hand a previously-returned port to a
+//     LATER call, so two servers in the same node could collide on a port.
+//     The process-wide reservation table eliminates that for every call
+//     site at once. TCP and UDP share the table: skipping a number the
+//     other protocol used is harmless and keeps the logic simple.
+//
+//  2. Kernel ephemeral-source steal (TOCTOU): a port obtained by binding
+//     ":0" lies inside the kernel's ephemeral range, so between the
+//     allocator closing its probe listener and the daemon binding the
+//     port, ANY outbound connection from a node process (Raft peer dials,
+//     health polls) can be assigned that exact number as its source port —
+//     the daemon then fails with "address already in use" (seen as a
+//     TestCluster_SnapshotTriggered flake, 2026-06-11). No in-process
+//     table can see kernel source-port assignment; the robust fix is to
+//     allocate listen ports OUTSIDE the ephemeral range, which outbound
+//     connections never draw from.
 var (
-	reservedPortsMu sync.Mutex
-	reservedPorts   = make(map[int]struct{})
+	reservedPortsMu   sync.Mutex
+	reservedPorts     = make(map[int]struct{})
+	nextCandidatePort int
+	ephemeralLowOnce  sync.Once
+	ephemeralLow      int
 )
 
-// reservePortUnique records port as handed out and reports whether it was not
-// already reserved by an earlier allocate call.
-func reservePortUnique(port int) bool {
-	reservedPortsMu.Lock()
-	defer reservedPortsMu.Unlock()
-	if _, taken := reservedPorts[port]; taken {
-		return false
+// portWindow is how many ports below the ephemeral floor the allocators draw
+// from. A full integration run allocates a few hundred ports; 8192 leaves
+// ample headroom while staying far above the well-known/registered ranges.
+const portWindow = 8192
+
+// ephemeralPortLow returns the lower bound of the kernel's ephemeral port
+// range, read once from /proc/sys/net/ipv4/ip_local_port_range.
+func ephemeralPortLow(t *testing.T) int {
+	t.Helper()
+	ephemeralLowOnce.Do(func() {
+		data, err := os.ReadFile("/proc/sys/net/ipv4/ip_local_port_range")
+		if err != nil {
+			return // leave ephemeralLow zero; the caller fails loudly
+		}
+		fields := strings.Fields(string(data))
+		if len(fields) != 2 {
+			return
+		}
+		low, err := strconv.Atoi(fields[0])
+		if err != nil {
+			return
+		}
+		ephemeralLow = low
+	})
+	if ephemeralLow == 0 {
+		t.Fatalf("ephemeralPortLow: cannot determine kernel ephemeral port range from /proc/sys/net/ipv4/ip_local_port_range")
 	}
-	reservedPorts[port] = struct{}{}
-	return true
+	return ephemeralLow
 }
 
-// allocatePorts returns n free UDP ports for node listen addresses. All
-// listeners are held open until all ports are determined (distinct within the
-// batch), and each port is reserved process-wide so a later allocate call
-// cannot hand back the same number (see reservedPorts).
+// nextReservedPort reserves and returns the next sequential candidate port
+// from the non-ephemeral allocation window. The caller must still
+// bind-verify the port (something outside the test process could be using
+// it) and draw again on failure.
+func nextReservedPort(t *testing.T) int {
+	t.Helper()
+	low := ephemeralPortLow(t)
+	base := low - portWindow
+	if base < 1024 {
+		t.Fatalf("nextReservedPort: ephemeral floor %d leaves no room for a %d-port test window", low, portWindow)
+	}
+	reservedPortsMu.Lock()
+	defer reservedPortsMu.Unlock()
+	if nextCandidatePort == 0 {
+		nextCandidatePort = base
+	}
+	for nextCandidatePort < low {
+		port := nextCandidatePort
+		nextCandidatePort++
+		if _, taken := reservedPorts[port]; taken {
+			continue
+		}
+		reservedPorts[port] = struct{}{}
+		return port
+	}
+	t.Fatalf("nextReservedPort: exhausted %d-port window [%d,%d)", portWindow, base, low)
+	return 0
+}
+
+// allocatePorts returns n free UDP ports for node listen addresses. Ports are
+// drawn from the reserved non-ephemeral window (see reservedPorts) and
+// bind-verified before being returned; listeners are held open until the
+// whole batch is determined.
 func allocatePorts(t *testing.T, n int) []int {
 	t.Helper()
 	ports := make([]int, 0, n)
 	var listeners []net.PacketConn
-	const maxAttempts = 100
+	const maxAttempts = 1000
 	for attempt := 0; len(ports) < n && attempt < maxAttempts; attempt++ {
-		pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+		port := nextReservedPort(t)
+		pc, err := net.ListenPacket("udp", fmt.Sprintf("127.0.0.1:%d", port))
 		if err != nil {
-			for _, l := range listeners {
-				l.Close()
-			}
-			t.Fatalf("allocatePorts: %v", err)
-		}
-		port := pc.LocalAddr().(*net.UDPAddr).Port
-		if !reservePortUnique(port) {
-			pc.Close() // already handed out by an earlier call; re-roll
-			continue
+			continue // busy outside the test process; draw the next candidate
 		}
 		listeners = append(listeners, pc)
 		ports = append(ports, port)
@@ -584,28 +641,20 @@ func runCLI(t *testing.T, binary string, args ...string) (string, error) {
 	return string(out), err
 }
 
-// allocateTCPPorts returns n free TCP ports for server addresses. All
-// listeners are held open until all ports are determined (distinct within the
-// batch), and each port is reserved process-wide so a later allocate call
-// cannot hand back the same number (see reservedPorts) — preventing two
-// servers in the same node from colliding on a port.
+// allocateTCPPorts returns n free TCP ports for server addresses. Ports are
+// drawn from the reserved non-ephemeral window (see reservedPorts) and
+// bind-verified before being returned; listeners are held open until the
+// whole batch is determined.
 func allocateTCPPorts(t *testing.T, n int) []int {
 	t.Helper()
 	ports := make([]int, 0, n)
 	var listeners []net.Listener
-	const maxAttempts = 100
+	const maxAttempts = 1000
 	for attempt := 0; len(ports) < n && attempt < maxAttempts; attempt++ {
-		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		port := nextReservedPort(t)
+		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 		if err != nil {
-			for _, l := range listeners {
-				l.Close()
-			}
-			t.Fatalf("allocateTCPPorts: %v", err)
-		}
-		port := ln.Addr().(*net.TCPAddr).Port
-		if !reservePortUnique(port) {
-			ln.Close() // already handed out by an earlier call; re-roll
-			continue
+			continue // busy outside the test process; draw the next candidate
 		}
 		listeners = append(listeners, ln)
 		ports = append(ports, port)

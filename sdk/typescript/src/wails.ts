@@ -29,6 +29,7 @@ import type {
     LeaseClient,
     LockClient,
     MVCCClient,
+    OfficerClient,
     RebalanceClient,
     RoleClient,
     SealClient,
@@ -162,7 +163,11 @@ import type {
     UpdateTenantRequest,
     UpdateTenantResponse,
     TenantBarrierInitRequest,
+    TenantBarrierInitResponse,
     TenantBarrierUnsealRequest,
+    TenantBarrierUnsealShareRequest,
+    TenantBarrierUnsealProgress,
+    TenantBarrierStatusResponse,
     UpdateTenantQuotasRequest,
     UpdateTenantQuotasResponse,
     ConfigInitializedResponse,
@@ -179,6 +184,19 @@ import type {
     ImbalanceReport,
     ConnectionProfile,
     ConnectionState,
+    OfficerRegisterRequest,
+    OfficerRegisterResponse,
+    OfficerStatus,
+    ShareClaimBeginRequest,
+    ShareClaimBeginResponse,
+    ShareClaimCompleteRequest,
+    ShareClaimCompleteResponse,
+    ShamirSealVoteRequest,
+    ShamirSealVoteResponse,
+    TenantOfficerRegisterRequest,
+    TenantShareClaimBeginRequest,
+    TenantShareClaimCompleteRequest,
+    TenantShamirSealVoteRequest,
 } from './types.js';
 
 import { deepSnakeToCamel, deepCamelToSnake } from './transform.js';
@@ -276,6 +294,7 @@ interface WailsBindings {
         ConfigBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
         TenantBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
         BackupBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
+        OfficerBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
         RebalanceBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
         LockBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
         ConnectionManagerBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
@@ -997,9 +1016,6 @@ export class WailsClient implements Client {
     get seal(): SealClient {
         const b = wrapBindings(getBindings().main.SealBinding);
         return {
-            bootstrap: async (): Promise<BootstrapResult> => {
-                return b.Bootstrap() as Promise<BootstrapResult>;
-            },
             initialize: async (secret: string): Promise<void> => {
                 await b.Initialize(secret);
             },
@@ -1099,11 +1115,26 @@ export class WailsClient implements Client {
             update: async (tenantId: string, req: UpdateTenantRequest): Promise<UpdateTenantResponse> => {
                 return b.Update(tenantId, toSnake(req)) as Promise<UpdateTenantResponse>;
             },
-            barrierInit: async (req: TenantBarrierInitRequest): Promise<void> => {
-                await b.BarrierInit(toSnake(req));
+            barrierInit: async (req: TenantBarrierInitRequest): Promise<TenantBarrierInitResponse> => {
+                // The desktop TenantBinding.BarrierInit returns only an error;
+                // it does not surface Shamir shares. Per-tenant Shamir share
+                // capture is therefore a REST-transport-only flow. We honor the
+                // interface contract by returning a minimal response synthesized
+                // from the request for the non-Shamir strategies.
+                const result = await b.BarrierInit(toSnake(req));
+                if (result !== undefined && result !== null) {
+                    return result as TenantBarrierInitResponse;
+                }
+                return { tenantId: req.tenantId, strategy: req.strategy ?? '' };
             },
             barrierUnseal: async (req: TenantBarrierUnsealRequest): Promise<void> => {
                 await b.BarrierUnseal(toSnake(req));
+            },
+            barrierUnsealShare: async (req: TenantBarrierUnsealShareRequest): Promise<TenantBarrierUnsealProgress> => {
+                return b.BarrierUnsealShare(toSnake(req)) as Promise<TenantBarrierUnsealProgress>;
+            },
+            barrierStatus: async (tenantId: string): Promise<TenantBarrierStatusResponse> => {
+                return b.BarrierStatus(tenantId) as Promise<TenantBarrierStatusResponse>;
             },
             updateQuotas: async (req: UpdateTenantQuotasRequest): Promise<UpdateTenantQuotasResponse> => {
                 return b.UpdateQuotas(toSnake(req)) as Promise<UpdateTenantQuotasResponse>;
@@ -1214,6 +1245,62 @@ export class WailsClient implements Client {
             },
             isEmbeddedAvailable: async (): Promise<boolean> => {
                 return b.IsEmbeddedAvailable() as Promise<boolean>;
+            },
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // Security Officers (delegates to the Go OfficerBinding)
+    // -----------------------------------------------------------------------
+
+    /** @inheritdoc */
+    get officers(): OfficerClient {
+        const b = wrapBindings(getBindings().main.OfficerBinding);
+        return {
+            registerOfficer: async (req: OfficerRegisterRequest): Promise<OfficerRegisterResponse> => {
+                return b.RegisterOfficer(toSnake(req)) as Promise<OfficerRegisterResponse>;
+            },
+            listOfficers: async (): Promise<OfficerStatus[]> => {
+                return ((await b.ListOfficers()) ?? []) as OfficerStatus[];
+            },
+            officerClaimStatus: async (): Promise<OfficerStatus[]> => {
+                return ((await b.OfficerClaimStatus()) ?? []) as OfficerStatus[];
+            },
+            claimBegin: async (req: ShareClaimBeginRequest): Promise<ShareClaimBeginResponse> => {
+                return b.ClaimBegin(toSnake(req)) as Promise<ShareClaimBeginResponse>;
+            },
+            claimComplete: async (req: ShareClaimCompleteRequest): Promise<ShareClaimCompleteResponse> => {
+                return b.ClaimComplete(toSnake(req)) as Promise<ShareClaimCompleteResponse>;
+            },
+            registerRecoveryOfficer: async (req: OfficerRegisterRequest): Promise<OfficerRegisterResponse> => {
+                return b.RegisterRecoveryOfficer(toSnake(req)) as Promise<OfficerRegisterResponse>;
+            },
+            recoveryClaimBegin: async (req: ShareClaimBeginRequest): Promise<ShareClaimBeginResponse> => {
+                return b.RecoveryClaimBegin(toSnake(req)) as Promise<ShareClaimBeginResponse>;
+            },
+            recoveryClaimComplete: async (req: ShareClaimCompleteRequest): Promise<ShareClaimCompleteResponse> => {
+                return b.RecoveryClaimComplete(toSnake(req)) as Promise<ShareClaimCompleteResponse>;
+            },
+            submitSealVote: async (req: ShamirSealVoteRequest): Promise<ShamirSealVoteResponse> => {
+                return b.SubmitSealVote(toSnake(req)) as Promise<ShamirSealVoteResponse>;
+            },
+            listTenantOfficers: async (tenantId: string): Promise<OfficerStatus[]> => {
+                return ((await b.ListTenantOfficers(tenantId)) ?? []) as OfficerStatus[];
+            },
+            tenantOfficerClaimStatus: async (tenantId: string): Promise<OfficerStatus[]> => {
+                return ((await b.TenantOfficerClaimStatus(tenantId)) ?? []) as OfficerStatus[];
+            },
+            registerTenantOfficer: async (req: TenantOfficerRegisterRequest): Promise<OfficerRegisterResponse> => {
+                return b.RegisterTenantOfficer(toSnake(req)) as Promise<OfficerRegisterResponse>;
+            },
+            tenantClaimBegin: async (req: TenantShareClaimBeginRequest): Promise<ShareClaimBeginResponse> => {
+                return b.TenantClaimBegin(toSnake(req)) as Promise<ShareClaimBeginResponse>;
+            },
+            tenantClaimComplete: async (req: TenantShareClaimCompleteRequest): Promise<ShareClaimCompleteResponse> => {
+                return b.TenantClaimComplete(toSnake(req)) as Promise<ShareClaimCompleteResponse>;
+            },
+            submitTenantSealVote: async (req: TenantShamirSealVoteRequest): Promise<ShamirSealVoteResponse> => {
+                return b.SubmitTenantSealVote(toSnake(req)) as Promise<ShamirSealVoteResponse>;
             },
         };
     }

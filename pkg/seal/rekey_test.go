@@ -15,9 +15,9 @@ import (
 	"testing"
 )
 
-// newRekeyBarrier creates a barrier with ShamirStrategy + SoftwareStrategy
-// and returns the barrier plus its underlying MemoryBackend.
-func newRekeyBarrier(t *testing.T) (*Barrier, *MemoryBackend) {
+// newRekeyBarrier creates a barrier with ShamirStrategy + SoftwareStrategy,
+// wires a captureDistributor, and returns the barrier plus backend.
+func newRekeyBarrier(t *testing.T) (*Barrier, *MemoryBackend, *captureDistributor) {
 	t.Helper()
 	backend := NewMemoryBackend()
 	shamirStrat, err := NewShamirStrategy(3, 5)
@@ -32,20 +32,22 @@ func newRekeyBarrier(t *testing.T) (*Barrier, *MemoryBackend) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return b, backend
+	dist := newCaptureDistributor()
+	b.SetCeremonyDistributor(dist)
+	return b, backend, dist
 }
 
 func TestRekeySuccess(t *testing.T) {
 	t.Run("NewSharesCanUnseal", func(t *testing.T) {
-		b, _ := newRekeyBarrier(t)
+		b, _, dist := newRekeyBarrier(t)
 		ctx := context.Background()
 
-		initResult, err := b.InitializeShamir(ctx, Credentials{})
-		if err != nil {
+		if _, err := b.InitializeShamir(ctx, Credentials{}); err != nil {
 			t.Fatal(err)
 		}
-		if len(initResult.Shares) != 5 {
-			t.Fatalf("init shares: got %d, want 5", len(initResult.Shares))
+		initShares := dist.Shares()
+		if len(initShares) != 5 {
+			t.Fatalf("init shares: got %d, want 5", len(initShares))
 		}
 
 		// Rekey with same parameters.
@@ -62,16 +64,20 @@ func TestRekeySuccess(t *testing.T) {
 		if rekeyResult.TotalShares != 5 {
 			t.Errorf("TotalShares: got %d, want 5", rekeyResult.TotalShares)
 		}
-		if len(rekeyResult.Shares) != 5 {
-			t.Errorf("Shares count: got %d, want 5", len(rekeyResult.Shares))
+		if rekeyResult.ShareCount != 5 {
+			t.Errorf("ShareCount: got %d, want 5", rekeyResult.ShareCount)
+		}
+		rekeyShares := dist.Shares()
+		if len(rekeyShares) != 5 {
+			t.Errorf("captured shares after rekey: got %d, want 5", len(rekeyShares))
 		}
 
 		// Verify new shares are different from old shares.
 		oldSet := make(map[string]struct{})
-		for _, s := range initResult.Shares {
+		for _, s := range initShares {
 			oldSet[s] = struct{}{}
 		}
-		for _, s := range rekeyResult.Shares {
+		for _, s := range rekeyShares {
 			if _, found := oldSet[s]; found {
 				t.Error("new share is identical to an old share; expected different shares")
 			}
@@ -82,7 +88,7 @@ func TestRekeySuccess(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		err = b.UnsealWithShares(ctx, rekeyResult.Shares[:3])
+		err = b.UnsealWithShares(ctx, rekeyShares[:3])
 		if err != nil {
 			t.Fatalf("UnsealWithShares after rekey: %v", err)
 		}
@@ -92,11 +98,10 @@ func TestRekeySuccess(t *testing.T) {
 	})
 
 	t.Run("ChangeThreshold", func(t *testing.T) {
-		b, _ := newRekeyBarrier(t)
+		b, _, dist := newRekeyBarrier(t)
 		ctx := context.Background()
 
-		_, err := b.InitializeShamir(ctx, Credentials{})
-		if err != nil {
+		if _, err := b.InitializeShamir(ctx, Credentials{}); err != nil {
 			t.Fatal(err)
 		}
 
@@ -111,8 +116,12 @@ func TestRekeySuccess(t *testing.T) {
 		if rekeyResult.TotalShares != 3 {
 			t.Errorf("TotalShares: got %d, want 3", rekeyResult.TotalShares)
 		}
-		if len(rekeyResult.Shares) != 3 {
-			t.Errorf("Shares count: got %d, want 3", len(rekeyResult.Shares))
+		if rekeyResult.ShareCount != 3 {
+			t.Errorf("ShareCount: got %d, want 3", rekeyResult.ShareCount)
+		}
+		rekeyShares := dist.Shares()
+		if len(rekeyShares) != 3 {
+			t.Errorf("captured shares after rekey: got %d, want 3", len(rekeyShares))
 		}
 
 		// Verify config was updated.
@@ -123,28 +132,26 @@ func TestRekeySuccess(t *testing.T) {
 			t.Errorf("config TotalShares: got %d, want 3", b.config.Shamir.TotalShares)
 		}
 
-		// Verify the new threshold works for unseal.
+		// Seal, then unseal with new threshold.
 		if err := b.Seal(); err != nil {
 			t.Fatal(err)
 		}
 
-		err = b.UnsealWithShares(ctx, rekeyResult.Shares[:2])
+		err = b.UnsealWithShares(ctx, rekeyShares[:2])
 		if err != nil {
 			t.Fatalf("UnsealWithShares with new 2-of-3 shares: %v", err)
 		}
 	})
 
 	t.Run("SealedRootKeyBlobUpdated", func(t *testing.T) {
-		b, backend := newRekeyBarrier(t)
+		b, backend, _ := newRekeyBarrier(t)
 		ctx := context.Background()
 
-		_, err := b.InitializeShamir(ctx, Credentials{})
-		if err != nil {
+		if _, err := b.InitializeShamir(ctx, Credentials{}); err != nil {
 			t.Fatal(err)
 		}
 
-		_, err = b.Rekey(ctx, 2, 4)
-		if err != nil {
+		if _, err := b.Rekey(ctx, 2, 4); err != nil {
 			t.Fatal(err)
 		}
 
@@ -168,7 +175,7 @@ func TestRekeySuccess(t *testing.T) {
 
 func TestRekeyErrors(t *testing.T) {
 	t.Run("ErrSealed", func(t *testing.T) {
-		b, _ := newRekeyBarrier(t)
+		b, _, _ := newRekeyBarrier(t)
 		ctx := context.Background()
 
 		// Barrier is sealed (not initialized).
@@ -180,7 +187,7 @@ func TestRekeyErrors(t *testing.T) {
 
 	t.Run("ErrShamirNotConfigured", func(t *testing.T) {
 		// Create barrier without Shamir strategy.
-		b, _ := newRecoveryBarrier(t)
+		b, _, _ := newRecoveryBarrier(t)
 		initRecoveryBarrier(t, b)
 		ctx := context.Background()
 
@@ -190,57 +197,84 @@ func TestRekeyErrors(t *testing.T) {
 		}
 	})
 
-	t.Run("ErrShamirThresholdInvalid_ThresholdTooLow", func(t *testing.T) {
-		b, _ := newRekeyBarrier(t)
-		ctx := context.Background()
-
-		_, err := b.InitializeShamir(ctx, Credentials{})
+	t.Run("ErrCeremonyDistributorNotConfigured", func(t *testing.T) {
+		// Create a barrier with ShamirStrategy but no distributor.
+		backend := NewMemoryBackend()
+		shamirStrat, err := NewShamirStrategy(3, 5)
 		if err != nil {
 			t.Fatal(err)
 		}
+		b, err := NewBarrier(testLogger(), backend, BarrierConfig{
+			RootKeyPath:     "test/root-key",
+			Shamir:          &ShamirConfig{Threshold: 3, TotalShares: 5},
+			PreferenceOrder: []StrategyID{StrategyShamir},
+		}, testSoftwareStrategy(t), shamirStrat)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Wire distributor only for init, then remove it.
+		dist := newCaptureDistributor()
+		b.SetCeremonyDistributor(dist)
+		ctx := context.Background()
+		if _, err := b.InitializeShamir(ctx, Credentials{}); err != nil {
+			t.Fatal(err)
+		}
+		// Remove the distributor — Rekey should fail.
+		b.SetCeremonyDistributor(nil)
 
-		_, err = b.Rekey(ctx, 1, 5)
+		_, err = b.Rekey(ctx, 2, 3)
+		if !errors.Is(err, ErrCeremonyDistributorNotConfigured) {
+			t.Errorf("got %v, want ErrCeremonyDistributorNotConfigured", err)
+		}
+	})
+
+	t.Run("ErrShamirThresholdInvalid_ThresholdTooLow", func(t *testing.T) {
+		b, _, _ := newRekeyBarrier(t)
+		ctx := context.Background()
+
+		if _, err := b.InitializeShamir(ctx, Credentials{}); err != nil {
+			t.Fatal(err)
+		}
+
+		_, err := b.Rekey(ctx, 1, 5)
 		if !errors.Is(err, ErrShamirThresholdInvalid) {
 			t.Errorf("got %v, want ErrShamirThresholdInvalid", err)
 		}
 	})
 
 	t.Run("ErrShamirThresholdInvalid_ThresholdExceedsTotal", func(t *testing.T) {
-		b, _ := newRekeyBarrier(t)
+		b, _, _ := newRekeyBarrier(t)
 		ctx := context.Background()
 
-		_, err := b.InitializeShamir(ctx, Credentials{})
-		if err != nil {
+		if _, err := b.InitializeShamir(ctx, Credentials{}); err != nil {
 			t.Fatal(err)
 		}
 
-		_, err = b.Rekey(ctx, 6, 5)
+		_, err := b.Rekey(ctx, 6, 5)
 		if !errors.Is(err, ErrShamirThresholdInvalid) {
 			t.Errorf("got %v, want ErrShamirThresholdInvalid", err)
 		}
 	})
 
 	t.Run("ErrShamirThresholdInvalid_ZeroValues", func(t *testing.T) {
-		b, _ := newRekeyBarrier(t)
+		b, _, _ := newRekeyBarrier(t)
 		ctx := context.Background()
 
-		_, err := b.InitializeShamir(ctx, Credentials{})
-		if err != nil {
+		if _, err := b.InitializeShamir(ctx, Credentials{}); err != nil {
 			t.Fatal(err)
 		}
 
-		_, err = b.Rekey(ctx, 0, 0)
+		_, err := b.Rekey(ctx, 0, 0)
 		if !errors.Is(err, ErrShamirThresholdInvalid) {
 			t.Errorf("got %v, want ErrShamirThresholdInvalid", err)
 		}
 	})
 
 	t.Run("ErrCorruptRootKey_CorruptBlob", func(t *testing.T) {
-		b, backend := newRekeyBarrier(t)
+		b, backend, _ := newRekeyBarrier(t)
 		ctx := context.Background()
 
-		_, err := b.InitializeShamir(ctx, Credentials{})
-		if err != nil {
+		if _, err := b.InitializeShamir(ctx, Credentials{}); err != nil {
 			t.Fatal(err)
 		}
 
@@ -250,7 +284,7 @@ func TestRekeyErrors(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		_, err = b.Rekey(ctx, 2, 3)
+		_, err := b.Rekey(ctx, 2, 3)
 		if !errors.Is(err, ErrCorruptRootKey) {
 			t.Errorf("got %v, want ErrCorruptRootKey", err)
 		}
@@ -259,11 +293,10 @@ func TestRekeyErrors(t *testing.T) {
 
 func TestRekeyPreservesData(t *testing.T) {
 	t.Run("DataAccessibleAfterRekey", func(t *testing.T) {
-		b, _ := newRekeyBarrier(t)
+		b, _, dist := newRekeyBarrier(t)
 		ctx := context.Background()
 
-		_, err := b.InitializeShamir(ctx, Credentials{})
-		if err != nil {
+		if _, err := b.InitializeShamir(ctx, Credentials{}); err != nil {
 			t.Fatal(err)
 		}
 
@@ -273,10 +306,10 @@ func TestRekeyPreservesData(t *testing.T) {
 		}
 
 		// Rekey.
-		rekeyResult, err := b.Rekey(ctx, 2, 3)
-		if err != nil {
+		if _, err := b.Rekey(ctx, 2, 3); err != nil {
 			t.Fatal(err)
 		}
+		rekeyShares := dist.Shares()
 
 		// Data should still be accessible.
 		val, err := b.Get(ctx, "secret-data")
@@ -287,13 +320,12 @@ func TestRekeyPreservesData(t *testing.T) {
 			t.Errorf("Get after rekey: got %q, want %q", val, "important")
 		}
 
-		// Seal and unseal with new shares.
+		// Seal, then unseal with new shares.
 		if err := b.Seal(); err != nil {
 			t.Fatal(err)
 		}
 
-		err = b.UnsealWithShares(ctx, rekeyResult.Shares[:2])
-		if err != nil {
+		if err := b.UnsealWithShares(ctx, rekeyShares[:2]); err != nil {
 			t.Fatal(err)
 		}
 
@@ -310,11 +342,10 @@ func TestRekeyPreservesData(t *testing.T) {
 
 func TestRekeyStrategyReplaced(t *testing.T) {
 	t.Run("BarrierUsesNewStrategy", func(t *testing.T) {
-		b, _ := newRekeyBarrier(t)
+		b, _, _ := newRekeyBarrier(t)
 		ctx := context.Background()
 
-		_, err := b.InitializeShamir(ctx, Credentials{})
-		if err != nil {
+		if _, err := b.InitializeShamir(ctx, Credentials{}); err != nil {
 			t.Fatal(err)
 		}
 
@@ -328,8 +359,7 @@ func TestRekeyStrategyReplaced(t *testing.T) {
 		}
 
 		// Rekey to 2-of-4.
-		_, err = b.Rekey(ctx, 2, 4)
-		if err != nil {
+		if _, err := b.Rekey(ctx, 2, 4); err != nil {
 			t.Fatal(err)
 		}
 

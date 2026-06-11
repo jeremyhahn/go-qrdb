@@ -48,7 +48,7 @@ go-xkms/pkg/seal/              Hardware strategies (TPM2, PKCS#11, AWS KMS, GCP 
 | StrategyID | Constant | Source | When to use |
 |------------|----------|--------|-------------|
 | `passphrase` | `seal.StrategyPassphrase` | go-quicraft (re-exported) | Single passphrase, FIPS-aware KDF (Argon2id or PBKDF2-SHA256). The default. |
-| `shamir`   | `seal.StrategyShamir`   | go-qrdb (`pkg/seal/strategy_shamir.go`) | M-of-N quorum unseal; the root key is the Shamir secret. |
+| `shamir`   | `seal.StrategyShamir`   | go-qrdb (`pkg/seal/strategy_shamir.go`) | M-of-N quorum unseal; the Shamir secret is a random unseal key that AEAD-wraps the root key (Vault-style indirection, see [shamir.md](shamir.md)). |
 | `none`     | `seal.StrategyNone`     | go-quicraft (re-exported) | Barrier disabled; data stored plaintext. Dev/test or OS-level FDE deployments. |
 
 > **Config alias:** the YAML `seal.strategy` field accepts `software` as a **deprecated alias** for `passphrase`. It is canonicalized once at config load (`SealConfig.CanonicalStrategy()`), so every consumer sees the canonical `passphrase` ID — the software/passphrase strategy reports `ID() == "passphrase"`.
@@ -182,7 +182,7 @@ Use cases:
 | Shamir threshold unsealing | M-of-N quorum-based unseal with share accumulation | [shamir.md](shamir.md) |
 | Multi-tenant barriers | Independent DEK per tenant via BarrierRegistry | [multi-tenant.md](multi-tenant.md) |
 | Recovery keys | Independent Shamir split of the DEK for disaster recovery | [shamir.md](shamir.md) |
-| Rekey | Generate new shares without changing the root key | [shamir.md](shamir.md) |
+| Rekey | New unseal key + share set; cryptographically revokes all prior shares without rotating the root key | [shamir.md](shamir.md) |
 | Root token generation | One-time admin token via share reconstruction | [shamir.md](shamir.md) |
 | Audit logging | Structured audit events for all barrier operations | Inline below |
 | Cluster auto-unseal | ShareExchangeCoordinator for distributed share exchange | Inline below |
@@ -376,20 +376,39 @@ There is no `BarrierInitialize` call required for `none`; the daemon transitions
 
 #### Initialize with Shamir M-of-N
 
-Initialize with Shamir secret sharing. The returned shares must be distributed to key holders and stored securely.
+Initialize with Shamir secret sharing. Shares are **never returned in the
+response** — each share is sealed into a server-side memguard enclave bound to
+an enrolled Security Officer, who claims it exactly once over mTLS (see
+[so-share-distribution-design.md](so-share-distribution-design.md) and
+[shamir.md](shamir.md)). Register the officers (CSR-based) before
+initializing.
 
 ```go
+// 1. Admin registers each Security Officer with their CSR.
+reg, err := barrier.OfficerRegister(ctx, &transport.OfficerRegisterRequest{
+    Username: "so-alice",
+    CSRPEM:   aliceCSR,
+})
+// reg.CertPEM: the officer's signed mTLS certificate
+// reg.ShareIndex: the share that will be sealed to this officer
+
+// 2. Initialize: the response is share-free.
 resp, err := barrier.BarrierInitializeShamir(ctx, &transport.BarrierInitializeShamirRequest{
     Secret:      "root-secret",
     Threshold:   3,
     TotalShares: 5,
 })
-if err != nil {
-    return err
-}
-for i, share := range resp.Shares {
-    fmt.Printf("Share %d: %s\n", i, share)
-}
+// resp.Threshold: 3, resp.TotalShares: 5, resp.ShareCount: 5
+
+// 3. Each officer claims their share with their own mTLS cert:
+//    challenge nonce -> sign with officer key -> one-time share reveal.
+ch, err := barrier.ShareClaimBegin(ctx, &transport.ShareClaimBeginRequest{Username: "so-alice"})
+claim, err := barrier.ShareClaimComplete(ctx, &transport.ShareClaimCompleteRequest{
+    Username:  "so-alice",
+    NonceHex:  ch.NonceHex,
+    Signature: signature,
+})
+// claim.ShareBytes is returned exactly once; the server enclave is destroyed.
 ```
 
 #### Unseal with Shamir Shares (Quorum)
@@ -440,14 +459,34 @@ resp, err := barrier.BarrierRekey(ctx, &transport.BarrierRekeyRequest{
     Threshold: 2,
     Total:     3,
 })
+// resp.Threshold / resp.TotalShares / resp.ShareCount — the new shares are
+// sealed to the enrolled officers' enclaves; each officer must claim again.
 ```
 
 #### Recovery Keys
 
+Recovery shares follow the same officer-claim model through the recovery
+officer registry — generation responses are share-free.
+
 ```go
+// Register recovery officers first (CSR-based, same as system officers).
+reg, err := barrier.RecoveryOfficerRegister(ctx, &transport.OfficerRegisterRequest{
+    Username: "ro-bob",
+    CSRPEM:   bobCSR,
+})
+
 keys, err := barrier.BarrierGenerateRecoveryKeys(ctx, &transport.BarrierGenerateRecoveryKeysRequest{
     Threshold: 2,
     Total:     3,
+})
+// keys.Threshold / keys.Total / keys.ShareCount — no key material returned.
+
+// Recovery officers claim their shares one time each.
+ch, err := barrier.RecoveryShareClaimBegin(ctx, &transport.ShareClaimBeginRequest{Username: "ro-bob"})
+claim, err := barrier.RecoveryShareClaimComplete(ctx, &transport.ShareClaimCompleteRequest{
+    Username:  "ro-bob",
+    NonceHex:  ch.NonceHex,
+    Signature: signature,
 })
 
 status, err := barrier.BarrierHasRecoveryKeys(ctx)
@@ -471,6 +510,18 @@ resp, err := barrier.BarrierGenerateRootToken(ctx, &transport.BarrierGenerateRoo
 
 ```go
 err := barrier.BarrierSeal(ctx)
+```
+
+For a **Shamir-strategy** barrier, single-admin `BarrierSeal` is rejected
+(`ErrShamirBarrierRequiresQuorum`); M officers must each submit a seal vote
+instead. The barrier seals automatically once the quorum reconstructs and
+verifies the secret:
+
+```go
+progress, err := barrier.ShamirSealVote(ctx, &transport.ShamirSealVoteRequest{
+    Share: shareA,
+})
+// progress.Required / progress.Submitted / progress.Complete
 ```
 
 #### Shamir Share Management
@@ -505,26 +556,59 @@ All endpoints are under the `/v1/barrier/` prefix. Mutation endpoints require an
 | `DELETE` | `/v1/barrier/recovery` | Delete recovery keys |
 | `GET` | `/v1/barrier/recovery/status` | Check if recovery keys exist |
 | `POST` | `/v1/barrier/root-token` | Generate a root token |
+| `POST` | `/v1/barrier/officers` | Register a Security Officer (CSR) |
+| `GET` | `/v1/barrier/officers` | List registered Security Officers |
+| `GET` | `/v1/barrier/officers/claim-status` | Per-officer claim status |
+| `POST` | `/v1/barrier/officers/{username}/claim/begin` | Issue a claim challenge nonce |
+| `POST` | `/v1/barrier/officers/{username}/claim/complete` | One-time share reveal |
+| `POST` | `/v1/barrier/shamir/seal-vote` | Submit a seal vote (Shamir quorum seal) |
+| `POST` | `/v1/barrier/recovery/officers` | Register a recovery officer (CSR) |
+| `POST` | `/v1/barrier/recovery/officers/{username}/claim/begin` | Recovery claim nonce |
+| `POST` | `/v1/barrier/recovery/officers/{username}/claim/complete` | One-time recovery share reveal |
 
 Successful mutation endpoints return `204 No Content`. Endpoints that return data respond with `200 OK` and a JSON body.
 
 Notes on specific endpoints:
 
-- `POST /v1/barrier/shamir/initialize` honors the **request's** `threshold` and `total_shares` (the operator/UI-chosen M-of-N scheme). When omitted (zero), the daemon's configured `seal.shamir_threshold` / `seal.shamir_total` are used. It returns the generated shares; the administrative root token is a separate call (`POST /v1/barrier/root-token`).
+- `POST /v1/barrier/shamir/initialize` honors the **request's** `threshold` and `total_shares` (the operator/UI-chosen M-of-N scheme). When omitted (zero), the daemon's configured `seal.shamir_threshold` / `seal.shamir_total` are used. The response is **share-free** (`{threshold, total_shares, share_count}`) — shares are sealed to the enrolled Security Officers' enclaves and retrieved through the claim endpoints. The administrative root token is a separate call (`POST /v1/barrier/root-token`) that requires a quorum of claimed shares as input.
+- The claim endpoints require the caller's **mTLS client certificate** to match the thumbprint bound at registration; the claim/complete response is the only message in the entire API that ever carries share bytes, and the server-side enclave is destroyed on delivery. These routes are **identity-gated** (`permission.IdentityGated`), not RBAC-gated: Security Officers are ceremony-registry principals registered before the RBAC user store exists, so the middleware requires only an authenticated mTLS identity and the handler's registry/thumbprint/signature checks are the authorization (the Vault posture — possession of the enrolled credential is the authorization).
+- `POST /v1/barrier/seal` returns `422 Unprocessable Entity` for Shamir-strategy barriers (`ErrShamirBarrierRequiresQuorum`); use `/v1/barrier/shamir/seal-vote` (M distinct shares within the vote TTL) instead. After the seal quorum completes, `/v1/barrier/status` remains reachable on the same port via the sealed-window listener.
+- `POST /v1/barrier/shamir/initialize` **auto-unseals** the barrier and triggers the sealed-window → full-server listener swap. Clients should expect a brief connection gap (~seconds) immediately after a successful initialize and poll `/health` until it returns `200`.
+- `POST /v1/barrier/rekey` rotates the **distributed share set, not the root key**: unclaimed prior-round enclaves are destroyed, claim history resets (officers re-claim), but a quorum of prior-round shares still reconstructs the preserved root key. See [shamir.md](shamir.md#rekey).
 - `GET /v1/barrier/status` includes `shamir_threshold` and `shamir_total` when the active strategy is `shamir` (absent otherwise), so clients can display the M-of-N scheme.
 - `GET /health` returns `503 {"error":"barrier sealed","code":"SEALED"}` while the barrier is sealed and `200` once unsealed and bootstrapped.
+- The **MCP barrier tools** (`qrdb_barrier_status`, `qrdb_barrier_shamir_initialize`, `qrdb_barrier_rekey`, `qrdb_barrier_recovery_generate`, `qrdb_barrier_root_token`) return the same canonical snake_case wire shapes as the REST endpoints above: status is `{sealed, strategy, hardware_backed, initialized_at (RFC3339, omitted when never initialized), shamir_threshold/shamir_total (when > 0)}`; Shamir initialize and rekey return the share-free `{threshold, total_shares, share_count}`; recovery generate returns `{threshold, total, share_count}`; root token returns `{token, created_at}`. SDK clients on every transport decode these shapes — handlers must never marshal Go service structs directly (PascalCase fields do not survive a snake_case round-trip).
+
+### Barrier HTTP status mapping
+
+All `/v1/barrier/*` handlers share one error mapper. Seal/ceremony errors map as follows; anything unrecognized falls through to the generic service mapper (e.g. `BarrierSealedError` → `503`), and unknown errors return `500`.
+
+| Error | HTTP status |
+|-------|-------------|
+| `seal.ErrShamirBarrierRequiresQuorum` | `422 Unprocessable Entity` |
+| `seal.ErrAlreadyUnsealed` | `409 Conflict` |
+| `seal.ErrAlreadyInitialized` | `409 Conflict` |
+| `seal.ErrNotInitialized` | `409 Conflict` |
+| `seal.ErrInvalidCredentials` | `403 Forbidden` |
+| `ceremony.ErrShareAlreadyClaimed` | `409 Conflict` |
+| `ceremony.ErrNoPendingShare` | `404 Not Found` |
+| barrier sealed (service error) | `503 Service Unavailable` |
 
 ## Web UI administration
 
 The browser admin UI (`cmd/qrdb/frontend`) drives the barrier entirely over the REST API above:
 
-- **Bootstrap.** When the UI connects to a sealed, *uninitialized* server it routes to the Server Initialization wizard (none / passphrase / Shamir). For Shamir, the generated key shares **and** root token are displayed exactly once with a save-acknowledgement gate before the app proceeds — they cannot be recovered later.
+- **Bootstrap.** When the UI connects to a sealed, *uninitialized* server it routes to the Server Initialization wizard (none / passphrase / Shamir). For Shamir, **no share material is ever displayed**: the wizard shows the M-of-N scheme and a per-officer claim-status table, and directs each Security Officer to authenticate with their own mTLS certificate at the `/officer/claim` page, where their share is revealed exactly once. No root token is minted at init time — officers generate one post-claim from a share quorum (`POST /v1/barrier/root-token`).
 - **Unseal.** When the UI connects to a sealed, *initialized* server it shows an unseal screen; the Seal Manager also seals/unseals an already-loaded server. The unseal control adapts to the active strategy (passphrase entry vs Shamir share submission).
 - **Sealed connectivity.** A sealed daemon serves only the `/v1/barrier/*` (and ceremony/credential) endpoints via its pre-host sealed-window listener — it does **not** serve the SPA itself (see [sealed-window.md](sealed-window.md)). In production the embedded UI is therefore reachable only once unsealed; for development the Vite dev server serves the SPA and proxies the API to the daemon (`QRDB_PROXY_TARGET`), so the init/unseal screens are reachable against a sealed backend.
 
+### Desktop (Wails) seal flow
+
+The desktop GUI's `SealBinding` (`cmd/qrdb/bindings_seal.go`) is a thin delegate over the Go SDK's `BarrierClient` on the active connection — it performs **no local share splitting or barrier simulation**. `InitializeShamir` returns the same share-free result as the REST endpoint (no share bytes, no root token); `Unseal` consults `BarrierStatus` first and routes by strategy (`shamir` → per-share `BarrierUnsealWithShare` with quorum progress, otherwise one-shot passphrase `BarrierUnseal`). For embedded servers, only `none`-mode barriers auto-initialize/auto-unseal at startup; passphrase and Shamir barriers honor the daemon's sealed-window semantics and require the same operator ceremony as a remote server.
+
 ### Per-tenant barriers in the UI
 
-Per-tenant barriers (Tenants admin view) use the **passphrase** strategy only — per-tenant Shamir is not supported (`strategy: "shamir"` is rejected). They also require a storage **volume pool** to be configured on the daemon (`storage.volume_pools`); without one, `POST /v1/tenants/{id}/barrier/init` returns `volume pool not configured`. The init form collects a passphrase (required) and new tenants default to `prefix` isolation, which needs no volume pool. See [multi-tenant.md](multi-tenant.md).
+The Tenants admin view lets the **tenant admin choose the barrier strategy** — `none` / `passphrase` / `shamir` — defaulting to `passphrase`. A cryptographic barrier requires a storage **volume pool** configured on the daemon (`storage.volume_pools`); without one, `POST /v1/tenants/{id}/barrier/init` returns `volume pool not configured`. New tenants default to `prefix` isolation (no pool needed). Per-tenant `shamir` follows the same SO distribution model as the system barrier: tenant officers are registered per tenant (`POST /v1/tenants/{id}/barrier/officers`), init responses are share-free, each officer claims their share once via the tenant claim endpoints, the UI drives the per-tenant multi-share unseal ceremony via `POST /v1/tenants/{id}/barrier/unseal-share`, and sealing a Shamir tenant barrier requires a seal-vote quorum (`POST /v1/tenants/{id}/barrier/seal-vote`). See [multi-tenant.md](multi-tenant.md).
 
 ## Compliance Documentation
 

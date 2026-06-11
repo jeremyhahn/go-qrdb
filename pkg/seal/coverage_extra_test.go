@@ -335,6 +335,8 @@ func TestGenerateRecoveryKeys_PutError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	dist := newCaptureDistributor()
+	b.SetRecoveryDistributor(dist)
 
 	ctx := context.Background()
 	// Initialize with no Put error so the barrier can be set up.
@@ -366,16 +368,18 @@ func TestRecoverWithSoftwareStrategy_GetError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	dist := newCaptureDistributor()
+	b.SetRecoveryDistributor(dist)
 
 	ctx := context.Background()
 	// Initialize and generate recovery keys so RecoverWithKeys has metadata.
 	if err := b.Initialize(ctx, Credentials{Secret: "pw"}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	result, err := b.GenerateRecoveryKeys(ctx, 2, 3)
-	if err != nil {
+	if _, err := b.GenerateRecoveryKeys(ctx, 2, 3); err != nil {
 		t.Fatalf("GenerateRecoveryKeys: %v", err)
 	}
+	recShares := dist.Shares()
 
 	// Seal the barrier.
 	if err := b.Seal(); err != nil {
@@ -386,7 +390,7 @@ func TestRecoverWithSoftwareStrategy_GetError(t *testing.T) {
 	// root key blob in recoverWithSoftwareStrategy, it fails.
 	fb.getErr = errStorageInject
 
-	err = b.RecoverWithKeys(ctx, result.Shares[:2])
+	err = b.RecoverWithKeys(ctx, recShares[:2])
 	if err == nil {
 		t.Fatal("expected error when Get fails in recoverWithSoftwareStrategy")
 	}
@@ -530,11 +534,13 @@ func TestUnsealDirect_FreshEpochBarrier(t *testing.T) {
 
 	// Initialize the first barrier so the sealed root key is stored in backend.
 	b1 := newBarrier()
+	dist := newCaptureDistributor()
+	b1.SetCeremonyDistributor(dist)
 	ctx := context.Background()
-	result, err := b1.InitializeShamir(ctx, Credentials{})
-	if err != nil {
+	if _, err := b1.InitializeShamir(ctx, Credentials{}); err != nil {
 		t.Fatalf("InitializeShamir: %v", err)
 	}
+	shares := dist.Shares()
 
 	// Create a second barrier with a fresh EpochBarrier pointing to the same backend.
 	// This simulates a process restart where state is loaded from persistent storage.
@@ -542,7 +548,7 @@ func TestUnsealDirect_FreshEpochBarrier(t *testing.T) {
 
 	// Submit enough shares to trigger unsealDirect on a fresh EpochBarrier.
 	for i := 0; i < 2; i++ {
-		prog, err := b2.UnsealWithShare(ctx, result.Shares[i])
+		prog, err := b2.UnsealWithShare(ctx, shares[i])
 		if err != nil {
 			t.Fatalf("UnsealWithShare(%d): %v", i, err)
 		}
@@ -571,15 +577,18 @@ func TestRecoverWithSoftwareStrategy_CorruptJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	dist := newCaptureDistributor()
+	b.SetRecoveryDistributor(dist)
 
 	ctx := context.Background()
 	if err := b.Initialize(ctx, Credentials{Secret: "pw"}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	result, err := b.GenerateRecoveryKeys(ctx, 2, 3)
-	if err != nil {
+	if _, err := b.GenerateRecoveryKeys(ctx, 2, 3); err != nil {
 		t.Fatalf("GenerateRecoveryKeys: %v", err)
 	}
+	recShares := dist.Shares()
+
 	if err := b.Seal(); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
@@ -589,7 +598,7 @@ func TestRecoverWithSoftwareStrategy_CorruptJSON(t *testing.T) {
 		t.Fatalf("Put corrupt: %v", err)
 	}
 
-	err = b.RecoverWithKeys(ctx, result.Shares[:2])
+	err = b.RecoverWithKeys(ctx, recShares[:2])
 	if err == nil {
 		t.Fatal("expected error when root key blob is corrupt JSON")
 	}

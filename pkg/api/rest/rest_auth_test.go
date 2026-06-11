@@ -17,9 +17,11 @@ package rest
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -300,7 +302,7 @@ func TestHandleCreateUser_Success(t *testing.T) {
 	}
 	srv := newAuthServer(svc, nil, nil)
 
-	body := `{"username":"alice","tenantID":"tenant-1","roleIDs":["role-admin"]}`
+	body := `{"username":"alice","tenant_id":"tenant-1","role_ids":["role-admin"]}`
 	req := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
@@ -343,7 +345,7 @@ func TestHandleCreateUser_ServiceError_UsernameExists(t *testing.T) {
 	}
 	srv := newAuthServer(svc, nil, nil)
 
-	body := `{"username":"alice","tenantID":"tenant-1"}`
+	body := `{"username":"alice","tenant_id":"tenant-1"}`
 	req := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
@@ -357,7 +359,7 @@ func TestHandleCreateUser_NilService(t *testing.T) {
 	// Without UserService, the /users route is not registered.
 	// POST /users does not match the "/users/" prefix either (len 6 < 7).
 	// Dispatch returns 404.
-	body := `{"username":"alice","tenantID":"tenant-1"}`
+	body := `{"username":"alice","tenant_id":"tenant-1"}`
 	req := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
@@ -373,7 +375,7 @@ func TestHandleCreateUser_ValidationError(t *testing.T) {
 	}
 	srv := newAuthServer(svc, nil, nil)
 
-	body := `{"username":"","tenantID":"tenant-1"}`
+	body := `{"username":"","tenant_id":"tenant-1"}`
 	req := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
@@ -389,7 +391,7 @@ func TestHandleCreateUser_StoreError(t *testing.T) {
 	}
 	srv := newAuthServer(svc, nil, nil)
 
-	body := `{"username":"alice","tenantID":"tenant-1"}`
+	body := `{"username":"alice","tenant_id":"tenant-1"}`
 	req := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
@@ -624,7 +626,7 @@ func TestHandleUpdateUser_Success(t *testing.T) {
 	}
 	srv := newAuthServer(svc, nil, nil)
 
-	body := `{"username":"bob","roleIDs":["role-admin"]}`
+	body := `{"username":"bob","role_ids":["role-admin"]}`
 	req := httptest.NewRequest(http.MethodPut, "/users/1001", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
@@ -892,7 +894,7 @@ func TestHandleCreateRole_Success(t *testing.T) {
 	}
 	srv := newAuthServer(nil, roleSvc, nil)
 
-	body := `{"name":"editor","tenantID":"tenant-1","permissions":["kv:put","kv:get"]}`
+	body := `{"name":"editor","tenant_id":"tenant-1","permissions":["kv:put","kv:get"]}`
 	req := httptest.NewRequest(http.MethodPost, "/roles", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
@@ -932,7 +934,7 @@ func TestHandleCreateRole_DuplicateName(t *testing.T) {
 	}
 	srv := newAuthServer(nil, roleSvc, nil)
 
-	body := `{"name":"admin","tenantID":"tenant-1"}`
+	body := `{"name":"admin","tenant_id":"tenant-1"}`
 	req := httptest.NewRequest(http.MethodPost, "/roles", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
@@ -943,7 +945,7 @@ func TestHandleCreateRole_DuplicateName(t *testing.T) {
 func TestHandleCreateRole_NilService(t *testing.T) {
 	srv := newAuthServer(nil, nil, nil)
 
-	body := `{"name":"admin","tenantID":"tenant-1"}`
+	body := `{"name":"admin","tenant_id":"tenant-1"}`
 	req := httptest.NewRequest(http.MethodPost, "/roles", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
@@ -959,7 +961,7 @@ func TestHandleCreateRole_ValidationError(t *testing.T) {
 	}
 	srv := newAuthServer(nil, roleSvc, nil)
 
-	body := `{"name":"","tenantID":"tenant-1"}`
+	body := `{"name":"","tenant_id":"tenant-1"}`
 	req := httptest.NewRequest(http.MethodPost, "/roles", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
@@ -975,7 +977,7 @@ func TestHandleCreateRole_InvalidPermission(t *testing.T) {
 	}
 	srv := newAuthServer(nil, roleSvc, nil)
 
-	body := `{"name":"bad","tenantID":"tenant-1","permissions":["invalid:perm"]}`
+	body := `{"name":"bad","tenant_id":"tenant-1","permissions":["invalid:perm"]}`
 	req := httptest.NewRequest(http.MethodPost, "/roles", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
@@ -1331,7 +1333,7 @@ func TestHandleAssignRole_Success(t *testing.T) {
 	}
 	srv := newAuthServer(userSvc, roleSvc, nil)
 
-	body := `{"userID":1001,"roleID":"role-new"}`
+	body := `{"user_id":"1001","role_id":"role-new"}`
 	req := httptest.NewRequest(http.MethodPost, "/roles/assign", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
@@ -1361,7 +1363,7 @@ func TestHandleAssignRole_AlreadyAssigned(t *testing.T) {
 	srv := newAuthServer(userSvc, roleSvc, nil)
 
 	// Assign the role that is already assigned -- should be idempotent.
-	body := `{"userID":1001,"roleID":"role-admin"}`
+	body := `{"user_id":"1001","role_id":"role-admin"}`
 	req := httptest.NewRequest(http.MethodPost, "/roles/assign", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
@@ -1378,7 +1380,7 @@ func TestHandleAssignRole_AlreadyAssigned(t *testing.T) {
 func TestHandleAssignRole_NilRoleService(t *testing.T) {
 	srv := newAuthServer(&mockUserService{}, nil, nil)
 
-	body := `{"userID":1001,"roleID":"role-001"}`
+	body := `{"user_id":"1001","role_id":"role-001"}`
 	req := httptest.NewRequest(http.MethodPost, "/roles/assign", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
@@ -1393,7 +1395,7 @@ func TestHandleAssignRole_NilUserService(t *testing.T) {
 	roleSvc := &mockRoleService{}
 	srv := newAuthServer(nil, roleSvc, nil)
 
-	body := `{"userID":1001,"roleID":"role-001"}`
+	body := `{"user_id":"1001","role_id":"role-001"}`
 	req := httptest.NewRequest(http.MethodPost, "/roles/assign", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
@@ -1419,7 +1421,7 @@ func TestHandleAssignRole_RoleNotFound(t *testing.T) {
 	}
 	srv := newAuthServer(&mockUserService{}, roleSvc, nil)
 
-	body := `{"userID":1001,"roleID":"nonexistent"}`
+	body := `{"user_id":"1001","role_id":"nonexistent"}`
 	req := httptest.NewRequest(http.MethodPost, "/roles/assign", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
@@ -1440,7 +1442,7 @@ func TestHandleAssignRole_UserNotFound(t *testing.T) {
 	}
 	srv := newAuthServer(userSvc, roleSvc, nil)
 
-	body := `{"userID":9999,"roleID":"role-001"}`
+	body := `{"user_id":"9999","role_id":"role-001"}`
 	req := httptest.NewRequest(http.MethodPost, "/roles/assign", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
@@ -1465,7 +1467,7 @@ func TestHandleAssignRole_UpdateError(t *testing.T) {
 	srv := newAuthServer(userSvc, roleSvc, nil)
 
 	// Assign a role that is NOT already in the user's RoleIDs to trigger the update path.
-	body := `{"userID":1001,"roleID":"role-new"}`
+	body := `{"user_id":"1001","role_id":"role-new"}`
 	req := httptest.NewRequest(http.MethodPost, "/roles/assign", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
@@ -1499,7 +1501,7 @@ func TestHandleUnassignRole_Success(t *testing.T) {
 	roleSvc := &mockRoleService{}
 	srv := newAuthServer(userSvc, roleSvc, nil)
 
-	body := `{"userID":1001,"roleID":"role-admin"}`
+	body := `{"user_id":"1001","role_id":"role-admin"}`
 	req := httptest.NewRequest(http.MethodPost, "/roles/unassign", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
@@ -1516,7 +1518,7 @@ func TestHandleUnassignRole_Success(t *testing.T) {
 func TestHandleUnassignRole_NilRoleService(t *testing.T) {
 	srv := newAuthServer(&mockUserService{}, nil, nil)
 
-	body := `{"userID":1001,"roleID":"role-001"}`
+	body := `{"user_id":"1001","role_id":"role-001"}`
 	req := httptest.NewRequest(http.MethodPost, "/roles/unassign", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
@@ -1531,7 +1533,7 @@ func TestHandleUnassignRole_NilUserService(t *testing.T) {
 	roleSvc := &mockRoleService{}
 	srv := newAuthServer(nil, roleSvc, nil)
 
-	body := `{"userID":1001,"roleID":"role-001"}`
+	body := `{"user_id":"1001","role_id":"role-001"}`
 	req := httptest.NewRequest(http.MethodPost, "/roles/unassign", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
@@ -1558,7 +1560,7 @@ func TestHandleUnassignRole_UserNotFound(t *testing.T) {
 	roleSvc := &mockRoleService{}
 	srv := newAuthServer(userSvc, roleSvc, nil)
 
-	body := `{"userID":9999,"roleID":"role-001"}`
+	body := `{"user_id":"9999","role_id":"role-001"}`
 	req := httptest.NewRequest(http.MethodPost, "/roles/unassign", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
@@ -1578,7 +1580,7 @@ func TestHandleUnassignRole_UpdateError(t *testing.T) {
 	roleSvc := &mockRoleService{}
 	srv := newAuthServer(userSvc, roleSvc, nil)
 
-	body := `{"userID":1001,"roleID":"role-admin"}`
+	body := `{"user_id":"1001","role_id":"role-admin"}`
 	req := httptest.NewRequest(http.MethodPost, "/roles/unassign", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
@@ -2599,4 +2601,169 @@ func TestDispatch_CertsList_WrongMethod(t *testing.T) {
 	srv.dispatch(rec, req)
 
 	assertStatus(t, rec, http.StatusMethodNotAllowed)
+}
+
+// =========================================================================
+// Wire-format regression tests
+// =========================================================================
+
+// snowflakeID is a real-magnitude Snowflake user ID that exceeds
+// JavaScript's Number.MAX_SAFE_INTEGER (2^53-1). If it crossed the wire
+// as a bare JSON number, JSON.parse in browser/Node clients would round
+// it (…256 -> …260), corrupting every follow-up request that echoes the
+// ID. The wire contract therefore encodes uint64 IDs as JSON strings.
+const snowflakeID uint64 = 58370771029856256
+
+// TestUserResponse_WireFormat_SnakeCaseStringID locks the user wire
+// contract: snake_case keys and a string-encoded uint64 ID.
+func TestUserResponse_WireFormat_SnakeCaseStringID(t *testing.T) {
+	u := testUser()
+	u.ID = snowflakeID
+
+	svc := &mockUserService{
+		getUserFn: func(_ context.Context, id uint64) (*user.User, error) {
+			if id != snowflakeID {
+				t.Fatalf("id = %d, want %d", id, snowflakeID)
+			}
+			return u, nil
+		},
+	}
+	srv := newAuthServer(svc, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/users/58370771029856256", nil)
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusOK)
+
+	var wire map[string]json.RawMessage
+	if err := json.Unmarshal(rec.Body.Bytes(), &wire); err != nil {
+		t.Fatalf("unmarshal wire: %v", err)
+	}
+
+	if got := string(wire["id"]); got != `"58370771029856256"` {
+		t.Fatalf("id on the wire = %s, want string \"58370771029856256\"", got)
+	}
+	for _, key := range []string{"username", "tenant_id", "role_ids", "enabled", "system", "created_at", "updated_at"} {
+		if _, ok := wire[key]; !ok {
+			t.Fatalf("wire key %q missing; got keys %v", key, wireKeys(wire))
+		}
+	}
+	for _, stale := range []string{"tenantID", "roleIDs", "createdAt", "updatedAt"} {
+		if _, ok := wire[stale]; ok {
+			t.Fatalf("stale camelCase wire key %q present", stale)
+		}
+	}
+}
+
+// TestListUsersResponse_WireFormat_HasMore locks the paginated list
+// envelope keys: users, total, has_more.
+func TestListUsersResponse_WireFormat_HasMore(t *testing.T) {
+	svc := &mockUserService{
+		listUsersFn: func(_ context.Context, _ *user.ListUsersRequest) (*user.ListUsersResponse, error) {
+			return &user.ListUsersResponse{Users: []*user.User{testUser()}, Total: 11, HasMore: true}, nil
+		},
+	}
+	srv := newAuthServer(svc, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/users/list", nil)
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusOK)
+
+	var wire map[string]json.RawMessage
+	if err := json.Unmarshal(rec.Body.Bytes(), &wire); err != nil {
+		t.Fatalf("unmarshal wire: %v", err)
+	}
+	if _, ok := wire["has_more"]; !ok {
+		t.Fatalf("wire key has_more missing; got keys %v", wireKeys(wire))
+	}
+	if _, ok := wire["hasMore"]; ok {
+		t.Fatal("stale camelCase wire key hasMore present")
+	}
+}
+
+// TestRoleResponse_WireFormat_SnakeCase locks the role wire contract.
+func TestRoleResponse_WireFormat_SnakeCase(t *testing.T) {
+	roleSvc := &mockRoleService{
+		getRoleFn: func(_ context.Context, _ string) (*role.Role, error) {
+			return testRole(), nil
+		},
+	}
+	srv := newAuthServer(nil, roleSvc, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/roles/role-001", nil)
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusOK)
+
+	var wire map[string]json.RawMessage
+	if err := json.Unmarshal(rec.Body.Bytes(), &wire); err != nil {
+		t.Fatalf("unmarshal wire: %v", err)
+	}
+	for _, key := range []string{"id", "name", "tenant_id", "permissions", "system", "created_at", "updated_at"} {
+		if _, ok := wire[key]; !ok {
+			t.Fatalf("wire key %q missing; got keys %v", key, wireKeys(wire))
+		}
+	}
+	for _, stale := range []string{"tenantID", "createdAt", "updatedAt"} {
+		if _, ok := wire[stale]; ok {
+			t.Fatalf("stale camelCase wire key %q present", stale)
+		}
+	}
+}
+
+// TestHandleAssignRole_StringUserID locks the assign-role request
+// contract: user_id arrives as a JSON string and decodes losslessly
+// to the full uint64 Snowflake.
+func TestHandleAssignRole_StringUserID(t *testing.T) {
+	u := testUser()
+	u.ID = snowflakeID
+	u.RoleIDs = nil
+
+	var gotUpdate *user.UpdateUserRequest
+	userSvc := &mockUserService{
+		getUserFn: func(_ context.Context, id uint64) (*user.User, error) {
+			if id != snowflakeID {
+				t.Fatalf("GetUser id = %d, want %d", id, snowflakeID)
+			}
+			return u, nil
+		},
+		updateUserFn: func(_ context.Context, req *user.UpdateUserRequest) (*user.User, error) {
+			gotUpdate = req
+			return u, nil
+		},
+	}
+	roleSvc := &mockRoleService{
+		getRoleFn: func(_ context.Context, _ string) (*role.Role, error) {
+			return testRole(), nil
+		},
+	}
+	srv := newAuthServer(userSvc, roleSvc, nil)
+
+	body := `{"user_id":"58370771029856256","role_id":"role-001"}`
+	req := httptest.NewRequest(http.MethodPost, "/roles/assign", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusOK)
+	if gotUpdate == nil {
+		t.Fatal("UpdateUser was not called")
+	}
+	if gotUpdate.ID != snowflakeID {
+		t.Fatalf("UpdateUser id = %d, want %d (precision lost on the wire)", gotUpdate.ID, snowflakeID)
+	}
+}
+
+// wireKeys returns the sorted key set of a decoded wire object for
+// diagnostics in failure messages.
+func wireKeys(wire map[string]json.RawMessage) []string {
+	keys := make([]string, 0, len(wire))
+	for k := range wire {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }

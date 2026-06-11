@@ -89,6 +89,15 @@ func computeSPKIPin(cert *x509.Certificate) (string, error) {
 	return base64.StdEncoding.EncodeToString(digest[:]), nil
 }
 
+// CertThumbprint returns the lowercase hex-encoded SHA-256 of the DER-encoded
+// certificate. It is the canonical thumbprint used by the officer claim flow
+// to match a presenting mTLS client certificate to its enrolled record.
+// Transport handlers call this to extract the caller's thumbprint from the
+// peer certificate before passing it to BeginClaimShare / CompleteClaimShare.
+func CertThumbprint(certDER []byte) string {
+	return certThumbprint(certDER)
+}
+
 // certThumbprint returns the lowercase hex SHA-256 of the DER-encoded
 // certificate.
 func certThumbprint(certDER []byte) string {

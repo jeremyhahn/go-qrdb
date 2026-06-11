@@ -276,7 +276,7 @@ func TestMCPTenant_AfterClose(t *testing.T) {
 	if _, err := tr.UpdateTenantQuotas(context.Background(), &transport.UpdateTenantQuotasRequest{}); !errors.As(err, &ce) {
 		t.Errorf("UpdateTenantQuotas: %v", err)
 	}
-	if err := tr.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{}); !errors.As(err, &ce) {
+	if _, err := tr.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{}); !errors.As(err, &ce) {
 		t.Errorf("TenantBarrierInit: %v", err)
 	}
 	if err := tr.TenantBarrierUnseal(context.Background(), &transport.TenantBarrierUnsealRequest{}); !errors.As(err, &ce) {

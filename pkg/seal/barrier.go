@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	quicraftseal "github.com/jeremyhahn/go-quicraft/pkg/seal"
 )
 
@@ -137,6 +138,23 @@ type StorageBarrier struct {
 	// initialized barrier from a sealed-but-initialized one. atomic.Value
 	// stores time.Time. Zero value means "never initialized".
 	initializedAt atomic.Value
+
+	// distributor is the ceremony distributor for system barrier share
+	// distribution (init, rekey). Set via SetCeremonyDistributor.
+	distributor CeremonyDistributor
+
+	// recoveryDistributor is the ceremony distributor for recovery key
+	// share distribution. Set via SetRecoveryDistributor.
+	recoveryDistributor CeremonyDistributor
+
+	// sealVoteAcc holds the Shamir share accumulator used exclusively for
+	// quorum-gated sealing. Separate from the unseal accumulator so that
+	// seal votes and unseal submissions never interfere with each other.
+	sealVoteAcc atomic.Value
+
+	// sealVoteMu serializes load-or-create of the seal-vote accumulator,
+	// mirroring the accumulatorMu pattern for the unseal accumulator.
+	sealVoteMu sync.Mutex
 }
 
 // NewStorageBarrier creates a new StorageBarrier that encrypts all values
@@ -223,14 +241,30 @@ func (b *StorageBarrier) Initialize(ctx context.Context, creds Credentials) erro
 		return err
 	}
 
-	// Persist the sealed root key blob.
+	// Persist the sealed root key blob with an atomic compare-and-set on key
+	// existence. The Exists fast-path above is advisory only; this CAS is the
+	// authoritative guard against two concurrent initializers each generating
+	// a root key and the second silently overwriting the first.
 	sealed := b.barrier.SealedRootKeyData()
 	blob, err := json.Marshal(sealed)
 	if err != nil {
 		return err
 	}
-	if err := b.base.Put(ctx, b.config.RootKeyPath, blob); err != nil {
+	stored, err := b.base.PutIfAbsent(ctx, b.config.RootKeyPath, blob)
+	if err != nil {
 		return err
+	}
+	if !stored {
+		// Another initializer won the race. Discard this call's root key and
+		// DEKs by sealing the epoch barrier — the loser must not come up
+		// unsealed with a root key that was never persisted.
+		if sealErr := b.barrier.Seal(); sealErr != nil {
+			b.logger.Error("failed to seal epoch barrier after lost initialization race",
+				slog.String("error", sealErr.Error()))
+		}
+		emitAudit(b.config.AuditLogger, "initialize", "barrier", b.config.RootKeyPath,
+			"deny", map[string]string{"error": ErrAlreadyInitialized.Error(), "strategy": string(strategy.ID())})
+		return ErrAlreadyInitialized
 	}
 
 	// Transition to unsealed.
@@ -332,15 +366,26 @@ func (b *StorageBarrier) Unseal(ctx context.Context, creds Credentials) error {
 	return nil
 }
 
-// unsealDirect obtains an encryptor from the Shamir strategy using the raw
-// root key and transitions to the unsealed state. The EpochBarrier is
+// unsealDirect resolves the quorum-reconstructed secret to the barrier root
+// key (unwrapping it from the unseal-key blob when present, see
+// unsealkey.go) and transitions to the unsealed state. The EpochBarrier is
 // initialized with the root key directly.
-// Used by StrategyShamir where shares reconstruct the root key directly.
-func (b *StorageBarrier) unsealDirect(rootKey []byte) error {
+// Used by StrategyShamir where shares reconstruct the unseal key (or, on
+// legacy barriers, the root key itself).
+func (b *StorageBarrier) unsealDirect(ctx context.Context, secret []byte) error {
 	shamirStrat, ok := b.strategies[StrategyShamir]
 	if !ok {
 		return ErrShamirNotConfigured
 	}
+
+	// Resolve the reconstructed secret to the root key. In unseal-key mode
+	// the AEAD unwrap doubles as share verification: wrong or rekey-revoked
+	// shares fail here with ErrUnsealKeyMismatch.
+	rootKey, err := b.resolveDirectSecret(ctx, secret)
+	if err != nil {
+		return err
+	}
+	defer secure.Wipe(rootKey)
 
 	// The SOs have reconstructed the root key in memory (rootKey). The real
 	// ShamirStrategy can no longer reconstruct it (shares are never persisted),
@@ -348,7 +393,7 @@ func (b *StorageBarrier) unsealDirect(rootKey []byte) error {
 	// the in-hand root key. The persisted (key-material-free) envelope supplies
 	// the epoch/salt state needed to re-derive DEKs. This mirrors RecoverWithKeys
 	// and works whether the EpochBarrier is freshly opened or sealed in-process.
-	blob, getErr := b.base.Get(context.Background(), b.config.RootKeyPath)
+	blob, getErr := b.base.Get(ctx, b.config.RootKeyPath)
 	if getErr != nil {
 		return getErr
 	}
@@ -361,13 +406,13 @@ func (b *StorageBarrier) unsealDirect(rootKey []byte) error {
 	}
 	recStrat := newRecoveryStrategy(rootKey, shamirStrat)
 	defer func() { _ = recStrat.Close() }()
-	if unsealErr := b.barrier.Unseal(context.Background(), recStrat, Credentials{}); unsealErr != nil {
+	if unsealErr := b.barrier.Unseal(ctx, recStrat, Credentials{}); unsealErr != nil {
 		return unsealErr
 	}
 
 	b.activeStrategy.Store(StrategyShamir)
 	b.state.Store(stateUnsealed)
-	b.restoreInitializedAt(context.Background())
+	b.restoreInitializedAt(ctx)
 	return nil
 }
 
@@ -539,6 +584,30 @@ func (b *StorageBarrier) ActiveStrategy() StrategyID {
 	return ""
 }
 
+// SetCeremonyDistributor installs the ceremony distributor used to seal
+// shares to enrolled Security Officers during system barrier init and rekey.
+func (b *StorageBarrier) SetCeremonyDistributor(d CeremonyDistributor) {
+	b.distributor = d
+}
+
+// CeremonyDistributor returns the ceremony distributor configured for
+// system barrier share distribution, or nil if not set.
+func (b *StorageBarrier) CeremonyDistributor() CeremonyDistributor {
+	return b.distributor
+}
+
+// SetRecoveryDistributor installs the ceremony distributor used to seal
+// shares to enrolled recovery Security Officers.
+func (b *StorageBarrier) SetRecoveryDistributor(d CeremonyDistributor) {
+	b.recoveryDistributor = d
+}
+
+// RecoveryDistributor returns the ceremony distributor configured for
+// recovery key share distribution, or nil if not set.
+func (b *StorageBarrier) RecoveryDistributor() CeremonyDistributor {
+	return b.recoveryDistributor
+}
+
 // Config returns the barrier's configuration.
 func (b *StorageBarrier) Config() BarrierConfig {
 	return b.config
@@ -610,6 +679,22 @@ func (b *StorageBarrier) Put(ctx context.Context, key string, value []byte) erro
 		return &PutError{Key: key, Err: err}
 	}
 	return b.base.Put(ctx, key, encrypted)
+}
+
+// PutIfAbsent encrypts the value and atomically stores it under the given key
+// only if the key does not already exist. The compare-and-set is delegated to
+// the base backend, which owns the atomicity for its consistency domain; the
+// CAS condition is key existence, so the non-deterministic ciphertext produced
+// by each call does not affect the outcome.
+func (b *StorageBarrier) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
+	if b.state.Load() != stateUnsealed {
+		return false, ErrSealed
+	}
+	encrypted, err := b.barrier.Encrypt(nil, value)
+	if err != nil {
+		return false, &PutError{Key: key, Err: err}
+	}
+	return b.base.PutIfAbsent(ctx, key, encrypted)
 }
 
 // Delete removes the key from storage.
@@ -753,6 +838,21 @@ func (m *MemoryBackend) Put(_ context.Context, key string, data []byte) error {
 	copy(stored, data)
 	m.data[key] = stored
 	return nil
+}
+
+// PutIfAbsent atomically stores the value under the given key only if the key
+// does not already exist. The single write lock makes the check-then-write
+// atomic for this in-process backend.
+func (m *MemoryBackend) PutIfAbsent(_ context.Context, key string, data []byte) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.data[key]; ok {
+		return false, nil
+	}
+	stored := make([]byte, len(data))
+	copy(stored, data)
+	m.data[key] = stored
+	return true, nil
 }
 
 // Delete removes the key from storage.

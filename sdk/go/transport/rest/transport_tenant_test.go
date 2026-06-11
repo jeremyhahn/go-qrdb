@@ -182,7 +182,7 @@ func newTenantBarrierTestTransport(t *testing.T) (*Transport, *tenantBarrierServ
 func TestTenantBarrierInit_Success(t *testing.T) {
 	rt, srv, _ := newTenantBarrierTestTransport(t)
 
-	err := rt.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{
+	_, err := rt.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{
 		TenantID:  "acme",
 		Threshold: 3,
 		Shares:    5,
@@ -205,7 +205,7 @@ func TestTenantBarrierInit_Success(t *testing.T) {
 func TestTenantBarrierInit_NilRequest(t *testing.T) {
 	rt, _, _ := newTenantBarrierTestTransport(t)
 
-	err := rt.TenantBarrierInit(context.Background(), nil)
+	_, err := rt.TenantBarrierInit(context.Background(), nil)
 	if err == nil {
 		t.Fatal("TenantBarrierInit(nil) returned nil error, want non-nil")
 	}
@@ -218,7 +218,7 @@ func TestTenantBarrierInit_NilRequest(t *testing.T) {
 func TestTenantBarrierInit_EmptyTenantID(t *testing.T) {
 	rt, _, _ := newTenantBarrierTestTransport(t)
 
-	err := rt.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{})
+	_, err := rt.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{})
 	if err == nil {
 		t.Fatal("TenantBarrierInit with empty TenantID returned nil error")
 	}
@@ -231,7 +231,7 @@ func TestTenantBarrierInit_NotFound(t *testing.T) {
 	rt, srv, _ := newTenantBarrierTestTransport(t)
 	srv.notFoundTenant.Store("ghost")
 
-	err := rt.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{TenantID: "ghost"})
+	_, err := rt.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{TenantID: "ghost"})
 	if err == nil {
 		t.Fatal("expected error from 404 response")
 	}
@@ -248,7 +248,7 @@ func TestTenantBarrierInit_AfterClose(t *testing.T) {
 	rt, _, _ := newTenantBarrierTestTransport(t)
 	_ = rt.Close()
 
-	err := rt.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{TenantID: "acme"})
+	_, err := rt.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{TenantID: "acme"})
 	var closedErr *transport.ClosedError
 	if !errors.As(err, &closedErr) {
 		t.Fatalf("expected *transport.ClosedError, got %v", err)

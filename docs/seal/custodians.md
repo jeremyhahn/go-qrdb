@@ -365,12 +365,12 @@ All custody lifecycle operations are exposed through the qrdb SDK (Go, TypeScrip
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/v1/ceremony/initialize` | SO: Initialize ceremony with Members and Threshold |
+| `POST` | `/v1/ceremony/initialize` | SO: Initialize ceremony with Officers (CSR-enrolled) and Threshold |
 | `POST` | `/v1/ceremony/enroll-custodian` | SO: Enroll a custodian with auth factor enrollment |
 | `POST` | `/v1/ceremony/revoke-custodian` | SO: Revoke a custodian from the active ceremony |
 | `GET` | `/v1/ceremony/status` | SO/Auditor: Get ceremony state and pending custodian list |
-| `POST` | `/v1/barrier/unseal-share/begin` | Custodian: Request challenge for unseal |
-| `POST` | `/v1/barrier/unseal-share/complete` | Custodian: Submit signed response and receive sealed envelope |
+| `POST` | `/v1/ceremony/claim-share/begin` | Custodian: Request challenge nonce for share claim |
+| `POST` | `/v1/ceremony/claim-share/complete` | Custodian: Submit signed response to claim their share |
 
 ### Go SDK
 
@@ -378,41 +378,59 @@ All custody lifecycle operations are exposed through the qrdb SDK (Go, TypeScrip
 client, _ := sdk.NewClient(transport)
 client.Connect(ctx)
 
-// SO initializes ceremony
-resp, _ := client.Ceremony().CeremonyInitialize(ctx, &transport.CeremonyInitializeRequest{
-    Members: []string{"custodian_a", "custodian_b", "custodian_c"},
-    Threshold: 2,
-    FactorMethod: "piv",  // all custodians use PIV cards
+// SO initializes the ceremony. Officers are registered by CSR; no share
+// bytes are returned (INV-1) — custodians claim shares individually below.
+initResp, _ := client.Ceremony().CeremonyInitialize(ctx, &transport.CeremonyInitializeRequest{
+	SOPin:     soPin,
+	UserPin:   userPin,
+	Threshold: 2,
+	Officers: []transport.CeremonyOfficerRequest{
+		{Username: "custodian_a", CSRPEM: csrA},
+		{Username: "custodian_b", CSRPEM: csrB},
+		{Username: "custodian_c", CSRPEM: csrC},
+	},
+})
+_ = initResp.ShareCount // share metadata only; never raw shares
+
+// Custodian enrollment with a hardware auth factor is SO-driven over REST:
+// POST /v1/ceremony/enroll-custodian
+//   {username, method, enrollmentID, publicKeyPEM, shareIndex, shareBytes}
+// The service seals the share into an ECDH+AES-256-GCM envelope bound to the
+// custodian's factor public key and zeroes the raw bytes after sealing.
+
+// Custodian claims their sealed share envelope (factor challenge handshake).
+begin, _ := client.Ceremony().CeremonyClaimShareBegin(ctx, &transport.CeremonyClaimShareBeginRequest{
+	CustodianID: custodianID,
 })
 
-// SO enrolls each custodian (after receiving their public key)
-_, _ = client.Ceremony().EnrollCustodian(ctx, &transport.EnrollCustodianRequest{
-    Username: "custodian_a",
-    Method: "piv",
-    PublicKey: pubkey_a,  // P-256 public key from custodian's PIV card
-})
+// Custodian signs begin.Nonce with their hardware factor (PIV/FIDO2/PKCS#11)
+// in-process on the custodian's machine.
+factorResponse := signWithFactor(begin.Nonce)
 
-// Custodian begins unseal
-resp, _ := client.Ceremony().UnsealShareBegin(ctx, &transport.UnsealShareBeginRequest{
-    Username: "custodian_a",
+info, _ := client.Ceremony().CeremonyClaimShareComplete(ctx, &transport.CeremonyClaimShareCompleteRequest{
+	CustodianID:    custodianID,
+	ChallengeID:    challengeID, // from the factor subsystem's challenge
+	FactorResponse: factorResponse,
 })
-nonce := resp.Nonce
+_ = info.ShareClaimed // true; envelope delivered exactly once
 
-// Custodian signs nonce with PIV key (done in-process on the custodian's machine)
-signature := signWithPIV(nonce)
-
-// Custodian completes unseal
-progress, _ := client.Barrier().UnsealShareComplete(ctx, &transport.UnsealShareCompleteRequest{
-    Username: "custodian_a",
-    Nonce: nonce,
-    Signature: signature,
-    Envelope: sealed_share_envelope,
+// Custodian submits their plaintext share toward the unseal quorum. The
+// custodian decrypts the envelope offline with their hardware private key;
+// the server never sees the envelope key and zeroes ShareBytes after
+// accumulation.
+progress, _ := client.Ceremony().CeremonySubmitUnsealShare(ctx, &transport.CeremonySubmitUnsealShareRequest{
+	CustodianID:    custodianID,
+	ChallengeID:    challengeID,
+	FactorResponse: factorResponse,
+	ShareBytes:     plaintextShare,
 })
-// progress.Submitted = 1, progress.Required = 2
+// progress.Submitted = 1, progress.Required = 2, progress.Unsealed = false
 ```
 
 ## See Also
 
+- [so-share-distribution-design.md](so-share-distribution-design.md) — Security Officer share-distribution model for the storage barrier (CSR enrollment, one-time enclave-backed claims, quorum-gated sealing)
+- [shamir.md](shamir.md) — Barrier-level Shamir lifecycle as exposed through `/v1/barrier/*`
 - [roles.md](../auth/roles.md) — Custodian role definition and permissions
 - [compliance.md](../seal/compliance.md) — FIPS 140-3 AS10.05/06 (split knowledge, dual auth)
 - [auth-factors.md](../seal/auth-factors.md) — PIV, PKCS#11, FIDO2 factor implementations

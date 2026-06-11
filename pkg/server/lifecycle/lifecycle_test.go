@@ -17,6 +17,7 @@ package lifecycle_test
 import (
 	"context"
 	"crypto/rand"
+	"crypto/x509"
 	"encoding/hex"
 	"errors"
 	"log/slog"
@@ -26,11 +27,13 @@ import (
 	"github.com/jeremyhahn/go-objstore/pkg/local"
 	objpool "github.com/jeremyhahn/go-objstore/pkg/pool"
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
@@ -692,5 +695,221 @@ func TestBuildSealServicesOnly_WithStrategyRegistry(t *testing.T) {
 
 	if node.Tenant == nil {
 		t.Error("Tenant is nil; expected TenantService built with StrategyRegistry")
+	}
+}
+
+// TestBuildServices_EmptyDataDir_ReturnsEmptyVectorDataDirError verifies that
+// BuildServices returns an EmptyVectorDataDirError when infra.DataDir is empty.
+// The vector storage subsystem is backed exclusively by PebbleDB and requires
+// an absolute data directory; silently writing to a relative "./vector" path
+// in the process working directory is never correct.
+func TestBuildServices_EmptyDataDir_ReturnsEmptyVectorDataDirError(t *testing.T) {
+	host := newLocalHost()
+	defer func() { _ = host.Close() }()
+
+	hub := watch.NewHub()
+	defer hub.Close()
+
+	_, err := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
+		Host:     host,
+		WatchHub: hub,
+		DataDir:  "", // intentionally empty
+	})
+	if err == nil {
+		t.Fatal("expected EmptyVectorDataDirError, got nil")
+	}
+	var target *lifecycle.EmptyVectorDataDirError
+	if !errors.As(err, &target) {
+		t.Errorf("expected *EmptyVectorDataDirError, got %T: %v", err, err)
+	}
+}
+
+// TestBuildServices_NonEmptyDataDir_VectorStorageOpens verifies that the
+// normal path (non-empty DataDir) opens the vector storage and returns a
+// Node with a non-nil Vector service, confirming the guard is the only thing
+// that changes.
+func TestBuildServices_NonEmptyDataDir_VectorStorageOpens(t *testing.T) {
+	host := newLocalHost()
+	defer func() { _ = host.Close() }()
+
+	hub := watch.NewHub()
+	defer hub.Close()
+
+	node, err := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
+		Host:     host,
+		WatchHub: hub,
+		DataDir:  t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("BuildServices: %v", err)
+	}
+	defer func() { _ = node.Stop(context.Background()) }()
+
+	if node.Vector == nil {
+		t.Error("Vector service is nil; expected it to be populated with a non-empty DataDir")
+	}
+}
+
+// stubCeremonyCA is a minimal CeremonyCA used to assert identity wiring
+// through the lifecycle Infra. It is never invoked by the tests.
+type stubCeremonyCA struct{}
+
+func (stubCeremonyCA) SignCSR(context.Context, []byte, *ceremony.SignCSROptions) (*x509.Certificate, error) {
+	return nil, errors.New("stub")
+}
+
+func (stubCeremonyCA) CACertificate() (*x509.Certificate, error) { return nil, errors.New("stub") }
+
+func (stubCeremonyCA) CABundle() ([]byte, error) { return nil, errors.New("stub") }
+
+func (stubCeremonyCA) IssueCertificate(context.Context, *ceremony.IssueCertRequest) (*ceremony.IssuedCert, error) {
+	return nil, errors.New("stub")
+}
+
+// newTestCeremonyCore constructs a core ceremony service over the supplied
+// barrier/credential pair, mirroring what BuildSealServicesOnly builds.
+func newTestCeremonyCore(t *testing.T, barrier *seal.StorageBarrier, credSvc *credentials.CredentialService) *ceremony.CeremonyService {
+	t.Helper()
+	svc, err := ceremony.NewCeremonyService(
+		&ceremony.CeremonyConfig{DataDir: t.TempDir()}, barrier, credSvc, slog.Default())
+	if err != nil {
+		t.Fatalf("NewCeremonyService: %v", err)
+	}
+	return svc
+}
+
+// TestBuildSealServicesOnly_WiresCeremonyCA verifies that Infra.CeremonyCA is
+// installed on the ceremony core service so daemon deployments can register
+// Security Officers without running the full initialization ceremony.
+func TestBuildSealServicesOnly_WiresCeremonyCA(t *testing.T) {
+	barrier, registry, credSvc := newTestBarrier(t)
+	ca := stubCeremonyCA{}
+
+	node, err := lifecycle.BuildSealServicesOnly(context.Background(), lifecycle.Infra{
+		DataDir:           t.TempDir(),
+		SealBarrier:       barrier,
+		BarrierRegistry:   registry,
+		CredentialCoreSvc: credSvc,
+		CeremonyCA:        ca,
+		Logger:            slog.Default(),
+	})
+	if err != nil {
+		t.Fatalf("BuildSealServicesOnly: %v", err)
+	}
+	defer func() { _ = node.Stop(context.Background()) }()
+
+	coreSvc, ok := service.CeremonyServiceCore(node.Ceremony)
+	if !ok {
+		t.Fatal("CeremonyServiceCore: core service not exposed")
+	}
+	if got := coreSvc.CA(); got != ceremony.CeremonyCA(ca) {
+		t.Errorf("ceremony CA = %v, want the Infra-supplied CA", got)
+	}
+}
+
+// TestBuildSealServicesOnly_ReusesCeremonyCoreSvc verifies that a pre-built
+// ceremony core service supplied via Infra.CeremonyCoreSvc is reused as-is
+// rather than replaced — the property that keeps sealed-window officer
+// registrations and enclave-held shares alive across boot phases.
+func TestBuildSealServicesOnly_ReusesCeremonyCoreSvc(t *testing.T) {
+	barrier, registry, credSvc := newTestBarrier(t)
+	core := newTestCeremonyCore(t, barrier, credSvc)
+
+	node, err := lifecycle.BuildSealServicesOnly(context.Background(), lifecycle.Infra{
+		DataDir:           t.TempDir(),
+		SealBarrier:       barrier,
+		BarrierRegistry:   registry,
+		CredentialCoreSvc: credSvc,
+		CeremonyCoreSvc:   core,
+		Logger:            slog.Default(),
+	})
+	if err != nil {
+		t.Fatalf("BuildSealServicesOnly: %v", err)
+	}
+	defer func() { _ = node.Stop(context.Background()) }()
+
+	coreSvc, ok := service.CeremonyServiceCore(node.Ceremony)
+	if !ok {
+		t.Fatal("CeremonyServiceCore: core service not exposed")
+	}
+	if coreSvc != core {
+		t.Error("ceremony core service was rebuilt; expected the Infra-supplied instance to be reused")
+	}
+}
+
+// TestBuildServices_WiresCeremonyCA verifies the full-boot path installs
+// Infra.CeremonyCA on the ceremony core service.
+func TestBuildServices_WiresCeremonyCA(t *testing.T) {
+	host := newLocalHost()
+	defer func() { _ = host.Close() }()
+
+	hub := watch.NewHub()
+	defer hub.Close()
+
+	barrier, registry, credSvc := newTestBarrier(t)
+	ca := stubCeremonyCA{}
+
+	node, err := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
+		Host:              host,
+		WatchHub:          hub,
+		DataDir:           t.TempDir(),
+		SealBarrier:       barrier,
+		BarrierRegistry:   registry,
+		CredentialCoreSvc: credSvc,
+		CeremonyCA:        ca,
+	})
+	if err != nil {
+		t.Fatalf("BuildServices: %v", err)
+	}
+	defer func() { _ = node.Stop(context.Background()) }()
+
+	coreSvc, ok := service.CeremonyServiceCore(node.Ceremony)
+	if !ok {
+		t.Fatal("CeremonyServiceCore: core service not exposed")
+	}
+	if got := coreSvc.CA(); got != ceremony.CeremonyCA(ca) {
+		t.Errorf("ceremony CA = %v, want the Infra-supplied CA", got)
+	}
+}
+
+// TestBuildServices_ReusesCeremonyCoreSvc verifies the full-boot path reuses
+// a sealed-window ceremony core service supplied via Infra.CeremonyCoreSvc —
+// Gap B of the daemon Security Officer claim chain.
+func TestBuildServices_ReusesCeremonyCoreSvc(t *testing.T) {
+	host := newLocalHost()
+	defer func() { _ = host.Close() }()
+
+	hub := watch.NewHub()
+	defer hub.Close()
+
+	barrier, registry, credSvc := newTestBarrier(t)
+	core := newTestCeremonyCore(t, barrier, credSvc)
+	ca := stubCeremonyCA{}
+	core.SetCA(ca)
+
+	node, err := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
+		Host:              host,
+		WatchHub:          hub,
+		DataDir:           t.TempDir(),
+		SealBarrier:       barrier,
+		BarrierRegistry:   registry,
+		CredentialCoreSvc: credSvc,
+		CeremonyCoreSvc:   core,
+		CeremonyCA:        ca,
+	})
+	if err != nil {
+		t.Fatalf("BuildServices: %v", err)
+	}
+	defer func() { _ = node.Stop(context.Background()) }()
+
+	coreSvc, ok := service.CeremonyServiceCore(node.Ceremony)
+	if !ok {
+		t.Fatal("CeremonyServiceCore: core service not exposed")
+	}
+	if coreSvc != core {
+		t.Error("ceremony core service was rebuilt; expected the Infra-supplied instance to be reused")
+	}
+	if got := coreSvc.CA(); got != ceremony.CeremonyCA(ca) {
+		t.Errorf("ceremony CA = %v, want the sealed-window CA preserved", got)
 	}
 }

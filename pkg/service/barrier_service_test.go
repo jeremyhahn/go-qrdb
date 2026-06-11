@@ -17,17 +17,79 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
+	"reflect"
+	"sync"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	quicraftShamir "github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir"
 )
 
 // testLogger returns a quiet logger for unit tests.
 func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 }
+
+// ---------------------------------------------------------------------------
+// testCaptureDistributor — local Shamir distributor for service-layer tests.
+//
+// Implements seal.CeremonyDistributor by splitting with the real Shamir library
+// and recording the share strings so tests can later call UnsealWithShare /
+// RecoverWithKeys. This mirrors the ceremony package's production split path
+// without requiring a full ceremony setup.
+// ---------------------------------------------------------------------------
+
+type testCaptureDistributor struct {
+	mu     sync.Mutex
+	shares []string
+}
+
+func newTestCaptureDistributor() *testCaptureDistributor {
+	return &testCaptureDistributor{}
+}
+
+// SealAndDistribute splits secret into total shares with the given threshold,
+// records them for retrieval, and returns the count.
+func (c *testCaptureDistributor) SealAndDistribute(_ context.Context, secret []byte, threshold, total int) (int, error) {
+	raw, err := quicraftShamir.Split(secret, threshold, total)
+	if err != nil {
+		return 0, fmt.Errorf("testCaptureDistributor: split failed: %w", err)
+	}
+	c.mu.Lock()
+	c.shares = make([]string, len(raw))
+	for i, s := range raw {
+		c.shares[i] = s.Value
+	}
+	c.mu.Unlock()
+	return len(raw), nil
+}
+
+// RekeyAndDistribute destroys the prior round and produces fresh shares.
+func (c *testCaptureDistributor) RekeyAndDistribute(ctx context.Context, newSecret []byte, newThreshold, newTotal int) (int, error) {
+	c.mu.Lock()
+	c.shares = nil
+	c.mu.Unlock()
+	return c.SealAndDistribute(ctx, newSecret, newThreshold, newTotal)
+}
+
+// Shares returns a copy of the share strings captured during the last split.
+func (c *testCaptureDistributor) Shares() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.shares == nil {
+		return nil
+	}
+	out := make([]string, len(c.shares))
+	copy(out, c.shares)
+	return out
+}
+
+// ---------------------------------------------------------------------------
+// Barrier construction helpers
+// ---------------------------------------------------------------------------
 
 // newTestSoftwareBarrier creates a StorageBarrier backed by in-memory storage
 // with a SoftwareStrategy. Suitable for testing credential-based init/unseal.
@@ -114,21 +176,57 @@ func initAndUnsealSoftwareBarrier(t *testing.T) BarrierServicer {
 	return svc
 }
 
-// initShamirBarrier initializes a Shamir barrier and returns the service
-// and the shares produced during initialization.
-func initShamirBarrier(t *testing.T) (BarrierServicer, *ShamirInitInfo) {
+// initShamirBarrier initializes a Shamir barrier with wired ceremony and
+// recovery capture distributors. Returns the service, the ShamirInitInfo
+// (which contains ShareCount, not raw shares), and the ceremony distributor
+// whose Shares() method provides the actual share strings for unseal and
+// root-token operations.
+//
+// The recovery distributor is always wired so tests that seal then call
+// GenerateRecoveryKeys do not fail with ErrCeremonyDistributorNotConfigured.
+func initShamirBarrier(t *testing.T) (BarrierServicer, *ShamirInitInfo, *testCaptureDistributor) {
 	t.Helper()
 	barrier := newTestShamirBarrier(t)
+	dist := newTestCaptureDistributor()
+	recDist := newTestCaptureDistributor()
+	barrier.SetCeremonyDistributor(dist)
+	barrier.SetRecoveryDistributor(recDist)
 	svc := NewBarrierService(barrier)
 	ctx := context.Background()
 	info, err := svc.BarrierInitializeShamir(ctx, "", 2, 3)
 	if err != nil {
 		t.Fatalf("BarrierInitializeShamir: %v", err)
 	}
-	return svc, info
+	return svc, info, dist
 }
 
-// --- Lifecycle Tests ---
+// ---------------------------------------------------------------------------
+// INV-1: ShamirInitInfo and RecoveryKeysInfo must not carry raw share fields
+// ---------------------------------------------------------------------------
+
+// TestShamirInitInfo_NoSharesField asserts that ShamirInitInfo has no field
+// named "Shares". If it does, raw share material could escape in wire responses
+// violating the per-SO claim-only distribution invariant.
+func TestShamirInitInfo_NoSharesField(t *testing.T) {
+	rt := reflect.TypeOf(ShamirInitInfo{})
+	if _, ok := rt.FieldByName("Shares"); ok {
+		t.Errorf("ShamirInitInfo must not have a Shares field (INV-1: shares must only reach SOs via ClaimShare)")
+	}
+}
+
+// TestRecoveryKeysInfo_NoKeysField asserts that RecoveryKeysInfo has no field
+// named "Keys". If it does, raw recovery share material could escape in wire
+// responses violating the per-SO claim-only distribution invariant.
+func TestRecoveryKeysInfo_NoKeysField(t *testing.T) {
+	rt := reflect.TypeOf(RecoveryKeysInfo{})
+	if _, ok := rt.FieldByName("Keys"); ok {
+		t.Errorf("RecoveryKeysInfo must not have a Keys field (INV-1: recovery shares must only reach SOs via ClaimShare)")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Lifecycle Tests
+// ---------------------------------------------------------------------------
 
 func TestBarrierService_BarrierInitialize(t *testing.T) {
 	barrier, _ := newTestSoftwareBarrier(t)
@@ -257,6 +355,19 @@ func TestBarrierService_BarrierSeal_Idempotent(t *testing.T) {
 	}
 }
 
+// TestBarrierSeal_ShamirRequiresQuorum verifies INV-8: single-admin BarrierSeal
+// is blocked for Shamir-protected barriers; the caller must use
+// BarrierShamirSealVote to collect a quorum instead.
+func TestBarrierSeal_ShamirRequiresQuorum(t *testing.T) {
+	svc, _, _ := initShamirBarrier(t)
+	ctx := context.Background()
+
+	err := svc.BarrierSeal(ctx)
+	if !errors.Is(err, seal.ErrShamirBarrierRequiresQuorum) {
+		t.Errorf("BarrierSeal on Shamir barrier = %v, want %v", err, seal.ErrShamirBarrierRequiresQuorum)
+	}
+}
+
 func TestBarrierService_BarrierStatus(t *testing.T) {
 	barrier, _ := newTestSoftwareBarrier(t)
 	svc := NewBarrierService(barrier)
@@ -294,10 +405,14 @@ func TestBarrierService_BarrierStatus_AfterInitialize(t *testing.T) {
 	}
 }
 
-// --- Shamir Tests ---
+// ---------------------------------------------------------------------------
+// Shamir Tests
+// ---------------------------------------------------------------------------
 
 func TestBarrierService_BarrierInitializeShamir(t *testing.T) {
 	barrier := newTestShamirBarrier(t)
+	dist := newTestCaptureDistributor()
+	barrier.SetCeremonyDistributor(dist)
 	svc := NewBarrierService(barrier)
 	ctx := context.Background()
 
@@ -311,18 +426,25 @@ func TestBarrierService_BarrierInitializeShamir(t *testing.T) {
 	if info.TotalShares != 3 {
 		t.Errorf("TotalShares = %d, want 3", info.TotalShares)
 	}
-	if len(info.Shares) != 3 {
-		t.Errorf("len(Shares) = %d, want 3", len(info.Shares))
+	if info.ShareCount != 3 {
+		t.Errorf("ShareCount = %d, want 3", info.ShareCount)
 	}
-	for i, share := range info.Shares {
-		if share == "" {
-			t.Errorf("share[%d] is empty", i)
+	// Verify the distributor captured the shares.
+	shares := dist.Shares()
+	if len(shares) != 3 {
+		t.Errorf("distributor captured %d shares, want 3", len(shares))
+	}
+	for i, s := range shares {
+		if s == "" {
+			t.Errorf("captured share[%d] is empty", i)
 		}
 	}
 }
 
 func TestBarrierService_BarrierInitializeShamir_AlreadyInitialized(t *testing.T) {
 	barrier := newTestShamirBarrier(t)
+	dist := newTestCaptureDistributor()
+	barrier.SetCeremonyDistributor(dist)
 	svc := NewBarrierService(barrier)
 	ctx := context.Background()
 
@@ -339,6 +461,8 @@ func TestBarrierService_BarrierInitializeShamir_AlreadyInitialized(t *testing.T)
 
 func TestBarrierService_BarrierInitializeShamir_CredentialMode(t *testing.T) {
 	barrier := newTestSoftwareBarrierWithShamir(t)
+	dist := newTestCaptureDistributor()
+	barrier.SetCeremonyDistributor(dist)
 	svc := NewBarrierService(barrier)
 	ctx := context.Background()
 
@@ -349,22 +473,31 @@ func TestBarrierService_BarrierInitializeShamir_CredentialMode(t *testing.T) {
 	if info.Threshold != 2 {
 		t.Errorf("Threshold = %d, want 2", info.Threshold)
 	}
-	if len(info.Shares) != 3 {
-		t.Errorf("len(Shares) = %d, want 3", len(info.Shares))
+	if info.ShareCount != 3 {
+		t.Errorf("ShareCount = %d, want 3", info.ShareCount)
 	}
 }
 
 func TestBarrierService_BarrierUnsealWithShare(t *testing.T) {
-	svc, info := initShamirBarrier(t)
+	svc, _, dist := initShamirBarrier(t)
 	ctx := context.Background()
+	shares := dist.Shares()
 
 	// Seal the barrier so we can unseal with shares.
-	if err := svc.BarrierSeal(ctx); err != nil {
-		t.Fatalf("BarrierSeal: %v", err)
+	// Shamir barriers require quorum to seal, so we use SubmitSealVote path.
+	// For testing, we use the underlying barrier directly via the service
+	// BarrierShamirSealVote which requires a valid share. Since we're just
+	// testing the unseal flow, seal via BarrierShamirSealVote with quorum.
+	// Submit 2 shares (threshold = 2) to seal.
+	if _, err := svc.BarrierShamirSealVote(ctx, shares[0]); err != nil {
+		t.Fatalf("first BarrierShamirSealVote: %v", err)
+	}
+	if _, err := svc.BarrierShamirSealVote(ctx, shares[1]); err != nil {
+		t.Fatalf("second BarrierShamirSealVote: %v", err)
 	}
 
-	// Submit first share - should not complete yet.
-	progress, err := svc.BarrierUnsealWithShare(ctx, info.Shares[0])
+	// Submit first unseal share - should not complete yet.
+	progress, err := svc.BarrierUnsealWithShare(ctx, shares[0])
 	if err != nil {
 		t.Fatalf("first BarrierUnsealWithShare: %v", err)
 	}
@@ -379,7 +512,7 @@ func TestBarrierService_BarrierUnsealWithShare(t *testing.T) {
 	}
 
 	// Submit second share - should reach quorum and unseal.
-	progress, err = svc.BarrierUnsealWithShare(ctx, info.Shares[1])
+	progress, err = svc.BarrierUnsealWithShare(ctx, shares[1])
 	if err != nil {
 		t.Fatalf("second BarrierUnsealWithShare: %v", err)
 	}
@@ -401,26 +534,32 @@ func TestBarrierService_BarrierUnsealWithShare(t *testing.T) {
 }
 
 func TestBarrierService_BarrierUnsealWithShare_AlreadyUnsealed(t *testing.T) {
-	svc, info := initShamirBarrier(t)
+	svc, _, dist := initShamirBarrier(t)
 	ctx := context.Background()
+	shares := dist.Shares()
 
 	// Barrier is already unsealed after init. Submitting a share should error.
-	_, err := svc.BarrierUnsealWithShare(ctx, info.Shares[0])
+	_, err := svc.BarrierUnsealWithShare(ctx, shares[0])
 	if !errors.Is(err, seal.ErrAlreadyUnsealed) {
 		t.Errorf("BarrierUnsealWithShare on unsealed = %v, want %v", err, seal.ErrAlreadyUnsealed)
 	}
 }
 
 func TestBarrierService_BarrierUnsealWithShares(t *testing.T) {
-	svc, info := initShamirBarrier(t)
+	svc, _, dist := initShamirBarrier(t)
 	ctx := context.Background()
+	shares := dist.Shares()
 
-	if err := svc.BarrierSeal(ctx); err != nil {
-		t.Fatalf("BarrierSeal: %v", err)
+	// Seal via quorum votes.
+	if _, err := svc.BarrierShamirSealVote(ctx, shares[0]); err != nil {
+		t.Fatalf("first BarrierShamirSealVote: %v", err)
+	}
+	if _, err := svc.BarrierShamirSealVote(ctx, shares[1]); err != nil {
+		t.Fatalf("second BarrierShamirSealVote: %v", err)
 	}
 
 	// Provide all shares at once.
-	err := svc.BarrierUnsealWithShares(ctx, info.Shares)
+	err := svc.BarrierUnsealWithShares(ctx, shares)
 	if err != nil {
 		t.Fatalf("BarrierUnsealWithShares returned unexpected error: %v", err)
 	}
@@ -435,24 +574,31 @@ func TestBarrierService_BarrierUnsealWithShares(t *testing.T) {
 }
 
 func TestBarrierService_BarrierUnsealWithShares_InsufficientShares(t *testing.T) {
-	svc, info := initShamirBarrier(t)
+	svc, _, dist := initShamirBarrier(t)
 	ctx := context.Background()
+	shares := dist.Shares()
 
-	if err := svc.BarrierSeal(ctx); err != nil {
-		t.Fatalf("BarrierSeal: %v", err)
+	// Seal via quorum votes.
+	if _, err := svc.BarrierShamirSealVote(ctx, shares[0]); err != nil {
+		t.Fatalf("first BarrierShamirSealVote: %v", err)
+	}
+	if _, err := svc.BarrierShamirSealVote(ctx, shares[1]); err != nil {
+		t.Fatalf("second BarrierShamirSealVote: %v", err)
 	}
 
 	// Provide only 1 share when threshold is 2.
-	err := svc.BarrierUnsealWithShares(ctx, info.Shares[:1])
+	err := svc.BarrierUnsealWithShares(ctx, shares[:1])
 	if !errors.Is(err, seal.ErrShamirQuorumIncomplete) {
 		t.Errorf("BarrierUnsealWithShares with 1 share = %v, want %v", err, seal.ErrShamirQuorumIncomplete)
 	}
 }
 
-// --- Rekey Tests ---
+// ---------------------------------------------------------------------------
+// Rekey Tests
+// ---------------------------------------------------------------------------
 
 func TestBarrierService_BarrierRekey(t *testing.T) {
-	svc, _ := initShamirBarrier(t)
+	svc, _, _ := initShamirBarrier(t)
 	ctx := context.Background()
 
 	result, err := svc.BarrierRekey(ctx, 3, 5)
@@ -465,22 +611,22 @@ func TestBarrierService_BarrierRekey(t *testing.T) {
 	if result.TotalShares != 5 {
 		t.Errorf("TotalShares = %d, want 5", result.TotalShares)
 	}
-	if len(result.Shares) != 5 {
-		t.Errorf("len(Shares) = %d, want 5", len(result.Shares))
-	}
-	for i, share := range result.Shares {
-		if share == "" {
-			t.Errorf("rekeyed share[%d] is empty", i)
-		}
+	if result.ShareCount != 5 {
+		t.Errorf("ShareCount = %d, want 5", result.ShareCount)
 	}
 }
 
 func TestBarrierService_BarrierRekey_Sealed(t *testing.T) {
-	svc, _ := initShamirBarrier(t)
+	svc, _, dist := initShamirBarrier(t)
 	ctx := context.Background()
+	shares := dist.Shares()
 
-	if err := svc.BarrierSeal(ctx); err != nil {
-		t.Fatalf("BarrierSeal: %v", err)
+	// Seal via quorum votes.
+	if _, err := svc.BarrierShamirSealVote(ctx, shares[0]); err != nil {
+		t.Fatalf("first BarrierShamirSealVote: %v", err)
+	}
+	if _, err := svc.BarrierShamirSealVote(ctx, shares[1]); err != nil {
+		t.Fatalf("second BarrierShamirSealVote: %v", err)
 	}
 
 	_, err := svc.BarrierRekey(ctx, 3, 5)
@@ -490,7 +636,7 @@ func TestBarrierService_BarrierRekey_Sealed(t *testing.T) {
 }
 
 func TestBarrierService_BarrierRekey_InvalidThreshold(t *testing.T) {
-	svc, _ := initShamirBarrier(t)
+	svc, _, _ := initShamirBarrier(t)
 	ctx := context.Background()
 
 	_, err := svc.BarrierRekey(ctx, 1, 5)
@@ -499,11 +645,23 @@ func TestBarrierService_BarrierRekey_InvalidThreshold(t *testing.T) {
 	}
 }
 
-// --- Recovery Tests ---
+// ---------------------------------------------------------------------------
+// Recovery Tests
+// ---------------------------------------------------------------------------
 
 func TestBarrierService_BarrierGenerateRecoveryKeys(t *testing.T) {
-	svc, _ := initShamirBarrier(t)
+	barrier := newTestShamirBarrier(t)
+	dist := newTestCaptureDistributor()
+	barrier.SetCeremonyDistributor(dist)
+	recDist := newTestCaptureDistributor()
+	barrier.SetRecoveryDistributor(recDist)
+	svc := NewBarrierService(barrier)
 	ctx := context.Background()
+
+	// Initialize first so recovery keys can be generated.
+	if _, err := svc.BarrierInitializeShamir(ctx, "", 2, 3); err != nil {
+		t.Fatalf("BarrierInitializeShamir: %v", err)
+	}
 
 	result, err := svc.BarrierGenerateRecoveryKeys(ctx, 2, 3)
 	if err != nil {
@@ -515,18 +673,18 @@ func TestBarrierService_BarrierGenerateRecoveryKeys(t *testing.T) {
 	if result.Total != 3 {
 		t.Errorf("Total = %d, want 3", result.Total)
 	}
-	if len(result.Keys) != 3 {
-		t.Errorf("len(Keys) = %d, want 3", len(result.Keys))
+	if result.ShareCount != 3 {
+		t.Errorf("ShareCount = %d, want 3", result.ShareCount)
 	}
-	for i, key := range result.Keys {
-		if key == "" {
-			t.Errorf("recovery key[%d] is empty", i)
-		}
+	// Verify the recovery distributor captured the shares.
+	recoveryShares := recDist.Shares()
+	if len(recoveryShares) != 3 {
+		t.Errorf("recovery distributor captured %d shares, want 3", len(recoveryShares))
 	}
 }
 
 func TestBarrierService_BarrierGenerateRecoveryKeys_InvalidThreshold(t *testing.T) {
-	svc, _ := initShamirBarrier(t)
+	svc, _, _ := initShamirBarrier(t)
 	ctx := context.Background()
 
 	_, err := svc.BarrierGenerateRecoveryKeys(ctx, 1, 3)
@@ -536,11 +694,16 @@ func TestBarrierService_BarrierGenerateRecoveryKeys_InvalidThreshold(t *testing.
 }
 
 func TestBarrierService_BarrierGenerateRecoveryKeys_Sealed(t *testing.T) {
-	svc, _ := initShamirBarrier(t)
+	svc, _, dist := initShamirBarrier(t)
 	ctx := context.Background()
+	shares := dist.Shares()
 
-	if err := svc.BarrierSeal(ctx); err != nil {
-		t.Fatalf("BarrierSeal: %v", err)
+	// Seal via quorum votes.
+	if _, err := svc.BarrierShamirSealVote(ctx, shares[0]); err != nil {
+		t.Fatalf("first BarrierShamirSealVote: %v", err)
+	}
+	if _, err := svc.BarrierShamirSealVote(ctx, shares[1]); err != nil {
+		t.Fatalf("second BarrierShamirSealVote: %v", err)
 	}
 
 	_, err := svc.BarrierGenerateRecoveryKeys(ctx, 2, 3)
@@ -550,22 +713,37 @@ func TestBarrierService_BarrierGenerateRecoveryKeys_Sealed(t *testing.T) {
 }
 
 func TestBarrierService_BarrierRecoverWithKeys(t *testing.T) {
-	svc, _ := initShamirBarrier(t)
+	barrier := newTestShamirBarrier(t)
+	dist := newTestCaptureDistributor()
+	barrier.SetCeremonyDistributor(dist)
+	recDist := newTestCaptureDistributor()
+	barrier.SetRecoveryDistributor(recDist)
+	svc := NewBarrierService(barrier)
 	ctx := context.Background()
 
+	// Initialize first.
+	if _, err := svc.BarrierInitializeShamir(ctx, "", 2, 3); err != nil {
+		t.Fatalf("BarrierInitializeShamir: %v", err)
+	}
+
 	// Generate recovery keys while unsealed.
-	recovery, err := svc.BarrierGenerateRecoveryKeys(ctx, 2, 3)
+	_, err := svc.BarrierGenerateRecoveryKeys(ctx, 2, 3)
 	if err != nil {
 		t.Fatalf("BarrierGenerateRecoveryKeys: %v", err)
 	}
+	recoveryShares := recDist.Shares()
 
-	// Seal the barrier.
-	if err := svc.BarrierSeal(ctx); err != nil {
-		t.Fatalf("BarrierSeal: %v", err)
+	// Seal via quorum votes using unseal shares.
+	unsealShares := dist.Shares()
+	if _, err := svc.BarrierShamirSealVote(ctx, unsealShares[0]); err != nil {
+		t.Fatalf("first BarrierShamirSealVote: %v", err)
+	}
+	if _, err := svc.BarrierShamirSealVote(ctx, unsealShares[1]); err != nil {
+		t.Fatalf("second BarrierShamirSealVote: %v", err)
 	}
 
 	// Recover using the recovery keys.
-	err = svc.BarrierRecoverWithKeys(ctx, recovery.Keys)
+	err = svc.BarrierRecoverWithKeys(ctx, recoveryShares)
 	if err != nil {
 		t.Fatalf("BarrierRecoverWithKeys returned unexpected error: %v", err)
 	}
@@ -580,31 +758,50 @@ func TestBarrierService_BarrierRecoverWithKeys(t *testing.T) {
 }
 
 func TestBarrierService_BarrierRecoverWithKeys_InsufficientKeys(t *testing.T) {
-	svc, _ := initShamirBarrier(t)
+	barrier := newTestShamirBarrier(t)
+	dist := newTestCaptureDistributor()
+	barrier.SetCeremonyDistributor(dist)
+	recDist := newTestCaptureDistributor()
+	barrier.SetRecoveryDistributor(recDist)
+	svc := NewBarrierService(barrier)
 	ctx := context.Background()
 
-	recovery, err := svc.BarrierGenerateRecoveryKeys(ctx, 2, 3)
+	if _, err := svc.BarrierInitializeShamir(ctx, "", 2, 3); err != nil {
+		t.Fatalf("BarrierInitializeShamir: %v", err)
+	}
+
+	_, err := svc.BarrierGenerateRecoveryKeys(ctx, 2, 3)
 	if err != nil {
 		t.Fatalf("BarrierGenerateRecoveryKeys: %v", err)
 	}
+	recoveryShares := recDist.Shares()
 
-	if err := svc.BarrierSeal(ctx); err != nil {
-		t.Fatalf("BarrierSeal: %v", err)
+	unsealShares := dist.Shares()
+	if _, err := svc.BarrierShamirSealVote(ctx, unsealShares[0]); err != nil {
+		t.Fatalf("first BarrierShamirSealVote: %v", err)
+	}
+	if _, err := svc.BarrierShamirSealVote(ctx, unsealShares[1]); err != nil {
+		t.Fatalf("second BarrierShamirSealVote: %v", err)
 	}
 
 	// Provide only 1 key when threshold is 2.
-	err = svc.BarrierRecoverWithKeys(ctx, recovery.Keys[:1])
+	err = svc.BarrierRecoverWithKeys(ctx, recoveryShares[:1])
 	if !errors.Is(err, seal.ErrShamirQuorumIncomplete) {
 		t.Errorf("BarrierRecoverWithKeys with 1 key = %v, want %v", err, seal.ErrShamirQuorumIncomplete)
 	}
 }
 
 func TestBarrierService_BarrierRecoverWithKeys_NoRecoveryMeta(t *testing.T) {
-	svc, _ := initShamirBarrier(t)
+	svc, _, dist := initShamirBarrier(t)
 	ctx := context.Background()
+	shares := dist.Shares()
 
-	if err := svc.BarrierSeal(ctx); err != nil {
-		t.Fatalf("BarrierSeal: %v", err)
+	// Seal via quorum votes.
+	if _, err := svc.BarrierShamirSealVote(ctx, shares[0]); err != nil {
+		t.Fatalf("first BarrierShamirSealVote: %v", err)
+	}
+	if _, err := svc.BarrierShamirSealVote(ctx, shares[1]); err != nil {
+		t.Fatalf("second BarrierShamirSealVote: %v", err)
 	}
 
 	// Attempt recovery without ever generating recovery keys.
@@ -615,8 +812,17 @@ func TestBarrierService_BarrierRecoverWithKeys_NoRecoveryMeta(t *testing.T) {
 }
 
 func TestBarrierService_BarrierDeleteRecoveryKeys(t *testing.T) {
-	svc, _ := initShamirBarrier(t)
+	barrier := newTestShamirBarrier(t)
+	dist := newTestCaptureDistributor()
+	barrier.SetCeremonyDistributor(dist)
+	recDist := newTestCaptureDistributor()
+	barrier.SetRecoveryDistributor(recDist)
+	svc := NewBarrierService(barrier)
 	ctx := context.Background()
+
+	if _, err := svc.BarrierInitializeShamir(ctx, "", 2, 3); err != nil {
+		t.Fatalf("BarrierInitializeShamir: %v", err)
+	}
 
 	_, err := svc.BarrierGenerateRecoveryKeys(ctx, 2, 3)
 	if err != nil {
@@ -638,11 +844,16 @@ func TestBarrierService_BarrierDeleteRecoveryKeys(t *testing.T) {
 }
 
 func TestBarrierService_BarrierDeleteRecoveryKeys_Sealed(t *testing.T) {
-	svc, _ := initShamirBarrier(t)
+	svc, _, dist := initShamirBarrier(t)
 	ctx := context.Background()
+	shares := dist.Shares()
 
-	if err := svc.BarrierSeal(ctx); err != nil {
-		t.Fatalf("BarrierSeal: %v", err)
+	// Seal via quorum votes.
+	if _, err := svc.BarrierShamirSealVote(ctx, shares[0]); err != nil {
+		t.Fatalf("first BarrierShamirSealVote: %v", err)
+	}
+	if _, err := svc.BarrierShamirSealVote(ctx, shares[1]); err != nil {
+		t.Fatalf("second BarrierShamirSealVote: %v", err)
 	}
 
 	err := svc.BarrierDeleteRecoveryKeys(ctx)
@@ -652,8 +863,17 @@ func TestBarrierService_BarrierDeleteRecoveryKeys_Sealed(t *testing.T) {
 }
 
 func TestBarrierService_BarrierHasRecoveryKeys(t *testing.T) {
-	svc, _ := initShamirBarrier(t)
+	barrier := newTestShamirBarrier(t)
+	dist := newTestCaptureDistributor()
+	barrier.SetCeremonyDistributor(dist)
+	recDist := newTestCaptureDistributor()
+	barrier.SetRecoveryDistributor(recDist)
+	svc := NewBarrierService(barrier)
 	ctx := context.Background()
+
+	if _, err := svc.BarrierInitializeShamir(ctx, "", 2, 3); err != nil {
+		t.Fatalf("BarrierInitializeShamir: %v", err)
+	}
 
 	_, err := svc.BarrierGenerateRecoveryKeys(ctx, 2, 3)
 	if err != nil {
@@ -670,7 +890,7 @@ func TestBarrierService_BarrierHasRecoveryKeys(t *testing.T) {
 }
 
 func TestBarrierService_BarrierHasRecoveryKeys_NoKeys(t *testing.T) {
-	svc, _ := initShamirBarrier(t)
+	svc, _, _ := initShamirBarrier(t)
 	ctx := context.Background()
 
 	has, err := svc.BarrierHasRecoveryKeys(ctx)
@@ -683,11 +903,16 @@ func TestBarrierService_BarrierHasRecoveryKeys_NoKeys(t *testing.T) {
 }
 
 func TestBarrierService_BarrierHasRecoveryKeys_Sealed(t *testing.T) {
-	svc, _ := initShamirBarrier(t)
+	svc, _, dist := initShamirBarrier(t)
 	ctx := context.Background()
+	shares := dist.Shares()
 
-	if err := svc.BarrierSeal(ctx); err != nil {
-		t.Fatalf("BarrierSeal: %v", err)
+	// Seal via quorum votes.
+	if _, err := svc.BarrierShamirSealVote(ctx, shares[0]); err != nil {
+		t.Fatalf("first BarrierShamirSealVote: %v", err)
+	}
+	if _, err := svc.BarrierShamirSealVote(ctx, shares[1]); err != nil {
+		t.Fatalf("second BarrierShamirSealVote: %v", err)
 	}
 
 	_, err := svc.BarrierHasRecoveryKeys(ctx)
@@ -696,14 +921,17 @@ func TestBarrierService_BarrierHasRecoveryKeys_Sealed(t *testing.T) {
 	}
 }
 
-// --- Root Token Tests ---
+// ---------------------------------------------------------------------------
+// Root Token Tests
+// ---------------------------------------------------------------------------
 
 func TestBarrierService_BarrierGenerateRootToken(t *testing.T) {
-	svc, info := initShamirBarrier(t)
+	svc, _, dist := initShamirBarrier(t)
 	ctx := context.Background()
+	shares := dist.Shares()
 
 	// Generate a root token using the shares.
-	token, err := svc.BarrierGenerateRootToken(ctx, info.Shares)
+	token, err := svc.BarrierGenerateRootToken(ctx, shares)
 	if err != nil {
 		t.Fatalf("BarrierGenerateRootToken returned unexpected error: %v", err)
 	}
@@ -720,11 +948,12 @@ func TestBarrierService_BarrierGenerateRootToken(t *testing.T) {
 }
 
 func TestBarrierService_BarrierGenerateRootToken_InsufficientShares(t *testing.T) {
-	svc, info := initShamirBarrier(t)
+	svc, _, dist := initShamirBarrier(t)
 	ctx := context.Background()
+	shares := dist.Shares()
 
 	// Provide only 1 share when threshold is 2.
-	_, err := svc.BarrierGenerateRootToken(ctx, info.Shares[:1])
+	_, err := svc.BarrierGenerateRootToken(ctx, shares[:1])
 	if !errors.Is(err, seal.ErrShamirQuorumIncomplete) {
 		t.Errorf("BarrierGenerateRootToken with 1 share = %v, want %v", err, seal.ErrShamirQuorumIncomplete)
 	}
@@ -742,15 +971,16 @@ func TestBarrierService_BarrierGenerateRootToken_NotConfigured(t *testing.T) {
 }
 
 func TestBarrierService_BarrierGenerateRootToken_Uniqueness(t *testing.T) {
-	svc, info := initShamirBarrier(t)
+	svc, _, dist := initShamirBarrier(t)
 	ctx := context.Background()
+	shares := dist.Shares()
 
-	token1, err := svc.BarrierGenerateRootToken(ctx, info.Shares)
+	token1, err := svc.BarrierGenerateRootToken(ctx, shares)
 	if err != nil {
 		t.Fatalf("first BarrierGenerateRootToken: %v", err)
 	}
 
-	token2, err := svc.BarrierGenerateRootToken(ctx, info.Shares)
+	token2, err := svc.BarrierGenerateRootToken(ctx, shares)
 	if err != nil {
 		t.Fatalf("second BarrierGenerateRootToken: %v", err)
 	}
@@ -761,23 +991,28 @@ func TestBarrierService_BarrierGenerateRootToken_Uniqueness(t *testing.T) {
 	}
 }
 
-// --- Credential-Mode Shamir Unseal Tests ---
+// ---------------------------------------------------------------------------
+// Credential-Mode Shamir Unseal Tests
+// ---------------------------------------------------------------------------
 
 func TestBarrierService_BarrierUnsealWithShares_CredentialMode(t *testing.T) {
 	barrier := newTestSoftwareBarrierWithShamir(t)
+	dist := newTestCaptureDistributor()
+	barrier.SetCeremonyDistributor(dist)
 	svc := NewBarrierService(barrier)
 	ctx := context.Background()
 
-	info, err := svc.BarrierInitializeShamir(ctx, "my-secret", 2, 3)
+	_, err := svc.BarrierInitializeShamir(ctx, "my-secret", 2, 3)
 	if err != nil {
 		t.Fatalf("BarrierInitializeShamir: %v", err)
 	}
+	shares := dist.Shares()
 
 	if err := svc.BarrierSeal(ctx); err != nil {
 		t.Fatalf("BarrierSeal: %v", err)
 	}
 
-	err = svc.BarrierUnsealWithShares(ctx, info.Shares)
+	err = svc.BarrierUnsealWithShares(ctx, shares)
 	if err != nil {
 		t.Fatalf("BarrierUnsealWithShares (credential mode) returned unexpected error: %v", err)
 	}
@@ -791,21 +1026,23 @@ func TestBarrierService_BarrierUnsealWithShares_CredentialMode(t *testing.T) {
 	}
 }
 
-// --- Fix 1: InitializeShamir honors request threshold/total ---
+// ---------------------------------------------------------------------------
+// Fix 1: InitializeShamir honors request threshold/total
+// ---------------------------------------------------------------------------
 
 // TestBarrierService_InitializeShamir_RequestParamsWin verifies that when
 // explicit threshold/total are provided to BarrierInitializeShamir, those
 // values override the boot-time daemon config (direct-mode ShamirStrategy).
 func TestBarrierService_InitializeShamir_RequestParamsWin(t *testing.T) {
 	tests := []struct {
-		name              string
-		daemonThreshold   int
-		daemonTotal       int
-		requestThreshold  int
-		requestTotal      int
-		wantThreshold     int
-		wantTotal         int
-		wantShareCount    int
+		name             string
+		daemonThreshold  int
+		daemonTotal      int
+		requestThreshold int
+		requestTotal     int
+		wantThreshold    int
+		wantTotal        int
+		wantShareCount   int
 	}{
 		{
 			name:             "request 3-of-5 overrides daemon 2-of-3",
@@ -860,6 +1097,9 @@ func TestBarrierService_InitializeShamir_RequestParamsWin(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = barrier.Close() })
 
+			dist := newTestCaptureDistributor()
+			barrier.SetCeremonyDistributor(dist)
+
 			svc := NewBarrierService(barrier)
 			ctx := context.Background()
 
@@ -873,8 +1113,12 @@ func TestBarrierService_InitializeShamir_RequestParamsWin(t *testing.T) {
 			if info.TotalShares != tc.wantTotal {
 				t.Errorf("TotalShares = %d, want %d", info.TotalShares, tc.wantTotal)
 			}
-			if len(info.Shares) != tc.wantShareCount {
-				t.Errorf("len(Shares) = %d, want %d", len(info.Shares), tc.wantShareCount)
+			if info.ShareCount != tc.wantShareCount {
+				t.Errorf("ShareCount = %d, want %d", info.ShareCount, tc.wantShareCount)
+			}
+			// Distributor must have captured the expected number of shares.
+			if got := len(dist.Shares()); got != tc.wantShareCount {
+				t.Errorf("distributor captured %d shares, want %d", got, tc.wantShareCount)
 			}
 		})
 	}
@@ -903,6 +1147,9 @@ func TestBarrierService_InitializeShamir_ZeroValueFallsBackToConfig(t *testing.T
 	}
 	t.Cleanup(func() { _ = barrier.Close() })
 
+	dist := newTestCaptureDistributor()
+	barrier.SetCeremonyDistributor(dist)
+
 	svc := NewBarrierService(barrier)
 	ctx := context.Background()
 
@@ -917,8 +1164,8 @@ func TestBarrierService_InitializeShamir_ZeroValueFallsBackToConfig(t *testing.T
 	if info.TotalShares != 3 {
 		t.Errorf("TotalShares = %d, want 3 (daemon config fallback)", info.TotalShares)
 	}
-	if len(info.Shares) != 3 {
-		t.Errorf("len(Shares) = %d, want 3", len(info.Shares))
+	if info.ShareCount != 3 {
+		t.Errorf("ShareCount = %d, want 3", info.ShareCount)
 	}
 }
 
@@ -945,6 +1192,9 @@ func TestBarrierService_InitializeShamir_CredentialMode_RequestParamsWin(t *test
 	}
 	t.Cleanup(func() { _ = barrier.Close() })
 
+	dist := newTestCaptureDistributor()
+	barrier.SetCeremonyDistributor(dist)
+
 	svc := NewBarrierService(barrier)
 	ctx := context.Background()
 
@@ -959,12 +1209,14 @@ func TestBarrierService_InitializeShamir_CredentialMode_RequestParamsWin(t *test
 	if info.TotalShares != 5 {
 		t.Errorf("TotalShares = %d, want 5", info.TotalShares)
 	}
-	if len(info.Shares) != 5 {
-		t.Errorf("len(Shares) = %d, want 5", len(info.Shares))
+	if info.ShareCount != 5 {
+		t.Errorf("ShareCount = %d, want 5", info.ShareCount)
 	}
 }
 
-// --- Fix 2: BarrierStatus reports active Shamir threshold/total ---
+// ---------------------------------------------------------------------------
+// Fix 2: BarrierStatus reports active Shamir threshold/total
+// ---------------------------------------------------------------------------
 
 // TestBarrierService_BarrierStatus_ShamirFields verifies that after a Shamir
 // initialization, BarrierStatus reports the correct ShamirThreshold and
@@ -999,6 +1251,9 @@ func TestBarrierService_BarrierStatus_ShamirFields(t *testing.T) {
 				t.Fatalf("NewStorageBarrier: %v", err)
 			}
 			t.Cleanup(func() { _ = barrier.Close() })
+
+			dist := newTestCaptureDistributor()
+			barrier.SetCeremonyDistributor(dist)
 
 			svc := NewBarrierService(barrier)
 			ctx := context.Background()
@@ -1046,6 +1301,9 @@ func TestBarrierService_BarrierStatus_ShamirFields_AfterRequestOverride(t *testi
 	}
 	t.Cleanup(func() { _ = barrier.Close() })
 
+	dist := newTestCaptureDistributor()
+	barrier.SetCeremonyDistributor(dist)
+
 	svc := NewBarrierService(barrier)
 	ctx := context.Background()
 
@@ -1085,7 +1343,86 @@ func TestBarrierService_BarrierStatus_NonShamir_ZeroFields(t *testing.T) {
 	}
 }
 
-// --- NewBarrierService Construction Test ---
+// ---------------------------------------------------------------------------
+// ErrCeremonyNotConfigured: all SO methods require wired CeremonyService
+// ---------------------------------------------------------------------------
+
+// TestBarrierService_OfficerOps_CeremonyNotConfigured verifies that every
+// Security Officer and recovery method returns ErrCeremonyNotConfigured when
+// no CeremonyService has been wired via NewBarrierServiceWithCeremony.
+func TestBarrierService_OfficerOps_CeremonyNotConfigured(t *testing.T) {
+	barrier, _ := newTestSoftwareBarrier(t)
+	svc := NewBarrierService(barrier) // no ceremony wired
+	ctx := context.Background()
+
+	req := &BarrierOfficerRegisterRequest{
+		Username: "alice",
+		CSRPEM:   []byte("fake-csr"),
+	}
+
+	tests := []struct {
+		name string
+		fn   func() error
+	}{
+		{
+			name: "BarrierOfficerRegister",
+			fn:   func() error { _, err := svc.BarrierOfficerRegister(ctx, req); return err },
+		},
+		{
+			name: "BarrierOfficerList",
+			fn:   func() error { _, err := svc.BarrierOfficerList(ctx); return err },
+		},
+		{
+			name: "BarrierOfficerClaimStatus",
+			fn:   func() error { _, err := svc.BarrierOfficerClaimStatus(ctx); return err },
+		},
+		{
+			name: "BarrierShareClaimBegin",
+			fn: func() error {
+				_, err := svc.BarrierShareClaimBegin(ctx, "alice", "thumbprint")
+				return err
+			},
+		},
+		{
+			name: "BarrierShareClaimComplete",
+			fn: func() error {
+				_, err := svc.BarrierShareClaimComplete(ctx, "alice", "nonce", []byte("sig"), "thumbprint")
+				return err
+			},
+		},
+		{
+			name: "BarrierRecoveryOfficerRegister",
+			fn:   func() error { _, err := svc.BarrierRecoveryOfficerRegister(ctx, req); return err },
+		},
+		{
+			name: "BarrierRecoveryShareClaimBegin",
+			fn: func() error {
+				_, err := svc.BarrierRecoveryShareClaimBegin(ctx, "alice", "thumbprint")
+				return err
+			},
+		},
+		{
+			name: "BarrierRecoveryShareClaimComplete",
+			fn: func() error {
+				_, err := svc.BarrierRecoveryShareClaimComplete(ctx, "alice", "nonce", []byte("sig"), "thumbprint")
+				return err
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.fn()
+			if !errors.Is(err, ErrCeremonyNotConfigured) {
+				t.Errorf("%s = %v, want %v", tc.name, err, ErrCeremonyNotConfigured)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// NewBarrierService Construction Test
+// ---------------------------------------------------------------------------
 
 func TestNewBarrierService(t *testing.T) {
 	barrier, _ := newTestSoftwareBarrier(t)

@@ -14,7 +14,10 @@
 
 package sdk
 
-import "github.com/jeremyhahn/go-qrdb/pkg/permission"
+import (
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+)
 
 // ---------------------------------------------------------------------------
 // Permission types
@@ -68,3 +71,28 @@ var PermissionResource = permission.Resource
 
 // PermissionAction returns the action component of a permission string.
 var PermissionAction = permission.Action
+
+// ---------------------------------------------------------------------------
+// Per-tenant permission scope types
+// ---------------------------------------------------------------------------
+
+// PermissionScopeResolver resolves a permission's scope in the context of a
+// specific tenant. It is the tenant-aware counterpart to the process-global
+// scope registry and is the interface the RBAC authorizer depends on so that
+// a caller-defined permission resolves in the caller's own tenant.
+// (Aliases pkg/permission.ScopeResolver.)
+type PermissionScopeResolver = permission.ScopeResolver
+
+// TenantScopeStore persists and resolves caller-defined, per-tenant permission
+// scopes. Two tenants may define the same permission name with different scopes
+// without colliding, because each tenant's definitions are stored in that
+// tenant's own store as selected by the TenantStoreResolver. (Aliases
+// pkg/permission.TenantScopeStore.)
+type TenantScopeStore = permission.TenantScopeStore
+
+// NewTenantScopeStore constructs a TenantScopeStore over the given
+// TenantStoreResolver. The resolver must be non-nil. (Aliases
+// pkg/permission.NewTenantScopeStore.)
+var NewTenantScopeStore = func(resolver tenant.StoreResolver) (*permission.TenantScopeStore, error) {
+	return permission.NewTenantScopeStore(resolver)
+}

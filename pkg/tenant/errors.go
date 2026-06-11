@@ -45,6 +45,10 @@ var (
 	// supply the secret.
 	ErrEmptyPassphrase = errors.New("tenant: empty passphrase")
 
+	// ErrEmptyShare is returned when a Shamir unseal-share operation is
+	// invoked without a caller-supplied share value.
+	ErrEmptyShare = errors.New("tenant: empty shamir share")
+
 	// ErrNilStore is returned when a nil storage backend is provided
 	// to the tenant service constructor.
 	ErrNilStore = errors.New("tenant: nil storage backend")
@@ -86,7 +90,9 @@ func (e *InvalidTenantIDError) Error() string {
 
 // InvalidTenantIDCharError is returned when a tenant ID contains a character
 // that is not permitted. Tenant IDs must not contain control characters (bytes
-// < 0x20) or the unit-separator byte (0x1f) used as the scoped-key separator.
+// < 0x20), the unit-separator byte (0x1f) used as the scoped-key separator,
+// or path separators ('/', '\') — tenant ids become filesystem path segments
+// under barrier isolation.
 type InvalidTenantIDCharError struct {
 	TenantID string
 	Byte     byte
@@ -114,6 +120,25 @@ type ReservedTenantIDError struct {
 
 func (e *ReservedTenantIDError) Error() string {
 	return "tenant: id " + e.TenantID + " is reserved: " + e.Reason
+}
+
+// TenantScopeError is returned when a caller bound to one tenant attempts a
+// per-tenant barrier operation against a different tenant. This is the
+// service-layer tenant-isolation defense: transport-level RBAC
+// (AuthorizeTenant + ScopeTenantOnly) is the first gate, but in-process
+// surfaces and any transport that fails to bind the true target tenant must
+// still fail closed here. Callers bound to the system tenant (daemon-internal
+// flows and embedded in-process hosts carry no tenant binding and resolve to
+// the system tenant) are exempt.
+type TenantScopeError struct {
+	CallerTenantID string
+	TargetTenantID string
+	Op             string
+}
+
+func (e *TenantScopeError) Error() string {
+	return "tenant: caller " + e.CallerTenantID + " is not permitted to " +
+		e.Op + " barrier of tenant " + e.TargetTenantID
 }
 
 // QuotaExceededError is returned by IncrementQuotaUsage when adding delta

@@ -398,6 +398,227 @@ func TestKVStoreAdapter_Exists_OtherError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// kvSealBackend
+// ---------------------------------------------------------------------------
+
+// mockKVStore is a minimal kvstore.KVStore implementation for testing
+// kvSealBackend. Only the Get method needs a meaningful body; the rest
+// delegate to no-ops.
+type mockKVStore struct {
+	getFn func(ctx context.Context, key string) ([]byte, error)
+}
+
+func (m *mockKVStore) Put(_ context.Context, _ string, _ []byte) error { return nil }
+func (m *mockKVStore) Delete(_ context.Context, _ string) error        { return nil }
+func (m *mockKVStore) List(_ context.Context, _ string) ([]string, error) {
+	return nil, nil
+}
+func (m *mockKVStore) Scan(_ context.Context, _ string, _ func(string, []byte) error) error {
+	return nil
+}
+func (m *mockKVStore) Exists(_ context.Context, _ string) (bool, error)              { return false, nil }
+func (m *mockKVStore) RegisterEntityIndexes(_ string, _ []kvstore.EntityIndex) error { return nil }
+func (m *mockKVStore) QueryIndex(_ context.Context, _ string, _ []byte) ([][]byte, error) {
+	return nil, nil
+}
+func (m *mockKVStore) ScanIndex(_ context.Context, _ string, _, _ []byte) (map[string][][]byte, error) {
+	return nil, nil
+}
+func (m *mockKVStore) QueryCompoundIndex(_ context.Context, _ string, _ [][]byte) ([][]byte, error) {
+	return nil, nil
+}
+func (m *mockKVStore) ScanCompoundIndex(_ context.Context, _ string, _ [][]byte, _, _ []byte) (map[string][][]byte, error) {
+	return nil, nil
+}
+func (m *mockKVStore) Get(ctx context.Context, key string) ([]byte, error) {
+	if m.getFn != nil {
+		return m.getFn(ctx, key)
+	}
+	return nil, nil
+}
+
+var _ kvstore.KVStore = (*mockKVStore)(nil)
+
+// TestKVSealBackend_Close_IsNoop verifies that Close on a kvSealBackend
+// returns nil without touching the wrapped store.
+func TestKVSealBackend_Close_IsNoop(t *testing.T) {
+	b := kvSealBackend{KVStore: &mockKVStore{}}
+	if err := b.Close(); err != nil {
+		t.Errorf("Close: expected nil, got %v", err)
+	}
+}
+
+// TestKVSealBackend_Get_ReturnsValue verifies that a non-nil response from
+// the underlying store is passed through unchanged.
+func TestKVSealBackend_Get_ReturnsValue(t *testing.T) {
+	want := []byte("secret-data")
+	b := kvSealBackend{KVStore: &mockKVStore{
+		getFn: func(_ context.Context, _ string) ([]byte, error) { return want, nil },
+	}}
+	got, err := b.Get(context.Background(), "key")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Errorf("Get: got %q, want %q", got, want)
+	}
+}
+
+// TestKVSealBackend_Get_NilValue_ReturnsErrSecretNotFound verifies that a nil
+// (missing-key) response from the underlying store is converted to
+// seal.ErrSecretNotFound so StorageBackend consumers can distinguish "absent"
+// from "empty value".
+func TestKVSealBackend_Get_NilValue_ReturnsErrSecretNotFound(t *testing.T) {
+	b := kvSealBackend{KVStore: &mockKVStore{
+		getFn: func(_ context.Context, _ string) ([]byte, error) { return nil, nil },
+	}}
+	_, err := b.Get(context.Background(), "missing")
+	if err == nil {
+		t.Fatal("expected seal.ErrSecretNotFound, got nil")
+	}
+}
+
+// TestKVSealBackend_Get_StoreError_Propagates verifies that a storage error
+// from the underlying KVStore is returned directly without wrapping.
+func TestKVSealBackend_Get_StoreError_Propagates(t *testing.T) {
+	sentinel := errors.New("storage failure")
+	b := kvSealBackend{KVStore: &mockKVStore{
+		getFn: func(_ context.Context, _ string) ([]byte, error) { return nil, sentinel },
+	}}
+	_, err := b.Get(context.Background(), "key")
+	if !errors.Is(err, sentinel) {
+		t.Errorf("expected sentinel error, got %v", err)
+	}
+}
+
+// mockTransactionServicer is a minimal service.TransactionServicer for
+// testing kvSealBackend.PutIfAbsent. Only Execute carries behaviour; the
+// remaining interface methods are unreachable from PutIfAbsent.
+type mockTransactionServicer struct {
+	executeFn func(ctx context.Context, compares []service.Compare, successOps, failureOps []service.Op) (*service.TransactionResponse, error)
+}
+
+func (m *mockTransactionServicer) Execute(ctx context.Context, compares []service.Compare, successOps, failureOps []service.Op) (*service.TransactionResponse, error) {
+	return m.executeFn(ctx, compares, successOps, failureOps)
+}
+
+func (m *mockTransactionServicer) ExecuteWithMode(_ context.Context, _ []service.Compare, _, _ []service.Op, _ writemode.Mode) (*service.TransactionResponse, error) {
+	return nil, nil
+}
+
+func (m *mockTransactionServicer) ExecuteEntity(_ context.Context, _ *service.TransactionEntityRequest) (*service.TransactionEntityResponse, error) {
+	return nil, nil
+}
+
+var _ service.TransactionServicer = (*mockTransactionServicer)(nil)
+
+// TestKVSealBackend_PutIfAbsent_NilTx verifies that a backend constructed
+// without a transaction service rejects PutIfAbsent with
+// ErrNoTransactionService instead of attempting a non-atomic write.
+func TestKVSealBackend_PutIfAbsent_NilTx(t *testing.T) {
+	b := kvSealBackend{KVStore: &mockKVStore{}}
+	stored, err := b.PutIfAbsent(context.Background(), "key", []byte("v"))
+	if !errors.Is(err, ErrNoTransactionService) {
+		t.Fatalf("expected ErrNoTransactionService, got %v", err)
+	}
+	if stored {
+		t.Error("stored must be false when the transaction service is missing")
+	}
+}
+
+// TestKVSealBackend_PutIfAbsent_FirstWriter verifies the success path: the
+// version==0 precondition passes, the Put executes, and the caller observes
+// stored=true. The compare and op shapes are asserted so a regression in the
+// absent-key precondition (version 0) is caught here.
+func TestKVSealBackend_PutIfAbsent_FirstWriter(t *testing.T) {
+	tx := &mockTransactionServicer{
+		executeFn: func(_ context.Context, compares []service.Compare, successOps, failureOps []service.Op) (*service.TransactionResponse, error) {
+			if len(compares) != 1 || compares[0].Target != service.CompareVersion || compares[0].Version != 0 {
+				t.Errorf("expected single version==0 compare, got %+v", compares)
+			}
+			if string(compares[0].Key) != "key" {
+				t.Errorf("compare key: got %q, want %q", compares[0].Key, "key")
+			}
+			if len(successOps) != 1 || successOps[0].Type != service.OpPut || string(successOps[0].Value) != "v" {
+				t.Errorf("expected single Put success op, got %+v", successOps)
+			}
+			if failureOps != nil {
+				t.Errorf("expected nil failure ops, got %+v", failureOps)
+			}
+			return &service.TransactionResponse{Succeeded: true}, nil
+		},
+	}
+	b := kvSealBackend{KVStore: &mockKVStore{}, tx: tx}
+	stored, err := b.PutIfAbsent(context.Background(), "key", []byte("v"))
+	if err != nil {
+		t.Fatalf("PutIfAbsent: %v", err)
+	}
+	if !stored {
+		t.Error("expected stored=true for the first writer")
+	}
+}
+
+// TestKVSealBackend_PutIfAbsent_KeyExists verifies that a failed compare
+// (key already written) yields stored=false with no error.
+func TestKVSealBackend_PutIfAbsent_KeyExists(t *testing.T) {
+	tx := &mockTransactionServicer{
+		executeFn: func(_ context.Context, _ []service.Compare, _, _ []service.Op) (*service.TransactionResponse, error) {
+			return &service.TransactionResponse{Succeeded: false}, nil
+		},
+	}
+	b := kvSealBackend{KVStore: &mockKVStore{}, tx: tx}
+	stored, err := b.PutIfAbsent(context.Background(), "key", []byte("v"))
+	if err != nil {
+		t.Fatalf("PutIfAbsent: %v", err)
+	}
+	if stored {
+		t.Error("expected stored=false when the key already exists")
+	}
+}
+
+// TestKVSealBackend_PutIfAbsent_ExecuteError verifies that a transaction
+// failure propagates and reports stored=false.
+func TestKVSealBackend_PutIfAbsent_ExecuteError(t *testing.T) {
+	sentinel := errors.New("raft unavailable")
+	tx := &mockTransactionServicer{
+		executeFn: func(_ context.Context, _ []service.Compare, _, _ []service.Op) (*service.TransactionResponse, error) {
+			return nil, sentinel
+		},
+	}
+	b := kvSealBackend{KVStore: &mockKVStore{}, tx: tx}
+	stored, err := b.PutIfAbsent(context.Background(), "key", []byte("v"))
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("expected sentinel error, got %v", err)
+	}
+	if stored {
+		t.Error("stored must be false on transaction error")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// resolveReplicaID
+// ---------------------------------------------------------------------------
+
+// TestResolveReplicaID_ZeroMapsToOne verifies that a zero ReplicaID (the
+// standalone default not yet materialised) is mapped to node 1, matching the
+// qrdb standalone Snowflake convention.
+func TestResolveReplicaID_ZeroMapsToOne(t *testing.T) {
+	if got := resolveReplicaID(0); got != 1 {
+		t.Errorf("resolveReplicaID(0): got %d, want 1", got)
+	}
+}
+
+// TestResolveReplicaID_NonZeroPassesThrough verifies that non-zero replica
+// IDs are returned unchanged.
+func TestResolveReplicaID_NonZeroPassesThrough(t *testing.T) {
+	for _, id := range []uint64{1, 42, 1023} {
+		if got := resolveReplicaID(id); got != id {
+			t.Errorf("resolveReplicaID(%d): got %d, want %d", id, got, id)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
 // No-op index methods
 // ---------------------------------------------------------------------------
 

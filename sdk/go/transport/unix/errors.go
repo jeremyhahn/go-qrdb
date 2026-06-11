@@ -14,8 +14,6 @@
 
 package unix
 
-import "errors"
-
 // dialError is returned when gRPC-over-Unix-socket dial fails.
 type dialError struct {
 	Err error
@@ -40,8 +38,3 @@ type socketNotFoundError struct {
 func (e *socketNotFoundError) Error() string {
 	return "unix transport: socket not found: " + e.Path
 }
-
-// errNilRequest is returned by client methods when a caller passes a nil
-// request pointer. It is wrapped in a transport.RequestError by the caller
-// so that the surfaced error preserves the operation name.
-var errNilRequest = errors.New("unix transport: nil request")

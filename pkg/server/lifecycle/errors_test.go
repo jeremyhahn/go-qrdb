@@ -268,3 +268,62 @@ func TestEmbeddingProviderError_ErrorsAs(t *testing.T) {
 		t.Error("errors.As failed")
 	}
 }
+
+func TestCustodianGroupServiceError_ErrorAndUnwrap(t *testing.T) {
+	inner := errors.New("custodian group init failed")
+	err := &lifecycle.CustodianGroupServiceError{Err: inner}
+	if !strings.Contains(err.Error(), "custodian group service") {
+		t.Errorf("unexpected message: %q", err.Error())
+	}
+	if !errors.Is(err, inner) {
+		t.Error("Unwrap did not return inner error")
+	}
+}
+
+func TestCustodianGroupServiceError_ErrorsAs(t *testing.T) {
+	err := &lifecycle.CustodianGroupServiceError{Err: errors.New("x")}
+	var target *lifecycle.CustodianGroupServiceError
+	if !errors.As(err, &target) {
+		t.Error("errors.As failed")
+	}
+}
+
+func TestShareServiceError_ErrorAndUnwrap(t *testing.T) {
+	inner := errors.New("share service init failed")
+	err := &lifecycle.ShareServiceError{Err: inner}
+	if !strings.Contains(err.Error(), "share service") {
+		t.Errorf("unexpected message: %q", err.Error())
+	}
+	if !errors.Is(err, inner) {
+		t.Error("Unwrap did not return inner error")
+	}
+}
+
+func TestShareServiceError_ErrorsAs(t *testing.T) {
+	err := &lifecycle.ShareServiceError{Err: errors.New("x")}
+	var target *lifecycle.ShareServiceError
+	if !errors.As(err, &target) {
+		t.Error("errors.As failed")
+	}
+}
+
+// TestEmptyVectorDataDirError_Error verifies that the error message clearly
+// identifies the root cause (empty DataDir) and the subsystem (vector storage).
+func TestEmptyVectorDataDirError_Error(t *testing.T) {
+	err := &lifecycle.EmptyVectorDataDirError{}
+	msg := err.Error()
+	if !strings.Contains(msg, "DataDir") {
+		t.Errorf("expected DataDir in message, got: %q", msg)
+	}
+	if !strings.Contains(msg, "vector") {
+		t.Errorf("expected 'vector' in message, got: %q", msg)
+	}
+}
+
+func TestEmptyVectorDataDirError_ErrorsAs(t *testing.T) {
+	err := &lifecycle.EmptyVectorDataDirError{}
+	var target *lifecycle.EmptyVectorDataDirError
+	if !errors.As(err, &target) {
+		t.Error("errors.As failed")
+	}
+}

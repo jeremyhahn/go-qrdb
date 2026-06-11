@@ -86,9 +86,11 @@ func (t *Transport) BarrierStatus(ctx context.Context) (*transport.BarrierStatus
 		return nil, err
 	}
 	resp := &transport.BarrierStatusResponse{
-		Sealed:         info.Sealed,
-		Strategy:       info.Strategy,
-		HardwareBacked: info.HardwareBacked,
+		Sealed:          info.Sealed,
+		Strategy:        info.Strategy,
+		HardwareBacked:  info.HardwareBacked,
+		ShamirThreshold: info.ShamirThreshold,
+		ShamirTotal:     info.ShamirTotal,
 	}
 	if !info.InitializedAt.IsZero() {
 		resp.InitializedAt = info.InitializedAt.Format(time.RFC3339)
@@ -116,7 +118,7 @@ func (t *Transport) BarrierInitializeShamir(ctx context.Context, req *transport.
 		return nil, err
 	}
 	return &transport.BarrierInitializeShamirResponse{
-		Shares:      info.Shares,
+		ShareCount:  info.ShareCount,
 		Threshold:   info.Threshold,
 		TotalShares: info.TotalShares,
 	}, nil
@@ -173,7 +175,7 @@ func (t *Transport) BarrierRekey(ctx context.Context, req *transport.BarrierReke
 		return nil, err
 	}
 	return &transport.BarrierRekeyResponse{
-		Shares:      info.Shares,
+		ShareCount:  info.ShareCount,
 		Threshold:   info.Threshold,
 		TotalShares: info.TotalShares,
 	}, nil
@@ -197,9 +199,9 @@ func (t *Transport) BarrierGenerateRecoveryKeys(ctx context.Context, req *transp
 		return nil, err
 	}
 	return &transport.BarrierRecoveryKeysResponse{
-		Keys:      info.Keys,
-		Threshold: info.Threshold,
-		Total:     info.Total,
+		ShareCount: info.ShareCount,
+		Threshold:  info.Threshold,
+		Total:      info.Total,
 	}, nil
 }
 
@@ -401,6 +403,208 @@ func handleBarrierGenerateRootToken(ctx context.Context, t *Transport, req, resp
 		*out = result
 	}
 	return nil
+}
+
+// OfficerRegister registers a Security Officer for the system barrier by
+// delegating to the injected BarrierServicer.
+func (t *Transport) OfficerRegister(ctx context.Context, req *transport.OfficerRegisterRequest) (*transport.OfficerRegisterResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.barrierSvc == nil {
+		return nil, &NilServiceError{Service: "BarrierServicer"}
+	}
+	result, err := t.barrierSvc.BarrierOfficerRegister(ctx, &service.BarrierOfficerRegisterRequest{
+		Username:          req.Username,
+		CSRPEM:            req.CSRPEM,
+		AuthenticatorType: req.AuthenticatorType,
+		AuthenticatorRef:  req.AuthenticatorRef,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &transport.OfficerRegisterResponse{
+		CertPEM:    result.CertPEM,
+		ShareIndex: result.ShareIndex,
+	}, nil
+}
+
+// OfficerList returns all enrolled Security Officers for the system barrier
+// by delegating to the injected BarrierServicer.
+func (t *Transport) OfficerList(ctx context.Context) ([]*transport.OfficerStatus, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.barrierSvc == nil {
+		return nil, &NilServiceError{Service: "BarrierServicer"}
+	}
+	officers, err := t.barrierSvc.BarrierOfficerList(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return embeddedBarrierOfficerStatusesToTransport(officers), nil
+}
+
+// OfficerClaimStatus returns a per-officer claim status snapshot for the
+// system barrier by delegating to the injected BarrierServicer.
+func (t *Transport) OfficerClaimStatus(ctx context.Context) ([]*transport.OfficerStatus, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.barrierSvc == nil {
+		return nil, &NilServiceError{Service: "BarrierServicer"}
+	}
+	officers, err := t.barrierSvc.BarrierOfficerClaimStatus(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return embeddedBarrierOfficerStatusesToTransport(officers), nil
+}
+
+// ShareClaimBegin issues a challenge nonce to the named Security Officer for
+// the system barrier share claim handshake by delegating to the injected
+// BarrierServicer.
+func (t *Transport) ShareClaimBegin(ctx context.Context, req *transport.ShareClaimBeginRequest) (*transport.ShareClaimBeginResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.barrierSvc == nil {
+		return nil, &NilServiceError{Service: "BarrierServicer"}
+	}
+	challenge, err := t.barrierSvc.BarrierShareClaimBegin(ctx, req.Username, "")
+	if err != nil {
+		return nil, err
+	}
+	return &transport.ShareClaimBeginResponse{
+		NonceHex:  challenge.NonceHex,
+		ExpiresAt: challenge.ExpiresAt,
+	}, nil
+}
+
+// ShareClaimComplete verifies the Security Officer's nonce signature and
+// returns the system barrier share bytes exactly once by delegating to the
+// injected BarrierServicer.
+func (t *Transport) ShareClaimComplete(ctx context.Context, req *transport.ShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.barrierSvc == nil {
+		return nil, &NilServiceError{Service: "BarrierServicer"}
+	}
+	result, err := t.barrierSvc.BarrierShareClaimComplete(ctx, req.Username, req.NonceHex, req.Signature, "")
+	if err != nil {
+		return nil, err
+	}
+	return &transport.ShareClaimCompleteResponse{
+		ShareIndex: result.ShareIndex,
+		ShareBytes: result.ShareBytes,
+	}, nil
+}
+
+// ShamirSealVote submits a Shamir share as a seal vote for the system barrier
+// by delegating to the injected BarrierServicer.
+func (t *Transport) ShamirSealVote(ctx context.Context, req *transport.ShamirSealVoteRequest) (*transport.ShamirSealVoteResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.barrierSvc == nil {
+		return nil, &NilServiceError{Service: "BarrierServicer"}
+	}
+	progress, err := t.barrierSvc.BarrierShamirSealVote(ctx, req.Share)
+	if err != nil {
+		return nil, err
+	}
+	return &transport.ShamirSealVoteResponse{
+		Required:  progress.Required,
+		Submitted: progress.Submitted,
+		Complete:  progress.Complete,
+	}, nil
+}
+
+// RecoveryOfficerRegister registers a Security Officer for recovery key
+// distribution by delegating to the injected BarrierServicer.
+func (t *Transport) RecoveryOfficerRegister(ctx context.Context, req *transport.OfficerRegisterRequest) (*transport.OfficerRegisterResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.barrierSvc == nil {
+		return nil, &NilServiceError{Service: "BarrierServicer"}
+	}
+	result, err := t.barrierSvc.BarrierRecoveryOfficerRegister(ctx, &service.BarrierOfficerRegisterRequest{
+		Username:          req.Username,
+		CSRPEM:            req.CSRPEM,
+		AuthenticatorType: req.AuthenticatorType,
+		AuthenticatorRef:  req.AuthenticatorRef,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &transport.OfficerRegisterResponse{
+		CertPEM:    result.CertPEM,
+		ShareIndex: result.ShareIndex,
+	}, nil
+}
+
+// RecoveryShareClaimBegin issues a challenge nonce to the named recovery
+// officer for the recovery share claim handshake by delegating to the injected
+// BarrierServicer.
+func (t *Transport) RecoveryShareClaimBegin(ctx context.Context, req *transport.ShareClaimBeginRequest) (*transport.ShareClaimBeginResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.barrierSvc == nil {
+		return nil, &NilServiceError{Service: "BarrierServicer"}
+	}
+	challenge, err := t.barrierSvc.BarrierRecoveryShareClaimBegin(ctx, req.Username, "")
+	if err != nil {
+		return nil, err
+	}
+	return &transport.ShareClaimBeginResponse{
+		NonceHex:  challenge.NonceHex,
+		ExpiresAt: challenge.ExpiresAt,
+	}, nil
+}
+
+// RecoveryShareClaimComplete verifies the recovery officer's nonce signature
+// and returns the recovery share bytes exactly once by delegating to the
+// injected BarrierServicer.
+func (t *Transport) RecoveryShareClaimComplete(ctx context.Context, req *transport.ShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.barrierSvc == nil {
+		return nil, &NilServiceError{Service: "BarrierServicer"}
+	}
+	result, err := t.barrierSvc.BarrierRecoveryShareClaimComplete(ctx, req.Username, req.NonceHex, req.Signature, "")
+	if err != nil {
+		return nil, err
+	}
+	return &transport.ShareClaimCompleteResponse{
+		ShareIndex: result.ShareIndex,
+		ShareBytes: result.ShareBytes,
+	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Conversion helpers
+// ---------------------------------------------------------------------------
+
+// embeddedBarrierOfficerStatusesToTransport converts service layer officer
+// status records to the transport layer representation.
+func embeddedBarrierOfficerStatusesToTransport(officers []*service.BarrierOfficerStatus) []*transport.OfficerStatus {
+	out := make([]*transport.OfficerStatus, len(officers))
+	for i, o := range officers {
+		out[i] = &transport.OfficerStatus{
+			Username:       o.Username,
+			CertThumbprint: o.CertThumbprint,
+			ShareIndex:     o.ShareIndex,
+			AuthFactor:     o.AuthFactor,
+			EnrolledAt:     o.EnrolledAt,
+			ClaimedAt:      o.ClaimedAt,
+			SharePending:   o.SharePending,
+		}
+	}
+	return out
 }
 
 // WithBarrierService injects a BarrierServicer into the transport.

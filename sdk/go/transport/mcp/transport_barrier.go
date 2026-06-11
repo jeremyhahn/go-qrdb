@@ -305,3 +305,227 @@ func (t *Transport) BarrierGenerateRootToken(ctx context.Context, req *transport
 
 	return &resp, nil
 }
+
+// OfficerRegister registers a Security Officer for the system barrier by
+// calling the qrdb_barrier_officer_register MCP tool.
+func (t *Transport) OfficerRegister(ctx context.Context, req *transport.OfficerRegisterRequest) (*transport.OfficerRegisterResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	args := map[string]any{
+		"username": req.Username,
+		"csr_pem":  string(req.CSRPEM),
+	}
+	if req.AuthenticatorType != "" {
+		args["authenticator_type"] = req.AuthenticatorType
+	}
+	if req.AuthenticatorRef != "" {
+		args["authenticator_ref"] = req.AuthenticatorRef
+	}
+
+	text, err := t.callTool(ctx, "qrdb_barrier_officer_register", args)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "OfficerRegister", Err: err}
+	}
+
+	var resp transport.OfficerRegisterResponse
+	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "OfficerRegister", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+
+	return &resp, nil
+}
+
+// OfficerList returns all enrolled Security Officers for the system barrier by
+// calling the qrdb_barrier_officer_list MCP tool.
+func (t *Transport) OfficerList(ctx context.Context) ([]*transport.OfficerStatus, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	text, err := t.callTool(ctx, "qrdb_barrier_officer_list", nil)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "OfficerList", Err: err}
+	}
+
+	var wire struct {
+		Officers []*transport.OfficerStatus `json:"officers"`
+	}
+	if jsonErr := json.Unmarshal([]byte(text), &wire); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "OfficerList", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+
+	return wire.Officers, nil
+}
+
+// OfficerClaimStatus returns a per-officer claim status snapshot for the
+// system barrier by calling the qrdb_barrier_officer_claim_status MCP tool.
+func (t *Transport) OfficerClaimStatus(ctx context.Context) ([]*transport.OfficerStatus, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	text, err := t.callTool(ctx, "qrdb_barrier_officer_claim_status", nil)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "OfficerClaimStatus", Err: err}
+	}
+
+	var wire struct {
+		Officers []*transport.OfficerStatus `json:"officers"`
+	}
+	if jsonErr := json.Unmarshal([]byte(text), &wire); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "OfficerClaimStatus", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+
+	return wire.Officers, nil
+}
+
+// ShareClaimBegin issues a challenge nonce to the named Security Officer for
+// the system barrier share claim handshake by calling the
+// qrdb_barrier_share_claim_begin MCP tool.
+func (t *Transport) ShareClaimBegin(ctx context.Context, req *transport.ShareClaimBeginRequest) (*transport.ShareClaimBeginResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	text, err := t.callTool(ctx, "qrdb_barrier_share_claim_begin", map[string]any{
+		"username": req.Username,
+	})
+	if err != nil {
+		return nil, &transport.RequestError{Method: "ShareClaimBegin", Err: err}
+	}
+
+	var resp transport.ShareClaimBeginResponse
+	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "ShareClaimBegin", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+
+	return &resp, nil
+}
+
+// ShareClaimComplete verifies the Security Officer's nonce signature and
+// returns the system barrier share bytes exactly once by calling the
+// qrdb_barrier_share_claim_complete MCP tool.
+func (t *Transport) ShareClaimComplete(ctx context.Context, req *transport.ShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	text, err := t.callTool(ctx, "qrdb_barrier_share_claim_complete", map[string]any{
+		"username":  req.Username,
+		"nonce_hex": req.NonceHex,
+		"signature": req.Signature,
+	})
+	if err != nil {
+		return nil, &transport.RequestError{Method: "ShareClaimComplete", Err: err}
+	}
+
+	var resp transport.ShareClaimCompleteResponse
+	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "ShareClaimComplete", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+
+	return &resp, nil
+}
+
+// ShamirSealVote submits a Shamir share as a seal vote for the system barrier
+// by calling the qrdb_barrier_shamir_seal_vote MCP tool.
+func (t *Transport) ShamirSealVote(ctx context.Context, req *transport.ShamirSealVoteRequest) (*transport.ShamirSealVoteResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	text, err := t.callTool(ctx, "qrdb_barrier_shamir_seal_vote", map[string]any{
+		"share": req.Share,
+	})
+	if err != nil {
+		return nil, &transport.RequestError{Method: "ShamirSealVote", Err: err}
+	}
+
+	var resp transport.ShamirSealVoteResponse
+	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "ShamirSealVote", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+
+	return &resp, nil
+}
+
+// RecoveryOfficerRegister registers a Security Officer for recovery key
+// distribution by calling the qrdb_barrier_recovery_officer_register MCP tool.
+func (t *Transport) RecoveryOfficerRegister(ctx context.Context, req *transport.OfficerRegisterRequest) (*transport.OfficerRegisterResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	args := map[string]any{
+		"username": req.Username,
+		"csr_pem":  string(req.CSRPEM),
+	}
+	if req.AuthenticatorType != "" {
+		args["authenticator_type"] = req.AuthenticatorType
+	}
+	if req.AuthenticatorRef != "" {
+		args["authenticator_ref"] = req.AuthenticatorRef
+	}
+
+	text, err := t.callTool(ctx, "qrdb_barrier_recovery_officer_register", args)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "RecoveryOfficerRegister", Err: err}
+	}
+
+	var resp transport.OfficerRegisterResponse
+	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "RecoveryOfficerRegister", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+
+	return &resp, nil
+}
+
+// RecoveryShareClaimBegin issues a challenge nonce to the named recovery
+// officer for the recovery share claim handshake by calling the
+// qrdb_barrier_recovery_share_claim_begin MCP tool.
+func (t *Transport) RecoveryShareClaimBegin(ctx context.Context, req *transport.ShareClaimBeginRequest) (*transport.ShareClaimBeginResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	text, err := t.callTool(ctx, "qrdb_barrier_recovery_share_claim_begin", map[string]any{
+		"username": req.Username,
+	})
+	if err != nil {
+		return nil, &transport.RequestError{Method: "RecoveryShareClaimBegin", Err: err}
+	}
+
+	var resp transport.ShareClaimBeginResponse
+	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "RecoveryShareClaimBegin", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+
+	return &resp, nil
+}
+
+// RecoveryShareClaimComplete verifies the recovery officer's nonce signature
+// and returns the recovery share bytes exactly once by calling the
+// qrdb_barrier_recovery_share_claim_complete MCP tool.
+func (t *Transport) RecoveryShareClaimComplete(ctx context.Context, req *transport.ShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	text, err := t.callTool(ctx, "qrdb_barrier_recovery_share_claim_complete", map[string]any{
+		"username":  req.Username,
+		"nonce_hex": req.NonceHex,
+		"signature": req.Signature,
+	})
+	if err != nil {
+		return nil, &transport.RequestError{Method: "RecoveryShareClaimComplete", Err: err}
+	}
+
+	var resp transport.ShareClaimCompleteResponse
+	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "RecoveryShareClaimComplete", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+
+	return &resp, nil
+}

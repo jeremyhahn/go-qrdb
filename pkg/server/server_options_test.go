@@ -25,6 +25,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/custodian"
 	"github.com/jeremyhahn/go-qrdb/pkg/lock"
+	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -96,21 +97,39 @@ func (s *stubTenantServicerForRegistry) DeleteTenant(_ context.Context, _ string
 func (s *stubTenantServicerForRegistry) UpdateTenant(_ context.Context, _ string, _ tenant.TenantPatch) (*tenant.TenantInfo, error) {
 	return nil, nil
 }
-func (s *stubTenantServicerForRegistry) TenantBarrierInit(_ context.Context, _, _ string, _, _ int) error {
-	return nil
+func (s *stubTenantServicerForRegistry) TenantBarrierInit(_ context.Context, _, _ string, _, _ int) (*tenant.TenantBarrierInitResult, error) {
+	return nil, nil
 }
 
-func (s *stubTenantServicerForRegistry) TenantBarrierInitWithStrategy(_ context.Context, _, _ string, _, _ int, _ seal.StrategyID) error {
-	return nil
+func (s *stubTenantServicerForRegistry) TenantBarrierInitWithStrategy(_ context.Context, _, _ string, _, _ int, _ seal.StrategyID) (*tenant.TenantBarrierInitResult, error) {
+	return nil, nil
+}
+func (s *stubTenantServicerForRegistry) TenantBarrierUnsealShare(_ context.Context, _, _ string) (*tenant.TenantBarrierUnsealProgress, error) {
+	return nil, nil
 }
 func (s *stubTenantServicerForRegistry) TenantBarrierUnseal(_ context.Context, _ string, _ []byte) error {
 	return nil
 }
-func (s *stubTenantServicerForRegistry) UpdateQuotas(_ context.Context, _ string, _ interface{}) (*tenant.TenantInfo, error) {
+func (s *stubTenantServicerForRegistry) TenantBarrierSeal(_ context.Context, _ string) error {
+	return nil
+}
+func (s *stubTenantServicerForRegistry) TenantBarrierStatus(_ context.Context, _ string) (*tenant.TenantBarrierStatus, error) {
 	return nil, nil
 }
-func (s *stubTenantServicerForRegistry) Quotas(_ context.Context, _ string) (interface{}, error) {
+func (s *stubTenantServicerForRegistry) UpdateQuotas(_ context.Context, _ string, _ *quota.Quotas) (*tenant.TenantInfo, error) {
 	return nil, nil
+}
+func (s *stubTenantServicerForRegistry) Quotas(_ context.Context, _ string) (*quota.Quotas, error) {
+	return nil, nil
+}
+func (s *stubTenantServicerForRegistry) IncrementQuotaUsage(_ context.Context, _ string, _ quota.Resource, _ int64) (*tenant.TenantInfo, error) {
+	return nil, nil
+}
+func (s *stubTenantServicerForRegistry) DecrementQuotaUsage(_ context.Context, _ string, _ quota.Resource, _ int64) (*tenant.TenantInfo, error) {
+	return nil, nil
+}
+func (s *stubTenantServicerForRegistry) GetQuotaUsage(_ context.Context, _ string, _ quota.Resource) (int64, error) {
+	return 0, nil
 }
 
 // ---------------------------------------------------------------------------

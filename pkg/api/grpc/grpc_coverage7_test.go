@@ -342,11 +342,10 @@ func TestGRPC_AddCertBinding_NilService(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// EnrollFactorUnary / ChallengeFactorUnary / VerifyFactorUnary /
-// ListFactorsUnary / RevokeFactorUnary (authfactor_server.go – 0% covered)
+// AuthFactorService native pb round-trip (authfactor_server.go – 0% covered)
 //
-// These are client-side SDK helpers. We test them via an in-process server
-// that has RegisterAuthFactorService wired, verifying the full request/response
+// We test the five RPC methods via an in-process server that has
+// RegisterAuthFactorService wired, verifying the full request/response
 // round-trip for the happy path and the connection-error path.
 // ---------------------------------------------------------------------------
 
@@ -374,26 +373,25 @@ func startAuthFactorServer(t *testing.T, svc *mockAuthFactorService) (*grpc.Clie
 	}
 }
 
-func TestEnrollFactorUnary_Success(t *testing.T) {
+func TestEnrollFactor_Success(t *testing.T) {
 	svc := newMockAuthFactorService()
 	conn, cleanup := startAuthFactorServer(t, svc)
 	defer cleanup()
 
-	resp, err := EnrollFactorUnary(context.Background(), conn, &grpcEnrollFactorRequest{
+	resp, err := pb.NewAuthFactorServiceClient(conn).EnrollFactor(context.Background(), &pb.EnrollFactorRequest{
 		FactorName: "pkcs11",
 		Subject:    "alice",
-		TenantID:   "tenant-1",
+		TenantId:   "tenant-1",
 	})
 	if err != nil {
-		t.Fatalf("EnrollFactorUnary failed: %v", err)
+		t.Fatalf("EnrollFactor failed: %v", err)
 	}
-	if resp.EnrollmentID != "enroll-1" {
-		t.Fatalf("expected enrollment_id 'enroll-1', got %q", resp.EnrollmentID)
+	if resp.EnrollmentId != "enroll-1" {
+		t.Fatalf("expected enrollment_id 'enroll-1', got %q", resp.EnrollmentId)
 	}
 }
 
-func TestEnrollFactorUnary_ConnectionError(t *testing.T) {
-	// Use a closed connection to trigger the conn.Invoke error path.
+func TestEnrollFactor_ConnectionError(t *testing.T) {
 	conn, err := grpc.NewClient("127.0.0.1:1",
 		grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
@@ -401,31 +399,34 @@ func TestEnrollFactorUnary_ConnectionError(t *testing.T) {
 	}
 	defer conn.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 0) // immediate deadline
+	ctx, cancel := context.WithTimeout(context.Background(), 0)
 	cancel()
-	_, err = EnrollFactorUnary(ctx, conn, &grpcEnrollFactorRequest{FactorName: "piv", Subject: "bob"})
+	_, err = pb.NewAuthFactorServiceClient(conn).EnrollFactor(ctx, &pb.EnrollFactorRequest{
+		FactorName: "piv",
+		Subject:    "bob",
+	})
 	if err == nil {
 		t.Fatal("expected error from dead connection, got nil")
 	}
 }
 
-func TestChallengeFactorUnary_Success(t *testing.T) {
+func TestChallengeFactor_Success(t *testing.T) {
 	svc := newMockAuthFactorService()
 	conn, cleanup := startAuthFactorServer(t, svc)
 	defer cleanup()
 
-	resp, err := ChallengeFactorUnary(context.Background(), conn, &grpcChallengeFactorRequest{
-		EnrollmentID: "enroll-1",
+	resp, err := pb.NewAuthFactorServiceClient(conn).ChallengeFactor(context.Background(), &pb.ChallengeFactorRequest{
+		EnrollmentId: "enroll-1",
 	})
 	if err != nil {
-		t.Fatalf("ChallengeFactorUnary failed: %v", err)
+		t.Fatalf("ChallengeFactor failed: %v", err)
 	}
-	if resp.ChallengeID != "challenge-1" {
-		t.Fatalf("expected challenge_id 'challenge-1', got %q", resp.ChallengeID)
+	if resp.ChallengeId != "challenge-1" {
+		t.Fatalf("expected challenge_id 'challenge-1', got %q", resp.ChallengeId)
 	}
 }
 
-func TestChallengeFactorUnary_ConnectionError(t *testing.T) {
+func TestChallengeFactor_ConnectionError(t *testing.T) {
 	conn, err := grpc.NewClient("127.0.0.1:1",
 		grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
@@ -435,27 +436,29 @@ func TestChallengeFactorUnary_ConnectionError(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 0)
 	cancel()
-	_, err = ChallengeFactorUnary(ctx, conn, &grpcChallengeFactorRequest{EnrollmentID: "x"})
+	_, err = pb.NewAuthFactorServiceClient(conn).ChallengeFactor(ctx, &pb.ChallengeFactorRequest{
+		EnrollmentId: "x",
+	})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
 }
 
-func TestVerifyFactorUnary_Success(t *testing.T) {
+func TestVerifyFactor_Success(t *testing.T) {
 	svc := newMockAuthFactorService()
 	conn, cleanup := startAuthFactorServer(t, svc)
 	defer cleanup()
 
-	err := VerifyFactorUnary(context.Background(), conn, &grpcVerifyFactorRequest{
-		ChallengeID: "challenge-1",
+	_, err := pb.NewAuthFactorServiceClient(conn).VerifyFactor(context.Background(), &pb.VerifyFactorRequest{
+		ChallengeId: "challenge-1",
 		Value:       []byte("sig"),
 	})
 	if err != nil {
-		t.Fatalf("VerifyFactorUnary failed: %v", err)
+		t.Fatalf("VerifyFactor failed: %v", err)
 	}
 }
 
-func TestVerifyFactorUnary_ConnectionError(t *testing.T) {
+func TestVerifyFactor_ConnectionError(t *testing.T) {
 	conn, err := grpc.NewClient("127.0.0.1:1",
 		grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
@@ -465,27 +468,31 @@ func TestVerifyFactorUnary_ConnectionError(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 0)
 	cancel()
-	err = VerifyFactorUnary(ctx, conn, &grpcVerifyFactorRequest{ChallengeID: "c"})
+	_, err = pb.NewAuthFactorServiceClient(conn).VerifyFactor(ctx, &pb.VerifyFactorRequest{
+		ChallengeId: "c",
+	})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
 }
 
-func TestListFactorsUnary_Success(t *testing.T) {
+func TestListFactors_Success(t *testing.T) {
 	svc := newMockAuthFactorService()
 	conn, cleanup := startAuthFactorServer(t, svc)
 	defer cleanup()
 
-	resp, err := ListFactorsUnary(context.Background(), conn, &grpcListFactorsRequest{Subject: "alice"})
+	resp, err := pb.NewAuthFactorServiceClient(conn).ListFactors(context.Background(), &pb.ListFactorsRequest{
+		Subject: "alice",
+	})
 	if err != nil {
-		t.Fatalf("ListFactorsUnary failed: %v", err)
+		t.Fatalf("ListFactors failed: %v", err)
 	}
 	if resp.Total != 1 {
 		t.Fatalf("expected total=1, got %d", resp.Total)
 	}
 }
 
-func TestListFactorsUnary_ConnectionError(t *testing.T) {
+func TestListFactors_ConnectionError(t *testing.T) {
 	conn, err := grpc.NewClient("127.0.0.1:1",
 		grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
@@ -495,24 +502,28 @@ func TestListFactorsUnary_ConnectionError(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 0)
 	cancel()
-	_, err = ListFactorsUnary(ctx, conn, &grpcListFactorsRequest{Subject: "x"})
+	_, err = pb.NewAuthFactorServiceClient(conn).ListFactors(ctx, &pb.ListFactorsRequest{
+		Subject: "x",
+	})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
 }
 
-func TestRevokeFactorUnary_Success(t *testing.T) {
+func TestRevokeFactor_Success(t *testing.T) {
 	svc := newMockAuthFactorService()
 	conn, cleanup := startAuthFactorServer(t, svc)
 	defer cleanup()
 
-	err := RevokeFactorUnary(context.Background(), conn, &grpcRevokeFactorRequest{EnrollmentID: "enroll-1"})
+	_, err := pb.NewAuthFactorServiceClient(conn).RevokeFactor(context.Background(), &pb.RevokeFactorRequest{
+		EnrollmentId: "enroll-1",
+	})
 	if err != nil {
-		t.Fatalf("RevokeFactorUnary failed: %v", err)
+		t.Fatalf("RevokeFactor failed: %v", err)
 	}
 }
 
-func TestRevokeFactorUnary_ConnectionError(t *testing.T) {
+func TestRevokeFactor_ConnectionError(t *testing.T) {
 	conn, err := grpc.NewClient("127.0.0.1:1",
 		grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
@@ -522,7 +533,9 @@ func TestRevokeFactorUnary_ConnectionError(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 0)
 	cancel()
-	err = RevokeFactorUnary(ctx, conn, &grpcRevokeFactorRequest{EnrollmentID: "e"})
+	_, err = pb.NewAuthFactorServiceClient(conn).RevokeFactor(ctx, &pb.RevokeFactorRequest{
+		EnrollmentId: "e",
+	})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

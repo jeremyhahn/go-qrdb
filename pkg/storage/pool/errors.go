@@ -14,7 +14,10 @@
 
 package pool
 
-import "fmt"
+import (
+	"fmt"
+	"strconv"
+)
 
 // NilStorageError is returned by NewPebbleStateStore when the supplied
 // storage is nil.
@@ -63,3 +66,78 @@ func (e *PutError) Error() string {
 
 // Unwrap returns the underlying error.
 func (e *PutError) Unwrap() error { return e.Err }
+
+// VolumePoolStorageError is returned when the volume-pool state store (the
+// dedicated Pebble that persists round-robin cursors) fails to open.
+type VolumePoolStorageError struct {
+	Err error
+}
+
+// Error implements the error interface.
+func (e *VolumePoolStorageError) Error() string {
+	return "qrdb/storage/pool: state store: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *VolumePoolStorageError) Unwrap() error { return e.Err }
+
+// VolumePoolRegisterError is returned when objstore's pool.Manager rejects a
+// Register call (typically duplicate name or empty candidates).
+type VolumePoolRegisterError struct {
+	Name string
+	Err  error
+}
+
+// Error implements the error interface.
+func (e *VolumePoolRegisterError) Error() string {
+	return "qrdb/storage/pool: register " + strconv.Quote(e.Name) + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *VolumePoolRegisterError) Unwrap() error { return e.Err }
+
+// NilStateStoreError is returned by BuildPoolStrategy when the supplied
+// state store is nil. The stateful strategies (round_robin) persist their
+// cursor through it, so construction without one is a programming error,
+// not a configuration problem.
+type NilStateStoreError struct{}
+
+// Error implements the error interface.
+func (e *NilStateStoreError) Error() string {
+	return "qrdb/storage/pool: state store must not be nil"
+}
+
+// VolumePoolStrategyError is returned when a volume-pool YAML config
+// references an unknown strategy name.
+type VolumePoolStrategyError struct {
+	Strategy string
+	Err      error
+}
+
+// Error implements the error interface.
+func (e *VolumePoolStrategyError) Error() string {
+	if e.Err != nil {
+		return "qrdb/storage/pool: strategy " + strconv.Quote(e.Strategy) + ": " + e.Err.Error()
+	}
+	return "qrdb/storage/pool: strategy " + strconv.Quote(e.Strategy) + ": unsupported"
+}
+
+// Unwrap returns the underlying error.
+func (e *VolumePoolStrategyError) Unwrap() error { return e.Err }
+
+// VolumePoolPathError is returned when one of the configured local paths
+// cannot be created or wrapped as an objstore Backend.
+type VolumePoolPathError struct {
+	Pool string
+	Path string
+	Err  error
+}
+
+// Error implements the error interface.
+func (e *VolumePoolPathError) Error() string {
+	return "qrdb/storage/pool: pool " + strconv.Quote(e.Pool) +
+		" path " + strconv.Quote(e.Path) + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *VolumePoolPathError) Unwrap() error { return e.Err }

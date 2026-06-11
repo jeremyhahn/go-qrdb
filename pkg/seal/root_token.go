@@ -102,8 +102,9 @@ func (b *StorageBarrier) GenerateRootToken(ctx context.Context, shareValues []st
 // verifySecretAndGetRootKey verifies the reconstructed Shamir secret against
 // the barrier's sealed root key and returns a copy of the root key.
 // It supports two modes:
-//   - Direct mode: a ShamirStrategy is registered and the secret is the root
-//     key itself.
+//   - Direct mode: a ShamirStrategy is registered and the secret is the
+//     unseal key that decrypts the wrapped root key (or, on legacy barriers
+//     without a wrapped blob, the root key itself).
 //   - Credential mode: the secret is a password used to unseal the root key
 //     via one of the barrier's registered strategies.
 func (b *StorageBarrier) verifySecretAndGetRootKey(ctx context.Context, secret []byte) ([]byte, error) {
@@ -122,9 +123,11 @@ func (b *StorageBarrier) verifySecretAndGetRootKey(ctx context.Context, secret [
 }
 
 // verifyDirectMode verifies the secret when a ShamirStrategy is registered.
-// The secret IS the root key. Verification is done by encrypting and
-// decrypting a canary value with the EpochBarrier, and confirming the
-// sealed root key was sealed with the Shamir strategy.
+// The secret is the unseal key (or, on legacy barriers without a wrapped
+// root key blob, the root key itself). With a wrapped blob present the
+// authenticated decrypt is real cryptographic verification: wrong or
+// rekey-revoked shares fail the AEAD open. The sealed root key envelope is
+// additionally confirmed to use the Shamir strategy.
 func (b *StorageBarrier) verifyDirectMode(ctx context.Context, secret []byte) ([]byte, error) {
 	// Verify the sealed root key blob uses the Shamir strategy.
 	blob, err := b.base.Get(ctx, b.config.RootKeyPath)
@@ -139,10 +142,13 @@ func (b *StorageBarrier) verifyDirectMode(ctx context.Context, secret []byte) ([
 		return nil, ErrRootTokenVerificationFailed
 	}
 
-	// Return a copy of the secret (which is the root key in direct mode).
-	rootKeyCopy := make([]byte, len(secret))
-	copy(rootKeyCopy, secret)
-	return rootKeyCopy, nil
+	// Resolve the secret to the root key (AEAD unwrap in unseal-key mode,
+	// pass-through copy in legacy direct mode).
+	rootKey, err := b.resolveDirectSecret(ctx, secret)
+	if err != nil {
+		return nil, ErrRootTokenVerificationFailed
+	}
+	return rootKey, nil
 }
 
 // verifyCredentialMode verifies the secret when no ShamirStrategy is

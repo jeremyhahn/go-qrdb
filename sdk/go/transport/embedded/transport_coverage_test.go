@@ -791,7 +791,7 @@ var _ service.CeremonyServicer = (*mockCeremonyService)(nil)
 // Minimal CeremonyCA stub satisfying the interface.
 type mockCeremonyCA struct{}
 
-func (m *mockCeremonyCA) SignCSR(_ []byte, _ *ceremony.SignCSROptions) (*x509.Certificate, error) {
+func (m *mockCeremonyCA) SignCSR(_ context.Context, _ []byte, _ *ceremony.SignCSROptions) (*x509.Certificate, error) {
 	return nil, errors.New("not used")
 }
 
@@ -803,7 +803,7 @@ func (m *mockCeremonyCA) CABundle() ([]byte, error) {
 	return nil, errors.New("not used")
 }
 
-func (m *mockCeremonyCA) IssueCertificate(_ *ceremony.IssueCertRequest) (*ceremony.IssuedCert, error) {
+func (m *mockCeremonyCA) IssueCertificate(_ context.Context, _ *ceremony.IssueCertRequest) (*ceremony.IssuedCert, error) {
 	return nil, errors.New("not used")
 }
 

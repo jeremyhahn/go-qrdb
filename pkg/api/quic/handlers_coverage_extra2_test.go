@@ -26,6 +26,7 @@ import (
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -100,15 +101,19 @@ func (m *mockTenantSvc) Quotas(_ context.Context, _ string) (*quota.Quotas, erro
 	return &quota.Quotas{}, nil
 }
 
-func (m *mockTenantSvc) TenantBarrierInit(ctx context.Context, id, passphrase string, threshold, total int) error {
+func (m *mockTenantSvc) TenantBarrierInit(ctx context.Context, id, passphrase string, threshold, total int) (*tenant.TenantBarrierInitResult, error) {
 	if m.barrierInitFn != nil {
-		return m.barrierInitFn(ctx, id, passphrase, threshold, total)
+		return nil, m.barrierInitFn(ctx, id, passphrase, threshold, total)
 	}
-	return nil
+	return nil, nil
 }
 
-func (m *mockTenantSvc) TenantBarrierInitWithStrategy(ctx context.Context, id, passphrase string, threshold, total int, _ seal.StrategyID) error {
+func (m *mockTenantSvc) TenantBarrierInitWithStrategy(ctx context.Context, id, passphrase string, threshold, total int, _ seal.StrategyID) (*tenant.TenantBarrierInitResult, error) {
 	return m.TenantBarrierInit(ctx, id, passphrase, threshold, total)
+}
+
+func (m *mockTenantSvc) TenantBarrierUnsealShare(_ context.Context, _, _ string) (*tenant.TenantBarrierUnsealProgress, error) {
+	return nil, nil
 }
 
 func (m *mockTenantSvc) IncrementQuotaUsage(_ context.Context, _ string, _ quota.Resource, _ int64) (*tenant.TenantInfo, error) {
@@ -142,6 +147,24 @@ func (m *mockTenantSvc) TenantBarrierStatus(ctx context.Context, id string) (*te
 		return m.barrierStatusFn(ctx, id)
 	}
 	return &tenant.TenantBarrierStatus{TenantID: id, Sealed: false, Initialized: true, Strategy: "passphrase"}, nil
+}
+func (m *mockTenantSvc) TenantBarrierOfficerRegister(_ context.Context, _ string, _ *ceremony.RegisterOfficerRequest) (*ceremony.RegisterOfficerResult, error) {
+	return &ceremony.RegisterOfficerResult{}, nil
+}
+func (m *mockTenantSvc) TenantBarrierOfficerList(_ context.Context, _ string) ([]*ceremony.OfficerStatus, error) {
+	return nil, nil
+}
+func (m *mockTenantSvc) TenantBarrierShareClaimBegin(_ context.Context, _, _, _ string) (*ceremony.ChallengeResponse, error) {
+	return &ceremony.ChallengeResponse{}, nil
+}
+func (m *mockTenantSvc) TenantBarrierShareClaimComplete(_ context.Context, _, _, _ string, _ []byte, _ string) (*ceremony.ShareClaimResult, error) {
+	return &ceremony.ShareClaimResult{}, nil
+}
+func (m *mockTenantSvc) TenantBarrierOfficerClaimStatus(_ context.Context, _ string) ([]*ceremony.OfficerStatus, error) {
+	return nil, nil
+}
+func (m *mockTenantSvc) TenantBarrierShamirSealVote(_ context.Context, _, _ string) (*tenant.TenantBarrierUnsealProgress, error) {
+	return &tenant.TenantBarrierUnsealProgress{}, nil
 }
 
 func newTenantServer() *Server {

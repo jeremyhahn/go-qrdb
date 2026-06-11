@@ -27,27 +27,29 @@ var _ transport.UserAuthFactorClient = (*Transport)(nil)
 
 // quicUserFactorRecord matches the server-side wire shape.
 type quicUserFactorRecord struct {
-	ID           string            `json:"id"`
-	UserID       uint64            `json:"user_id"`
-	Type         string            `json:"type"`
-	Label        string            `json:"label,omitempty"`
-	Credential   []byte            `json:"credential"`
-	Metadata     map[string]string `json:"metadata,omitempty"`
-	RegisteredAt string            `json:"registered_at"`
-	LastUsedAt   string            `json:"last_used_at,omitempty"`
-	RevokedAt    string            `json:"revoked_at,omitempty"`
-	CreatedBy    string            `json:"created_by,omitempty"`
+	ID             string            `json:"id"`
+	UserID         uint64            `json:"user_id"`
+	Type           string            `json:"type"`
+	Label          string            `json:"label,omitempty"`
+	Credential     []byte            `json:"credential"`
+	SPKICredential []byte            `json:"spki_credential,omitempty"`
+	Metadata       map[string]string `json:"metadata,omitempty"`
+	RegisteredAt   string            `json:"registered_at"`
+	LastUsedAt     string            `json:"last_used_at,omitempty"`
+	RevokedAt      string            `json:"revoked_at,omitempty"`
+	CreatedBy      string            `json:"created_by,omitempty"`
 }
 
 func userFactorFromQUICWire(r *quicUserFactorRecord) transport.AuthFactorRecord {
 	out := transport.AuthFactorRecord{
-		ID:         r.ID,
-		UserID:     r.UserID,
-		Type:       r.Type,
-		Label:      r.Label,
-		Credential: r.Credential,
-		Metadata:   r.Metadata,
-		CreatedBy:  r.CreatedBy,
+		ID:             r.ID,
+		UserID:         r.UserID,
+		Type:           r.Type,
+		Label:          r.Label,
+		Credential:     r.Credential,
+		SPKICredential: r.SPKICredential,
+		Metadata:       r.Metadata,
+		CreatedBy:      r.CreatedBy,
 	}
 	out.RegisteredAt, _ = time.Parse(time.RFC3339, r.RegisteredAt)
 	if r.LastUsedAt != "" {

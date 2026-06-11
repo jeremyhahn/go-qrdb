@@ -118,6 +118,16 @@ const (
 	// coordination. Fastest reads (<1ms) but may return stale data if
 	// node is partitioned.
 	ConsistencyEventual
+
+	// ConsistencyFollower reads from the local replica's state machine
+	// after it has applied up to its committed index, without a leader
+	// ReadIndex round-trip. Unlike ConsistencyEventual it reflects every
+	// entry committed at read time (read-your-committed-writes), and unlike
+	// ConsistencyLinearizable it is served locally on any replica — so
+	// followers can serve reads even when the leader is momentarily
+	// unreachable for a ReadIndex confirmation. Recommended for replicated
+	// stores that read on every node (e.g. health checks, key existence).
+	ConsistencyFollower
 )
 
 // String returns the human-readable name of the consistency level.
@@ -129,6 +139,8 @@ func (l ConsistencyLevel) String() string {
 		return "linearizable"
 	case ConsistencyEventual:
 		return "eventual"
+	case ConsistencyFollower:
+		return "follower"
 	default:
 		return "unknown"
 	}
@@ -136,7 +148,7 @@ func (l ConsistencyLevel) String() string {
 
 // IsValid reports whether the consistency level is a recognized value.
 func (l ConsistencyLevel) IsValid() bool {
-	return l <= ConsistencyEventual
+	return l <= ConsistencyFollower
 }
 
 // ParseConsistencyLevel converts a string to a ConsistencyLevel.
@@ -149,6 +161,8 @@ func ParseConsistencyLevel(s string) (ConsistencyLevel, error) {
 		return ConsistencyLinearizable, nil
 	case "eventual", "stale":
 		return ConsistencyEventual, nil
+	case "follower":
+		return ConsistencyFollower, nil
 	default:
 		return 0, &InvalidConsistencyLevelError{Level: s}
 	}

@@ -520,11 +520,16 @@ func WithPINBackend(backend pin.PINBackend) ServerOption {
 	return func(o *serverOptions) { o.pinBackend = backend }
 }
 
-// WithFactorRegistry injects a populated authentication-factor
-// registry. qrdb provides a default with the software mTLS factor;
-// higher layers (xkms via quicbaas) register FIDO2 / PIV / PKCS#11
-// factors so callers can enroll and verify them through the unified
-// AuthFactorService surface.
+// WithFactorRegistry injects a populated authentication-factor registry.
+// The registry starts empty; there are no default factors. Higher layers
+// (xkms via quicbaas composition, or xkmsd's embedded node) register
+// go-xkms hardware factor plugins (fido2/piv/pkcs11) and inject via this
+// option. When set and no explicit WithAuthFactorService is supplied, the
+// server (via ensureAuthFactorService in Start) and the SDK node builders
+// (via wireClientAndServer) construct the unified AuthFactorService from
+// the registry automatically so every transport exposes the
+// enrollment/challenge/verify surface. mTLS login is handled natively by
+// the auth.LoginResolver path and is not an authfactors.Factor.
 func WithFactorRegistry(reg *authfactors.FactorRegistry) ServerOption {
 	return func(o *serverOptions) { o.factorRegistry = reg }
 }
@@ -543,6 +548,11 @@ type CryptoOptions struct {
 	PINBackend       pin.PINBackend
 	FactorRegistry   *authfactors.FactorRegistry
 	AuditLogger      audit.AuditLogger
+	// AuthFactorService is the caller-supplied AuthFactorServicer, if any.
+	// When non-nil the caller passed server.WithAuthFactorService explicitly.
+	// When nil and FactorRegistry is non-nil, the server and SDK node builders
+	// construct the service automatically via ensureAuthFactorService.
+	AuthFactorService service.AuthFactorServicer
 }
 
 // ResolveCryptoOptions applies the given ServerOptions to a throwaway option
@@ -559,11 +569,12 @@ func ResolveCryptoOptions(opts ...ServerOption) CryptoOptions {
 		}
 	}
 	return CryptoOptions{
-		StrategyRegistry: o.strategyRegistry,
-		SealStrategy:     o.sealStrategy,
-		PINBackend:       o.pinBackend,
-		FactorRegistry:   o.factorRegistry,
-		AuditLogger:      o.auditLogger,
+		StrategyRegistry:  o.strategyRegistry,
+		SealStrategy:      o.sealStrategy,
+		PINBackend:        o.pinBackend,
+		FactorRegistry:    o.factorRegistry,
+		AuditLogger:       o.auditLogger,
+		AuthFactorService: o.authFactorSvc,
 	}
 }
 
@@ -595,11 +606,37 @@ func New(cfg *config.Config, kvSvc service.KVServicer, adminSvc service.AdminSer
 	return s
 }
 
+// ensureAuthFactorService completes the WithFactorRegistry contract: when
+// a caller injected a FactorRegistry via WithFactorRegistry but did not
+// supply an explicit WithAuthFactorService, this method constructs the
+// unified AuthFactorService from the registry and the KV service and
+// assigns it so every transport that checks s.opts.authFactorSvc sees a
+// valid instance. It is a no-op when authFactorSvc is already set or when
+// factorRegistry is nil (no factors to serve).
+func (s *Server) ensureAuthFactorService() error {
+	if s.opts.authFactorSvc != nil || s.opts.factorRegistry == nil {
+		return nil
+	}
+	svc, err := service.NewAuthFactorService(service.AuthFactorServiceConfig{
+		Factors: s.opts.factorRegistry.All(),
+		KV:      s.kvSvc,
+	})
+	if err != nil {
+		return err
+	}
+	s.opts.authFactorSvc = svc
+	return nil
+}
+
 // Start launches the configured API servers. Servers are started sequentially
 // in order: REST, gRPC, QUIC, Unix, MCP, MySQL, PostgreSQL. If any server
 // fails to start, all previously started servers are rolled back and the
 // error is returned.
 func (s *Server) Start() error {
+	if err := s.ensureAuthFactorService(); err != nil {
+		return err
+	}
+
 	if s.config.Protocols.REST {
 		if err := s.startREST(); err != nil {
 			return err

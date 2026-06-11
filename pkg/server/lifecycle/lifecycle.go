@@ -107,6 +107,22 @@ type Infra struct {
 	// empty and SealBarrier is non-nil, it defaults to DataDir/seal.
 	CeremonyDataDir string
 
+	// CeremonyCA is an optional certificate authority used to sign Security
+	// Officer CSRs outside the full initialization ceremony. When non-nil it
+	// is wired into the ceremony service via SetCA, which never overwrites a
+	// CA already established by Initialize. Daemon deployments pass the
+	// node's cluster CA here so officer certificates chain to the same CA
+	// the server trusts for mTLS client authentication.
+	CeremonyCA ceremony.CeremonyCA
+
+	// CeremonyCoreSvc is an already-constructed core ceremony service to
+	// reuse instead of building a new one. The sealed-window boot phase
+	// (BuildSealServicesOnly) accumulates in-memory state — enclave-stored
+	// shares and cache-only officer registrations — that must survive into
+	// the post-unseal service graph; threading the instance here preserves
+	// it. When nil a fresh ceremony service is constructed.
+	CeremonyCoreSvc *ceremony.CeremonyService
+
 	// Logger is used for service-level structured logging. When nil,
 	// slog.Default() is used.
 	Logger *slog.Logger
@@ -170,11 +186,13 @@ type Node struct {
 	Role role.RoleServicer
 
 	// Security services. All are nil when no SealBarrier was provided.
-	Barrier    service.BarrierServicer
-	Ceremony   service.CeremonyServicer
-	Credential service.CredentialServicer
-	Tenant     tenant.TenantServicer
-	CertProv   cert.CertProvider
+	Barrier        service.BarrierServicer
+	Ceremony       service.CeremonyServicer
+	CustodianGroup ceremony.CustodianGroupServicer
+	Share          ceremony.ShareServicer
+	Credential     service.CredentialServicer
+	Tenant         tenant.TenantServicer
+	CertProv       cert.CertProvider
 
 	// StoreResolver maps a tenant ID to the KVStore backing its IAM data.
 	// It is non-nil only when a BarrierRegistry was supplied: barrier-mode
@@ -274,6 +292,24 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	}
 	n.Role = roleSvc
 
+	// Custodian group + Shamir share services, backed by the node's KV store
+	// (the same store the IAM services use). They power the embedded ceremony
+	// API that go-xkms exposes as its custodian-group and share endpoints. The
+	// node hosts no seal barrier of its own, so these use the KV store directly;
+	// any at-rest encryption is provided by a barrier layered over KV upstream.
+	custodianStore := kvSealBackend{KVStore: newKVStoreAdapter(n.KV), tx: n.Transaction}
+	custodianGroupSvc, err := ceremony.NewCustodianGroupService(custodianStore, log)
+	if err != nil {
+		return nil, &CustodianGroupServiceError{Err: err}
+	}
+	n.CustodianGroup = custodianGroupSvc
+
+	shareSvc, err := ceremony.NewShareService(custodianStore, custodianGroupSvc, log)
+	if err != nil {
+		return nil, &ShareServiceError{Err: err}
+	}
+	n.Share = shareSvc
+
 	// Database service. Use the caller-supplied manager when available
 	// (callers may have run migrations or created databases before calling
 	// BuildServices). Otherwise create a fresh manager.
@@ -293,6 +329,9 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		enc = atrest.New(infra.SealBarrier)
 	}
 
+	if infra.DataDir == "" {
+		return nil, &EmptyVectorDataDirError{}
+	}
 	vectorDataDir := filepath.Join(infra.DataDir, "vector")
 	vectorCfg := vectorstorage.DefaultConfig(vectorDataDir)
 	vectorLog := logger.NewAdapter(newMinimalLogger(log))
@@ -380,28 +419,39 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Logger) error {
 	_ = ctx // reserved for future use by barrier operations
 
-	n.Barrier = service.NewBarrierService(infra.SealBarrier)
-
 	if infra.CredentialCoreSvc != nil {
 		n.Credential = service.NewCredentialService(infra.CredentialCoreSvc)
 
-		ceremonyDataDir := infra.CeremonyDataDir
-		if ceremonyDataDir == "" {
-			ceremonyDataDir = filepath.Join(infra.DataDir, "seal")
+		ceremonyCoreSvc := infra.CeremonyCoreSvc
+		if ceremonyCoreSvc == nil {
+			ceremonyDataDir := infra.CeremonyDataDir
+			if ceremonyDataDir == "" {
+				ceremonyDataDir = filepath.Join(infra.DataDir, "seal")
+			}
+			ceremonyCfg := &ceremony.CeremonyConfig{
+				DataDir: ceremonyDataDir,
+			}
+			svc, err := ceremony.NewCeremonyService(
+				ceremonyCfg, infra.SealBarrier, infra.CredentialCoreSvc, log)
+			if err != nil {
+				return &CeremonyServiceError{Err: err}
+			}
+			ceremonyCoreSvc = svc
 		}
-		ceremonyCfg := &ceremony.CeremonyConfig{
-			DataDir: ceremonyDataDir,
-		}
-		ceremonyCoreSvc, err := ceremony.NewCeremonyService(
-			ceremonyCfg, infra.SealBarrier, infra.CredentialCoreSvc, log)
-		if err != nil {
-			return &CeremonyServiceError{Err: err}
-		}
+		ceremonyCoreSvc.SetCA(infra.CeremonyCA)
 		n.Ceremony = service.NewCeremonyService(ceremonyCoreSvc)
+		n.Barrier = service.NewBarrierServiceWithCeremony(infra.SealBarrier, ceremonyCoreSvc)
+	} else {
+		n.Barrier = service.NewBarrierService(infra.SealBarrier)
 	}
 
 	if infra.BarrierRegistry != nil {
 		tenantOpts := buildTenantServiceOpts(infra)
+		if n.Ceremony != nil {
+			if coreSvc, ok := service.CeremonyServiceCore(n.Ceremony); ok {
+				tenantOpts = append(tenantOpts, tenant.WithTenantCeremonyCA(coreSvc.CA()))
+			}
+		}
 		tenantSvcInst, err := tenant.NewTenantService(
 			infra.SealBarrier, infra.BarrierRegistry, log, tenantOpts...)
 		if err != nil {
@@ -451,23 +501,31 @@ func BuildSealServicesOnly(ctx context.Context, infra Infra) (*Node, error) {
 	}
 
 	n := &Node{}
-	n.Barrier = service.NewBarrierService(infra.SealBarrier)
 	n.Credential = service.NewCredentialService(infra.CredentialCoreSvc)
 
-	ceremonyDataDir := infra.CeremonyDataDir
-	if ceremonyDataDir == "" {
-		ceremonyDataDir = filepath.Join(infra.DataDir, "seal")
+	ceremonyCoreSvc := infra.CeremonyCoreSvc
+	if ceremonyCoreSvc == nil {
+		ceremonyDataDir := infra.CeremonyDataDir
+		if ceremonyDataDir == "" {
+			ceremonyDataDir = filepath.Join(infra.DataDir, "seal")
+		}
+		ceremonyCfg := &ceremony.CeremonyConfig{DataDir: ceremonyDataDir}
+		svc, err := ceremony.NewCeremonyService(
+			ceremonyCfg, infra.SealBarrier, infra.CredentialCoreSvc, log)
+		if err != nil {
+			return nil, &CeremonyServiceError{Err: err}
+		}
+		ceremonyCoreSvc = svc
 	}
-	ceremonyCfg := &ceremony.CeremonyConfig{DataDir: ceremonyDataDir}
-	ceremonyCoreSvc, err := ceremony.NewCeremonyService(
-		ceremonyCfg, infra.SealBarrier, infra.CredentialCoreSvc, log)
-	if err != nil {
-		return nil, &CeremonyServiceError{Err: err}
-	}
+	ceremonyCoreSvc.SetCA(infra.CeremonyCA)
 	n.Ceremony = service.NewCeremonyService(ceremonyCoreSvc)
+	n.Barrier = service.NewBarrierServiceWithCeremony(infra.SealBarrier, ceremonyCoreSvc)
 
 	if infra.BarrierRegistry != nil {
 		tenantOpts := buildTenantServiceOpts(infra)
+		if ca := ceremonyCoreSvc.CA(); ca != nil {
+			tenantOpts = append(tenantOpts, tenant.WithTenantCeremonyCA(ca))
+		}
 		tenantSvcInst, err := tenant.NewTenantService(
 			infra.SealBarrier, infra.BarrierRegistry, log, tenantOpts...)
 		if err != nil {

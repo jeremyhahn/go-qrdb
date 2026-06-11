@@ -41,6 +41,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
 	"github.com/jeremyhahn/go-qrdb/pkg/bootstrap"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
@@ -132,6 +133,7 @@ type startFlags struct {
 	tlsCertFile           string
 	tlsKeyFile            string
 	tlsClientAuth         string
+	tlsClientAuthSet      bool
 	bootstrapNoiseKey     string
 	bootstrapNoiseAddr    string
 	bootstrapNoisePort    int
@@ -311,6 +313,14 @@ func newStartCmd() *cobra.Command {
 			"  2. CLI flags (backward compatible)\n" +
 			"CLI flags override YAML values when both are provided.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// Track whether the operator explicitly chose a TLS
+			// client-auth mode. Only an explicit selection (flag or
+			// YAML) overrides the auth-derived listener default; the
+			// flag's literal default is never force-applied because
+			// the listener must keep serving certificate-less public
+			// endpoints such as /health.
+			f.tlsClientAuthSet = cmd.Flags().Changed("tls-client-auth")
+
 			// Load YAML config if --config is provided, then let CLI
 			// flags override any YAML values that were explicitly set.
 			if f.configFile != "" {
@@ -582,6 +592,7 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 	}
 	if !cmd.Flags().Changed("tls-client-auth") && cfg.TLS.ClientAuth != "" {
 		f.tlsClientAuth = cfg.TLS.ClientAuth
+		f.tlsClientAuthSet = true
 	}
 	if !cmd.Flags().Changed("bootstrap-noise-key") && cfg.Bootstrap.NoiseKey != "" {
 		f.bootstrapNoiseKey = cfg.Bootstrap.NoiseKey
@@ -744,6 +755,25 @@ func findFreeTCPPort() (int, error) {
 	return port, nil
 }
 
+// applyTLSClientAuth applies the operator-selected TLS client-auth mode
+// to the bundle's shared listener TLS configuration. It is called only
+// when the operator explicitly chose a mode (--tls-client-auth flag or
+// YAML tls.client_auth); unset deployments keep the auth-derived
+// default (VerifyClientCertIfGiven when auth is enabled, NoClientCert
+// otherwise) so certificate-less public endpoints such as /health stay
+// reachable. The CA pool is attached as ClientCAs whenever client
+// certificates may be presented: it is the verification pool for the
+// verifying modes and the acceptable-CA hint in the CertificateRequest
+// for the non-verifying ones.
+func applyTLSClientAuth(f *startFlags, bundle *TLSBundle) {
+	cfg := qrdbconfig.TLSConfig{ClientAuth: f.tlsClientAuth}
+	mode := cfg.CryptoTLSClientAuth()
+	bundle.TLSConfig.ClientAuth = mode
+	if mode != tls.NoClientCert {
+		bundle.TLSConfig.ClientCAs = bundle.CACertPool
+	}
+}
+
 // runStart executes the start command logic: load or generate TLS, build
 // config, create the host, start the shard, build service layer, create
 // the multi-protocol server, and block until a termination signal is
@@ -766,6 +796,18 @@ func runStart(f *startFlags) error {
 		} else {
 			slog.Info("TLS cert hot-reload enabled", "watch_dir", f.dataDir)
 		}
+	}
+
+	// Apply an explicitly configured TLS client-auth mode to the shared
+	// listener TLS config BEFORE any listener starts. The pre-host
+	// sealed-window server reuses bundle.TLSConfig, and the Security
+	// Officer share-claim handshake requires the listener to request the
+	// client certificate (--tls-client-auth=request) so the handler can
+	// verify the officer's cert thumbprint. When the operator does not
+	// set a mode the auth-derived default is applied later (see the
+	// ClientAuth block ahead of server construction).
+	if f.tlsClientAuthSet {
+		applyTLSClientAuth(f, bundle)
 	}
 
 	// Generate the admin client certificate immediately after TLS is
@@ -948,15 +990,28 @@ func runStart(f *startFlags) error {
 		)
 	}
 
+	// The ceremony CA signs Security Officer client-certificate CSRs so
+	// the resulting certs chain to the same CA the server trusts for
+	// mTLS — the prerequisite for the share-free officer claim flow.
+	// nil with BYO TLS certificates (no CA private key available).
+	ceremonyCA, err := ceremonyCAFromBundle(bundle)
+	if err != nil {
+		return err
+	}
+
 	// Pre-host sealed-window listener. While the barrier is sealed the
 	// data plane cannot start (Pebble.Open would fail with ErrSealed
 	// because every file open is encfs-wrapped). We bring up an
 	// API-only server with the seal services and the sealed-window
 	// probe installed, then poll the barrier until the operator drives
 	// the public unseal API. Once IsSealed flips false we tear the
-	// listener down and let the regular boot continue.
+	// listener down and let the regular boot continue. The returned
+	// seal Node is threaded into BuildServices below so that officer
+	// registrations and enclave-held shares from the sealed window
+	// survive into the post-unseal service graph.
+	var sealedWindowNode *lifecycle.Node
 	if sealSub != nil && sealSub.SealBarrier.IsSealed() {
-		err := awaitUnseal(sigCtx, f, bundle, sealSub)
+		sealNode, err := awaitUnseal(sigCtx, f, bundle, sealSub, ceremonyCA)
 		var canceled *awaitUnsealCanceledError
 		if errors.As(err, &canceled) {
 			slog.Info("daemon shutdown during sealed boot")
@@ -965,6 +1020,7 @@ func runStart(f *startFlags) error {
 		if err != nil {
 			return err
 		}
+		sealedWindowNode = sealNode
 	}
 
 	host, err := initializeNode(sigCtx, f, bundle)
@@ -1055,6 +1111,17 @@ func runStart(f *startFlags) error {
 			"Set tenant.strict_isolation: true (or build with FIPS-140) to enforce per-tenant isolation.")
 	}
 
+	// Reuse the ceremony core service from the sealed-window listener when
+	// one exists: officer registrations performed while sealed are
+	// cache-only and distributed shares live in the service's in-memory
+	// enclaves, so constructing a fresh instance here would orphan both.
+	var ceremonyCoreSvc *ceremony.CeremonyService
+	if sealedWindowNode != nil && sealedWindowNode.Ceremony != nil {
+		if coreSvc, ok := service.CeremonyServiceCore(sealedWindowNode.Ceremony); ok {
+			ceremonyCoreSvc = coreSvc
+		}
+	}
+
 	svcNode, err := lifecycle.BuildServices(sigCtx, lifecycle.Infra{
 		Host:                  adapter,
 		WatchHub:              watchHub,
@@ -1065,6 +1132,8 @@ func runStart(f *startFlags) error {
 		BarrierRegistry:       barrierRegistry,
 		CredentialCoreSvc:     credCoreSvc,
 		CeremonyDataDir:       filepath.Join(f.dataDir, "seal"),
+		CeremonyCA:            ceremonyCA,
+		CeremonyCoreSvc:       ceremonyCoreSvc,
 		Logger:                slog.Default(),
 		EmbeddingConfig:       f.embeddingConfig,
 		RAGConfig:             f.ragConfig,
@@ -1214,16 +1283,21 @@ func runStart(f *startFlags) error {
 	// the server.New constructor.
 	serverCfg := buildServerConfig(f)
 
-	// Configure mTLS on the TLS listener. When auth is enabled,
-	// VerifyClientCertIfGiven allows public endpoints (like /health) to
-	// work without a client certificate while still validating certs when
-	// provided. When auth is disabled, NoClientCert disables client cert
-	// verification entirely.
-	if f.authEnabled {
-		bundle.TLSConfig.ClientAuth = tls.VerifyClientCertIfGiven
-		bundle.TLSConfig.ClientCAs = bundle.CACertPool
-	} else {
-		bundle.TLSConfig.ClientAuth = tls.NoClientCert
+	// Configure mTLS on the TLS listener. An explicit operator selection
+	// (--tls-client-auth flag or YAML tls.client_auth) was already applied
+	// after resolveTLS and always wins. Otherwise the mode is derived from
+	// the auth posture: when auth is enabled, VerifyClientCertIfGiven
+	// allows public endpoints (like /health) to work without a client
+	// certificate while still validating certs when provided; when auth
+	// is disabled, NoClientCert disables client cert verification
+	// entirely.
+	if !f.tlsClientAuthSet {
+		if f.authEnabled {
+			bundle.TLSConfig.ClientAuth = tls.VerifyClientCertIfGiven
+			bundle.TLSConfig.ClientCAs = bundle.CACertPool
+		} else {
+			bundle.TLSConfig.ClientAuth = tls.NoClientCert
+		}
 	}
 
 	// Create and start the multi-protocol server.
@@ -1282,6 +1356,9 @@ func runStart(f *startFlags) error {
 	}
 	if ceremonySvc != nil {
 		serverOpts = append(serverOpts, server.WithCeremonyService(ceremonySvc))
+	}
+	if ceremonyCA != nil {
+		serverOpts = append(serverOpts, server.WithCeremonyCA(ceremonyCA))
 	}
 	if svcNode.CertProv != nil {
 		serverOpts = append(serverOpts, server.WithCertProvider(svcNode.CertProv))

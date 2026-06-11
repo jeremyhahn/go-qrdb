@@ -50,7 +50,7 @@ func TestHandlerContextCanceled_SurfacesErrorNotHang(t *testing.T) {
 			name:   "handleCreateRole_context_canceled",
 			method: http.MethodPost,
 			path:   "/roles",
-			body:   `{"name":"x","tenantID":"t1","permissions":[]}`,
+			body:   `{"name":"x","tenant_id":"t1","permissions":[]}`,
 			server: func() *Server {
 				svc := &mockRoleService{
 					createRoleFn: func(_ context.Context, _ *role.CreateRoleRequest) (*role.Role, error) {
@@ -79,7 +79,7 @@ func TestHandlerContextCanceled_SurfacesErrorNotHang(t *testing.T) {
 			name:   "handleCreateUser_context_canceled",
 			method: http.MethodPost,
 			path:   "/users",
-			body:   `{"username":"alice","tenantID":"t1"}`,
+			body:   `{"username":"alice","tenant_id":"t1"}`,
 			server: func() *Server {
 				svc := &mockUserService{
 					createUserFn: func(_ context.Context, _ *user.CreateUserRequest) (*user.User, error) {

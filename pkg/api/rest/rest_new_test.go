@@ -3148,7 +3148,7 @@ func TestHandleRole_NilService_Direct(t *testing.T) {
 func TestHandleAssignRole_NilService_Direct(t *testing.T) {
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0")
 
-	body := `{"userID":"u1","roleID":"r1"}`
+	body := `{"user_id":"1","role_id":"r1"}`
 	req := httptest.NewRequest(http.MethodPost, "/roles/assign", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.handleAssignRole(rec, req)
@@ -3159,7 +3159,7 @@ func TestHandleAssignRole_NilService_Direct(t *testing.T) {
 func TestHandleUnassignRole_NilService_Direct(t *testing.T) {
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0")
 
-	body := `{"userID":"u1","roleID":"r1"}`
+	body := `{"user_id":"1","role_id":"r1"}`
 	req := httptest.NewRequest(http.MethodPost, "/roles/unassign", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.handleUnassignRole(rec, req)

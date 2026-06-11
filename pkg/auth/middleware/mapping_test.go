@@ -17,7 +17,10 @@ package middleware
 import (
 	"testing"
 
-	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/reflect/protoregistry"
+
+	_ "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1" // registers qrdb.v1 services
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 )
 
@@ -29,18 +32,35 @@ import (
 // test fails the build if a new RPC is added without a corresponding entry in
 // grpcPermissions.
 func TestGRPCPermissions_EveryMethodMapped(t *testing.T) {
-	sd := pb.QRDBService_ServiceDesc
-	for _, m := range sd.Methods {
-		full := "/" + sd.ServiceName + "/" + m.MethodName
-		if _, ok := LookupGRPC(full); !ok {
-			t.Errorf("gRPC method %q has NO permission mapping (unauthorized/denied at runtime); add it to grpcPermissions", full)
+	// Enumerate EVERY qrdb.v1 service in the global proto registry (the
+	// qrdbv1 import registers them all), so a newly generated service can
+	// never silently escape the guard — which is exactly how the
+	// TenantBarrierService/UnsealShare + AuthFactorService +
+	// UserAuthFactorService gap shipped when only QRDBService_ServiceDesc
+	// was enumerated here.
+	var services int
+	protoregistry.GlobalFiles.RangeFiles(func(fd protoreflect.FileDescriptor) bool {
+		if fd.Package() != "qrdb.v1" {
+			return true
 		}
-	}
-	for _, s := range sd.Streams {
-		full := "/" + sd.ServiceName + "/" + s.StreamName
-		if _, ok := LookupGRPC(full); !ok {
-			t.Errorf("gRPC stream %q has NO permission mapping; add it to grpcPermissions", full)
+		svcs := fd.Services()
+		for i := 0; i < svcs.Len(); i++ {
+			svc := svcs.Get(i)
+			services++
+			methods := svc.Methods()
+			for j := 0; j < methods.Len(); j++ {
+				full := "/" + string(svc.FullName()) + "/" + string(methods.Get(j).Name())
+				if _, ok := LookupGRPC(full); !ok {
+					t.Errorf("gRPC method %q has NO permission mapping (unauthorized/denied at runtime); add it to grpcPermissions", full)
+				}
+			}
 		}
+		return true
+	})
+	// Guard the guard: all five qrdb.v1 services (QRDB, TenantBarrier,
+	// Audit, AuthFactor, UserAuthFactor) must have been seen.
+	if services < 5 {
+		t.Fatalf("expected at least 5 qrdb.v1 services in the proto registry, saw %d", services)
 	}
 }
 
@@ -369,6 +389,12 @@ func TestLookupQUIC_NotFound(t *testing.T) {
 // no longer holds — registration validity is the meaningful check.
 func TestGRPCPermissions_PermissionsAreRegistered(t *testing.T) {
 	for method, perm := range grpcPermissions {
+		// permission.IdentityGated is a deliberately unregistered sentinel:
+		// claim routes are authorized at the handler layer, and the sentinel
+		// must never be grantable to a role.
+		if perm == permission.IdentityGated {
+			continue
+		}
 		if !permission.IsRegistered(perm) {
 			t.Errorf("gRPC method %q maps to unregistered permission %q", method, perm)
 		}
@@ -382,6 +408,10 @@ func TestGRPCPermissions_PermissionsAreRegistered(t *testing.T) {
 // is applied here.
 func TestRESTPermissions_PermissionsAreRegistered(t *testing.T) {
 	for route, perm := range restPermissions {
+		// Skip the deliberately unregistered identity-gated sentinel.
+		if perm == permission.IdentityGated {
+			continue
+		}
 		if !permission.IsRegistered(perm) {
 			t.Errorf("REST route %q maps to unregistered permission %q", route, perm)
 		}
@@ -394,29 +424,27 @@ func TestRESTPermissions_PermissionsAreRegistered(t *testing.T) {
 // them rather than fail — parallel agents will add the proto methods and
 // remove these entries.
 var pendingGRPCPermissions = map[permission.Permission]struct{}{
-	permission.SealBootstrap:              {}, // shared: barrier/initialize + root-token
-	permission.SealUnseal:                 {},
-	permission.SealSeal:                   {},
-	permission.SealStatus:                 {}, // shared: status + recovery/status + shamir/verify
-	permission.SealInitializeShamir:       {},
-	permission.BarrierUnsealShare:         {}, // shared: unseal-share + unseal-shares
-	permission.SealRekey:                  {},
-	permission.SealGenerateRecovery:       {}, // shared: recovery/generate + DELETE recovery
-	permission.SealRecoverWithKeys:        {},
-	permission.CeremonyInitialize:         {},
-	permission.CeremonyStatus:             {},
-	permission.CeremonyClaimCert:          {}, // shared: claim-cert/begin + claim-cert/complete
-	permission.CeremonyClaimShareComplete: {},
-	permission.CeremonySignCSR:            {},
-	permission.CeremonyEnrollCustodian:    {}, // Phase 4: gRPC proto stubs pending
-	permission.CeremonyRevokeCustodian:    {}, // Phase 4: gRPC proto stubs pending
-	permission.CeremonyClaimShareBegin:    {}, // Phase 4: gRPC proto stubs pending
-	permission.AuditQuery:                 {},
-	permission.AuthFactorEnroll:           {},
-	permission.AuthFactorChallenge:        {},
-	permission.AuthFactorVerify:           {},
-	permission.AuthFactorList:             {},
-	permission.AuthFactorRevoke:           {},
+	permission.SealBootstrap:           {}, // shared: barrier/initialize + root-token
+	permission.SealUnseal:              {},
+	permission.SealSeal:                {},
+	permission.SealStatus:              {}, // shared: status + recovery/status + shamir/verify
+	permission.SealInitializeShamir:    {},
+	permission.BarrierUnsealShare:      {}, // shared: unseal-share + unseal-shares
+	permission.SealRekey:               {},
+	permission.SealGenerateRecovery:    {}, // shared: recovery/generate + DELETE recovery
+	permission.SealRecoverWithKeys:     {},
+	permission.CeremonyInitialize:      {},
+	permission.CeremonyStatus:          {},
+	permission.CeremonyClaimCert:       {}, // shared: claim-cert/begin + claim-cert/complete
+	permission.CeremonySignCSR:         {},
+	permission.CeremonyEnrollCustodian: {}, // Phase 4: gRPC proto stubs pending
+	permission.CeremonyRevokeCustodian: {}, // Phase 4: gRPC proto stubs pending
+	permission.AuditQuery:              {},
+	permission.AuthFactorEnroll:        {},
+	permission.AuthFactorChallenge:     {},
+	permission.AuthFactorVerify:        {},
+	permission.AuthFactorList:          {},
+	permission.AuthFactorRevoke:        {},
 
 	// Transport-specific by design (no QRDBService gRPC method exists for
 	// these subsystems): the embedding/RAG HTTP API and the per-user
@@ -457,13 +485,13 @@ func TestMappingConsistency_RESTPermissionsHaveGRPCCounterparts(t *testing.T) {
 }
 
 func TestGRPCPermissions_AllKeysUseCorrectPrefix(t *testing.T) {
-	// Keys belong to one of the canonical gRPC services: the generated
-	// QRDBService, or the JSON-over-gRPC services registered with string-literal
-	// full method names (per-tenant barrier and audit).
+	// Keys belong to one of the canonical generated qrdb.v1 gRPC services.
 	prefixes := []string{
 		"/qrdb.v1.QRDBService/",
 		"/qrdb.v1.TenantBarrierService/",
 		"/qrdb.v1.AuditService/",
+		"/qrdb.v1.AuthFactorService/",
+		"/qrdb.v1.UserAuthFactorService/",
 	}
 	for method := range grpcPermissions {
 		matched := false
@@ -481,6 +509,10 @@ func TestGRPCPermissions_AllKeysUseCorrectPrefix(t *testing.T) {
 
 func TestGRPCPermissions_AllPermissionsRegistered(t *testing.T) {
 	for method, perm := range grpcPermissions {
+		// Skip the deliberately unregistered identity-gated sentinel.
+		if perm == permission.IdentityGated {
+			continue
+		}
 		if !permission.IsRegistered(perm) {
 			t.Errorf("gRPC %q maps to unregistered permission %q", method, perm)
 		}
@@ -489,6 +521,10 @@ func TestGRPCPermissions_AllPermissionsRegistered(t *testing.T) {
 
 func TestQUICPermissions_AllPermissionsRegistered(t *testing.T) {
 	for method, perm := range quicPermissions {
+		// Skip the deliberately unregistered identity-gated sentinel.
+		if perm == permission.IdentityGated {
+			continue
+		}
 		if !permission.IsRegistered(perm) {
 			t.Errorf("QUIC %q maps to unregistered permission %q", method, perm)
 		}
@@ -545,26 +581,25 @@ func TestMappingConsistency_QUICPermissionsHaveGRPCCounterparts(t *testing.T) {
 		permission.TSListMetrics:  {},
 		// Phase 2 compliance permissions — gRPC proto stubs pending.
 		// These appear in both REST and QUIC but not yet in gRPC.
-		permission.SealBootstrap:              {},
-		permission.SealUnseal:                 {},
-		permission.SealSeal:                   {},
-		permission.SealStatus:                 {},
-		permission.SealInitializeShamir:       {},
-		permission.BarrierUnsealShare:         {},
-		permission.SealRekey:                  {},
-		permission.SealGenerateRecovery:       {},
-		permission.SealRecoverWithKeys:        {},
-		permission.CeremonyInitialize:         {},
-		permission.CeremonyStatus:             {},
-		permission.CeremonyClaimCert:          {},
-		permission.CeremonyClaimShareComplete: {},
-		permission.CeremonySignCSR:            {},
-		permission.AuditQuery:                 {},
-		permission.AuthFactorEnroll:           {},
-		permission.AuthFactorChallenge:        {},
-		permission.AuthFactorVerify:           {},
-		permission.AuthFactorList:             {},
-		permission.AuthFactorRevoke:           {},
+		permission.SealBootstrap:        {},
+		permission.SealUnseal:           {},
+		permission.SealSeal:             {},
+		permission.SealStatus:           {},
+		permission.SealInitializeShamir: {},
+		permission.BarrierUnsealShare:   {},
+		permission.SealRekey:            {},
+		permission.SealGenerateRecovery: {},
+		permission.SealRecoverWithKeys:  {},
+		permission.CeremonyInitialize:   {},
+		permission.CeremonyStatus:       {},
+		permission.CeremonyClaimCert:    {},
+		permission.CeremonySignCSR:      {},
+		permission.AuditQuery:           {},
+		permission.AuthFactorEnroll:     {},
+		permission.AuthFactorChallenge:  {},
+		permission.AuthFactorVerify:     {},
+		permission.AuthFactorList:       {},
+		permission.AuthFactorRevoke:     {},
 		// Per-user auth-factor lifecycle: QUIC/REST/MCP-only (no gRPC method).
 		permission.UserAuthFactorsAdd:     {},
 		permission.UserAuthFactorsGet:     {},
@@ -608,6 +643,7 @@ func TestLookupREST_PathParamRoutes(t *testing.T) {
 		{"POST", "/users/abc123/disable", permission.UsersDisable},
 		{"POST", "/users/abc123/cert-bindings", permission.UsersAddCertBinding},
 		{"GET", "/users/by-cert-thumbprint/AbC-_123", permission.UsersGetByCertThumbprint},
+		{"GET", "/users/by-username/admin", permission.UsersRead},
 		{"GET", "/roles/r-1", permission.RolesRead},
 		{"PUT", "/roles/r-1", permission.RolesUpdate},
 		{"DELETE", "/roles/r-1", permission.RolesDelete},

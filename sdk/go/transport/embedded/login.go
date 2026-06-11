@@ -309,7 +309,13 @@ func (c *loginClient) FinishLogin(ctx context.Context, req transport.FinishLogin
 	}
 
 	domainType := factorTypeToDomain(req.Type)
-	principal, factor, err := c.transport.loginResolver.Resolve(ctx, domainType, req.LookupKey)
+	// Resolve LookupKey first, then any ordered fallback keys. The
+	// fallback must happen here — the login session was consumed above,
+	// so a client-side retry with a different key is impossible. The
+	// canonical pairing is SPKI key first (renewal-stable), legacy
+	// SHA-256(cert) key second (pre-SPKI enrolments).
+	lookupKeys := append([][]byte{req.LookupKey}, req.AltLookupKeys...)
+	principal, factor, err := c.transport.loginResolver.ResolveFirst(ctx, domainType, lookupKeys...)
 	if err != nil {
 		return nil, mapFactorError(err)
 	}

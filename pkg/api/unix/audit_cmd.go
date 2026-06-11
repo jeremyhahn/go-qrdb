@@ -17,24 +17,25 @@
 package unix
 
 import (
-	grpcpkg "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
+	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 )
 
-// AuditQueryRequest is the JSON-encoded audit filter used by Unix callers.
-// It mirrors grpcpkg.AuditQueryRequest for type consistency.
-type AuditQueryRequest = grpcpkg.AuditQueryRequest
+// The audit service wire types are the canonical qrdb.v1 protobuf messages.
+// These Unix-package aliases let callers reference them without importing
+// the qrdbv1 package directly.
 
-// AuditQueryResponse is the JSON-encoded audit page returned to Unix callers.
-// It mirrors grpcpkg.AuditQueryResponse for type consistency.
-type AuditQueryResponse = grpcpkg.AuditQueryResponse
+// AuditQueryRequest is the protobuf audit filter payload for Unix callers.
+type AuditQueryRequest = pb.AuditQueryRequest
+
+// AuditQueryResponse is the protobuf audit page response for Unix callers.
+type AuditQueryResponse = pb.AuditQueryResponse
 
 // WithAuditLogger configures the Unix socket server with a compliance-grade
 // audit logger. When set, the AuditService is registered on the gRPC server
 // alongside the main QRDBService.
 //
 // Authorization: requires "audit:query" permission.
-// TODO: switch to permission.AuditQuery constant once Phase 2 lands.
 func WithAuditLogger(l audit.AuditLogger) ServerOption {
 	return func(s *Server) { s.auditLogger = l }
 }

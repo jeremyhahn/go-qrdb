@@ -41,6 +41,14 @@ import (
 // secondary index used by List. The third is a (type, credential lookup
 // key) index used by login resolution to map an incoming auth event to a
 // user.
+//
+// Factors that carry an SPKICredential (mtls / piv) additionally write a
+// fourth record under the same lookup namespace:
+//
+//	__sys:auth/lookup/{type}/{spkiCredKeyHex}             -> factorID (bytes)
+//
+// keyed by the SHA-256 of the certificate's SubjectPublicKeyInfo, so a
+// certificate renewed with the same keypair still resolves to the factor.
 
 const (
 	userFactorPrimaryPrefix = "__sys:auth/factors/"
@@ -176,6 +184,11 @@ func (s *userAuthFactorService) Add(ctx context.Context, userID uint64, factor *
 	if existingID, err := s.lookupFactorID(ctx, factor.Type, factor.Credential); err == nil && existingID != "" {
 		return &auth.FactorAlreadyExistsError{Type: factor.Type, FactorID: existingID}
 	}
+	if len(factor.SPKICredential) > 0 {
+		if existingID, err := s.lookupFactorID(ctx, factor.Type, factor.SPKICredential); err == nil && existingID != "" {
+			return &auth.FactorAlreadyExistsError{Type: factor.Type, FactorID: existingID}
+		}
+	}
 
 	data, err := json.Marshal(factor)
 	if err != nil {
@@ -193,6 +206,14 @@ func (s *userAuthFactorService) Add(ctx context.Context, userID uint64, factor *
 	// Lookup index by (type, credential).
 	if err := s.kv.Put(ctx, lookupKey, []byte(factor.ID)); err != nil {
 		return err
+	}
+	// Secondary lookup index by (type, SPKI credential). Renewal-stable:
+	// a certificate renewed with the same keypair resolves through this
+	// entry even though its SHA-256(cert) credential changed.
+	if len(factor.SPKICredential) > 0 {
+		if err := s.kv.Put(ctx, lookupKeyFor(factor.Type, factor.SPKICredential), []byte(factor.ID)); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -344,9 +365,16 @@ func (s *userAuthFactorService) Rotate(ctx context.Context, oldID string, newFac
 		newFactor.RegisteredAt = s.nowFunc()
 	}
 
-	// Reject collision against the new credential.
+	// Reject collision against the new credential. A hit on the old
+	// factor's own index entries is allowed — rotating to a renewed cert
+	// with the same keypair legitimately reuses the SPKI lookup key.
 	if existingID, err := s.lookupFactorID(ctx, newFactor.Type, newFactor.Credential); err == nil && existingID != "" && existingID != oldID {
 		return &auth.FactorAlreadyExistsError{Type: newFactor.Type, FactorID: existingID}
+	}
+	if len(newFactor.SPKICredential) > 0 {
+		if existingID, err := s.lookupFactorID(ctx, newFactor.Type, newFactor.SPKICredential); err == nil && existingID != "" && existingID != oldID {
+			return &auth.FactorAlreadyExistsError{Type: newFactor.Type, FactorID: existingID}
+		}
 	}
 
 	now := s.nowFunc()
@@ -365,6 +393,14 @@ func (s *userAuthFactorService) Rotate(ctx context.Context, oldID string, newFac
 	}
 	if err := s.kv.Put(ctx, lookupKeyFor(newFactor.Type, newFactor.Credential), []byte(newFactor.ID)); err != nil {
 		return err
+	}
+	// SPKI lookup index. When the rotation reuses the old keypair this
+	// overwrites the old factor's SPKI entry to point at the new factor —
+	// exactly the renewal-survives-login behaviour the index exists for.
+	if len(newFactor.SPKICredential) > 0 {
+		if err := s.kv.Put(ctx, lookupKeyFor(newFactor.Type, newFactor.SPKICredential), []byte(newFactor.ID)); err != nil {
+			return err
+		}
 	}
 
 	// Revoke the old factor.

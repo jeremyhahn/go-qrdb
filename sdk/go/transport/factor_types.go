@@ -38,7 +38,7 @@ import (
 // request / response carriers and routes by factor type.
 
 // FactorType identifies the kind of authentication factor a user has
-// registered. The three first-class types match auth.AuthFactorType so
+// registered. The four first-class types match auth.AuthFactorType so
 // the wire format and the in-process model are byte-identical.
 type FactorType string
 
@@ -51,6 +51,12 @@ const (
 
 	// FactorTypePIV designates a PIV smart card.
 	FactorTypePIV FactorType = "piv"
+
+	// FactorTypePKCS11 designates a PKCS#11 / HSM hardware key. The credential
+	// lookup key is SHA-256(SubjectPublicKeyInfo DER) of the enrolled public
+	// key (32 bytes). Possession is proven by signing a server nonce with the
+	// private key resident on the HSM.
+	FactorTypePKCS11 FactorType = "pkcs11"
 )
 
 // IsValid reports whether the receiver is one of the supported factor
@@ -59,7 +65,7 @@ const (
 // lockstep.
 func (t FactorType) IsValid() bool {
 	switch t {
-	case FactorTypeMTLS, FactorTypeFIDO2, FactorTypePIV:
+	case FactorTypeMTLS, FactorTypeFIDO2, FactorTypePIV, FactorTypePKCS11:
 		return true
 	default:
 		return false
@@ -73,9 +79,10 @@ func (t FactorType) String() string { return string(t) }
 // It is the wire-format twin of auth.AuthFactor. The Credential blob
 // carries the canonical lookup key for the factor type:
 //
-//	mtls : SHA-256(cert)        (32 bytes)
-//	fido2: WebAuthn credentialID (variable length)
-//	piv  : SHA-256(slot cert)   (32 bytes)
+//	mtls  : SHA-256(cert)                       (32 bytes)
+//	fido2 : WebAuthn credentialID               (variable length)
+//	piv   : SHA-256(slot cert)                  (32 bytes)
+//	pkcs11: SHA-256(SubjectPublicKeyInfo DER)    (32 bytes)
 //
 // Hardware-specific verification metadata (cert PEM, COSE public key,
 // AAGUID, slot id, card serial number) belongs in Metadata.
@@ -142,9 +149,11 @@ type VerifyChallenge struct {
 
 	// Signature is the type-specific signed response.
 	//
-	//   mtls : DER-encoded ECDSA / RSA-PSS signature
-	//   fido2: WebAuthn assertion JSON (base64url)
-	//   piv  : DER-encoded ECDSA signature over Nonce
+	//   mtls  : DER-encoded ECDSA / RSA-PSS signature
+	//   fido2 : WebAuthn assertion JSON (base64url)
+	//   piv   : DER-encoded ECDSA signature over Nonce
+	//   pkcs11: DER-encoded ECDSA / RSA-PKCS1v15 signature over SHA-256(Nonce),
+	//           or raw Ed25519 signature over Nonce
 	Signature []byte `json:"signature"`
 
 	// MethodMetadata carries factor-specific extras (FIDO2 client data,

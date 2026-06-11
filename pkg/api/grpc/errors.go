@@ -311,3 +311,12 @@ func (e *TTLParseError) Error() string {
 func (e *TTLParseError) Unwrap() error {
 	return e.Err
 }
+
+// ClientCertRequiredError is returned when a share-claim handler requires
+// a verified mTLS client certificate but the connection carries none.
+type ClientCertRequiredError struct{}
+
+// Error returns a human-readable description.
+func (e *ClientCertRequiredError) Error() string {
+	return "grpc: client certificate required for share claim"
+}

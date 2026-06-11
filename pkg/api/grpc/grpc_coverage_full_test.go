@@ -22,7 +22,6 @@ package grpc
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net"
 	"testing"
@@ -32,7 +31,6 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/wrapperspb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
@@ -362,7 +360,7 @@ func TestGRPC_GetUserByCertThumbprintFull_Error(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// audit_server.go — QueryAuditUnary
+// audit_server.go — AuditService native pb round-trip
 // ---------------------------------------------------------------------------
 
 func TestAuditService_QueryUnaryFull_Success(t *testing.T) {
@@ -370,24 +368,21 @@ func TestAuditService_QueryUnaryFull_Success(t *testing.T) {
 	conn, cleanup := startServerWithAuditFull(t, logger)
 	defer cleanup()
 
-	filter := audit.Filter{}
-	filterJSON, _ := json.Marshal(filter)
-	req := wrapperspb.Bytes(filterJSON)
-	resp := new(wrapperspb.BytesValue)
-	if err := conn.Invoke(context.Background(), "/qrdb.v1.AuditService/Query", req, resp); err != nil {
-		t.Fatalf("QueryAuditUnary failed: %v", err)
+	resp, err := pb.NewAuditServiceClient(conn).Query(context.Background(), &pb.AuditQueryRequest{})
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected non-nil response")
 	}
 }
 
 func TestAuditService_QueryUnaryFull_Error(t *testing.T) {
-	svcErr := errors.New("audit error")
-	logger := &fullMockAuditLogger{queryErr: svcErr}
+	logger := &fullMockAuditLogger{queryErr: errors.New("audit error")}
 	conn, cleanup := startServerWithAuditFull(t, logger)
 	defer cleanup()
 
-	req := wrapperspb.Bytes(nil)
-	resp := new(wrapperspb.BytesValue)
-	err := conn.Invoke(context.Background(), "/qrdb.v1.AuditService/Query", req, resp)
+	_, err := pb.NewAuditServiceClient(conn).Query(context.Background(), &pb.AuditQueryRequest{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -397,16 +392,14 @@ func TestAuditService_QueryUnaryFull_NilLogger(t *testing.T) {
 	conn, cleanup := startServerWithAuditFull(t, nil)
 	defer cleanup()
 
-	req := wrapperspb.Bytes(nil)
-	resp := new(wrapperspb.BytesValue)
-	err := conn.Invoke(context.Background(), "/qrdb.v1.AuditService/Query", req, resp)
+	_, err := pb.NewAuditServiceClient(conn).Query(context.Background(), &pb.AuditQueryRequest{})
 	if err == nil {
 		t.Fatal("expected error from nil logger, got nil")
 	}
 }
 
 // ---------------------------------------------------------------------------
-// user_auth_factor_server.go — handlers and Unary helpers
+// user_auth_factor_server.go — native pb round-trip
 // ---------------------------------------------------------------------------
 
 func TestUserAuthFactor_Add_Success(t *testing.T) {
@@ -414,15 +407,14 @@ func TestUserAuthFactor_Add_Success(t *testing.T) {
 	conn, cleanup := startServerWithUserAuthFactorFull(t, svc)
 	defer cleanup()
 
-	req := &GRPCUserAuthFactorAddRequest{
-		UserID:     42,
+	resp, err := pb.NewUserAuthFactorServiceClient(conn).Add(context.Background(), &pb.UserAuthFactorAddRequest{
+		UserId:     42,
 		Type:       "totp",
 		Label:      "my-totp",
 		Credential: []byte("secret"),
-	}
-	resp, err := UserAuthFactorAddUnary(context.Background(), conn, req)
+	})
 	if err != nil {
-		t.Fatalf("UserAuthFactorAddUnary failed: %v", err)
+		t.Fatalf("Add failed: %v", err)
 	}
 	if resp == nil {
 		t.Fatal("expected non-nil response")
@@ -435,8 +427,10 @@ func TestUserAuthFactor_Add_Error(t *testing.T) {
 	conn, cleanup := startServerWithUserAuthFactorFull(t, svc)
 	defer cleanup()
 
-	req := &GRPCUserAuthFactorAddRequest{UserID: 1, Type: "totp"}
-	_, err := UserAuthFactorAddUnary(context.Background(), conn, req)
+	_, err := pb.NewUserAuthFactorServiceClient(conn).Add(context.Background(), &pb.UserAuthFactorAddRequest{
+		UserId: 1,
+		Type:   "totp",
+	})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -451,9 +445,11 @@ func TestUserAuthFactor_List_Success(t *testing.T) {
 	conn, cleanup := startServerWithUserAuthFactorFull(t, svc)
 	defer cleanup()
 
-	resp, err := UserAuthFactorListUnary(context.Background(), conn, &GRPCUserAuthFactorListRequest{UserID: 42})
+	resp, err := pb.NewUserAuthFactorServiceClient(conn).List(context.Background(), &pb.UserAuthFactorListRequest{
+		UserId: 42,
+	})
 	if err != nil {
-		t.Fatalf("UserAuthFactorListUnary failed: %v", err)
+		t.Fatalf("List failed: %v", err)
 	}
 	if resp.Total != 1 {
 		t.Fatalf("expected total=1, got %d", resp.Total)
@@ -466,7 +462,9 @@ func TestUserAuthFactor_List_Error(t *testing.T) {
 	conn, cleanup := startServerWithUserAuthFactorFull(t, svc)
 	defer cleanup()
 
-	_, err := UserAuthFactorListUnary(context.Background(), conn, &GRPCUserAuthFactorListRequest{UserID: 42})
+	_, err := pb.NewUserAuthFactorServiceClient(conn).List(context.Background(), &pb.UserAuthFactorListRequest{
+		UserId: 42,
+	})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -481,12 +479,14 @@ func TestUserAuthFactor_Get_Success(t *testing.T) {
 	conn, cleanup := startServerWithUserAuthFactorFull(t, svc)
 	defer cleanup()
 
-	resp, err := UserAuthFactorGetUnary(context.Background(), conn, &GRPCUserAuthFactorGetRequest{FactorID: "factor-1"})
+	resp, err := pb.NewUserAuthFactorServiceClient(conn).Get(context.Background(), &pb.UserAuthFactorGetRequest{
+		FactorId: "factor-1",
+	})
 	if err != nil {
-		t.Fatalf("UserAuthFactorGetUnary failed: %v", err)
+		t.Fatalf("Get failed: %v", err)
 	}
-	if resp.Factor.ID != "factor-1" {
-		t.Fatalf("expected factor-1, got %q", resp.Factor.ID)
+	if resp.Factor.Id != "factor-1" {
+		t.Fatalf("expected factor-1, got %q", resp.Factor.Id)
 	}
 }
 
@@ -496,7 +496,9 @@ func TestUserAuthFactor_Get_Error(t *testing.T) {
 	conn, cleanup := startServerWithUserAuthFactorFull(t, svc)
 	defer cleanup()
 
-	_, err := UserAuthFactorGetUnary(context.Background(), conn, &GRPCUserAuthFactorGetRequest{FactorID: "x"})
+	_, err := pb.NewUserAuthFactorServiceClient(conn).Get(context.Background(), &pb.UserAuthFactorGetRequest{
+		FactorId: "x",
+	})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -511,9 +513,11 @@ func TestUserAuthFactor_Remove_Success(t *testing.T) {
 	conn, cleanup := startServerWithUserAuthFactorFull(t, svc)
 	defer cleanup()
 
-	resp, err := UserAuthFactorRemoveUnary(context.Background(), conn, &GRPCUserAuthFactorRemoveRequest{FactorID: "factor-1"})
+	resp, err := pb.NewUserAuthFactorServiceClient(conn).Remove(context.Background(), &pb.UserAuthFactorRemoveRequest{
+		FactorId: "factor-1",
+	})
 	if err != nil {
-		t.Fatalf("UserAuthFactorRemoveUnary failed: %v", err)
+		t.Fatalf("Remove failed: %v", err)
 	}
 	_ = resp
 }
@@ -524,7 +528,9 @@ func TestUserAuthFactor_Remove_Error(t *testing.T) {
 	conn, cleanup := startServerWithUserAuthFactorFull(t, svc)
 	defer cleanup()
 
-	_, err := UserAuthFactorRemoveUnary(context.Background(), conn, &GRPCUserAuthFactorRemoveRequest{FactorID: "x"})
+	_, err := pb.NewUserAuthFactorServiceClient(conn).Remove(context.Background(), &pb.UserAuthFactorRemoveRequest{
+		FactorId: "x",
+	})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -539,13 +545,12 @@ func TestUserAuthFactor_Rotate_Success(t *testing.T) {
 	conn, cleanup := startServerWithUserAuthFactorFull(t, svc)
 	defer cleanup()
 
-	req := &GRPCUserAuthFactorRotateRequest{
-		OldFactorID: "factor-1",
-		NewFactor:   GRPCUserAuthFactorAddRequest{UserID: 42, Type: "totp"},
-	}
-	resp, err := UserAuthFactorRotateUnary(context.Background(), conn, req)
+	resp, err := pb.NewUserAuthFactorServiceClient(conn).Rotate(context.Background(), &pb.UserAuthFactorRotateRequest{
+		OldFactorId: "factor-1",
+		NewFactor:   &pb.UserAuthFactorNewFactor{UserId: 42, Type: "totp"},
+	})
 	if err != nil {
-		t.Fatalf("UserAuthFactorRotateUnary failed: %v", err)
+		t.Fatalf("Rotate failed: %v", err)
 	}
 	_ = resp
 }
@@ -556,8 +561,10 @@ func TestUserAuthFactor_Rotate_Error(t *testing.T) {
 	conn, cleanup := startServerWithUserAuthFactorFull(t, svc)
 	defer cleanup()
 
-	req := &GRPCUserAuthFactorRotateRequest{OldFactorID: "x", NewFactor: GRPCUserAuthFactorAddRequest{}}
-	_, err := UserAuthFactorRotateUnary(context.Background(), conn, req)
+	_, err := pb.NewUserAuthFactorServiceClient(conn).Rotate(context.Background(), &pb.UserAuthFactorRotateRequest{
+		OldFactorId: "x",
+		NewFactor:   &pb.UserAuthFactorNewFactor{},
+	})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -572,11 +579,12 @@ func TestUserAuthFactor_Relabel_Success(t *testing.T) {
 	conn, cleanup := startServerWithUserAuthFactorFull(t, svc)
 	defer cleanup()
 
-	resp, err := UserAuthFactorRelabelUnary(context.Background(), conn, &GRPCUserAuthFactorRelabelRequest{
-		FactorID: "factor-1", Label: "new-label",
+	resp, err := pb.NewUserAuthFactorServiceClient(conn).Relabel(context.Background(), &pb.UserAuthFactorRelabelRequest{
+		FactorId: "factor-1",
+		Label:    "new-label",
 	})
 	if err != nil {
-		t.Fatalf("UserAuthFactorRelabelUnary failed: %v", err)
+		t.Fatalf("Relabel failed: %v", err)
 	}
 	_ = resp
 }
@@ -587,7 +595,10 @@ func TestUserAuthFactor_Relabel_Error(t *testing.T) {
 	conn, cleanup := startServerWithUserAuthFactorFull(t, svc)
 	defer cleanup()
 
-	_, err := UserAuthFactorRelabelUnary(context.Background(), conn, &GRPCUserAuthFactorRelabelRequest{FactorID: "x", Label: "l"})
+	_, err := pb.NewUserAuthFactorServiceClient(conn).Relabel(context.Background(), &pb.UserAuthFactorRelabelRequest{
+		FactorId: "x",
+		Label:    "l",
+	})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -602,15 +613,15 @@ func TestUserAuthFactor_Login_Success(t *testing.T) {
 	conn, cleanup := startServerWithUserAuthFactorFull(t, svc)
 	defer cleanup()
 
-	resp, err := UserAuthFactorLoginUnary(context.Background(), conn, &GRPCUserAuthFactorLoginRequest{
+	resp, err := pb.NewUserAuthFactorServiceClient(conn).Login(context.Background(), &pb.UserAuthFactorLoginRequest{
 		Type:      "totp",
 		LookupKey: []byte("key"),
 	})
 	if err != nil {
-		t.Fatalf("UserAuthFactorLoginUnary failed: %v", err)
+		t.Fatalf("Login failed: %v", err)
 	}
-	if resp.Factor.ID != "factor-1" {
-		t.Fatalf("expected factor-1, got %q", resp.Factor.ID)
+	if resp.Factor.Id != "factor-1" {
+		t.Fatalf("expected factor-1, got %q", resp.Factor.Id)
 	}
 }
 
@@ -620,7 +631,7 @@ func TestUserAuthFactor_Login_Error(t *testing.T) {
 	conn, cleanup := startServerWithUserAuthFactorFull(t, svc)
 	defer cleanup()
 
-	_, err := UserAuthFactorLoginUnary(context.Background(), conn, &GRPCUserAuthFactorLoginRequest{
+	_, err := pb.NewUserAuthFactorServiceClient(conn).Login(context.Background(), &pb.UserAuthFactorLoginRequest{
 		Type:      "totp",
 		LookupKey: []byte("bad"),
 	})
@@ -708,17 +719,17 @@ func TestMapUserAuthFactorGRPCError_Internal(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// userFactorToWire — conversion helpers
+// userFactorToProto — conversion helpers
 // ---------------------------------------------------------------------------
 
-func TestUserFactorToWireFull_Nil(t *testing.T) {
-	got := userFactorToWire(nil)
-	if got.ID != "" {
-		t.Errorf("expected empty ID for nil factor, got %q", got.ID)
+func TestUserFactorToProtoFull_Nil(t *testing.T) {
+	got := userFactorToProto(nil)
+	if got.Id != "" {
+		t.Errorf("expected empty Id for nil factor, got %q", got.Id)
 	}
 }
 
-func TestUserFactorToWireFull_WithLastUsed(t *testing.T) {
+func TestUserFactorToProtoFull_WithLastUsed(t *testing.T) {
 	now := time.Now()
 	f := &auth.AuthFactor{
 		ID:           "f1",
@@ -727,13 +738,13 @@ func TestUserFactorToWireFull_WithLastUsed(t *testing.T) {
 		RegisteredAt: now,
 		LastUsedAt:   &now,
 	}
-	got := userFactorToWire(f)
+	got := userFactorToProto(f)
 	if got.LastUsedAt == "" {
 		t.Error("expected non-empty LastUsedAt")
 	}
 }
 
-func TestUserFactorToWireFull_WithRevokedAt(t *testing.T) {
+func TestUserFactorToProtoFull_WithRevokedAt(t *testing.T) {
 	now := time.Now()
 	f := &auth.AuthFactor{
 		ID:           "f1",
@@ -742,22 +753,22 @@ func TestUserFactorToWireFull_WithRevokedAt(t *testing.T) {
 		RegisteredAt: now,
 		RevokedAt:    &now,
 	}
-	got := userFactorToWire(f)
+	got := userFactorToProto(f)
 	if got.RevokedAt == "" {
 		t.Error("expected non-empty RevokedAt")
 	}
 }
 
-func TestUserFactorFromAddWireFull(t *testing.T) {
-	req := &GRPCUserAuthFactorAddRequest{
-		UserID:     42,
+func TestUserFactorFromAddProtoFull(t *testing.T) {
+	req := &pb.UserAuthFactorAddRequest{
+		UserId:     42,
 		Type:       "totp",
 		Label:      "my-totp",
 		Credential: []byte("secret"),
 		Metadata:   map[string]string{"k": "v"},
 		CreatedBy:  "admin",
 	}
-	got := userFactorFromAddWire(req)
+	got := userFactorFromAddProto(req)
 	if got.UserID != 42 {
 		t.Fatalf("expected UserID 42, got %d", got.UserID)
 	}

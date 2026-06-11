@@ -1271,11 +1271,13 @@ func TestUsers_SingleNode_CreateAndList(t *testing.T) {
 
 	client := mtlsHTTPClient(t, ca, 10*time.Second)
 
-	// Create a user.
+	// Create a user. The REST wire contract is snake_case; user IDs are
+	// uint64 Snowflakes encoded as JSON strings (proto3 convention) to
+	// avoid precision loss in JS clients.
 	payload := struct {
 		Username string   `json:"username"`
-		TenantID string   `json:"tenantID"`
-		RoleIDs  []string `json:"roleIDs"`
+		TenantID string   `json:"tenant_id"`
+		RoleIDs  []string `json:"role_ids"`
 	}{
 		Username: "testuser1",
 		TenantID: "system",
@@ -1299,7 +1301,7 @@ func TestUsers_SingleNode_CreateAndList(t *testing.T) {
 	}
 
 	var createdUser struct {
-		ID       uint64 `json:"id"`
+		ID       uint64 `json:"id,string"`
 		Username string `json:"username"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&createdUser); err != nil {
@@ -1331,7 +1333,7 @@ func TestUsers_SingleNode_CreateAndList(t *testing.T) {
 
 		var listResult struct {
 			Users []struct {
-				ID       uint64 `json:"id"`
+				ID       uint64 `json:"id,string"`
 				Username string `json:"username"`
 			} `json:"users"`
 			Total int `json:"total"`
@@ -1362,7 +1364,7 @@ func TestRoles_SingleNode_CreateAndAssign(t *testing.T) {
 	// Create a role.
 	rolePayload := struct {
 		Name        string   `json:"name"`
-		TenantID    string   `json:"tenantID"`
+		TenantID    string   `json:"tenant_id"`
 		Permissions []string `json:"permissions"`
 	}{
 		Name:        "testrole",
@@ -1397,8 +1399,8 @@ func TestRoles_SingleNode_CreateAndAssign(t *testing.T) {
 	// Create a user to assign the role to.
 	userPayload := struct {
 		Username string   `json:"username"`
-		TenantID string   `json:"tenantID"`
-		RoleIDs  []string `json:"roleIDs"`
+		TenantID string   `json:"tenant_id"`
+		RoleIDs  []string `json:"role_ids"`
 	}{
 		Username: "roleuser",
 		TenantID: "system",
@@ -1422,7 +1424,7 @@ func TestRoles_SingleNode_CreateAndAssign(t *testing.T) {
 	}
 
 	var createdUser struct {
-		ID uint64 `json:"id"`
+		ID uint64 `json:"id,string"`
 	}
 	if err := json.NewDecoder(userResp.Body).Decode(&createdUser); err != nil {
 		t.Fatalf("create user decode: %v", err)
@@ -1430,8 +1432,8 @@ func TestRoles_SingleNode_CreateAndAssign(t *testing.T) {
 
 	// Assign the role to the user.
 	assignPayload := struct {
-		UserID uint64 `json:"userID"`
-		RoleID string `json:"roleID"`
+		UserID uint64 `json:"user_id,string"`
+		RoleID string `json:"role_id"`
 	}{
 		UserID: createdUser.ID,
 		RoleID: createdRole.ID,
@@ -1455,7 +1457,7 @@ func TestRoles_SingleNode_CreateAndAssign(t *testing.T) {
 
 	// Verify the user now has the role.
 	var assignedUser struct {
-		RoleIDs []string `json:"roleIDs"`
+		RoleIDs []string `json:"role_ids"`
 	}
 	if err := json.NewDecoder(assignResp.Body).Decode(&assignedUser); err != nil {
 		t.Fatalf("assign role decode: %v", err)

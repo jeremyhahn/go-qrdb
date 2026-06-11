@@ -27,6 +27,8 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -84,11 +86,7 @@ func (m *covMockBarrierSvc) BarrierInitializeShamir(ctx context.Context, secret 
 	if m.initializeShamirFn != nil {
 		return m.initializeShamirFn(ctx, secret, threshold, totalShares)
 	}
-	shares := make([]string, totalShares)
-	for i := range shares {
-		shares[i] = "share-" + string(rune('A'+i))
-	}
-	return &service.ShamirInitInfo{Shares: shares, Threshold: threshold, TotalShares: totalShares}, nil
+	return &service.ShamirInitInfo{Threshold: threshold, TotalShares: totalShares, ShareCount: totalShares}, nil
 }
 func (m *covMockBarrierSvc) BarrierUnsealWithShare(ctx context.Context, share string) (*service.UnsealShareProgress, error) {
 	if m.unsealWithShareFn != nil {
@@ -106,21 +104,13 @@ func (m *covMockBarrierSvc) BarrierRekey(ctx context.Context, threshold, total i
 	if m.rekeyFn != nil {
 		return m.rekeyFn(ctx, threshold, total)
 	}
-	shares := make([]string, total)
-	for i := range shares {
-		shares[i] = "new-" + string(rune('A'+i))
-	}
-	return &service.ShamirInitInfo{Shares: shares, Threshold: threshold, TotalShares: total}, nil
+	return &service.ShamirInitInfo{Threshold: threshold, TotalShares: total, ShareCount: total}, nil
 }
 func (m *covMockBarrierSvc) BarrierGenerateRecoveryKeys(ctx context.Context, threshold, total int) (*service.RecoveryKeysInfo, error) {
 	if m.generateRecoveryKeysFn != nil {
 		return m.generateRecoveryKeysFn(ctx, threshold, total)
 	}
-	keys := make([]string, total)
-	for i := range keys {
-		keys[i] = "rk-" + string(rune('A'+i))
-	}
-	return &service.RecoveryKeysInfo{Keys: keys, Threshold: threshold, Total: total}, nil
+	return &service.RecoveryKeysInfo{Threshold: threshold, Total: total, ShareCount: total}, nil
 }
 func (m *covMockBarrierSvc) BarrierRecoverWithKeys(ctx context.Context, keys []string) error {
 	if m.recoverWithKeysFn != nil {
@@ -146,6 +136,33 @@ func (m *covMockBarrierSvc) BarrierGenerateRootToken(ctx context.Context, shares
 	}
 	return &service.RootTokenInfo{Token: "tok-abc", CreatedAt: time.Now()}, nil
 }
+func (m *covMockBarrierSvc) BarrierOfficerRegister(_ context.Context, _ *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
+	return &service.BarrierOfficerRegisterResult{}, nil
+}
+func (m *covMockBarrierSvc) BarrierOfficerList(_ context.Context) ([]*service.BarrierOfficerStatus, error) {
+	return nil, nil
+}
+func (m *covMockBarrierSvc) BarrierOfficerClaimStatus(_ context.Context) ([]*service.BarrierOfficerStatus, error) {
+	return nil, nil
+}
+func (m *covMockBarrierSvc) BarrierShareClaimBegin(_ context.Context, _, _ string) (*service.BarrierShareClaimChallenge, error) {
+	return &service.BarrierShareClaimChallenge{}, nil
+}
+func (m *covMockBarrierSvc) BarrierShareClaimComplete(_ context.Context, _, _ string, _ []byte, _ string) (*service.BarrierShareClaimResult, error) {
+	return &service.BarrierShareClaimResult{}, nil
+}
+func (m *covMockBarrierSvc) BarrierShamirSealVote(_ context.Context, _ string) (*service.UnsealShareProgress, error) {
+	return &service.UnsealShareProgress{}, nil
+}
+func (m *covMockBarrierSvc) BarrierRecoveryOfficerRegister(_ context.Context, _ *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
+	return &service.BarrierOfficerRegisterResult{}, nil
+}
+func (m *covMockBarrierSvc) BarrierRecoveryShareClaimBegin(_ context.Context, _, _ string) (*service.BarrierShareClaimChallenge, error) {
+	return &service.BarrierShareClaimChallenge{}, nil
+}
+func (m *covMockBarrierSvc) BarrierRecoveryShareClaimComplete(_ context.Context, _, _ string, _ []byte, _ string) (*service.BarrierShareClaimResult, error) {
+	return &service.BarrierShareClaimResult{}, nil
+}
 
 // ---------------------------------------------------------------------------
 // Mock: TenantServicer
@@ -167,6 +184,14 @@ type covMockTenantSvc struct {
 var _ tenant.TenantServicer = (*covMockTenantSvc)(nil)
 
 func newCovMockTenantSvc() *covMockTenantSvc { return &covMockTenantSvc{} }
+
+// allowAllTenantScope is a tenantScopeAuthorizer stub that permits every
+// target tenant, isolating handler-behavior tests from authorization. It
+// lives here (minimal build-tag set) so every test compilation context that
+// includes the tenant-barrier handlers can reference it.
+func allowAllTenantScope(_ context.Context, _ string, _ permission.Permission) error {
+	return nil
+}
 
 func (m *covMockTenantSvc) CreateTenant(ctx context.Context, id, name string, iso tenant.IsolationType) (*tenant.TenantInfo, error) {
 	if m.createFn != nil {
@@ -216,14 +241,19 @@ func (m *covMockTenantSvc) DecrementQuotaUsage(_ context.Context, _ string, _ qu
 func (m *covMockTenantSvc) GetQuotaUsage(_ context.Context, _ string, _ quota.Resource) (int64, error) {
 	return 0, nil
 }
-func (m *covMockTenantSvc) TenantBarrierInit(ctx context.Context, id, passphrase string, threshold, total int) error {
+func (m *covMockTenantSvc) TenantBarrierInit(ctx context.Context, id, passphrase string, threshold, total int) (*tenant.TenantBarrierInitResult, error) {
 	if m.barrierInitFn != nil {
-		return m.barrierInitFn(ctx, id, passphrase, threshold, total)
+		if err := m.barrierInitFn(ctx, id, passphrase, threshold, total); err != nil {
+			return nil, err
+		}
 	}
-	return nil
+	return &tenant.TenantBarrierInitResult{TenantID: id, Strategy: string(seal.StrategyPassphrase)}, nil
 }
-func (m *covMockTenantSvc) TenantBarrierInitWithStrategy(ctx context.Context, id, passphrase string, threshold, total int, _ seal.StrategyID) error {
+func (m *covMockTenantSvc) TenantBarrierInitWithStrategy(ctx context.Context, id, passphrase string, threshold, total int, _ seal.StrategyID) (*tenant.TenantBarrierInitResult, error) {
 	return m.TenantBarrierInit(ctx, id, passphrase, threshold, total)
+}
+func (m *covMockTenantSvc) TenantBarrierUnsealShare(_ context.Context, _, _ string) (*tenant.TenantBarrierUnsealProgress, error) {
+	return nil, nil
 }
 func (m *covMockTenantSvc) TenantBarrierUnseal(ctx context.Context, id string, key []byte) error {
 	if m.barrierUnsealFn != nil {
@@ -242,6 +272,24 @@ func (m *covMockTenantSvc) TenantBarrierStatus(ctx context.Context, id string) (
 		return m.barrierStatusFn(ctx, id)
 	}
 	return &tenant.TenantBarrierStatus{TenantID: id, Sealed: false, Initialized: true}, nil
+}
+func (m *covMockTenantSvc) TenantBarrierOfficerRegister(_ context.Context, _ string, _ *ceremony.RegisterOfficerRequest) (*ceremony.RegisterOfficerResult, error) {
+	return &ceremony.RegisterOfficerResult{}, nil
+}
+func (m *covMockTenantSvc) TenantBarrierOfficerList(_ context.Context, _ string) ([]*ceremony.OfficerStatus, error) {
+	return nil, nil
+}
+func (m *covMockTenantSvc) TenantBarrierShareClaimBegin(_ context.Context, _, _, _ string) (*ceremony.ChallengeResponse, error) {
+	return &ceremony.ChallengeResponse{}, nil
+}
+func (m *covMockTenantSvc) TenantBarrierShareClaimComplete(_ context.Context, _, _, _ string, _ []byte, _ string) (*ceremony.ShareClaimResult, error) {
+	return &ceremony.ShareClaimResult{}, nil
+}
+func (m *covMockTenantSvc) TenantBarrierOfficerClaimStatus(_ context.Context, _ string) ([]*ceremony.OfficerStatus, error) {
+	return nil, nil
+}
+func (m *covMockTenantSvc) TenantBarrierShamirSealVote(_ context.Context, _, _ string) (*tenant.TenantBarrierUnsealProgress, error) {
+	return &tenant.TenantBarrierUnsealProgress{}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -407,8 +455,8 @@ func (m *covMockAuditLogger) Close() error { return nil }
 func TestCovBarrierTools_Registration(t *testing.T) {
 	svc := newCovMockBarrierSvc()
 	tools := barrierTools(svc, nil)
-	if len(tools) != 13 {
-		t.Fatalf("expected 13 tools, got %d", len(tools))
+	if len(tools) != 22 {
+		t.Fatalf("expected 22 tools, got %d", len(tools))
 	}
 	names := []string{
 		"qrdb_barrier_initialize",
@@ -424,6 +472,15 @@ func TestCovBarrierTools_Registration(t *testing.T) {
 		"qrdb_barrier_recovery_delete",
 		"qrdb_barrier_recovery_status",
 		"qrdb_barrier_root_token",
+		"qrdb_barrier_officer_register",
+		"qrdb_barrier_officer_list",
+		"qrdb_barrier_share_claim_begin",
+		"qrdb_barrier_share_claim_complete",
+		"qrdb_barrier_officer_claim_status",
+		"qrdb_barrier_shamir_seal_vote",
+		"qrdb_barrier_recovery_officer_register",
+		"qrdb_barrier_recovery_share_claim_begin",
+		"qrdb_barrier_recovery_share_claim_complete",
 	}
 	for i, n := range names {
 		if tools[i].Tool.Name != n {
@@ -595,7 +652,13 @@ func TestCovHandleBarrierShamirInitialize_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	var info service.ShamirInitInfo
+	// The handler marshals the canonical snake_case wire shape via
+	// shamirInitInfoToWire, so decode with explicitly tagged fields.
+	var info struct {
+		Threshold   int `json:"threshold"`
+		TotalShares int `json:"total_shares"`
+		ShareCount  int `json:"share_count"`
+	}
 	if jerr := json.Unmarshal([]byte(resultText(t, result)), &info); jerr != nil {
 		t.Fatalf("unmarshal: %v", jerr)
 	}
@@ -741,7 +804,12 @@ func TestCovHandleBarrierRekey_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	var info service.ShamirInitInfo
+	// Rekey shares the snake_case wire shape produced by shamirInitInfoToWire.
+	var info struct {
+		Threshold   int `json:"threshold"`
+		TotalShares int `json:"total_shares"`
+		ShareCount  int `json:"share_count"`
+	}
 	if jerr := json.Unmarshal([]byte(resultText(t, result)), &info); jerr != nil {
 		t.Fatalf("unmarshal: %v", jerr)
 	}
@@ -1417,14 +1485,14 @@ func TestCovHandleTenantUpdateQuotas_ServiceError(t *testing.T) {
 
 func TestCovTenantBarrierTools_Registration(t *testing.T) {
 	svc := newCovMockTenantSvc()
-	tools := tenantBarrierTools(svc)
-	if len(tools) != 4 {
-		t.Fatalf("expected 4 tools, got %d", len(tools))
+	tools := tenantBarrierTools(svc, allowAllTenantScope)
+	if len(tools) != 11 {
+		t.Fatalf("expected 11 tools, got %d", len(tools))
 	}
 }
 
 func TestCovHandleTenantBarrierInit_Success(t *testing.T) {
-	handler := handleTenantBarrierInit(newCovMockTenantSvc())
+	handler := handleTenantBarrierInit(newCovMockTenantSvc(), allowAllTenantScope)
 	req := buildCallToolRequest(t, "qrdb_tenant_barrier_init", map[string]any{
 		"tenant_id": "acme", "passphrase": "secret", "threshold": float64(2), "shares": float64(3),
 	})
@@ -1438,7 +1506,7 @@ func TestCovHandleTenantBarrierInit_Success(t *testing.T) {
 }
 
 func TestCovHandleTenantBarrierInit_MissingID(t *testing.T) {
-	handler := handleTenantBarrierInit(newCovMockTenantSvc())
+	handler := handleTenantBarrierInit(newCovMockTenantSvc(), allowAllTenantScope)
 	req := buildCallToolRequest(t, "qrdb_tenant_barrier_init", map[string]any{})
 	result, err := handler(context.Background(), req)
 	if err != nil || !result.IsError {
@@ -1451,7 +1519,7 @@ func TestCovHandleTenantBarrierInit_ServiceError(t *testing.T) {
 	svc.barrierInitFn = func(_ context.Context, _, _ string, _, _ int) error {
 		return tenant.ErrTenantNotFound
 	}
-	handler := handleTenantBarrierInit(svc)
+	handler := handleTenantBarrierInit(svc, allowAllTenantScope)
 	req := buildCallToolRequest(t, "qrdb_tenant_barrier_init", map[string]any{"tenant_id": "missing"})
 	_, err := handler(context.Background(), req)
 	if err == nil {
@@ -1460,7 +1528,7 @@ func TestCovHandleTenantBarrierInit_ServiceError(t *testing.T) {
 }
 
 func TestCovHandleTenantBarrierUnseal_SuccessWithKey(t *testing.T) {
-	handler := handleTenantBarrierUnseal(newCovMockTenantSvc())
+	handler := handleTenantBarrierUnseal(newCovMockTenantSvc(), allowAllTenantScope)
 	encoded := base64.StdEncoding.EncodeToString([]byte("keydata"))
 	req := buildCallToolRequest(t, "qrdb_tenant_barrier_unseal", map[string]any{
 		"tenant_id": "acme", "key": encoded,
@@ -1475,7 +1543,7 @@ func TestCovHandleTenantBarrierUnseal_SuccessWithKey(t *testing.T) {
 }
 
 func TestCovHandleTenantBarrierUnseal_NoKey(t *testing.T) {
-	handler := handleTenantBarrierUnseal(newCovMockTenantSvc())
+	handler := handleTenantBarrierUnseal(newCovMockTenantSvc(), allowAllTenantScope)
 	req := buildCallToolRequest(t, "qrdb_tenant_barrier_unseal", map[string]any{"tenant_id": "acme"})
 	result, err := handler(context.Background(), req)
 	if err != nil {
@@ -1487,7 +1555,7 @@ func TestCovHandleTenantBarrierUnseal_NoKey(t *testing.T) {
 }
 
 func TestCovHandleTenantBarrierUnseal_MissingID(t *testing.T) {
-	handler := handleTenantBarrierUnseal(newCovMockTenantSvc())
+	handler := handleTenantBarrierUnseal(newCovMockTenantSvc(), allowAllTenantScope)
 	req := buildCallToolRequest(t, "qrdb_tenant_barrier_unseal", map[string]any{})
 	result, err := handler(context.Background(), req)
 	if err != nil || !result.IsError {
@@ -1496,7 +1564,7 @@ func TestCovHandleTenantBarrierUnseal_MissingID(t *testing.T) {
 }
 
 func TestCovHandleTenantBarrierUnseal_BadBase64(t *testing.T) {
-	handler := handleTenantBarrierUnseal(newCovMockTenantSvc())
+	handler := handleTenantBarrierUnseal(newCovMockTenantSvc(), allowAllTenantScope)
 	req := buildCallToolRequest(t, "qrdb_tenant_barrier_unseal", map[string]any{
 		"tenant_id": "acme", "key": "!!!bad!!!",
 	})
@@ -1511,7 +1579,7 @@ func TestCovHandleTenantBarrierUnseal_ServiceError(t *testing.T) {
 	svc.barrierUnsealFn = func(_ context.Context, _ string, _ []byte) error {
 		return tenant.ErrTenantNotFound
 	}
-	handler := handleTenantBarrierUnseal(svc)
+	handler := handleTenantBarrierUnseal(svc, allowAllTenantScope)
 	req := buildCallToolRequest(t, "qrdb_tenant_barrier_unseal", map[string]any{"tenant_id": "missing"})
 	_, err := handler(context.Background(), req)
 	if err == nil {
@@ -1520,7 +1588,7 @@ func TestCovHandleTenantBarrierUnseal_ServiceError(t *testing.T) {
 }
 
 func TestCovHandleTenantBarrierSeal_Success(t *testing.T) {
-	handler := handleTenantBarrierSeal(newCovMockTenantSvc())
+	handler := handleTenantBarrierSeal(newCovMockTenantSvc(), allowAllTenantScope)
 	req := buildCallToolRequest(t, "qrdb_tenant_barrier_seal", map[string]any{"tenant_id": "acme"})
 	result, err := handler(context.Background(), req)
 	if err != nil {
@@ -1532,7 +1600,7 @@ func TestCovHandleTenantBarrierSeal_Success(t *testing.T) {
 }
 
 func TestCovHandleTenantBarrierSeal_MissingID(t *testing.T) {
-	handler := handleTenantBarrierSeal(newCovMockTenantSvc())
+	handler := handleTenantBarrierSeal(newCovMockTenantSvc(), allowAllTenantScope)
 	req := buildCallToolRequest(t, "qrdb_tenant_barrier_seal", map[string]any{})
 	result, err := handler(context.Background(), req)
 	if err != nil || !result.IsError {
@@ -1543,7 +1611,7 @@ func TestCovHandleTenantBarrierSeal_MissingID(t *testing.T) {
 func TestCovHandleTenantBarrierSeal_ServiceError(t *testing.T) {
 	svc := newCovMockTenantSvc()
 	svc.barrierSealFn = func(_ context.Context, _ string) error { return errors.New("seal err") }
-	handler := handleTenantBarrierSeal(svc)
+	handler := handleTenantBarrierSeal(svc, allowAllTenantScope)
 	req := buildCallToolRequest(t, "qrdb_tenant_barrier_seal", map[string]any{"tenant_id": "acme"})
 	_, err := handler(context.Background(), req)
 	if err == nil {
@@ -1552,7 +1620,7 @@ func TestCovHandleTenantBarrierSeal_ServiceError(t *testing.T) {
 }
 
 func TestCovHandleTenantBarrierStatus_Success(t *testing.T) {
-	handler := handleTenantBarrierStatus(newCovMockTenantSvc())
+	handler := handleTenantBarrierStatus(newCovMockTenantSvc(), allowAllTenantScope)
 	req := buildCallToolRequest(t, "qrdb_tenant_barrier_status", map[string]any{"tenant_id": "acme"})
 	result, err := handler(context.Background(), req)
 	if err != nil {
@@ -1568,7 +1636,7 @@ func TestCovHandleTenantBarrierStatus_Success(t *testing.T) {
 }
 
 func TestCovHandleTenantBarrierStatus_MissingID(t *testing.T) {
-	handler := handleTenantBarrierStatus(newCovMockTenantSvc())
+	handler := handleTenantBarrierStatus(newCovMockTenantSvc(), allowAllTenantScope)
 	req := buildCallToolRequest(t, "qrdb_tenant_barrier_status", map[string]any{})
 	result, err := handler(context.Background(), req)
 	if err != nil || !result.IsError {
@@ -1581,7 +1649,7 @@ func TestCovHandleTenantBarrierStatus_ServiceError(t *testing.T) {
 	svc.barrierStatusFn = func(_ context.Context, _ string) (*tenant.TenantBarrierStatus, error) {
 		return nil, tenant.ErrTenantNotFound
 	}
-	handler := handleTenantBarrierStatus(svc)
+	handler := handleTenantBarrierStatus(svc, allowAllTenantScope)
 	req := buildCallToolRequest(t, "qrdb_tenant_barrier_status", map[string]any{"tenant_id": "missing"})
 	_, err := handler(context.Background(), req)
 	if err == nil {

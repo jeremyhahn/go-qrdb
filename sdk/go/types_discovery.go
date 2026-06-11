@@ -94,4 +94,9 @@ var (
 
 	// BootstrapShard forms or joins a Raft shard using peer discovery.
 	BootstrapShard = cluster.BootstrapShard
+
+	// ParsePeers parses a slice of "id=address" strings into a member map
+	// suitable for Raft peer configuration. Returns an error when any entry
+	// is malformed. (Aliases pkg/cluster.ParsePeers.)
+	ParsePeers = cluster.ParsePeers
 )

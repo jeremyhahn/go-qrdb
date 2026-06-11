@@ -852,6 +852,33 @@ func (s *stubBarrierSvc) BarrierHasRecoveryKeys(_ context.Context) (bool, error)
 func (s *stubBarrierSvc) BarrierGenerateRootToken(_ context.Context, _ []string) (*service.RootTokenInfo, error) {
 	return nil, nil
 }
+func (s *stubBarrierSvc) BarrierOfficerRegister(_ context.Context, _ *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
+	return nil, nil
+}
+func (s *stubBarrierSvc) BarrierOfficerList(_ context.Context) ([]*service.BarrierOfficerStatus, error) {
+	return nil, nil
+}
+func (s *stubBarrierSvc) BarrierOfficerClaimStatus(_ context.Context) ([]*service.BarrierOfficerStatus, error) {
+	return nil, nil
+}
+func (s *stubBarrierSvc) BarrierShareClaimBegin(_ context.Context, _, _ string) (*service.BarrierShareClaimChallenge, error) {
+	return nil, nil
+}
+func (s *stubBarrierSvc) BarrierShareClaimComplete(_ context.Context, _, _ string, _ []byte, _ string) (*service.BarrierShareClaimResult, error) {
+	return nil, nil
+}
+func (s *stubBarrierSvc) BarrierShamirSealVote(_ context.Context, _ string) (*service.UnsealShareProgress, error) {
+	return nil, nil
+}
+func (s *stubBarrierSvc) BarrierRecoveryOfficerRegister(_ context.Context, _ *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
+	return nil, nil
+}
+func (s *stubBarrierSvc) BarrierRecoveryShareClaimBegin(_ context.Context, _, _ string) (*service.BarrierShareClaimChallenge, error) {
+	return nil, nil
+}
+func (s *stubBarrierSvc) BarrierRecoveryShareClaimComplete(_ context.Context, _, _ string, _ []byte, _ string) (*service.BarrierShareClaimResult, error) {
+	return nil, nil
+}
 
 // stubCeremonySvc satisfies service.CeremonyServicer for option propagation tests.
 type stubCeremonySvc struct{}

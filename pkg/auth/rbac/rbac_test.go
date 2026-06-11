@@ -1265,6 +1265,89 @@ func TestAuthorize_TenantOnly_AdminAtSystem_CannotInitAnyBarrier(t *testing.T) {
 	}
 }
 
+// operatorBuiltInPerms returns the live Operator built-in role permission set,
+// so the data-plane authorize-path tests exercise the real grant rather than a
+// hand-copied list.
+func operatorBuiltInPerms(t *testing.T) []permission.Permission {
+	t.Helper()
+	for _, r := range role.BuiltInRoles("acme") {
+		if r.Name == role.RoleNameOperator {
+			return r.Permissions
+		}
+	}
+	t.Fatal("operator built-in role not found")
+	return nil
+}
+
+// TestAuthorize_TenantOnly_OperatorDataPlane_AllowDayToDay_DenyAdmin proves the
+// end-to-end RBAC decision for the broker data-plane grant: an Operator in its
+// own tenant passes a day-to-day verb (objstore:get) but is denied the
+// administrative verb (objstore:admin) it does not hold. The perms are
+// ScopeTenantOnly, so the operator's tenant must match the request target.
+func TestAuthorize_TenantOnly_OperatorDataPlane_AllowDayToDay_DenyAdmin(t *testing.T) {
+	svc := newMockRoleService(map[string][]permission.Permission{
+		"operator-role": operatorBuiltInPerms(t),
+	})
+	authz := New(svc)
+
+	operator := &auth.Identity{
+		Subject:  "acme-operator",
+		TenantID: "acme",
+		Roles:    []string{"operator-role"},
+	}
+
+	// Day-to-day verb is allowed on the operator's own tenant.
+	if err := authz.Authorize(ctxFor("acme"), operator, "objstore", "get"); err != nil {
+		t.Fatalf("operator should be allowed objstore:get on own tenant, got: %v", err)
+	}
+
+	// Administrative verb is denied — operator does not hold objstore:admin.
+	err := authz.Authorize(ctxFor("acme"), operator, "objstore", "admin")
+	if err == nil {
+		t.Fatal("operator must NOT be allowed objstore:admin")
+	}
+	var denied *PermissionDeniedError
+	if !errors.As(err, &denied) {
+		t.Fatalf("expected *PermissionDeniedError for objstore:admin, got %T: %v", err, err)
+	}
+
+	// dynamic_secrets day-to-day allowed; role management denied.
+	if err := authz.Authorize(ctxFor("acme"), operator, "dynamic_secrets", "generate"); err != nil {
+		t.Fatalf("operator should be allowed dynamic_secrets:generate, got: %v", err)
+	}
+	if err := authz.Authorize(ctxFor("acme"), operator, "dynamic_secrets", "role_create"); err == nil {
+		t.Fatal("operator must NOT be allowed dynamic_secrets:role_create")
+	}
+}
+
+// TestAuthorize_TenantOnly_OperatorDataPlane_CrossTenantDenied verifies the
+// ScopeTenantOnly confinement still applies to the operator's data-plane grant:
+// an operator cannot exercise even a day-to-day verb against another tenant.
+func TestAuthorize_TenantOnly_OperatorDataPlane_CrossTenantDenied(t *testing.T) {
+	svc := newMockRoleService(map[string][]permission.Permission{
+		"operator-role": operatorBuiltInPerms(t),
+	})
+	authz := New(svc)
+
+	operator := &auth.Identity{
+		Subject:  "acme-operator",
+		TenantID: "acme",
+		Roles:    []string{"operator-role"},
+	}
+
+	err := authz.Authorize(ctxFor("bob-corp"), operator, "objstore", "get")
+	if err == nil {
+		t.Fatal("operator@acme must NOT exercise objstore:get on bob-corp")
+	}
+	var denied *PermissionDeniedError
+	if !errors.As(err, &denied) {
+		t.Fatalf("expected *PermissionDeniedError, got %T: %v", err, err)
+	}
+	if !strings.Contains(denied.Reason, "tenant-only") {
+		t.Errorf("expected tenant-only denial reason, got %q", denied.Reason)
+	}
+}
+
 // TestAuthorize_TenantOnly_UnsealAndSeal verifies the seal/unseal
 // tenant_barrier permissions carry the same ScopeTenantOnly semantics.
 func TestAuthorize_TenantOnly_UnsealAndSeal(t *testing.T) {

@@ -20,7 +20,6 @@ import (
 
 	"google.golang.org/protobuf/types/known/emptypb"
 
-	grpcpkg "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -141,95 +140,256 @@ func (t *Transport) UpdateTenantQuotas(ctx context.Context, req *transport.Updat
 }
 
 // ---------------------------------------------------------------------------
-// Per-tenant barrier RPCs (JSON-over-gRPC, no proto regeneration required).
+// Per-tenant barrier RPCs (native protobuf: qrdb.v1.TenantBarrierService).
 // ---------------------------------------------------------------------------
 
-// TenantBarrierInit initializes a per-tenant barrier via the JSON-over-gRPC
-// TenantBarrierService.Init RPC.
-func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.TenantBarrierInitRequest) error {
+// TenantBarrierInit initializes a per-tenant barrier via the
+// TenantBarrierService.Init RPC. For the Shamir strategy the response carries
+// the generated M-of-N shares; for none/passphrase the share fields are empty.
+func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.TenantBarrierInitRequest) (*transport.TenantBarrierInitResponse, error) {
 	if t.closed.Load() {
-		return &transport.ClosedError{}
+		return nil, &transport.ClosedError{}
 	}
 	if req == nil {
-		return &transport.RequestError{Method: "TenantBarrierInit", Err: errNilRequest{}}
+		return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: &transport.NilRequestError{}}
 	}
 
-	wireReq := &grpcpkg.GRPCTenantBarrierInitRequest{
-		TenantID:   req.TenantID,
+	resp, err := pb.NewTenantBarrierServiceClient(t.conn).Init(ctx, &pb.TenantBarrierInitRequest{
+		TenantId:   req.TenantID,
 		Passphrase: req.Passphrase,
-		Threshold:  req.Threshold,
-		Shares:     req.Shares,
+		Threshold:  int32(req.Threshold), //nolint:gosec // share threshold is a small count
+		Shares:     int32(req.Shares),    //nolint:gosec // share count is small
 		Strategy:   req.Strategy,
+	})
+	if err != nil {
+		return nil, mapGRPCError("TenantBarrierInit", err)
 	}
-	if err := grpcpkg.TenantBarrierInitUnary(ctx, t.conn, wireReq); err != nil {
-		return mapGRPCError("TenantBarrierInit", err)
-	}
-	return nil
+	return &transport.TenantBarrierInitResponse{
+		TenantID:    resp.GetTenantId(),
+		Strategy:    resp.GetStrategy(),
+		Threshold:   int(resp.GetThreshold()),
+		TotalShares: int(resp.GetTotalShares()),
+		ShareCount:  int(resp.GetShareCount()),
+	}, nil
 }
 
-// TenantBarrierUnseal unseals a per-tenant barrier via the JSON-over-gRPC
-// TenantBarrierService.Unseal RPC.
+// TenantBarrierUnsealShare submits a single Shamir share toward a per-tenant
+// barrier's quorum threshold via the TenantBarrierService.UnsealShare RPC.
+func (t *Transport) TenantBarrierUnsealShare(ctx context.Context, req *transport.TenantBarrierUnsealShareRequest) (*transport.TenantBarrierUnsealProgress, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierUnsealShare", Err: &transport.NilRequestError{}}
+	}
+
+	resp, err := pb.NewTenantBarrierServiceClient(t.conn).UnsealShare(ctx, &pb.TenantBarrierUnsealShareRequest{
+		TenantId: req.TenantID,
+		Share:    req.Share,
+	})
+	if err != nil {
+		return nil, mapGRPCError("TenantBarrierUnsealShare", err)
+	}
+	return &transport.TenantBarrierUnsealProgress{
+		TenantID:  resp.GetTenantId(),
+		Required:  int(resp.GetRequired()),
+		Submitted: int(resp.GetSubmitted()),
+		Complete:  resp.GetComplete(),
+		Sealed:    resp.GetSealed(),
+	}, nil
+}
+
+// TenantBarrierUnseal unseals a per-tenant barrier with single-key material via
+// the TenantBarrierService.Unseal RPC. Key takes precedence over Share.
 func (t *Transport) TenantBarrierUnseal(ctx context.Context, req *transport.TenantBarrierUnsealRequest) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
 	if req == nil {
-		return &transport.RequestError{Method: "TenantBarrierUnseal", Err: errNilRequest{}}
+		return &transport.RequestError{Method: "TenantBarrierUnseal", Err: &transport.NilRequestError{}}
 	}
 
-	wireReq := &grpcpkg.GRPCTenantBarrierUnsealRequest{
-		TenantID: req.TenantID,
-		Share:    req.Share,
-		Key:      req.Key,
+	key := req.Key
+	if len(key) == 0 {
+		key = req.Share
 	}
-	if err := grpcpkg.TenantBarrierUnsealUnary(ctx, t.conn, wireReq); err != nil {
+	if _, err := pb.NewTenantBarrierServiceClient(t.conn).Unseal(ctx, &pb.TenantBarrierUnsealRequest{
+		TenantId: req.TenantID,
+		Key:      key,
+	}); err != nil {
 		return mapGRPCError("TenantBarrierUnseal", err)
 	}
 	return nil
 }
 
-// TenantBarrierSeal seals a per-tenant barrier via the JSON-over-gRPC
-// TenantBarrierService.Seal RPC.
+// TenantBarrierSeal seals a per-tenant barrier via the TenantBarrierService.Seal RPC.
 func (t *Transport) TenantBarrierSeal(ctx context.Context, req *transport.TenantBarrierSealRequest) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
 	if req == nil {
-		return &transport.RequestError{Method: "TenantBarrierSeal", Err: errNilRequest{}}
+		return &transport.RequestError{Method: "TenantBarrierSeal", Err: &transport.NilRequestError{}}
 	}
 
-	wireReq := &grpcpkg.GRPCTenantBarrierSealRequest{TenantID: req.TenantID}
-	if err := grpcpkg.TenantBarrierSealUnary(ctx, t.conn, wireReq); err != nil {
+	if _, err := pb.NewTenantBarrierServiceClient(t.conn).Seal(ctx, &pb.TenantBarrierSealRequest{
+		TenantId: req.TenantID,
+	}); err != nil {
 		return mapGRPCError("TenantBarrierSeal", err)
 	}
 	return nil
 }
 
 // TenantBarrierStatus returns the current sealed/initialized state and active
-// strategy metadata for a per-tenant barrier via the JSON-over-gRPC
-// TenantBarrierService.Status RPC.
+// strategy metadata for a per-tenant barrier via the TenantBarrierService.Status RPC.
 func (t *Transport) TenantBarrierStatus(ctx context.Context, req *transport.TenantBarrierStatusRequest) (*transport.TenantBarrierStatusResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
 	if req == nil {
-		return nil, &transport.RequestError{Method: "TenantBarrierStatus", Err: errNilRequest{}}
+		return nil, &transport.RequestError{Method: "TenantBarrierStatus", Err: &transport.NilRequestError{}}
 	}
 
-	wireReq := &grpcpkg.GRPCTenantBarrierStatusRequest{TenantID: req.TenantID}
-	resp, err := grpcpkg.TenantBarrierStatusUnary(ctx, t.conn, wireReq)
+	resp, err := pb.NewTenantBarrierServiceClient(t.conn).Status(ctx, &pb.TenantBarrierStatusRequest{
+		TenantId: req.TenantID,
+	})
 	if err != nil {
 		return nil, mapGRPCError("TenantBarrierStatus", err)
 	}
-	if resp == nil {
-		return nil, &transport.RequestError{Method: "TenantBarrierStatus", Err: errEmptyResponse{}}
-	}
 	return &transport.TenantBarrierStatusResponse{
-		TenantID:       resp.TenantID,
-		Sealed:         resp.Sealed,
-		Initialized:    resp.Initialized,
-		Strategy:       resp.Strategy,
-		HardwareBacked: resp.HardwareBacked,
+		TenantID:        resp.GetTenantId(),
+		Sealed:          resp.GetSealed(),
+		Initialized:     resp.GetInitialized(),
+		Strategy:        resp.GetStrategy(),
+		HardwareBacked:  resp.GetHardwareBacked(),
+		ShamirThreshold: int(resp.GetShamirThreshold()),
+		ShamirTotal:     int(resp.GetShamirTotal()),
+	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Tenant barrier officer / share-claim operations
+// ---------------------------------------------------------------------------
+
+// TenantBarrierOfficerRegister registers a Security Officer for a specific
+// tenant's barrier via the TenantBarrierService.OfficerRegister RPC.
+func (t *Transport) TenantBarrierOfficerRegister(ctx context.Context, req *transport.TenantOfficerRegisterRequest) (*transport.OfficerRegisterResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierOfficerRegister", Err: &transport.NilRequestError{}}
+	}
+	resp, err := pb.NewTenantBarrierServiceClient(t.conn).OfficerRegister(ctx, &pb.TenantBarrierOfficerRegisterRequest{
+		TenantId:          req.TenantID,
+		Username:          req.Username,
+		CsrPem:            req.CSRPEM,
+		AuthenticatorType: req.AuthenticatorType,
+	})
+	if err != nil {
+		return nil, mapGRPCError("TenantBarrierOfficerRegister", err)
+	}
+	return &transport.OfficerRegisterResponse{
+		CertPEM:    resp.GetCertPem(),
+		ShareIndex: int(resp.GetShareIndex()),
+	}, nil
+}
+
+// TenantBarrierOfficerList lists all registered Security Officers for a
+// specific tenant's barrier via the TenantBarrierService.OfficerList RPC.
+func (t *Transport) TenantBarrierOfficerList(ctx context.Context, tenantID string) ([]*transport.OfficerStatus, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	resp, err := pb.NewTenantBarrierServiceClient(t.conn).OfficerList(ctx, &pb.TenantBarrierOfficerListRequest{
+		TenantId: tenantID,
+	})
+	if err != nil {
+		return nil, mapGRPCError("TenantBarrierOfficerList", err)
+	}
+	return protoToOfficerStatusSlice(resp.GetOfficers()), nil
+}
+
+// TenantBarrierOfficerClaimStatus returns per-officer claim status for a
+// specific tenant's barrier via the TenantBarrierService.OfficerClaimStatus RPC.
+func (t *Transport) TenantBarrierOfficerClaimStatus(ctx context.Context, tenantID string) ([]*transport.OfficerStatus, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	resp, err := pb.NewTenantBarrierServiceClient(t.conn).OfficerClaimStatus(ctx, &pb.TenantBarrierOfficerClaimStatusRequest{
+		TenantId: tenantID,
+	})
+	if err != nil {
+		return nil, mapGRPCError("TenantBarrierOfficerClaimStatus", err)
+	}
+	return protoToOfficerStatusSlice(resp.GetOfficers()), nil
+}
+
+// TenantBarrierShareClaimBegin issues a challenge nonce for a tenant barrier
+// Security Officer via TenantBarrierService.ShareClaimBegin.
+func (t *Transport) TenantBarrierShareClaimBegin(ctx context.Context, req *transport.TenantShareClaimBeginRequest) (*transport.ShareClaimBeginResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierShareClaimBegin", Err: &transport.NilRequestError{}}
+	}
+	resp, err := pb.NewTenantBarrierServiceClient(t.conn).ShareClaimBegin(ctx, &pb.TenantBarrierShareClaimBeginRequest{
+		TenantId: req.TenantID,
+		Username: req.Username,
+	})
+	if err != nil {
+		return nil, mapGRPCError("TenantBarrierShareClaimBegin", err)
+	}
+	return &transport.ShareClaimBeginResponse{
+		NonceHex:  resp.GetNonceHex(),
+		ExpiresAt: time.Unix(resp.GetExpires(), 0),
+	}, nil
+}
+
+// TenantBarrierShareClaimComplete verifies the tenant barrier officer's nonce
+// signature and returns the share bytes exactly once via
+// TenantBarrierService.ShareClaimComplete.
+func (t *Transport) TenantBarrierShareClaimComplete(ctx context.Context, req *transport.TenantShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierShareClaimComplete", Err: &transport.NilRequestError{}}
+	}
+	resp, err := pb.NewTenantBarrierServiceClient(t.conn).ShareClaimComplete(ctx, &pb.TenantBarrierShareClaimCompleteRequest{
+		TenantId:  req.TenantID,
+		Username:  req.Username,
+		NonceHex:  req.NonceHex,
+		Signature: req.Signature,
+	})
+	if err != nil {
+		return nil, mapGRPCError("TenantBarrierShareClaimComplete", err)
+	}
+	return &transport.ShareClaimCompleteResponse{
+		ShareBytes: resp.GetShareBytes(),
+	}, nil
+}
+
+// TenantBarrierShamirSealVote submits a Shamir share as a seal vote for a
+// specific tenant's barrier via TenantBarrierService.ShamirSealVote.
+func (t *Transport) TenantBarrierShamirSealVote(ctx context.Context, req *transport.TenantShamirSealVoteRequest) (*transport.ShamirSealVoteResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierShamirSealVote", Err: &transport.NilRequestError{}}
+	}
+	resp, err := pb.NewTenantBarrierServiceClient(t.conn).ShamirSealVote(ctx, &pb.TenantBarrierShamirSealVoteRequest{
+		TenantId:   req.TenantID,
+		ShareValue: req.Share,
+	})
+	if err != nil {
+		return nil, mapGRPCError("TenantBarrierShamirSealVote", err)
+	}
+	return &transport.ShamirSealVoteResponse{
+		Required:  int(resp.GetRequired()),
+		Submitted: int(resp.GetSubmitted()),
+		Complete:  resp.GetComplete(),
 	}, nil
 }
 
@@ -279,20 +439,3 @@ func protoToTenantInfo(resp *pb.TenantResponse) transport.TenantInfo {
 
 	return info
 }
-
-// ---------------------------------------------------------------------------
-// Local typed errors used by per-tenant barrier transport calls.
-// ---------------------------------------------------------------------------
-
-// errNilRequest is returned when a tenant barrier RPC receives a nil request.
-type errNilRequest struct{}
-
-// Error returns a fixed, lowercase identifier consistent with Go error style.
-func (errNilRequest) Error() string { return "tenant barrier: nil request" }
-
-// errEmptyResponse is returned when the server replies with a successful
-// status but the decoded payload is nil.
-type errEmptyResponse struct{}
-
-// Error returns a fixed, lowercase identifier.
-func (errEmptyResponse) Error() string { return "tenant barrier: empty response" }

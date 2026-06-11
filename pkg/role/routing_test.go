@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -225,6 +226,96 @@ func TestRoutingRoleService_SealedTenantFailsClosed(t *testing.T) {
 	}
 	if len(shared.m) != 0 {
 		t.Fatal("sealed-tenant write leaked into the shared store")
+	}
+}
+
+// TestRoutingRoleService_DelegatesFullLifecycle exercises the remaining
+// routed RoleServicer methods end-to-end through the per-tenant router. It is
+// the path that resolves a tenant-admin's effective permissions, so it also
+// asserts that broker data-plane wildcard grants survive a create -> resolve
+// round-trip through the tenant store.
+func TestRoutingRoleService_DelegatesFullLifecycle(t *testing.T) {
+	store := newFakeKVStore()
+	resolver := &fakeResolver{
+		shared:  newFakeKVStore(),
+		tenants: map[string]kvstore.KVStore{"acme": store},
+	}
+	svc, err := NewRoutingService(resolver)
+	if err != nil {
+		t.Fatalf("NewRoutingService: %v", err)
+	}
+
+	ctx := context.Background()
+	tctx := tenant.WithTenantID(ctx, "acme")
+
+	created, err := svc.CreateRole(ctx, &CreateRoleRequest{
+		Name:     "tenant-admin",
+		TenantID: "acme",
+		Permissions: []permission.Permission{
+			permission.ObjStoreAll,
+			permission.SchedulerAll,
+			permission.ParametersRead,
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateRole: %v", err)
+	}
+
+	// GetRoleByName routes on the explicit tenant argument.
+	byName, err := svc.GetRoleByName(ctx, "acme", "tenant-admin")
+	if err != nil {
+		t.Fatalf("GetRoleByName: %v", err)
+	}
+	if byName.ID != created.ID {
+		t.Fatalf("GetRoleByName ID = %q, want %q", byName.ID, created.ID)
+	}
+
+	// UpdateRole routes on the context tenant.
+	updated, err := svc.UpdateRole(tctx, &UpdateRoleRequest{
+		ID: created.ID,
+		Permissions: []permission.Permission{
+			permission.ObjStoreAll,
+			permission.MessagingAll,
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpdateRole: %v", err)
+	}
+	if len(updated.Permissions) != 2 {
+		t.Fatalf("UpdateRole perms = %d, want 2", len(updated.Permissions))
+	}
+
+	// ListRoles routes on the request's TenantID.
+	list, err := svc.ListRoles(ctx, &ListRolesRequest{TenantID: "acme"})
+	if err != nil {
+		t.Fatalf("ListRoles: %v", err)
+	}
+	if list.Total != 1 {
+		t.Fatalf("ListRoles Total = %d, want 1", list.Total)
+	}
+
+	// ResolvePermissions routes on the context tenant and returns the
+	// (sorted, deduped) wildcard grants.
+	perms, err := svc.ResolvePermissions(tctx, []string{created.ID})
+	if err != nil {
+		t.Fatalf("ResolvePermissions: %v", err)
+	}
+	got := make(map[permission.Permission]struct{}, len(perms))
+	for _, p := range perms {
+		got[p] = struct{}{}
+	}
+	for _, want := range []permission.Permission{permission.ObjStoreAll, permission.MessagingAll} {
+		if _, ok := got[want]; !ok {
+			t.Errorf("ResolvePermissions missing %q", want)
+		}
+	}
+
+	// DeleteRole routes on the context tenant.
+	if err := svc.DeleteRole(tctx, created.ID); err != nil {
+		t.Fatalf("DeleteRole: %v", err)
+	}
+	if _, err := svc.GetRole(tctx, created.ID); err == nil {
+		t.Fatal("GetRole after delete: expected error")
 	}
 }
 

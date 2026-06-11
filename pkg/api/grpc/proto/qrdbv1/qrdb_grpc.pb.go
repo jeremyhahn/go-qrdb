@@ -34,179 +34,188 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	QRDBService_Put_FullMethodName                           = "/qrdb.v1.QRDBService/Put"
-	QRDBService_Get_FullMethodName                           = "/qrdb.v1.QRDBService/Get"
-	QRDBService_Delete_FullMethodName                        = "/qrdb.v1.QRDBService/Delete"
-	QRDBService_List_FullMethodName                          = "/qrdb.v1.QRDBService/List"
-	QRDBService_Scan_FullMethodName                          = "/qrdb.v1.QRDBService/Scan"
-	QRDBService_PutWithLease_FullMethodName                  = "/qrdb.v1.QRDBService/PutWithLease"
-	QRDBService_GetRevision_FullMethodName                   = "/qrdb.v1.QRDBService/GetRevision"
-	QRDBService_GetAtRevision_FullMethodName                 = "/qrdb.v1.QRDBService/GetAtRevision"
-	QRDBService_Range_FullMethodName                         = "/qrdb.v1.QRDBService/Range"
-	QRDBService_Compact_FullMethodName                       = "/qrdb.v1.QRDBService/Compact"
-	QRDBService_CurrentRevision_FullMethodName               = "/qrdb.v1.QRDBService/CurrentRevision"
-	QRDBService_Transaction_FullMethodName                   = "/qrdb.v1.QRDBService/Transaction"
-	QRDBService_Batch_FullMethodName                         = "/qrdb.v1.QRDBService/Batch"
-	QRDBService_Watch_FullMethodName                         = "/qrdb.v1.QRDBService/Watch"
-	QRDBService_LeaseGrant_FullMethodName                    = "/qrdb.v1.QRDBService/LeaseGrant"
-	QRDBService_LeaseRevoke_FullMethodName                   = "/qrdb.v1.QRDBService/LeaseRevoke"
-	QRDBService_LeaseKeepAlive_FullMethodName                = "/qrdb.v1.QRDBService/LeaseKeepAlive"
-	QRDBService_LeaseTimeToLive_FullMethodName               = "/qrdb.v1.QRDBService/LeaseTimeToLive"
-	QRDBService_LeaseList_FullMethodName                     = "/qrdb.v1.QRDBService/LeaseList"
-	QRDBService_LockAcquire_FullMethodName                   = "/qrdb.v1.QRDBService/LockAcquire"
-	QRDBService_LockTryLock_FullMethodName                   = "/qrdb.v1.QRDBService/LockTryLock"
-	QRDBService_LockRelease_FullMethodName                   = "/qrdb.v1.QRDBService/LockRelease"
-	QRDBService_LockExtend_FullMethodName                    = "/qrdb.v1.QRDBService/LockExtend"
-	QRDBService_LockStatus_FullMethodName                    = "/qrdb.v1.QRDBService/LockStatus"
-	QRDBService_LockList_FullMethodName                      = "/qrdb.v1.QRDBService/LockList"
-	QRDBService_IndexCreate_FullMethodName                   = "/qrdb.v1.QRDBService/IndexCreate"
-	QRDBService_IndexDrop_FullMethodName                     = "/qrdb.v1.QRDBService/IndexDrop"
-	QRDBService_IndexQuery_FullMethodName                    = "/qrdb.v1.QRDBService/IndexQuery"
-	QRDBService_IndexScan_FullMethodName                     = "/qrdb.v1.QRDBService/IndexScan"
-	QRDBService_IndexList_FullMethodName                     = "/qrdb.v1.QRDBService/IndexList"
-	QRDBService_TSWrite_FullMethodName                       = "/qrdb.v1.QRDBService/TSWrite"
-	QRDBService_TSWriteBatch_FullMethodName                  = "/qrdb.v1.QRDBService/TSWriteBatch"
-	QRDBService_TSQuery_FullMethodName                       = "/qrdb.v1.QRDBService/TSQuery"
-	QRDBService_TSAggregate_FullMethodName                   = "/qrdb.v1.QRDBService/TSAggregate"
-	QRDBService_TSWritePoint_FullMethodName                  = "/qrdb.v1.QRDBService/TSWritePoint"
-	QRDBService_TSRichQuery_FullMethodName                   = "/qrdb.v1.QRDBService/TSRichQuery"
-	QRDBService_TSDeleteSeries_FullMethodName                = "/qrdb.v1.QRDBService/TSDeleteSeries"
-	QRDBService_TSGetRetention_FullMethodName                = "/qrdb.v1.QRDBService/TSGetRetention"
-	QRDBService_TSSetRetention_FullMethodName                = "/qrdb.v1.QRDBService/TSSetRetention"
-	QRDBService_TSListMetrics_FullMethodName                 = "/qrdb.v1.QRDBService/TSListMetrics"
-	QRDBService_VectorCreateNamespace_FullMethodName         = "/qrdb.v1.QRDBService/VectorCreateNamespace"
-	QRDBService_VectorDeleteNamespace_FullMethodName         = "/qrdb.v1.QRDBService/VectorDeleteNamespace"
-	QRDBService_VectorListNamespaces_FullMethodName          = "/qrdb.v1.QRDBService/VectorListNamespaces"
-	QRDBService_VectorGetNamespaceInfo_FullMethodName        = "/qrdb.v1.QRDBService/VectorGetNamespaceInfo"
-	QRDBService_VectorUpsert_FullMethodName                  = "/qrdb.v1.QRDBService/VectorUpsert"
-	QRDBService_VectorGet_FullMethodName                     = "/qrdb.v1.QRDBService/VectorGet"
-	QRDBService_VectorDelete_FullMethodName                  = "/qrdb.v1.QRDBService/VectorDelete"
-	QRDBService_VectorBatchUpsert_FullMethodName             = "/qrdb.v1.QRDBService/VectorBatchUpsert"
-	QRDBService_VectorBatchDelete_FullMethodName             = "/qrdb.v1.QRDBService/VectorBatchDelete"
-	QRDBService_VectorList_FullMethodName                    = "/qrdb.v1.QRDBService/VectorList"
-	QRDBService_VectorUpdateMetadata_FullMethodName          = "/qrdb.v1.QRDBService/VectorUpdateMetadata"
-	QRDBService_VectorSearchSimilar_FullMethodName           = "/qrdb.v1.QRDBService/VectorSearchSimilar"
-	QRDBService_VectorSearchByMetadata_FullMethodName        = "/qrdb.v1.QRDBService/VectorSearchByMetadata"
-	QRDBService_VectorHybridSearch_FullMethodName            = "/qrdb.v1.QRDBService/VectorHybridSearch"
-	QRDBService_VectorSearchByID_FullMethodName              = "/qrdb.v1.QRDBService/VectorSearchByID"
-	QRDBService_VectorRebuildIndex_FullMethodName            = "/qrdb.v1.QRDBService/VectorRebuildIndex"
-	QRDBService_VectorGetRebuildProgress_FullMethodName      = "/qrdb.v1.QRDBService/VectorGetRebuildProgress"
-	QRDBService_VectorGetIndexStats_FullMethodName           = "/qrdb.v1.QRDBService/VectorGetIndexStats"
-	QRDBService_VectorCompactNamespace_FullMethodName        = "/qrdb.v1.QRDBService/VectorCompactNamespace"
-	QRDBService_VectorGetCompactionProgress_FullMethodName   = "/qrdb.v1.QRDBService/VectorGetCompactionProgress"
-	QRDBService_Health_FullMethodName                        = "/qrdb.v1.QRDBService/Health"
-	QRDBService_Status_FullMethodName                        = "/qrdb.v1.QRDBService/Status"
-	QRDBService_Peers_FullMethodName                         = "/qrdb.v1.QRDBService/Peers"
-	QRDBService_AddMember_FullMethodName                     = "/qrdb.v1.QRDBService/AddMember"
-	QRDBService_RemoveMember_FullMethodName                  = "/qrdb.v1.QRDBService/RemoveMember"
-	QRDBService_RequestSnapshot_FullMethodName               = "/qrdb.v1.QRDBService/RequestSnapshot"
-	QRDBService_Drain_FullMethodName                         = "/qrdb.v1.QRDBService/Drain"
-	QRDBService_Capabilities_FullMethodName                  = "/qrdb.v1.QRDBService/Capabilities"
-	QRDBService_StartShard_FullMethodName                    = "/qrdb.v1.QRDBService/StartShard"
-	QRDBService_StopShard_FullMethodName                     = "/qrdb.v1.QRDBService/StopShard"
-	QRDBService_GetShardState_FullMethodName                 = "/qrdb.v1.QRDBService/GetShardState"
-	QRDBService_GetTopology_FullMethodName                   = "/qrdb.v1.QRDBService/GetTopology"
-	QRDBService_CreateUser_FullMethodName                    = "/qrdb.v1.QRDBService/CreateUser"
-	QRDBService_GetUser_FullMethodName                       = "/qrdb.v1.QRDBService/GetUser"
-	QRDBService_GetUserByUsername_FullMethodName             = "/qrdb.v1.QRDBService/GetUserByUsername"
-	QRDBService_GetUserByCertThumbprint_FullMethodName       = "/qrdb.v1.QRDBService/GetUserByCertThumbprint"
-	QRDBService_AddCertBinding_FullMethodName                = "/qrdb.v1.QRDBService/AddCertBinding"
-	QRDBService_UpdateUser_FullMethodName                    = "/qrdb.v1.QRDBService/UpdateUser"
-	QRDBService_DeleteUser_FullMethodName                    = "/qrdb.v1.QRDBService/DeleteUser"
-	QRDBService_ListUsers_FullMethodName                     = "/qrdb.v1.QRDBService/ListUsers"
-	QRDBService_EnableUser_FullMethodName                    = "/qrdb.v1.QRDBService/EnableUser"
-	QRDBService_DisableUser_FullMethodName                   = "/qrdb.v1.QRDBService/DisableUser"
-	QRDBService_CreateRole_FullMethodName                    = "/qrdb.v1.QRDBService/CreateRole"
-	QRDBService_GetRole_FullMethodName                       = "/qrdb.v1.QRDBService/GetRole"
-	QRDBService_GetRoleByName_FullMethodName                 = "/qrdb.v1.QRDBService/GetRoleByName"
-	QRDBService_UpdateRole_FullMethodName                    = "/qrdb.v1.QRDBService/UpdateRole"
-	QRDBService_DeleteRole_FullMethodName                    = "/qrdb.v1.QRDBService/DeleteRole"
-	QRDBService_ListRoles_FullMethodName                     = "/qrdb.v1.QRDBService/ListRoles"
-	QRDBService_AssignRole_FullMethodName                    = "/qrdb.v1.QRDBService/AssignRole"
-	QRDBService_UnassignRole_FullMethodName                  = "/qrdb.v1.QRDBService/UnassignRole"
-	QRDBService_ListPermissions_FullMethodName               = "/qrdb.v1.QRDBService/ListPermissions"
-	QRDBService_ResolveRolePermissions_FullMethodName        = "/qrdb.v1.QRDBService/ResolveRolePermissions"
-	QRDBService_GenerateCert_FullMethodName                  = "/qrdb.v1.QRDBService/GenerateCert"
-	QRDBService_ExportCert_FullMethodName                    = "/qrdb.v1.QRDBService/ExportCert"
-	QRDBService_RevokeCert_FullMethodName                    = "/qrdb.v1.QRDBService/RevokeCert"
-	QRDBService_ListCerts_FullMethodName                     = "/qrdb.v1.QRDBService/ListCerts"
-	QRDBService_CreateCollection_FullMethodName              = "/qrdb.v1.QRDBService/CreateCollection"
-	QRDBService_GetCollectionInfo_FullMethodName             = "/qrdb.v1.QRDBService/GetCollectionInfo"
-	QRDBService_ListCollections_FullMethodName               = "/qrdb.v1.QRDBService/ListCollections"
-	QRDBService_DropCollection_FullMethodName                = "/qrdb.v1.QRDBService/DropCollection"
-	QRDBService_InsertDocument_FullMethodName                = "/qrdb.v1.QRDBService/InsertDocument"
-	QRDBService_GetDocument_FullMethodName                   = "/qrdb.v1.QRDBService/GetDocument"
-	QRDBService_UpdateDocument_FullMethodName                = "/qrdb.v1.QRDBService/UpdateDocument"
-	QRDBService_DeleteDocument_FullMethodName                = "/qrdb.v1.QRDBService/DeleteDocument"
-	QRDBService_ListDocuments_FullMethodName                 = "/qrdb.v1.QRDBService/ListDocuments"
-	QRDBService_DatabaseCreate_FullMethodName                = "/qrdb.v1.QRDBService/DatabaseCreate"
-	QRDBService_DatabaseGet_FullMethodName                   = "/qrdb.v1.QRDBService/DatabaseGet"
-	QRDBService_DatabaseList_FullMethodName                  = "/qrdb.v1.QRDBService/DatabaseList"
-	QRDBService_DatabaseDrop_FullMethodName                  = "/qrdb.v1.QRDBService/DatabaseDrop"
-	QRDBService_DatabaseUpdateProtocol_FullMethodName        = "/qrdb.v1.QRDBService/DatabaseUpdateProtocol"
-	QRDBService_DatabaseUpdateEtcd_FullMethodName            = "/qrdb.v1.QRDBService/DatabaseUpdateEtcd"
-	QRDBService_DatabaseUpdateRaft_FullMethodName            = "/qrdb.v1.QRDBService/DatabaseUpdateRaft"
-	QRDBService_DatabaseUpdateBarrier_FullMethodName         = "/qrdb.v1.QRDBService/DatabaseUpdateBarrier"
-	QRDBService_DatabaseUpdateConnection_FullMethodName      = "/qrdb.v1.QRDBService/DatabaseUpdateConnection"
-	QRDBService_BarrierInitialize_FullMethodName             = "/qrdb.v1.QRDBService/BarrierInitialize"
-	QRDBService_BarrierUnseal_FullMethodName                 = "/qrdb.v1.QRDBService/BarrierUnseal"
-	QRDBService_BarrierSeal_FullMethodName                   = "/qrdb.v1.QRDBService/BarrierSeal"
-	QRDBService_BarrierStatus_FullMethodName                 = "/qrdb.v1.QRDBService/BarrierStatus"
-	QRDBService_BarrierShamirInitialize_FullMethodName       = "/qrdb.v1.QRDBService/BarrierShamirInitialize"
-	QRDBService_BarrierShamirUnsealShare_FullMethodName      = "/qrdb.v1.QRDBService/BarrierShamirUnsealShare"
-	QRDBService_BarrierShamirUnsealShares_FullMethodName     = "/qrdb.v1.QRDBService/BarrierShamirUnsealShares"
-	QRDBService_BarrierRekey_FullMethodName                  = "/qrdb.v1.QRDBService/BarrierRekey"
-	QRDBService_BarrierRecoveryGenerate_FullMethodName       = "/qrdb.v1.QRDBService/BarrierRecoveryGenerate"
-	QRDBService_BarrierRecoveryRecover_FullMethodName        = "/qrdb.v1.QRDBService/BarrierRecoveryRecover"
-	QRDBService_BarrierRecoveryDelete_FullMethodName         = "/qrdb.v1.QRDBService/BarrierRecoveryDelete"
-	QRDBService_BarrierRecoveryStatus_FullMethodName         = "/qrdb.v1.QRDBService/BarrierRecoveryStatus"
-	QRDBService_BarrierRootToken_FullMethodName              = "/qrdb.v1.QRDBService/BarrierRootToken"
-	QRDBService_CeremonyInitialize_FullMethodName            = "/qrdb.v1.QRDBService/CeremonyInitialize"
-	QRDBService_CeremonyStatus_FullMethodName                = "/qrdb.v1.QRDBService/CeremonyStatus"
-	QRDBService_CeremonyClaimCertBegin_FullMethodName        = "/qrdb.v1.QRDBService/CeremonyClaimCertBegin"
-	QRDBService_CeremonyClaimCertComplete_FullMethodName     = "/qrdb.v1.QRDBService/CeremonyClaimCertComplete"
-	QRDBService_CeremonyClaimShare_FullMethodName            = "/qrdb.v1.QRDBService/CeremonyClaimShare"
-	QRDBService_CeremonySignCSR_FullMethodName               = "/qrdb.v1.QRDBService/CeremonySignCSR"
-	QRDBService_CeremonyEnrollExternalOfficer_FullMethodName = "/qrdb.v1.QRDBService/CeremonyEnrollExternalOfficer"
-	QRDBService_CeremonyClaimShareBegin_FullMethodName       = "/qrdb.v1.QRDBService/CeremonyClaimShareBegin"
-	QRDBService_CeremonyClaimShareComplete_FullMethodName    = "/qrdb.v1.QRDBService/CeremonyClaimShareComplete"
-	QRDBService_CeremonySubmitUnsealShare_FullMethodName     = "/qrdb.v1.QRDBService/CeremonySubmitUnsealShare"
-	QRDBService_TenantCreate_FullMethodName                  = "/qrdb.v1.QRDBService/TenantCreate"
-	QRDBService_TenantGet_FullMethodName                     = "/qrdb.v1.QRDBService/TenantGet"
-	QRDBService_TenantList_FullMethodName                    = "/qrdb.v1.QRDBService/TenantList"
-	QRDBService_TenantUpdate_FullMethodName                  = "/qrdb.v1.QRDBService/TenantUpdate"
-	QRDBService_TenantDelete_FullMethodName                  = "/qrdb.v1.QRDBService/TenantDelete"
-	QRDBService_TenantUpdateQuotas_FullMethodName            = "/qrdb.v1.QRDBService/TenantUpdateQuotas"
-	QRDBService_CredentialSubmit_FullMethodName              = "/qrdb.v1.QRDBService/CredentialSubmit"
-	QRDBService_CredentialStrategy_FullMethodName            = "/qrdb.v1.QRDBService/CredentialStrategy"
-	QRDBService_CredentialDelete_FullMethodName              = "/qrdb.v1.QRDBService/CredentialDelete"
-	QRDBService_CredentialList_FullMethodName                = "/qrdb.v1.QRDBService/CredentialList"
-	QRDBService_CredentialRotate_FullMethodName              = "/qrdb.v1.QRDBService/CredentialRotate"
-	QRDBService_CredentialRetrieveVersion_FullMethodName     = "/qrdb.v1.QRDBService/CredentialRetrieveVersion"
-	QRDBService_CredentialListVersions_FullMethodName        = "/qrdb.v1.QRDBService/CredentialListVersions"
-	QRDBService_CredentialGCExpired_FullMethodName           = "/qrdb.v1.QRDBService/CredentialGCExpired"
-	QRDBService_CredentialStore_FullMethodName               = "/qrdb.v1.QRDBService/CredentialStore"
-	QRDBService_CredentialRetrieve_FullMethodName            = "/qrdb.v1.QRDBService/CredentialRetrieve"
-	QRDBService_BackupCreate_FullMethodName                  = "/qrdb.v1.QRDBService/BackupCreate"
-	QRDBService_BackupList_FullMethodName                    = "/qrdb.v1.QRDBService/BackupList"
-	QRDBService_BackupGet_FullMethodName                     = "/qrdb.v1.QRDBService/BackupGet"
-	QRDBService_BackupDelete_FullMethodName                  = "/qrdb.v1.QRDBService/BackupDelete"
-	QRDBService_BackupRestore_FullMethodName                 = "/qrdb.v1.QRDBService/BackupRestore"
-	QRDBService_BackupVerify_FullMethodName                  = "/qrdb.v1.QRDBService/BackupVerify"
-	QRDBService_RebalanceGetShardStats_FullMethodName        = "/qrdb.v1.QRDBService/RebalanceGetShardStats"
-	QRDBService_RebalanceCreatePlan_FullMethodName           = "/qrdb.v1.QRDBService/RebalanceCreatePlan"
-	QRDBService_RebalanceExecute_FullMethodName              = "/qrdb.v1.QRDBService/RebalanceExecute"
-	QRDBService_RebalanceGetImbalanceReport_FullMethodName   = "/qrdb.v1.QRDBService/RebalanceGetImbalanceReport"
-	QRDBService_Embed_FullMethodName                         = "/qrdb.v1.QRDBService/Embed"
-	QRDBService_BatchEmbed_FullMethodName                    = "/qrdb.v1.QRDBService/BatchEmbed"
-	QRDBService_ListEmbeddingModels_FullMethodName           = "/qrdb.v1.QRDBService/ListEmbeddingModels"
-	QRDBService_RAGIngestDocument_FullMethodName             = "/qrdb.v1.QRDBService/RAGIngestDocument"
-	QRDBService_RAGQuery_FullMethodName                      = "/qrdb.v1.QRDBService/RAGQuery"
-	QRDBService_RAGDeleteDocument_FullMethodName             = "/qrdb.v1.QRDBService/RAGDeleteDocument"
-	QRDBService_RAGListDocuments_FullMethodName              = "/qrdb.v1.QRDBService/RAGListDocuments"
-	QRDBService_DatabaseSeal_FullMethodName                  = "/qrdb.v1.QRDBService/DatabaseSeal"
-	QRDBService_DatabaseUnseal_FullMethodName                = "/qrdb.v1.QRDBService/DatabaseUnseal"
-	QRDBService_DatabaseBarrierStatus_FullMethodName         = "/qrdb.v1.QRDBService/DatabaseBarrierStatus"
+	QRDBService_Put_FullMethodName                               = "/qrdb.v1.QRDBService/Put"
+	QRDBService_Get_FullMethodName                               = "/qrdb.v1.QRDBService/Get"
+	QRDBService_Delete_FullMethodName                            = "/qrdb.v1.QRDBService/Delete"
+	QRDBService_List_FullMethodName                              = "/qrdb.v1.QRDBService/List"
+	QRDBService_Scan_FullMethodName                              = "/qrdb.v1.QRDBService/Scan"
+	QRDBService_PutWithLease_FullMethodName                      = "/qrdb.v1.QRDBService/PutWithLease"
+	QRDBService_GetRevision_FullMethodName                       = "/qrdb.v1.QRDBService/GetRevision"
+	QRDBService_GetAtRevision_FullMethodName                     = "/qrdb.v1.QRDBService/GetAtRevision"
+	QRDBService_Range_FullMethodName                             = "/qrdb.v1.QRDBService/Range"
+	QRDBService_Compact_FullMethodName                           = "/qrdb.v1.QRDBService/Compact"
+	QRDBService_CurrentRevision_FullMethodName                   = "/qrdb.v1.QRDBService/CurrentRevision"
+	QRDBService_Transaction_FullMethodName                       = "/qrdb.v1.QRDBService/Transaction"
+	QRDBService_Batch_FullMethodName                             = "/qrdb.v1.QRDBService/Batch"
+	QRDBService_Watch_FullMethodName                             = "/qrdb.v1.QRDBService/Watch"
+	QRDBService_LeaseGrant_FullMethodName                        = "/qrdb.v1.QRDBService/LeaseGrant"
+	QRDBService_LeaseRevoke_FullMethodName                       = "/qrdb.v1.QRDBService/LeaseRevoke"
+	QRDBService_LeaseKeepAlive_FullMethodName                    = "/qrdb.v1.QRDBService/LeaseKeepAlive"
+	QRDBService_LeaseTimeToLive_FullMethodName                   = "/qrdb.v1.QRDBService/LeaseTimeToLive"
+	QRDBService_LeaseList_FullMethodName                         = "/qrdb.v1.QRDBService/LeaseList"
+	QRDBService_LockAcquire_FullMethodName                       = "/qrdb.v1.QRDBService/LockAcquire"
+	QRDBService_LockTryLock_FullMethodName                       = "/qrdb.v1.QRDBService/LockTryLock"
+	QRDBService_LockRelease_FullMethodName                       = "/qrdb.v1.QRDBService/LockRelease"
+	QRDBService_LockExtend_FullMethodName                        = "/qrdb.v1.QRDBService/LockExtend"
+	QRDBService_LockStatus_FullMethodName                        = "/qrdb.v1.QRDBService/LockStatus"
+	QRDBService_LockList_FullMethodName                          = "/qrdb.v1.QRDBService/LockList"
+	QRDBService_IndexCreate_FullMethodName                       = "/qrdb.v1.QRDBService/IndexCreate"
+	QRDBService_IndexDrop_FullMethodName                         = "/qrdb.v1.QRDBService/IndexDrop"
+	QRDBService_IndexQuery_FullMethodName                        = "/qrdb.v1.QRDBService/IndexQuery"
+	QRDBService_IndexScan_FullMethodName                         = "/qrdb.v1.QRDBService/IndexScan"
+	QRDBService_IndexList_FullMethodName                         = "/qrdb.v1.QRDBService/IndexList"
+	QRDBService_TSWrite_FullMethodName                           = "/qrdb.v1.QRDBService/TSWrite"
+	QRDBService_TSWriteBatch_FullMethodName                      = "/qrdb.v1.QRDBService/TSWriteBatch"
+	QRDBService_TSQuery_FullMethodName                           = "/qrdb.v1.QRDBService/TSQuery"
+	QRDBService_TSAggregate_FullMethodName                       = "/qrdb.v1.QRDBService/TSAggregate"
+	QRDBService_TSWritePoint_FullMethodName                      = "/qrdb.v1.QRDBService/TSWritePoint"
+	QRDBService_TSRichQuery_FullMethodName                       = "/qrdb.v1.QRDBService/TSRichQuery"
+	QRDBService_TSDeleteSeries_FullMethodName                    = "/qrdb.v1.QRDBService/TSDeleteSeries"
+	QRDBService_TSGetRetention_FullMethodName                    = "/qrdb.v1.QRDBService/TSGetRetention"
+	QRDBService_TSSetRetention_FullMethodName                    = "/qrdb.v1.QRDBService/TSSetRetention"
+	QRDBService_TSListMetrics_FullMethodName                     = "/qrdb.v1.QRDBService/TSListMetrics"
+	QRDBService_VectorCreateNamespace_FullMethodName             = "/qrdb.v1.QRDBService/VectorCreateNamespace"
+	QRDBService_VectorDeleteNamespace_FullMethodName             = "/qrdb.v1.QRDBService/VectorDeleteNamespace"
+	QRDBService_VectorListNamespaces_FullMethodName              = "/qrdb.v1.QRDBService/VectorListNamespaces"
+	QRDBService_VectorGetNamespaceInfo_FullMethodName            = "/qrdb.v1.QRDBService/VectorGetNamespaceInfo"
+	QRDBService_VectorUpsert_FullMethodName                      = "/qrdb.v1.QRDBService/VectorUpsert"
+	QRDBService_VectorGet_FullMethodName                         = "/qrdb.v1.QRDBService/VectorGet"
+	QRDBService_VectorDelete_FullMethodName                      = "/qrdb.v1.QRDBService/VectorDelete"
+	QRDBService_VectorBatchUpsert_FullMethodName                 = "/qrdb.v1.QRDBService/VectorBatchUpsert"
+	QRDBService_VectorBatchDelete_FullMethodName                 = "/qrdb.v1.QRDBService/VectorBatchDelete"
+	QRDBService_VectorList_FullMethodName                        = "/qrdb.v1.QRDBService/VectorList"
+	QRDBService_VectorUpdateMetadata_FullMethodName              = "/qrdb.v1.QRDBService/VectorUpdateMetadata"
+	QRDBService_VectorSearchSimilar_FullMethodName               = "/qrdb.v1.QRDBService/VectorSearchSimilar"
+	QRDBService_VectorSearchByMetadata_FullMethodName            = "/qrdb.v1.QRDBService/VectorSearchByMetadata"
+	QRDBService_VectorHybridSearch_FullMethodName                = "/qrdb.v1.QRDBService/VectorHybridSearch"
+	QRDBService_VectorSearchByID_FullMethodName                  = "/qrdb.v1.QRDBService/VectorSearchByID"
+	QRDBService_VectorRebuildIndex_FullMethodName                = "/qrdb.v1.QRDBService/VectorRebuildIndex"
+	QRDBService_VectorGetRebuildProgress_FullMethodName          = "/qrdb.v1.QRDBService/VectorGetRebuildProgress"
+	QRDBService_VectorGetIndexStats_FullMethodName               = "/qrdb.v1.QRDBService/VectorGetIndexStats"
+	QRDBService_VectorCompactNamespace_FullMethodName            = "/qrdb.v1.QRDBService/VectorCompactNamespace"
+	QRDBService_VectorGetCompactionProgress_FullMethodName       = "/qrdb.v1.QRDBService/VectorGetCompactionProgress"
+	QRDBService_Health_FullMethodName                            = "/qrdb.v1.QRDBService/Health"
+	QRDBService_Status_FullMethodName                            = "/qrdb.v1.QRDBService/Status"
+	QRDBService_Peers_FullMethodName                             = "/qrdb.v1.QRDBService/Peers"
+	QRDBService_AddMember_FullMethodName                         = "/qrdb.v1.QRDBService/AddMember"
+	QRDBService_RemoveMember_FullMethodName                      = "/qrdb.v1.QRDBService/RemoveMember"
+	QRDBService_RequestSnapshot_FullMethodName                   = "/qrdb.v1.QRDBService/RequestSnapshot"
+	QRDBService_Drain_FullMethodName                             = "/qrdb.v1.QRDBService/Drain"
+	QRDBService_Capabilities_FullMethodName                      = "/qrdb.v1.QRDBService/Capabilities"
+	QRDBService_StartShard_FullMethodName                        = "/qrdb.v1.QRDBService/StartShard"
+	QRDBService_StopShard_FullMethodName                         = "/qrdb.v1.QRDBService/StopShard"
+	QRDBService_GetShardState_FullMethodName                     = "/qrdb.v1.QRDBService/GetShardState"
+	QRDBService_GetTopology_FullMethodName                       = "/qrdb.v1.QRDBService/GetTopology"
+	QRDBService_CreateUser_FullMethodName                        = "/qrdb.v1.QRDBService/CreateUser"
+	QRDBService_GetUser_FullMethodName                           = "/qrdb.v1.QRDBService/GetUser"
+	QRDBService_GetUserByUsername_FullMethodName                 = "/qrdb.v1.QRDBService/GetUserByUsername"
+	QRDBService_GetUserByCertThumbprint_FullMethodName           = "/qrdb.v1.QRDBService/GetUserByCertThumbprint"
+	QRDBService_AddCertBinding_FullMethodName                    = "/qrdb.v1.QRDBService/AddCertBinding"
+	QRDBService_UpdateUser_FullMethodName                        = "/qrdb.v1.QRDBService/UpdateUser"
+	QRDBService_DeleteUser_FullMethodName                        = "/qrdb.v1.QRDBService/DeleteUser"
+	QRDBService_ListUsers_FullMethodName                         = "/qrdb.v1.QRDBService/ListUsers"
+	QRDBService_EnableUser_FullMethodName                        = "/qrdb.v1.QRDBService/EnableUser"
+	QRDBService_DisableUser_FullMethodName                       = "/qrdb.v1.QRDBService/DisableUser"
+	QRDBService_CreateRole_FullMethodName                        = "/qrdb.v1.QRDBService/CreateRole"
+	QRDBService_GetRole_FullMethodName                           = "/qrdb.v1.QRDBService/GetRole"
+	QRDBService_GetRoleByName_FullMethodName                     = "/qrdb.v1.QRDBService/GetRoleByName"
+	QRDBService_UpdateRole_FullMethodName                        = "/qrdb.v1.QRDBService/UpdateRole"
+	QRDBService_DeleteRole_FullMethodName                        = "/qrdb.v1.QRDBService/DeleteRole"
+	QRDBService_ListRoles_FullMethodName                         = "/qrdb.v1.QRDBService/ListRoles"
+	QRDBService_AssignRole_FullMethodName                        = "/qrdb.v1.QRDBService/AssignRole"
+	QRDBService_UnassignRole_FullMethodName                      = "/qrdb.v1.QRDBService/UnassignRole"
+	QRDBService_ListPermissions_FullMethodName                   = "/qrdb.v1.QRDBService/ListPermissions"
+	QRDBService_ResolveRolePermissions_FullMethodName            = "/qrdb.v1.QRDBService/ResolveRolePermissions"
+	QRDBService_GenerateCert_FullMethodName                      = "/qrdb.v1.QRDBService/GenerateCert"
+	QRDBService_ExportCert_FullMethodName                        = "/qrdb.v1.QRDBService/ExportCert"
+	QRDBService_RevokeCert_FullMethodName                        = "/qrdb.v1.QRDBService/RevokeCert"
+	QRDBService_ListCerts_FullMethodName                         = "/qrdb.v1.QRDBService/ListCerts"
+	QRDBService_CreateCollection_FullMethodName                  = "/qrdb.v1.QRDBService/CreateCollection"
+	QRDBService_GetCollectionInfo_FullMethodName                 = "/qrdb.v1.QRDBService/GetCollectionInfo"
+	QRDBService_ListCollections_FullMethodName                   = "/qrdb.v1.QRDBService/ListCollections"
+	QRDBService_DropCollection_FullMethodName                    = "/qrdb.v1.QRDBService/DropCollection"
+	QRDBService_InsertDocument_FullMethodName                    = "/qrdb.v1.QRDBService/InsertDocument"
+	QRDBService_GetDocument_FullMethodName                       = "/qrdb.v1.QRDBService/GetDocument"
+	QRDBService_UpdateDocument_FullMethodName                    = "/qrdb.v1.QRDBService/UpdateDocument"
+	QRDBService_DeleteDocument_FullMethodName                    = "/qrdb.v1.QRDBService/DeleteDocument"
+	QRDBService_ListDocuments_FullMethodName                     = "/qrdb.v1.QRDBService/ListDocuments"
+	QRDBService_DatabaseCreate_FullMethodName                    = "/qrdb.v1.QRDBService/DatabaseCreate"
+	QRDBService_DatabaseGet_FullMethodName                       = "/qrdb.v1.QRDBService/DatabaseGet"
+	QRDBService_DatabaseList_FullMethodName                      = "/qrdb.v1.QRDBService/DatabaseList"
+	QRDBService_DatabaseDrop_FullMethodName                      = "/qrdb.v1.QRDBService/DatabaseDrop"
+	QRDBService_DatabaseUpdateProtocol_FullMethodName            = "/qrdb.v1.QRDBService/DatabaseUpdateProtocol"
+	QRDBService_DatabaseUpdateEtcd_FullMethodName                = "/qrdb.v1.QRDBService/DatabaseUpdateEtcd"
+	QRDBService_DatabaseUpdateRaft_FullMethodName                = "/qrdb.v1.QRDBService/DatabaseUpdateRaft"
+	QRDBService_DatabaseUpdateBarrier_FullMethodName             = "/qrdb.v1.QRDBService/DatabaseUpdateBarrier"
+	QRDBService_DatabaseUpdateConnection_FullMethodName          = "/qrdb.v1.QRDBService/DatabaseUpdateConnection"
+	QRDBService_BarrierInitialize_FullMethodName                 = "/qrdb.v1.QRDBService/BarrierInitialize"
+	QRDBService_BarrierUnseal_FullMethodName                     = "/qrdb.v1.QRDBService/BarrierUnseal"
+	QRDBService_BarrierSeal_FullMethodName                       = "/qrdb.v1.QRDBService/BarrierSeal"
+	QRDBService_BarrierStatus_FullMethodName                     = "/qrdb.v1.QRDBService/BarrierStatus"
+	QRDBService_BarrierShamirInitialize_FullMethodName           = "/qrdb.v1.QRDBService/BarrierShamirInitialize"
+	QRDBService_BarrierShamirUnsealShare_FullMethodName          = "/qrdb.v1.QRDBService/BarrierShamirUnsealShare"
+	QRDBService_BarrierShamirUnsealShares_FullMethodName         = "/qrdb.v1.QRDBService/BarrierShamirUnsealShares"
+	QRDBService_BarrierRekey_FullMethodName                      = "/qrdb.v1.QRDBService/BarrierRekey"
+	QRDBService_BarrierOfficerRegister_FullMethodName            = "/qrdb.v1.QRDBService/BarrierOfficerRegister"
+	QRDBService_BarrierOfficerList_FullMethodName                = "/qrdb.v1.QRDBService/BarrierOfficerList"
+	QRDBService_BarrierShareClaimBegin_FullMethodName            = "/qrdb.v1.QRDBService/BarrierShareClaimBegin"
+	QRDBService_BarrierShareClaimComplete_FullMethodName         = "/qrdb.v1.QRDBService/BarrierShareClaimComplete"
+	QRDBService_BarrierOfficerClaimStatus_FullMethodName         = "/qrdb.v1.QRDBService/BarrierOfficerClaimStatus"
+	QRDBService_BarrierShamirSealVote_FullMethodName             = "/qrdb.v1.QRDBService/BarrierShamirSealVote"
+	QRDBService_BarrierRecoveryOfficerRegister_FullMethodName    = "/qrdb.v1.QRDBService/BarrierRecoveryOfficerRegister"
+	QRDBService_BarrierRecoveryShareClaimBegin_FullMethodName    = "/qrdb.v1.QRDBService/BarrierRecoveryShareClaimBegin"
+	QRDBService_BarrierRecoveryShareClaimComplete_FullMethodName = "/qrdb.v1.QRDBService/BarrierRecoveryShareClaimComplete"
+	QRDBService_BarrierRecoveryGenerate_FullMethodName           = "/qrdb.v1.QRDBService/BarrierRecoveryGenerate"
+	QRDBService_BarrierRecoveryRecover_FullMethodName            = "/qrdb.v1.QRDBService/BarrierRecoveryRecover"
+	QRDBService_BarrierRecoveryDelete_FullMethodName             = "/qrdb.v1.QRDBService/BarrierRecoveryDelete"
+	QRDBService_BarrierRecoveryStatus_FullMethodName             = "/qrdb.v1.QRDBService/BarrierRecoveryStatus"
+	QRDBService_BarrierRootToken_FullMethodName                  = "/qrdb.v1.QRDBService/BarrierRootToken"
+	QRDBService_CeremonyInitialize_FullMethodName                = "/qrdb.v1.QRDBService/CeremonyInitialize"
+	QRDBService_CeremonyStatus_FullMethodName                    = "/qrdb.v1.QRDBService/CeremonyStatus"
+	QRDBService_CeremonyClaimCertBegin_FullMethodName            = "/qrdb.v1.QRDBService/CeremonyClaimCertBegin"
+	QRDBService_CeremonyClaimCertComplete_FullMethodName         = "/qrdb.v1.QRDBService/CeremonyClaimCertComplete"
+	QRDBService_CeremonyClaimShare_FullMethodName                = "/qrdb.v1.QRDBService/CeremonyClaimShare"
+	QRDBService_CeremonySignCSR_FullMethodName                   = "/qrdb.v1.QRDBService/CeremonySignCSR"
+	QRDBService_CeremonyEnrollExternalOfficer_FullMethodName     = "/qrdb.v1.QRDBService/CeremonyEnrollExternalOfficer"
+	QRDBService_CeremonyClaimShareBegin_FullMethodName           = "/qrdb.v1.QRDBService/CeremonyClaimShareBegin"
+	QRDBService_CeremonyClaimShareComplete_FullMethodName        = "/qrdb.v1.QRDBService/CeremonyClaimShareComplete"
+	QRDBService_CeremonySubmitUnsealShare_FullMethodName         = "/qrdb.v1.QRDBService/CeremonySubmitUnsealShare"
+	QRDBService_TenantCreate_FullMethodName                      = "/qrdb.v1.QRDBService/TenantCreate"
+	QRDBService_TenantGet_FullMethodName                         = "/qrdb.v1.QRDBService/TenantGet"
+	QRDBService_TenantList_FullMethodName                        = "/qrdb.v1.QRDBService/TenantList"
+	QRDBService_TenantUpdate_FullMethodName                      = "/qrdb.v1.QRDBService/TenantUpdate"
+	QRDBService_TenantDelete_FullMethodName                      = "/qrdb.v1.QRDBService/TenantDelete"
+	QRDBService_TenantUpdateQuotas_FullMethodName                = "/qrdb.v1.QRDBService/TenantUpdateQuotas"
+	QRDBService_CredentialSubmit_FullMethodName                  = "/qrdb.v1.QRDBService/CredentialSubmit"
+	QRDBService_CredentialStrategy_FullMethodName                = "/qrdb.v1.QRDBService/CredentialStrategy"
+	QRDBService_CredentialDelete_FullMethodName                  = "/qrdb.v1.QRDBService/CredentialDelete"
+	QRDBService_CredentialList_FullMethodName                    = "/qrdb.v1.QRDBService/CredentialList"
+	QRDBService_CredentialRotate_FullMethodName                  = "/qrdb.v1.QRDBService/CredentialRotate"
+	QRDBService_CredentialRetrieveVersion_FullMethodName         = "/qrdb.v1.QRDBService/CredentialRetrieveVersion"
+	QRDBService_CredentialListVersions_FullMethodName            = "/qrdb.v1.QRDBService/CredentialListVersions"
+	QRDBService_CredentialGCExpired_FullMethodName               = "/qrdb.v1.QRDBService/CredentialGCExpired"
+	QRDBService_CredentialStore_FullMethodName                   = "/qrdb.v1.QRDBService/CredentialStore"
+	QRDBService_CredentialRetrieve_FullMethodName                = "/qrdb.v1.QRDBService/CredentialRetrieve"
+	QRDBService_BackupCreate_FullMethodName                      = "/qrdb.v1.QRDBService/BackupCreate"
+	QRDBService_BackupList_FullMethodName                        = "/qrdb.v1.QRDBService/BackupList"
+	QRDBService_BackupGet_FullMethodName                         = "/qrdb.v1.QRDBService/BackupGet"
+	QRDBService_BackupDelete_FullMethodName                      = "/qrdb.v1.QRDBService/BackupDelete"
+	QRDBService_BackupRestore_FullMethodName                     = "/qrdb.v1.QRDBService/BackupRestore"
+	QRDBService_BackupVerify_FullMethodName                      = "/qrdb.v1.QRDBService/BackupVerify"
+	QRDBService_RebalanceGetShardStats_FullMethodName            = "/qrdb.v1.QRDBService/RebalanceGetShardStats"
+	QRDBService_RebalanceCreatePlan_FullMethodName               = "/qrdb.v1.QRDBService/RebalanceCreatePlan"
+	QRDBService_RebalanceExecute_FullMethodName                  = "/qrdb.v1.QRDBService/RebalanceExecute"
+	QRDBService_RebalanceGetImbalanceReport_FullMethodName       = "/qrdb.v1.QRDBService/RebalanceGetImbalanceReport"
+	QRDBService_Embed_FullMethodName                             = "/qrdb.v1.QRDBService/Embed"
+	QRDBService_BatchEmbed_FullMethodName                        = "/qrdb.v1.QRDBService/BatchEmbed"
+	QRDBService_ListEmbeddingModels_FullMethodName               = "/qrdb.v1.QRDBService/ListEmbeddingModels"
+	QRDBService_RAGIngestDocument_FullMethodName                 = "/qrdb.v1.QRDBService/RAGIngestDocument"
+	QRDBService_RAGQuery_FullMethodName                          = "/qrdb.v1.QRDBService/RAGQuery"
+	QRDBService_RAGDeleteDocument_FullMethodName                 = "/qrdb.v1.QRDBService/RAGDeleteDocument"
+	QRDBService_RAGListDocuments_FullMethodName                  = "/qrdb.v1.QRDBService/RAGListDocuments"
+	QRDBService_DatabaseSeal_FullMethodName                      = "/qrdb.v1.QRDBService/DatabaseSeal"
+	QRDBService_DatabaseUnseal_FullMethodName                    = "/qrdb.v1.QRDBService/DatabaseUnseal"
+	QRDBService_DatabaseBarrierStatus_FullMethodName             = "/qrdb.v1.QRDBService/DatabaseBarrierStatus"
 )
 
 // QRDBServiceClient is the client API for QRDBService service.
@@ -459,13 +468,32 @@ type QRDBServiceClient interface {
 	// BarrierStatus returns the current barrier state.
 	BarrierStatus(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*BarrierStatusResponse, error)
 	// BarrierShamirInitialize initializes the barrier with Shamir secret sharing.
-	BarrierShamirInitialize(ctx context.Context, in *BarrierShamirInitializeRequest, opts ...grpc.CallOption) (*BarrierShamirInitializeResponse, error)
+	BarrierShamirInitialize(ctx context.Context, in *BarrierShamirInitializeRequest, opts ...grpc.CallOption) (*BarrierShamirOperationResponse, error)
 	// BarrierShamirUnsealShare submits a single Shamir share toward the unseal threshold.
 	BarrierShamirUnsealShare(ctx context.Context, in *BarrierShamirUnsealShareRequest, opts ...grpc.CallOption) (*BarrierShamirUnsealShareResponse, error)
 	// BarrierShamirUnsealShares submits multiple Shamir shares to unseal in one call.
 	BarrierShamirUnsealShares(ctx context.Context, in *BarrierShamirUnsealSharesRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// BarrierRekey generates new Shamir shares with the specified parameters.
-	BarrierRekey(ctx context.Context, in *BarrierRekeyRequest, opts ...grpc.CallOption) (*BarrierShamirInitializeResponse, error)
+	BarrierRekey(ctx context.Context, in *BarrierRekeyRequest, opts ...grpc.CallOption) (*BarrierShamirOperationResponse, error)
+	// BarrierOfficerRegister registers a new Security Officer for the system barrier.
+	BarrierOfficerRegister(ctx context.Context, in *BarrierOfficerRegisterRequest, opts ...grpc.CallOption) (*BarrierOfficerRegisterResponse, error)
+	// BarrierOfficerList lists all registered Security Officers for the system barrier.
+	BarrierOfficerList(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*BarrierOfficerListResponse, error)
+	// BarrierShareClaimBegin starts the share claim handshake for the calling SO.
+	BarrierShareClaimBegin(ctx context.Context, in *BarrierShareClaimBeginRequest, opts ...grpc.CallOption) (*BarrierShareClaimBeginResponse, error)
+	// BarrierShareClaimComplete completes the share claim handshake and returns
+	// the share exactly once. Only callable by the SO's own mTLS session.
+	BarrierShareClaimComplete(ctx context.Context, in *BarrierShareClaimCompleteRequest, opts ...grpc.CallOption) (*BarrierShareClaimCompleteResponse, error)
+	// BarrierOfficerClaimStatus returns per-officer claim status (no share data).
+	BarrierOfficerClaimStatus(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*BarrierOfficerClaimStatusResponse, error)
+	// BarrierShamirSealVote submits a share as a seal vote (Shamir barriers only).
+	BarrierShamirSealVote(ctx context.Context, in *BarrierShamirSealVoteRequest, opts ...grpc.CallOption) (*BarrierShamirSealVoteResponse, error)
+	// BarrierRecoveryOfficerRegister registers an SO for recovery key distribution.
+	BarrierRecoveryOfficerRegister(ctx context.Context, in *BarrierOfficerRegisterRequest, opts ...grpc.CallOption) (*BarrierOfficerRegisterResponse, error)
+	// BarrierRecoveryShareClaimBegin starts the recovery share claim handshake.
+	BarrierRecoveryShareClaimBegin(ctx context.Context, in *BarrierShareClaimBeginRequest, opts ...grpc.CallOption) (*BarrierShareClaimBeginResponse, error)
+	// BarrierRecoveryShareClaimComplete completes the recovery share claim handshake.
+	BarrierRecoveryShareClaimComplete(ctx context.Context, in *BarrierShareClaimCompleteRequest, opts ...grpc.CallOption) (*BarrierShareClaimCompleteResponse, error)
 	// BarrierRecoveryGenerate generates recovery keys for disaster recovery.
 	BarrierRecoveryGenerate(ctx context.Context, in *BarrierRecoveryGenerateRequest, opts ...grpc.CallOption) (*BarrierRecoveryKeysResponse, error)
 	// BarrierRecoveryRecover unseals the barrier using recovery keys.
@@ -1792,9 +1820,9 @@ func (c *qRDBServiceClient) BarrierStatus(ctx context.Context, in *emptypb.Empty
 	return out, nil
 }
 
-func (c *qRDBServiceClient) BarrierShamirInitialize(ctx context.Context, in *BarrierShamirInitializeRequest, opts ...grpc.CallOption) (*BarrierShamirInitializeResponse, error) {
+func (c *qRDBServiceClient) BarrierShamirInitialize(ctx context.Context, in *BarrierShamirInitializeRequest, opts ...grpc.CallOption) (*BarrierShamirOperationResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(BarrierShamirInitializeResponse)
+	out := new(BarrierShamirOperationResponse)
 	err := c.cc.Invoke(ctx, QRDBService_BarrierShamirInitialize_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
@@ -1822,10 +1850,100 @@ func (c *qRDBServiceClient) BarrierShamirUnsealShares(ctx context.Context, in *B
 	return out, nil
 }
 
-func (c *qRDBServiceClient) BarrierRekey(ctx context.Context, in *BarrierRekeyRequest, opts ...grpc.CallOption) (*BarrierShamirInitializeResponse, error) {
+func (c *qRDBServiceClient) BarrierRekey(ctx context.Context, in *BarrierRekeyRequest, opts ...grpc.CallOption) (*BarrierShamirOperationResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(BarrierShamirInitializeResponse)
+	out := new(BarrierShamirOperationResponse)
 	err := c.cc.Invoke(ctx, QRDBService_BarrierRekey_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) BarrierOfficerRegister(ctx context.Context, in *BarrierOfficerRegisterRequest, opts ...grpc.CallOption) (*BarrierOfficerRegisterResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BarrierOfficerRegisterResponse)
+	err := c.cc.Invoke(ctx, QRDBService_BarrierOfficerRegister_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) BarrierOfficerList(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*BarrierOfficerListResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BarrierOfficerListResponse)
+	err := c.cc.Invoke(ctx, QRDBService_BarrierOfficerList_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) BarrierShareClaimBegin(ctx context.Context, in *BarrierShareClaimBeginRequest, opts ...grpc.CallOption) (*BarrierShareClaimBeginResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BarrierShareClaimBeginResponse)
+	err := c.cc.Invoke(ctx, QRDBService_BarrierShareClaimBegin_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) BarrierShareClaimComplete(ctx context.Context, in *BarrierShareClaimCompleteRequest, opts ...grpc.CallOption) (*BarrierShareClaimCompleteResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BarrierShareClaimCompleteResponse)
+	err := c.cc.Invoke(ctx, QRDBService_BarrierShareClaimComplete_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) BarrierOfficerClaimStatus(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*BarrierOfficerClaimStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BarrierOfficerClaimStatusResponse)
+	err := c.cc.Invoke(ctx, QRDBService_BarrierOfficerClaimStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) BarrierShamirSealVote(ctx context.Context, in *BarrierShamirSealVoteRequest, opts ...grpc.CallOption) (*BarrierShamirSealVoteResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BarrierShamirSealVoteResponse)
+	err := c.cc.Invoke(ctx, QRDBService_BarrierShamirSealVote_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) BarrierRecoveryOfficerRegister(ctx context.Context, in *BarrierOfficerRegisterRequest, opts ...grpc.CallOption) (*BarrierOfficerRegisterResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BarrierOfficerRegisterResponse)
+	err := c.cc.Invoke(ctx, QRDBService_BarrierRecoveryOfficerRegister_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) BarrierRecoveryShareClaimBegin(ctx context.Context, in *BarrierShareClaimBeginRequest, opts ...grpc.CallOption) (*BarrierShareClaimBeginResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BarrierShareClaimBeginResponse)
+	err := c.cc.Invoke(ctx, QRDBService_BarrierRecoveryShareClaimBegin_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) BarrierRecoveryShareClaimComplete(ctx context.Context, in *BarrierShareClaimCompleteRequest, opts ...grpc.CallOption) (*BarrierShareClaimCompleteResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BarrierShareClaimCompleteResponse)
+	err := c.cc.Invoke(ctx, QRDBService_BarrierRecoveryShareClaimComplete_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -2592,13 +2710,32 @@ type QRDBServiceServer interface {
 	// BarrierStatus returns the current barrier state.
 	BarrierStatus(context.Context, *emptypb.Empty) (*BarrierStatusResponse, error)
 	// BarrierShamirInitialize initializes the barrier with Shamir secret sharing.
-	BarrierShamirInitialize(context.Context, *BarrierShamirInitializeRequest) (*BarrierShamirInitializeResponse, error)
+	BarrierShamirInitialize(context.Context, *BarrierShamirInitializeRequest) (*BarrierShamirOperationResponse, error)
 	// BarrierShamirUnsealShare submits a single Shamir share toward the unseal threshold.
 	BarrierShamirUnsealShare(context.Context, *BarrierShamirUnsealShareRequest) (*BarrierShamirUnsealShareResponse, error)
 	// BarrierShamirUnsealShares submits multiple Shamir shares to unseal in one call.
 	BarrierShamirUnsealShares(context.Context, *BarrierShamirUnsealSharesRequest) (*emptypb.Empty, error)
 	// BarrierRekey generates new Shamir shares with the specified parameters.
-	BarrierRekey(context.Context, *BarrierRekeyRequest) (*BarrierShamirInitializeResponse, error)
+	BarrierRekey(context.Context, *BarrierRekeyRequest) (*BarrierShamirOperationResponse, error)
+	// BarrierOfficerRegister registers a new Security Officer for the system barrier.
+	BarrierOfficerRegister(context.Context, *BarrierOfficerRegisterRequest) (*BarrierOfficerRegisterResponse, error)
+	// BarrierOfficerList lists all registered Security Officers for the system barrier.
+	BarrierOfficerList(context.Context, *emptypb.Empty) (*BarrierOfficerListResponse, error)
+	// BarrierShareClaimBegin starts the share claim handshake for the calling SO.
+	BarrierShareClaimBegin(context.Context, *BarrierShareClaimBeginRequest) (*BarrierShareClaimBeginResponse, error)
+	// BarrierShareClaimComplete completes the share claim handshake and returns
+	// the share exactly once. Only callable by the SO's own mTLS session.
+	BarrierShareClaimComplete(context.Context, *BarrierShareClaimCompleteRequest) (*BarrierShareClaimCompleteResponse, error)
+	// BarrierOfficerClaimStatus returns per-officer claim status (no share data).
+	BarrierOfficerClaimStatus(context.Context, *emptypb.Empty) (*BarrierOfficerClaimStatusResponse, error)
+	// BarrierShamirSealVote submits a share as a seal vote (Shamir barriers only).
+	BarrierShamirSealVote(context.Context, *BarrierShamirSealVoteRequest) (*BarrierShamirSealVoteResponse, error)
+	// BarrierRecoveryOfficerRegister registers an SO for recovery key distribution.
+	BarrierRecoveryOfficerRegister(context.Context, *BarrierOfficerRegisterRequest) (*BarrierOfficerRegisterResponse, error)
+	// BarrierRecoveryShareClaimBegin starts the recovery share claim handshake.
+	BarrierRecoveryShareClaimBegin(context.Context, *BarrierShareClaimBeginRequest) (*BarrierShareClaimBeginResponse, error)
+	// BarrierRecoveryShareClaimComplete completes the recovery share claim handshake.
+	BarrierRecoveryShareClaimComplete(context.Context, *BarrierShareClaimCompleteRequest) (*BarrierShareClaimCompleteResponse, error)
 	// BarrierRecoveryGenerate generates recovery keys for disaster recovery.
 	BarrierRecoveryGenerate(context.Context, *BarrierRecoveryGenerateRequest) (*BarrierRecoveryKeysResponse, error)
 	// BarrierRecoveryRecover unseals the barrier using recovery keys.
@@ -3090,7 +3227,7 @@ func (UnimplementedQRDBServiceServer) BarrierSeal(context.Context, *emptypb.Empt
 func (UnimplementedQRDBServiceServer) BarrierStatus(context.Context, *emptypb.Empty) (*BarrierStatusResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method BarrierStatus not implemented")
 }
-func (UnimplementedQRDBServiceServer) BarrierShamirInitialize(context.Context, *BarrierShamirInitializeRequest) (*BarrierShamirInitializeResponse, error) {
+func (UnimplementedQRDBServiceServer) BarrierShamirInitialize(context.Context, *BarrierShamirInitializeRequest) (*BarrierShamirOperationResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method BarrierShamirInitialize not implemented")
 }
 func (UnimplementedQRDBServiceServer) BarrierShamirUnsealShare(context.Context, *BarrierShamirUnsealShareRequest) (*BarrierShamirUnsealShareResponse, error) {
@@ -3099,8 +3236,35 @@ func (UnimplementedQRDBServiceServer) BarrierShamirUnsealShare(context.Context, 
 func (UnimplementedQRDBServiceServer) BarrierShamirUnsealShares(context.Context, *BarrierShamirUnsealSharesRequest) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method BarrierShamirUnsealShares not implemented")
 }
-func (UnimplementedQRDBServiceServer) BarrierRekey(context.Context, *BarrierRekeyRequest) (*BarrierShamirInitializeResponse, error) {
+func (UnimplementedQRDBServiceServer) BarrierRekey(context.Context, *BarrierRekeyRequest) (*BarrierShamirOperationResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method BarrierRekey not implemented")
+}
+func (UnimplementedQRDBServiceServer) BarrierOfficerRegister(context.Context, *BarrierOfficerRegisterRequest) (*BarrierOfficerRegisterResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method BarrierOfficerRegister not implemented")
+}
+func (UnimplementedQRDBServiceServer) BarrierOfficerList(context.Context, *emptypb.Empty) (*BarrierOfficerListResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method BarrierOfficerList not implemented")
+}
+func (UnimplementedQRDBServiceServer) BarrierShareClaimBegin(context.Context, *BarrierShareClaimBeginRequest) (*BarrierShareClaimBeginResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method BarrierShareClaimBegin not implemented")
+}
+func (UnimplementedQRDBServiceServer) BarrierShareClaimComplete(context.Context, *BarrierShareClaimCompleteRequest) (*BarrierShareClaimCompleteResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method BarrierShareClaimComplete not implemented")
+}
+func (UnimplementedQRDBServiceServer) BarrierOfficerClaimStatus(context.Context, *emptypb.Empty) (*BarrierOfficerClaimStatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method BarrierOfficerClaimStatus not implemented")
+}
+func (UnimplementedQRDBServiceServer) BarrierShamirSealVote(context.Context, *BarrierShamirSealVoteRequest) (*BarrierShamirSealVoteResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method BarrierShamirSealVote not implemented")
+}
+func (UnimplementedQRDBServiceServer) BarrierRecoveryOfficerRegister(context.Context, *BarrierOfficerRegisterRequest) (*BarrierOfficerRegisterResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method BarrierRecoveryOfficerRegister not implemented")
+}
+func (UnimplementedQRDBServiceServer) BarrierRecoveryShareClaimBegin(context.Context, *BarrierShareClaimBeginRequest) (*BarrierShareClaimBeginResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method BarrierRecoveryShareClaimBegin not implemented")
+}
+func (UnimplementedQRDBServiceServer) BarrierRecoveryShareClaimComplete(context.Context, *BarrierShareClaimCompleteRequest) (*BarrierShareClaimCompleteResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method BarrierRecoveryShareClaimComplete not implemented")
 }
 func (UnimplementedQRDBServiceServer) BarrierRecoveryGenerate(context.Context, *BarrierRecoveryGenerateRequest) (*BarrierRecoveryKeysResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method BarrierRecoveryGenerate not implemented")
@@ -5465,6 +5629,168 @@ func _QRDBService_BarrierRekey_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _QRDBService_BarrierOfficerRegister_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BarrierOfficerRegisterRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).BarrierOfficerRegister(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_BarrierOfficerRegister_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).BarrierOfficerRegister(ctx, req.(*BarrierOfficerRegisterRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_BarrierOfficerList_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).BarrierOfficerList(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_BarrierOfficerList_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).BarrierOfficerList(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_BarrierShareClaimBegin_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BarrierShareClaimBeginRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).BarrierShareClaimBegin(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_BarrierShareClaimBegin_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).BarrierShareClaimBegin(ctx, req.(*BarrierShareClaimBeginRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_BarrierShareClaimComplete_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BarrierShareClaimCompleteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).BarrierShareClaimComplete(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_BarrierShareClaimComplete_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).BarrierShareClaimComplete(ctx, req.(*BarrierShareClaimCompleteRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_BarrierOfficerClaimStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).BarrierOfficerClaimStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_BarrierOfficerClaimStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).BarrierOfficerClaimStatus(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_BarrierShamirSealVote_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BarrierShamirSealVoteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).BarrierShamirSealVote(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_BarrierShamirSealVote_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).BarrierShamirSealVote(ctx, req.(*BarrierShamirSealVoteRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_BarrierRecoveryOfficerRegister_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BarrierOfficerRegisterRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).BarrierRecoveryOfficerRegister(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_BarrierRecoveryOfficerRegister_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).BarrierRecoveryOfficerRegister(ctx, req.(*BarrierOfficerRegisterRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_BarrierRecoveryShareClaimBegin_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BarrierShareClaimBeginRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).BarrierRecoveryShareClaimBegin(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_BarrierRecoveryShareClaimBegin_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).BarrierRecoveryShareClaimBegin(ctx, req.(*BarrierShareClaimBeginRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_BarrierRecoveryShareClaimComplete_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BarrierShareClaimCompleteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).BarrierRecoveryShareClaimComplete(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_BarrierRecoveryShareClaimComplete_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).BarrierRecoveryShareClaimComplete(ctx, req.(*BarrierShareClaimCompleteRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _QRDBService_BarrierRecoveryGenerate_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(BarrierRecoveryGenerateRequest)
 	if err := dec(in); err != nil {
@@ -6875,6 +7201,42 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _QRDBService_BarrierRekey_Handler,
 		},
 		{
+			MethodName: "BarrierOfficerRegister",
+			Handler:    _QRDBService_BarrierOfficerRegister_Handler,
+		},
+		{
+			MethodName: "BarrierOfficerList",
+			Handler:    _QRDBService_BarrierOfficerList_Handler,
+		},
+		{
+			MethodName: "BarrierShareClaimBegin",
+			Handler:    _QRDBService_BarrierShareClaimBegin_Handler,
+		},
+		{
+			MethodName: "BarrierShareClaimComplete",
+			Handler:    _QRDBService_BarrierShareClaimComplete_Handler,
+		},
+		{
+			MethodName: "BarrierOfficerClaimStatus",
+			Handler:    _QRDBService_BarrierOfficerClaimStatus_Handler,
+		},
+		{
+			MethodName: "BarrierShamirSealVote",
+			Handler:    _QRDBService_BarrierShamirSealVote_Handler,
+		},
+		{
+			MethodName: "BarrierRecoveryOfficerRegister",
+			Handler:    _QRDBService_BarrierRecoveryOfficerRegister_Handler,
+		},
+		{
+			MethodName: "BarrierRecoveryShareClaimBegin",
+			Handler:    _QRDBService_BarrierRecoveryShareClaimBegin_Handler,
+		},
+		{
+			MethodName: "BarrierRecoveryShareClaimComplete",
+			Handler:    _QRDBService_BarrierRecoveryShareClaimComplete_Handler,
+		},
+		{
 			MethodName: "BarrierRecoveryGenerate",
 			Handler:    _QRDBService_BarrierRecoveryGenerate_Handler,
 		},
@@ -7086,5 +7448,1301 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 			ServerStreams: true,
 		},
 	},
+	Metadata: "pkg/api/grpc/proto/qrdbv1/qrdb.proto",
+}
+
+const (
+	TenantBarrierService_Init_FullMethodName               = "/qrdb.v1.TenantBarrierService/Init"
+	TenantBarrierService_Unseal_FullMethodName             = "/qrdb.v1.TenantBarrierService/Unseal"
+	TenantBarrierService_UnsealShare_FullMethodName        = "/qrdb.v1.TenantBarrierService/UnsealShare"
+	TenantBarrierService_Seal_FullMethodName               = "/qrdb.v1.TenantBarrierService/Seal"
+	TenantBarrierService_Status_FullMethodName             = "/qrdb.v1.TenantBarrierService/Status"
+	TenantBarrierService_OfficerRegister_FullMethodName    = "/qrdb.v1.TenantBarrierService/OfficerRegister"
+	TenantBarrierService_OfficerList_FullMethodName        = "/qrdb.v1.TenantBarrierService/OfficerList"
+	TenantBarrierService_ShareClaimBegin_FullMethodName    = "/qrdb.v1.TenantBarrierService/ShareClaimBegin"
+	TenantBarrierService_ShareClaimComplete_FullMethodName = "/qrdb.v1.TenantBarrierService/ShareClaimComplete"
+	TenantBarrierService_OfficerClaimStatus_FullMethodName = "/qrdb.v1.TenantBarrierService/OfficerClaimStatus"
+	TenantBarrierService_ShamirSealVote_FullMethodName     = "/qrdb.v1.TenantBarrierService/ShamirSealVote"
+)
+
+// TenantBarrierServiceClient is the client API for TenantBarrierService service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+//
+// ===========================================================================
+// TenantBarrierService — per-tenant barrier lifecycle (none/passphrase/shamir)
+//
+// Each tenant barrier is independent of the system barrier and may use a
+// different strategy. Service-layer authorization (caller must be a tenant
+// admin of the target tenant; the system tenant is denied) is enforced by the
+// interceptors; the handlers delegate to pkg/tenant.TenantServicer.
+// ===========================================================================
+type TenantBarrierServiceClient interface {
+	// Init initializes a tenant barrier with the selected strategy. For the
+	// Shamir strategy the share_count field indicates how many officer shares
+	// were sealed; shares are never returned in the response.
+	Init(ctx context.Context, in *TenantBarrierInitRequest, opts ...grpc.CallOption) (*TenantBarrierInitResponse, error)
+	// Unseal unseals a tenant barrier using a single key (passphrase strategy).
+	Unseal(ctx context.Context, in *TenantBarrierUnsealRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// UnsealShare submits one Shamir share toward the tenant quorum threshold,
+	// auto-unsealing once enough distinct shares have been submitted.
+	UnsealShare(ctx context.Context, in *TenantBarrierUnsealShareRequest, opts ...grpc.CallOption) (*TenantBarrierUnsealProgress, error)
+	// Seal seals a tenant barrier.
+	Seal(ctx context.Context, in *TenantBarrierSealRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// Status reports a tenant barrier's sealed/initialized state and strategy.
+	Status(ctx context.Context, in *TenantBarrierStatusRequest, opts ...grpc.CallOption) (*TenantBarrierStatusResponse, error)
+	// OfficerRegister enrolls a Security Officer for this tenant's barrier.
+	// Only valid for Shamir-strategy tenant barriers.
+	OfficerRegister(ctx context.Context, in *TenantBarrierOfficerRegisterRequest, opts ...grpc.CallOption) (*TenantBarrierOfficerRegisterResponse, error)
+	// OfficerList returns the enrolled officers for this tenant's barrier.
+	OfficerList(ctx context.Context, in *TenantBarrierOfficerListRequest, opts ...grpc.CallOption) (*TenantBarrierOfficerListResponse, error)
+	// ShareClaimBegin issues a challenge nonce to the named officer as the
+	// first step of the two-phase share claim flow.
+	ShareClaimBegin(ctx context.Context, in *TenantBarrierShareClaimBeginRequest, opts ...grpc.CallOption) (*TenantBarrierShareClaimBeginResponse, error)
+	// ShareClaimComplete verifies the signed nonce and returns the share bytes
+	// exactly once, then destroys the enclave.
+	ShareClaimComplete(ctx context.Context, in *TenantBarrierShareClaimCompleteRequest, opts ...grpc.CallOption) (*TenantBarrierShareClaimCompleteResponse, error)
+	// OfficerClaimStatus returns per-officer claim status for admin visibility.
+	OfficerClaimStatus(ctx context.Context, in *TenantBarrierOfficerClaimStatusRequest, opts ...grpc.CallOption) (*TenantBarrierOfficerClaimStatusResponse, error)
+	// ShamirSealVote submits one share toward the quorum-gated seal threshold.
+	ShamirSealVote(ctx context.Context, in *TenantBarrierShamirSealVoteRequest, opts ...grpc.CallOption) (*TenantBarrierShamirSealVoteResponse, error)
+}
+
+type tenantBarrierServiceClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewTenantBarrierServiceClient(cc grpc.ClientConnInterface) TenantBarrierServiceClient {
+	return &tenantBarrierServiceClient{cc}
+}
+
+func (c *tenantBarrierServiceClient) Init(ctx context.Context, in *TenantBarrierInitRequest, opts ...grpc.CallOption) (*TenantBarrierInitResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TenantBarrierInitResponse)
+	err := c.cc.Invoke(ctx, TenantBarrierService_Init_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tenantBarrierServiceClient) Unseal(ctx context.Context, in *TenantBarrierUnsealRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, TenantBarrierService_Unseal_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tenantBarrierServiceClient) UnsealShare(ctx context.Context, in *TenantBarrierUnsealShareRequest, opts ...grpc.CallOption) (*TenantBarrierUnsealProgress, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TenantBarrierUnsealProgress)
+	err := c.cc.Invoke(ctx, TenantBarrierService_UnsealShare_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tenantBarrierServiceClient) Seal(ctx context.Context, in *TenantBarrierSealRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, TenantBarrierService_Seal_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tenantBarrierServiceClient) Status(ctx context.Context, in *TenantBarrierStatusRequest, opts ...grpc.CallOption) (*TenantBarrierStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TenantBarrierStatusResponse)
+	err := c.cc.Invoke(ctx, TenantBarrierService_Status_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tenantBarrierServiceClient) OfficerRegister(ctx context.Context, in *TenantBarrierOfficerRegisterRequest, opts ...grpc.CallOption) (*TenantBarrierOfficerRegisterResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TenantBarrierOfficerRegisterResponse)
+	err := c.cc.Invoke(ctx, TenantBarrierService_OfficerRegister_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tenantBarrierServiceClient) OfficerList(ctx context.Context, in *TenantBarrierOfficerListRequest, opts ...grpc.CallOption) (*TenantBarrierOfficerListResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TenantBarrierOfficerListResponse)
+	err := c.cc.Invoke(ctx, TenantBarrierService_OfficerList_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tenantBarrierServiceClient) ShareClaimBegin(ctx context.Context, in *TenantBarrierShareClaimBeginRequest, opts ...grpc.CallOption) (*TenantBarrierShareClaimBeginResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TenantBarrierShareClaimBeginResponse)
+	err := c.cc.Invoke(ctx, TenantBarrierService_ShareClaimBegin_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tenantBarrierServiceClient) ShareClaimComplete(ctx context.Context, in *TenantBarrierShareClaimCompleteRequest, opts ...grpc.CallOption) (*TenantBarrierShareClaimCompleteResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TenantBarrierShareClaimCompleteResponse)
+	err := c.cc.Invoke(ctx, TenantBarrierService_ShareClaimComplete_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tenantBarrierServiceClient) OfficerClaimStatus(ctx context.Context, in *TenantBarrierOfficerClaimStatusRequest, opts ...grpc.CallOption) (*TenantBarrierOfficerClaimStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TenantBarrierOfficerClaimStatusResponse)
+	err := c.cc.Invoke(ctx, TenantBarrierService_OfficerClaimStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tenantBarrierServiceClient) ShamirSealVote(ctx context.Context, in *TenantBarrierShamirSealVoteRequest, opts ...grpc.CallOption) (*TenantBarrierShamirSealVoteResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TenantBarrierShamirSealVoteResponse)
+	err := c.cc.Invoke(ctx, TenantBarrierService_ShamirSealVote_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// TenantBarrierServiceServer is the server API for TenantBarrierService service.
+// All implementations must embed UnimplementedTenantBarrierServiceServer
+// for forward compatibility.
+//
+// ===========================================================================
+// TenantBarrierService — per-tenant barrier lifecycle (none/passphrase/shamir)
+//
+// Each tenant barrier is independent of the system barrier and may use a
+// different strategy. Service-layer authorization (caller must be a tenant
+// admin of the target tenant; the system tenant is denied) is enforced by the
+// interceptors; the handlers delegate to pkg/tenant.TenantServicer.
+// ===========================================================================
+type TenantBarrierServiceServer interface {
+	// Init initializes a tenant barrier with the selected strategy. For the
+	// Shamir strategy the share_count field indicates how many officer shares
+	// were sealed; shares are never returned in the response.
+	Init(context.Context, *TenantBarrierInitRequest) (*TenantBarrierInitResponse, error)
+	// Unseal unseals a tenant barrier using a single key (passphrase strategy).
+	Unseal(context.Context, *TenantBarrierUnsealRequest) (*emptypb.Empty, error)
+	// UnsealShare submits one Shamir share toward the tenant quorum threshold,
+	// auto-unsealing once enough distinct shares have been submitted.
+	UnsealShare(context.Context, *TenantBarrierUnsealShareRequest) (*TenantBarrierUnsealProgress, error)
+	// Seal seals a tenant barrier.
+	Seal(context.Context, *TenantBarrierSealRequest) (*emptypb.Empty, error)
+	// Status reports a tenant barrier's sealed/initialized state and strategy.
+	Status(context.Context, *TenantBarrierStatusRequest) (*TenantBarrierStatusResponse, error)
+	// OfficerRegister enrolls a Security Officer for this tenant's barrier.
+	// Only valid for Shamir-strategy tenant barriers.
+	OfficerRegister(context.Context, *TenantBarrierOfficerRegisterRequest) (*TenantBarrierOfficerRegisterResponse, error)
+	// OfficerList returns the enrolled officers for this tenant's barrier.
+	OfficerList(context.Context, *TenantBarrierOfficerListRequest) (*TenantBarrierOfficerListResponse, error)
+	// ShareClaimBegin issues a challenge nonce to the named officer as the
+	// first step of the two-phase share claim flow.
+	ShareClaimBegin(context.Context, *TenantBarrierShareClaimBeginRequest) (*TenantBarrierShareClaimBeginResponse, error)
+	// ShareClaimComplete verifies the signed nonce and returns the share bytes
+	// exactly once, then destroys the enclave.
+	ShareClaimComplete(context.Context, *TenantBarrierShareClaimCompleteRequest) (*TenantBarrierShareClaimCompleteResponse, error)
+	// OfficerClaimStatus returns per-officer claim status for admin visibility.
+	OfficerClaimStatus(context.Context, *TenantBarrierOfficerClaimStatusRequest) (*TenantBarrierOfficerClaimStatusResponse, error)
+	// ShamirSealVote submits one share toward the quorum-gated seal threshold.
+	ShamirSealVote(context.Context, *TenantBarrierShamirSealVoteRequest) (*TenantBarrierShamirSealVoteResponse, error)
+	mustEmbedUnimplementedTenantBarrierServiceServer()
+}
+
+// UnimplementedTenantBarrierServiceServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedTenantBarrierServiceServer struct{}
+
+func (UnimplementedTenantBarrierServiceServer) Init(context.Context, *TenantBarrierInitRequest) (*TenantBarrierInitResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Init not implemented")
+}
+func (UnimplementedTenantBarrierServiceServer) Unseal(context.Context, *TenantBarrierUnsealRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method Unseal not implemented")
+}
+func (UnimplementedTenantBarrierServiceServer) UnsealShare(context.Context, *TenantBarrierUnsealShareRequest) (*TenantBarrierUnsealProgress, error) {
+	return nil, status.Error(codes.Unimplemented, "method UnsealShare not implemented")
+}
+func (UnimplementedTenantBarrierServiceServer) Seal(context.Context, *TenantBarrierSealRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method Seal not implemented")
+}
+func (UnimplementedTenantBarrierServiceServer) Status(context.Context, *TenantBarrierStatusRequest) (*TenantBarrierStatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Status not implemented")
+}
+func (UnimplementedTenantBarrierServiceServer) OfficerRegister(context.Context, *TenantBarrierOfficerRegisterRequest) (*TenantBarrierOfficerRegisterResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method OfficerRegister not implemented")
+}
+func (UnimplementedTenantBarrierServiceServer) OfficerList(context.Context, *TenantBarrierOfficerListRequest) (*TenantBarrierOfficerListResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method OfficerList not implemented")
+}
+func (UnimplementedTenantBarrierServiceServer) ShareClaimBegin(context.Context, *TenantBarrierShareClaimBeginRequest) (*TenantBarrierShareClaimBeginResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ShareClaimBegin not implemented")
+}
+func (UnimplementedTenantBarrierServiceServer) ShareClaimComplete(context.Context, *TenantBarrierShareClaimCompleteRequest) (*TenantBarrierShareClaimCompleteResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ShareClaimComplete not implemented")
+}
+func (UnimplementedTenantBarrierServiceServer) OfficerClaimStatus(context.Context, *TenantBarrierOfficerClaimStatusRequest) (*TenantBarrierOfficerClaimStatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method OfficerClaimStatus not implemented")
+}
+func (UnimplementedTenantBarrierServiceServer) ShamirSealVote(context.Context, *TenantBarrierShamirSealVoteRequest) (*TenantBarrierShamirSealVoteResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ShamirSealVote not implemented")
+}
+func (UnimplementedTenantBarrierServiceServer) mustEmbedUnimplementedTenantBarrierServiceServer() {}
+func (UnimplementedTenantBarrierServiceServer) testEmbeddedByValue()                              {}
+
+// UnsafeTenantBarrierServiceServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to TenantBarrierServiceServer will
+// result in compilation errors.
+type UnsafeTenantBarrierServiceServer interface {
+	mustEmbedUnimplementedTenantBarrierServiceServer()
+}
+
+func RegisterTenantBarrierServiceServer(s grpc.ServiceRegistrar, srv TenantBarrierServiceServer) {
+	// If the following call panics, it indicates UnimplementedTenantBarrierServiceServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&TenantBarrierService_ServiceDesc, srv)
+}
+
+func _TenantBarrierService_Init_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TenantBarrierInitRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TenantBarrierServiceServer).Init(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TenantBarrierService_Init_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TenantBarrierServiceServer).Init(ctx, req.(*TenantBarrierInitRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _TenantBarrierService_Unseal_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TenantBarrierUnsealRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TenantBarrierServiceServer).Unseal(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TenantBarrierService_Unseal_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TenantBarrierServiceServer).Unseal(ctx, req.(*TenantBarrierUnsealRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _TenantBarrierService_UnsealShare_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TenantBarrierUnsealShareRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TenantBarrierServiceServer).UnsealShare(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TenantBarrierService_UnsealShare_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TenantBarrierServiceServer).UnsealShare(ctx, req.(*TenantBarrierUnsealShareRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _TenantBarrierService_Seal_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TenantBarrierSealRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TenantBarrierServiceServer).Seal(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TenantBarrierService_Seal_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TenantBarrierServiceServer).Seal(ctx, req.(*TenantBarrierSealRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _TenantBarrierService_Status_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TenantBarrierStatusRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TenantBarrierServiceServer).Status(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TenantBarrierService_Status_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TenantBarrierServiceServer).Status(ctx, req.(*TenantBarrierStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _TenantBarrierService_OfficerRegister_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TenantBarrierOfficerRegisterRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TenantBarrierServiceServer).OfficerRegister(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TenantBarrierService_OfficerRegister_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TenantBarrierServiceServer).OfficerRegister(ctx, req.(*TenantBarrierOfficerRegisterRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _TenantBarrierService_OfficerList_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TenantBarrierOfficerListRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TenantBarrierServiceServer).OfficerList(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TenantBarrierService_OfficerList_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TenantBarrierServiceServer).OfficerList(ctx, req.(*TenantBarrierOfficerListRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _TenantBarrierService_ShareClaimBegin_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TenantBarrierShareClaimBeginRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TenantBarrierServiceServer).ShareClaimBegin(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TenantBarrierService_ShareClaimBegin_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TenantBarrierServiceServer).ShareClaimBegin(ctx, req.(*TenantBarrierShareClaimBeginRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _TenantBarrierService_ShareClaimComplete_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TenantBarrierShareClaimCompleteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TenantBarrierServiceServer).ShareClaimComplete(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TenantBarrierService_ShareClaimComplete_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TenantBarrierServiceServer).ShareClaimComplete(ctx, req.(*TenantBarrierShareClaimCompleteRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _TenantBarrierService_OfficerClaimStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TenantBarrierOfficerClaimStatusRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TenantBarrierServiceServer).OfficerClaimStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TenantBarrierService_OfficerClaimStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TenantBarrierServiceServer).OfficerClaimStatus(ctx, req.(*TenantBarrierOfficerClaimStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _TenantBarrierService_ShamirSealVote_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TenantBarrierShamirSealVoteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TenantBarrierServiceServer).ShamirSealVote(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TenantBarrierService_ShamirSealVote_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TenantBarrierServiceServer).ShamirSealVote(ctx, req.(*TenantBarrierShamirSealVoteRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// TenantBarrierService_ServiceDesc is the grpc.ServiceDesc for TenantBarrierService service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var TenantBarrierService_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "qrdb.v1.TenantBarrierService",
+	HandlerType: (*TenantBarrierServiceServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "Init",
+			Handler:    _TenantBarrierService_Init_Handler,
+		},
+		{
+			MethodName: "Unseal",
+			Handler:    _TenantBarrierService_Unseal_Handler,
+		},
+		{
+			MethodName: "UnsealShare",
+			Handler:    _TenantBarrierService_UnsealShare_Handler,
+		},
+		{
+			MethodName: "Seal",
+			Handler:    _TenantBarrierService_Seal_Handler,
+		},
+		{
+			MethodName: "Status",
+			Handler:    _TenantBarrierService_Status_Handler,
+		},
+		{
+			MethodName: "OfficerRegister",
+			Handler:    _TenantBarrierService_OfficerRegister_Handler,
+		},
+		{
+			MethodName: "OfficerList",
+			Handler:    _TenantBarrierService_OfficerList_Handler,
+		},
+		{
+			MethodName: "ShareClaimBegin",
+			Handler:    _TenantBarrierService_ShareClaimBegin_Handler,
+		},
+		{
+			MethodName: "ShareClaimComplete",
+			Handler:    _TenantBarrierService_ShareClaimComplete_Handler,
+		},
+		{
+			MethodName: "OfficerClaimStatus",
+			Handler:    _TenantBarrierService_OfficerClaimStatus_Handler,
+		},
+		{
+			MethodName: "ShamirSealVote",
+			Handler:    _TenantBarrierService_ShamirSealVote_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
+	Metadata: "pkg/api/grpc/proto/qrdbv1/qrdb.proto",
+}
+
+const (
+	AuditService_Query_FullMethodName = "/qrdb.v1.AuditService/Query"
+)
+
+// AuditServiceClient is the client API for AuditService service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+//
+// ===========================================================================
+// AuditService — compliance-grade audit query (qrdb.v1.AuditService)
+//
+// Query returns a paginated page of audit events matching a filter.
+// Authorization: requires "audit:query" permission.
+// ===========================================================================
+type AuditServiceClient interface {
+	// Query returns audit events matching the supplied filter.
+	Query(ctx context.Context, in *AuditQueryRequest, opts ...grpc.CallOption) (*AuditQueryResponse, error)
+}
+
+type auditServiceClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewAuditServiceClient(cc grpc.ClientConnInterface) AuditServiceClient {
+	return &auditServiceClient{cc}
+}
+
+func (c *auditServiceClient) Query(ctx context.Context, in *AuditQueryRequest, opts ...grpc.CallOption) (*AuditQueryResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AuditQueryResponse)
+	err := c.cc.Invoke(ctx, AuditService_Query_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// AuditServiceServer is the server API for AuditService service.
+// All implementations must embed UnimplementedAuditServiceServer
+// for forward compatibility.
+//
+// ===========================================================================
+// AuditService — compliance-grade audit query (qrdb.v1.AuditService)
+//
+// Query returns a paginated page of audit events matching a filter.
+// Authorization: requires "audit:query" permission.
+// ===========================================================================
+type AuditServiceServer interface {
+	// Query returns audit events matching the supplied filter.
+	Query(context.Context, *AuditQueryRequest) (*AuditQueryResponse, error)
+	mustEmbedUnimplementedAuditServiceServer()
+}
+
+// UnimplementedAuditServiceServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedAuditServiceServer struct{}
+
+func (UnimplementedAuditServiceServer) Query(context.Context, *AuditQueryRequest) (*AuditQueryResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Query not implemented")
+}
+func (UnimplementedAuditServiceServer) mustEmbedUnimplementedAuditServiceServer() {}
+func (UnimplementedAuditServiceServer) testEmbeddedByValue()                      {}
+
+// UnsafeAuditServiceServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to AuditServiceServer will
+// result in compilation errors.
+type UnsafeAuditServiceServer interface {
+	mustEmbedUnimplementedAuditServiceServer()
+}
+
+func RegisterAuditServiceServer(s grpc.ServiceRegistrar, srv AuditServiceServer) {
+	// If the following call panics, it indicates UnimplementedAuditServiceServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&AuditService_ServiceDesc, srv)
+}
+
+func _AuditService_Query_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AuditQueryRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AuditServiceServer).Query(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AuditService_Query_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AuditServiceServer).Query(ctx, req.(*AuditQueryRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// AuditService_ServiceDesc is the grpc.ServiceDesc for AuditService service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var AuditService_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "qrdb.v1.AuditService",
+	HandlerType: (*AuditServiceServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "Query",
+			Handler:    _AuditService_Query_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
+	Metadata: "pkg/api/grpc/proto/qrdbv1/qrdb.proto",
+}
+
+const (
+	AuthFactorService_EnrollFactor_FullMethodName    = "/qrdb.v1.AuthFactorService/EnrollFactor"
+	AuthFactorService_ChallengeFactor_FullMethodName = "/qrdb.v1.AuthFactorService/ChallengeFactor"
+	AuthFactorService_VerifyFactor_FullMethodName    = "/qrdb.v1.AuthFactorService/VerifyFactor"
+	AuthFactorService_ListFactors_FullMethodName     = "/qrdb.v1.AuthFactorService/ListFactors"
+	AuthFactorService_RevokeFactor_FullMethodName    = "/qrdb.v1.AuthFactorService/RevokeFactor"
+)
+
+// AuthFactorServiceClient is the client API for AuthFactorService service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+//
+// ===========================================================================
+// AuthFactorService — custodian hardware-factor enrollment/challenge/verify
+// (qrdb.v1.AuthFactorService)
+//
+// This service manages the lifecycle of hardware auth factors (FIDO2, PIV,
+// PKCS#11) for ceremony custodians. Authorization is per-method; see the
+// permission constants in pkg/permission.
+// ===========================================================================
+type AuthFactorServiceClient interface {
+	// EnrollFactor enrolls a custodian in the given auth factor type.
+	EnrollFactor(ctx context.Context, in *EnrollFactorRequest, opts ...grpc.CallOption) (*EnrollFactorResponse, error)
+	// ChallengeFactor issues a challenge for a previously enrolled factor.
+	ChallengeFactor(ctx context.Context, in *ChallengeFactorRequest, opts ...grpc.CallOption) (*ChallengeFactorResponse, error)
+	// VerifyFactor verifies the custodian's challenge response.
+	VerifyFactor(ctx context.Context, in *VerifyFactorRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// ListFactors lists enrolled auth factors, optionally filtered by subject.
+	ListFactors(ctx context.Context, in *ListFactorsRequest, opts ...grpc.CallOption) (*ListFactorsResponse, error)
+	// RevokeFactor permanently revokes an enrollment.
+	RevokeFactor(ctx context.Context, in *RevokeFactorRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+}
+
+type authFactorServiceClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewAuthFactorServiceClient(cc grpc.ClientConnInterface) AuthFactorServiceClient {
+	return &authFactorServiceClient{cc}
+}
+
+func (c *authFactorServiceClient) EnrollFactor(ctx context.Context, in *EnrollFactorRequest, opts ...grpc.CallOption) (*EnrollFactorResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(EnrollFactorResponse)
+	err := c.cc.Invoke(ctx, AuthFactorService_EnrollFactor_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *authFactorServiceClient) ChallengeFactor(ctx context.Context, in *ChallengeFactorRequest, opts ...grpc.CallOption) (*ChallengeFactorResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ChallengeFactorResponse)
+	err := c.cc.Invoke(ctx, AuthFactorService_ChallengeFactor_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *authFactorServiceClient) VerifyFactor(ctx context.Context, in *VerifyFactorRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, AuthFactorService_VerifyFactor_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *authFactorServiceClient) ListFactors(ctx context.Context, in *ListFactorsRequest, opts ...grpc.CallOption) (*ListFactorsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListFactorsResponse)
+	err := c.cc.Invoke(ctx, AuthFactorService_ListFactors_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *authFactorServiceClient) RevokeFactor(ctx context.Context, in *RevokeFactorRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, AuthFactorService_RevokeFactor_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// AuthFactorServiceServer is the server API for AuthFactorService service.
+// All implementations must embed UnimplementedAuthFactorServiceServer
+// for forward compatibility.
+//
+// ===========================================================================
+// AuthFactorService — custodian hardware-factor enrollment/challenge/verify
+// (qrdb.v1.AuthFactorService)
+//
+// This service manages the lifecycle of hardware auth factors (FIDO2, PIV,
+// PKCS#11) for ceremony custodians. Authorization is per-method; see the
+// permission constants in pkg/permission.
+// ===========================================================================
+type AuthFactorServiceServer interface {
+	// EnrollFactor enrolls a custodian in the given auth factor type.
+	EnrollFactor(context.Context, *EnrollFactorRequest) (*EnrollFactorResponse, error)
+	// ChallengeFactor issues a challenge for a previously enrolled factor.
+	ChallengeFactor(context.Context, *ChallengeFactorRequest) (*ChallengeFactorResponse, error)
+	// VerifyFactor verifies the custodian's challenge response.
+	VerifyFactor(context.Context, *VerifyFactorRequest) (*emptypb.Empty, error)
+	// ListFactors lists enrolled auth factors, optionally filtered by subject.
+	ListFactors(context.Context, *ListFactorsRequest) (*ListFactorsResponse, error)
+	// RevokeFactor permanently revokes an enrollment.
+	RevokeFactor(context.Context, *RevokeFactorRequest) (*emptypb.Empty, error)
+	mustEmbedUnimplementedAuthFactorServiceServer()
+}
+
+// UnimplementedAuthFactorServiceServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedAuthFactorServiceServer struct{}
+
+func (UnimplementedAuthFactorServiceServer) EnrollFactor(context.Context, *EnrollFactorRequest) (*EnrollFactorResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method EnrollFactor not implemented")
+}
+func (UnimplementedAuthFactorServiceServer) ChallengeFactor(context.Context, *ChallengeFactorRequest) (*ChallengeFactorResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ChallengeFactor not implemented")
+}
+func (UnimplementedAuthFactorServiceServer) VerifyFactor(context.Context, *VerifyFactorRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method VerifyFactor not implemented")
+}
+func (UnimplementedAuthFactorServiceServer) ListFactors(context.Context, *ListFactorsRequest) (*ListFactorsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListFactors not implemented")
+}
+func (UnimplementedAuthFactorServiceServer) RevokeFactor(context.Context, *RevokeFactorRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method RevokeFactor not implemented")
+}
+func (UnimplementedAuthFactorServiceServer) mustEmbedUnimplementedAuthFactorServiceServer() {}
+func (UnimplementedAuthFactorServiceServer) testEmbeddedByValue()                           {}
+
+// UnsafeAuthFactorServiceServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to AuthFactorServiceServer will
+// result in compilation errors.
+type UnsafeAuthFactorServiceServer interface {
+	mustEmbedUnimplementedAuthFactorServiceServer()
+}
+
+func RegisterAuthFactorServiceServer(s grpc.ServiceRegistrar, srv AuthFactorServiceServer) {
+	// If the following call panics, it indicates UnimplementedAuthFactorServiceServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&AuthFactorService_ServiceDesc, srv)
+}
+
+func _AuthFactorService_EnrollFactor_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(EnrollFactorRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AuthFactorServiceServer).EnrollFactor(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AuthFactorService_EnrollFactor_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AuthFactorServiceServer).EnrollFactor(ctx, req.(*EnrollFactorRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AuthFactorService_ChallengeFactor_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ChallengeFactorRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AuthFactorServiceServer).ChallengeFactor(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AuthFactorService_ChallengeFactor_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AuthFactorServiceServer).ChallengeFactor(ctx, req.(*ChallengeFactorRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AuthFactorService_VerifyFactor_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VerifyFactorRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AuthFactorServiceServer).VerifyFactor(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AuthFactorService_VerifyFactor_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AuthFactorServiceServer).VerifyFactor(ctx, req.(*VerifyFactorRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AuthFactorService_ListFactors_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListFactorsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AuthFactorServiceServer).ListFactors(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AuthFactorService_ListFactors_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AuthFactorServiceServer).ListFactors(ctx, req.(*ListFactorsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AuthFactorService_RevokeFactor_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RevokeFactorRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AuthFactorServiceServer).RevokeFactor(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AuthFactorService_RevokeFactor_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AuthFactorServiceServer).RevokeFactor(ctx, req.(*RevokeFactorRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// AuthFactorService_ServiceDesc is the grpc.ServiceDesc for AuthFactorService service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var AuthFactorService_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "qrdb.v1.AuthFactorService",
+	HandlerType: (*AuthFactorServiceServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "EnrollFactor",
+			Handler:    _AuthFactorService_EnrollFactor_Handler,
+		},
+		{
+			MethodName: "ChallengeFactor",
+			Handler:    _AuthFactorService_ChallengeFactor_Handler,
+		},
+		{
+			MethodName: "VerifyFactor",
+			Handler:    _AuthFactorService_VerifyFactor_Handler,
+		},
+		{
+			MethodName: "ListFactors",
+			Handler:    _AuthFactorService_ListFactors_Handler,
+		},
+		{
+			MethodName: "RevokeFactor",
+			Handler:    _AuthFactorService_RevokeFactor_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
+	Metadata: "pkg/api/grpc/proto/qrdbv1/qrdb.proto",
+}
+
+const (
+	UserAuthFactorService_Add_FullMethodName     = "/qrdb.v1.UserAuthFactorService/Add"
+	UserAuthFactorService_List_FullMethodName    = "/qrdb.v1.UserAuthFactorService/List"
+	UserAuthFactorService_Get_FullMethodName     = "/qrdb.v1.UserAuthFactorService/Get"
+	UserAuthFactorService_Remove_FullMethodName  = "/qrdb.v1.UserAuthFactorService/Remove"
+	UserAuthFactorService_Rotate_FullMethodName  = "/qrdb.v1.UserAuthFactorService/Rotate"
+	UserAuthFactorService_Relabel_FullMethodName = "/qrdb.v1.UserAuthFactorService/Relabel"
+	UserAuthFactorService_Login_FullMethodName   = "/qrdb.v1.UserAuthFactorService/Login"
+)
+
+// UserAuthFactorServiceClient is the client API for UserAuthFactorService service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+//
+// ===========================================================================
+// UserAuthFactorService — user-side auth factor management (M14)
+// (qrdb.v1.UserAuthFactorService)
+//
+// This service manages auth factors stored in the QRDB auth layer
+// (TOTP, passkey, etc.) for end-users. Authorization is per-method.
+// ===========================================================================
+type UserAuthFactorServiceClient interface {
+	// Add registers a new auth factor for a user.
+	Add(ctx context.Context, in *UserAuthFactorAddRequest, opts ...grpc.CallOption) (*UserAuthFactorAddResponse, error)
+	// List returns all auth factors for a user.
+	List(ctx context.Context, in *UserAuthFactorListRequest, opts ...grpc.CallOption) (*UserAuthFactorListResponse, error)
+	// Get retrieves a single auth factor by ID.
+	Get(ctx context.Context, in *UserAuthFactorGetRequest, opts ...grpc.CallOption) (*UserAuthFactorGetResponse, error)
+	// Remove deletes an auth factor.
+	Remove(ctx context.Context, in *UserAuthFactorRemoveRequest, opts ...grpc.CallOption) (*UserAuthFactorRemoveResponse, error)
+	// Rotate atomically replaces one factor with another.
+	Rotate(ctx context.Context, in *UserAuthFactorRotateRequest, opts ...grpc.CallOption) (*UserAuthFactorRotateResponse, error)
+	// Relabel updates the human-readable label of a factor.
+	Relabel(ctx context.Context, in *UserAuthFactorRelabelRequest, opts ...grpc.CallOption) (*UserAuthFactorRelabelResponse, error)
+	// Login looks up the auth factor matching a credential key and returns
+	// the associated user identity.
+	Login(ctx context.Context, in *UserAuthFactorLoginRequest, opts ...grpc.CallOption) (*UserAuthFactorLoginResponse, error)
+}
+
+type userAuthFactorServiceClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewUserAuthFactorServiceClient(cc grpc.ClientConnInterface) UserAuthFactorServiceClient {
+	return &userAuthFactorServiceClient{cc}
+}
+
+func (c *userAuthFactorServiceClient) Add(ctx context.Context, in *UserAuthFactorAddRequest, opts ...grpc.CallOption) (*UserAuthFactorAddResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UserAuthFactorAddResponse)
+	err := c.cc.Invoke(ctx, UserAuthFactorService_Add_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userAuthFactorServiceClient) List(ctx context.Context, in *UserAuthFactorListRequest, opts ...grpc.CallOption) (*UserAuthFactorListResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UserAuthFactorListResponse)
+	err := c.cc.Invoke(ctx, UserAuthFactorService_List_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userAuthFactorServiceClient) Get(ctx context.Context, in *UserAuthFactorGetRequest, opts ...grpc.CallOption) (*UserAuthFactorGetResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UserAuthFactorGetResponse)
+	err := c.cc.Invoke(ctx, UserAuthFactorService_Get_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userAuthFactorServiceClient) Remove(ctx context.Context, in *UserAuthFactorRemoveRequest, opts ...grpc.CallOption) (*UserAuthFactorRemoveResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UserAuthFactorRemoveResponse)
+	err := c.cc.Invoke(ctx, UserAuthFactorService_Remove_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userAuthFactorServiceClient) Rotate(ctx context.Context, in *UserAuthFactorRotateRequest, opts ...grpc.CallOption) (*UserAuthFactorRotateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UserAuthFactorRotateResponse)
+	err := c.cc.Invoke(ctx, UserAuthFactorService_Rotate_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userAuthFactorServiceClient) Relabel(ctx context.Context, in *UserAuthFactorRelabelRequest, opts ...grpc.CallOption) (*UserAuthFactorRelabelResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UserAuthFactorRelabelResponse)
+	err := c.cc.Invoke(ctx, UserAuthFactorService_Relabel_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userAuthFactorServiceClient) Login(ctx context.Context, in *UserAuthFactorLoginRequest, opts ...grpc.CallOption) (*UserAuthFactorLoginResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UserAuthFactorLoginResponse)
+	err := c.cc.Invoke(ctx, UserAuthFactorService_Login_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// UserAuthFactorServiceServer is the server API for UserAuthFactorService service.
+// All implementations must embed UnimplementedUserAuthFactorServiceServer
+// for forward compatibility.
+//
+// ===========================================================================
+// UserAuthFactorService — user-side auth factor management (M14)
+// (qrdb.v1.UserAuthFactorService)
+//
+// This service manages auth factors stored in the QRDB auth layer
+// (TOTP, passkey, etc.) for end-users. Authorization is per-method.
+// ===========================================================================
+type UserAuthFactorServiceServer interface {
+	// Add registers a new auth factor for a user.
+	Add(context.Context, *UserAuthFactorAddRequest) (*UserAuthFactorAddResponse, error)
+	// List returns all auth factors for a user.
+	List(context.Context, *UserAuthFactorListRequest) (*UserAuthFactorListResponse, error)
+	// Get retrieves a single auth factor by ID.
+	Get(context.Context, *UserAuthFactorGetRequest) (*UserAuthFactorGetResponse, error)
+	// Remove deletes an auth factor.
+	Remove(context.Context, *UserAuthFactorRemoveRequest) (*UserAuthFactorRemoveResponse, error)
+	// Rotate atomically replaces one factor with another.
+	Rotate(context.Context, *UserAuthFactorRotateRequest) (*UserAuthFactorRotateResponse, error)
+	// Relabel updates the human-readable label of a factor.
+	Relabel(context.Context, *UserAuthFactorRelabelRequest) (*UserAuthFactorRelabelResponse, error)
+	// Login looks up the auth factor matching a credential key and returns
+	// the associated user identity.
+	Login(context.Context, *UserAuthFactorLoginRequest) (*UserAuthFactorLoginResponse, error)
+	mustEmbedUnimplementedUserAuthFactorServiceServer()
+}
+
+// UnimplementedUserAuthFactorServiceServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedUserAuthFactorServiceServer struct{}
+
+func (UnimplementedUserAuthFactorServiceServer) Add(context.Context, *UserAuthFactorAddRequest) (*UserAuthFactorAddResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Add not implemented")
+}
+func (UnimplementedUserAuthFactorServiceServer) List(context.Context, *UserAuthFactorListRequest) (*UserAuthFactorListResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method List not implemented")
+}
+func (UnimplementedUserAuthFactorServiceServer) Get(context.Context, *UserAuthFactorGetRequest) (*UserAuthFactorGetResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Get not implemented")
+}
+func (UnimplementedUserAuthFactorServiceServer) Remove(context.Context, *UserAuthFactorRemoveRequest) (*UserAuthFactorRemoveResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Remove not implemented")
+}
+func (UnimplementedUserAuthFactorServiceServer) Rotate(context.Context, *UserAuthFactorRotateRequest) (*UserAuthFactorRotateResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Rotate not implemented")
+}
+func (UnimplementedUserAuthFactorServiceServer) Relabel(context.Context, *UserAuthFactorRelabelRequest) (*UserAuthFactorRelabelResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Relabel not implemented")
+}
+func (UnimplementedUserAuthFactorServiceServer) Login(context.Context, *UserAuthFactorLoginRequest) (*UserAuthFactorLoginResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Login not implemented")
+}
+func (UnimplementedUserAuthFactorServiceServer) mustEmbedUnimplementedUserAuthFactorServiceServer() {}
+func (UnimplementedUserAuthFactorServiceServer) testEmbeddedByValue()                               {}
+
+// UnsafeUserAuthFactorServiceServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to UserAuthFactorServiceServer will
+// result in compilation errors.
+type UnsafeUserAuthFactorServiceServer interface {
+	mustEmbedUnimplementedUserAuthFactorServiceServer()
+}
+
+func RegisterUserAuthFactorServiceServer(s grpc.ServiceRegistrar, srv UserAuthFactorServiceServer) {
+	// If the following call panics, it indicates UnimplementedUserAuthFactorServiceServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&UserAuthFactorService_ServiceDesc, srv)
+}
+
+func _UserAuthFactorService_Add_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UserAuthFactorAddRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserAuthFactorServiceServer).Add(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserAuthFactorService_Add_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserAuthFactorServiceServer).Add(ctx, req.(*UserAuthFactorAddRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserAuthFactorService_List_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UserAuthFactorListRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserAuthFactorServiceServer).List(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserAuthFactorService_List_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserAuthFactorServiceServer).List(ctx, req.(*UserAuthFactorListRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserAuthFactorService_Get_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UserAuthFactorGetRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserAuthFactorServiceServer).Get(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserAuthFactorService_Get_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserAuthFactorServiceServer).Get(ctx, req.(*UserAuthFactorGetRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserAuthFactorService_Remove_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UserAuthFactorRemoveRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserAuthFactorServiceServer).Remove(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserAuthFactorService_Remove_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserAuthFactorServiceServer).Remove(ctx, req.(*UserAuthFactorRemoveRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserAuthFactorService_Rotate_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UserAuthFactorRotateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserAuthFactorServiceServer).Rotate(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserAuthFactorService_Rotate_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserAuthFactorServiceServer).Rotate(ctx, req.(*UserAuthFactorRotateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserAuthFactorService_Relabel_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UserAuthFactorRelabelRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserAuthFactorServiceServer).Relabel(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserAuthFactorService_Relabel_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserAuthFactorServiceServer).Relabel(ctx, req.(*UserAuthFactorRelabelRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserAuthFactorService_Login_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UserAuthFactorLoginRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserAuthFactorServiceServer).Login(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserAuthFactorService_Login_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserAuthFactorServiceServer).Login(ctx, req.(*UserAuthFactorLoginRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// UserAuthFactorService_ServiceDesc is the grpc.ServiceDesc for UserAuthFactorService service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var UserAuthFactorService_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "qrdb.v1.UserAuthFactorService",
+	HandlerType: (*UserAuthFactorServiceServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "Add",
+			Handler:    _UserAuthFactorService_Add_Handler,
+		},
+		{
+			MethodName: "List",
+			Handler:    _UserAuthFactorService_List_Handler,
+		},
+		{
+			MethodName: "Get",
+			Handler:    _UserAuthFactorService_Get_Handler,
+		},
+		{
+			MethodName: "Remove",
+			Handler:    _UserAuthFactorService_Remove_Handler,
+		},
+		{
+			MethodName: "Rotate",
+			Handler:    _UserAuthFactorService_Rotate_Handler,
+		},
+		{
+			MethodName: "Relabel",
+			Handler:    _UserAuthFactorService_Relabel_Handler,
+		},
+		{
+			MethodName: "Login",
+			Handler:    _UserAuthFactorService_Login_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
 	Metadata: "pkg/api/grpc/proto/qrdbv1/qrdb.proto",
 }

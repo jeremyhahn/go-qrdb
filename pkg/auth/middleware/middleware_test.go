@@ -29,6 +29,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
@@ -549,6 +550,84 @@ func TestAuthorize_NoAudit(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Identity-gated sentinel tests
+//
+// permission.IdentityGated short-circuits the RBAC check: an authenticated
+// identity passes without consulting the authorizer (the binding
+// authorization — officer registry membership, certificate-thumbprint match,
+// nonce-signature or factor verification — is enforced at the handler
+// layer), while an unauthenticated caller is still rejected with
+// auth.ErrUnauthenticated.
+// ---------------------------------------------------------------------------
+
+func TestAuthorize_IdentityGated_SkipsRBAC(t *testing.T) {
+	// An authorizer that would DENY anything it is asked about, proving the
+	// sentinel never reaches the RBAC policy decision point.
+	authz := &mockAuthorizer{err: auth.ErrUnauthorized}
+	al := &mockAuditLogger{}
+	m := New(authz, WithAuditLogger(al))
+
+	identity := &auth.Identity{Subject: "so-1", TenantID: "t1"}
+	if err := m.authorize(context.Background(), identity, permission.IdentityGated); err != nil {
+		t.Fatalf("identity-gated authorize with authenticated identity: %v", err)
+	}
+
+	if authz.calls.Load() != 0 {
+		t.Errorf("authorizer was consulted %d times; identity-gated must short-circuit RBAC", authz.calls.Load())
+	}
+	if al.calls.Load() != 1 {
+		t.Fatalf("expected 1 audit call, got %d", al.calls.Load())
+	}
+	entry := al.entries[0]
+	if entry.Result != audit.ResultSuccess {
+		t.Errorf("expected audit result 'success', got %q", entry.Result)
+	}
+	if entry.Subject != "so-1" {
+		t.Errorf("expected audit subject 'so-1', got %q", entry.Subject)
+	}
+	if entry.Resource != permission.IdentityGated.String() {
+		t.Errorf("expected audit resource %q, got %q", permission.IdentityGated, entry.Resource)
+	}
+}
+
+func TestAuthorize_IdentityGated_NilIdentity(t *testing.T) {
+	authz := &mockAuthorizer{}
+	al := &mockAuditLogger{}
+	m := New(authz, WithAuditLogger(al))
+
+	err := m.authorize(context.Background(), nil, permission.IdentityGated)
+	if !errors.Is(err, auth.ErrUnauthenticated) {
+		t.Fatalf("expected auth.ErrUnauthenticated, got %v", err)
+	}
+	if authz.calls.Load() != 0 {
+		t.Errorf("authorizer was consulted %d times for an unauthenticated caller", authz.calls.Load())
+	}
+}
+
+func TestAuthorizeTenant_IdentityGated_Authenticated(t *testing.T) {
+	authz := &mockAuthorizer{err: auth.ErrUnauthorized}
+	m := New(authz)
+
+	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "so-1", TenantID: "t1"})
+	if err := m.AuthorizeTenant(ctx, "t2", permission.IdentityGated); err != nil {
+		t.Fatalf("identity-gated AuthorizeTenant with authenticated identity: %v", err)
+	}
+	if authz.calls.Load() != 0 {
+		t.Errorf("authorizer was consulted %d times; identity-gated must short-circuit RBAC", authz.calls.Load())
+	}
+}
+
+func TestAuthorizeTenant_IdentityGated_Unauthenticated(t *testing.T) {
+	authz := &mockAuthorizer{}
+	m := New(authz)
+
+	err := m.AuthorizeTenant(context.Background(), "t1", permission.IdentityGated)
+	if !errors.Is(err, auth.ErrUnauthenticated) {
+		t.Fatalf("expected auth.ErrUnauthenticated, got %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // gRPC UnaryInterceptor tests
 // ---------------------------------------------------------------------------
 
@@ -704,6 +783,60 @@ func TestUnaryInterceptor_UserDisabled(t *testing.T) {
 	}
 	if st.Code() != codes.PermissionDenied {
 		t.Errorf("expected PermissionDenied code, got %v", st.Code())
+	}
+}
+
+// TestUnaryInterceptor_IdentityGated_AuthenticatedPasses verifies that an
+// identity-gated claim route admits an authenticated caller who has NO RBAC
+// roles or grants: the deny-all authorizer is never consulted and the handler
+// runs. This is the Security-Officer posture — officers are ceremony-registry
+// principals, not RBAC users.
+func TestUnaryInterceptor_IdentityGated_AuthenticatedPasses(t *testing.T) {
+	id := &auth.Identity{Subject: "so-1", TenantID: "t1"}
+	authn := &mockAuthenticator{name: "mtls", identity: id}
+	authz := &mockAuthorizer{err: auth.ErrUnauthorized} // would deny anything asked
+
+	m := New(authz, WithAuthenticator(authn))
+	interceptor := m.UnaryInterceptor()
+
+	info := &grpc.UnaryServerInfo{FullMethod: "/qrdb.v1.QRDBService/BarrierShareClaimBegin"}
+	handlerCalled := false
+	handler := func(_ context.Context, _ any) (any, error) {
+		handlerCalled = true
+		return "ok", nil
+	}
+
+	resp, err := interceptor(context.Background(), nil, info, handler)
+	if err != nil {
+		t.Fatalf("identity-gated method denied for authenticated caller: %v", err)
+	}
+	if !handlerCalled || resp != "ok" {
+		t.Errorf("handler not invoked (called=%v resp=%v)", handlerCalled, resp)
+	}
+	if authz.calls.Load() != 0 {
+		t.Errorf("RBAC authorizer consulted %d times; identity-gated must short-circuit", authz.calls.Load())
+	}
+}
+
+// TestUnaryInterceptor_IdentityGated_UnauthenticatedDenied verifies INV-4:
+// the identity-gated sentinel still requires an authenticated identity, so a
+// caller with no client certificate is rejected with Unauthenticated.
+func TestUnaryInterceptor_IdentityGated_UnauthenticatedDenied(t *testing.T) {
+	authn := &mockAuthenticator{name: "mtls", err: auth.ErrUnauthenticated}
+	authz := &mockAuthorizer{}
+
+	m := New(authz, WithAuthenticator(authn))
+	interceptor := m.UnaryInterceptor()
+
+	info := &grpc.UnaryServerInfo{FullMethod: "/qrdb.v1.QRDBService/BarrierShareClaimBegin"}
+	handler := func(_ context.Context, _ any) (any, error) {
+		t.Error("handler should not be called")
+		return nil, nil
+	}
+
+	_, err := interceptor(context.Background(), nil, info, handler)
+	if status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("expected Unauthenticated, got %v (err=%v)", status.Code(err), err)
 	}
 }
 
@@ -875,6 +1008,70 @@ func TestRESTMiddleware_Unauthenticated(t *testing.T) {
 	}
 	if errResp.Error == "" {
 		t.Error("expected non-empty error message")
+	}
+}
+
+// TestRESTMiddleware_IdentityGated_AuthenticatedPasses verifies the REST
+// officer share-claim routes admit an authenticated caller with no RBAC
+// grants: the deny-all authorizer is never consulted, mirroring the gRPC
+// identity-gated test. The handler layer enforces the binding authorization.
+func TestRESTMiddleware_IdentityGated_AuthenticatedPasses(t *testing.T) {
+	id := &auth.Identity{Subject: "so-1", TenantID: ""}
+	authn := &mockAuthenticator{name: "mtls", identity: id}
+	authz := &mockAuthorizer{err: auth.ErrUnauthorized} // would deny anything asked
+
+	m := New(authz, WithAuthenticator(authn))
+
+	handlerCalled := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		handlerCalled = true
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := m.RESTMiddleware(next)
+
+	routes := []string{
+		"/v1/ceremony/claim-share/begin",
+		"/v1/ceremony/claim-share/complete",
+		"/v1/barrier/officers/so-1/claim/begin",
+		"/v1/barrier/officers/so-1/claim/complete",
+		"/v1/barrier/recovery/officers/so-1/claim/begin",
+		"/v1/barrier/recovery/officers/so-1/claim/complete",
+	}
+	for _, route := range routes {
+		handlerCalled = false
+		req := httptest.NewRequest(http.MethodPost, route, nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK || !handlerCalled {
+			t.Errorf("POST %s: expected 200 + handler call, got %d (called=%v)", route, rec.Code, handlerCalled)
+		}
+	}
+	if authz.calls.Load() != 0 {
+		t.Errorf("RBAC authorizer consulted %d times; identity-gated must short-circuit", authz.calls.Load())
+	}
+}
+
+// TestRESTMiddleware_IdentityGated_UnauthenticatedDenied verifies INV-4 on
+// REST: an identity-gated claim route still rejects a caller with no client
+// certificate with 401.
+func TestRESTMiddleware_IdentityGated_UnauthenticatedDenied(t *testing.T) {
+	authn := &mockAuthenticator{name: "mtls", err: auth.ErrUnauthenticated}
+	authz := &mockAuthorizer{}
+
+	m := New(authz, WithAuthenticator(authn))
+
+	next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Error("handler should not be called")
+	})
+	handler := m.RESTMiddleware(next)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/barrier/officers/so-1/claim/begin", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", rec.Code)
 	}
 }
 

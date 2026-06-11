@@ -74,8 +74,8 @@ func TestE2E_BarrierStatus_HappyPath(t *testing.T) {
 func TestE2E_BarrierInitializeShamir_HappyPath(t *testing.T) {
 	srv, tr := startE2EServer(t)
 	srv.SetResponder("barrier.ShamirInitialize", func(_ []byte) (uint16, []byte) {
-		return wire.StatusOK, mustMarshal(&pb.BarrierShamirInitializeResponse{
-			Shares: []string{"a", "b", "c"}, Threshold: 2, TotalShares: 3,
+		return wire.StatusOK, mustMarshal(&pb.BarrierShamirOperationResponse{
+			ShareCount: 3, Threshold: 2, TotalShares: 3,
 		})
 	})
 	resp, err := tr.BarrierInitializeShamir(context.Background(), &transport.BarrierInitializeShamirRequest{
@@ -84,7 +84,7 @@ func TestE2E_BarrierInitializeShamir_HappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BarrierInitializeShamir: %v", err)
 	}
-	if len(resp.Shares) != 3 || resp.Threshold != 2 {
+	if resp.ShareCount != 3 || resp.Threshold != 2 {
 		t.Fatalf("resp = %+v", resp)
 	}
 }
@@ -120,15 +120,15 @@ func TestE2E_BarrierUnsealWithShares_HappyPath(t *testing.T) {
 func TestE2E_BarrierRekey_HappyPath(t *testing.T) {
 	srv, tr := startE2EServer(t)
 	srv.SetResponder("barrier.Rekey", func(_ []byte) (uint16, []byte) {
-		return wire.StatusOK, mustMarshal(&pb.BarrierShamirInitializeResponse{
-			Shares: []string{"x", "y"}, Threshold: 2, TotalShares: 2,
+		return wire.StatusOK, mustMarshal(&pb.BarrierShamirOperationResponse{
+			ShareCount: 2, Threshold: 2, TotalShares: 2,
 		})
 	})
 	resp, err := tr.BarrierRekey(context.Background(), &transport.BarrierRekeyRequest{Threshold: 2, Total: 2, SOPin: "1234"})
 	if err != nil {
 		t.Fatalf("BarrierRekey: %v", err)
 	}
-	if len(resp.Shares) != 2 {
+	if resp.ShareCount != 2 {
 		t.Fatalf("resp = %+v", resp)
 	}
 }
@@ -137,7 +137,7 @@ func TestE2E_BarrierGenerateRecoveryKeys_HappyPath(t *testing.T) {
 	srv, tr := startE2EServer(t)
 	srv.SetResponder("barrier.RecoveryGenerate", func(_ []byte) (uint16, []byte) {
 		return wire.StatusOK, mustMarshal(&pb.BarrierRecoveryKeysResponse{
-			Keys: []string{"r1", "r2"}, Threshold: 1, Total: 2,
+			ShareCount: 2, Threshold: 1, Total: 2,
 		})
 	})
 	resp, err := tr.BarrierGenerateRecoveryKeys(context.Background(), &transport.BarrierGenerateRecoveryKeysRequest{
@@ -146,7 +146,7 @@ func TestE2E_BarrierGenerateRecoveryKeys_HappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BarrierGenerateRecoveryKeys: %v", err)
 	}
-	if len(resp.Keys) != 2 {
+	if resp.ShareCount != 2 {
 		t.Fatalf("resp = %+v", resp)
 	}
 }

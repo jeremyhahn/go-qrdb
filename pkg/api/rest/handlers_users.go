@@ -33,33 +33,37 @@ import (
 // createUserRequest is the JSON payload for POST /users.
 type createUserRequest struct {
 	Username string   `json:"username"`
-	TenantID string   `json:"tenantID"`
-	RoleIDs  []string `json:"roleIDs"`
+	TenantID string   `json:"tenant_id"`
+	RoleIDs  []string `json:"role_ids"`
 }
 
 // updateUserRequest is the JSON payload for PUT /users/{id}.
 type updateUserRequest struct {
 	Username string   `json:"username"`
-	RoleIDs  []string `json:"roleIDs"`
+	RoleIDs  []string `json:"role_ids"`
 }
 
 // userResponse is the JSON representation of a user entity.
+//
+// The ID is a uint64 Snowflake that exceeds JavaScript's
+// Number.MAX_SAFE_INTEGER, so it is encoded as a JSON string
+// (proto3 JSON convention) to avoid precision loss in JS clients.
 type userResponse struct {
-	ID        uint64   `json:"id"`
+	ID        uint64   `json:"id,string"`
 	Username  string   `json:"username"`
-	TenantID  string   `json:"tenantID"`
-	RoleIDs   []string `json:"roleIDs"`
+	TenantID  string   `json:"tenant_id"`
+	RoleIDs   []string `json:"role_ids"`
 	Enabled   bool     `json:"enabled"`
 	System    bool     `json:"system"`
-	CreatedAt string   `json:"createdAt"`
-	UpdatedAt string   `json:"updatedAt"`
+	CreatedAt string   `json:"created_at"`
+	UpdatedAt string   `json:"updated_at"`
 }
 
 // listUsersResponse is the JSON payload returned by GET /users/list.
 type listUsersResponse struct {
 	Users   []*userResponse `json:"users"`
 	Total   int             `json:"total"`
-	HasMore bool            `json:"hasMore"`
+	HasMore bool            `json:"has_more"`
 }
 
 // ---------------------------------------------------------------------------

@@ -130,6 +130,38 @@ func (e *CeremonyServiceError) Unwrap() error {
 	return e.Err
 }
 
+// CustodianGroupServiceError is returned when the custodian group service
+// fails to initialize.
+type CustodianGroupServiceError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *CustodianGroupServiceError) Error() string {
+	return "lifecycle: custodian group service initialization failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *CustodianGroupServiceError) Unwrap() error {
+	return e.Err
+}
+
+// ShareServiceError is returned when the Shamir share service fails to
+// initialize.
+type ShareServiceError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *ShareServiceError) Error() string {
+	return "lifecycle: share service initialization failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *ShareServiceError) Unwrap() error {
+	return e.Err
+}
+
 // CredentialServiceError is returned when the credential service fails
 // to initialize.
 type CredentialServiceError struct {
@@ -190,6 +222,21 @@ func (e *RoleServiceError) Error() string {
 // Unwrap returns the underlying error.
 func (e *RoleServiceError) Unwrap() error {
 	return e.Err
+}
+
+// EmptyVectorDataDirError is returned when the vector storage subsystem is
+// about to be opened but infra.DataDir is empty. The vector store is backed
+// exclusively by PebbleDB and requires a valid absolute data directory; an
+// empty DataDir would cause Pebble to write relative-path artifacts into the
+// process working directory, which is never the intended behaviour. Callers
+// using a memory storage backend must still supply a DataDir for the vector
+// store (e.g. t.TempDir() in tests) or disable the vector subsystem.
+type EmptyVectorDataDirError struct{}
+
+// Error returns a human-readable description.
+func (e *EmptyVectorDataDirError) Error() string {
+	return "lifecycle: infra.DataDir must not be empty when the vector storage subsystem is enabled; " +
+		"provide an absolute data directory or disable the vector subsystem"
 }
 
 // EmbeddingCacheError is returned when the embedding LRU cache fails to

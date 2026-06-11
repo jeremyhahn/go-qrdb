@@ -23,6 +23,7 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
 	mcpapi "github.com/jeremyhahn/go-qrdb/pkg/api/mcp"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -111,17 +112,27 @@ func (m *mockTenantSvc) Quotas(_ context.Context, _ string) (*quota.Quotas, erro
 	return &quota.Quotas{}, nil
 }
 
-func (m *mockTenantSvc) TenantBarrierInit(_ context.Context, id, _ string, threshold, shares int) error {
+func (m *mockTenantSvc) TenantBarrierInit(_ context.Context, id, _ string, threshold, shares int) (*tenant.TenantBarrierInitResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.lastBarrierID = id
 	m.lastBarrierThreshold = threshold
 	m.lastBarrierShares = shares
-	return m.barrierInitErr
+	if m.barrierInitErr != nil {
+		return nil, m.barrierInitErr
+	}
+	return &tenant.TenantBarrierInitResult{TenantID: id}, nil
 }
 
-func (m *mockTenantSvc) TenantBarrierInitWithStrategy(ctx context.Context, id, passphrase string, threshold, shares int, _ seal.StrategyID) error {
+func (m *mockTenantSvc) TenantBarrierInitWithStrategy(ctx context.Context, id, passphrase string, threshold, shares int, _ seal.StrategyID) (*tenant.TenantBarrierInitResult, error) {
 	return m.TenantBarrierInit(ctx, id, passphrase, threshold, shares)
+}
+
+func (m *mockTenantSvc) TenantBarrierUnsealShare(_ context.Context, id, _ string) (*tenant.TenantBarrierUnsealProgress, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lastBarrierID = id
+	return &tenant.TenantBarrierUnsealProgress{TenantID: id}, nil
 }
 
 func (m *mockTenantSvc) TenantBarrierUnseal(_ context.Context, id string, key []byte) error {
@@ -165,6 +176,25 @@ func (m *mockTenantSvc) DecrementQuotaUsage(_ context.Context, _ string, _ quota
 }
 func (m *mockTenantSvc) GetQuotaUsage(_ context.Context, _ string, _ quota.Resource) (int64, error) {
 	return 0, nil
+}
+
+func (m *mockTenantSvc) TenantBarrierOfficerRegister(_ context.Context, _ string, _ *ceremony.RegisterOfficerRequest) (*ceremony.RegisterOfficerResult, error) {
+	return &ceremony.RegisterOfficerResult{}, nil
+}
+func (m *mockTenantSvc) TenantBarrierOfficerList(_ context.Context, _ string) ([]*ceremony.OfficerStatus, error) {
+	return nil, nil
+}
+func (m *mockTenantSvc) TenantBarrierOfficerClaimStatus(_ context.Context, _ string) ([]*ceremony.OfficerStatus, error) {
+	return nil, nil
+}
+func (m *mockTenantSvc) TenantBarrierShareClaimBegin(_ context.Context, _, _, _ string) (*ceremony.ChallengeResponse, error) {
+	return &ceremony.ChallengeResponse{}, nil
+}
+func (m *mockTenantSvc) TenantBarrierShareClaimComplete(_ context.Context, _, _, _ string, _ []byte, _ string) (*ceremony.ShareClaimResult, error) {
+	return &ceremony.ShareClaimResult{}, nil
+}
+func (m *mockTenantSvc) TenantBarrierShamirSealVote(_ context.Context, _, _ string) (*tenant.TenantBarrierUnsealProgress, error) {
+	return &tenant.TenantBarrierUnsealProgress{}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -212,7 +242,7 @@ func TestTenantBarrierInit_Success(t *testing.T) {
 	tr, cleanup := connectTenantInProcess(t, svc)
 	defer cleanup()
 
-	err := tr.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{
+	_, err := tr.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{
 		TenantID:   "acme",
 		Passphrase: "supplied-secret",
 		Threshold:  3,
@@ -237,7 +267,7 @@ func TestTenantBarrierInit_DefaultsOmitted(t *testing.T) {
 	tr, cleanup := connectTenantInProcess(t, svc)
 	defer cleanup()
 
-	err := tr.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{
+	_, err := tr.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{
 		TenantID:   "acme",
 		Passphrase: "supplied-secret",
 	})
@@ -255,7 +285,7 @@ func TestTenantBarrierInit_ServiceError(t *testing.T) {
 	tr, cleanup := connectTenantInProcess(t, svc)
 	defer cleanup()
 
-	err := tr.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{
+	_, err := tr.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{
 		TenantID:   "missing",
 		Passphrase: "supplied-secret",
 	})
@@ -276,7 +306,7 @@ func TestTenantBarrierInit_NilRequest(t *testing.T) {
 	tr, cleanup := connectTenantInProcess(t, svc)
 	defer cleanup()
 
-	err := tr.TenantBarrierInit(context.Background(), nil)
+	_, err := tr.TenantBarrierInit(context.Background(), nil)
 	if err == nil {
 		t.Fatal("expected error for nil request")
 	}
@@ -287,7 +317,7 @@ func TestTenantBarrierInit_Closed(t *testing.T) {
 	tr, cleanup := connectTenantInProcess(t, svc)
 	cleanup()
 
-	err := tr.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{TenantID: "acme"})
+	_, err := tr.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{TenantID: "acme"})
 	if err == nil {
 		t.Fatal("expected ClosedError")
 	}

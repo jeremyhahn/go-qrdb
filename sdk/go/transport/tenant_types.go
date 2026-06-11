@@ -108,6 +108,30 @@ type TenantBarrierInitRequest struct {
 	Strategy string `json:"strategy,omitempty"`
 }
 
+// TenantBarrierInitResponse contains the outcome of a tenant barrier
+// initialization. Share material is never returned here; Security Officers
+// retrieve their individual shares via the tenant barrier
+// TenantBarrierShareClaimBegin/TenantBarrierShareClaimComplete flow.
+type TenantBarrierInitResponse struct {
+	// TenantID is the tenant whose barrier was initialized.
+	TenantID string `json:"tenant_id"`
+
+	// Strategy is the seal strategy the barrier was initialized with.
+	Strategy string `json:"strategy"`
+
+	// Threshold is the minimum number of shares required to unseal. Zero for
+	// non-Shamir strategies.
+	Threshold int `json:"threshold,omitempty"`
+
+	// TotalShares is the total number of shares generated. Zero for non-Shamir
+	// strategies.
+	TotalShares int `json:"total_shares,omitempty"`
+
+	// ShareCount is the number of shares successfully sealed to officer
+	// enclaves. Zero for non-Shamir strategies.
+	ShareCount int `json:"share_count,omitempty"`
+}
+
 // UpdateTenantQuotasRequest contains parameters for updating tenant quotas.
 type UpdateTenantQuotasRequest struct {
 	TenantID string       `json:"tenant_id"`
@@ -124,6 +148,33 @@ type TenantBarrierUnsealRequest struct {
 	TenantID string `json:"tenant_id"`
 	Share    []byte `json:"share,omitempty"`
 	Key      []byte `json:"key,omitempty"`
+}
+
+// TenantBarrierUnsealShareRequest contains parameters for submitting a single
+// Shamir share toward a per-tenant barrier's quorum threshold.
+type TenantBarrierUnsealShareRequest struct {
+	TenantID string `json:"tenant_id"`
+	Share    string `json:"share"`
+}
+
+// TenantBarrierUnsealProgress reports quorum progress while submitting Shamir
+// shares to unseal a per-tenant barrier. Once Complete is true the barrier has
+// been unsealed and the quorum accumulator has been reset.
+type TenantBarrierUnsealProgress struct {
+	// TenantID is the tenant whose barrier is being unsealed.
+	TenantID string `json:"tenant_id"`
+
+	// Required is the number of shares needed to reach the threshold.
+	Required int `json:"required"`
+
+	// Submitted is the number of distinct shares submitted so far.
+	Submitted int `json:"submitted"`
+
+	// Complete indicates the threshold has been met and the barrier unsealed.
+	Complete bool `json:"complete"`
+
+	// Sealed reports whether the barrier is still sealed.
+	Sealed bool `json:"sealed"`
 }
 
 // TenantBarrierSealRequest contains parameters for sealing a per-tenant
@@ -160,4 +211,12 @@ type TenantBarrierStatusResponse struct {
 	// HardwareBacked is true when the active strategy uses dedicated
 	// cryptographic hardware (HSM, TPM, etc.).
 	HardwareBacked bool `json:"hardware_backed"`
+
+	// ShamirThreshold is the minimum number of Shamir shares required to
+	// unseal this tenant barrier. Zero when the active strategy is not Shamir.
+	ShamirThreshold int `json:"shamir_threshold,omitempty"`
+
+	// ShamirTotal is the total number of Shamir shares generated at
+	// initialization. Zero when the active strategy is not Shamir.
+	ShamirTotal int `json:"shamir_total,omitempty"`
 }

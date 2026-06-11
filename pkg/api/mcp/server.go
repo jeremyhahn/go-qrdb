@@ -398,7 +398,7 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	}
 	if s.tenantSvc != nil {
 		s.mcpSrv.AddTools(tenantTools(s.tenantSvc)...)
-		s.mcpSrv.AddTools(tenantBarrierTools(s.tenantSvc)...)
+		s.mcpSrv.AddTools(tenantBarrierTools(s.tenantSvc, s.authorizeTenantBarrierOp)...)
 	}
 	if s.backupSvc != nil {
 		s.mcpSrv.AddTools(backupTools(s.backupSvc)...)

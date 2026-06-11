@@ -236,38 +236,61 @@ func (m *AuthMiddleware) lookupUser(ctx context.Context, tenantID, subject strin
 // authorize checks whether the identity is permitted to perform the
 // action on the resource, and optionally records the decision in the
 // audit log.
+//
+// The permission.IdentityGated sentinel short-circuits the RBAC check:
+// possession of an authenticated identity is the only middleware
+// requirement, and the binding authorization (officer/custodian registry
+// lookup, certificate-thumbprint match, nonce-signature or factor
+// verification) is enforced at the handler layer. Security Officers and
+// custodians are enrolled in the ceremony registry — not the RBAC user
+// store, which does not yet exist during sealed-window registration — so a
+// role-permission check can never authorize them. The decision is still
+// audited.
 func (m *AuthMiddleware) authorize(ctx context.Context, identity *auth.Identity, perm permission.Permission) error {
+	if perm == permission.IdentityGated {
+		if identity == nil {
+			return auth.ErrUnauthenticated
+		}
+		m.auditDecision(ctx, identity, perm, nil)
+		return nil
+	}
+
 	resource := permission.Resource(perm)
 	action := permission.Action(perm)
 
 	err := m.authorizer.Authorize(ctx, identity, resource, action)
+	m.auditDecision(ctx, identity, perm, err)
+	return err
+}
 
-	// Audit the decision when a logger is configured.
-	if m.audit != nil {
-		result := audit.ResultSuccess
-		if err != nil {
-			result = audit.ResultDenied
-		}
-
-		entry := &audit.Entry{
-			Timestamp: time.Now().UTC(),
-			Subject:   identity.Subject,
-			TenantID:  identity.TenantID,
-			Action:    "auth.authorize",
-			Resource:  perm.String(),
-			Result:    result,
-		}
-
-		if auditErr := m.audit.Log(ctx, entry); auditErr != nil {
-			slog.Error("auth/middleware: audit log failed",
-				"error", auditErr,
-				"subject", identity.Subject,
-				"permission", perm.String(),
-			)
-		}
+// auditDecision records an authorization decision in the audit log when a
+// logger is configured. A nil err is recorded as success, non-nil as denied.
+func (m *AuthMiddleware) auditDecision(ctx context.Context, identity *auth.Identity, perm permission.Permission, err error) {
+	if m.audit == nil {
+		return
 	}
 
-	return err
+	result := audit.ResultSuccess
+	if err != nil {
+		result = audit.ResultDenied
+	}
+
+	entry := &audit.Entry{
+		Timestamp: time.Now().UTC(),
+		Subject:   identity.Subject,
+		TenantID:  identity.TenantID,
+		Action:    "auth.authorize",
+		Resource:  perm.String(),
+		Result:    result,
+	}
+
+	if auditErr := m.audit.Log(ctx, entry); auditErr != nil {
+		slog.Error("auth/middleware: audit log failed",
+			"error", auditErr,
+			"subject", identity.Subject,
+			"permission", perm.String(),
+		)
+	}
 }
 
 // AuthorizeTenant authorizes the authenticated identity in ctx to perform a

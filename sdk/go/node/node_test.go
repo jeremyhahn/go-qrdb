@@ -46,9 +46,10 @@ func TestNewStandaloneNode_NilConfig(t *testing.T) {
 
 func TestNewStandaloneNode_MemoryBackend(t *testing.T) {
 	cfg := qrdbconfig.DefaultConfig()
-	// Ephemeral in-memory backend: must be requested explicitly now (an empty
-	// data dir no longer falls back to memory).
-	cfg.Raft.DataDir = ""
+	// In-memory primary storage, but vector storage still requires a disk
+	// directory (PebbleDB-only subsystem). Use t.TempDir() so no artifacts
+	// escape the test sandbox.
+	cfg.Raft.DataDir = t.TempDir()
 	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendMemory)}}
 	// Disable all protocol servers so Start() doesn't try to bind ports.
 	cfg.Protocols.REST = false
@@ -72,7 +73,7 @@ func TestNewStandaloneNode_MemoryBackend(t *testing.T) {
 
 func TestNewStandaloneNode_MemoryBackend_WithServerOption(t *testing.T) {
 	cfg := qrdbconfig.DefaultConfig()
-	cfg.Raft.DataDir = ""
+	cfg.Raft.DataDir = t.TempDir()
 	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendMemory)}}
 	cfg.Protocols.REST = false
 	cfg.Protocols.GRPC = false
@@ -118,7 +119,7 @@ func TestNewStandaloneNode_DoesNotConstructSMCreateFunc(t *testing.T) {
 	// indirectly: if the node builds with no host and no state machine
 	// factory, construction must succeed for a memory backend.
 	cfg := qrdbconfig.DefaultConfig()
-	cfg.Raft.DataDir = ""
+	cfg.Raft.DataDir = t.TempDir()
 	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendMemory)}}
 	cfg.Protocols.REST = false
 	cfg.Protocols.GRPC = false
@@ -491,9 +492,9 @@ func TestNode_Unseal_Idempotent(t *testing.T) {
 // seal disabled is a no-op.
 func TestNode_Unseal_NoSeal_IsNoop(t *testing.T) {
 	cfg := qrdbconfig.DefaultConfig()
-	cfg.Raft.DataDir = ""
-	// Ephemeral in-memory store must be requested explicitly; an empty data dir
-	// no longer falls back to memory silently.
+	cfg.Raft.DataDir = t.TempDir()
+	// In-memory primary storage, but vector storage still requires a disk
+	// directory. t.TempDir() above satisfies that requirement.
 	cfg.Databases = []qrdbconfig.DatabaseConfig{
 		{Name: "default", Backend: string(database.BackendMemory)},
 	}

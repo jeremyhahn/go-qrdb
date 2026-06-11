@@ -90,9 +90,9 @@ func (m *mockBarrierService) BarrierInitializeShamir(ctx context.Context, secret
 		return m.initializeShamirFn(ctx, secret, threshold, totalShares)
 	}
 	return &service.ShamirInitInfo{
-		Shares:      []string{"share-1", "share-2", "share-3"},
 		Threshold:   threshold,
 		TotalShares: totalShares,
+		ShareCount:  totalShares,
 	}, nil
 }
 
@@ -119,9 +119,9 @@ func (m *mockBarrierService) BarrierRekey(ctx context.Context, threshold, total 
 		return m.rekeyFn(ctx, threshold, total)
 	}
 	return &service.ShamirInitInfo{
-		Shares:      []string{"new-1", "new-2", "new-3"},
 		Threshold:   threshold,
 		TotalShares: total,
+		ShareCount:  total,
 	}, nil
 }
 
@@ -130,9 +130,9 @@ func (m *mockBarrierService) BarrierGenerateRecoveryKeys(ctx context.Context, th
 		return m.generateRecoveryFn(ctx, threshold, total)
 	}
 	return &service.RecoveryKeysInfo{
-		Keys:      []string{"rk-1", "rk-2"},
-		Threshold: threshold,
-		Total:     total,
+		Threshold:  threshold,
+		Total:      total,
+		ShareCount: total,
 	}, nil
 }
 
@@ -165,6 +165,33 @@ func (m *mockBarrierService) BarrierGenerateRootToken(ctx context.Context, share
 		Token:     "root-token-abc",
 		CreatedAt: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
 	}, nil
+}
+func (m *mockBarrierService) BarrierOfficerRegister(_ context.Context, _ *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
+	return &service.BarrierOfficerRegisterResult{}, nil
+}
+func (m *mockBarrierService) BarrierOfficerList(_ context.Context) ([]*service.BarrierOfficerStatus, error) {
+	return nil, nil
+}
+func (m *mockBarrierService) BarrierOfficerClaimStatus(_ context.Context) ([]*service.BarrierOfficerStatus, error) {
+	return nil, nil
+}
+func (m *mockBarrierService) BarrierShareClaimBegin(_ context.Context, _, _ string) (*service.BarrierShareClaimChallenge, error) {
+	return &service.BarrierShareClaimChallenge{}, nil
+}
+func (m *mockBarrierService) BarrierShareClaimComplete(_ context.Context, _, _ string, _ []byte, _ string) (*service.BarrierShareClaimResult, error) {
+	return &service.BarrierShareClaimResult{}, nil
+}
+func (m *mockBarrierService) BarrierShamirSealVote(_ context.Context, _ string) (*service.UnsealShareProgress, error) {
+	return &service.UnsealShareProgress{}, nil
+}
+func (m *mockBarrierService) BarrierRecoveryOfficerRegister(_ context.Context, _ *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
+	return &service.BarrierOfficerRegisterResult{}, nil
+}
+func (m *mockBarrierService) BarrierRecoveryShareClaimBegin(_ context.Context, _, _ string) (*service.BarrierShareClaimChallenge, error) {
+	return &service.BarrierShareClaimChallenge{}, nil
+}
+func (m *mockBarrierService) BarrierRecoveryShareClaimComplete(_ context.Context, _, _ string, _ []byte, _ string) (*service.BarrierShareClaimResult, error) {
+	return &service.BarrierShareClaimResult{}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -488,9 +515,9 @@ func TestBarrierHandlers_ShamirInitialize(t *testing.T) {
 				t.Fatalf("totalShares = %d, want 5", totalShares)
 			}
 			return &service.ShamirInitInfo{
-				Shares:      []string{"s1", "s2", "s3", "s4", "s5"},
 				Threshold:   2,
 				TotalShares: 5,
+				ShareCount:  5,
 			}, nil
 		},
 	}
@@ -508,15 +535,18 @@ func TestBarrierHandlers_ShamirInitialize(t *testing.T) {
 	var resp map[string]interface{}
 	decodeJSON(t, rec, &resp)
 
-	shares, ok := resp["shares"].([]interface{})
-	if !ok || len(shares) != 5 {
-		t.Fatalf("shares count = %d, want 5", len(shares))
+	// INV-1/INV-11: shares must not appear in the init response.
+	if _, hasShares := resp["shares"]; hasShares {
+		t.Fatal("shares must not appear in shamir initialize response")
 	}
 	if thresh, ok := resp["threshold"].(float64); !ok || int(thresh) != 2 {
 		t.Fatalf("threshold = %v, want 2", resp["threshold"])
 	}
 	if total, ok := resp["total_shares"].(float64); !ok || int(total) != 5 {
 		t.Fatalf("total_shares = %v, want 5", resp["total_shares"])
+	}
+	if count, ok := resp["share_count"].(float64); !ok || int(count) != 5 {
+		t.Fatalf("share_count = %v, want 5", resp["share_count"])
 	}
 }
 
@@ -712,9 +742,9 @@ func TestBarrierHandlers_Rekey(t *testing.T) {
 				t.Fatalf("total = %d, want 5", total)
 			}
 			return &service.ShamirInitInfo{
-				Shares:      []string{"r1", "r2", "r3", "r4", "r5"},
 				Threshold:   3,
 				TotalShares: 5,
+				ShareCount:  5,
 			}, nil
 		},
 	}
@@ -731,9 +761,12 @@ func TestBarrierHandlers_Rekey(t *testing.T) {
 	var resp map[string]interface{}
 	decodeJSON(t, rec, &resp)
 
-	shares, ok := resp["shares"].([]interface{})
-	if !ok || len(shares) != 5 {
-		t.Fatalf("shares count = %d, want 5", len(shares))
+	// INV-1/INV-11: shares must not appear in the rekey response.
+	if _, hasShares := resp["shares"]; hasShares {
+		t.Fatal("shares must not appear in rekey response")
+	}
+	if count, ok := resp["share_count"].(float64); !ok || int(count) != 5 {
+		t.Fatalf("share_count = %v, want 5", resp["share_count"])
 	}
 }
 
@@ -780,9 +813,9 @@ func TestBarrierHandlers_RecoveryGenerate(t *testing.T) {
 				t.Fatalf("total = %d, want 4", total)
 			}
 			return &service.RecoveryKeysInfo{
-				Keys:      []string{"rk1", "rk2", "rk3", "rk4"},
-				Threshold: 2,
-				Total:     4,
+				Threshold:  2,
+				Total:      4,
+				ShareCount: 4,
 			}, nil
 		},
 	}
@@ -799,15 +832,18 @@ func TestBarrierHandlers_RecoveryGenerate(t *testing.T) {
 	var resp map[string]interface{}
 	decodeJSON(t, rec, &resp)
 
-	keys, ok := resp["keys"].([]interface{})
-	if !ok || len(keys) != 4 {
-		t.Fatalf("keys count = %d, want 4", len(keys))
+	// INV-1/INV-11: recovery key bytes must not appear in the generate response.
+	if _, hasKeys := resp["keys"]; hasKeys {
+		t.Fatal("keys must not appear in recovery generate response")
 	}
 	if thresh, ok := resp["threshold"].(float64); !ok || int(thresh) != 2 {
 		t.Fatalf("threshold = %v, want 2", resp["threshold"])
 	}
 	if total, ok := resp["total"].(float64); !ok || int(total) != 4 {
 		t.Fatalf("total = %v, want 4", resp["total"])
+	}
+	if count, ok := resp["share_count"].(float64); !ok || int(count) != 4 {
+		t.Fatalf("share_count = %v, want 4", resp["share_count"])
 	}
 }
 
@@ -1152,22 +1188,25 @@ func TestBarrierStatusToResponse_ZeroInitTime(t *testing.T) {
 
 func TestShamirInitToResponse(t *testing.T) {
 	info := &service.ShamirInitInfo{
-		Shares:      []string{"a", "b"},
 		Threshold:   1,
 		TotalShares: 2,
+		ShareCount:  2,
 	}
 
 	resp := shamirInitToResponse(info)
 
-	shares, ok := resp["shares"].([]string)
-	if !ok || len(shares) != 2 {
-		t.Fatalf("shares = %v, want 2 items", resp["shares"])
+	// INV-1/INV-11: share bytes must not appear in the init response.
+	if _, hasShares := resp["shares"]; hasShares {
+		t.Fatal("shares must not appear in shamir init response")
 	}
 	if thresh, ok := resp["threshold"].(int); !ok || thresh != 1 {
 		t.Fatalf("threshold = %v, want 1", resp["threshold"])
 	}
 	if total, ok := resp["total_shares"].(int); !ok || total != 2 {
 		t.Fatalf("total_shares = %v, want 2", resp["total_shares"])
+	}
+	if count, ok := resp["share_count"].(int); !ok || count != 2 {
+		t.Fatalf("share_count = %v, want 2", resp["share_count"])
 	}
 }
 
@@ -1193,22 +1232,25 @@ func TestUnsealShareProgressToResponse(t *testing.T) {
 
 func TestRecoveryKeysToResponse(t *testing.T) {
 	info := &service.RecoveryKeysInfo{
-		Keys:      []string{"k1", "k2"},
-		Threshold: 1,
-		Total:     2,
+		Threshold:  1,
+		Total:      2,
+		ShareCount: 2,
 	}
 
 	resp := recoveryKeysToResponse(info)
 
-	keys, ok := resp["keys"].([]string)
-	if !ok || len(keys) != 2 {
-		t.Fatalf("keys = %v, want 2 items", resp["keys"])
+	// INV-1/INV-11: recovery key bytes must not appear in the generate response.
+	if _, hasKeys := resp["keys"]; hasKeys {
+		t.Fatal("keys must not appear in recovery generate response")
 	}
 	if thresh, ok := resp["threshold"].(int); !ok || thresh != 1 {
 		t.Fatalf("threshold = %v, want 1", resp["threshold"])
 	}
 	if total, ok := resp["total"].(int); !ok || total != 2 {
 		t.Fatalf("total = %v, want 2", resp["total"])
+	}
+	if count, ok := resp["share_count"].(int); !ok || count != 2 {
+		t.Fatalf("share_count = %v, want 2", resp["share_count"])
 	}
 }
 
@@ -1239,12 +1281,12 @@ func TestRootTokenToResponse(t *testing.T) {
 
 func TestBarrierHandlers_Status_ShamirFields_Exposed(t *testing.T) {
 	tests := []struct {
-		name              string
-		strategy          string
-		shamirThreshold   int
-		shamirTotal       int
-		wantThresholdKey  bool
-		wantTotalKey      bool
+		name             string
+		strategy         string
+		shamirThreshold  int
+		shamirTotal      int
+		wantThresholdKey bool
+		wantTotalKey     bool
 	}{
 		{
 			name:             "shamir strategy includes fields",

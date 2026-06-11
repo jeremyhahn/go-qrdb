@@ -18,8 +18,8 @@ package grpc
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
+	"net"
 	"testing"
 	"time"
 
@@ -27,9 +27,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/wrapperspb"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	tenantpkg "github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -152,21 +151,20 @@ func TestAuthFactor_EnrollFactor_Success(t *testing.T) {
 	conn, cleanup := startServerWithAuthFactor(t, svc)
 	defer cleanup()
 
-	req := &GRPCEnrollFactorRequest{
+	resp, err := pb.NewAuthFactorServiceClient(conn).EnrollFactor(context.Background(), &pb.EnrollFactorRequest{
 		FactorName:   "pkcs11",
 		Subject:      "alice",
-		TenantID:     "t1",
-		MethodParams: map[string]any{"slot": "1"},
-	}
-	resp, err := EnrollFactorUnary(context.Background(), conn, req)
+		TenantId:     "t1",
+		MethodParams: map[string]string{"slot": "1"},
+	})
 	if err != nil {
 		t.Fatalf("EnrollFactor failed: %v", err)
 	}
-	if resp.EnrollmentID != "enroll-1" {
-		t.Fatalf("expected enrollment ID 'enroll-1', got %q", resp.EnrollmentID)
+	if resp.EnrollmentId != "enroll-1" {
+		t.Fatalf("expected enrollment ID 'enroll-1', got %q", resp.EnrollmentId)
 	}
-	if resp.UserID != "alice" {
-		t.Fatalf("expected user_id 'alice', got %q", resp.UserID)
+	if resp.UserId != "alice" {
+		t.Fatalf("expected user_id 'alice', got %q", resp.UserId)
 	}
 }
 
@@ -175,8 +173,10 @@ func TestAuthFactor_EnrollFactor_EmptySubject(t *testing.T) {
 	conn, cleanup := startServerWithAuthFactor(t, svc)
 	defer cleanup()
 
-	req := &GRPCEnrollFactorRequest{FactorName: "pkcs11", Subject: ""}
-	_, err := EnrollFactorUnary(context.Background(), conn, req)
+	_, err := pb.NewAuthFactorServiceClient(conn).EnrollFactor(context.Background(), &pb.EnrollFactorRequest{
+		FactorName: "pkcs11",
+		Subject:    "",
+	})
 	if err == nil {
 		t.Fatal("expected error for empty subject")
 	}
@@ -191,8 +191,10 @@ func TestAuthFactor_EnrollFactor_EmptyFactorName(t *testing.T) {
 	conn, cleanup := startServerWithAuthFactor(t, svc)
 	defer cleanup()
 
-	req := &GRPCEnrollFactorRequest{Subject: "alice", FactorName: ""}
-	_, err := EnrollFactorUnary(context.Background(), conn, req)
+	_, err := pb.NewAuthFactorServiceClient(conn).EnrollFactor(context.Background(), &pb.EnrollFactorRequest{
+		Subject:    "alice",
+		FactorName: "",
+	})
 	if err == nil {
 		t.Fatal("expected error for empty factor_name")
 	}
@@ -207,13 +209,15 @@ func TestAuthFactor_EnrollFactor_NilMethodParams(t *testing.T) {
 	conn, cleanup := startServerWithAuthFactor(t, svc)
 	defer cleanup()
 
-	// MethodParams is nil - the handler initializes it to an empty map.
-	req := &GRPCEnrollFactorRequest{Subject: "alice", FactorName: "pkcs11"}
-	resp, err := EnrollFactorUnary(context.Background(), conn, req)
+	// MethodParams is nil - the handler builds an empty map internally.
+	resp, err := pb.NewAuthFactorServiceClient(conn).EnrollFactor(context.Background(), &pb.EnrollFactorRequest{
+		Subject:    "alice",
+		FactorName: "pkcs11",
+	})
 	if err != nil {
 		t.Fatalf("EnrollFactor with nil method_params failed: %v", err)
 	}
-	if resp.EnrollmentID == "" {
+	if resp.EnrollmentId == "" {
 		t.Fatal("expected non-empty enrollment ID")
 	}
 }
@@ -224,8 +228,10 @@ func TestAuthFactor_EnrollFactor_ServiceError(t *testing.T) {
 	conn, cleanup := startServerWithAuthFactor(t, svc)
 	defer cleanup()
 
-	req := &GRPCEnrollFactorRequest{Subject: "alice", FactorName: "pkcs11"}
-	_, err := EnrollFactorUnary(context.Background(), conn, req)
+	_, err := pb.NewAuthFactorServiceClient(conn).EnrollFactor(context.Background(), &pb.EnrollFactorRequest{
+		Subject:    "alice",
+		FactorName: "pkcs11",
+	})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -244,16 +250,17 @@ func TestAuthFactor_ChallengeFactor_Success(t *testing.T) {
 	conn, cleanup := startServerWithAuthFactor(t, svc)
 	defer cleanup()
 
-	req := &GRPCChallengeFactorRequest{EnrollmentID: "enroll-1"}
-	resp, err := ChallengeFactorUnary(context.Background(), conn, req)
+	resp, err := pb.NewAuthFactorServiceClient(conn).ChallengeFactor(context.Background(), &pb.ChallengeFactorRequest{
+		EnrollmentId: "enroll-1",
+	})
 	if err != nil {
 		t.Fatalf("ChallengeFactor failed: %v", err)
 	}
-	if resp.ChallengeID != "chal-1" {
-		t.Fatalf("expected challenge ID 'chal-1', got %q", resp.ChallengeID)
+	if resp.ChallengeId != "chal-1" {
+		t.Fatalf("expected challenge ID 'chal-1', got %q", resp.ChallengeId)
 	}
-	if resp.EnrollmentID != "enroll-1" {
-		t.Fatalf("expected enrollment ID 'enroll-1', got %q", resp.EnrollmentID)
+	if resp.EnrollmentId != "enroll-1" {
+		t.Fatalf("expected enrollment ID 'enroll-1', got %q", resp.EnrollmentId)
 	}
 }
 
@@ -262,8 +269,9 @@ func TestAuthFactor_ChallengeFactor_EmptyEnrollmentID(t *testing.T) {
 	conn, cleanup := startServerWithAuthFactor(t, svc)
 	defer cleanup()
 
-	req := &GRPCChallengeFactorRequest{EnrollmentID: ""}
-	_, err := ChallengeFactorUnary(context.Background(), conn, req)
+	_, err := pb.NewAuthFactorServiceClient(conn).ChallengeFactor(context.Background(), &pb.ChallengeFactorRequest{
+		EnrollmentId: "",
+	})
 	if err == nil {
 		t.Fatal("expected error for empty enrollment_id")
 	}
@@ -279,8 +287,9 @@ func TestAuthFactor_ChallengeFactor_ServiceError(t *testing.T) {
 	conn, cleanup := startServerWithAuthFactor(t, svc)
 	defer cleanup()
 
-	req := &GRPCChallengeFactorRequest{EnrollmentID: "missing"}
-	_, err := ChallengeFactorUnary(context.Background(), conn, req)
+	_, err := pb.NewAuthFactorServiceClient(conn).ChallengeFactor(context.Background(), &pb.ChallengeFactorRequest{
+		EnrollmentId: "missing",
+	})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -299,12 +308,12 @@ func TestAuthFactor_VerifyFactor_Success(t *testing.T) {
 	conn, cleanup := startServerWithAuthFactor(t, svc)
 	defer cleanup()
 
-	req := &GRPCVerifyFactorRequest{
-		ChallengeID: "chal-1",
+	_, err := pb.NewAuthFactorServiceClient(conn).VerifyFactor(context.Background(), &pb.VerifyFactorRequest{
+		ChallengeId: "chal-1",
 		Value:       []byte("response"),
 		Metadata:    map[string]string{"k": "v"},
-	}
-	if err := VerifyFactorUnary(context.Background(), conn, req); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("VerifyFactor failed: %v", err)
 	}
 }
@@ -314,8 +323,11 @@ func TestAuthFactor_VerifyFactor_NilMetadata(t *testing.T) {
 	conn, cleanup := startServerWithAuthFactor(t, svc)
 	defer cleanup()
 
-	req := &GRPCVerifyFactorRequest{ChallengeID: "chal-1", Value: []byte("r")}
-	if err := VerifyFactorUnary(context.Background(), conn, req); err != nil {
+	_, err := pb.NewAuthFactorServiceClient(conn).VerifyFactor(context.Background(), &pb.VerifyFactorRequest{
+		ChallengeId: "chal-1",
+		Value:       []byte("r"),
+	})
+	if err != nil {
 		t.Fatalf("VerifyFactor (nil metadata) failed: %v", err)
 	}
 }
@@ -325,8 +337,11 @@ func TestAuthFactor_VerifyFactor_EmptyChallengeID(t *testing.T) {
 	conn, cleanup := startServerWithAuthFactor(t, svc)
 	defer cleanup()
 
-	req := &GRPCVerifyFactorRequest{ChallengeID: "", Value: []byte("r")}
-	if err := VerifyFactorUnary(context.Background(), conn, req); err == nil {
+	_, err := pb.NewAuthFactorServiceClient(conn).VerifyFactor(context.Background(), &pb.VerifyFactorRequest{
+		ChallengeId: "",
+		Value:       []byte("r"),
+	})
+	if err == nil {
 		t.Fatal("expected error for empty challenge_id")
 	}
 }
@@ -337,8 +352,10 @@ func TestAuthFactor_VerifyFactor_ServiceError(t *testing.T) {
 	conn, cleanup := startServerWithAuthFactor(t, svc)
 	defer cleanup()
 
-	req := &GRPCVerifyFactorRequest{ChallengeID: "chal-1", Value: []byte("bad")}
-	err := VerifyFactorUnary(context.Background(), conn, req)
+	_, err := pb.NewAuthFactorServiceClient(conn).VerifyFactor(context.Background(), &pb.VerifyFactorRequest{
+		ChallengeId: "chal-1",
+		Value:       []byte("bad"),
+	})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -357,8 +374,9 @@ func TestAuthFactor_ListFactors_Success(t *testing.T) {
 	conn, cleanup := startServerWithAuthFactor(t, svc)
 	defer cleanup()
 
-	req := &GRPCListFactorsRequest{Subject: "alice"}
-	resp, err := ListFactorsUnary(context.Background(), conn, req)
+	resp, err := pb.NewAuthFactorServiceClient(conn).ListFactors(context.Background(), &pb.ListFactorsRequest{
+		Subject: "alice",
+	})
 	if err != nil {
 		t.Fatalf("ListFactors failed: %v", err)
 	}
@@ -376,8 +394,7 @@ func TestAuthFactor_ListFactors_WithRevokedAt(t *testing.T) {
 	conn, cleanup := startServerWithAuthFactor(t, svc)
 	defer cleanup()
 
-	req := &GRPCListFactorsRequest{}
-	resp, err := ListFactorsUnary(context.Background(), conn, req)
+	resp, err := pb.NewAuthFactorServiceClient(conn).ListFactors(context.Background(), &pb.ListFactorsRequest{})
 	if err != nil {
 		t.Fatalf("ListFactors failed: %v", err)
 	}
@@ -395,8 +412,9 @@ func TestAuthFactor_ListFactors_ServiceError(t *testing.T) {
 	conn, cleanup := startServerWithAuthFactor(t, svc)
 	defer cleanup()
 
-	req := &GRPCListFactorsRequest{Subject: "missing"}
-	_, err := ListFactorsUnary(context.Background(), conn, req)
+	_, err := pb.NewAuthFactorServiceClient(conn).ListFactors(context.Background(), &pb.ListFactorsRequest{
+		Subject: "missing",
+	})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -415,8 +433,10 @@ func TestAuthFactor_RevokeFactor_Success(t *testing.T) {
 	conn, cleanup := startServerWithAuthFactor(t, svc)
 	defer cleanup()
 
-	req := &GRPCRevokeFactorRequest{EnrollmentID: "enroll-1"}
-	if err := RevokeFactorUnary(context.Background(), conn, req); err != nil {
+	_, err := pb.NewAuthFactorServiceClient(conn).RevokeFactor(context.Background(), &pb.RevokeFactorRequest{
+		EnrollmentId: "enroll-1",
+	})
+	if err != nil {
 		t.Fatalf("RevokeFactor failed: %v", err)
 	}
 }
@@ -426,8 +446,10 @@ func TestAuthFactor_RevokeFactor_EmptyEnrollmentID(t *testing.T) {
 	conn, cleanup := startServerWithAuthFactor(t, svc)
 	defer cleanup()
 
-	req := &GRPCRevokeFactorRequest{EnrollmentID: ""}
-	if err := RevokeFactorUnary(context.Background(), conn, req); err == nil {
+	_, err := pb.NewAuthFactorServiceClient(conn).RevokeFactor(context.Background(), &pb.RevokeFactorRequest{
+		EnrollmentId: "",
+	})
+	if err == nil {
 		t.Fatal("expected error for empty enrollment_id")
 	}
 }
@@ -438,8 +460,9 @@ func TestAuthFactor_RevokeFactor_ServiceError(t *testing.T) {
 	conn, cleanup := startServerWithAuthFactor(t, svc)
 	defer cleanup()
 
-	req := &GRPCRevokeFactorRequest{EnrollmentID: "e1"}
-	err := RevokeFactorUnary(context.Background(), conn, req)
+	_, err := pb.NewAuthFactorServiceClient(conn).RevokeFactor(context.Background(), &pb.RevokeFactorRequest{
+		EnrollmentId: "e1",
+	})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -648,7 +671,7 @@ func TestWithAuthMiddleware_Set(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Audit: auditQueryHandler with interceptor path (covers the interceptor branch)
+// AuditService: interceptor path coverage via native proto gRPC client.
 // ---------------------------------------------------------------------------
 
 func TestAuditQueryHandler_WithInterceptor(t *testing.T) {
@@ -661,18 +684,25 @@ func TestAuditQueryHandler_WithInterceptor(t *testing.T) {
 	}
 
 	logger := &mockAuditLogger{}
-	srv := &auditServiceServer{auditLogger: logger}
+	grpcSrv := grpc.NewServer(grpc.UnaryInterceptor(interceptor))
+	RegisterAuditService(grpcSrv, logger)
 
-	var decCalled bool
-	dec := func(v any) error {
-		decCalled = true
-		v.(*wrapperspb.BytesValue).Value = []byte(`{}`)
-		return nil
-	}
-
-	result, err := auditQueryHandler(srv, context.Background(), dec, interceptor)
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatalf("auditQueryHandler with interceptor failed: %v", err)
+		t.Fatalf("listen: %v", err)
+	}
+	go func() { _ = grpcSrv.Serve(lis) }()
+	defer grpcSrv.Stop()
+
+	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	resp, err := pb.NewAuditServiceClient(conn).Query(context.Background(), &pb.AuditQueryRequest{})
+	if err != nil {
+		t.Fatalf("Query with interceptor failed: %v", err)
 	}
 	if !interceptorCalled {
 		t.Fatal("expected interceptor to be called")
@@ -680,99 +710,96 @@ func TestAuditQueryHandler_WithInterceptor(t *testing.T) {
 	if capturedMethod != "/qrdb.v1.AuditService/Query" {
 		t.Fatalf("expected full method '/qrdb.v1.AuditService/Query', got %q", capturedMethod)
 	}
-	if !decCalled {
-		t.Fatal("expected dec to be called")
-	}
-	if result == nil {
+	if resp == nil {
 		t.Fatal("expected non-nil result")
 	}
 }
 
-func TestAuditQueryHandler_DecodeError(t *testing.T) {
-	logger := &mockAuditLogger{}
-	srv := &auditServiceServer{auditLogger: logger}
-
-	dec := func(v any) error {
-		return errors.New("decode failure")
-	}
-	_, err := auditQueryHandler(srv, context.Background(), dec, nil)
-	if err == nil {
-		t.Fatal("expected error from decode failure")
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.InvalidArgument {
-		t.Fatalf("expected InvalidArgument, got %s", st.Code())
-	}
-}
-
 // ---------------------------------------------------------------------------
-// QueryAuditUnary - error path (unmarshal failure from invalid response)
+// AuditService: error path via native proto gRPC client.
 // ---------------------------------------------------------------------------
 
-func TestQueryAuditUnary_MarshalError(t *testing.T) {
-	// Test QueryAuditUnary's JSON marshal path: server returns an error which is
-	// propagated back through QueryAuditUnary.
+func TestAuditQueryHandler_ServiceError(t *testing.T) {
 	logger := &mockAuditLogger{queryErr: errors.New("server error")}
 	conn, cleanup := startServerWithAudit(t, logger)
 	defer cleanup()
 
-	_, err := QueryAuditUnary(context.Background(), conn, audit.Filter{})
+	_, err := pb.NewAuditServiceClient(conn).Query(context.Background(), &pb.AuditQueryRequest{})
 	if err == nil {
 		t.Fatal("expected error from query, got nil")
+	}
+	st, _ := status.FromError(err)
+	if st.Code() != codes.Internal {
+		t.Fatalf("expected Internal, got %s", st.Code())
 	}
 }
 
 // ---------------------------------------------------------------------------
-// TenantBarrier: tenantBarrierInitHandler with interceptor path
+// TenantBarrier: interceptor path coverage via native proto gRPC client.
 // ---------------------------------------------------------------------------
 
 func TestTenantBarrierInitHandler_WithInterceptor(t *testing.T) {
 	svc := newMockTenantBarrierOnlySvc()
-	server := &tenantBarrierServer{svc: svc, authMW: nil}
-
 	interceptorCalled := false
 	interceptor := func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		interceptorCalled = true
 		return handler(ctx, req)
 	}
 
-	body, _ := json.Marshal(GRPCTenantBarrierInitRequest{TenantID: "t1", Passphrase: "s"})
-	dec := func(v any) error {
-		v.(*wrapperspb.BytesValue).Value = body
-		return nil
-	}
-
-	result, err := tenantBarrierInitHandler(server, context.Background(), dec, interceptor)
+	grpcSrv := grpc.NewServer(grpc.UnaryInterceptor(interceptor))
+	RegisterTenantBarrierService(grpcSrv, svc, nil)
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatalf("tenantBarrierInitHandler with interceptor failed: %v", err)
+		t.Fatalf("listen: %v", err)
+	}
+	go func() { _ = grpcSrv.Serve(lis) }()
+	defer grpcSrv.Stop()
+
+	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	_, err = pb.NewTenantBarrierServiceClient(conn).Init(context.Background(), &pb.TenantBarrierInitRequest{
+		TenantId: "t1", Passphrase: "s",
+	})
+	if err != nil {
+		t.Fatalf("Init with interceptor failed: %v", err)
 	}
 	if !interceptorCalled {
 		t.Fatal("expected interceptor to be called")
-	}
-	if result == nil {
-		t.Fatal("expected non-nil result")
 	}
 }
 
 func TestTenantBarrierUnsealHandler_WithInterceptor(t *testing.T) {
 	svc := newMockTenantBarrierOnlySvc()
-	server := &tenantBarrierServer{svc: svc, authMW: nil}
-
 	interceptorCalled := false
 	interceptor := func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		interceptorCalled = true
 		return handler(ctx, req)
 	}
 
-	body, _ := json.Marshal(GRPCTenantBarrierUnsealRequest{TenantID: "t1", Share: []byte("s")})
-	dec := func(v any) error {
-		v.(*wrapperspb.BytesValue).Value = body
-		return nil
-	}
-
-	_, err := tenantBarrierUnsealHandler(server, context.Background(), dec, interceptor)
+	grpcSrv := grpc.NewServer(grpc.UnaryInterceptor(interceptor))
+	RegisterTenantBarrierService(grpcSrv, svc, nil)
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatalf("tenantBarrierUnsealHandler with interceptor failed: %v", err)
+		t.Fatalf("listen: %v", err)
+	}
+	go func() { _ = grpcSrv.Serve(lis) }()
+	defer grpcSrv.Stop()
+
+	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	_, err = pb.NewTenantBarrierServiceClient(conn).Unseal(context.Background(), &pb.TenantBarrierUnsealRequest{
+		TenantId: "t1", Key: []byte("s"),
+	})
+	if err != nil {
+		t.Fatalf("Unseal with interceptor failed: %v", err)
 	}
 	if !interceptorCalled {
 		t.Fatal("expected interceptor to be called")
@@ -781,23 +808,30 @@ func TestTenantBarrierUnsealHandler_WithInterceptor(t *testing.T) {
 
 func TestTenantBarrierSealHandler_WithInterceptor(t *testing.T) {
 	svc := newMockTenantBarrierOnlySvc()
-	server := &tenantBarrierServer{svc: svc, authMW: nil}
-
 	interceptorCalled := false
 	interceptor := func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		interceptorCalled = true
 		return handler(ctx, req)
 	}
 
-	body, _ := json.Marshal(GRPCTenantBarrierSealRequest{TenantID: "t1"})
-	dec := func(v any) error {
-		v.(*wrapperspb.BytesValue).Value = body
-		return nil
-	}
-
-	_, err := tenantBarrierSealHandler(server, context.Background(), dec, interceptor)
+	grpcSrv := grpc.NewServer(grpc.UnaryInterceptor(interceptor))
+	RegisterTenantBarrierService(grpcSrv, svc, nil)
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatalf("tenantBarrierSealHandler with interceptor failed: %v", err)
+		t.Fatalf("listen: %v", err)
+	}
+	go func() { _ = grpcSrv.Serve(lis) }()
+	defer grpcSrv.Stop()
+
+	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	_, err = pb.NewTenantBarrierServiceClient(conn).Seal(context.Background(), &pb.TenantBarrierSealRequest{TenantId: "t1"})
+	if err != nil {
+		t.Fatalf("Seal with interceptor failed: %v", err)
 	}
 	if !interceptorCalled {
 		t.Fatal("expected interceptor to be called")
@@ -806,23 +840,30 @@ func TestTenantBarrierSealHandler_WithInterceptor(t *testing.T) {
 
 func TestTenantBarrierStatusHandler_WithInterceptor(t *testing.T) {
 	svc := newMockTenantBarrierOnlySvc()
-	server := &tenantBarrierServer{svc: svc, authMW: nil}
-
 	interceptorCalled := false
 	interceptor := func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		interceptorCalled = true
 		return handler(ctx, req)
 	}
 
-	body, _ := json.Marshal(GRPCTenantBarrierStatusRequest{TenantID: "t1"})
-	dec := func(v any) error {
-		v.(*wrapperspb.BytesValue).Value = body
-		return nil
-	}
-
-	_, err := tenantBarrierStatusHandler(server, context.Background(), dec, interceptor)
+	grpcSrv := grpc.NewServer(grpc.UnaryInterceptor(interceptor))
+	RegisterTenantBarrierService(grpcSrv, svc, nil)
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatalf("tenantBarrierStatusHandler with interceptor failed: %v", err)
+		t.Fatalf("listen: %v", err)
+	}
+	go func() { _ = grpcSrv.Serve(lis) }()
+	defer grpcSrv.Stop()
+
+	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	_, err = pb.NewTenantBarrierServiceClient(conn).Status(context.Background(), &pb.TenantBarrierStatusRequest{TenantId: "t1"})
+	if err != nil {
+		t.Fatalf("Status with interceptor failed: %v", err)
 	}
 	if !interceptorCalled {
 		t.Fatal("expected interceptor to be called")
@@ -830,69 +871,53 @@ func TestTenantBarrierStatusHandler_WithInterceptor(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// TenantBarrier handler: decode error paths
+// TenantBarrier handler: nil service / empty tenant_id error paths.
 // ---------------------------------------------------------------------------
 
 func TestTenantBarrierInitHandler_DecodeError(t *testing.T) {
-	svc := newMockTenantBarrierOnlySvc()
-	server := &tenantBarrierServer{svc: svc}
-
-	dec := func(v any) error { return errors.New("decode error") }
-	_, err := tenantBarrierInitHandler(server, context.Background(), dec, nil)
+	// nil svc triggers Unimplemented — exercises the handler's nil-check branch.
+	srv := &tenantBarrierServer{svc: nil}
+	_, err := srv.Init(context.Background(), &pb.TenantBarrierInitRequest{TenantId: "t1"})
 	if err == nil {
-		t.Fatal("expected decode error")
+		t.Fatal("expected error from nil svc")
 	}
 	st, _ := status.FromError(err)
-	if st.Code() != codes.InvalidArgument {
-		t.Fatalf("expected InvalidArgument, got %s", st.Code())
+	if st.Code() != codes.Unimplemented {
+		t.Fatalf("expected Unimplemented, got %s", st.Code())
 	}
 }
 
 func TestTenantBarrierUnsealHandler_DecodeError(t *testing.T) {
-	svc := newMockTenantBarrierOnlySvc()
-	server := &tenantBarrierServer{svc: svc}
-
-	dec := func(v any) error { return errors.New("decode error") }
-	_, err := tenantBarrierUnsealHandler(server, context.Background(), dec, nil)
+	srv := &tenantBarrierServer{svc: nil}
+	_, err := srv.Unseal(context.Background(), &pb.TenantBarrierUnsealRequest{TenantId: "t1"})
 	if err == nil {
-		t.Fatal("expected decode error")
+		t.Fatal("expected error from nil svc")
 	}
 }
 
 func TestTenantBarrierSealHandler_DecodeError(t *testing.T) {
-	svc := newMockTenantBarrierOnlySvc()
-	server := &tenantBarrierServer{svc: svc}
-
-	dec := func(v any) error { return errors.New("decode error") }
-	_, err := tenantBarrierSealHandler(server, context.Background(), dec, nil)
+	srv := &tenantBarrierServer{svc: nil}
+	_, err := srv.Seal(context.Background(), &pb.TenantBarrierSealRequest{TenantId: "t1"})
 	if err == nil {
-		t.Fatal("expected decode error")
+		t.Fatal("expected error from nil svc")
 	}
 }
 
 func TestTenantBarrierStatusHandler_DecodeError(t *testing.T) {
-	svc := newMockTenantBarrierOnlySvc()
-	server := &tenantBarrierServer{svc: svc}
-
-	dec := func(v any) error { return errors.New("decode error") }
-	_, err := tenantBarrierStatusHandler(server, context.Background(), dec, nil)
+	srv := &tenantBarrierServer{svc: nil}
+	_, err := srv.Status(context.Background(), &pb.TenantBarrierStatusRequest{TenantId: "t1"})
 	if err == nil {
-		t.Fatal("expected decode error")
+		t.Fatal("expected error from nil svc")
 	}
 }
 
-// TenantBarrier: nil status response (getStatus nil path).
+// TestTenantBarrierStatus_NilStatus verifies that when the service returns a
+// nil *TenantBarrierStatus with no error the handler returns codes.Internal.
 func TestTenantBarrierStatus_NilStatus(t *testing.T) {
 	svc := &nilStatusTenantBarrierSvc{}
 	server := &tenantBarrierServer{svc: svc, authMW: nil}
 
-	body, _ := json.Marshal(GRPCTenantBarrierStatusRequest{TenantID: "t1"})
-	dec := func(v any) error {
-		v.(*wrapperspb.BytesValue).Value = body
-		return nil
-	}
-
-	_, err := tenantBarrierStatusHandler(server, context.Background(), dec, nil)
+	_, err := server.Status(context.Background(), &pb.TenantBarrierStatusRequest{TenantId: "t1"})
 	if err == nil {
 		t.Fatal("expected error for nil status response")
 	}

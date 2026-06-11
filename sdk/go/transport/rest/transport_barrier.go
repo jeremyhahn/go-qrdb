@@ -242,3 +242,178 @@ func (t *Transport) BarrierGenerateRootToken(ctx context.Context, req *transport
 
 	return &tokenResp, nil
 }
+
+// OfficerRegister registers a Security Officer for the system barrier.
+// Maps to POST /v1/barrier/officers.
+func (t *Transport) OfficerRegister(ctx context.Context, req *transport.OfficerRegisterRequest) (*transport.OfficerRegisterResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	var resp transport.OfficerRegisterResponse
+	if err := t.postJSONDecode(ctx, "OfficerRegister", "/v1/barrier/officers", req, &resp); err != nil {
+		return nil, err
+	}
+
+	return &resp, nil
+}
+
+// OfficerList returns all enrolled Security Officers for the system barrier.
+// Maps to GET /v1/barrier/officers.
+func (t *Transport) OfficerList(ctx context.Context) ([]*transport.OfficerStatus, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, t.baseURL+"/v1/barrier/officers", nil)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "OfficerList", Err: err}
+	}
+
+	resp, err := t.client.Do(httpReq)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "OfficerList", Err: err}
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, t.decodeErrorResponse("OfficerList", resp)
+	}
+
+	var wire struct {
+		Officers []*transport.OfficerStatus `json:"officers"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&wire); err != nil {
+		return nil, &transport.RequestError{Method: "OfficerList", Err: &jsonDecodeError{Err: err}}
+	}
+
+	return wire.Officers, nil
+}
+
+// OfficerClaimStatus returns a per-officer claim status snapshot for the
+// system barrier. Maps to GET /v1/barrier/officers/claim-status.
+func (t *Transport) OfficerClaimStatus(ctx context.Context) ([]*transport.OfficerStatus, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, t.baseURL+"/v1/barrier/officers/claim-status", nil)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "OfficerClaimStatus", Err: err}
+	}
+
+	resp, err := t.client.Do(httpReq)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "OfficerClaimStatus", Err: err}
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, t.decodeErrorResponse("OfficerClaimStatus", resp)
+	}
+
+	var wire struct {
+		Officers []*transport.OfficerStatus `json:"officers"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&wire); err != nil {
+		return nil, &transport.RequestError{Method: "OfficerClaimStatus", Err: &jsonDecodeError{Err: err}}
+	}
+
+	return wire.Officers, nil
+}
+
+// ShareClaimBegin issues a challenge nonce to the named Security Officer.
+// Maps to POST /v1/barrier/officers/{username}/claim/begin.
+func (t *Transport) ShareClaimBegin(ctx context.Context, req *transport.ShareClaimBeginRequest) (*transport.ShareClaimBeginResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	path := "/v1/barrier/officers/" + req.Username + "/claim/begin"
+	var resp transport.ShareClaimBeginResponse
+	if err := t.postJSONDecode(ctx, "ShareClaimBegin", path, req, &resp); err != nil {
+		return nil, err
+	}
+
+	return &resp, nil
+}
+
+// ShareClaimComplete verifies the Security Officer's nonce signature and
+// returns the system barrier share bytes exactly once.
+// Maps to POST /v1/barrier/officers/{username}/claim/complete.
+func (t *Transport) ShareClaimComplete(ctx context.Context, req *transport.ShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	path := "/v1/barrier/officers/" + req.Username + "/claim/complete"
+	var resp transport.ShareClaimCompleteResponse
+	if err := t.postJSONDecode(ctx, "ShareClaimComplete", path, req, &resp); err != nil {
+		return nil, err
+	}
+
+	return &resp, nil
+}
+
+// ShamirSealVote submits a Shamir share as a seal vote for the system barrier.
+// Maps to POST /v1/barrier/shamir/seal-vote.
+func (t *Transport) ShamirSealVote(ctx context.Context, req *transport.ShamirSealVoteRequest) (*transport.ShamirSealVoteResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	var resp transport.ShamirSealVoteResponse
+	if err := t.postJSONDecode(ctx, "ShamirSealVote", "/v1/barrier/shamir/seal-vote", req, &resp); err != nil {
+		return nil, err
+	}
+
+	return &resp, nil
+}
+
+// RecoveryOfficerRegister registers a Security Officer for recovery key
+// distribution. Maps to POST /v1/barrier/recovery/officers.
+func (t *Transport) RecoveryOfficerRegister(ctx context.Context, req *transport.OfficerRegisterRequest) (*transport.OfficerRegisterResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	var resp transport.OfficerRegisterResponse
+	if err := t.postJSONDecode(ctx, "RecoveryOfficerRegister", "/v1/barrier/recovery/officers", req, &resp); err != nil {
+		return nil, err
+	}
+
+	return &resp, nil
+}
+
+// RecoveryShareClaimBegin issues a challenge nonce to the named recovery
+// officer. Maps to POST /v1/barrier/recovery/officers/{username}/claim/begin.
+func (t *Transport) RecoveryShareClaimBegin(ctx context.Context, req *transport.ShareClaimBeginRequest) (*transport.ShareClaimBeginResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	path := "/v1/barrier/recovery/officers/" + req.Username + "/claim/begin"
+	var resp transport.ShareClaimBeginResponse
+	if err := t.postJSONDecode(ctx, "RecoveryShareClaimBegin", path, req, &resp); err != nil {
+		return nil, err
+	}
+
+	return &resp, nil
+}
+
+// RecoveryShareClaimComplete verifies the recovery officer's nonce signature
+// and returns the recovery share bytes exactly once.
+// Maps to POST /v1/barrier/recovery/officers/{username}/claim/complete.
+func (t *Transport) RecoveryShareClaimComplete(ctx context.Context, req *transport.ShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	path := "/v1/barrier/recovery/officers/" + req.Username + "/claim/complete"
+	var resp transport.ShareClaimCompleteResponse
+	if err := t.postJSONDecode(ctx, "RecoveryShareClaimComplete", path, req, &resp); err != nil {
+		return nil, err
+	}
+
+	return &resp, nil
+}

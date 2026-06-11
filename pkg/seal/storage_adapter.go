@@ -12,6 +12,7 @@ import (
 	"context"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // LegacyStorage is the interface for storage backends that use []byte keys
@@ -32,6 +33,12 @@ type LegacyStorage interface {
 // the updated barrier interface without modifying the storage layer.
 type StorageAdapter struct {
 	inner LegacyStorage
+
+	// putIfAbsentMu serializes the Exists+Set performed by PutIfAbsent so the
+	// check-then-write is atomic. LegacyStorage implementations are
+	// single-process local engines, so this mutex is the genuine atomicity
+	// mechanism — there is no other process to race with.
+	putIfAbsentMu sync.Mutex
 }
 
 // Compile-time interface check.
@@ -50,6 +57,27 @@ func (a *StorageAdapter) Get(_ context.Context, key string) ([]byte, error) {
 // Put stores the value under the given key.
 func (a *StorageAdapter) Put(_ context.Context, key string, data []byte) error {
 	return a.inner.Set([]byte(key), data)
+}
+
+// PutIfAbsent atomically stores the value under the given key only if the key
+// does not already exist. The check-then-write is serialized under
+// putIfAbsentMu, which provides genuine atomicity for the single-process
+// legacy engines this adapter wraps.
+func (a *StorageAdapter) PutIfAbsent(_ context.Context, key string, data []byte) (bool, error) {
+	a.putIfAbsentMu.Lock()
+	defer a.putIfAbsentMu.Unlock()
+
+	exists, err := a.inner.Exists([]byte(key))
+	if err != nil {
+		return false, err
+	}
+	if exists {
+		return false, nil
+	}
+	if err := a.inner.Set([]byte(key), data); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // Delete removes the key from storage.

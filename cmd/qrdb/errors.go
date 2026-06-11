@@ -254,6 +254,21 @@ func (e *EmbeddedBarrierError) Unwrap() error {
 	return e.Err
 }
 
+// PINsNotAllowedError is returned when --so-pin or --user-pin is
+// supplied for a barrier strategy that has no PIN store (strategy
+// "none" is identity passthrough; there is nothing to protect). The
+// shape matches the sibling CLIs (xkmsctl, quicbaas, platformctl) per
+// the canonical barrier surface.
+type PINsNotAllowedError struct {
+	Strategy string
+	Op       string
+}
+
+// Error returns a human-readable description.
+func (e *PINsNotAllowedError) Error() string {
+	return "qrdb: barrier " + e.Op + ": --so-pin/--user-pin are not allowed when --barrier-strategy=" + e.Strategy
+}
+
 // UserAbortError is returned when an interactive operator declines a
 // confirmation prompt (or stdin is closed before an answer is given).
 // The Op field identifies the destructive operation that was canceled.

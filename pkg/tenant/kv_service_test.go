@@ -419,7 +419,7 @@ func TestKVTenantBarrierInit_NotEnabled(t *testing.T) {
 	ctx := context.Background()
 	svc := newKVService(t)
 
-	err := svc.TenantBarrierInit(ctx, "acme", "pw", 2, 3)
+	_, err := svc.TenantBarrierInit(ctx, "acme", "pw", 2, 3)
 	if !errors.Is(err, ErrBarrierNotEnabled) {
 		t.Fatalf("want ErrBarrierNotEnabled, got %v", err)
 	}
@@ -688,5 +688,88 @@ func TestKVCreateTenant_InternalCallAllowsSystemID(t *testing.T) {
 	}
 	if info.ID != SystemTenantID {
 		t.Errorf("ID = %q, want %q", info.ID, SystemTenantID)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// kvTenantService — new barrier officer/claim/seal-vote stubs
+// ---------------------------------------------------------------------------
+
+func newKVServiceForBarrierTest(t *testing.T) TenantServicer {
+	t.Helper()
+	store := newMemKVStore()
+	svc, err := NewKVTenantService(store, slog.Default())
+	if err != nil {
+		t.Fatalf("NewKVTenantService: %v", err)
+	}
+	return svc
+}
+
+func TestKVTenantBarrierSeal_NotEnabled2(t *testing.T) {
+	svc := newKVServiceForBarrierTest(t)
+	if err := svc.TenantBarrierSeal(context.Background(), "t"); !errors.Is(err, ErrBarrierNotEnabled) {
+		t.Errorf("expected ErrBarrierNotEnabled, got %v", err)
+	}
+}
+
+func TestKVTenantBarrierStatus_NotEnabled2(t *testing.T) {
+	svc := newKVServiceForBarrierTest(t)
+	if _, err := svc.TenantBarrierStatus(context.Background(), "t"); !errors.Is(err, ErrBarrierNotEnabled) {
+		t.Errorf("expected ErrBarrierNotEnabled, got %v", err)
+	}
+}
+
+func TestKVTenantBarrierUnsealShare_NotEnabled(t *testing.T) {
+	svc := newKVServiceForBarrierTest(t)
+	if _, err := svc.TenantBarrierUnsealShare(context.Background(), "t", "share"); !errors.Is(err, ErrBarrierNotEnabled) {
+		t.Errorf("expected ErrBarrierNotEnabled, got %v", err)
+	}
+}
+
+func TestKVTenantBarrierOfficerRegister_NotEnabled(t *testing.T) {
+	svc := newKVServiceForBarrierTest(t)
+	_, err := svc.TenantBarrierOfficerRegister(context.Background(), "t", nil)
+	if !errors.Is(err, ErrBarrierNotEnabled) {
+		t.Errorf("expected ErrBarrierNotEnabled, got %v", err)
+	}
+}
+
+func TestKVTenantBarrierOfficerList_NotEnabled(t *testing.T) {
+	svc := newKVServiceForBarrierTest(t)
+	_, err := svc.TenantBarrierOfficerList(context.Background(), "t")
+	if !errors.Is(err, ErrBarrierNotEnabled) {
+		t.Errorf("expected ErrBarrierNotEnabled, got %v", err)
+	}
+}
+
+func TestKVTenantBarrierShareClaimBegin_NotEnabled(t *testing.T) {
+	svc := newKVServiceForBarrierTest(t)
+	_, err := svc.TenantBarrierShareClaimBegin(context.Background(), "t", "u", "thumb")
+	if !errors.Is(err, ErrBarrierNotEnabled) {
+		t.Errorf("expected ErrBarrierNotEnabled, got %v", err)
+	}
+}
+
+func TestKVTenantBarrierShareClaimComplete_NotEnabled(t *testing.T) {
+	svc := newKVServiceForBarrierTest(t)
+	_, err := svc.TenantBarrierShareClaimComplete(context.Background(), "t", "u", "nonce", []byte("sig"), "thumb")
+	if !errors.Is(err, ErrBarrierNotEnabled) {
+		t.Errorf("expected ErrBarrierNotEnabled, got %v", err)
+	}
+}
+
+func TestKVTenantBarrierOfficerClaimStatus_NotEnabled(t *testing.T) {
+	svc := newKVServiceForBarrierTest(t)
+	_, err := svc.TenantBarrierOfficerClaimStatus(context.Background(), "t")
+	if !errors.Is(err, ErrBarrierNotEnabled) {
+		t.Errorf("expected ErrBarrierNotEnabled, got %v", err)
+	}
+}
+
+func TestKVTenantBarrierShamirSealVote_NotEnabled(t *testing.T) {
+	svc := newKVServiceForBarrierTest(t)
+	_, err := svc.TenantBarrierShamirSealVote(context.Background(), "t", "share")
+	if !errors.Is(err, ErrBarrierNotEnabled) {
+		t.Errorf("expected ErrBarrierNotEnabled, got %v", err)
 	}
 }

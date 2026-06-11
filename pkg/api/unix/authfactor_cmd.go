@@ -15,16 +15,16 @@
 // Package unix provides a gRPC server over Unix domain sockets for QRDB. This
 // file exposes the auth factor service wire types as Unix-package aliases for
 // callers that talk to the Unix endpoint without importing the gRPC package
-// directly. It is the companion to audit_cmd.go and gives Phase 3 protocol
-// parity for the AuthFactor service.
+// directly. It is the companion to audit_cmd.go and gives protocol parity for
+// the AuthFactor service.
 //
 // The actual gRPC service registration is wired in server.go via
 // WithAuthFactorService — the AuthFactor gRPC service is registered on the
 // Unix socket whenever a service.AuthFactorServicer is provided, the same way
 // the AuditService is registered when an audit.AuditLogger is provided.
 //
-// Authorization (when Phase 2 permission constants are wired into the Unix
-// interceptor chain):
+// Authorization (when permission constants are wired into the Unix interceptor
+// chain):
 //   - EnrollFactor / RevokeFactor: SO (CeremonyEnrollCustodian /
 //     CeremonyRevokeCustodian).
 //   - ChallengeFactor / VerifyFactor: enrolled custodian
@@ -33,38 +33,33 @@
 package unix
 
 import (
-	grpcpkg "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
+	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 )
 
-// AuthFactorEnrollRequest is the JSON-encoded enrollment payload for Unix
-// callers. It mirrors grpcpkg.GRPCEnrollFactorRequest for type consistency
-// with the gRPC service registered on the Unix socket.
-type AuthFactorEnrollRequest = grpcpkg.GRPCEnrollFactorRequest
+// The auth factor wire types are the canonical qrdb.v1 protobuf messages.
+// These Unix-package aliases let callers reference them without importing
+// the qrdbv1 package directly.
 
-// AuthFactorEnrollResponse is the JSON-encoded enrollment response for Unix
-// callers. It mirrors grpcpkg.GRPCEnrollFactorResponse.
-type AuthFactorEnrollResponse = grpcpkg.GRPCEnrollFactorResponse
+// AuthFactorEnrollRequest is the protobuf enrollment payload for Unix callers.
+type AuthFactorEnrollRequest = pb.EnrollFactorRequest
 
-// AuthFactorChallengeRequest is the JSON-encoded challenge request for Unix
-// callers. It mirrors grpcpkg.GRPCChallengeFactorRequest.
-type AuthFactorChallengeRequest = grpcpkg.GRPCChallengeFactorRequest
+// AuthFactorEnrollResponse is the protobuf enrollment response for Unix callers.
+type AuthFactorEnrollResponse = pb.EnrollFactorResponse
 
-// AuthFactorChallengeResponse is the JSON-encoded challenge response for Unix
-// callers. It mirrors grpcpkg.GRPCChallengeFactorResponse.
-type AuthFactorChallengeResponse = grpcpkg.GRPCChallengeFactorResponse
+// AuthFactorChallengeRequest is the protobuf challenge request for Unix callers.
+type AuthFactorChallengeRequest = pb.ChallengeFactorRequest
 
-// AuthFactorVerifyRequest is the JSON-encoded verify payload for Unix
-// callers. It mirrors grpcpkg.GRPCVerifyFactorRequest.
-type AuthFactorVerifyRequest = grpcpkg.GRPCVerifyFactorRequest
+// AuthFactorChallengeResponse is the protobuf challenge response for Unix callers.
+type AuthFactorChallengeResponse = pb.ChallengeFactorResponse
 
-// AuthFactorListRequest is the JSON-encoded list filter for Unix callers. It
-// mirrors grpcpkg.GRPCListFactorsRequest.
-type AuthFactorListRequest = grpcpkg.GRPCListFactorsRequest
+// AuthFactorVerifyRequest is the protobuf verify payload for Unix callers.
+type AuthFactorVerifyRequest = pb.VerifyFactorRequest
 
-// AuthFactorListResponse is the JSON-encoded enrollment list returned to Unix
-// callers. It mirrors grpcpkg.GRPCListFactorsResponse.
-type AuthFactorListResponse = grpcpkg.GRPCListFactorsResponse
+// AuthFactorListRequest is the protobuf list filter for Unix callers.
+type AuthFactorListRequest = pb.ListFactorsRequest
 
-// AuthFactorRevokeRequest is the JSON-encoded revoke payload for Unix
-// callers. It mirrors grpcpkg.GRPCRevokeFactorRequest.
-type AuthFactorRevokeRequest = grpcpkg.GRPCRevokeFactorRequest
+// AuthFactorListResponse is the protobuf enrollment list returned to Unix callers.
+type AuthFactorListResponse = pb.ListFactorsResponse
+
+// AuthFactorRevokeRequest is the protobuf revoke payload for Unix callers.
+type AuthFactorRevokeRequest = pb.RevokeFactorRequest
