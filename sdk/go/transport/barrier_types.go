@@ -141,6 +141,27 @@ type BarrierRekeyResponse struct {
 	ShareCount  int `json:"share_count"`
 }
 
+// BarrierEnableEncryptionRequest migrates a previously-unencrypted barrier to a
+// keyed strategy (enable encryption after the fact). TenantID, when set, scopes
+// the migration to that tenant's dedicated barrier; empty means the system
+// barrier (admin scope). The migration runs asynchronously on the server.
+type BarrierEnableEncryptionRequest struct {
+	TenantID        string `json:"tenant_id,omitempty"`
+	Strategy        string `json:"strategy"`
+	Mechanism       string `json:"mechanism,omitempty"`
+	Availability    string `json:"availability,omitempty"`
+	Passphrase      string `json:"passphrase,omitempty"`
+	ShamirThreshold int    `json:"shamir_threshold,omitempty"`
+	ShamirTotal     int    `json:"shamir_total,omitempty"`
+}
+
+// BarrierEnableEncryptionResponse acknowledges that the migration has started.
+// Clients poll BarrierStatus for the strategy change to observe completion.
+type BarrierEnableEncryptionResponse struct {
+	Status string `json:"status"`
+	Scope  string `json:"scope"`
+}
+
 // BarrierGenerateRecoveryKeysRequest holds parameters for generating
 // recovery keys. The canonical CLI verb is `barrier recovery generate`
 // and supports an optional SO PIN.

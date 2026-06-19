@@ -171,6 +171,30 @@ func (t *Transport) BarrierRekey(ctx context.Context, req *transport.BarrierReke
 	}, nil
 }
 
+// BarrierEnableEncryption migrates a previously-unencrypted barrier to a keyed
+// strategy over the gRPC-on-UDS transport (the default CLI transport).
+func (t *Transport) BarrierEnableEncryption(ctx context.Context, req *transport.BarrierEnableEncryptionRequest) (*transport.BarrierEnableEncryptionResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	resp, err := t.client.BarrierEnableEncryption(ctx, &pb.BarrierEnableEncryptionRequest{
+		TenantId:        req.TenantID,
+		Strategy:        req.Strategy,
+		Mechanism:       req.Mechanism,
+		Availability:    req.Availability,
+		Passphrase:      req.Passphrase,
+		ShamirThreshold: int32(req.ShamirThreshold),
+		ShamirTotal:     int32(req.ShamirTotal),
+	})
+	if err != nil {
+		return nil, mapGRPCError("BarrierEnableEncryption", err)
+	}
+	return &transport.BarrierEnableEncryptionResponse{
+		Status: resp.GetStatus(),
+		Scope:  resp.GetScope(),
+	}, nil
+}
+
 // BarrierGenerateRecoveryKeys generates recovery keys for disaster recovery
 // scenarios.
 func (t *Transport) BarrierGenerateRecoveryKeys(ctx context.Context, req *transport.BarrierGenerateRecoveryKeysRequest) (*transport.BarrierRecoveryKeysResponse, error) {

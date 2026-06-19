@@ -546,6 +546,14 @@ type BarrierClient interface {
 	// threshold and total count, replacing the existing shares.
 	BarrierRekey(ctx context.Context, req *BarrierRekeyRequest) (*BarrierRekeyResponse, error)
 
+	// BarrierEnableEncryption migrates a previously-unencrypted barrier to a
+	// keyed strategy. The migration runs asynchronously on the server (a
+	// system-scope migration recycles the data-plane server in process); the
+	// response acknowledges the start and clients poll BarrierStatus for the
+	// strategy change. Supported on REST and gRPC; other transports return
+	// NotImplementedError.
+	BarrierEnableEncryption(ctx context.Context, req *BarrierEnableEncryptionRequest) (*BarrierEnableEncryptionResponse, error)
+
 	// BarrierGenerateRecoveryKeys generates recovery keys for disaster
 	// recovery scenarios.
 	BarrierGenerateRecoveryKeys(ctx context.Context, req *BarrierGenerateRecoveryKeysRequest) (*BarrierRecoveryKeysResponse, error)

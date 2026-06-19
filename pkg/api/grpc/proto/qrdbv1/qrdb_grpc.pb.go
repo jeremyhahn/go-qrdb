@@ -156,6 +156,7 @@ const (
 	QRDBService_BarrierShamirUnsealShare_FullMethodName          = "/qrdb.v1.QRDBService/BarrierShamirUnsealShare"
 	QRDBService_BarrierShamirUnsealShares_FullMethodName         = "/qrdb.v1.QRDBService/BarrierShamirUnsealShares"
 	QRDBService_BarrierRekey_FullMethodName                      = "/qrdb.v1.QRDBService/BarrierRekey"
+	QRDBService_BarrierEnableEncryption_FullMethodName           = "/qrdb.v1.QRDBService/BarrierEnableEncryption"
 	QRDBService_BarrierOfficerRegister_FullMethodName            = "/qrdb.v1.QRDBService/BarrierOfficerRegister"
 	QRDBService_BarrierOfficerList_FullMethodName                = "/qrdb.v1.QRDBService/BarrierOfficerList"
 	QRDBService_BarrierShareClaimBegin_FullMethodName            = "/qrdb.v1.QRDBService/BarrierShareClaimBegin"
@@ -476,6 +477,12 @@ type QRDBServiceClient interface {
 	BarrierShamirUnsealShares(ctx context.Context, in *BarrierShamirUnsealSharesRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// BarrierRekey generates new Shamir shares with the specified parameters.
 	BarrierRekey(ctx context.Context, in *BarrierRekeyRequest, opts ...grpc.CallOption) (*BarrierShamirOperationResponse, error)
+	// BarrierEnableEncryption migrates a previously-unencrypted barrier to a
+	// keyed strategy (enable encryption after the fact). The migration runs
+	// asynchronously because a system-scope migration recycles the data-plane
+	// server in process; the call returns immediately and clients poll
+	// BarrierStatus for the strategy change.
+	BarrierEnableEncryption(ctx context.Context, in *BarrierEnableEncryptionRequest, opts ...grpc.CallOption) (*BarrierEnableEncryptionResponse, error)
 	// BarrierOfficerRegister registers a new Security Officer for the system barrier.
 	BarrierOfficerRegister(ctx context.Context, in *BarrierOfficerRegisterRequest, opts ...grpc.CallOption) (*BarrierOfficerRegisterResponse, error)
 	// BarrierOfficerList lists all registered Security Officers for the system barrier.
@@ -1863,6 +1870,16 @@ func (c *qRDBServiceClient) BarrierRekey(ctx context.Context, in *BarrierRekeyRe
 	return out, nil
 }
 
+func (c *qRDBServiceClient) BarrierEnableEncryption(ctx context.Context, in *BarrierEnableEncryptionRequest, opts ...grpc.CallOption) (*BarrierEnableEncryptionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BarrierEnableEncryptionResponse)
+	err := c.cc.Invoke(ctx, QRDBService_BarrierEnableEncryption_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *qRDBServiceClient) BarrierOfficerRegister(ctx context.Context, in *BarrierOfficerRegisterRequest, opts ...grpc.CallOption) (*BarrierOfficerRegisterResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(BarrierOfficerRegisterResponse)
@@ -2730,6 +2747,12 @@ type QRDBServiceServer interface {
 	BarrierShamirUnsealShares(context.Context, *BarrierShamirUnsealSharesRequest) (*emptypb.Empty, error)
 	// BarrierRekey generates new Shamir shares with the specified parameters.
 	BarrierRekey(context.Context, *BarrierRekeyRequest) (*BarrierShamirOperationResponse, error)
+	// BarrierEnableEncryption migrates a previously-unencrypted barrier to a
+	// keyed strategy (enable encryption after the fact). The migration runs
+	// asynchronously because a system-scope migration recycles the data-plane
+	// server in process; the call returns immediately and clients poll
+	// BarrierStatus for the strategy change.
+	BarrierEnableEncryption(context.Context, *BarrierEnableEncryptionRequest) (*BarrierEnableEncryptionResponse, error)
 	// BarrierOfficerRegister registers a new Security Officer for the system barrier.
 	BarrierOfficerRegister(context.Context, *BarrierOfficerRegisterRequest) (*BarrierOfficerRegisterResponse, error)
 	// BarrierOfficerList lists all registered Security Officers for the system barrier.
@@ -3253,6 +3276,9 @@ func (UnimplementedQRDBServiceServer) BarrierShamirUnsealShares(context.Context,
 }
 func (UnimplementedQRDBServiceServer) BarrierRekey(context.Context, *BarrierRekeyRequest) (*BarrierShamirOperationResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method BarrierRekey not implemented")
+}
+func (UnimplementedQRDBServiceServer) BarrierEnableEncryption(context.Context, *BarrierEnableEncryptionRequest) (*BarrierEnableEncryptionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method BarrierEnableEncryption not implemented")
 }
 func (UnimplementedQRDBServiceServer) BarrierOfficerRegister(context.Context, *BarrierOfficerRegisterRequest) (*BarrierOfficerRegisterResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method BarrierOfficerRegister not implemented")
@@ -5647,6 +5673,24 @@ func _QRDBService_BarrierRekey_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _QRDBService_BarrierEnableEncryption_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BarrierEnableEncryptionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).BarrierEnableEncryption(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_BarrierEnableEncryption_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).BarrierEnableEncryption(ctx, req.(*BarrierEnableEncryptionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _QRDBService_BarrierOfficerRegister_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(BarrierOfficerRegisterRequest)
 	if err := dec(in); err != nil {
@@ -7235,6 +7279,10 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "BarrierRekey",
 			Handler:    _QRDBService_BarrierRekey_Handler,
+		},
+		{
+			MethodName: "BarrierEnableEncryption",
+			Handler:    _QRDBService_BarrierEnableEncryption_Handler,
 		},
 		{
 			MethodName: "BarrierOfficerRegister",

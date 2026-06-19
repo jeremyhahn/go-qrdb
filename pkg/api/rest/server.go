@@ -105,6 +105,7 @@ type Server struct {
 	collectionSvc     service.CollectionServicer
 	lockSvc           service.LockServicer
 	barrierSvc        service.BarrierServicer
+	encMigrator       service.EncryptionMigrator
 	pinBackend        pin.PINBackend
 	ceremonySvc       service.CeremonyServicer
 	credentialSvc     service.CredentialServicer
@@ -315,6 +316,12 @@ func WithCollectionService(svc service.CollectionServicer) ServerOption {
 // rekey, recovery, and root token generation.
 func WithBarrierService(svc service.BarrierServicer) ServerOption {
 	return func(s *Server) { s.barrierSvc = svc }
+}
+
+// WithEncryptionMigrator configures the enable-encryption migrator, enabling
+// POST /v1/barrier/enable-encryption. When nil that route is not registered.
+func WithEncryptionMigrator(m service.EncryptionMigrator) ServerOption {
+	return func(s *Server) { s.encMigrator = m }
 }
 
 // WithPINBackend attaches the canonical pin.PINBackend used for the
@@ -743,6 +750,9 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 		s.routes["/v1/barrier/shamir/unseal-shares"] = route{method: http.MethodPost, handler: s.handleBarrierShamirUnsealShares}
 		s.routes["/v1/barrier/shamir/seal-vote"] = route{method: http.MethodPost, handler: s.handleBarrierShamirSealVote}
 		s.routes["/v1/barrier/rekey"] = route{method: http.MethodPost, handler: s.handleBarrierRekey}
+		if s.encMigrator != nil {
+			s.routes["/v1/barrier/enable-encryption"] = route{method: http.MethodPost, handler: s.handleBarrierEnableEncryption}
+		}
 		s.routes["/v1/barrier/recovery/generate"] = route{method: http.MethodPost, handler: s.handleBarrierRecoveryGenerate}
 		s.routes["/v1/barrier/recovery/recover"] = route{method: http.MethodPost, handler: s.handleBarrierRecoveryRecover}
 		s.routes["/v1/barrier/recovery"] = route{method: http.MethodDelete, handler: s.handleBarrierRecoveryDelete}

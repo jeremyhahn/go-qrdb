@@ -522,7 +522,8 @@ func TestAll_TotalCount(t *testing.T) {
 	// + 4 multi-tenant quota/entitlement perms (tenants:set_isolation,
 	//   tenants:set_entitlements, databases:create_raft,
 	//   databases:create_volume) = 339 total.
-	const expectedTotal = 339
+	// + 1 enable-encryption migration perm (seal:enable_encryption) = 340 total.
+	const expectedTotal = 340
 	all := All()
 	if len(all) != expectedTotal {
 		t.Fatalf("All() count: got %d, want %d", len(all), expectedTotal)

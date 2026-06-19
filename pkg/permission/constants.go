@@ -391,6 +391,11 @@ const (
 	SealRotateRootKey Permission = "seal:rotate_root_key"
 	// SealRekey grants access to rekey Shamir shares (SO only).
 	SealRekey Permission = "seal:rekey"
+	// SealEnableEncryption grants access to migrate a previously-unencrypted
+	// barrier to a keyed strategy (enable encryption after the fact). System
+	// scope is SO/Admin only; tenant scope additionally requires ownership of a
+	// tenant with its own dedicated barrier.
+	SealEnableEncryption Permission = "seal:enable_encryption"
 	// SealGenerateRecovery grants access to generate offline recovery keys (SO only).
 	SealGenerateRecovery Permission = "seal:generate_recovery"
 	// SealRecoverWithKeys grants access to recover the barrier using offline recovery keys.
@@ -839,9 +844,10 @@ var categories = []Category{
 		Group: "Admin Services",
 		Permissions: []Permission{
 			SealBootstrap, SealUnseal, SealSeal, SealStatus,
-			SealRotateRootKey, SealRekey, SealGenerateRecovery,
-			SealRecoverWithKeys, SealInitializeShamir, BarrierUnsealShare,
-			SealOfficerRegister, SealOfficerList, SealSubmitSealVote,
+			SealRotateRootKey, SealRekey, SealEnableEncryption,
+			SealGenerateRecovery, SealRecoverWithKeys, SealInitializeShamir,
+			BarrierUnsealShare, SealOfficerRegister, SealOfficerList,
+			SealSubmitSealVote,
 		},
 	},
 	{

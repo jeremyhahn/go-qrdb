@@ -15,6 +15,7 @@
 package rest
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -349,6 +350,100 @@ func (s *Server) handleBarrierRekey(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, shamirInitToResponse(result))
+}
+
+// barrierEnableEncryptionRequest is the JSON payload for
+// POST /v1/barrier/enable-encryption.
+type barrierEnableEncryptionRequest struct {
+	// TenantID, when set, scopes the migration to that tenant's dedicated
+	// barrier; empty means the system barrier (admin scope).
+	TenantID string `json:"tenant_id,omitempty"`
+	// Strategy is the target keyed strategy: "passphrase" or "shamir".
+	Strategy string `json:"strategy"`
+	// Mechanism is "swap" (default) or "in-place".
+	Mechanism string `json:"mechanism,omitempty"`
+	// Availability is "quiesced" (default) or "online".
+	Availability string `json:"availability,omitempty"`
+	// Passphrase is the unseal credential for a passphrase target.
+	Passphrase string `json:"passphrase,omitempty"`
+	// ShamirThreshold / ShamirTotal configure an M-of-N Shamir target.
+	ShamirThreshold int `json:"shamir_threshold,omitempty"`
+	ShamirTotal     int `json:"shamir_total,omitempty"`
+}
+
+// migrationStartGrace gives the 202 response time to flush before a
+// system-scope migration tears down the data-plane server it was served on.
+const migrationStartGrace = 750 * time.Millisecond
+
+// handleBarrierEnableEncryption handles POST /v1/barrier/enable-encryption --
+// migrates a previously-unencrypted barrier to a keyed strategy. The work runs
+// asynchronously because a system-scope migration recycles the data-plane
+// server in process; the handler validates the request, starts the migration,
+// and returns 202. Clients observe completion by polling GET /v1/barrier/status
+// (the strategy changes from "none" to the keyed strategy).
+// Required permission: seal:enable_encryption.
+func (s *Server) handleBarrierEnableEncryption(w http.ResponseWriter, r *http.Request) {
+	if s.encMigrator == nil {
+		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "encryption-migration"})
+		return
+	}
+	var req barrierEnableEncryptionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+		return
+	}
+
+	scope := service.BarrierScope{Kind: service.ScopeSystem}
+	if req.TenantID != "" {
+		scope = service.BarrierScope{Kind: service.ScopeTenant, TenantID: req.TenantID}
+	}
+
+	opts := seal.MigrationOptions{
+		TargetStrategy:  seal.StrategyID(req.Strategy),
+		Mechanism:       migrationMechanism(req.Mechanism),
+		Availability:    migrationAvailability(req.Availability),
+		Credentials:     seal.Credentials{Secret: []byte(req.Passphrase)},
+		ShamirThreshold: req.ShamirThreshold,
+		ShamirTotal:     req.ShamirTotal,
+	}
+	// Validate synchronously so the caller gets immediate feedback on bad input
+	// (the async path can no longer surface a structured error to this client).
+	if err := opts.Validate(); err != nil {
+		writeErrorJSON(w, mapBarrierCeremonyHTTPError(err), err)
+		return
+	}
+
+	// Run asynchronously: a system-scope migration tears down the server this
+	// request is served on, so we must respond first. A background context is
+	// used because the request context is cancelled once the response returns.
+	go func() {
+		time.Sleep(migrationStartGrace)
+		_ = s.encMigrator.EnableEncryption(context.Background(), scope, opts)
+	}()
+
+	writeJSON(w, map[string]interface{}{
+		"status": "migration_started",
+		"scope":  string(scope.Kind),
+		"note":   "poll GET /v1/barrier/status; the strategy changes when the migration completes",
+	})
+}
+
+// migrationMechanism maps the wire mechanism string to a seal.MigrationMechanism,
+// defaulting to swap.
+func migrationMechanism(s string) seal.MigrationMechanism {
+	if s == string(seal.MechanismInPlace) {
+		return seal.MechanismInPlace
+	}
+	return seal.MechanismSwap
+}
+
+// migrationAvailability maps the wire availability string to a
+// seal.MigrationAvailability, defaulting to quiesced.
+func migrationAvailability(s string) seal.MigrationAvailability {
+	if s == string(seal.AvailabilityOnline) {
+		return seal.AvailabilityOnline
+	}
+	return seal.AvailabilityQuiesced
 }
 
 // handleBarrierRecoveryGenerate handles POST /v1/barrier/recovery/generate --
@@ -971,6 +1066,19 @@ func mapBarrierCeremonyHTTPError(err error) int {
 		return http.StatusForbidden
 	case errors.Is(err, service.ErrCeremonyNotConfigured):
 		return http.StatusUnprocessableEntity
+	// Enable-encryption migration validation + scoping errors.
+	case errors.Is(err, seal.ErrMigrationInvalidTarget),
+		errors.Is(err, seal.ErrMigrationInvalidMechanism),
+		errors.Is(err, seal.ErrMigrationInvalidAvailability),
+		errors.Is(err, seal.ErrShamirThresholdInvalid):
+		return http.StatusBadRequest
+	case errors.Is(err, seal.ErrMigrationSourceNotNone),
+		errors.Is(err, seal.ErrMigrationInProgress):
+		return http.StatusConflict
+	case errors.Is(err, service.ErrSharedBarrierImmutable):
+		return http.StatusForbidden
+	case errors.Is(err, service.ErrMigrationProviderUnavailable):
+		return http.StatusNotImplemented
 	default:
 		return mapHTTPError(err)
 	}

@@ -194,6 +194,57 @@ func (s *qrdbServiceServer) BarrierRekey(ctx context.Context, req *pb.BarrierRek
 	}, nil
 }
 
+// grpcMigrationStartGrace gives the response time to flush before a
+// system-scope migration recycles the data-plane server it was served on.
+const grpcMigrationStartGrace = 750 * time.Millisecond
+
+// BarrierEnableEncryption migrates a previously-unencrypted barrier to a keyed
+// strategy. Like the REST endpoint it validates synchronously then runs the
+// migration asynchronously (a system migration recycles the serving server),
+// returning a "migration_started" acknowledgement; clients poll BarrierStatus.
+func (s *qrdbServiceServer) BarrierEnableEncryption(_ context.Context, req *pb.BarrierEnableEncryptionRequest) (*pb.BarrierEnableEncryptionResponse, error) {
+	if s.encMigrator == nil {
+		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "encryption-migration"}).Error())
+	}
+
+	scope := service.BarrierScope{Kind: service.ScopeSystem}
+	if req.GetTenantId() != "" {
+		scope = service.BarrierScope{Kind: service.ScopeTenant, TenantID: req.GetTenantId()}
+	}
+
+	mechanism := seal.MechanismSwap
+	if req.GetMechanism() == string(seal.MechanismInPlace) {
+		mechanism = seal.MechanismInPlace
+	}
+	availability := seal.AvailabilityQuiesced
+	if req.GetAvailability() == string(seal.AvailabilityOnline) {
+		availability = seal.AvailabilityOnline
+	}
+
+	opts := seal.MigrationOptions{
+		TargetStrategy:  seal.StrategyID(req.GetStrategy()),
+		Mechanism:       mechanism,
+		Availability:    availability,
+		Credentials:     seal.Credentials{Secret: []byte(req.GetPassphrase())},
+		ShamirThreshold: int(req.GetShamirThreshold()),
+		ShamirTotal:     int(req.GetShamirTotal()),
+	}
+	if err := opts.Validate(); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	migrator := s.encMigrator
+	go func() {
+		time.Sleep(grpcMigrationStartGrace)
+		_ = migrator.EnableEncryption(context.Background(), scope, opts)
+	}()
+
+	return &pb.BarrierEnableEncryptionResponse{
+		Status: "migration_started",
+		Scope:  string(scope.Kind),
+	}, nil
+}
+
 // BarrierRecoveryGenerate generates a set of Shamir recovery shares from the
 // root key for disaster recovery. SO PIN verification is enforced when a
 // pin.PINBackend is configured AND a SO PIN has been set.

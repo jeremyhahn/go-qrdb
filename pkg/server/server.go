@@ -151,6 +151,7 @@ type serverOptions struct {
 	databaseSvc     service.DatabaseServicer
 	dbManager       *database.Manager
 	barrierSvc      service.BarrierServicer
+	encMigrator     service.EncryptionMigrator
 	ceremonySvc     service.CeremonyServicer
 	credentialSvc   service.CredentialServicer
 	ceremonyCA      ceremony.CeremonyCA
@@ -379,6 +380,12 @@ func WithDatabaseManager(manager *database.Manager) ServerOption {
 // WithBarrierService configures the barrier service for all protocol servers.
 func WithBarrierService(svc service.BarrierServicer) ServerOption {
 	return func(o *serverOptions) { o.barrierSvc = svc }
+}
+
+// WithEncryptionMigrator configures the enable-encryption migrator, exposing
+// the migration endpoint on the protocol servers that support it (REST today).
+func WithEncryptionMigrator(m service.EncryptionMigrator) ServerOption {
+	return func(o *serverOptions) { o.encMigrator = m }
 }
 
 // WithCeremonyService configures the ceremony service for all protocol servers.
@@ -886,6 +893,9 @@ func (s *Server) startREST() error {
 	if s.opts.barrierSvc != nil {
 		restOpts = append(restOpts, rest.WithBarrierService(s.opts.barrierSvc))
 	}
+	if s.opts.encMigrator != nil {
+		restOpts = append(restOpts, rest.WithEncryptionMigrator(s.opts.encMigrator))
+	}
 	if s.opts.pinBackend != nil {
 		restOpts = append(restOpts, rest.WithPINBackend(s.opts.pinBackend))
 	}
@@ -1001,6 +1011,9 @@ func (s *Server) startGRPC() error {
 	}
 	if s.opts.barrierSvc != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithBarrierService(s.opts.barrierSvc))
+	}
+	if s.opts.encMigrator != nil {
+		grpcOpts = append(grpcOpts, grpcapi.WithEncryptionMigrator(s.opts.encMigrator))
 	}
 	if s.opts.pinBackend != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithPINBackend(s.opts.pinBackend))

@@ -203,6 +203,12 @@ func (t *Transport) BarrierRekey(ctx context.Context, req *transport.BarrierReke
 
 // BarrierGenerateRecoveryKeys generates recovery keys for disaster recovery
 // scenarios by calling the qrdb_barrier_recovery_generate MCP tool.
+// BarrierEnableEncryption is not supported on the mcp transport; enable
+// encryption via the REST or gRPC (unix) transports.
+func (t *Transport) BarrierEnableEncryption(_ context.Context, _ *transport.BarrierEnableEncryptionRequest) (*transport.BarrierEnableEncryptionResponse, error) {
+	return nil, &transport.NotImplementedError{Method: "BarrierEnableEncryption"}
+}
+
 func (t *Transport) BarrierGenerateRecoveryKeys(ctx context.Context, req *transport.BarrierGenerateRecoveryKeysRequest) (*transport.BarrierRecoveryKeysResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}

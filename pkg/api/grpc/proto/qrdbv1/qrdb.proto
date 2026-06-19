@@ -463,6 +463,13 @@ service QRDBService {
     // BarrierRekey generates new Shamir shares with the specified parameters.
     rpc BarrierRekey(BarrierRekeyRequest) returns (BarrierShamirOperationResponse);
 
+    // BarrierEnableEncryption migrates a previously-unencrypted barrier to a
+    // keyed strategy (enable encryption after the fact). The migration runs
+    // asynchronously because a system-scope migration recycles the data-plane
+    // server in process; the call returns immediately and clients poll
+    // BarrierStatus for the strategy change.
+    rpc BarrierEnableEncryption(BarrierEnableEncryptionRequest) returns (BarrierEnableEncryptionResponse);
+
     // -----------------------------------------------------------------------
     // Barrier Security Officer management (system barrier)
     // -----------------------------------------------------------------------
@@ -2313,6 +2320,25 @@ message BarrierStatusResponse {
     string initialized_at = 4;
     int32 shamir_threshold = 5;
     int32 shamir_total = 6;
+}
+
+// BarrierEnableEncryptionRequest migrates a barrier from none to a keyed
+// strategy. tenant_id, when set, scopes the migration to that tenant's
+// dedicated barrier; empty means the system barrier (admin scope).
+message BarrierEnableEncryptionRequest {
+    string tenant_id = 1;
+    string strategy = 2;      // "passphrase" or "shamir"
+    string mechanism = 3;     // "swap" (default) or "in-place"
+    string availability = 4;  // "quiesced" (default) or "online"
+    string passphrase = 5;
+    int32 shamir_threshold = 6;
+    int32 shamir_total = 7;
+}
+
+// BarrierEnableEncryptionResponse acknowledges that the migration has started.
+message BarrierEnableEncryptionResponse {
+    string status = 1; // e.g. "migration_started"
+    string scope = 2;  // "system" or "tenant"
 }
 
 // BarrierShamirInitializeRequest initializes the barrier with Shamir secret sharing.

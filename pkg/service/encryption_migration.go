@@ -67,6 +67,14 @@ type BarrierScope struct {
 	TenantID string // required when Kind == ScopeTenant
 }
 
+// EncryptionMigrator is the node-level entrypoint that performs an in-process
+// encryption migration for a scoped barrier. The daemon's *node.Node satisfies
+// it; transport handlers depend on this interface (not the concrete node) so
+// the server stays decoupled from the node package.
+type EncryptionMigrator interface {
+	EnableEncryption(ctx context.Context, scope BarrierScope, opts seal.MigrationOptions) error
+}
+
 // ---------------------------------------------------------------------------
 // Provider
 // ---------------------------------------------------------------------------

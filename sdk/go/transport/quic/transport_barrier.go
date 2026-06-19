@@ -201,6 +201,12 @@ func (t *Transport) BarrierRekey(ctx context.Context, req *transport.BarrierReke
 
 // BarrierGenerateRecoveryKeys generates recovery keys for disaster recovery
 // scenarios.
+// BarrierEnableEncryption is not supported on the quic transport; enable
+// encryption via the REST or gRPC (unix) transports.
+func (t *Transport) BarrierEnableEncryption(_ context.Context, _ *transport.BarrierEnableEncryptionRequest) (*transport.BarrierEnableEncryptionResponse, error) {
+	return nil, &transport.NotImplementedError{Method: "BarrierEnableEncryption"}
+}
+
 func (t *Transport) BarrierGenerateRecoveryKeys(ctx context.Context, req *transport.BarrierGenerateRecoveryKeysRequest) (*transport.BarrierRecoveryKeysResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}

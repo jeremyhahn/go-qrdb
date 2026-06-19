@@ -1322,6 +1322,11 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	if n.authFactorSvc != nil {
 		allOpts = append(allOpts, server.WithAuthFactorService(n.authFactorSvc))
 	}
+	// Expose enable-encryption when a barrier registry is present: the node
+	// itself is the EncryptionMigrator (it performs the in-process recycle).
+	if n.barrierRegistry != nil {
+		allOpts = append(allOpts, server.WithEncryptionMigrator(n))
+	}
 	srv := server.New(serverCfg, svcNode.KV, svcNode.Admin, allOpts...)
 	if err := srv.Start(); err != nil {
 		_ = client.Close()

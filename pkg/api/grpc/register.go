@@ -114,6 +114,11 @@ func WithRegisterBarrierService(svc service.BarrierServicer) RegisterOption {
 	return func(s *qrdbServiceServer) { s.barrierSvc = svc }
 }
 
+// WithRegisterEncryptionMigrator attaches the enable-encryption migrator for the registered gRPC service.
+func WithRegisterEncryptionMigrator(m service.EncryptionMigrator) RegisterOption {
+	return func(s *qrdbServiceServer) { s.encMigrator = m }
+}
+
 // WithRegisterPINBackend attaches the canonical pin.PINBackend used for
 // the SO PIN / User PIN compliance-gating layer on barrier administrative
 // operations.

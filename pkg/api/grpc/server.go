@@ -63,6 +63,7 @@ type Server struct {
 	ragSvc            service.RAGServicer
 	databaseSvc       service.DatabaseServicer
 	barrierSvc        service.BarrierServicer
+	encMigrator       service.EncryptionMigrator
 	pinBackend        pin.PINBackend
 	ceremonySvc       service.CeremonyServicer
 	credentialSvc     service.CredentialServicer
@@ -186,6 +187,11 @@ func WithDatabaseService(svc service.DatabaseServicer) ServerOption {
 // WithBarrierService configures the gRPC server with a barrier management service.
 func WithBarrierService(svc service.BarrierServicer) ServerOption {
 	return func(s *Server) { s.barrierSvc = svc }
+}
+
+// WithEncryptionMigrator configures the enable-encryption migrator.
+func WithEncryptionMigrator(m service.EncryptionMigrator) ServerOption {
+	return func(s *Server) { s.encMigrator = m }
 }
 
 // WithPINBackend configures the gRPC server with the canonical
@@ -394,6 +400,7 @@ func (s *Server) Start() error {
 		ragSvc:        s.ragSvc,
 		databaseSvc:   s.databaseSvc,
 		barrierSvc:    s.barrierSvc,
+		encMigrator:   s.encMigrator,
 		pinBackend:    s.pinBackend,
 		ceremonySvc:   s.ceremonySvc,
 		credentialSvc: s.credentialSvc,

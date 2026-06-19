@@ -145,6 +145,21 @@ func (t *Transport) BarrierRekey(ctx context.Context, req *transport.BarrierReke
 	return &rekeyResp, nil
 }
 
+// BarrierEnableEncryption migrates a previously-unencrypted barrier to a keyed
+// strategy. Maps to POST /v1/barrier/enable-encryption.
+func (t *Transport) BarrierEnableEncryption(ctx context.Context, req *transport.BarrierEnableEncryptionRequest) (*transport.BarrierEnableEncryptionResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	var resp transport.BarrierEnableEncryptionResponse
+	if err := t.postJSONDecode(ctx, "BarrierEnableEncryption", "/v1/barrier/enable-encryption", req, &resp); err != nil {
+		return nil, err
+	}
+
+	return &resp, nil
+}
+
 // BarrierGenerateRecoveryKeys generates recovery keys for disaster recovery
 // scenarios. Maps to POST /v1/barrier/recovery/generate.
 func (t *Transport) BarrierGenerateRecoveryKeys(ctx context.Context, req *transport.BarrierGenerateRecoveryKeysRequest) (*transport.BarrierRecoveryKeysResponse, error) {

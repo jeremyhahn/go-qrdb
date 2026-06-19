@@ -184,6 +184,12 @@ func (t *Transport) BarrierRekey(ctx context.Context, req *transport.BarrierReke
 // BarrierGenerateRecoveryKeys generates recovery keys for disaster recovery
 // by delegating to the injected BarrierServicer. SO PIN verification is
 // enforced when a pin.PINBackend is injected and has a SO PIN set.
+// BarrierEnableEncryption is not supported on the embedded transport; enable
+// encryption via the REST or gRPC (unix) transports.
+func (t *Transport) BarrierEnableEncryption(_ context.Context, _ *transport.BarrierEnableEncryptionRequest) (*transport.BarrierEnableEncryptionResponse, error) {
+	return nil, &transport.NotImplementedError{Method: "BarrierEnableEncryption"}
+}
+
 func (t *Transport) BarrierGenerateRecoveryKeys(ctx context.Context, req *transport.BarrierGenerateRecoveryKeysRequest) (*transport.BarrierRecoveryKeysResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}

@@ -17,13 +17,17 @@ and how encrypted backups are restored. It is the canonical reference behind the
   decrypts every read and encrypts every write automatically. Data is never
   write-only and is never locked away from a running, unsealed instance.
 - The **sealing strategy is chosen at initialization** (`none` / `passphrase` /
-  `shamir`) and is **fixed thereafter**. There is no in-place "flip a switch"
-  to change strategy on a barrier that already holds data.
+  `shamir`). Enabling encryption on a `none` barrier after the fact is a
+  deliberate, in-place **re-encryption migration** — not a config flag — driven
+  by `qrdb barrier enable-encryption` (see [Enabling encryption after the
+  fact](#enabling-encryption-after-the-fact)).
 - The routine key-lifecycle operation is **rekey** (rotate the unseal
   credential / re-wrap the root key), *not* disabling encryption.
-- To **enable encryption on an existing `none` deployment**, provision a new
-  instance with a `passphrase` or `shamir` barrier and migrate via
-  **backup & restore**. This is a deliberate, audited migration — by design.
+- **Enable encryption on an existing `none` deployment** in place with
+  `qrdb barrier enable-encryption --strategy passphrase|shamir`. The node
+  re-encrypts all at-rest data and transitions the live barrier to the keyed
+  strategy with no process restart. Scope is the system barrier, or a single
+  tenant's dedicated barrier with `--tenant`.
 - **Disabling encryption is not offered** as a casual operation. Dropping a
   required control silently is a compliance regression (PCI-DSS, HIPAA,
   FedRAMP). See [Why "disable encryption" is not a toggle](#why-disable-encryption-is-not-a-toggle).
@@ -56,32 +60,57 @@ life of that barrier.
 |---|---|---|---|
 | **Rekey** (`pkg/seal/rekey.go`) | Yes (re-wraps the root key; new Shamir params) | No | No |
 | **Re-initialize** (uninitialized barrier only) | Sets it for the first time | n/a (no data yet) | Sets it for the first time |
-| **Disable / change strategy in place** | — | — | **Not supported** |
+| **Enable encryption** (`qrdb barrier enable-encryption`) | Sets it (the new keyed credential) | **Yes** (full at-rest re-encryption) | `none` → `passphrase`/`shamir` |
+| **Disable / downgrade to plaintext in place** | — | — | **Not supported** (see below) |
 
 Rekey is the routine, compliant rotation operation (PCI-DSS 3.6.1). It changes
-*how you unseal*, never *whether data is encrypted*.
+*how you unseal*, never *whether data is encrypted*. Enable-encryption is the
+deliberate, one-way migration that turns encryption *on*.
 
-## Enabling encryption on an existing `none` deployment
+## Enabling encryption after the fact
 
-Because the strategy is fixed at initialization, enabling encryption on a
-deployment that was initialized with `none` (or with the seal subsystem disabled
-entirely) is a **planned data migration**, not a runtime toggle:
+A barrier initialized with `none` can be migrated to a keyed strategy in place,
+re-encrypting all at-rest data, with **no process restart**:
 
-1. Provision a **new** qrdb instance (or cluster) configured with a
-   `passphrase` or `shamir` barrier and complete its initialization.
-2. Take a backup of the unencrypted source instance (see
-   [backup/README.md](../backup/README.md)).
-3. Restore that backup **into** the new, keyed instance. As the data lands, the
-   destination barrier encrypts it at rest transparently.
-4. Cut traffic over to the encrypted instance and retire the old one
-   (securely wiping its disks).
+```
+# system barrier (admin)
+qrdb barrier enable-encryption --strategy passphrase --passphrase '…'
 
-The GUI surfaces this in the Seal Manager: when no barrier is configured it
-shows an **"Encryption Not Configured"** panel with this migration guidance
-rather than a button that would silently re-encrypt (or fail against) a live
-store. For a barrier subsystem that is present but **never initialized**, the
-panel instead offers an in-place **Configure Encryption** action (a first-time
-`Initialize`, which is safe because there is no committed strategy or data yet).
+# a single tenant's dedicated barrier
+qrdb barrier enable-encryption --tenant acme --strategy passphrase --passphrase '…'
+
+# Shamir M-of-N target
+qrdb barrier enable-encryption --strategy shamir --shamir-threshold 2 --shamir-total 3 --passphrase '…'
+```
+
+How it works:
+
+1. The server mints a fresh keyed barrier and re-encrypts every owned store —
+   either by a logical copy into a keyed sibling (`--mechanism swap`, default)
+   or a byte-faithful raw-file recodec (`--mechanism in-place`), each verified
+   against the source before commit (no data loss).
+2. The store directories are atomically swapped and the live barrier is
+   transitioned to the keyed strategy. The data plane briefly recycles in
+   process (a short maintenance window) and resumes — no operator restart.
+3. The migration runs **asynchronously**: the command returns once it has
+   started; poll `qrdb barrier status` until the strategy changes from `none`
+   to the chosen strategy to confirm completion.
+
+**Scope is never global.** It is either the **system** barrier (admin authority,
+`seal:enable_encryption`) or a single tenant's **dedicated** barrier (`--tenant`).
+A tenant on the **shared system barrier** inherits the system settings and
+cannot change its own encryption — the server rejects such a request. Take a
+verified backup before migrating (see [backup/README.md](../backup/README.md)).
+
+The GUI surfaces the same operation from the Seal Manager. When a `none`
+barrier is configured it offers the migration; for a barrier subsystem present
+but **never initialized**, it offers a first-time **Configure Encryption**
+action (a plain `Initialize`, safe because there is no committed strategy or
+data yet).
+
+> **Transport support:** the operation is available over REST (`POST
+> /v1/barrier/enable-encryption`) and gRPC / unix (the default CLI transport).
+> The QUIC, MCP, and embedded transports return `NotImplemented`.
 
 ## Backups and how encrypted data is "decrypted"
 
