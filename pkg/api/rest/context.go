@@ -37,8 +37,9 @@ const (
 	HeaderDatabase = "X-QRDB-Database"
 
 	// defaultDatabaseScope is the fallback database name when the database
-	// header is absent or empty. Single-database deployments use this name.
-	defaultDatabaseScope = "default"
+	// header is absent or empty. It is the well-known bootstrap database the
+	// daemon auto-creates at boot. Single-database deployments use this name.
+	defaultDatabaseScope = "system"
 )
 
 // databaseFromContext returns the database name stored in ctx by

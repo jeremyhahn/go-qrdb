@@ -35,6 +35,13 @@ var (
 	// unseal the root key (wrong password, wrong token, etc).
 	ErrInvalidCredentials = errors.New("qrdb/seal: invalid credentials")
 
+	// ErrDecryptionFailed is returned when an unseal decryption operation
+	// fails, typically because the supplied passphrase is wrong (the AEAD tag
+	// fails to verify). It is wrapped by go-quicraft's *UnsealError, so
+	// errors.Is matches through the wrapper. A wrong passphrase is
+	// client-supplied bad credential material, not a server fault.
+	ErrDecryptionFailed = quicraftseal.ErrDecryptionFailed
+
 	// ErrNoAvailableStrategy is returned when no registered sealing strategy
 	// reports itself as available.
 	ErrNoAvailableStrategy = errors.New("qrdb/seal: no available sealing strategy")
@@ -55,6 +62,29 @@ var (
 	// ErrCorruptRootKey is returned when the root key blob stored in the
 	// backend fails to deserialize or has an unexpected format.
 	ErrCorruptRootKey = errors.New("qrdb/seal: root key blob corrupted")
+
+	// ErrMigrationInvalidTarget is returned when an encryption migration
+	// requests a target strategy that is not a valid migration destination
+	// (e.g. migrating to "none", or to the same strategy already in effect).
+	ErrMigrationInvalidTarget = errors.New("qrdb/seal: invalid migration target strategy")
+
+	// ErrMigrationSourceNotNone is returned when an enable-encryption migration
+	// is attempted on a barrier whose active strategy is not "none". Enabling
+	// encryption is only defined for a currently-unencrypted barrier; changing
+	// between encrypted strategies is a rekey/re-provision, not this migration.
+	ErrMigrationSourceNotNone = errors.New("qrdb/seal: encryption migration requires a none-strategy source barrier")
+
+	// ErrMigrationInvalidMechanism is returned when an unknown re-encryption
+	// mechanism is requested.
+	ErrMigrationInvalidMechanism = errors.New("qrdb/seal: invalid migration mechanism")
+
+	// ErrMigrationInvalidAvailability is returned when an unknown availability
+	// mode is requested.
+	ErrMigrationInvalidAvailability = errors.New("qrdb/seal: invalid migration availability mode")
+
+	// ErrMigrationInProgress is returned when a migration is started while a
+	// prior migration journal is still present in a non-terminal phase.
+	ErrMigrationInProgress = errors.New("qrdb/seal: an encryption migration is already in progress")
 
 	// ErrNilSealedData is returned when a nil SealedData pointer is passed
 	// to an unseal operation.
@@ -253,6 +283,46 @@ var (
 	// rejects such ids at creation; this is the fail-closed defense at
 	// the filesystem sink.
 	ErrTenantPathEscapesPool = errors.New("qrdb/seal: tenant path escapes volume pool root")
+
+	// ErrPoolSlotUnresolved is returned internally when a recorded
+	// cluster-wide relative slot cannot be mapped to a local pool candidate
+	// (the pool is missing, or the slot index is out of range for this node's
+	// candidate set). It signals the pooled-allocation path to fall back to a
+	// fresh node-local Pick; it is not surfaced to API callers.
+	ErrPoolSlotUnresolved = errors.New("qrdb/seal: recorded volume-pool slot cannot be resolved to a local candidate")
+
+	// --- Root-key import seam (multi-node tenant Raft groups) ---
+
+	// ErrImportedKeyNil is returned when a nil *ImportedKey is passed to
+	// ImportRootKey or Validate.
+	ErrImportedKeyNil = errors.New("qrdb/seal: imported key must not be nil")
+
+	// ErrImportedRootKeyEmpty is returned when ImportedKey.RootKey is empty.
+	ErrImportedRootKeyEmpty = errors.New("qrdb/seal: imported root key must not be empty")
+
+	// ErrImportedSaltInvalid is returned when ImportedKey.Salt is not exactly
+	// 32 bytes. The HKDF salt must match the leader's value precisely so that
+	// replica DEK derivation is identical.
+	ErrImportedSaltInvalid = errors.New("qrdb/seal: imported salt must be exactly 32 bytes")
+
+	// ErrImportedEpochZero is returned when ImportedKey.Epoch is zero. A
+	// valid barrier epoch is always >= 1.
+	ErrImportedEpochZero = errors.New("qrdb/seal: imported epoch must be greater than zero")
+
+	// ErrImportedEpochNotInKnown is returned when ImportedKey.KnownEpochs
+	// does not contain ImportedKey.Epoch. The current epoch must appear in
+	// the known-epochs list for the EpochBarrier to validate the sealed blob.
+	ErrImportedEpochNotInKnown = errors.New("qrdb/seal: imported KnownEpochs must contain Epoch")
+
+	// ErrImportSealedBlobNil is returned when a nil blob is passed to
+	// ImportSealedBlob.
+	ErrImportSealedBlobNil = errors.New("qrdb/seal: sealed blob must not be nil")
+
+	// ErrImportSealedBlobInvalid is returned when the blob passed to
+	// ImportSealedBlob cannot be unmarshalled to a structurally valid
+	// SealedRootKey (missing epoch, wrong salt length, epoch absent from
+	// KnownEpochs, or malformed JSON).
+	ErrImportSealedBlobInvalid = errors.New("qrdb/seal: sealed blob is not a valid sealed root key")
 )
 
 // GetError is returned when a barrier Get operation fails during decryption.

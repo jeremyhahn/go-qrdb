@@ -27,6 +27,18 @@ func (e *MethodTooLongError) Error() string {
 	return "wire: method name length " + strconv.Itoa(e.Length) + " exceeds maximum " + strconv.Itoa(e.Max)
 }
 
+// DatabaseTooLongError is returned when a database scope name exceeds
+// MaxDatabaseLen.
+type DatabaseTooLongError struct {
+	Length int
+	Max    int
+}
+
+// Error returns a human-readable description.
+func (e *DatabaseTooLongError) Error() string {
+	return "wire: database name length " + strconv.Itoa(e.Length) + " exceeds maximum " + strconv.Itoa(e.Max)
+}
+
 // PayloadTooLargeError is returned when a payload exceeds MaxPayloadSize.
 type PayloadTooLargeError struct {
 	Size int

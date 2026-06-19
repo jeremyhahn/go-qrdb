@@ -64,8 +64,9 @@ type e2eServer struct {
 // recordedRequest is the captured form of a single request handled by
 // the E2E server.
 type recordedRequest struct {
-	Method  string
-	Payload []byte
+	Method   string
+	Database string
+	Payload  []byte
 }
 
 // startE2EServer starts a real QUIC server on a random local port, returns
@@ -206,15 +207,16 @@ func (s *e2eServer) handleStream(stream *quicgo.Stream) {
 	defer s.wg.Done()
 	defer func() { _ = stream.Close() }()
 
-	method, requestID, payload, err := wire.ReadRequest(stream)
+	method, database, requestID, payload, err := wire.ReadRequest(stream)
 	if err != nil {
 		return
 	}
 
 	s.recordMu.Lock()
 	s.recordedRequests = append(s.recordedRequests, recordedRequest{
-		Method:  method,
-		Payload: append([]byte(nil), payload...),
+		Method:   method,
+		Database: database,
+		Payload:  append([]byte(nil), payload...),
 	})
 	s.recordMu.Unlock()
 

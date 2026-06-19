@@ -78,7 +78,7 @@ type createTenantCall struct {
 	isolationType tenant.IsolationType
 }
 
-func (f *fakeTenants) CreateTenant(_ context.Context, id, name string, isolationType tenant.IsolationType) (*tenant.TenantInfo, error) {
+func (f *fakeTenants) CreateTenant(_ context.Context, id, name string, isolationType tenant.IsolationType, _ ...tenant.CreateTenantOption) (*tenant.TenantInfo, error) {
 	f.createCalls = append(f.createCalls, createTenantCall{
 		id:            id,
 		name:          name,
@@ -106,6 +106,10 @@ func (f *fakeTenants) UpdateTenant(_ context.Context, _ string, _ tenant.TenantP
 }
 func (f *fakeTenants) UpdateQuotas(_ context.Context, _ string, _ *quota.Quotas) (*tenant.TenantInfo, error) {
 	return nil, nil
+}
+
+func (f *fakeTenants) UpdateEntitlements(ctx context.Context, id string, e *quota.Entitlements) (*tenant.TenantInfo, error) {
+	return &tenant.TenantInfo{ID: id, Entitlements: e}, nil
 }
 func (f *fakeTenants) TenantBarrierInit(_ context.Context, _, _ string, _, _ int) (*tenant.TenantBarrierInitResult, error) {
 	return nil, nil

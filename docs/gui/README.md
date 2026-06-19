@@ -251,7 +251,7 @@ ServerMode --> [Remote] --> ConnectionConfig --> Summary --> Complete
 | Dashboard        | Cluster health, node status, shard overview    |
 | Cluster          | Peer membership, add/remove members            |
 | Databases        | Create, drop, configure databases and protocols |
-| Seal Manager     | Initialize, seal, unseal, rotate, rekey; for Shamir barriers a Security Officers panel handles CSR enrollment, claim status, and quorum seal votes (single-admin seal is blocked) |
+| Seal Manager     | Initialize, seal, unseal, rotate, rekey; for Shamir barriers a Security Officers panel handles CSR enrollment, claim status, and quorum seal votes (single-admin seal is blocked). When no encryption barrier is configured (strategy `none`) it shows an "Encryption Not Configured" panel — no Seal/Unseal controls, since there is nothing to seal — with [migration guidance](../seal/enabling-encryption.md) for enabling encryption |
 | Tenants          | Tenant lifecycle, per-tenant barrier strategy and officer management |
 | Users            | Create, edit, enable/disable user accounts     |
 | Roles            | Create, edit, assign/unassign roles            |

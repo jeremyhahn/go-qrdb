@@ -651,6 +651,7 @@ func TestLookupREST_PathParamRoutes(t *testing.T) {
 		{"PUT", "/v1/tenants/t-1", permission.TenantsUpdate},
 		{"DELETE", "/v1/tenants/t-1", permission.TenantsDelete},
 		{"POST", "/v1/tenants/t-1/quotas", permission.TenantsUpdate},
+		{"PATCH", "/v1/tenants/t-1/entitlements", permission.TenantsSetEntitlements},
 		// Database config sub-resources are updated with PATCH (not POST).
 		{"PATCH", "/v1/databases/db1/etcd", permission.DatabasesUpdate},
 		{"PATCH", "/v1/databases/db1/raft", permission.DatabasesUpdate},
@@ -691,5 +692,40 @@ func TestLookupREST_UnmappedRemainsPublic(t *testing.T) {
 	}
 	if _, ok := LookupREST("GET", "/users/abc/unknown/deep/path"); ok {
 		t.Error("unrelated deep path must not match a templated route")
+	}
+}
+
+// TestMultiTenantQuotaEntitlementPerms_Registered verifies the four Phase-1
+// multi-tenant quota/entitlement permissions are registered in the permission
+// catalog so they can be granted to roles and pass grant validation.
+func TestMultiTenantQuotaEntitlementPerms_Registered(t *testing.T) {
+	perms := []permission.Permission{
+		permission.TenantsSetIsolation,
+		permission.TenantsSetEntitlements,
+		permission.DatabasesCreateRaft,
+		permission.DatabasesCreateVolume,
+	}
+	for _, p := range perms {
+		if !permission.IsRegistered(p) {
+			t.Errorf("permission %q is not registered in the catalog", p)
+		}
+	}
+}
+
+// TestUpdateEntitlements_MappedAcrossTransports verifies the new
+// UpdateEntitlements endpoints map to tenants:set_entitlements on every
+// transport (default-deny: an unmapped endpoint is denied at runtime).
+func TestUpdateEntitlements_MappedAcrossTransports(t *testing.T) {
+	// REST
+	if got, ok := LookupREST("PATCH", "/v1/tenants/t-1/entitlements"); !ok || got != permission.TenantsSetEntitlements {
+		t.Errorf("REST PATCH entitlements: got %q ok=%v, want %q", got, ok, permission.TenantsSetEntitlements)
+	}
+	// QUIC
+	if got, ok := quicPermissions["tenant.UpdateEntitlements"]; !ok || got != permission.TenantsSetEntitlements {
+		t.Errorf("QUIC tenant.UpdateEntitlements: got %q ok=%v, want %q", got, ok, permission.TenantsSetEntitlements)
+	}
+	// MCP
+	if got, ok := mcpPermissions["qrdb_tenant_update_entitlements"]; !ok || got != permission.TenantsSetEntitlements {
+		t.Errorf("MCP qrdb_tenant_update_entitlements: got %q ok=%v, want %q", got, ok, permission.TenantsSetEntitlements)
 	}
 }

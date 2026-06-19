@@ -90,7 +90,7 @@ func TestStorageBarrier_Scan_Success(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if err := b.Initialize(ctx, Credentials{Secret: "test-password"}); err != nil {
+	if err := b.Initialize(ctx, Credentials{Secret: []byte("test-password")}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -330,7 +330,7 @@ func TestTenantBarrier_Scan_Success(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if err := tb.Initialize(ctx, Credentials{Secret: "pw"}); err != nil {
+	if err := tb.Initialize(ctx, Credentials{Secret: []byte("pw")}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -494,7 +494,7 @@ func TestStorageBarrier_Put_EncryptError(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if err := b.Initialize(ctx, Credentials{Secret: "pw"}); err != nil {
+	if err := b.Initialize(ctx, Credentials{Secret: []byte("pw")}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -529,7 +529,7 @@ func TestRecoverWithSoftwareStrategy_StrategyNotFound(t *testing.T) {
 	dist := newCaptureDistributor()
 	b.SetRecoveryDistributor(dist)
 	ctx := context.Background()
-	if err := b.Initialize(ctx, Credentials{Secret: "pw"}); err != nil {
+	if err := b.Initialize(ctx, Credentials{Secret: []byte("pw")}); err != nil {
 		t.Fatal(err)
 	}
 

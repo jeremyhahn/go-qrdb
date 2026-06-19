@@ -53,7 +53,7 @@ type mockTenantSvc struct {
 
 var _ tenant.TenantServicer = (*mockTenantSvc)(nil)
 
-func (m *mockTenantSvc) CreateTenant(ctx context.Context, id, name string, iso tenant.IsolationType) (*tenant.TenantInfo, error) {
+func (m *mockTenantSvc) CreateTenant(ctx context.Context, id, name string, iso tenant.IsolationType, _ ...tenant.CreateTenantOption) (*tenant.TenantInfo, error) {
 	if m.createFn != nil {
 		return m.createFn(ctx, id, name, iso)
 	}
@@ -95,6 +95,10 @@ func (m *mockTenantSvc) UpdateQuotas(ctx context.Context, id string, q *quota.Qu
 		return m.updateQuotasFn(ctx, id, q)
 	}
 	return &tenant.TenantInfo{ID: id, Name: "test", Quotas: q, CreatedAt: time.Now(), UpdatedAt: time.Now()}, nil
+}
+
+func (m *mockTenantSvc) UpdateEntitlements(ctx context.Context, id string, e *quota.Entitlements) (*tenant.TenantInfo, error) {
+	return &tenant.TenantInfo{ID: id, Entitlements: e}, nil
 }
 
 func (m *mockTenantSvc) Quotas(_ context.Context, _ string) (*quota.Quotas, error) {

@@ -48,7 +48,7 @@ func newTestBarrier(t *testing.T) *seal.StorageBarrier {
 	if err != nil {
 		t.Fatalf("NewStorageBarrier: %v", err)
 	}
-	creds := seal.Credentials{Secret: passphrase}
+	creds := seal.Credentials{Secret: []byte(passphrase)}
 	if err := barrier.Initialize(ctx, creds); err != nil {
 		t.Fatalf("barrier.Initialize: %v", err)
 	}

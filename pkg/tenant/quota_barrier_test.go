@@ -293,6 +293,80 @@ func TestTenantService_IncrementQuotaUsage_StorePutFault(t *testing.T) {
 // TenantService — DecrementQuotaUsage
 // ---------------------------------------------------------------------------
 
+func TestTenantService_SetQuotaUsage_Success(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctx := context.Background()
+	if _, err := svc.CreateTenant(ctx, "set-ok", "Set OK", ""); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	if _, err := svc.UpdateQuotas(ctx, "set-ok", &quota.Quotas{MaxStorageBytes: 100}); err != nil {
+		t.Fatalf("UpdateQuotas: %v", err)
+	}
+	info, err := svc.SetQuotaUsage(ctx, "set-ok", quota.ResourceStorageBytes, 73)
+	if err != nil {
+		t.Fatalf("SetQuotaUsage: %v", err)
+	}
+	if info.Quotas.CurrentStorageBytes != 73 {
+		t.Errorf("CurrentStorageBytes = %d, want 73", info.Quotas.CurrentStorageBytes)
+	}
+}
+
+func TestTenantService_SetQuotaUsage_BypassesLimitAndClamps(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctx := context.Background()
+	if _, err := svc.CreateTenant(ctx, "set-over", "Set Over", ""); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	if _, err := svc.UpdateQuotas(ctx, "set-over", &quota.Quotas{MaxStorageBytes: 10}); err != nil {
+		t.Fatalf("UpdateQuotas: %v", err)
+	}
+	// SetQuotaUsage records true usage even above the limit (no enforcement).
+	info, err := svc.SetQuotaUsage(ctx, "set-over", quota.ResourceStorageBytes, 999)
+	if err != nil {
+		t.Fatalf("SetQuotaUsage over limit: %v", err)
+	}
+	if info.Quotas.CurrentStorageBytes != 999 {
+		t.Errorf("CurrentStorageBytes = %d, want 999", info.Quotas.CurrentStorageBytes)
+	}
+	// Negative values clamp to zero.
+	info, err = svc.SetQuotaUsage(ctx, "set-over", quota.ResourceStorageBytes, -1)
+	if err != nil {
+		t.Fatalf("SetQuotaUsage negative: %v", err)
+	}
+	if info.Quotas.CurrentStorageBytes != 0 {
+		t.Errorf("CurrentStorageBytes = %d, want 0 (clamped)", info.Quotas.CurrentStorageBytes)
+	}
+}
+
+func TestTenantService_SetQuotaUsage_EmptyID(t *testing.T) {
+	svc, _ := newTestService(t)
+	if _, err := svc.SetQuotaUsage(context.Background(), "", quota.ResourceStorageBytes, 1); !errors.Is(err, ErrEmptyTenantID) {
+		t.Errorf("expected ErrEmptyTenantID, got %v", err)
+	}
+}
+
+func TestKVSetQuotaUsage_Success(t *testing.T) {
+	ctx := context.Background()
+	svc := newKVService(t).(*kvTenantService)
+	if _, err := svc.CreateTenant(ctx, "kv-set-ok", "KV Set OK", ""); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	info, err := svc.SetQuotaUsage(ctx, "kv-set-ok", quota.ResourceStorageBytes, 256)
+	if err != nil {
+		t.Fatalf("SetQuotaUsage: %v", err)
+	}
+	if info.Quotas.CurrentStorageBytes != 256 {
+		t.Errorf("CurrentStorageBytes = %d, want 256", info.Quotas.CurrentStorageBytes)
+	}
+}
+
+func TestKVSetQuotaUsage_EmptyID(t *testing.T) {
+	svc := newKVService(t).(*kvTenantService)
+	if _, err := svc.SetQuotaUsage(context.Background(), "", quota.ResourceStorageBytes, 1); !errors.Is(err, ErrEmptyTenantID) {
+		t.Errorf("expected ErrEmptyTenantID, got %v", err)
+	}
+}
+
 func TestTenantService_DecrementQuotaUsage_Success(t *testing.T) {
 	svc, _ := newTestService(t)
 	ctx := context.Background()

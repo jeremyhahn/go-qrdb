@@ -58,7 +58,7 @@ func newRecoveryBarrierWithShamir(t *testing.T) (*Barrier, *MemoryBackend, *capt
 func initRecoveryBarrier(t *testing.T, b *Barrier) {
 	t.Helper()
 	ctx := context.Background()
-	if err := b.Initialize(ctx, Credentials{Secret: "test-password"}); err != nil {
+	if err := b.Initialize(ctx, Credentials{Secret: []byte("test-password")}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -447,7 +447,7 @@ func TestRecoveryRoundTrip(t *testing.T) {
 		ctx := context.Background()
 
 		// Initialize the barrier.
-		if err := b.Initialize(ctx, Credentials{Secret: "test-password"}); err != nil {
+		if err := b.Initialize(ctx, Credentials{Secret: []byte("test-password")}); err != nil {
 			t.Fatal(err)
 		}
 

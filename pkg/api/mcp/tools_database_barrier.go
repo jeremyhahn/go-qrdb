@@ -71,7 +71,7 @@ func handleDatabaseUnseal(dbSvc service.DatabaseServicer) mcpserver.ToolHandlerF
 			return mcp.NewToolResultError("name is required"), nil
 		}
 		secret := mcp.ParseString(req, "secret", "")
-		if err := dbSvc.UnsealDatabase(ctx, name, seal.Credentials{Secret: secret}); err != nil {
+		if err := dbSvc.UnsealDatabase(ctx, name, seal.Credentials{Secret: []byte(secret)}); err != nil {
 			return nil, &ToolError{Tool: "qrdb_database_unseal", Err: err}
 		}
 		return mcp.NewToolResultText(`{"unsealed":true}`), nil

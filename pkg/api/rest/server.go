@@ -52,6 +52,20 @@ type Host interface {
 	RaftAddress() string
 }
 
+// ClusterKeyReceiver handles cluster peer key-transport endpoints. It is
+// satisfied by *clusterkeys.Receiver (duck-typed; the interface lives here
+// so the rest package does not import clusterkeys). When set, the server
+// registers /v1/cluster/keydelivery (POST) and /v1/cluster/nodekey (GET).
+// These routes are pre-exempt from the auth middleware (the receiver
+// self-authorises via node cert + placement check) and from the sealed-window
+// middleware (key transport must work before the tenant barrier is unsealed).
+type ClusterKeyReceiver interface {
+	// Handler returns the http.HandlerFunc for POST /v1/cluster/keydelivery.
+	Handler() http.HandlerFunc
+	// NodeKeyHandler returns the http.HandlerFunc for GET /v1/cluster/nodekey.
+	NodeKeyHandler() http.HandlerFunc
+}
+
 // LeaderAdminResolver resolves the admin HTTP base URL for a given Raft
 // address. When the leader's Raft address is known from a NotLeaderError,
 // this resolver returns the corresponding admin HTTP URL (e.g.,
@@ -138,6 +152,11 @@ type Server struct {
 	// SealedWindowAllowlist is rejected with 503. When nil, the
 	// middleware is not installed and the server behaves as before.
 	sealedWindowProbe sealedWindowProbe
+
+	// clusterKeyReceiver handles the cluster peer key-delivery endpoints
+	// (/v1/cluster/keydelivery and /v1/cluster/nodekey). When nil these
+	// routes are not registered.
+	clusterKeyReceiver ClusterKeyReceiver
 }
 
 // ServerOption configures optional Server dependencies.
@@ -462,6 +481,16 @@ func WithSealedWindowProbe(probe sealedWindowProbe) ServerOption {
 	return func(s *Server) { s.sealedWindowProbe = probe }
 }
 
+// WithClusterKeyReceiver registers the cluster peer key-delivery routes when
+// set. The receiver handles /v1/cluster/keydelivery (POST) for incoming HPKE
+// envelopes and /v1/cluster/nodekey (GET) for certificate advertisement. Both
+// routes are pre-exempt from the auth middleware and the sealed-window
+// middleware so they work in every daemon state. When nil, the routes are not
+// registered and peer key transport is disabled on this node.
+func WithClusterKeyReceiver(rcv ClusterKeyReceiver) ServerOption {
+	return func(s *Server) { s.clusterKeyReceiver = rcv }
+}
+
 // NewServer creates a new REST server that listens on the given address
 // and delegates to the provided service implementations. kvSvc and adminSvc
 // may be nil when only non-KV services (barrier, cert, auth) are needed;
@@ -691,6 +720,16 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	// CA bootstrap endpoint (public, no auth required).
 	if len(s.caBootstrapCert) > 0 {
 		s.routes["/v1/ca/bootstrap"] = route{method: http.MethodGet, handler: s.handleCABootstrap}
+	}
+
+	// Cluster peer key-transport endpoints. Both routes are pre-exempt from the
+	// auth middleware (/v1/cluster/ prefix in middleware/rest.go) and are on the
+	// SealedWindowAllowlist (/v1/cluster/ prefix) so they work in every daemon
+	// state. The receiver self-authorises via node-cert verification and
+	// placement-table gate.
+	if s.clusterKeyReceiver != nil {
+		s.routes["/v1/cluster/keydelivery"] = route{method: http.MethodPost, handler: s.clusterKeyReceiver.Handler()}
+		s.routes["/v1/cluster/nodekey"] = route{method: http.MethodGet, handler: s.clusterKeyReceiver.NodeKeyHandler()}
 	}
 
 	// Barrier lifecycle routes.

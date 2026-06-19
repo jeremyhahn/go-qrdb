@@ -46,6 +46,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/dek"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
+	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -160,6 +161,9 @@ type serverOptions struct {
 	backupSvc       service.BackupServicer
 	rebalanceSvc    service.RebalanceServicer
 	dbRegistry      *DatabaseServiceRegistry
+	tenantHosts     *TenantHostRegistry
+	raftBackend     *RaftBackendFactory
+	quotaAccountant *quota.Accountant
 	webUI           http.Handler
 	auditLogger     audit.AuditLogger
 	authFactorSvc   service.AuthFactorServicer
@@ -194,6 +198,10 @@ type serverOptions struct {
 	// Wired identically across protocol servers so operators see the
 	// same envelope on every transport.
 	sealedWindowProbe SealedWindowProbe
+
+	// clusterKeyReceiver handles the /v1/cluster/keydelivery and
+	// /v1/cluster/nodekey endpoints. When nil the routes are not registered.
+	clusterKeyReceiver rest.ClusterKeyReceiver
 }
 
 // SealedWindowProbe is the abstraction the sealed-window middleware /
@@ -286,6 +294,15 @@ func WithCABootstrap(certPEM, keyPEM []byte) ServerOption {
 		o.caBootstrapCert = certPEM
 		o.caBootstrapKey = keyPEM
 	}
+}
+
+// WithClusterKeyReceiver wires the cluster peer key-transport receiver into
+// the REST server. When set, /v1/cluster/keydelivery and /v1/cluster/nodekey
+// are registered. Both paths are pre-exempt from the auth middleware and the
+// sealed-window middleware so they operate in every daemon state. When nil the
+// routes are omitted (single-node or non-clustered deployments).
+func WithClusterKeyReceiver(rcv rest.ClusterKeyReceiver) ServerOption {
+	return func(o *serverOptions) { o.clusterKeyReceiver = rcv }
 }
 
 // WithBatch configures the batch service for all protocol servers.
@@ -434,6 +451,36 @@ func WithRebalanceService(svc service.RebalanceServicer) ServerOption {
 func WithDatabaseServiceRegistry(reg *DatabaseServiceRegistry) ServerOption {
 	return func(o *serverOptions) {
 		o.dbRegistry = reg
+	}
+}
+
+// WithTenantHostRegistry sets the per-tenant volume Host registry. When set,
+// the transport-neutral service registry routes IsolationVolume tenants to
+// their dedicated per-tenant Raft Host instead of the shared system services.
+func WithTenantHostRegistry(reg *TenantHostRegistry) ServerOption {
+	return func(o *serverOptions) {
+		o.tenantHosts = reg
+	}
+}
+
+// WithRaftBackendFactory sets the dedicated per-database raft shard factory.
+// When set, the transport-neutral service registry routes IsolationRaft tenants
+// to their database's dedicated Raft group (shard) on the shared system Host
+// instead of the shared system services.
+func WithRaftBackendFactory(f *RaftBackendFactory) ServerOption {
+	return func(o *serverOptions) {
+		o.raftBackend = f
+	}
+}
+
+// WithQuotaAccountant sets the storage-byte quota accountant. When set, the
+// transport-neutral service registry wraps the resolved KV and MVCC servicers
+// for every non-system tenant with a positive MaxStorageBytes limit so writes
+// are enforced (rejected with quota.ExceededError before commit) and accounted.
+// The background reconciler flushes and corrects the accumulated usage.
+func WithQuotaAccountant(acct *quota.Accountant) ServerOption {
+	return func(o *serverOptions) {
+		o.quotaAccountant = acct
 	}
 }
 
@@ -884,14 +931,11 @@ func (s *Server) startREST() error {
 	if s.opts.soAuthenticator != nil {
 		restOpts = append(restOpts, rest.WithSOAuthenticator(s.opts.soAuthenticator))
 	}
-	if s.opts.dbRegistry != nil {
-		regOpts := []RESTRegistryOption{}
-		if s.opts.tenantSvc != nil {
-			regOpts = append(regOpts, WithTenantServicer(s.opts.tenantSvc))
-		}
-		restOpts = append(restOpts, rest.WithServiceRegistry(
-			NewRESTServiceRegistry(s.opts.dbRegistry, s.opts.barrierRegistry, tenant.SystemTenantID, regOpts...),
-		))
+	if reg := s.buildServiceRegistry(); reg != nil {
+		restOpts = append(restOpts, rest.WithServiceRegistry(reg))
+	}
+	if s.opts.clusterKeyReceiver != nil {
+		restOpts = append(restOpts, rest.WithClusterKeyReceiver(s.opts.clusterKeyReceiver))
 	}
 
 	s.restSrv = rest.NewServer(s.kvSvc, s.adminSvc, addr, restOpts...)
@@ -902,6 +946,33 @@ func (s *Server) startREST() error {
 
 	s.logger.Info("REST server started", "addr", s.restSrv.Addr())
 	return nil
+}
+
+// buildServiceRegistry constructs the transport-neutral per-(tenant, database)
+// service.Registry shared by every protocol (REST, gRPC, Unix). It returns nil
+// when no database registry is configured, in which case transports fall back
+// to their singleton service fields (single-database / embedded behaviour).
+func (s *Server) buildServiceRegistry() service.Registry {
+	if s.opts.dbRegistry == nil {
+		return nil
+	}
+	regOpts := []RESTRegistryOption{}
+	if s.opts.tenantSvc != nil {
+		regOpts = append(regOpts, WithTenantServicer(s.opts.tenantSvc))
+	}
+	if s.opts.dbManager != nil {
+		regOpts = append(regOpts, WithDatabaseCatalog(newManagerCatalog(s.opts.dbManager, tenant.SystemTenantID)))
+	}
+	if s.opts.tenantHosts != nil {
+		regOpts = append(regOpts, withTenantHostRegistry(s.opts.tenantHosts))
+	}
+	if s.opts.raftBackend != nil {
+		regOpts = append(regOpts, withRaftBackendFactory(s.opts.raftBackend))
+	}
+	if s.opts.quotaAccountant != nil {
+		regOpts = append(regOpts, withQuotaAccountant(s.opts.quotaAccountant))
+	}
+	return NewRESTServiceRegistry(s.opts.dbRegistry, s.opts.barrierRegistry, tenant.SystemTenantID, regOpts...)
 }
 
 // startGRPC creates and starts the gRPC server with configured options.
@@ -993,6 +1064,9 @@ func (s *Server) startGRPC() error {
 	}
 	if s.opts.authFactorSvc != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithAuthFactorService(s.opts.authFactorSvc))
+	}
+	if reg := s.buildServiceRegistry(); reg != nil {
+		grpcOpts = append(grpcOpts, grpcapi.WithServiceRegistry(reg))
 	}
 
 	s.grpcSrv = grpcapi.NewServer(s.kvSvc, s.adminSvc, addr, grpcOpts...)
@@ -1089,6 +1163,9 @@ func (s *Server) startQUIC() error {
 	if s.opts.authFactorSvc != nil {
 		quicOpts = append(quicOpts, quicapi.WithAuthFactorService(s.opts.authFactorSvc))
 	}
+	if reg := s.buildServiceRegistry(); reg != nil {
+		quicOpts = append(quicOpts, quicapi.WithServiceRegistry(reg))
+	}
 
 	s.quicSrv = quicapi.NewServer(s.kvSvc, s.adminSvc, addr, quicOpts...)
 
@@ -1177,6 +1254,9 @@ func (s *Server) startUnix() error {
 	}
 	if s.opts.authFactorSvc != nil {
 		unixOpts = append(unixOpts, unixapi.WithAuthFactorService(s.opts.authFactorSvc))
+	}
+	if reg := s.buildServiceRegistry(); reg != nil {
+		unixOpts = append(unixOpts, unixapi.WithServiceRegistry(reg))
 	}
 
 	s.unixSrv = unixapi.NewServer(s.kvSvc, s.adminSvc, s.config.Unix.SocketPath, unixOpts...)
@@ -1280,6 +1360,9 @@ func (s *Server) startMCP() error {
 	}
 	if s.opts.authFactorSvc != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithAuthFactorService(s.opts.authFactorSvc))
+	}
+	if reg := s.buildServiceRegistry(); reg != nil {
+		mcpOpts = append(mcpOpts, mcpapi.WithServiceRegistry(reg))
 	}
 
 	s.mcpSrv = mcpapi.NewServer(s.kvSvc, s.adminSvc, addr, mcpOpts...)

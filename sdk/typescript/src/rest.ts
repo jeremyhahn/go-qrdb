@@ -122,6 +122,7 @@ import type {
     NamespaceInfo,
     Op,
     PeersResponse,
+    TopologyResponse,
     RangeOptions,
     RangeResponse,
     RebuildIndexRequest,
@@ -177,6 +178,8 @@ import type {
     TenantBarrierStatusResponse,
     UpdateTenantQuotasRequest,
     UpdateTenantQuotasResponse,
+    UpdateTenantEntitlementsRequest,
+    UpdateTenantEntitlementsResponse,
     ConfigInitializedResponse,
     BackupRequest,
     BackupInfo,
@@ -229,7 +232,7 @@ const SDK_VERSION = '0.1.0';
  * so that SDK consumers see the camelCase field names declared in types.ts.
  * Throws {@link TransportError} on non-OK status codes.
  */
-async function fetchJSON<T>(baseUrl: string, path: string, init?: RequestInit): Promise<T> {
+async function requestJSON<T>(baseUrl: string, path: string, init?: RequestInit): Promise<T> {
     const url = baseUrl + path;
     const method = init?.method ?? 'GET';
     let resp: Response;
@@ -259,7 +262,7 @@ async function fetchJSON<T>(baseUrl: string, path: string, init?: RequestInit): 
  * return 204 No Content or 200 with an ignored body.
  * Throws {@link TransportError} on non-OK status.
  */
-async function fetchVoid(baseUrl: string, path: string, init?: RequestInit): Promise<void> {
+async function requestVoid(baseUrl: string, path: string, init?: RequestInit): Promise<void> {
     const url = baseUrl + path;
     const method = init?.method ?? 'GET';
     let resp: Response;
@@ -286,7 +289,7 @@ async function fetchVoid(baseUrl: string, path: string, init?: RequestInit): Pro
  * Issues a fetch request and returns the response body as a raw text string.
  * Throws {@link TransportError} on non-OK status codes.
  */
-async function fetchText(baseUrl: string, path: string, init?: RequestInit): Promise<string> {
+async function requestText(baseUrl: string, path: string, init?: RequestInit): Promise<string> {
     const url = baseUrl + path;
     const method = init?.method ?? 'GET';
     let resp: Response;
@@ -310,6 +313,55 @@ async function fetchText(baseUrl: string, path: string, init?: RequestInit): Pro
     return resp.text();
 }
 
+/**
+ * HTTP header that selects the target database within the authenticated
+ * tenant's shard. Mirrors the server-side `rest.HeaderDatabase` constant.
+ */
+const HEADER_DATABASE = 'X-QRDB-Database';
+
+/**
+ * Sentinel name for the server's implicit database. Scoping to it is identical
+ * to being unscoped: the server uses the well-known `system` bootstrap database
+ * whenever no header is sent.
+ */
+const DATABASE_DEFAULT_SCOPE = 'system';
+
+/**
+ * Path prefixes for data-plane endpoints (KV, MVCC, transaction, batch, watch,
+ * lease, lock, secondary index, time-series, and vector). Only requests to
+ * these paths carry the {@link HEADER_DATABASE} scope header. Management,
+ * admin, and system endpoints (databases, tenants, users, roles, certs,
+ * barrier, ceremony, seal, cluster, snapshot, audit, permissions, SQL) are
+ * never database-scoped via the header.
+ */
+const DATA_PLANE_PREFIXES: readonly string[] = [
+    '/kv',
+    '/tx',
+    '/batch',
+    '/watch',
+    '/lease',
+    '/lock',
+    '/index',
+    '/ts',
+    '/vector',
+];
+
+/**
+ * Reports whether a request path targets a data-plane endpoint and therefore
+ * should carry the database scope header. A prefix matches only on a path-
+ * segment boundary (exact, `/` separator, or `?` query start) so that, e.g.,
+ * `/kv` and `/kv/scan` match while an unrelated path beginning with the same
+ * letters would not.
+ */
+function isDataPlanePath(path: string): boolean {
+    return DATA_PLANE_PREFIXES.some(
+        (prefix) =>
+            path === prefix ||
+            path.startsWith(`${prefix}/`) ||
+            path.startsWith(`${prefix}?`),
+    );
+}
+
 /** Builds a query string from a record of optional key-value pairs. */
 function buildQuery(params: Record<string, string | number | boolean | undefined>): string {
     const parts: string[] = [];
@@ -319,6 +371,28 @@ function buildQuery(params: Record<string, string | number | boolean | undefined
         }
     }
     return parts.length > 0 ? `?${parts.join('&')}` : '';
+}
+
+/**
+ * Decodes a base64 string into its UTF-8 plaintext representation.
+ *
+ * Go's `json.Marshal` encodes `[]byte` values as base64, so any JSON response
+ * field that carries raw byte content (e.g. the `pairs` map returned by
+ * `GET /kv/scan`) arrives base64-encoded on the wire. This helper restores the
+ * original plaintext, keeping the REST client consistent with both the Wails
+ * client (whose Go bindings convert values via `string(v)`) and the REST
+ * single-key `GET /kv/{key}` handler (which returns raw plaintext bytes).
+ *
+ * The `atob` → `Uint8Array` → `TextDecoder` chain is used (rather than the
+ * lossy `atob` shortcut) so that multibyte UTF-8 sequences decode correctly.
+ */
+function decodeBase64Utf8(b64: string): string {
+    const binary = atob(b64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+    }
+    return new TextDecoder().decode(bytes);
 }
 
 /**
@@ -353,11 +427,41 @@ export class RestClient implements Client {
     private serverVersion = '';
 
     /**
+     * The active database this client targets. When non-empty, every
+     * data-plane request carries an `X-QRDB-Database` header so the server
+     * namespaces the operation under `{tenant}/{database}/`. An empty value
+     * (the default) leaves the header off, so the server falls back to the
+     * `default` database.
+     */
+    private readonly activeDatabase: string;
+
+    /**
      * @param baseUrl - The base URL of the QRDB REST API (e.g. `https://localhost:8443`).
      *   Trailing slashes are stripped automatically.
+     * @param activeDatabase - Optional database scope. When empty the client is
+     *   unscoped and data-plane requests target the server's `default` database.
      */
-    constructor(baseUrl: string) {
+    constructor(baseUrl: string, activeDatabase = '') {
         this.baseUrl = baseUrl.replace(/\/$/, '');
+        this.activeDatabase = activeDatabase;
+    }
+
+    /** @inheritdoc */
+    databaseScoped(name: string): Client {
+        // `system` and the empty string both map to the unscoped client: the
+        // server uses the `system` bootstrap database when no header is
+        // present, so there is no header to send for either.
+        const target = name === DATABASE_DEFAULT_SCOPE ? '' : name;
+        if (target === this.activeDatabase) {
+            return this;
+        }
+        // A lightweight clone that shares the live connection snapshot but
+        // carries its own immutable database scope. No global mutable state is
+        // involved, so scopes never leak across clients.
+        const scoped = new RestClient(this.baseUrl, target);
+        scoped.connected = this.connected;
+        scoped.serverVersion = this.serverVersion;
+        return scoped;
     }
 
     // -----------------------------------------------------------------------
@@ -370,7 +474,7 @@ export class RestClient implements Client {
             connect: async (address: string): Promise<void> => {
                 this.baseUrl = address.replace(/\/$/, '');
                 try {
-                    const health = await fetchJSON<HealthResponse>(this.baseUrl, '/health');
+                    const health = await this.fetchJSON<HealthResponse>('/health');
                     if (health.status) {
                         this.connected = true;
                     }
@@ -388,7 +492,7 @@ export class RestClient implements Client {
                 }
                 // Attempt to retrieve server version from status endpoint.
                 try {
-                    const status = await fetchJSON<StatusResponse>(this.baseUrl, '/status');
+                    const status = await this.fetchJSON<StatusResponse>('/status');
                     this.serverVersion = status.nodeId ?? '';
                 } catch {
                     // Non-fatal: version remains empty.
@@ -418,7 +522,7 @@ export class RestClient implements Client {
         return {
             put: async (key: string, value: string): Promise<void> => {
                 this.ensureConnected();
-                await fetchVoid(this.baseUrl, `/kv/${encodeURIComponent(key)}`, {
+                await this.fetchVoid(`/kv/${encodeURIComponent(key)}`, {
                     method: 'PUT',
                     body: value,
                 });
@@ -426,7 +530,7 @@ export class RestClient implements Client {
             get: async (key: string): Promise<string> => {
                 this.ensureConnected();
                 try {
-                    return await fetchText(this.baseUrl, `/kv/${encodeURIComponent(key)}`);
+                    return await this.fetchText(`/kv/${encodeURIComponent(key)}`);
                 } catch (err: unknown) {
                     if (err instanceof TransportError && err.statusCode === 404) {
                         throw new KeyNotFoundError(key);
@@ -436,22 +540,20 @@ export class RestClient implements Client {
             },
             delete: async (key: string): Promise<void> => {
                 this.ensureConnected();
-                await fetchVoid(this.baseUrl, `/kv/${encodeURIComponent(key)}`, {
+                await this.fetchVoid(`/kv/${encodeURIComponent(key)}`, {
                     method: 'DELETE',
                 });
             },
             list: async (prefix: string): Promise<string[]> => {
                 this.ensureConnected();
-                const resp = await fetchJSON<KVListResponse>(
-                    this.baseUrl,
-                    `/kv${buildQuery({ prefix })}`,
+                const resp = await this.fetchJSON<KVListResponse>(`/kv${buildQuery({ prefix })}`,
                 );
                 return resp.keys as string[];
             },
             exists: async (key: string): Promise<boolean> => {
                 this.ensureConnected();
                 try {
-                    await fetchText(this.baseUrl, `/kv/${encodeURIComponent(key)}`);
+                    await this.fetchText(`/kv/${encodeURIComponent(key)}`);
                     return true;
                 } catch (err: unknown) {
                     if (err instanceof TransportError && err.statusCode === 404) {
@@ -462,11 +564,16 @@ export class RestClient implements Client {
             },
             scan: async (prefix: string): Promise<Record<string, string>> => {
                 this.ensureConnected();
-                const resp = await fetchJSON<KVScanResponse>(
-                    this.baseUrl,
-                    `/kv/scan${buildQuery({ prefix })}`,
+                const resp = await this.fetchJSON<KVScanResponse>(`/kv/scan${buildQuery({ prefix })}`,
                 );
-                return resp.pairs as Record<string, string>;
+                // Wire values are base64 (Go marshals the `map[string][]byte`
+                // payload as base64). Decode each to plaintext so the result
+                // matches the Wails client and the REST single-key get().
+                const pairs: Record<string, string> = {};
+                for (const [k, v] of Object.entries(resp.pairs)) {
+                    pairs[k] = decodeBase64Utf8(v);
+                }
+                return pairs;
             },
         };
     }
@@ -480,15 +587,19 @@ export class RestClient implements Client {
         return {
             health: async (): Promise<HealthResponse> => {
                 this.ensureConnected();
-                return fetchJSON<HealthResponse>(this.baseUrl, '/health');
+                return this.fetchJSON<HealthResponse>('/health');
             },
             status: async (): Promise<StatusResponse> => {
                 this.ensureConnected();
-                return fetchJSON<StatusResponse>(this.baseUrl, '/status');
+                return this.fetchJSON<StatusResponse>('/status');
             },
             peers: async (): Promise<PeersResponse> => {
                 this.ensureConnected();
-                return fetchJSON<PeersResponse>(this.baseUrl, '/peers');
+                return this.fetchJSON<PeersResponse>('/peers');
+            },
+            getTopology: async (): Promise<TopologyResponse> => {
+                this.ensureConnected();
+                return this.fetchJSON<TopologyResponse>('/admin/topology');
             },
             addMember: async (
                 shardId: number,
@@ -496,34 +607,34 @@ export class RestClient implements Client {
                 raftAddr: string,
             ): Promise<void> => {
                 this.ensureConnected();
-                await fetchVoid(this.baseUrl, '/membership/add', {
+                await this.fetchVoid('/membership/add', {
                     method: 'POST',
                     ...jsonBody({ shard_id: shardId, replica_id: replicaId, address: raftAddr }),
                 });
             },
             removeMember: async (shardId: number, replicaId: number): Promise<void> => {
                 this.ensureConnected();
-                await fetchVoid(this.baseUrl, '/membership/remove', {
+                await this.fetchVoid('/membership/remove', {
                     method: 'POST',
                     ...jsonBody({ shard_id: shardId, replica_id: replicaId }),
                 });
             },
             requestSnapshot: async (shardId: number): Promise<void> => {
                 this.ensureConnected();
-                await fetchVoid(this.baseUrl, '/snapshot', {
+                await this.fetchVoid('/snapshot', {
                     method: 'POST',
                     ...jsonBody({ shard_id: shardId }),
                 });
             },
             drain: async (): Promise<void> => {
                 this.ensureConnected();
-                await fetchVoid(this.baseUrl, '/drain', {
+                await this.fetchVoid('/drain', {
                     method: 'POST',
                 });
             },
             capabilities: async (): Promise<CapabilitiesResponse> => {
                 this.ensureConnected();
-                return fetchJSON<CapabilitiesResponse>(this.baseUrl, '/capabilities');
+                return this.fetchJSON<CapabilitiesResponse>('/capabilities');
             },
         };
     }
@@ -541,24 +652,18 @@ export class RestClient implements Client {
                 leaseId: number,
             ): Promise<MVCCKeyValue> => {
                 this.ensureConnected();
-                return fetchJSON<MVCCKeyValue>(
-                    this.baseUrl,
-                    `/kv/${encodeURIComponent(key)}${buildQuery({ 'lease-id': leaseId })}`,
+                return this.fetchJSON<MVCCKeyValue>(`/kv/${encodeURIComponent(key)}${buildQuery({ 'lease-id': leaseId })}`,
                     { method: 'PUT', body: value },
                 );
             },
             getRevision: async (key: string): Promise<MVCCKeyValue> => {
                 this.ensureConnected();
-                return fetchJSON<MVCCKeyValue>(
-                    this.baseUrl,
-                    `/kv/${encodeURIComponent(key)}?revision=true`,
+                return this.fetchJSON<MVCCKeyValue>(`/kv/${encodeURIComponent(key)}?revision=true`,
                 );
             },
             getAtRevision: async (key: string, revision: number): Promise<MVCCKeyValue> => {
                 this.ensureConnected();
-                return fetchJSON<MVCCKeyValue>(
-                    this.baseUrl,
-                    `/kv/${encodeURIComponent(key)}${buildQuery({ 'at-revision': revision })}`,
+                return this.fetchJSON<MVCCKeyValue>(`/kv/${encodeURIComponent(key)}${buildQuery({ 'at-revision': revision })}`,
                 );
             },
             range: async (
@@ -567,9 +672,7 @@ export class RestClient implements Client {
                 opts: RangeOptions,
             ): Promise<RangeResponse> => {
                 this.ensureConnected();
-                return fetchJSON<RangeResponse>(
-                    this.baseUrl,
-                    `/kv/range${buildQuery({
+                return this.fetchJSON<RangeResponse>(`/kv/range${buildQuery({
                         start,
                         end,
                         limit: opts.limit,
@@ -583,16 +686,14 @@ export class RestClient implements Client {
             },
             compact: async (revision: number): Promise<void> => {
                 this.ensureConnected();
-                await fetchVoid(this.baseUrl, '/kv/compact', {
+                await this.fetchVoid('/kv/compact', {
                     method: 'POST',
                     ...jsonBody({ revision }),
                 });
             },
             currentRevision: async (): Promise<number> => {
                 this.ensureConnected();
-                const resp = await fetchJSON<CurrentRevisionResponse>(
-                    this.baseUrl,
-                    '/kv/revision',
+                const resp = await this.fetchJSON<CurrentRevisionResponse>('/kv/revision',
                 );
                 return resp.revision;
             },
@@ -608,7 +709,7 @@ export class RestClient implements Client {
         return {
             execute: async (req: TransactionRequest): Promise<TransactionResponse> => {
                 this.ensureConnected();
-                return fetchJSON<TransactionResponse>(this.baseUrl, '/tx', {
+                return this.fetchJSON<TransactionResponse>('/tx', {
                     method: 'POST',
                     ...jsonBody({
                         compares: req.compares.map(serializeCompare),
@@ -629,7 +730,7 @@ export class RestClient implements Client {
         return {
             execute: async (ops: readonly Op[]): Promise<BatchResponse> => {
                 this.ensureConnected();
-                return fetchJSON<BatchResponse>(this.baseUrl, '/batch', {
+                return this.fetchJSON<BatchResponse>('/batch', {
                     method: 'POST',
                     ...jsonBody({ ops }),
                 });
@@ -751,7 +852,10 @@ export class RestClient implements Client {
         callback: (response: WatchResponse) => void,
     ): Promise<void> {
         try {
-            const resp = await fetch(url, { signal });
+            // Watch is a data-plane stream, so it carries the database scope
+            // header when this client is scoped (the helper returns undefined
+            // for unscoped clients, leaving the header off).
+            const resp = await fetch(url, { signal, headers: this.scopeHeaders('/watch') });
             if (!resp.ok) {
                 const body = await resp.text();
                 throw new TransportError(
@@ -820,39 +924,31 @@ export class RestClient implements Client {
         return {
             grant: async (ttl: number): Promise<LeaseInfo> => {
                 this.ensureConnected();
-                return fetchJSON<LeaseInfo>(
-                    this.baseUrl,
-                    '/lease/grant',
+                return this.fetchJSON<LeaseInfo>('/lease/grant',
                     { method: 'POST', ...jsonBody({ ttl }) },
                 );
             },
             revoke: async (leaseId: number): Promise<void> => {
                 this.ensureConnected();
-                await fetchVoid(this.baseUrl, '/lease/revoke', {
+                await this.fetchVoid('/lease/revoke', {
                     method: 'POST',
                     ...jsonBody({ lease_id: leaseId }),
                 });
             },
             keepAlive: async (leaseId: number): Promise<LeaseInfo> => {
                 this.ensureConnected();
-                return fetchJSON<LeaseInfo>(
-                    this.baseUrl,
-                    '/lease/keepalive',
+                return this.fetchJSON<LeaseInfo>('/lease/keepalive',
                     { method: 'POST', ...jsonBody({ lease_id: leaseId }) },
                 );
             },
             timeToLive: async (leaseId: number): Promise<LeaseInfo> => {
                 this.ensureConnected();
-                return fetchJSON<LeaseInfo>(
-                    this.baseUrl,
-                    `/lease/ttl${buildQuery({ lease_id: leaseId })}`,
+                return this.fetchJSON<LeaseInfo>(`/lease/ttl${buildQuery({ lease_id: leaseId })}`,
                 );
             },
             list: async (): Promise<readonly LeaseInfo[]> => {
                 this.ensureConnected();
-                const resp = await fetchJSON<LeaseListResponse>(
-                    this.baseUrl,
-                    '/lease/list',
+                const resp = await this.fetchJSON<LeaseListResponse>('/lease/list',
                 );
                 return resp.leases;
             },
@@ -868,41 +964,33 @@ export class RestClient implements Client {
         return {
             acquire: async (req: LockAcquireRequest): Promise<LockInfo> => {
                 this.ensureConnected();
-                return fetchJSON<LockInfo>(
-                    this.baseUrl,
-                    '/lock/acquire',
+                return this.fetchJSON<LockInfo>('/lock/acquire',
                     { method: 'POST', ...jsonBody(req) },
                 );
             },
             tryLock: async (req: LockAcquireRequest): Promise<LockInfo> => {
                 this.ensureConnected();
-                return fetchJSON<LockInfo>(
-                    this.baseUrl,
-                    '/lock/trylock',
+                return this.fetchJSON<LockInfo>('/lock/trylock',
                     { method: 'POST', ...jsonBody(req) },
                 );
             },
             release: async (req: LockReleaseRequest): Promise<void> => {
                 this.ensureConnected();
-                await fetchVoid(this.baseUrl, '/lock/release', {
+                await this.fetchVoid('/lock/release', {
                     method: 'POST',
                     ...jsonBody(req),
                 });
             },
             extend: async (req: LockExtendRequest): Promise<LockInfo> => {
                 this.ensureConnected();
-                return fetchJSON<LockInfo>(
-                    this.baseUrl,
-                    '/lock/extend',
+                return this.fetchJSON<LockInfo>('/lock/extend',
                     { method: 'POST', ...jsonBody(req) },
                 );
             },
             status: async (key: string): Promise<LockInfo | null> => {
                 this.ensureConnected();
                 try {
-                    return await fetchJSON<LockInfo>(
-                        this.baseUrl,
-                        `/lock/status${buildQuery({ key })}`,
+                    return await this.fetchJSON<LockInfo>(`/lock/status${buildQuery({ key })}`,
                     );
                 } catch (err: unknown) {
                     if (err instanceof TransportError && err.statusCode === 404) {
@@ -913,9 +1001,7 @@ export class RestClient implements Client {
             },
             list: async (prefix?: string): Promise<LockListResponse> => {
                 this.ensureConnected();
-                return fetchJSON<LockListResponse>(
-                    this.baseUrl,
-                    `/lock/list${prefix ? buildQuery({ prefix }) : ''}`,
+                return this.fetchJSON<LockListResponse>(`/lock/list${prefix ? buildQuery({ prefix }) : ''}`,
                 );
             },
         };
@@ -930,23 +1016,21 @@ export class RestClient implements Client {
         return {
             create: async (req: IndexCreateRequest): Promise<void> => {
                 this.ensureConnected();
-                await fetchVoid(this.baseUrl, '/index/create', {
+                await this.fetchVoid('/index/create', {
                     method: 'POST',
                     ...jsonBody(req),
                 });
             },
             drop: async (name: string): Promise<void> => {
                 this.ensureConnected();
-                await fetchVoid(this.baseUrl, '/index/drop', {
+                await this.fetchVoid('/index/drop', {
                     method: 'POST',
                     ...jsonBody({ name }),
                 });
             },
             query: async (indexName: string, value: string): Promise<IndexQueryResponse> => {
                 this.ensureConnected();
-                return fetchJSON<IndexQueryResponse>(
-                    this.baseUrl,
-                    `/index/query${buildQuery({ index_name: indexName, value })}`,
+                return this.fetchJSON<IndexQueryResponse>(`/index/query${buildQuery({ index_name: indexName, value })}`,
                 );
             },
             scan: async (
@@ -955,14 +1039,12 @@ export class RestClient implements Client {
                 end: string,
             ): Promise<IndexScanResponse> => {
                 this.ensureConnected();
-                return fetchJSON<IndexScanResponse>(
-                    this.baseUrl,
-                    `/index/scan${buildQuery({ index_name: indexName, start, end })}`,
+                return this.fetchJSON<IndexScanResponse>(`/index/scan${buildQuery({ index_name: indexName, start, end })}`,
                 );
             },
             list: async (): Promise<IndexListResponse> => {
                 this.ensureConnected();
-                return fetchJSON<IndexListResponse>(this.baseUrl, '/index/list');
+                return this.fetchJSON<IndexListResponse>('/index/list');
             },
         };
     }
@@ -976,7 +1058,7 @@ export class RestClient implements Client {
         return {
             write: async (point: TSDataPoint): Promise<void> => {
                 this.ensureConnected();
-                await fetchVoid(this.baseUrl, '/ts/write', {
+                await this.fetchVoid('/ts/write', {
                     method: 'POST',
                     ...jsonBody({
                         metric: point.metric,
@@ -988,7 +1070,7 @@ export class RestClient implements Client {
             },
             writeBatch: async (points: readonly TSDataPoint[]): Promise<void> => {
                 this.ensureConnected();
-                await fetchVoid(this.baseUrl, '/ts/write-batch', {
+                await this.fetchVoid('/ts/write-batch', {
                     method: 'POST',
                     ...jsonBody({
                         points: points.map((p) => ({
@@ -1011,9 +1093,7 @@ export class RestClient implements Client {
                     timestampNs: number;
                     tags?: Record<string, string>;
                 }
-                const raw = await fetchJSON<{ points: RawTSPoint[] }>(
-                    this.baseUrl,
-                    `/ts/query${buildQuery({
+                const raw = await this.fetchJSON<{ points: RawTSPoint[] }>(`/ts/query${buildQuery({
                         metric: req.metric,
                         start_ns: req.startNs,
                         end_ns: req.endNs,
@@ -1035,9 +1115,7 @@ export class RestClient implements Client {
             },
             aggregate: async (req: TSAggregateRequest): Promise<TSAggregateResponse> => {
                 this.ensureConnected();
-                return fetchJSON<TSAggregateResponse>(
-                    this.baseUrl,
-                    `/ts/aggregate${buildQuery({
+                return this.fetchJSON<TSAggregateResponse>(`/ts/aggregate${buildQuery({
                         metric: req.metric,
                         start_ns: req.startNs,
                         end_ns: req.endNs,
@@ -1048,7 +1126,7 @@ export class RestClient implements Client {
             },
             writePoint: async (point: TSDataPoint): Promise<void> => {
                 this.ensureConnected();
-                await fetchVoid(this.baseUrl, '/ts/write', {
+                await this.fetchVoid('/ts/write', {
                     method: 'POST',
                     ...jsonBody({
                         metric: point.metric,
@@ -1060,37 +1138,33 @@ export class RestClient implements Client {
             },
             richQuery: async (req: TSRichQueryRequest): Promise<TSRichQueryResponse> => {
                 this.ensureConnected();
-                return fetchJSON<TSRichQueryResponse>(this.baseUrl, '/ts/rich-query', {
+                return this.fetchJSON<TSRichQueryResponse>('/ts/rich-query', {
                     method: 'POST',
                     ...jsonBody(req),
                 });
             },
             deleteSeries: async (req: TSDeleteRequest): Promise<TSDeleteResponse> => {
                 this.ensureConnected();
-                return fetchJSON<TSDeleteResponse>(this.baseUrl, '/ts/delete', {
+                return this.fetchJSON<TSDeleteResponse>('/ts/delete', {
                     method: 'POST',
                     ...jsonBody(req),
                 });
             },
             getRetention: async (req: TSGetRetentionRequest): Promise<TSGetRetentionResponse> => {
                 this.ensureConnected();
-                return fetchJSON<TSGetRetentionResponse>(
-                    this.baseUrl,
-                    `/ts/retention${buildQuery({ metric: req.metric })}`,
+                return this.fetchJSON<TSGetRetentionResponse>(`/ts/retention${buildQuery({ metric: req.metric })}`,
                 );
             },
             setRetention: async (req: TSSetRetentionRequest): Promise<void> => {
                 this.ensureConnected();
-                await fetchVoid(this.baseUrl, '/ts/retention', {
+                await this.fetchVoid('/ts/retention', {
                     method: 'POST',
                     ...jsonBody(req),
                 });
             },
             listMetrics: async (req: TSListMetricsRequest): Promise<TSListMetricsResponse> => {
                 this.ensureConnected();
-                return fetchJSON<TSListMetricsResponse>(
-                    this.baseUrl,
-                    `/ts/metrics${buildQuery({
+                return this.fetchJSON<TSListMetricsResponse>(`/ts/metrics${buildQuery({
                         prefix: req.prefix,
                         limit: req.limit,
                     })}`,
@@ -1110,17 +1184,13 @@ export class RestClient implements Client {
                 req: CreateNamespaceRequest,
             ): Promise<CreateNamespaceResponse> => {
                 this.ensureConnected();
-                return fetchJSON<CreateNamespaceResponse>(
-                    this.baseUrl,
-                    '/vector/namespace',
+                return this.fetchJSON<CreateNamespaceResponse>('/vector/namespace',
                     { method: 'POST', ...jsonBody(req) },
                 );
             },
             deleteNamespace: async (req: DeleteNamespaceRequest): Promise<void> => {
                 this.ensureConnected();
-                await fetchVoid(
-                    this.baseUrl,
-                    '/vector/namespace/delete',
+                await this.fetchVoid('/vector/namespace/delete',
                     { method: 'POST', ...jsonBody(req) },
                 );
             },
@@ -1128,16 +1198,12 @@ export class RestClient implements Client {
                 req: ListNamespacesRequest,
             ): Promise<ListNamespacesResponse> => {
                 this.ensureConnected();
-                return fetchJSON<ListNamespacesResponse>(
-                    this.baseUrl,
-                    `/vector/namespaces${buildQuery({ shard_id: req.shardId })}`,
+                return this.fetchJSON<ListNamespacesResponse>(`/vector/namespaces${buildQuery({ shard_id: req.shardId })}`,
                 );
             },
             getNamespaceInfo: async (req: GetNamespaceInfoRequest): Promise<NamespaceInfo> => {
                 this.ensureConnected();
-                return fetchJSON<NamespaceInfo>(
-                    this.baseUrl,
-                    `/vector/namespace/info${buildQuery({
+                return this.fetchJSON<NamespaceInfo>(`/vector/namespace/info${buildQuery({
                         namespace: req.namespace,
                         shard_id: req.shardId,
                     })}`,
@@ -1145,16 +1211,14 @@ export class RestClient implements Client {
             },
             upsertVector: async (req: UpsertVectorRequest): Promise<UpsertVectorResponse> => {
                 this.ensureConnected();
-                return fetchJSON<UpsertVectorResponse>(this.baseUrl, '/vector/upsert', {
+                return this.fetchJSON<UpsertVectorResponse>('/vector/upsert', {
                     method: 'POST',
                     ...jsonBody(req),
                 });
             },
             getVector: async (req: GetVectorRequest): Promise<VectorData> => {
                 this.ensureConnected();
-                return fetchJSON<VectorData>(
-                    this.baseUrl,
-                    `/vector/get${buildQuery({
+                return this.fetchJSON<VectorData>(`/vector/get${buildQuery({
                         namespace: req.namespace,
                         id: req.id,
                         consistency: req.consistency,
@@ -1164,16 +1228,14 @@ export class RestClient implements Client {
             },
             deleteVector: async (req: DeleteVectorRequest): Promise<void> => {
                 this.ensureConnected();
-                await fetchVoid(this.baseUrl, '/vector/delete', {
+                await this.fetchVoid('/vector/delete', {
                     method: 'POST',
                     ...jsonBody(req),
                 });
             },
             batchUpsert: async (req: BatchUpsertRequest): Promise<BatchUpsertResponse> => {
                 this.ensureConnected();
-                return fetchJSON<BatchUpsertResponse>(
-                    this.baseUrl,
-                    '/vector/batch/upsert',
+                return this.fetchJSON<BatchUpsertResponse>('/vector/batch/upsert',
                     { method: 'POST', ...jsonBody(req) },
                 );
             },
@@ -1181,17 +1243,13 @@ export class RestClient implements Client {
                 req: BatchDeleteVectorsRequest,
             ): Promise<BatchDeleteVectorsResponse> => {
                 this.ensureConnected();
-                return fetchJSON<BatchDeleteVectorsResponse>(
-                    this.baseUrl,
-                    '/vector/batch/delete',
+                return this.fetchJSON<BatchDeleteVectorsResponse>('/vector/batch/delete',
                     { method: 'POST', ...jsonBody(req) },
                 );
             },
             listVectors: async (req: ListVectorsRequest): Promise<ListVectorsResponse> => {
                 this.ensureConnected();
-                return fetchJSON<ListVectorsResponse>(
-                    this.baseUrl,
-                    `/vector/list${buildQuery({
+                return this.fetchJSON<ListVectorsResponse>(`/vector/list${buildQuery({
                         namespace: req.namespace,
                         limit: req.limit,
                         offset: req.offset,
@@ -1202,7 +1260,7 @@ export class RestClient implements Client {
             },
             updateMetadata: async (req: UpdateMetadataRequest): Promise<void> => {
                 this.ensureConnected();
-                await fetchVoid(this.baseUrl, '/vector/metadata', {
+                await this.fetchVoid('/vector/metadata', {
                     method: 'POST',
                     ...jsonBody(req),
                 });
@@ -1211,9 +1269,7 @@ export class RestClient implements Client {
                 req: SearchSimilarRequest,
             ): Promise<SearchSimilarResponse> => {
                 this.ensureConnected();
-                return fetchJSON<SearchSimilarResponse>(
-                    this.baseUrl,
-                    '/vector/search/similar',
+                return this.fetchJSON<SearchSimilarResponse>('/vector/search/similar',
                     { method: 'POST', ...jsonBody(req) },
                 );
             },
@@ -1221,9 +1277,7 @@ export class RestClient implements Client {
                 req: SearchByMetadataRequest,
             ): Promise<SearchByMetadataResponse> => {
                 this.ensureConnected();
-                return fetchJSON<SearchByMetadataResponse>(
-                    this.baseUrl,
-                    '/vector/search/metadata',
+                return this.fetchJSON<SearchByMetadataResponse>('/vector/search/metadata',
                     { method: 'POST', ...jsonBody(req) },
                 );
             },
@@ -1231,17 +1285,13 @@ export class RestClient implements Client {
                 req: HybridSearchRequest,
             ): Promise<HybridSearchResponse> => {
                 this.ensureConnected();
-                return fetchJSON<HybridSearchResponse>(
-                    this.baseUrl,
-                    '/vector/search/hybrid',
+                return this.fetchJSON<HybridSearchResponse>('/vector/search/hybrid',
                     { method: 'POST', ...jsonBody(req) },
                 );
             },
             searchByID: async (req: SearchByIDRequest): Promise<SearchSimilarResponse> => {
                 this.ensureConnected();
-                return fetchJSON<SearchSimilarResponse>(
-                    this.baseUrl,
-                    '/vector/search/by-id',
+                return this.fetchJSON<SearchSimilarResponse>('/vector/search/by-id',
                     { method: 'POST', ...jsonBody(req) },
                 );
             },
@@ -1249,9 +1299,7 @@ export class RestClient implements Client {
                 req: RebuildIndexRequest,
             ): Promise<RebuildIndexResponse> => {
                 this.ensureConnected();
-                return fetchJSON<RebuildIndexResponse>(
-                    this.baseUrl,
-                    '/vector/index/rebuild',
+                return this.fetchJSON<RebuildIndexResponse>('/vector/index/rebuild',
                     { method: 'POST', ...jsonBody(req) },
                 );
             },
@@ -1259,9 +1307,7 @@ export class RestClient implements Client {
                 req: GetRebuildProgressRequest,
             ): Promise<RebuildProgress> => {
                 this.ensureConnected();
-                return fetchJSON<RebuildProgress>(
-                    this.baseUrl,
-                    `/vector/index/rebuild/progress${buildQuery({
+                return this.fetchJSON<RebuildProgress>(`/vector/index/rebuild/progress${buildQuery({
                         namespace: req.namespace,
                         job_id: req.jobId,
                         shard_id: req.shardId,
@@ -1270,9 +1316,7 @@ export class RestClient implements Client {
             },
             getIndexStats: async (req: GetIndexStatsRequest): Promise<IndexStats> => {
                 this.ensureConnected();
-                return fetchJSON<IndexStats>(
-                    this.baseUrl,
-                    `/vector/index/stats${buildQuery({
+                return this.fetchJSON<IndexStats>(`/vector/index/stats${buildQuery({
                         namespace: req.namespace,
                         shard_id: req.shardId,
                     })}`,
@@ -1282,9 +1326,7 @@ export class RestClient implements Client {
                 req: CompactNamespaceRequest,
             ): Promise<CompactNamespaceResponse> => {
                 this.ensureConnected();
-                return fetchJSON<CompactNamespaceResponse>(
-                    this.baseUrl,
-                    '/vector/compact',
+                return this.fetchJSON<CompactNamespaceResponse>('/vector/compact',
                     { method: 'POST', ...jsonBody(req) },
                 );
             },
@@ -1292,9 +1334,7 @@ export class RestClient implements Client {
                 req: GetCompactionProgressRequest,
             ): Promise<CompactionProgress> => {
                 this.ensureConnected();
-                return fetchJSON<CompactionProgress>(
-                    this.baseUrl,
-                    `/vector/compact/progress${buildQuery({
+                return this.fetchJSON<CompactionProgress>(`/vector/compact/progress${buildQuery({
                         namespace: req.namespace,
                         job_id: req.jobId,
                         shard_id: req.shardId,
@@ -1313,39 +1353,31 @@ export class RestClient implements Client {
         return {
             create: async (req: CreateUserRequest): Promise<User> => {
                 this.ensureConnected();
-                return fetchJSON<User>(this.baseUrl, '/users', {
+                return this.fetchJSON<User>('/users', {
                     method: 'POST',
                     ...jsonBody(req),
                 });
             },
             get: async (id: string): Promise<User> => {
                 this.ensureConnected();
-                return fetchJSON<User>(
-                    this.baseUrl,
-                    `/users/${encodeURIComponent(id)}`,
+                return this.fetchJSON<User>(`/users/${encodeURIComponent(id)}`,
                 );
             },
             update: async (req: UpdateUserRequest): Promise<User> => {
                 this.ensureConnected();
-                return fetchJSON<User>(
-                    this.baseUrl,
-                    `/users/${encodeURIComponent(req.id)}`,
+                return this.fetchJSON<User>(`/users/${encodeURIComponent(req.id)}`,
                     { method: 'PUT', ...jsonBody(req) },
                 );
             },
             delete: async (id: string): Promise<void> => {
                 this.ensureConnected();
-                await fetchVoid(
-                    this.baseUrl,
-                    `/users/${encodeURIComponent(id)}`,
+                await this.fetchVoid(`/users/${encodeURIComponent(id)}`,
                     { method: 'DELETE' },
                 );
             },
             list: async (req: ListUsersRequest): Promise<ListUsersResponse> => {
                 this.ensureConnected();
-                return fetchJSON<ListUsersResponse>(
-                    this.baseUrl,
-                    `/users/list${buildQuery({
+                return this.fetchJSON<ListUsersResponse>(`/users/list${buildQuery({
                         tenantID: req.tenantId,
                         page: req.page,
                         pageSize: req.pageSize,
@@ -1354,25 +1386,19 @@ export class RestClient implements Client {
             },
             enable: async (id: string): Promise<void> => {
                 this.ensureConnected();
-                await fetchVoid(
-                    this.baseUrl,
-                    `/users/${encodeURIComponent(id)}/enable`,
+                await this.fetchVoid(`/users/${encodeURIComponent(id)}/enable`,
                     { method: 'POST' },
                 );
             },
             disable: async (id: string): Promise<void> => {
                 this.ensureConnected();
-                await fetchVoid(
-                    this.baseUrl,
-                    `/users/${encodeURIComponent(id)}/disable`,
+                await this.fetchVoid(`/users/${encodeURIComponent(id)}/disable`,
                     { method: 'POST' },
                 );
             },
             getUserByCertThumbprint: async (thumbprint: string): Promise<User> => {
                 this.ensureConnected();
-                return fetchJSON<User>(
-                    this.baseUrl,
-                    `/users/by-cert-thumbprint/${encodeURIComponent(thumbprint)}`,
+                return this.fetchJSON<User>(`/users/by-cert-thumbprint/${encodeURIComponent(thumbprint)}`,
                 );
             },
             addCertBinding: async (
@@ -1381,9 +1407,7 @@ export class RestClient implements Client {
                 notAfterUnix?: number,
             ): Promise<User> => {
                 this.ensureConnected();
-                return fetchJSON<User>(
-                    this.baseUrl,
-                    `/users/${encodeURIComponent(userId)}/cert-bindings`,
+                return this.fetchJSON<User>(`/users/${encodeURIComponent(userId)}/cert-bindings`,
                     { method: 'POST', ...jsonBody({ thumbprint, notAfterUnix }) },
                 );
             },
@@ -1399,39 +1423,31 @@ export class RestClient implements Client {
         return {
             create: async (req: CreateRoleRequest): Promise<Role> => {
                 this.ensureConnected();
-                return fetchJSON<Role>(this.baseUrl, '/roles', {
+                return this.fetchJSON<Role>('/roles', {
                     method: 'POST',
                     ...jsonBody(req),
                 });
             },
             get: async (id: string): Promise<Role> => {
                 this.ensureConnected();
-                return fetchJSON<Role>(
-                    this.baseUrl,
-                    `/roles/${encodeURIComponent(id)}`,
+                return this.fetchJSON<Role>(`/roles/${encodeURIComponent(id)}`,
                 );
             },
             update: async (req: UpdateRoleRequest): Promise<Role> => {
                 this.ensureConnected();
-                return fetchJSON<Role>(
-                    this.baseUrl,
-                    `/roles/${encodeURIComponent(req.id)}`,
+                return this.fetchJSON<Role>(`/roles/${encodeURIComponent(req.id)}`,
                     { method: 'PUT', ...jsonBody(req) },
                 );
             },
             delete: async (id: string): Promise<void> => {
                 this.ensureConnected();
-                await fetchVoid(
-                    this.baseUrl,
-                    `/roles/${encodeURIComponent(id)}`,
+                await this.fetchVoid(`/roles/${encodeURIComponent(id)}`,
                     { method: 'DELETE' },
                 );
             },
             list: async (req: ListRolesRequest): Promise<ListRolesResponse> => {
                 this.ensureConnected();
-                return fetchJSON<ListRolesResponse>(
-                    this.baseUrl,
-                    `/roles/list${buildQuery({
+                return this.fetchJSON<ListRolesResponse>(`/roles/list${buildQuery({
                         tenantID: req.tenantId,
                         page: req.page,
                         pageSize: req.pageSize,
@@ -1440,23 +1456,21 @@ export class RestClient implements Client {
             },
             assign: async (userId: string, roleId: string): Promise<void> => {
                 this.ensureConnected();
-                await fetchVoid(this.baseUrl, '/roles/assign', {
+                await this.fetchVoid('/roles/assign', {
                     method: 'POST',
                     ...jsonBody({ userId, roleId }),
                 });
             },
             unassign: async (userId: string, roleId: string): Promise<void> => {
                 this.ensureConnected();
-                await fetchVoid(this.baseUrl, '/roles/unassign', {
+                await this.fetchVoid('/roles/unassign', {
                     method: 'POST',
                     ...jsonBody({ userId, roleId }),
                 });
             },
             listPermissions: async (): Promise<ListPermissionsResponse> => {
                 this.ensureConnected();
-                return fetchJSON<ListPermissionsResponse>(
-                    this.baseUrl,
-                    '/permissions',
+                return this.fetchJSON<ListPermissionsResponse>('/permissions',
                 );
             },
         };
@@ -1471,30 +1485,28 @@ export class RestClient implements Client {
         return {
             generate: async (req: GenerateCertRequest): Promise<CertBundle> => {
                 this.ensureConnected();
-                return fetchJSON<CertBundle>(this.baseUrl, '/certs/generate', {
+                return this.fetchJSON<CertBundle>('/certs/generate', {
                     method: 'POST',
                     ...jsonBody(req),
                 });
             },
             export: async (req: ExportCertRequest): Promise<ExportCertResponse> => {
                 this.ensureConnected();
-                return fetchJSON<ExportCertResponse>(this.baseUrl, '/certs/export', {
+                return this.fetchJSON<ExportCertResponse>('/certs/export', {
                     method: 'POST',
                     ...jsonBody(req),
                 });
             },
             revoke: async (serial: string): Promise<void> => {
                 this.ensureConnected();
-                await fetchVoid(this.baseUrl, '/certs/revoke', {
+                await this.fetchVoid('/certs/revoke', {
                     method: 'POST',
                     ...jsonBody({ serial }),
                 });
             },
             list: async (tenantId: string): Promise<ListCertsResponse> => {
                 this.ensureConnected();
-                return fetchJSON<ListCertsResponse>(
-                    this.baseUrl,
-                    `/certs/list${buildQuery({ tenantID: tenantId })}`,
+                return this.fetchJSON<ListCertsResponse>(`/certs/list${buildQuery({ tenantID: tenantId })}`,
                 );
             },
         };
@@ -1509,7 +1521,7 @@ export class RestClient implements Client {
         return {
             create: async (req: CreateDatabaseRequest): Promise<DatabaseInfo> => {
                 this.ensureConnected();
-                return fetchJSON<DatabaseInfo>(this.baseUrl, '/v1/databases', {
+                return this.fetchJSON<DatabaseInfo>('/v1/databases', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(req),
@@ -1517,32 +1529,24 @@ export class RestClient implements Client {
             },
             get: async (name: string): Promise<DatabaseInfo> => {
                 this.ensureConnected();
-                return fetchJSON<DatabaseInfo>(
-                    this.baseUrl,
-                    `/v1/databases/${encodeURIComponent(name)}`,
+                return this.fetchJSON<DatabaseInfo>(`/v1/databases/${encodeURIComponent(name)}`,
                 );
             },
             list: async (): Promise<DatabaseInfo[]> => {
                 this.ensureConnected();
-                const resp = await fetchJSON<{ databases: DatabaseInfo[] }>(
-                    this.baseUrl,
-                    '/v1/databases/list',
+                const resp = await this.fetchJSON<{ databases: DatabaseInfo[] }>('/v1/databases/list',
                 );
                 return resp.databases;
             },
             drop: async (name: string): Promise<void> => {
                 this.ensureConnected();
-                await fetchVoid(
-                    this.baseUrl,
-                    `/v1/databases/${encodeURIComponent(name)}`,
+                await this.fetchVoid(`/v1/databases/${encodeURIComponent(name)}`,
                     { method: 'DELETE' },
                 );
             },
             updateSQL: async (name: string, sql: DatabaseSQLConfig): Promise<DatabaseInfo> => {
                 this.ensureConnected();
-                return fetchJSON<DatabaseInfo>(
-                    this.baseUrl,
-                    `/v1/databases/${encodeURIComponent(name)}/protocol`,
+                return this.fetchJSON<DatabaseInfo>(`/v1/databases/${encodeURIComponent(name)}/protocol`,
                     {
                         method: 'PATCH',
                         headers: { 'Content-Type': 'application/json' },
@@ -1555,9 +1559,7 @@ export class RestClient implements Client {
             },
             updateRaft: async (name: string, raft: DatabaseRaftConfig): Promise<DatabaseInfo> => {
                 this.ensureConnected();
-                return fetchJSON<DatabaseInfo>(
-                    this.baseUrl,
-                    `/databases/${encodeURIComponent(name)}/raft`,
+                return this.fetchJSON<DatabaseInfo>(`/databases/${encodeURIComponent(name)}/raft`,
                     {
                         method: 'PATCH',
                         headers: { 'Content-Type': 'application/json' },
@@ -1567,9 +1569,7 @@ export class RestClient implements Client {
             },
             updateBarrier: async (name: string, barrier: DatabaseBarrierConfig): Promise<DatabaseInfo> => {
                 this.ensureConnected();
-                return fetchJSON<DatabaseInfo>(
-                    this.baseUrl,
-                    `/databases/${encodeURIComponent(name)}/barrier`,
+                return this.fetchJSON<DatabaseInfo>(`/databases/${encodeURIComponent(name)}/barrier`,
                     {
                         method: 'PATCH',
                         headers: { 'Content-Type': 'application/json' },
@@ -1579,9 +1579,7 @@ export class RestClient implements Client {
             },
             updateConnection: async (name: string, connection: DatabaseConnectionConfig): Promise<DatabaseInfo> => {
                 this.ensureConnected();
-                return fetchJSON<DatabaseInfo>(
-                    this.baseUrl,
-                    `/databases/${encodeURIComponent(name)}/connection`,
+                return this.fetchJSON<DatabaseInfo>(`/databases/${encodeURIComponent(name)}/connection`,
                     {
                         method: 'PATCH',
                         headers: { 'Content-Type': 'application/json' },
@@ -1601,7 +1599,7 @@ export class RestClient implements Client {
         return {
             create: async (req: CreateCollectionRequest): Promise<CollectionInfo> => {
                 this.ensureConnected();
-                return fetchJSON<CollectionInfo>(this.baseUrl, '/v1/collections', {
+                return this.fetchJSON<CollectionInfo>('/v1/collections', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(req),
@@ -1609,32 +1607,24 @@ export class RestClient implements Client {
             },
             get: async (database: string, name: string): Promise<CollectionInfo> => {
                 this.ensureConnected();
-                return fetchJSON<CollectionInfo>(
-                    this.baseUrl,
-                    `/v1/collections/${encodeURIComponent(database)}/${encodeURIComponent(name)}`,
+                return this.fetchJSON<CollectionInfo>(`/v1/collections/${encodeURIComponent(database)}/${encodeURIComponent(name)}`,
                 );
             },
             list: async (database: string): Promise<CollectionInfo[]> => {
                 this.ensureConnected();
-                const resp = await fetchJSON<ListCollectionsResponse>(
-                    this.baseUrl,
-                    `/v1/collections/list${buildQuery({ database })}`,
+                const resp = await this.fetchJSON<ListCollectionsResponse>(`/v1/collections/list${buildQuery({ database })}`,
                 );
                 return resp.collections as CollectionInfo[];
             },
             drop: async (database: string, name: string): Promise<void> => {
                 this.ensureConnected();
-                await fetchVoid(
-                    this.baseUrl,
-                    `/v1/collections/${encodeURIComponent(database)}/${encodeURIComponent(name)}`,
+                await this.fetchVoid(`/v1/collections/${encodeURIComponent(database)}/${encodeURIComponent(name)}`,
                     { method: 'DELETE' },
                 );
             },
             insertDocument: async (req: InsertDocumentRequest): Promise<InsertDocumentResponse> => {
                 this.ensureConnected();
-                return fetchJSON<InsertDocumentResponse>(
-                    this.baseUrl,
-                    `/v1/collections/${encodeURIComponent(req.database)}/${encodeURIComponent(req.collection)}/documents`,
+                return this.fetchJSON<InsertDocumentResponse>(`/v1/collections/${encodeURIComponent(req.database)}/${encodeURIComponent(req.collection)}/documents`,
                     {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -1648,16 +1638,12 @@ export class RestClient implements Client {
                 id: string,
             ): Promise<DocumentResponse> => {
                 this.ensureConnected();
-                return fetchJSON<DocumentResponse>(
-                    this.baseUrl,
-                    `/v1/collections/${encodeURIComponent(database)}/${encodeURIComponent(collection)}/documents/${encodeURIComponent(String(id))}`,
+                return this.fetchJSON<DocumentResponse>(`/v1/collections/${encodeURIComponent(database)}/${encodeURIComponent(collection)}/documents/${encodeURIComponent(String(id))}`,
                 );
             },
             updateDocument: async (req: UpdateDocumentRequest): Promise<void> => {
                 this.ensureConnected();
-                await fetchVoid(
-                    this.baseUrl,
-                    `/v1/collections/${encodeURIComponent(req.database)}/${encodeURIComponent(req.collection)}/documents/${encodeURIComponent(String(req.id))}`,
+                await this.fetchVoid(`/v1/collections/${encodeURIComponent(req.database)}/${encodeURIComponent(req.collection)}/documents/${encodeURIComponent(String(req.id))}`,
                     {
                         method: 'PUT',
                         headers: { 'Content-Type': 'application/json' },
@@ -1671,17 +1657,13 @@ export class RestClient implements Client {
                 id: string,
             ): Promise<void> => {
                 this.ensureConnected();
-                await fetchVoid(
-                    this.baseUrl,
-                    `/v1/collections/${encodeURIComponent(database)}/${encodeURIComponent(collection)}/documents/${encodeURIComponent(String(id))}`,
+                await this.fetchVoid(`/v1/collections/${encodeURIComponent(database)}/${encodeURIComponent(collection)}/documents/${encodeURIComponent(String(id))}`,
                     { method: 'DELETE' },
                 );
             },
             listDocuments: async (req: ListDocumentsRequest): Promise<ListDocumentsResponse> => {
                 this.ensureConnected();
-                return fetchJSON<ListDocumentsResponse>(
-                    this.baseUrl,
-                    `/v1/collections/${encodeURIComponent(req.database)}/${encodeURIComponent(req.collection)}/documents${buildQuery({
+                return this.fetchJSON<ListDocumentsResponse>(`/v1/collections/${encodeURIComponent(req.database)}/${encodeURIComponent(req.collection)}/documents${buildQuery({
                         page_size: req.page_size,
                         page_token: req.page_token,
                     })}`,
@@ -1699,7 +1681,7 @@ export class RestClient implements Client {
         return {
             query: async (query: string, database: string): Promise<SQLQueryResult> => {
                 this.ensureConnected();
-                return fetchJSON<SQLQueryResult>(this.baseUrl, '/sql/query', {
+                return this.fetchJSON<SQLQueryResult>('/sql/query', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ query, database }),
@@ -1718,7 +1700,7 @@ export class RestClient implements Client {
             initialize: async (secret: string): Promise<void> => {
                 this.ensureConnected();
                 // Passphrase (or none, when secret is "") barrier bootstrap.
-                await fetchVoid(this.baseUrl, '/v1/barrier/initialize', {
+                await this.fetchVoid('/v1/barrier/initialize', {
                     method: 'POST',
                     ...jsonBody({ secret }),
                 });
@@ -1735,9 +1717,7 @@ export class RestClient implements Client {
                     readonly totalShares: number;
                     readonly shareCount: number;
                 }
-                const init = await fetchJSON<ShamirInitResponse>(
-                    this.baseUrl,
-                    '/v1/barrier/shamir/initialize',
+                const init = await this.fetchJSON<ShamirInitResponse>('/v1/barrier/shamir/initialize',
                     { method: 'POST', ...jsonBody({ secret, threshold, total_shares: totalShares }) },
                 );
                 // No root token is derived here: root-token generation
@@ -1761,9 +1741,7 @@ export class RestClient implements Client {
                 interface BarrierStrategyResponse {
                     readonly strategy: string;
                 }
-                const { strategy } = await fetchJSON<BarrierStrategyResponse>(
-                    this.baseUrl,
-                    '/v1/barrier/status',
+                const { strategy } = await this.fetchJSON<BarrierStrategyResponse>('/v1/barrier/status',
                 );
                 if (strategy === 'shamir') {
                     interface UnsealShareProgressResponse {
@@ -1771,9 +1749,7 @@ export class RestClient implements Client {
                         readonly submitted: number;
                         readonly complete: boolean;
                     }
-                    const resp = await fetchJSON<UnsealShareProgressResponse>(
-                        this.baseUrl,
-                        '/v1/barrier/shamir/unseal-share',
+                    const resp = await this.fetchJSON<UnsealShareProgressResponse>('/v1/barrier/shamir/unseal-share',
                         { method: 'POST', ...jsonBody({ share }) },
                     );
                     return {
@@ -1783,7 +1759,7 @@ export class RestClient implements Client {
                     };
                 }
                 // Passphrase / none: the provided value carries the secret.
-                await fetchVoid(this.baseUrl, '/v1/barrier/unseal', {
+                await this.fetchVoid('/v1/barrier/unseal', {
                     method: 'POST',
                     ...jsonBody({ secret: share }),
                 });
@@ -1791,7 +1767,7 @@ export class RestClient implements Client {
             },
             seal: async (): Promise<void> => {
                 this.ensureConnected();
-                await fetchVoid(this.baseUrl, '/v1/barrier/seal', { method: 'POST' });
+                await this.fetchVoid('/v1/barrier/seal', { method: 'POST' });
             },
             status: async (): Promise<SealStatus> => {
                 this.ensureConnected();
@@ -1805,9 +1781,7 @@ export class RestClient implements Client {
                     readonly shamirTotal?: number;
                 }
                 try {
-                    const resp = await fetchJSON<BarrierStatusResponse>(
-                        this.baseUrl,
-                        '/v1/barrier/status',
+                    const resp = await this.fetchJSON<BarrierStatusResponse>('/v1/barrier/status',
                     );
                     return {
                         sealed: resp.sealed,
@@ -1847,120 +1821,94 @@ export class RestClient implements Client {
         return {
             registerOfficer: async (req: OfficerRegisterRequest): Promise<OfficerRegisterResponse> => {
                 this.ensureConnected();
-                return fetchJSON<OfficerRegisterResponse>(
-                    this.baseUrl,
-                    '/v1/barrier/officers',
+                return this.fetchJSON<OfficerRegisterResponse>('/v1/barrier/officers',
                     { method: 'POST', ...jsonBody(deepCamelToSnake(req)) },
                 );
             },
             listOfficers: async (): Promise<OfficerStatus[]> => {
                 this.ensureConnected();
                 interface ListResponse { readonly officers: OfficerStatus[] }
-                const resp = await fetchJSON<ListResponse>(this.baseUrl, '/v1/barrier/officers');
+                const resp = await this.fetchJSON<ListResponse>('/v1/barrier/officers');
                 return resp.officers ?? [];
             },
             officerClaimStatus: async (): Promise<OfficerStatus[]> => {
                 this.ensureConnected();
                 interface ListResponse { readonly officers: OfficerStatus[] }
-                const resp = await fetchJSON<ListResponse>(this.baseUrl, '/v1/barrier/officers/claim-status');
+                const resp = await this.fetchJSON<ListResponse>('/v1/barrier/officers/claim-status');
                 return resp.officers ?? [];
             },
             claimBegin: async (req: ShareClaimBeginRequest): Promise<ShareClaimBeginResponse> => {
                 this.ensureConnected();
-                return fetchJSON<ShareClaimBeginResponse>(
-                    this.baseUrl,
-                    `/v1/barrier/officers/${encodeURIComponent(req.username)}/claim/begin`,
+                return this.fetchJSON<ShareClaimBeginResponse>(`/v1/barrier/officers/${encodeURIComponent(req.username)}/claim/begin`,
                     { method: 'POST', ...jsonBody({}) },
                 );
             },
             claimComplete: async (req: ShareClaimCompleteRequest): Promise<ShareClaimCompleteResponse> => {
                 this.ensureConnected();
-                return fetchJSON<ShareClaimCompleteResponse>(
-                    this.baseUrl,
-                    `/v1/barrier/officers/${encodeURIComponent(req.username)}/claim/complete`,
+                return this.fetchJSON<ShareClaimCompleteResponse>(`/v1/barrier/officers/${encodeURIComponent(req.username)}/claim/complete`,
                     { method: 'POST', ...jsonBody({ nonce_hex: req.nonceHex, signature: req.signature }) },
                 );
             },
             registerRecoveryOfficer: async (req: OfficerRegisterRequest): Promise<OfficerRegisterResponse> => {
                 this.ensureConnected();
-                return fetchJSON<OfficerRegisterResponse>(
-                    this.baseUrl,
-                    '/v1/barrier/recovery/officers',
+                return this.fetchJSON<OfficerRegisterResponse>('/v1/barrier/recovery/officers',
                     { method: 'POST', ...jsonBody(deepCamelToSnake(req)) },
                 );
             },
             recoveryClaimBegin: async (req: ShareClaimBeginRequest): Promise<ShareClaimBeginResponse> => {
                 this.ensureConnected();
-                return fetchJSON<ShareClaimBeginResponse>(
-                    this.baseUrl,
-                    `/v1/barrier/recovery/officers/${encodeURIComponent(req.username)}/claim/begin`,
+                return this.fetchJSON<ShareClaimBeginResponse>(`/v1/barrier/recovery/officers/${encodeURIComponent(req.username)}/claim/begin`,
                     { method: 'POST', ...jsonBody({}) },
                 );
             },
             recoveryClaimComplete: async (req: ShareClaimCompleteRequest): Promise<ShareClaimCompleteResponse> => {
                 this.ensureConnected();
-                return fetchJSON<ShareClaimCompleteResponse>(
-                    this.baseUrl,
-                    `/v1/barrier/recovery/officers/${encodeURIComponent(req.username)}/claim/complete`,
+                return this.fetchJSON<ShareClaimCompleteResponse>(`/v1/barrier/recovery/officers/${encodeURIComponent(req.username)}/claim/complete`,
                     { method: 'POST', ...jsonBody({ nonce_hex: req.nonceHex, signature: req.signature }) },
                 );
             },
             submitSealVote: async (req: ShamirSealVoteRequest): Promise<ShamirSealVoteResponse> => {
                 this.ensureConnected();
-                return fetchJSON<ShamirSealVoteResponse>(
-                    this.baseUrl,
-                    '/v1/barrier/shamir/seal-vote',
+                return this.fetchJSON<ShamirSealVoteResponse>('/v1/barrier/shamir/seal-vote',
                     { method: 'POST', ...jsonBody(req) },
                 );
             },
             listTenantOfficers: async (tenantId: string): Promise<OfficerStatus[]> => {
                 this.ensureConnected();
                 interface ListResponse { readonly officers: OfficerStatus[] }
-                const resp = await fetchJSON<ListResponse>(
-                    this.baseUrl,
-                    `/v1/tenants/${encodeURIComponent(tenantId)}/barrier/officers`,
+                const resp = await this.fetchJSON<ListResponse>(`/v1/tenants/${encodeURIComponent(tenantId)}/barrier/officers`,
                 );
                 return resp.officers ?? [];
             },
             tenantOfficerClaimStatus: async (tenantId: string): Promise<OfficerStatus[]> => {
                 this.ensureConnected();
                 interface ListResponse { readonly officers: OfficerStatus[] }
-                const resp = await fetchJSON<ListResponse>(
-                    this.baseUrl,
-                    `/v1/tenants/${encodeURIComponent(tenantId)}/barrier/officers/claim-status`,
+                const resp = await this.fetchJSON<ListResponse>(`/v1/tenants/${encodeURIComponent(tenantId)}/barrier/officers/claim-status`,
                 );
                 return resp.officers ?? [];
             },
             registerTenantOfficer: async (req: TenantOfficerRegisterRequest): Promise<OfficerRegisterResponse> => {
                 this.ensureConnected();
                 const { tenantId, ...rest } = req;
-                return fetchJSON<OfficerRegisterResponse>(
-                    this.baseUrl,
-                    `/v1/tenants/${encodeURIComponent(tenantId)}/barrier/officers`,
+                return this.fetchJSON<OfficerRegisterResponse>(`/v1/tenants/${encodeURIComponent(tenantId)}/barrier/officers`,
                     { method: 'POST', ...jsonBody(deepCamelToSnake(rest)) },
                 );
             },
             tenantClaimBegin: async (req: TenantShareClaimBeginRequest): Promise<ShareClaimBeginResponse> => {
                 this.ensureConnected();
-                return fetchJSON<ShareClaimBeginResponse>(
-                    this.baseUrl,
-                    `/v1/tenants/${encodeURIComponent(req.tenantId)}/barrier/officers/${encodeURIComponent(req.username)}/claim/begin`,
+                return this.fetchJSON<ShareClaimBeginResponse>(`/v1/tenants/${encodeURIComponent(req.tenantId)}/barrier/officers/${encodeURIComponent(req.username)}/claim/begin`,
                     { method: 'POST', ...jsonBody({}) },
                 );
             },
             tenantClaimComplete: async (req: TenantShareClaimCompleteRequest): Promise<ShareClaimCompleteResponse> => {
                 this.ensureConnected();
-                return fetchJSON<ShareClaimCompleteResponse>(
-                    this.baseUrl,
-                    `/v1/tenants/${encodeURIComponent(req.tenantId)}/barrier/officers/${encodeURIComponent(req.username)}/claim/complete`,
+                return this.fetchJSON<ShareClaimCompleteResponse>(`/v1/tenants/${encodeURIComponent(req.tenantId)}/barrier/officers/${encodeURIComponent(req.username)}/claim/complete`,
                     { method: 'POST', ...jsonBody({ nonce_hex: req.nonceHex, signature: req.signature }) },
                 );
             },
             submitTenantSealVote: async (req: TenantShamirSealVoteRequest): Promise<ShamirSealVoteResponse> => {
                 this.ensureConnected();
-                return fetchJSON<ShamirSealVoteResponse>(
-                    this.baseUrl,
-                    `/v1/tenants/${encodeURIComponent(req.tenantId)}/barrier/seal-vote`,
+                return this.fetchJSON<ShamirSealVoteResponse>(`/v1/tenants/${encodeURIComponent(req.tenantId)}/barrier/seal-vote`,
                     { method: 'POST', ...jsonBody({ share: req.share }) },
                 );
             },
@@ -2032,7 +1980,7 @@ export class RestClient implements Client {
                 // The REST wire format returns the tenant object directly;
                 // wrap it to match the SDK contract (mirrors the Go REST
                 // transport's CreateTenant adaptation).
-                const tenant = await fetchJSON<TenantInfo>(this.baseUrl, '/v1/tenants', {
+                const tenant = await this.fetchJSON<TenantInfo>('/v1/tenants', {
                     method: 'POST',
                     ...jsonBody(req),
                 });
@@ -2041,31 +1989,25 @@ export class RestClient implements Client {
             get: async (tenantId: string): Promise<GetTenantResponse> => {
                 this.ensureConnected();
                 // Bare tenant on the wire; wrap to the SDK contract.
-                const tenant = await fetchJSON<TenantInfo>(
-                    this.baseUrl,
-                    `/v1/tenants/${encodeURIComponent(tenantId)}`,
+                const tenant = await this.fetchJSON<TenantInfo>(`/v1/tenants/${encodeURIComponent(tenantId)}`,
                 );
                 return { tenant };
             },
             list: async (): Promise<ListTenantsResponse> => {
                 this.ensureConnected();
-                return fetchJSON<ListTenantsResponse>(this.baseUrl, '/v1/tenants/list');
+                return this.fetchJSON<ListTenantsResponse>('/v1/tenants/list');
             },
             delete: async (tenantId: string): Promise<void> => {
                 this.ensureConnected();
                 // DELETE /v1/tenants/{id} responds 204 No Content.
-                await fetchVoid(
-                    this.baseUrl,
-                    `/v1/tenants/${encodeURIComponent(tenantId)}`,
+                await this.fetchVoid(`/v1/tenants/${encodeURIComponent(tenantId)}`,
                     { method: 'DELETE' },
                 );
             },
             update: async (tenantId: string, req: UpdateTenantRequest): Promise<UpdateTenantResponse> => {
                 this.ensureConnected();
                 // Bare tenant on the wire; wrap to the SDK contract.
-                const tenant = await fetchJSON<TenantInfo>(
-                    this.baseUrl,
-                    `/v1/tenants/${encodeURIComponent(tenantId)}`,
+                const tenant = await this.fetchJSON<TenantInfo>(`/v1/tenants/${encodeURIComponent(tenantId)}`,
                     { method: 'PUT', ...jsonBody(req) },
                 );
                 return { tenant };
@@ -2100,34 +2042,43 @@ export class RestClient implements Client {
             },
             barrierUnseal: async (req: TenantBarrierUnsealRequest): Promise<void> => {
                 this.ensureConnected();
-                await fetchJSON<unknown>(
-                    this.baseUrl,
-                    `/v1/tenants/${encodeURIComponent(req.tenantId)}/barrier/unseal`,
+                await this.fetchJSON<unknown>(`/v1/tenants/${encodeURIComponent(req.tenantId)}/barrier/unseal`,
                     { method: 'POST', ...jsonBody(req) },
                 );
             },
             barrierUnsealShare: async (req: TenantBarrierUnsealShareRequest): Promise<TenantBarrierUnsealProgress> => {
                 this.ensureConnected();
-                return fetchJSON<TenantBarrierUnsealProgress>(
-                    this.baseUrl,
-                    `/v1/tenants/${encodeURIComponent(req.tenantId)}/barrier/unseal-share`,
+                return this.fetchJSON<TenantBarrierUnsealProgress>(`/v1/tenants/${encodeURIComponent(req.tenantId)}/barrier/unseal-share`,
                     { method: 'POST', ...jsonBody(req) },
                 );
             },
             barrierStatus: async (tenantId: string): Promise<TenantBarrierStatusResponse> => {
                 this.ensureConnected();
-                return fetchJSON<TenantBarrierStatusResponse>(
-                    this.baseUrl,
-                    `/v1/tenants/${encodeURIComponent(tenantId)}/barrier/status`,
+                return this.fetchJSON<TenantBarrierStatusResponse>(`/v1/tenants/${encodeURIComponent(tenantId)}/barrier/status`,
                 );
             },
             updateQuotas: async (req: UpdateTenantQuotasRequest): Promise<UpdateTenantQuotasResponse> => {
                 this.ensureConnected();
-                return fetchJSON<UpdateTenantQuotasResponse>(
-                    this.baseUrl,
-                    `/v1/tenants/${encodeURIComponent(req.tenantId)}/quotas`,
-                    { method: 'PUT', ...jsonBody(req) },
+                // The REST handler (POST /v1/tenants/{id}/quotas) decodes a FLAT
+                // quota body (top-level max_* fields), not a wrapper object, and
+                // returns the bare updated tenant. Send only the quotas and wrap
+                // the response to match the SDK contract.
+                const tenant = await this.fetchJSON<TenantInfo>(`/v1/tenants/${encodeURIComponent(req.tenantId)}/quotas`,
+                    { method: 'POST', ...jsonBody(req.quotas) },
                 );
+                return { tenant };
+            },
+            updateEntitlements: async (req: UpdateTenantEntitlementsRequest): Promise<UpdateTenantEntitlementsResponse> => {
+                this.ensureConnected();
+                // The REST handler (PATCH /v1/tenants/{id}/entitlements) decodes a
+                // FLAT entitlements body (top-level allow_* / allowed_isolation_modes
+                // fields), not a wrapper object, and returns the bare updated
+                // tenant. Send only the entitlements and wrap the response to match
+                // the SDK contract (mirrors updateQuotas above).
+                const tenant = await this.fetchJSON<TenantInfo>(`/v1/tenants/${encodeURIComponent(req.tenantId)}/entitlements`,
+                    { method: 'PATCH', ...jsonBody(req.entitlements) },
+                );
+                return { tenant };
             },
         };
     }
@@ -2141,9 +2092,7 @@ export class RestClient implements Client {
         return {
             initialized: async (): Promise<ConfigInitializedResponse> => {
                 this.ensureConnected();
-                return fetchJSON<ConfigInitializedResponse>(
-                    this.baseUrl,
-                    '/v1/config/initialized',
+                return this.fetchJSON<ConfigInitializedResponse>('/v1/config/initialized',
                 );
             },
             isEmbeddedAvailable: async (): Promise<boolean> => false,
@@ -2159,44 +2108,36 @@ export class RestClient implements Client {
         return {
             create: async (req: BackupRequest): Promise<BackupInfo> => {
                 this.ensureConnected();
-                return fetchJSON<BackupInfo>(this.baseUrl, '/v1/backups', {
+                return this.fetchJSON<BackupInfo>('/v1/backups', {
                     method: 'POST',
                     ...jsonBody(req),
                 });
             },
             list: async (): Promise<ListBackupsResponse> => {
                 this.ensureConnected();
-                return fetchJSON<ListBackupsResponse>(this.baseUrl, '/v1/backups');
+                return this.fetchJSON<ListBackupsResponse>('/v1/backups');
             },
             get: async (id: string): Promise<BackupInfo> => {
                 this.ensureConnected();
-                return fetchJSON<BackupInfo>(
-                    this.baseUrl,
-                    `/v1/backups/${encodeURIComponent(id)}`,
+                return this.fetchJSON<BackupInfo>(`/v1/backups/${encodeURIComponent(id)}`,
                 );
             },
             delete: async (id: string): Promise<void> => {
                 this.ensureConnected();
                 // DELETE /v1/backups/{id} responds 204 No Content.
-                await fetchVoid(
-                    this.baseUrl,
-                    `/v1/backups/${encodeURIComponent(id)}`,
+                await this.fetchVoid(`/v1/backups/${encodeURIComponent(id)}`,
                     { method: 'DELETE' },
                 );
             },
             restore: async (req: RestoreRequest): Promise<RestoreResult> => {
                 this.ensureConnected();
-                return fetchJSON<RestoreResult>(
-                    this.baseUrl,
-                    `/v1/backups/${encodeURIComponent(req.backupId)}/restore`,
+                return this.fetchJSON<RestoreResult>(`/v1/backups/${encodeURIComponent(req.backupId)}/restore`,
                     { method: 'POST', ...jsonBody(req) },
                 );
             },
             verify: async (id: string): Promise<VerifyResult> => {
                 this.ensureConnected();
-                return fetchJSON<VerifyResult>(
-                    this.baseUrl,
-                    `/v1/backups/${encodeURIComponent(id)}/verify`,
+                return this.fetchJSON<VerifyResult>(`/v1/backups/${encodeURIComponent(id)}/verify`,
                     { method: 'POST' },
                 );
             },
@@ -2212,28 +2153,26 @@ export class RestClient implements Client {
         return {
             getShardStats: async (shardId: number): Promise<ShardStatsResponse> => {
                 this.ensureConnected();
-                return fetchJSON<ShardStatsResponse>(
-                    this.baseUrl,
-                    `/v1/rebalance/shards/${encodeURIComponent(String(shardId))}/stats`,
+                return this.fetchJSON<ShardStatsResponse>(`/v1/rebalance/shards/${encodeURIComponent(String(shardId))}/stats`,
                 );
             },
             createPlan: async (req: RebalancePlanRequest): Promise<RebalancePlan> => {
                 this.ensureConnected();
-                return fetchJSON<RebalancePlan>(this.baseUrl, '/v1/rebalance/plan', {
+                return this.fetchJSON<RebalancePlan>('/v1/rebalance/plan', {
                     method: 'POST',
                     ...jsonBody(req),
                 });
             },
             execute: async (plan: RebalancePlan): Promise<RebalanceResult> => {
                 this.ensureConnected();
-                return fetchJSON<RebalanceResult>(this.baseUrl, '/v1/rebalance/execute', {
+                return this.fetchJSON<RebalanceResult>('/v1/rebalance/execute', {
                     method: 'POST',
                     ...jsonBody(plan),
                 });
             },
             getImbalanceReport: async (): Promise<ImbalanceReport> => {
                 this.ensureConnected();
-                return fetchJSON<ImbalanceReport>(this.baseUrl, '/v1/rebalance/report');
+                return this.fetchJSON<ImbalanceReport>('/v1/rebalance/report');
             },
         };
     }
@@ -2285,6 +2224,58 @@ export class RestClient implements Client {
         if (!this.connected) {
             throw new NotConnectedError();
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Request helpers (database-scope aware)
+    //
+    // Every service getter routes its requests through these three wrappers
+    // rather than the module-level request functions. The wrappers inject the
+    // X-QRDB-Database header for DATA-PLANE paths only when this client is
+    // database-scoped; management/admin/system paths never carry the header.
+    // This keeps the database scope in exactly one place instead of at ~150
+    // individual call sites.
+    // -----------------------------------------------------------------------
+
+    /**
+     * Returns the database scope header for a data-plane path, or `undefined`
+     * when this client is unscoped or the path is a management/admin endpoint.
+     */
+    private scopeHeaders(path: string): Record<string, string> | undefined {
+        if (this.activeDatabase !== '' && isDataPlanePath(path)) {
+            return { [HEADER_DATABASE]: this.activeDatabase };
+        }
+        return undefined;
+    }
+
+    /** Merges the database scope header into a request init, when applicable. */
+    private scopedInit(path: string, init?: RequestInit): RequestInit | undefined {
+        const dbHeaders = this.scopeHeaders(path);
+        if (dbHeaders === undefined) {
+            return init;
+        }
+        return {
+            ...init,
+            headers: {
+                ...(init?.headers as Record<string, string> | undefined),
+                ...dbHeaders,
+            },
+        };
+    }
+
+    /** Database-scope-aware wrapper over {@link requestJSON}. */
+    private fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
+        return requestJSON<T>(this.baseUrl, path, this.scopedInit(path, init));
+    }
+
+    /** Database-scope-aware wrapper over {@link requestVoid}. */
+    private fetchVoid(path: string, init?: RequestInit): Promise<void> {
+        return requestVoid(this.baseUrl, path, this.scopedInit(path, init));
+    }
+
+    /** Database-scope-aware wrapper over {@link requestText}. */
+    private fetchText(path: string, init?: RequestInit): Promise<string> {
+        return requestText(this.baseUrl, path, this.scopedInit(path, init));
     }
 }
 

@@ -23,7 +23,7 @@ import (
 // BootstrapSystemTenant requires. Using a minimal interface keeps this
 // package from depending on the full tenant service dependency graph.
 type TenantServicer interface {
-	CreateTenant(ctx context.Context, id, name string, isolationType tenant.IsolationType) (*tenant.TenantInfo, error)
+	CreateTenant(ctx context.Context, id, name string, isolationType tenant.IsolationType, opts ...tenant.CreateTenantOption) (*tenant.TenantInfo, error)
 }
 
 // BootstrapState describes the outcome of a BootstrapSystemTenant call.

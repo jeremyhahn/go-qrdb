@@ -1367,7 +1367,7 @@ type mockTenantService struct {
 	barrierStatusFn func(ctx context.Context, id string) (*tenant.TenantBarrierStatus, error)
 }
 
-func (m *mockTenantService) CreateTenant(ctx context.Context, id, name string, iso tenant.IsolationType) (*tenant.TenantInfo, error) {
+func (m *mockTenantService) CreateTenant(ctx context.Context, id, name string, iso tenant.IsolationType, _ ...tenant.CreateTenantOption) (*tenant.TenantInfo, error) {
 	if m.createFn != nil {
 		return m.createFn(ctx, id, name, iso)
 	}
@@ -1407,6 +1407,10 @@ func (m *mockTenantService) UpdateQuotas(ctx context.Context, id string, q *quot
 		return m.updateQuotasFn(ctx, id, q)
 	}
 	return &tenant.TenantInfo{ID: id, Quotas: q}, nil
+}
+
+func (m *mockTenantService) UpdateEntitlements(ctx context.Context, id string, e *quota.Entitlements) (*tenant.TenantInfo, error) {
+	return &tenant.TenantInfo{ID: id, Entitlements: e}, nil
 }
 
 func (m *mockTenantService) TenantBarrierInit(ctx context.Context, id, passphrase string, threshold, shares int) (*tenant.TenantBarrierInitResult, error) {

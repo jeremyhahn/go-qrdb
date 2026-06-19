@@ -179,6 +179,8 @@ func (d *Database) Info() DatabaseInfo {
 		DataDir:      d.dataDir,
 		Mode:         cfg.Mode,
 		StorageCodec: cfg.StorageCodec,
+		Replicas:     cfg.Replicas,
+		DedicatedWAL: cfg.DedicatedWAL,
 		Raft:         cfg.Raft,
 		Barrier:      cfg.Barrier,
 		Connection:   cfg.Connection,

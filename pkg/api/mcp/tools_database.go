@@ -96,6 +96,9 @@ func toolDatabaseCreate() mcp.Tool {
 			mcp.Required(),
 			mcp.Description("The storage backend type: memory, file, pebble, or raft."),
 		),
+		mcp.WithNumber("replicas",
+			mcp.Description("Replication factor for a dedicated-raft database. Meaningful only for raft-backed databases; unset defaults to 1."),
+		),
 		mcp.WithBoolean("mysql",
 			mcp.Description("Enable MySQL wire protocol for this database."),
 		),
@@ -175,10 +178,11 @@ func handleDatabaseCreate(dbSvc service.DatabaseServicer) mcpserver.ToolHandlerF
 		}
 
 		cfg := database.DatabaseConfig{
-			Name:    name,
-			Engine:  database.EngineType(engine),
-			Backend: database.BackendType(backend),
-			DataDir: mcp.ParseString(req, "data_dir", ""),
+			Name:     name,
+			Engine:   database.EngineType(engine),
+			Backend:  database.BackendType(backend),
+			DataDir:  mcp.ParseString(req, "data_dir", ""),
+			Replicas: int(mcp.ParseInt64(req, "replicas", 0)),
 			Protocol: database.ProtocolConfig{
 				MySQL:      mcp.ParseBoolean(req, "mysql", false),
 				PostgreSQL: mcp.ParseBoolean(req, "postgresql", false),

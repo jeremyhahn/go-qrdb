@@ -17,6 +17,7 @@ import type {
     HealthResponse,
     StatusResponse,
     PeersResponse,
+    TopologyResponse,
     CapabilitiesResponse,
 
     // MVCC
@@ -189,6 +190,8 @@ import type {
     TenantBarrierStatusResponse,
     UpdateTenantQuotasRequest,
     UpdateTenantQuotasResponse,
+    UpdateTenantEntitlementsRequest,
+    UpdateTenantEntitlementsResponse,
 
     // Server config
     ConfigInitializedResponse,
@@ -321,6 +324,13 @@ export interface AdminClient {
 
     /** Returns the peer membership for all loaded shards. */
     peers(): Promise<PeersResponse>;
+
+    /**
+     * Returns the full cluster topology as seen from this node: per-shard
+     * placement, leader election state, and Raft transport addresses for all
+     * known replicas. Maps to GET /admin/topology.
+     */
+    getTopology(): Promise<TopologyResponse>;
 
     /**
      * Adds a new replica to the specified shard.
@@ -1701,6 +1711,15 @@ export interface TenantClient {
      * @returns The updated tenant.
      */
     updateQuotas(req: UpdateTenantQuotasRequest): Promise<UpdateTenantQuotasResponse>;
+
+    /**
+     * Updates the feature entitlements for a tenant (which isolation tiers and
+     * dedicated-storage features the tenant's plan permits).
+     *
+     * @param req - Entitlement update parameters.
+     * @returns The updated tenant.
+     */
+    updateEntitlements(req: UpdateTenantEntitlementsRequest): Promise<UpdateTenantEntitlementsResponse>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1870,6 +1889,20 @@ export interface ConnectionManagerClient {
  * are compile-time features that may be disabled in the server binary.
  */
 export interface Client {
+    /**
+     * Returns a client scoped to the named database within the authenticated
+     * tenant. Every data-plane operation (KV, MVCC, transaction, batch, watch,
+     * lease, lock, index, time-series, vector) on the returned client targets
+     * that database; management and admin operations are unaffected and remain
+     * system-scoped. Passing an empty string or the `default` database name
+     * returns an unscoped client (the server uses `default` when no scope is
+     * selected).
+     *
+     * @param name - Target database name within the tenant.
+     * @returns A client whose data-plane calls operate on the named database.
+     */
+    databaseScoped(name: string): Client;
+
     /** Connection lifecycle management. */
     readonly connection: ConnectionClient;
 

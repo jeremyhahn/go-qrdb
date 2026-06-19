@@ -16,15 +16,19 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"crypto/fips140"
 	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/binary"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -43,6 +47,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/bootstrap"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterkeys"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/custodian"
@@ -51,9 +56,11 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/dek"
 	"github.com/jeremyhahn/go-qrdb/pkg/discovery"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
+	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/logger"
 	"github.com/jeremyhahn/go-qrdb/pkg/mvccadapter"
+	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
@@ -71,6 +78,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
+	"github.com/jeremyhahn/go-quicraft/pkg/logdb/waldb"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/spf13/cobra"
 )
@@ -88,45 +96,56 @@ type startFlags struct {
 	peers           []string
 	// shardID is deprecated. System services always use shard.ShardKV (1).
 	// Kept for backward compatibility with existing YAML configs and CLI scripts.
-	shardID               uint64
-	replicaID             uint64
-	multicastSecret       string
-	multicastGroup        string
-	dnsDomain             string
-	dnsService            string
-	dnsProto              string
-	discoveryEndpoint     string
-	discoveryToken        string
-	discoveryClusterSize  int
-	discoveryInsecure     bool
-	clusterMinPeers       int
-	dynamicMembership     bool
-	adminPort             int
-	grpcPort              int
-	maxInMemLogSize       uint64
-	maxTotalInMemLogSize  uint64
-	snapshotEntries       uint64
-	compactionOverhead    uint64
-	join                  bool
-	logFormat             string
-	logLevel              string
-	debugRaft             bool
-	enableREST            bool
-	enableGRPC            bool
-	enableQUIC            bool
-	quicPort              int
-	enableUnix            bool
-	unixSocketPath        string
-	enableMCP             bool
-	mcpPort               int
-	mcpEndpoint           string
-	enableMySQL           bool
-	mysqlPort             int
-	enablePgSQL           bool
-	pgsqlPort             int
-	authEnabled           bool
-	separationOfDuties    bool
-	spiffeTrustDomain     string
+	shardID              uint64
+	replicaID            uint64
+	multicastSecret      string
+	multicastGroup       string
+	dnsDomain            string
+	dnsService           string
+	dnsProto             string
+	discoveryEndpoint    string
+	discoveryToken       string
+	discoveryClusterSize int
+	discoveryInsecure    bool
+	clusterMinPeers      int
+	dynamicMembership    bool
+	adminPort            int
+	grpcPort             int
+	maxInMemLogSize      uint64
+	maxTotalInMemLogSize uint64
+	snapshotEntries      uint64
+	compactionOverhead   uint64
+	join                 bool
+	logFormat            string
+	logLevel             string
+	debugRaft            bool
+	enableREST           bool
+	enableGRPC           bool
+	enableQUIC           bool
+	quicPort             int
+	enableUnix           bool
+	unixSocketPath       string
+	enableMCP            bool
+	mcpPort              int
+	mcpEndpoint          string
+	enableMySQL          bool
+	mysqlPort            int
+	enablePgSQL          bool
+	pgsqlPort            int
+	authEnabled          bool
+	separationOfDuties   bool
+	spiffeTrustDomain    string
+	// clusterTrustDomain is the cluster-wide SPIFFE trust domain used for
+	// node identity. It is encoded into auto-generated node certificates as
+	// a URI SAN (spiffe://<clusterTrustDomain>/node/<raftAddress>) and must
+	// be the same on every node. The default "qrdb.cluster" is suitable for
+	// most deployments; production clusters should use a dedicated domain.
+	clusterTrustDomain string
+	// peerAdminURLs is a static map from each peer's Raft address to its
+	// admin HTTPS base URL. It is populated from cfg.Auth.PeerAdminURLs and
+	// pre-seeds the peerAdminRegistry so the cluster key sender can reach
+	// follower nodes even when they share a host but use distinct admin ports.
+	peerAdminURLs         map[string]string
 	strictTenantIsolation bool
 	sqlDatabase           string
 	tlsCAFile             string
@@ -173,12 +192,36 @@ type startFlags struct {
 	// When no config file is provided, defaults from DefaultConfig are used.
 	ragConfig qrdbconfig.RAGConfig
 
+	// tenantConfig holds the tenant defaults (default quotas + entitlements)
+	// loaded from YAML, applied to tenants whose own values are unset.
+	tenantConfig qrdbconfig.TenantConfig
+
 	// createFn is an optional pre-built state machine factory. When set,
 	// initializeNode uses it instead of resolving from the SM registry.
 	// This enables callers to inject subsystem-aware factories (e.g.
 	// with Lessor, WatchHub, TimeSeries) that share instances with the
 	// service layer.
 	createFn sm.CreateFunc
+
+	// walBarrier is the system seal barrier wired into the shared Raft
+	// LogDB/WAL so committed entries (keys and values) are encrypted at
+	// rest under the same barrier that encrypts the state-machine Pebble.
+	// It is nil when seal is disabled (plaintext WAL is acceptable then)
+	// and is only set after the barrier is unsealed, before the Host is
+	// constructed, so the LogDB opens against an available barrier.
+	walBarrier quicraft.Barrier
+
+	// walSystemBarrier is the same system barrier as a concrete *seal.EpochBarrier
+	// (the underlying type of walBarrier). It is used to open the shared WAL inside
+	// the multiplex LogDB and to register it by barrier identity (4d Option C).
+	walSystemBarrier *seal.EpochBarrier
+
+	// walMux is the multiplex LogDB wired as the shared host's LogDB in
+	// clustered/raft mode when seal is enabled. It owns the shared system-barrier
+	// WAL and routes opted-in dedicated-raft shards to per-tenant-KEY WALs. It is
+	// nil for single-node/standalone hosts and when seal is disabled, leaving the
+	// shared-WAL (Route A) path byte-identical to before.
+	walMux *database.MultiplexLogDB
 }
 
 // raftNode is the interface that the start command requires for shard
@@ -422,6 +465,8 @@ func newStartCmd() *cobra.Command {
 		"Enable lease-based linearizable reads (requires --check-quorum)")
 	cmd.Flags().BoolVar(&f.checkQuorum, "check-quorum", true,
 		"Enable leader step-down on quorum loss (required for --lease-read)")
+	cmd.Flags().StringVar(&f.clusterTrustDomain, "cluster-trust-domain", "qrdb.cluster",
+		"Cluster-wide SPIFFE trust domain for node identity (e.g. spiffe://<domain>/node/<raftAddr>); must be identical on all cluster members")
 
 	return cmd
 }
@@ -563,9 +608,24 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 	// (crypto/fips140.Enabled()) is always strict regardless of config.
 	f.separationOfDuties = cfg.Auth.SeparationOfDuties
 	f.spiffeTrustDomain = cfg.Auth.SPIFFETrustDomain
+	if !cmd.Flags().Changed("cluster-trust-domain") && cfg.Auth.ClusterTrustDomain != "" {
+		f.clusterTrustDomain = cfg.Auth.ClusterTrustDomain
+	}
+	if len(cfg.Auth.PeerAdminURLs) > 0 {
+		m := make(map[string]string, len(cfg.Auth.PeerAdminURLs))
+		for _, e := range cfg.Auth.PeerAdminURLs {
+			if e.RaftAddr != "" && e.AdminURL != "" {
+				m[e.RaftAddr] = e.AdminURL
+			}
+		}
+		if len(m) > 0 {
+			f.peerAdminURLs = m
+		}
+	}
 	// Tenant isolation posture mirrors RBAC: config can raise strictness;
 	// FIPS-140 always enforces it.
 	f.strictTenantIsolation = cfg.Tenant.StrictIsolation
+	f.tenantConfig = cfg.Tenant
 	if !cmd.Flags().Changed("enable-mysql") {
 		f.enableMySQL = cfg.Protocols.MySQL
 	}
@@ -838,9 +898,23 @@ func runStart(f *startFlags) error {
 		return err
 	}
 
-	// Initialize database manager.
-	dbManager := database.NewManager(slog.Default(), f.dataDir)
+	// Initialize database manager. A shard allocator assigns a unique shard ID
+	// to every raft-backed database (its Raft config carries ShardID == 0 at
+	// create); OpenAll advances the allocator past the highest persisted shard
+	// ID so IDs are never reused across restarts. Non-raft databases (Raft ==
+	// nil) are unaffected. The allocated IDs drive the dedicated per-database
+	// raft shards of IsolationRaft tenants (Phase 4b).
+	shardAllocator := shard.NewAllocator()
+	dbManager := database.NewManager(slog.Default(), f.dataDir, database.WithAllocator(shardAllocator))
 	defer func() { _ = dbManager.Close() }()
+
+	// Rehydrate every database persisted under {dataDir}/databases so that
+	// databases created in a prior run are known after restart. This is
+	// idempotent with the config-listed open loop below (Open/Create are
+	// no-ops for already-open databases).
+	if err := dbManager.OpenAll(); err != nil {
+		return err
+	}
 
 	// Use default database configs when no YAML config was provided.
 	if len(f.databases) == 0 {
@@ -966,6 +1040,22 @@ func runStart(f *startFlags) error {
 		sealBarrierForEnc = sealSub.SealBarrier
 	}
 	enc := atrest.New(sealBarrierForEnc)
+
+	// Wire the same system barrier into the shared Raft LogDB/WAL so the
+	// replication log is encrypted at rest, not just the state-machine
+	// Pebble. Without this the committed KV entries (keys and values) sit
+	// in cleartext in the WAL until log compaction. The underlying
+	// EpochBarrier satisfies quicraft.Barrier; it MUST be unsealed before
+	// NewHost opens the LogDB. The boot sequence below drives the barrier
+	// through the sealed-window unseal (awaitUnseal) before initializeNode
+	// constructs the Host, so by the time WithBarrier is engaged the
+	// barrier is unsealed — the same precondition the SM Pebble relies on.
+	// When seal is disabled sealBarrierForEnc is nil and the WAL stays
+	// plaintext (a no-op, consistent with encryption being off).
+	if sealBarrierForEnc != nil {
+		f.walSystemBarrier = sealBarrierForEnc.EpochBarrier()
+		f.walBarrier = f.walSystemBarrier
+	}
 
 	// Build a subsystem-aware state machine factory for "mvcc" and
 	// "pebble" SM types. Other types fall back to the registry default.
@@ -1123,22 +1213,24 @@ func runStart(f *startFlags) error {
 	}
 
 	svcNode, err := lifecycle.BuildServices(sigCtx, lifecycle.Infra{
-		Host:                  adapter,
-		WatchHub:              watchHub,
-		DataDir:               f.dataDir,
-		DatabaseManager:       dbManager,
-		KVOptions:             nil,
-		SealBarrier:           sealBarrier,
-		BarrierRegistry:       barrierRegistry,
-		CredentialCoreSvc:     credCoreSvc,
-		CeremonyDataDir:       filepath.Join(f.dataDir, "seal"),
-		CeremonyCA:            ceremonyCA,
-		CeremonyCoreSvc:       ceremonyCoreSvc,
-		Logger:                slog.Default(),
-		EmbeddingConfig:       f.embeddingConfig,
-		RAGConfig:             f.ragConfig,
-		StrictTenantIsolation: strictTenant,
-		Encryptor:             enc,
+		Host:                      adapter,
+		WatchHub:                  watchHub,
+		DataDir:                   f.dataDir,
+		DatabaseManager:           dbManager,
+		KVOptions:                 nil,
+		SealBarrier:               sealBarrier,
+		BarrierRegistry:           barrierRegistry,
+		CredentialCoreSvc:         credCoreSvc,
+		CeremonyDataDir:           filepath.Join(f.dataDir, "seal"),
+		CeremonyCA:                ceremonyCA,
+		CeremonyCoreSvc:           ceremonyCoreSvc,
+		Logger:                    slog.Default(),
+		EmbeddingConfig:           f.embeddingConfig,
+		RAGConfig:                 f.ragConfig,
+		StrictTenantIsolation:     strictTenant,
+		DefaultTenantQuotas:       f.tenantConfig.DefaultQuotas.ToQuotas(),
+		DefaultTenantEntitlements: f.tenantConfig.DefaultEntitlements.ToEntitlements(),
+		Encryptor:                 enc,
 	})
 	if err != nil {
 		_ = shutdownNode(host)
@@ -1268,6 +1360,135 @@ func runStart(f *startFlags) error {
 	// fail until the pipeline is ready, returning 503 to early clients.
 	warmupReadIndex(sigCtx, kvSvc)
 
+	// Phase 2: make the volume pool a cluster-wide replicated concept. Bind the
+	// pool's round-robin cursor to the replicated system KV (so the cursor is a
+	// single value that survives leader failover) and attach the replicated
+	// tenant→relative-slot assignment store to the barrier registry (so every
+	// replica resolves the SAME relative slot for a tenant — realized at its own
+	// local pool base — instead of running a divergent node-local pool.Pick).
+	// Both must be wired before RestoreVolumeTenants below, which seeds the
+	// assignment from node-local DataRoot records for pre-Phase-2 clusters.
+	if volumePool != nil && kvSvc != nil {
+		if volumePool.ReplicatedState != nil {
+			if bindErr := volumePool.ReplicatedState.Bind(lifecycle.NewKVStoreAdapter(kvSvc)); bindErr != nil {
+				slog.Default().Warn("start: failed to bind replicated volume-pool cursor; falling back to node-local pick",
+					slog.Any("error", bindErr))
+			}
+		}
+		if barrierRegistry != nil {
+			barrierRegistry.Attach(seal.WithReplicatedSlotStore(
+				lifecycle.NewReplicatedSealBackend(kvSvc, txSvc)))
+		}
+	}
+
+	// Restore every per-tenant barrier (IsolationVolume + IsolationRaft) from
+	// THIS node's own persisted tenant-root records before re-attaching either
+	// tenant type. RestoreVolumeTenants re-registers and (for auto-unseal
+	// tenants) unseals each barrier using the node-local DataRoot recorded by
+	// RegisterVolumeTenant on a prior run (create on the leader, key delivery on
+	// followers). This is the authoritative barrier-restore path for EVERY node
+	// and must run before the reattach passes: TenantInfo is replicated cluster
+	// metadata, so every node sees every dedicated tenant, but the DataRoot
+	// carried in TenantInfo belongs to the CREATING node and is invalid
+	// elsewhere — each node's key material lives at its own recorded DataRoot.
+	// Failures are logged and deferred to the reconciler rather than aborting.
+	if barrierRegistry != nil && volumePool != nil {
+		if err := barrierRegistry.RestoreVolumeTenants(sigCtx); err != nil {
+			slog.Default().Warn("start: RestoreVolumeTenants failed; some tenant barriers may be deferred",
+				slog.Any("error", err))
+		}
+	}
+
+	// Per-tenant volume Host registry (Phase 2 IsolationVolume). Each volume
+	// tenant runs a dedicated single-node Raft Host on its own DataRoot with
+	// full engines, encrypted under the tenant DEK. Requires the seal subsystem
+	// (per-tenant barrier) and the volume pool (DataRoot allocation). Boot
+	// re-attach eagerly rebuilds the Host of each volume tenant whose barrier is
+	// locally available (restored above) so persisted data is reachable after a
+	// restart; tenants with no local barrier are deferred to lazy attach.
+	var tenantHostReg *server.TenantHostRegistry
+	if barrierRegistry != nil && tenantSvcInst != nil && volumePool != nil {
+		tenantHostReg = server.NewTenantHostRegistryFromServicer(barrierRegistry, tenantSvcInst, slog.Default())
+		if err := reattachVolumeTenants(sigCtx, tenantSvcInst, barrierRegistry, tenantHostReg, slog.Default()); err != nil {
+			_ = tenantHostReg.CloseAll()
+			_ = shutdownNode(host)
+			return err
+		}
+	}
+
+	// Dedicated per-database raft groups (Phase 4b IsolationRaft). Each
+	// IsolationRaft tenant runs one Raft shard per database on the SHARED system
+	// Host: the shard's state-machine data lives under the tenant's DataRoot
+	// ({DataRoot}/databases/{db}/shard-<N>), encrypted under the tenant DEK,
+	// while the Raft log stays in the shared host LogDB. Requires the seal
+	// subsystem (per-tenant barrier) and the volume pool (DataRoot allocation).
+	// Boot re-attach re-registers + (for system-managed tenants) unseals each
+	// raft tenant's barrier and re-starts its database shards before serving.
+	var raftBackendReg *server.RaftBackendFactory
+	if barrierRegistry != nil && tenantSvcInst != nil && volumePool != nil {
+		// Make the replicated placement table (Phase 4c) the source of truth for
+		// resolving a dedicated-raft database's shard. The factory falls back to
+		// the meta.json-derived source for databases without a placement entry,
+		// so Phase-4b single-node databases keep working unchanged. The local
+		// node is identified by its Raft address, matching the placement
+		// replicas' NodeID.
+		var raftOpts []server.RaftBackendOption
+		if svcNode.PlacementStore != nil {
+			raftOpts = append(raftOpts,
+				server.WithPlacementInfoSource(svcNode.PlacementStore, f.raftAddress, barrierRegistry.LocalTenantDataRoot))
+		}
+		// 4d Option C: hand the multiplex LogDB to the factory so dedicated-raft
+		// databases that opted into a per-tenant-KEY WAL get their Raft log routed
+		// to a tenant-barrier-encrypted dedicated WAL. Nil when seal is disabled or
+		// single-node, in which case every shard uses the shared system WAL.
+		if f.walMux != nil {
+			raftOpts = append(raftOpts, server.WithMultiplexLogDB(f.walMux))
+		}
+		raftBackendReg = server.NewRaftBackendFactoryFromManager(
+			host, f.replicaID, f.raftAddress, barrierRegistry, dbManager, tenant.SystemTenantID, slog.Default(), raftOpts...)
+
+		// Eagerly re-attach dedicated raft database shards for tenants whose
+		// barrier is now locally available (registered + unsealed by
+		// RestoreVolumeTenants above). Tenants with no local key material on this
+		// node are deferred to the TenantShardReconciler, which attaches them once
+		// key delivery completes.
+		if err := reattachRaftTenants(sigCtx, tenantSvcInst, barrierRegistry, raftBackendReg, dbManager, slog.Default()); err != nil {
+			_ = raftBackendReg.CloseAll()
+			if tenantHostReg != nil {
+				_ = tenantHostReg.CloseAll()
+			}
+			_ = shutdownNode(host)
+			return err
+		}
+
+		// Phase 4c-1d: TenantShardReconciler drives ongoing convergence between
+		// the replicated placement table and the set of locally started dedicated
+		// raft shards. The boot pass in Run (called immediately) re-attaches every
+		// shard assigned to this node. After that, the reconciler either watches
+		// placement events (if the backing KV supports Watch) or polls on a 5 s
+		// ticker. Barrier readiness is wired so shards whose tenant key has not
+		// yet arrived are silently deferred rather than surfacing an error.
+		if svcNode.PlacementStore != nil {
+			reconciler := server.NewTenantShardReconciler(
+				svcNode.PlacementStore,
+				raftBackendReg,
+				f.raftAddress,
+				slog.Default(),
+				server.WithBarrierReadiness(barrierRegistry),
+			)
+			go reconciler.Run(sigCtx)
+		}
+	}
+
+	// Storage-byte quota accountant (Phase 3). Enforces each non-system
+	// tenant's MaxStorageBytes on the write path (rejecting over-limit writes
+	// with quota.ExceededError -> HTTP 429) and accumulates usage in memory;
+	// the reconciler below flushes it to the persisted counter and corrects
+	// drift. Requires the tenant service (the quota.QuotaProvider + the
+	// Increment/Decrement usage mutator). The wrapper installs only for tenants
+	// with a positive limit, so unlimited/system workloads are unaffected.
+	quotaAccountant := buildQuotaAccountant(tenantSvcInst)
+
 	// Build leader forwarding resolver so writes on non-leader nodes
 	// are transparently proxied to the current leader. Uses HTTPS scheme
 	// since the admin server now runs TLS.
@@ -1278,6 +1499,145 @@ func runStart(f *startFlags) error {
 	// be detected as a loop (and for symmetry with peer registrations).
 	localAdminURL := "https://" + net.JoinHostPort("127.0.0.1", adminPortStr)
 	registry.Register(f.raftAddress, localAdminURL)
+
+	// Pre-register peer admin URLs from config (Phase 4c-1c). This is required
+	// when cluster nodes share a host but use distinct admin ports (e.g.
+	// integration tests). In production clusters where every node uses the
+	// same admin port on a distinct host, the fallback derivation inside
+	// peerAdminRegistry.ResolveAdminURL is sufficient and this map is empty.
+	for peerRaftAddr, peerAdminURL := range f.peerAdminURLs {
+		if peerRaftAddr == f.raftAddress {
+			continue // local node already registered above
+		}
+		registry.Register(peerRaftAddr, peerAdminURL)
+	}
+
+	// Phase 4c-1c: Cluster peer key-transport (clusterkeys). Build the HPKE
+	// receiver and sender only when the seal subsystem and placement table are
+	// both present (clustered, IsolationRaft-capable deployment). Single-node or
+	// non-clustered nodes skip this and leave the routes un-mounted.
+	//
+	// clusterTrustDomain is the single invariant that ties the node cert SPIFFE
+	// SAN (stamped into auto-generated certs by resolveTLS), the receiver's
+	// peer-cert verification, and the sender's recipient-cert authentication.
+	// All three MUST use the same value; it is sourced from f.clusterTrustDomain
+	// which defaults to "qrdb.cluster" and can be overridden via the
+	// --cluster-trust-domain flag or YAML auth.cluster_trust_domain.
+	var ckReceiver *clusterkeys.Receiver
+	var ckSender *clusterkeys.Sender
+	if barrierRegistry != nil && svcNode.PlacementStore != nil {
+		// Parse the node's ECDSA P-256 private key from the TLS bundle. This is
+		// the same key that the node certificate was issued for, making it the
+		// HPKE recipient key (DHKEM-P-256). A parse failure disables key transport
+		// rather than aborting the daemon — single-node and passphrase-sealed
+		// deployments do not strictly need this.
+		var nodePriv *ecdsa.PrivateKey
+		if block, _ := pem.Decode(bundle.KeyPEM); block != nil {
+			if p, parseErr := x509.ParseECPrivateKey(block.Bytes); parseErr == nil {
+				nodePriv = p
+			} else {
+				slog.Warn("clusterkeys: failed to parse node private key, peer key transport disabled",
+					slog.Any("error", parseErr))
+			}
+		}
+		if nodePriv != nil {
+			kdReceiver, kdErr := keydelivery.NewReceiver(nodePriv, f.raftAddress)
+			if kdErr != nil {
+				slog.Warn("clusterkeys: key delivery receiver init failed, peer key transport disabled",
+					slog.Any("error", kdErr))
+			} else {
+				var ckrErr error
+				ckReceiver, ckrErr = clusterkeys.NewReceiver(
+					kdReceiver,
+					barrierRegistry,
+					svcNode.PlacementStore,
+					f.clusterTrustDomain,
+					f.raftAddress,
+					bundle.CACertPool,
+					bundle.CertPEM,
+					slog.Default(),
+				)
+				if ckrErr != nil {
+					slog.Warn("clusterkeys: cluster key receiver init failed, peer key transport disabled",
+						slog.Any("error", ckrErr))
+				}
+			}
+		}
+	}
+	if ckReceiver != nil {
+		// Build an mTLS *http.Client presenting the node cert and trusting the
+		// cluster CA pool. TLS 1.3 is pinned; the cert is loaded from the bundle
+		// to avoid touching the file system after hot-reload may have swapped it.
+		nodeCert, certErr := tls.X509KeyPair(bundle.CertPEM, bundle.KeyPEM)
+		if certErr != nil {
+			slog.Warn("clusterkeys: failed to build mTLS client cert, sender disabled",
+				slog.Any("error", certErr))
+		} else {
+			mtlsTransport := &http.Transport{
+				TLSClientConfig: &tls.Config{
+					Certificates: []tls.Certificate{nodeCert},
+					RootCAs:      bundle.CACertPool,
+					MinVersion:   tls.VersionTLS13,
+				},
+				ForceAttemptHTTP2: true,
+			}
+			mtlsClient := &http.Client{
+				Timeout:   15 * time.Second,
+				Transport: mtlsTransport,
+			}
+			var senderErr error
+			ckSender, senderErr = clusterkeys.NewSender(
+				registry,
+				mtlsClient,
+				bundle.CACertPool,
+				f.clusterTrustDomain,
+				slog.Default(),
+			)
+			if senderErr != nil {
+				slog.Warn("clusterkeys: sender init failed, peer key distribution disabled",
+					slog.Any("error", senderErr))
+			}
+		}
+	}
+	// Post-construction injection: wire the sender into the DatabaseService.
+	// lifecycle.BuildServices constructs DatabaseService before the sender is
+	// available (the sender needs the LeaderAdminResolver which is created
+	// here), so SetDistributor is used instead of a construction-time option.
+	if ckSender != nil {
+		if concrete, ok := dbSvc.(*service.DatabaseService); ok {
+			concrete.SetDistributor(ckSender, barrierRegistry, f.raftAddress)
+		}
+	}
+
+	// Phase 4c-2: post-construction injection into RebalanceService.
+	// lifecycle.BuildServices constructs RebalanceService before the
+	// clusterkeys.Sender (and the placement store) are available, so
+	// SetRebalanceDeps mirrors the SetDistributor pattern used above.
+	// All three dependencies are nil-guarded: when any is absent (single-node
+	// or non-IsolationRaft deployment) SetRebalanceDeps disables the
+	// dedicated-tenant MOVE path and the generic system-shard path is used.
+	if svcNode.Rebalance != nil {
+		if concrete, ok := svcNode.Rebalance.(*service.RebalanceService); ok {
+			concrete.SetRebalanceDeps(
+				svcNode.PlacementStore,
+				ckSender,
+				barrierRegistry,
+				f.raftAddress,
+			)
+		}
+	}
+
+	// Phase 4c-1d: wire the Raft host into DatabaseService so CreateForTenant
+	// can call AddFollowerNode for each follower replica immediately after the
+	// placement is persisted. raftBackendReg being non-nil implies the shared
+	// host is configured for IsolationRaft tenants. The raftFollowerAdder
+	// adapter wraps host.RequestAddNode + rs.Result() into the narrow
+	// service.RaftHost interface (AddFollowerNode → error only).
+	if raftBackendReg != nil {
+		if concrete, ok := dbSvc.(*service.DatabaseService); ok {
+			concrete.SetRaftHost(&raftFollowerAdder{host: host})
+		}
+	}
 
 	// Build server configuration using the QRDB config type required by
 	// the server.New constructor.
@@ -1382,6 +1742,18 @@ func runStart(f *startFlags) error {
 	if tenantDEKMgr != nil {
 		serverOpts = append(serverOpts, server.WithTenantDEKManager(tenantDEKMgr))
 	}
+	if tenantHostReg != nil {
+		serverOpts = append(serverOpts, server.WithTenantHostRegistry(tenantHostReg))
+	}
+	if raftBackendReg != nil {
+		serverOpts = append(serverOpts, server.WithRaftBackendFactory(raftBackendReg))
+	}
+	if quotaAccountant != nil {
+		serverOpts = append(serverOpts, server.WithQuotaAccountant(quotaAccountant))
+	}
+	if ckReceiver != nil {
+		serverOpts = append(serverOpts, server.WithClusterKeyReceiver(ckReceiver))
+	}
 	if tenantSvcInst != nil {
 		serverOpts = append(serverOpts, server.WithTenantService(tenantSvcInst))
 		// The structurally-privileged system tenant is created earlier in
@@ -1412,9 +1784,9 @@ func runStart(f *startFlags) error {
 	// Currently all databases share the system shard services. As per-database
 	// shard allocation (Phase 1.2) is enabled, each database will get its
 	// own service set backed by a dedicated shard.
-	dbRegistry := server.NewDatabaseServiceRegistry("default")
-	dbRegistry.Register("default", &server.DatabaseServices{
-		Name:        "default",
+	dbRegistry := server.NewDatabaseServiceRegistry("system")
+	dbRegistry.Register("system", &server.DatabaseServices{
+		Name:        "system",
 		ShardID:     shard.ShardKV,
 		KV:          kvSvc,
 		MVCC:        mvccSvc,
@@ -1453,6 +1825,20 @@ func runStart(f *startFlags) error {
 		)
 	}
 
+	// Storage-quota reconciler (Phase 3). Periodically flushes the in-memory
+	// byte accumulator to the persisted CurrentStorageBytes counters and, for
+	// each dedicated-volume tenant, recomputes the true on-disk size of its
+	// DataRoot to correct drift. Stops cleanly on signal (sigCtx cancellation),
+	// performing a final flush. Shared/prefix tenants rely on the flushed
+	// accumulator value (documented approximation). Skipped when the accountant
+	// or tenant service is absent.
+	if quotaAccountant != nil && tenantSvcInst != nil {
+		if rec := buildQuotaReconciler(quotaAccountant, tenantSvcInst, f.tenantConfig); rec != nil {
+			go rec.Run(sigCtx)
+			slog.Info("storage-quota reconciler started")
+		}
+	}
+
 	// Opt-in dynamic Raft membership: register self under a lease and, on the
 	// leader, reconcile the Raft group as nodes join and leave. OFF by default.
 	var membershipMgr *cluster.MembershipManager
@@ -1487,6 +1873,25 @@ func runStart(f *startFlags) error {
 		_ = bundle.Reloader.Stop()
 	}
 
+	// Stop all dedicated per-database raft shards first so their Pebble locks on
+	// {DataRoot}/databases/{db} are released (the shared host itself is closed
+	// later, below) before the barrier per-tenant Pebbles are closed.
+	if raftBackendReg != nil {
+		if err := raftBackendReg.CloseAll(); err != nil {
+			slog.Error("dedicated raft shard close-all failed", slog.Any("error", err))
+		}
+	}
+
+	// Close all per-tenant volume Hosts first so their Raft shards stop and
+	// their Pebble locks on {DataRoot}/databases are released before the
+	// barrier per-tenant Pebbles (which live under {DataRoot}/barrier) are
+	// closed below.
+	if tenantHostReg != nil {
+		if err := tenantHostReg.CloseAll(); err != nil {
+			slog.Error("per-tenant volume host close-all failed", slog.Any("error", err))
+		}
+	}
+
 	// Close all per-tenant Pebbles allocated through the volume pool.
 	// We use a short-lived background context here because sigCtx is
 	// already cancelled by the time we reach this point.
@@ -1504,6 +1909,101 @@ func runStart(f *startFlags) error {
 
 	srv.Stop()
 	return shutdownNode(host)
+}
+
+// buildQuotaAccountant constructs the storage-byte quota accountant from the
+// tenant service, which supplies both the quota lookup (quota.QuotaProvider)
+// and the durable usage mutator (Increment/Decrement). Returns nil when the
+// tenant service is absent or is not a quota.QuotaProvider, in which case no
+// storage-byte enforcement is wired (unlimited behaviour).
+func buildQuotaAccountant(tenantSvc tenant.TenantServicer) *quota.Accountant {
+	if tenantSvc == nil {
+		return nil
+	}
+	provider, ok := tenantSvc.(quota.QuotaProvider)
+	if !ok {
+		return nil
+	}
+	acct, err := quota.NewAccountant(quota.AccountantConfig{
+		Quotas: provider.Quotas,
+		Flush: func(ctx context.Context, tenantID string, delta int64) error {
+			switch {
+			case delta > 0:
+				_, ferr := tenantSvc.IncrementQuotaUsage(ctx, tenantID, quota.ResourceStorageBytes, delta)
+				return ferr
+			case delta < 0:
+				_, ferr := tenantSvc.DecrementQuotaUsage(ctx, tenantID, quota.ResourceStorageBytes, -delta)
+				return ferr
+			default:
+				return nil
+			}
+		},
+		Logger: slog.Default(),
+	})
+	if err != nil {
+		slog.Error("storage-quota accountant init failed", slog.Any("error", err))
+		return nil
+	}
+	return acct
+}
+
+// quotaUsageSetter is the subset of the tenant service the reconciler needs to
+// overwrite a tenant's authoritative usage (bypassing limit enforcement). It is
+// satisfied by the concrete tenant service implementations.
+type quotaUsageSetter interface {
+	SetQuotaUsage(ctx context.Context, tenantID string, resource quota.Resource, value int64) (*tenant.TenantInfo, error)
+}
+
+// buildQuotaReconciler constructs the storage-quota reconciler that flushes the
+// accountant and corrects per-volume-tenant on-disk usage. Returns nil when the
+// tenant service cannot set absolute usage (no SetQuotaUsage support) or the
+// reconciler cannot be built.
+func buildQuotaReconciler(acct *quota.Accountant, tenantSvc tenant.TenantServicer, tcfg qrdbconfig.TenantConfig) *quota.Reconciler {
+	setter, ok := tenantSvc.(quotaUsageSetter)
+	if !ok {
+		slog.Warn("tenant service does not support SetQuotaUsage; storage-quota reconciler disabled")
+		return nil
+	}
+	interval, err := tcfg.QuotaReconcileIntervalDuration()
+	if err != nil {
+		slog.Warn("invalid tenant.quota_reconcile_interval; using default",
+			slog.String("default", quota.DefaultReconcileInterval.String()),
+			slog.Any("error", err))
+		interval = quota.DefaultReconcileInterval
+	}
+	rec, err := quota.NewReconciler(quota.ReconcilerConfig{
+		Accountant: acct,
+		Interval:   interval,
+		Tenants: func(ctx context.Context) ([]quota.StorageTenant, error) {
+			infos, lerr := tenantSvc.ListTenants(ctx)
+			if lerr != nil {
+				return nil, lerr
+			}
+			out := make([]quota.StorageTenant, 0, len(infos))
+			for i := range infos {
+				ti := &infos[i]
+				if ti.ID == tenant.SystemTenantID {
+					continue
+				}
+				out = append(out, quota.StorageTenant{
+					ID:       ti.ID,
+					DataRoot: ti.DataRoot,
+					Volume:   ti.EffectiveIsolationType() == tenant.IsolationVolume,
+				})
+			}
+			return out, nil
+		},
+		SetUsage: func(ctx context.Context, tenantID string, bytes int64) error {
+			_, serr := setter.SetQuotaUsage(ctx, tenantID, quota.ResourceStorageBytes, bytes)
+			return serr
+		},
+		Logger: slog.Default(),
+	})
+	if err != nil {
+		slog.Error("storage-quota reconciler init failed", slog.Any("error", err))
+		return nil
+	}
+	return rec
 }
 
 // buildServerConfig constructs a *qrdbconfig.Config from the parsed start
@@ -1641,6 +2141,48 @@ func initializeNode(ctx context.Context, f *startFlags, bundle *TLSBundle) (*qui
 		slog.Info("single-node mode, transport disabled")
 	}
 
+	// Encrypt the shared Raft LogDB/WAL at rest under the system barrier
+	// when seal is enabled. f.walBarrier is set in runStart only after the
+	// barrier is unsealed (and is nil when seal is disabled), so the LogDB
+	// always opens against an available barrier here.
+	//
+	// 4d Option C: in clustered/raft mode wrap the shared system-barrier WAL in a
+	// multiplex LogDB so dedicated-raft shards that opt into a per-tenant-KEY WAL
+	// can be routed to their own tenant-barrier-encrypted WAL store at attach
+	// time, while WithShardBarriers routes those shards' snapshots to the tenant
+	// barrier too. Shards on the shared WAL resolve a nil per-shard barrier and
+	// fall back to the host-wide system barrier, keeping Route A byte-identical.
+	// Single-node hosts keep the plain WithBarrier path unchanged.
+	if f.walBarrier != nil {
+		if !isSingleNode(f) && f.walSystemBarrier != nil {
+			walDir := filepath.Join(f.dataDir, "wal")
+			sharedWAL, err := waldb.Open(walDir, waldb.WithBarrier(f.walSystemBarrier))
+			if err != nil {
+				return nil, err
+			}
+			mux, err := database.NewMultiplexLogDB(sharedWAL, f.walSystemBarrier)
+			if err != nil {
+				_ = sharedWAL.Close()
+				return nil, err
+			}
+			f.walMux = mux
+			hostOpts = append(hostOpts,
+				quicraft.WithLogDB(mux),
+				quicraft.WithBarrier(f.walBarrier),
+				quicraft.WithShardBarriers(func(shardID uint64) quicraft.Barrier {
+					if b := mux.BarrierForShard(shardID); b != nil {
+						return b
+					}
+					return nil
+				}),
+			)
+			slog.Info("raft WAL at-rest encryption enabled (multiplex: shared system barrier + per-tenant dedicated WALs)")
+		} else {
+			hostOpts = append(hostOpts, quicraft.WithBarrier(f.walBarrier))
+			slog.Info("raft WAL at-rest encryption enabled (system barrier)")
+		}
+	}
+
 	// Create the host.
 	host, err := quicraft.NewHost(hostCfg, hostOpts...)
 	if err != nil {
@@ -1710,6 +2252,158 @@ func waitForSignal() {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-sigCh
 	slog.Info("received signal, shutting down", "signal", sig.String())
+}
+
+// reattachVolumeTenants eagerly rebuilds the per-tenant Raft Host of every
+// IsolationVolume tenant whose per-tenant barrier is already available on THIS
+// node after a restart. The barrier itself is restored beforehand by
+// BarrierRegistry.RestoreVolumeTenants, which re-registers and (for auto-unseal
+// tenants) unseals each barrier from the node-local persisted tenant-root
+// record.
+//
+// TenantInfo is replicated cluster metadata, so this node sees every volume
+// tenant — including those it holds no local key material for. The DataRoot in
+// TenantInfo is the CREATING node's path and is NOT valid elsewhere, so it is
+// deliberately never used here to (re-)register a barrier. A tenant whose
+// barrier is absent from the local registry is skipped; its Host attaches
+// lazily on first access. A self-managed tenant whose barrier is
+// registered-but-sealed is left sealed for the tenant admin to unseal. For an
+// auto-unseal tenant whose barrier is ready, the per-tenant Host is eagerly
+// re-attached; a re-attach failure aborts boot.
+func reattachVolumeTenants(
+	ctx context.Context,
+	tenantSvc tenant.TenantServicer,
+	barrierReg *seal.BarrierRegistry,
+	hostReg *server.TenantHostRegistry,
+	logger *slog.Logger,
+) error {
+	tenants, err := tenantSvc.ListTenants(ctx)
+	if err != nil {
+		return err
+	}
+	for i := range tenants {
+		t := tenants[i]
+		if t.EffectiveIsolationType() != tenant.IsolationVolume {
+			continue
+		}
+		// The barrier is restored from this node's own tenant-root record by
+		// RestoreVolumeTenants. When it is absent, this node holds no key
+		// material for the tenant; defer to lazy attach rather than registering
+		// with the (foreign) replicated DataRoot.
+		tb, gerr := barrierReg.GetTenant(t.ID)
+		if gerr != nil {
+			logger.Info("volume tenant not provisioned on this node; deferring Host attach",
+				slog.String("tenant", t.ID))
+			continue
+		}
+		// A self-managed tenant comes up SEALED: the tenant admin must re-unseal
+		// before the data plane is reachable, and the per-tenant Host builds
+		// lazily on first access after unseal. Do NOT unseal or build its Host
+		// here. Only a system-managed (auto-unseal) tenant is unsealed
+		// credential-free (the system barrier is the unseal authority) and its
+		// Host eagerly re-attached.
+		if !t.BarrierAutoUnseal {
+			logger.Info("volume tenant left sealed for tenant-managed unseal",
+				slog.String("tenant", t.ID))
+			continue
+		}
+		// Auto-unseal tenants are unsealed by RestoreVolumeTenants. Tolerate a
+		// still-sealed barrier here as a best-effort fallback before attaching.
+		if tb.IsSealed() {
+			if uerr := barrierReg.UnsealTenant(ctx, t.ID, seal.Credentials{}); uerr != nil && !errors.Is(uerr, seal.ErrAlreadyUnsealed) {
+				return &VolumeReattachError{TenantID: t.ID, Err: uerr}
+			}
+		}
+		if aerr := hostReg.Attach(ctx, t.ID); aerr != nil {
+			return &VolumeReattachError{TenantID: t.ID, Err: aerr}
+		}
+		logger.Info("re-attached volume tenant",
+			slog.String("tenant", t.ID),
+			slog.String("data_root", t.DataRoot))
+	}
+	return nil
+}
+
+// reattachRaftTenants eagerly re-starts the dedicated raft database shards of
+// every IsolationRaft tenant whose per-tenant barrier is already available on
+// THIS node after a restart. The barrier itself is restored beforehand by
+// BarrierRegistry.RestoreVolumeTenants, which re-registers and (for auto-unseal
+// tenants) unseals each barrier from the node-local persisted tenant-root record.
+//
+// TenantInfo is replicated cluster metadata, so this node sees every raft
+// tenant — including those it holds no local key material for (e.g. it never
+// received key delivery). The DataRoot carried in TenantInfo is the CREATING
+// node's path and is NOT valid on other nodes, so it is deliberately never used
+// here to (re-)register a barrier. Instead, a tenant whose barrier is absent
+// from the local registry is skipped and deferred to the TenantShardReconciler,
+// which attaches it once key delivery completes.
+//
+// A self-managed tenant whose barrier is registered-but-sealed is left sealed —
+// the tenant admin re-unseals and the shards attach lazily on first access. For
+// an auto-unseal tenant whose barrier is ready, every dedicated database shard
+// known to the local manager is eagerly re-attached on the shared host before
+// serving so its data is reachable immediately. A shard whose re-attach fails
+// aborts boot.
+func reattachRaftTenants(
+	ctx context.Context,
+	tenantSvc tenant.TenantServicer,
+	barrierReg *seal.BarrierRegistry,
+	raftReg *server.RaftBackendFactory,
+	manager *database.Manager,
+	logger *slog.Logger,
+) error {
+	tenants, err := tenantSvc.ListTenants(ctx)
+	if err != nil {
+		return err
+	}
+	for i := range tenants {
+		t := tenants[i]
+		if t.EffectiveIsolationType() != tenant.IsolationRaft {
+			continue
+		}
+		// The barrier is restored from this node's own tenant-root record by
+		// RestoreVolumeTenants. When it is absent, this node holds no key
+		// material for the tenant yet; defer to the reconciler rather than
+		// registering with the (foreign) replicated DataRoot.
+		tb, gerr := barrierReg.GetTenant(t.ID)
+		if gerr != nil {
+			logger.Info("raft tenant not yet provisioned on this node; deferring shard attach to reconciler",
+				slog.String("tenant", t.ID))
+			continue
+		}
+		// Self-managed tenants stay sealed: the admin re-unseals and the shards
+		// attach lazily on first access. Do not unseal or start shards here.
+		if !t.BarrierAutoUnseal {
+			logger.Info("raft tenant left sealed for tenant-managed unseal",
+				slog.String("tenant", t.ID))
+			continue
+		}
+		// Auto-unseal tenants are unsealed by RestoreVolumeTenants. Tolerate a
+		// still-sealed barrier here as a best-effort fallback before attaching.
+		if tb.IsSealed() {
+			if uerr := barrierReg.UnsealTenant(ctx, t.ID, seal.Credentials{}); uerr != nil && !errors.Is(uerr, seal.ErrAlreadyUnsealed) {
+				return &RaftReattachError{TenantID: t.ID, Err: uerr}
+			}
+		}
+		// Eagerly re-start every dedicated raft database shard owned by this
+		// tenant that the local manager knows about. The databases were re-opened
+		// by dbManager.OpenAll (placeholder backend + meta.json carrying the
+		// persisted shard ID); here we re-bind the live shard on the shared host.
+		// Databases not present locally are attached by the reconciler instead.
+		for _, info := range manager.List() {
+			if info.TenantID != t.ID || info.Backend != database.BackendRaft {
+				continue
+			}
+			if aerr := raftReg.Attach(ctx, t.ID, info.Name); aerr != nil {
+				return &RaftReattachError{TenantID: t.ID, Database: info.Name, Err: aerr}
+			}
+			logger.Info("re-attached raft database shard",
+				slog.String("tenant", t.ID),
+				slog.String("database", info.Name),
+				slog.Uint64("shard_id", info.ShardID))
+		}
+	}
+	return nil
 }
 
 // shutdownNode gracefully closes the node and logs the result.
@@ -2248,5 +2942,29 @@ func handleSIGHUP(reloader *CertReloader, logger *slog.Logger) {
 		logger.Error("SIGHUP cert reload failed", "error", err)
 	} else {
 		logger.Info("TLS certificate reloaded via SIGHUP")
+	}
+}
+
+// raftFollowerAdder adapts *quicraft.Host to the service.RaftHost interface.
+// It wraps RequestAddNode + rs.Result() into a single blocking call that
+// returns only an error, shielding DatabaseService from the quicraft import
+// and from RequestState lifecycle management.
+type raftFollowerAdder struct {
+	host *quicraft.Host
+}
+
+// AddFollowerNode calls RequestAddNode on the shared Raft host and blocks
+// until the config change commits or ctx is cancelled.
+func (a *raftFollowerAdder) AddFollowerNode(ctx context.Context, shardID, replicaID uint64, raftAddr string) error {
+	rs, err := a.host.RequestAddNode(ctx, shardID, replicaID, raftAddr, 0)
+	if err != nil {
+		return err
+	}
+	select {
+	case <-ctx.Done():
+		rs.Release()
+		return ctx.Err()
+	case result := <-rs.ResultC():
+		return result.Err
 	}
 }

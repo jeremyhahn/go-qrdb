@@ -477,6 +477,45 @@ func readDir(path string) ([]string, error) {
 	return out, nil
 }
 
+// newShareableComponents builds the primitive components (system barrier,
+// pool manager, per-tenant Pebble registry) needed to create multiple
+// BarrierRegistry instances that share the same underlying persistent state.
+// This allows tests to simulate a "restart" or a "follower node": a fresh
+// BarrierRegistry is created with the same system barrier and pool, but with
+// empty in-memory maps (tenants, tenantDataRoots).
+//
+// The returned attachOptions slice is pre-built from the shared pool manager
+// and per-tenant registry; pass it to seal.NewBarrierRegistry via the
+// variadic opts argument. The roots slice contains the two pool-root paths so
+// callers can assert DataRoot placement.
+func newShareableComponents(t *testing.T) (
+	system *seal.StorageBarrier,
+	attachOptions []seal.Option,
+	roots []string,
+) {
+	t.Helper()
+
+	c1, p1 := configuredLocal(t)
+	c2, p2 := configuredLocal(t)
+	mgr := objpool.NewManager()
+	state, _, _ := newStateStore(t)
+	rr := &objpool.RoundRobinStrategy{State: state}
+	if err := mgr.Register("default", []common.Storage{c1, c2}, rr); err != nil {
+		t.Fatalf("newShareableComponents pool Register: %v", err)
+	}
+
+	system = newPoolSystemBarrier(t)
+	perTenantReg := pebblestore.NewPerTenantRegistry()
+	t.Cleanup(func() { _ = perTenantReg.CloseAll(context.Background()) })
+
+	attachOptions = []seal.Option{
+		seal.WithVolumePool(mgr, state, "default"),
+		seal.WithPerTenantRegistry(perTenantReg),
+	}
+	roots = []string{p1, p2}
+	return
+}
+
 // fakeCloudStorage is a common.Storage stub used to drive the
 // non-local-backend test paths. It deliberately does not implement
 // common.PathAccessor.

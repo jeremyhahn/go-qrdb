@@ -19,17 +19,32 @@ import "time"
 // TenantQuotas holds per-tenant resource limits. A value of -1 means
 // unlimited and 0 means use the system default.
 type TenantQuotas struct {
-	MaxDatabases    int64 `json:"max_databases"`
-	MaxRaftGroups   int64 `json:"max_raft_groups"`
-	MaxCollections  int64 `json:"max_collections"`
-	MaxKeys         int64 `json:"max_keys"`
-	MaxStorageBytes int64 `json:"max_storage_bytes"`
-	MaxUsers        int64 `json:"max_users"`
-	MaxRoles        int64 `json:"max_roles"`
-	MaxCertificates int64 `json:"max_certificates"`
-	MaxBackups      int64 `json:"max_backups"`
-	MaxVectorDims   int64 `json:"max_vector_dims"`
-	MaxTSMetrics    int64 `json:"max_ts_metrics"`
+	MaxDatabases         int64 `json:"max_databases"`
+	MaxRaftGroups        int64 `json:"max_raft_groups"`
+	MaxReplicasPerGroup  int64 `json:"max_replicas_per_group"`
+	MaxTotalReplicas     int64 `json:"max_total_replicas"`
+	MaxCollections       int64 `json:"max_collections"`
+	MaxKeys              int64 `json:"max_keys"`
+	MaxStorageBytes      int64 `json:"max_storage_bytes"`
+	MaxDatabaseSizeBytes int64 `json:"max_database_size_bytes"`
+	MaxUsers             int64 `json:"max_users"`
+	MaxRoles             int64 `json:"max_roles"`
+	MaxCertificates      int64 `json:"max_certificates"`
+	MaxBackups           int64 `json:"max_backups"`
+	MaxVectorDims        int64 `json:"max_vector_dims"`
+	MaxTSMetrics         int64 `json:"max_ts_metrics"`
+}
+
+// TenantEntitlements describes which isolation tiers and dedicated-storage
+// features a tenant's plan permits.
+type TenantEntitlements struct {
+	AllowedIsolationModes []string `json:"allowed_isolation_modes,omitempty"`
+	AllowDedicatedRaft    bool     `json:"allow_dedicated_raft,omitempty"`
+	AllowVolumeStorage    bool     `json:"allow_volume_storage,omitempty"`
+	// AllowSystemManagedBarrier permits a dedicated-isolation tenant to opt into
+	// the system-managed auto-unseal key-management mode for its barrier. When
+	// false (the secure default) the tenant must self-manage its barrier keys.
+	AllowSystemManagedBarrier bool `json:"allow_system_managed_barrier,omitempty"`
 }
 
 // TenantIsolationType controls the data isolation strategy for a tenant.
@@ -51,6 +66,7 @@ type TenantInfo struct {
 	Name          string              `json:"name"`
 	IsolationType TenantIsolationType `json:"isolation_type,omitempty"`
 	Quotas        *TenantQuotas       `json:"quotas,omitempty"`
+	Entitlements  *TenantEntitlements `json:"entitlements,omitempty"`
 	CreatedAt     time.Time           `json:"created_at"`
 	UpdatedAt     time.Time           `json:"updated_at"`
 }
@@ -60,6 +76,10 @@ type CreateTenantRequest struct {
 	ID            string              `json:"id"`
 	Name          string              `json:"name"`
 	IsolationType TenantIsolationType `json:"isolation_type,omitempty"`
+	// BarrierAutoUnseal opts a dedicated-isolation tenant (barrier/volume) into
+	// the system-managed auto-unseal key-management mode (entitlement-gated).
+	// The default (false) is the secure self-managed mode.
+	BarrierAutoUnseal bool `json:"barrier_auto_unseal,omitempty"`
 }
 
 // UpdateTenantRequest contains the mutable fields for updating a tenant.
@@ -140,6 +160,18 @@ type UpdateTenantQuotasRequest struct {
 
 // UpdateTenantQuotasResponse contains the updated tenant.
 type UpdateTenantQuotasResponse struct {
+	Tenant TenantInfo `json:"tenant"`
+}
+
+// UpdateTenantEntitlementsRequest contains parameters for updating tenant
+// feature entitlements.
+type UpdateTenantEntitlementsRequest struct {
+	TenantID     string             `json:"tenant_id"`
+	Entitlements TenantEntitlements `json:"entitlements"`
+}
+
+// UpdateTenantEntitlementsResponse contains the updated tenant.
+type UpdateTenantEntitlementsResponse struct {
 	Tenant TenantInfo `json:"tenant"`
 }
 

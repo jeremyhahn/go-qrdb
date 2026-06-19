@@ -69,7 +69,7 @@ func newMockTenantSvc() *mockTenantSvc {
 	return &mockTenantSvc{}
 }
 
-func (m *mockTenantSvc) CreateTenant(_ context.Context, id, name string, iso tenant.IsolationType) (*tenant.TenantInfo, error) {
+func (m *mockTenantSvc) CreateTenant(_ context.Context, id, name string, iso tenant.IsolationType, _ ...tenant.CreateTenantOption) (*tenant.TenantInfo, error) {
 	if m.createErr != nil {
 		return nil, m.createErr
 	}
@@ -106,6 +106,10 @@ func (m *mockTenantSvc) UpdateQuotas(_ context.Context, id string, q *quota.Quot
 		return nil, m.updateQuotasErr
 	}
 	return &tenant.TenantInfo{ID: id, Name: "test", Quotas: q}, nil
+}
+
+func (m *mockTenantSvc) UpdateEntitlements(ctx context.Context, id string, e *quota.Entitlements) (*tenant.TenantInfo, error) {
+	return &tenant.TenantInfo{ID: id, Entitlements: e}, nil
 }
 
 func (m *mockTenantSvc) Quotas(_ context.Context, _ string) (*quota.Quotas, error) {

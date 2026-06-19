@@ -563,6 +563,7 @@ func soPermissions() []permission.Permission {
 		// Tenant management
 		permission.TenantsCreate, permission.TenantsRead, permission.TenantsUpdate,
 		permission.TenantsDelete, permission.TenantsList,
+		permission.TenantsSetIsolation, permission.TenantsSetEntitlements,
 		// Key lifecycle (infrastructure keys — delete any key; create infra keys)
 		permission.KeysCreate, permission.KeysDelete, permission.KeysList, permission.KeysGet,
 		// Key material import/export (privileged lifecycle — NOT sign/encrypt/decrypt)
@@ -624,6 +625,8 @@ func adminPermissions() []permission.Permission {
 		// Tenant management (self-scope: act on own tenant)
 		permission.TenantsCreate, permission.TenantsRead, permission.TenantsUpdate,
 		permission.TenantsDelete, permission.TenantsList,
+		// Tenant provisioning controls: isolation tier and plan entitlements.
+		permission.TenantsSetIsolation, permission.TenantsSetEntitlements,
 		// Per-tenant barrier management (tenant-only scope: a tenant admin
 		// may init/unseal/seal their OWN tenant's barrier; the system tenant
 		// is structurally denied these by the ScopeTenantOnly rule even

@@ -26,6 +26,7 @@ import (
 	"log/slog"
 	"math/big"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"time"
@@ -165,7 +166,11 @@ func generateCA(validity time.Duration) (caCertPEM, caKeyPEM []byte, caCert *x50
 // generateNodeCert creates an ECDSA P-256 leaf certificate signed by the
 // given CA. The leaf includes SANs for all local hostnames and interface
 // IPs. ExtKeyUsage includes both ServerAuth and ClientAuth for mTLS.
-func generateNodeCert(caCert *x509.Certificate, caKey *ecdsa.PrivateKey, validity time.Duration) (certPEM, keyPEM []byte, err error) {
+// When nodeURI is provided and non-empty, it is parsed as a URI and
+// appended to the leaf's URI SANs so the node carries its SPIFFE node
+// identity (spiffe://<trust-domain>/node/<raftAddr>). DNS and IP SANs
+// are always included regardless of nodeURI.
+func generateNodeCert(caCert *x509.Certificate, caKey *ecdsa.PrivateKey, validity time.Duration, nodeURI ...string) (certPEM, keyPEM []byte, err error) {
 	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, nil, &TLSGenerateError{Err: err}
@@ -195,6 +200,21 @@ func generateNodeCert(caCert *x509.Certificate, caKey *ecdsa.PrivateKey, validit
 		},
 		BasicConstraintsValid: true,
 		IsCA:                  false,
+	}
+
+	// Append the node SPIFFE URI SAN when provided. url.Parse yields a *url.URL
+	// that x509 serialises into the SubjectAltName extension. An OMITTED URI is
+	// fine (callers that don't need the cluster key-transport SAN). But a
+	// NON-EMPTY URI that fails to parse is a misconfiguration: silently shipping
+	// a cert without the SAN makes "clustered key delivery never works" hard to
+	// diagnose (the sender fails closed on a SAN-less recipient), so fail closed
+	// here instead.
+	if len(nodeURI) > 0 && nodeURI[0] != "" {
+		u, parseErr := url.Parse(nodeURI[0])
+		if parseErr != nil {
+			return nil, nil, &TLSGenerateError{Err: parseErr}
+		}
+		leafTemplate.URIs = append(leafTemplate.URIs, u)
 	}
 
 	leafCertDER, err := x509.CreateCertificate(rand.Reader, leafTemplate, caCert, &leafKey.PublicKey, caKey)
@@ -261,13 +281,16 @@ func generateClientCert(caCert *x509.Certificate, caKey *ecdsa.PrivateKey, cn, o
 	return certPEM, keyPEM, nil
 }
 
-func generateCATLS() (*TLSBundle, error) {
+// generateCATLS creates an ephemeral ECDSA P-256 CA and a leaf certificate
+// signed by that CA. nodeURI is an optional SPIFFE node URI SAN (see
+// generateNodeCert); callers that do not need the SAN omit the argument.
+func generateCATLS(nodeURI ...string) (*TLSBundle, error) {
 	caCertPEM, caKeyPEM, caCert, caKey, err := generateCA(caValidity)
 	if err != nil {
 		return nil, err
 	}
 
-	certPEM, keyPEM, err := generateNodeCert(caCert, caKey, nodeValidity)
+	certPEM, keyPEM, err := generateNodeCert(caCert, caKey, nodeValidity, nodeURI...)
 	if err != nil {
 		return nil, err
 	}
@@ -600,8 +623,10 @@ func persistFullBundle(bundle *TLSBundle, dataDir string) error {
 // generateLeafFromCA parses concatenated CA certificate + CA private key
 // PEM bytes (e.g., from a bootstrap endpoint) and generates a node leaf
 // certificate signed by the CA. The returned TLSBundle is fully
-// populated including TLSConfig and CACertPool.
-func generateLeafFromCA(bundlePEM []byte) (*TLSBundle, error) {
+// populated including TLSConfig and CACertPool. nodeURI is an optional
+// SPIFFE node URI SAN (see generateNodeCert); callers that do not need
+// the SAN omit the argument.
+func generateLeafFromCA(bundlePEM []byte, nodeURI ...string) (*TLSBundle, error) {
 	// Parse CA certificate.
 	caBlock, rest := pem.Decode(bundlePEM)
 	if caBlock == nil || caBlock.Type != "CERTIFICATE" {
@@ -625,7 +650,7 @@ func generateLeafFromCA(bundlePEM []byte) (*TLSBundle, error) {
 	caKeyPEM := pem.EncodeToMemory(keyBlock)
 
 	// Generate the node leaf certificate.
-	certPEM, keyPEM, err := generateNodeCert(caCert, caKey, nodeValidity)
+	certPEM, keyPEM, err := generateNodeCert(caCert, caKey, nodeValidity, nodeURI...)
 	if err != nil {
 		return nil, err
 	}

@@ -27,8 +27,9 @@ import (
 // revision. All operations succeed or fail together. The per-operation
 // results are returned in the same order as the input.
 func (s *Server) handleBatch(ctx context.Context, payload []byte) ([]byte, error) {
-	if s.batchSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "batch"}
+	batchSvc, svcErr := s.batchSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
 	}
 
 	var req pb.BatchRequest
@@ -41,7 +42,7 @@ func (s *Server) handleBatch(ctx context.Context, payload []byte) ([]byte, error
 		ops[i] = protoToOp(op)
 	}
 
-	results, err := s.batchSvc.Execute(ctx, ops)
+	results, err := batchSvc.Execute(ctx, ops)
 	if err != nil {
 		return nil, err
 	}

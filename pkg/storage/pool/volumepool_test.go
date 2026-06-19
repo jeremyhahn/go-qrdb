@@ -176,7 +176,7 @@ func TestBuildLocalCandidates_Empty(t *testing.T) {
 // unchanged.
 func TestBuildVolumePoolSubsystem_NoPools(t *testing.T) {
 	for _, pools := range [][]qrdbconfig.VolumePoolConfig{nil, {}} {
-		sub, err := qrdbpool.BuildVolumePoolSubsystem(t.TempDir(), pools, nil)
+		sub, err := qrdbpool.BuildVolumePoolSubsystem(t.TempDir(), pools, nil, false)
 		if err != nil {
 			t.Fatalf("BuildVolumePoolSubsystem: %v", err)
 		}
@@ -202,7 +202,7 @@ func TestBuildVolumePoolSubsystem_Success(t *testing.T) {
 		},
 	}
 
-	sub, err := qrdbpool.BuildVolumePoolSubsystem(dataDir, pools, slog.New(slog.DiscardHandler))
+	sub, err := qrdbpool.BuildVolumePoolSubsystem(dataDir, pools, slog.New(slog.DiscardHandler), false)
 	if err != nil {
 		t.Fatalf("BuildVolumePoolSubsystem: %v", err)
 	}
@@ -229,6 +229,41 @@ func TestBuildVolumePoolSubsystem_Success(t *testing.T) {
 	}
 }
 
+// TestBuildVolumePoolSubsystem_Clustered verifies clustered mode wires a
+// ReplicatedState (unbound) for the cursor while still opening the node-local
+// Pebble StateStore as a lifetime-pinned handle. Standalone mode leaves
+// ReplicatedState nil.
+func TestBuildVolumePoolSubsystem_Clustered(t *testing.T) {
+	dataDir := t.TempDir()
+	pools := []qrdbconfig.VolumePoolConfig{
+		{Name: "default", Strategy: "round_robin", Paths: []string{filepath.Join(dataDir, "vols", "a")}},
+	}
+
+	clustered, err := qrdbpool.BuildVolumePoolSubsystem(dataDir, pools, nil, true)
+	if err != nil {
+		t.Fatalf("BuildVolumePoolSubsystem(clustered): %v", err)
+	}
+	t.Cleanup(func() { _ = clustered.Close() })
+	if clustered.ReplicatedState == nil {
+		t.Error("clustered subsystem must expose a ReplicatedState")
+	}
+	if clustered.ReplicatedState != nil && clustered.ReplicatedState.Bound() {
+		t.Error("clustered ReplicatedState must start unbound")
+	}
+	if clustered.StateStore == nil {
+		t.Error("clustered subsystem must still open the node-local StateStore")
+	}
+
+	standalone, err := qrdbpool.BuildVolumePoolSubsystem(t.TempDir(), pools, nil, false)
+	if err != nil {
+		t.Fatalf("BuildVolumePoolSubsystem(standalone): %v", err)
+	}
+	t.Cleanup(func() { _ = standalone.Close() })
+	if standalone.ReplicatedState != nil {
+		t.Error("standalone subsystem must not expose a ReplicatedState")
+	}
+}
+
 // TestBuildVolumePoolSubsystem_ManagerPick verifies the wired manager hands
 // out path-accessible candidates from the registered pool — the LocalOnly
 // wrapper guarantees common.PathAccessor — and the round-robin cursor
@@ -241,7 +276,7 @@ func TestBuildVolumePoolSubsystem_ManagerPick(t *testing.T) {
 		{Name: "default", Strategy: "round_robin", Paths: []string{volA, volB}},
 	}
 
-	sub, err := qrdbpool.BuildVolumePoolSubsystem(dataDir, pools, nil)
+	sub, err := qrdbpool.BuildVolumePoolSubsystem(dataDir, pools, nil, false)
 	if err != nil {
 		t.Fatalf("BuildVolumePoolSubsystem: %v", err)
 	}
@@ -273,7 +308,7 @@ func TestBuildVolumePoolSubsystem_UnknownStrategy(t *testing.T) {
 		{Name: "default", Strategy: "bogus", Paths: []string{filepath.Join(dataDir, "v")}},
 	}
 
-	sub, err := qrdbpool.BuildVolumePoolSubsystem(dataDir, pools, nil)
+	sub, err := qrdbpool.BuildVolumePoolSubsystem(dataDir, pools, nil, false)
 	var se *qrdbpool.VolumePoolStrategyError
 	if !errors.As(err, &se) {
 		t.Fatalf("expected *VolumePoolStrategyError, got %T: %v", err, err)
@@ -297,7 +332,7 @@ func TestBuildVolumePoolSubsystem_BadPath(t *testing.T) {
 		{Name: "default", Strategy: "round_robin", Paths: []string{filepath.Join(blocker, "v")}},
 	}
 
-	sub, err := qrdbpool.BuildVolumePoolSubsystem(dataDir, pools, nil)
+	sub, err := qrdbpool.BuildVolumePoolSubsystem(dataDir, pools, nil, false)
 	var pe *qrdbpool.VolumePoolPathError
 	if !errors.As(err, &pe) {
 		t.Fatalf("expected *VolumePoolPathError, got %T: %v", err, err)
@@ -311,7 +346,7 @@ func TestBuildVolumePoolSubsystem_BadPath(t *testing.T) {
 	good := []qrdbconfig.VolumePoolConfig{
 		{Name: "default", Strategy: "round_robin", Paths: []string{filepath.Join(dataDir, "v")}},
 	}
-	sub2, err := qrdbpool.BuildVolumePoolSubsystem(dataDir, good, nil)
+	sub2, err := qrdbpool.BuildVolumePoolSubsystem(dataDir, good, nil, false)
 	if err != nil {
 		t.Fatalf("rebuild after failed build: %v", err)
 	}
@@ -328,7 +363,7 @@ func TestBuildVolumePoolSubsystem_DuplicatePool(t *testing.T) {
 		{Name: "dup", Strategy: "round_robin", Paths: []string{filepath.Join(dataDir, "b")}},
 	}
 
-	sub, err := qrdbpool.BuildVolumePoolSubsystem(dataDir, pools, nil)
+	sub, err := qrdbpool.BuildVolumePoolSubsystem(dataDir, pools, nil, false)
 	var re *qrdbpool.VolumePoolRegisterError
 	if !errors.As(err, &re) {
 		t.Fatalf("expected *VolumePoolRegisterError, got %T: %v", err, err)
@@ -357,7 +392,7 @@ func TestBuildVolumePoolSubsystem_StateDirCreateFailure(t *testing.T) {
 		{Name: "default", Strategy: "round_robin", Paths: []string{filepath.Join(base, "v")}},
 	}
 
-	sub, err := qrdbpool.BuildVolumePoolSubsystem(dataDir, pools, nil)
+	sub, err := qrdbpool.BuildVolumePoolSubsystem(dataDir, pools, nil, false)
 	var se *qrdbpool.VolumePoolStorageError
 	if !errors.As(err, &se) {
 		t.Fatalf("expected *VolumePoolStorageError, got %T: %v", err, err)
@@ -393,7 +428,7 @@ func TestVolumePoolSubsystem_Close(t *testing.T) {
 		pools := []qrdbconfig.VolumePoolConfig{
 			{Name: "default", Strategy: "round_robin", Paths: []string{filepath.Join(dataDir, "v")}},
 		}
-		sub, err := qrdbpool.BuildVolumePoolSubsystem(dataDir, pools, nil)
+		sub, err := qrdbpool.BuildVolumePoolSubsystem(dataDir, pools, nil, false)
 		if err != nil {
 			t.Fatalf("BuildVolumePoolSubsystem: %v", err)
 		}

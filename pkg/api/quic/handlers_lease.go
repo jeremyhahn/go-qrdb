@@ -26,8 +26,9 @@ import (
 // with the specified TTL via the lease service, and returns a serialized
 // LeaseGrantResponse.
 func (s *Server) handleLeaseGrant(ctx context.Context, payload []byte) ([]byte, error) {
-	if s.leaseSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "lease"}
+	leaseSvc, svcErr := s.leaseSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
 	}
 
 	var req pb.LeaseGrantRequest
@@ -35,7 +36,7 @@ func (s *Server) handleLeaseGrant(ctx context.Context, payload []byte) ([]byte, 
 		return nil, &UnmarshalError{Err: err}
 	}
 
-	l, err := s.leaseSvc.Grant(ctx, req.GetTtl())
+	l, err := leaseSvc.Grant(ctx, req.GetTtl())
 	if err != nil {
 		return nil, err
 	}
@@ -51,8 +52,9 @@ func (s *Server) handleLeaseGrant(ctx context.Context, payload []byte) ([]byte, 
 // the specified lease and deletes attached keys, and returns an empty
 // response payload.
 func (s *Server) handleLeaseRevoke(ctx context.Context, payload []byte) ([]byte, error) {
-	if s.leaseSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "lease"}
+	leaseSvc, svcErr := s.leaseSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
 	}
 
 	var req pb.LeaseRevokeRequest
@@ -60,7 +62,7 @@ func (s *Server) handleLeaseRevoke(ctx context.Context, payload []byte) ([]byte,
 		return nil, &UnmarshalError{Err: err}
 	}
 
-	if err := s.leaseSvc.Revoke(ctx, req.GetLeaseId()); err != nil {
+	if err := leaseSvc.Revoke(ctx, req.GetLeaseId()); err != nil {
 		return nil, err
 	}
 
@@ -71,8 +73,9 @@ func (s *Server) handleLeaseRevoke(ctx context.Context, payload []byte) ([]byte,
 // TTL on the specified lease, and returns a serialized
 // LeaseKeepAliveResponse with the refreshed lease state.
 func (s *Server) handleLeaseKeepAlive(ctx context.Context, payload []byte) ([]byte, error) {
-	if s.leaseSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "lease"}
+	leaseSvc, svcErr := s.leaseSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
 	}
 
 	var req pb.LeaseKeepAliveRequest
@@ -80,7 +83,7 @@ func (s *Server) handleLeaseKeepAlive(ctx context.Context, payload []byte) ([]by
 		return nil, &UnmarshalError{Err: err}
 	}
 
-	l, err := s.leaseSvc.KeepAlive(ctx, req.GetLeaseId())
+	l, err := leaseSvc.KeepAlive(ctx, req.GetLeaseId())
 	if err != nil {
 		return nil, err
 	}
@@ -96,8 +99,9 @@ func (s *Server) handleLeaseKeepAlive(ctx context.Context, payload []byte) ([]by
 // the current state of the specified lease including its remaining TTL,
 // and returns a serialized LeaseTimeToLiveResponse.
 func (s *Server) handleLeaseTimeToLive(ctx context.Context, payload []byte) ([]byte, error) {
-	if s.leaseSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "lease"}
+	leaseSvc, svcErr := s.leaseSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
 	}
 
 	var req pb.LeaseTimeToLiveRequest
@@ -105,7 +109,7 @@ func (s *Server) handleLeaseTimeToLive(ctx context.Context, payload []byte) ([]b
 		return nil, &UnmarshalError{Err: err}
 	}
 
-	l, err := s.leaseSvc.TimeToLive(ctx, req.GetLeaseId())
+	l, err := leaseSvc.TimeToLive(ctx, req.GetLeaseId())
 	if err != nil {
 		return nil, err
 	}
@@ -121,11 +125,12 @@ func (s *Server) handleLeaseTimeToLive(ctx context.Context, payload []byte) ([]b
 // returns a serialized LeaseListResponse. The payload is ignored since
 // no request parameters are required.
 func (s *Server) handleLeaseList(ctx context.Context, _ []byte) ([]byte, error) {
-	if s.leaseSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "lease"}
+	leaseSvc, svcErr := s.leaseSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
 	}
 
-	leases, err := s.leaseSvc.Leases(ctx)
+	leases, err := leaseSvc.Leases(ctx)
 	if err != nil {
 		return nil, err
 	}

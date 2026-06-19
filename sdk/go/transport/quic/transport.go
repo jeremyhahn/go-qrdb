@@ -53,6 +53,29 @@ type Transport struct {
 	conn      *quicgo.Conn
 	closed    atomic.Bool
 	requestID atomic.Uint64
+
+	// database is the target database scope conveyed on data-plane request
+	// frames. An empty string (or the default "system" scope) selects the
+	// server's implicit bootstrap database. It is set via WithDatabase.
+	database string
+}
+
+// Compile-time assertion that the QUIC transport supports database scoping.
+var _ transport.DatabaseScoper = (*Transport)(nil)
+
+// WithDatabase returns a database-scoped clone of the transport that conveys
+// the given database scope on its data-plane request frames while sharing the
+// parent's underlying QUIC connection. Scoping to the empty string or the
+// default "system" database yields an unscoped clone (no database is sent). It
+// implements transport.DatabaseScoper.
+func (t *Transport) WithDatabase(database string) transport.Transport {
+	clone := &Transport{
+		config:   t.config,
+		conn:     t.conn,
+		database: transport.NormalizeDatabaseScope(database),
+	}
+	clone.closed.Store(t.closed.Load())
+	return clone
 }
 
 // New creates a new QUIC transport with the given options. The transport
@@ -649,7 +672,7 @@ func (t *Transport) call(ctx context.Context, method string, payload []byte) ([]
 
 	reqID := t.requestID.Add(1)
 
-	if err := wire.WriteRequest(stream, method, reqID, payload); err != nil {
+	if err := wire.WriteRequest(stream, method, t.database, reqID, payload); err != nil {
 		stream.CancelWrite(0)
 		return nil, &transport.RequestError{Method: method, Err: err}
 	}

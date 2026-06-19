@@ -31,6 +31,23 @@ type Checker interface {
 	Usage(ctx context.Context, tenantID string, resource Resource) (int64, error)
 }
 
+// EntitlementChecker validates whether a tenant's plan permits a requested
+// isolation mode or dedicated-storage feature. It is the feature-governance
+// plane, consulted at the service layer before the numeric quota plane and
+// independent of RBAC permissions. The system tenant is implicitly entitled
+// to everything.
+type EntitlementChecker interface {
+	// CheckIsolation returns nil if the tenant is entitled to the given
+	// isolation mode (e.g. "prefix", "barrier", "volume", "raft"), or an
+	// *EntitlementError when the mode is not permitted by the tenant's plan.
+	CheckIsolation(ctx context.Context, tenantID string, mode string) error
+
+	// CheckFeature returns nil if the tenant is entitled to the named feature
+	// ("dedicated_raft", "volume_storage"), or an *EntitlementError when the
+	// feature is not permitted by the tenant's plan.
+	CheckFeature(ctx context.Context, tenantID string, feature string) error
+}
+
 // CountFunc is a function that returns the current count of a resource
 // for a tenant. Used by the Service to query actual usage from the
 // underlying data layer.

@@ -46,6 +46,10 @@ type createTenantRequest struct {
 	ID            string               `json:"id"`
 	Name          string               `json:"name"`
 	IsolationType tenant.IsolationType `json:"isolation_type,omitempty"`
+	// BarrierAutoUnseal opts a dedicated-isolation tenant into the
+	// system-managed auto-unseal key-management mode (entitlement-gated). The
+	// default (false) is the secure self-managed mode.
+	BarrierAutoUnseal bool `json:"barrier_auto_unseal,omitempty"`
 }
 
 // updateTenantRequest is the JSON payload for PUT /v1/tenants/{id}.
@@ -56,17 +60,30 @@ type updateTenantRequest struct {
 
 // setTenantQuotasRequest is the JSON payload for POST /v1/tenants/{id}/quotas.
 type setTenantQuotasRequest struct {
-	MaxDatabases    int64 `json:"max_databases"`
-	MaxRaftGroups   int64 `json:"max_raft_groups"`
-	MaxCollections  int64 `json:"max_collections"`
-	MaxKeys         int64 `json:"max_keys"`
-	MaxStorageBytes int64 `json:"max_storage_bytes"`
-	MaxUsers        int64 `json:"max_users"`
-	MaxRoles        int64 `json:"max_roles"`
-	MaxCertificates int64 `json:"max_certificates"`
-	MaxBackups      int64 `json:"max_backups"`
-	MaxVectorDims   int64 `json:"max_vector_dims"`
-	MaxTSMetrics    int64 `json:"max_ts_metrics"`
+	MaxDatabases         int64 `json:"max_databases"`
+	MaxRaftGroups        int64 `json:"max_raft_groups"`
+	MaxReplicasPerGroup  int64 `json:"max_replicas_per_group"`
+	MaxTotalReplicas     int64 `json:"max_total_replicas"`
+	MaxCollections       int64 `json:"max_collections"`
+	MaxKeys              int64 `json:"max_keys"`
+	MaxStorageBytes      int64 `json:"max_storage_bytes"`
+	MaxDatabaseSizeBytes int64 `json:"max_database_size_bytes"`
+	MaxUsers             int64 `json:"max_users"`
+	MaxRoles             int64 `json:"max_roles"`
+	MaxCertificates      int64 `json:"max_certificates"`
+	MaxBackups           int64 `json:"max_backups"`
+	MaxVectorDims        int64 `json:"max_vector_dims"`
+	MaxTSMetrics         int64 `json:"max_ts_metrics"`
+}
+
+// setTenantEntitlementsRequest is the JSON payload for
+// PATCH /v1/tenants/{id}/entitlements.
+type setTenantEntitlementsRequest struct {
+	AllowedIsolationModes     []string `json:"allowed_isolation_modes,omitempty"`
+	AllowDedicatedRaft        bool     `json:"allow_dedicated_raft,omitempty"`
+	AllowVolumeStorage        bool     `json:"allow_volume_storage,omitempty"`
+	AllowSystemManagedBarrier bool     `json:"allow_system_managed_barrier,omitempty"`
+	AllowDedicatedWAL         bool     `json:"allow_dedicated_wal,omitempty"`
 }
 
 // tenantBarrierInitRequest is the JSON payload for
@@ -126,6 +143,7 @@ type tenantResponse struct {
 	Name          string               `json:"name"`
 	IsolationType tenant.IsolationType `json:"isolation_type"`
 	Quotas        *quota.Quotas        `json:"quotas,omitempty"`
+	Entitlements  *quota.Entitlements  `json:"entitlements,omitempty"`
 	CreatedAt     string               `json:"createdAt"`
 	UpdatedAt     string               `json:"updatedAt"`
 }
@@ -155,7 +173,8 @@ func (s *Server) handleCreateTenant(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
 	defer cancel()
-	info, err := s.tenantSvc.CreateTenant(ctx, req.ID, req.Name, req.IsolationType)
+	info, err := s.tenantSvc.CreateTenant(ctx, req.ID, req.Name, req.IsolationType,
+		tenant.WithBarrierAutoUnseal(req.BarrierAutoUnseal))
 	if err != nil {
 		writeErrorJSON(w, mapTenantError(err), err)
 		return
@@ -294,6 +313,17 @@ func (s *Server) handleTenantByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// PATCH sub-paths.
+	if r.Method == http.MethodPatch {
+		if id, found := strings.CutSuffix(suffix, "/entitlements"); found && id != "" {
+			s.handleSetTenantEntitlements(w, r, id)
+			return
+		}
+		w.Header().Set("Allow", "GET, DELETE, PUT, POST, PATCH")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
 	// GET /v1/tenants/{id}, DELETE /v1/tenants/{id}, PUT /v1/tenants/{id}
 	id := suffix
 	handler, ok := tenantMethodHandlers[r.Method]
@@ -403,20 +433,49 @@ func (s *Server) handleSetTenantQuotas(w http.ResponseWriter, r *http.Request, i
 	}
 
 	q := &quota.Quotas{
-		MaxDatabases:    req.MaxDatabases,
-		MaxRaftGroups:   req.MaxRaftGroups,
-		MaxCollections:  req.MaxCollections,
-		MaxKeys:         req.MaxKeys,
-		MaxStorageBytes: req.MaxStorageBytes,
-		MaxUsers:        req.MaxUsers,
-		MaxRoles:        req.MaxRoles,
-		MaxCertificates: req.MaxCertificates,
-		MaxBackups:      req.MaxBackups,
-		MaxVectorDims:   req.MaxVectorDims,
-		MaxTSMetrics:    req.MaxTSMetrics,
+		MaxDatabases:         req.MaxDatabases,
+		MaxRaftGroups:        req.MaxRaftGroups,
+		MaxReplicasPerGroup:  req.MaxReplicasPerGroup,
+		MaxTotalReplicas:     req.MaxTotalReplicas,
+		MaxCollections:       req.MaxCollections,
+		MaxKeys:              req.MaxKeys,
+		MaxStorageBytes:      req.MaxStorageBytes,
+		MaxDatabaseSizeBytes: req.MaxDatabaseSizeBytes,
+		MaxUsers:             req.MaxUsers,
+		MaxRoles:             req.MaxRoles,
+		MaxCertificates:      req.MaxCertificates,
+		MaxBackups:           req.MaxBackups,
+		MaxVectorDims:        req.MaxVectorDims,
+		MaxTSMetrics:         req.MaxTSMetrics,
 	}
 
 	info, err := s.tenantSvc.UpdateQuotas(r.Context(), id, q)
+	if err != nil {
+		writeErrorJSON(w, mapTenantError(err), err)
+		return
+	}
+
+	writeJSON(w, tenantToResponse(info))
+}
+
+// handleSetTenantEntitlements handles PATCH /v1/tenants/{id}/entitlements --
+// updates the feature entitlements for an existing tenant.
+func (s *Server) handleSetTenantEntitlements(w http.ResponseWriter, r *http.Request, id string) {
+	var req setTenantEntitlementsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+		return
+	}
+
+	e := &quota.Entitlements{
+		AllowedIsolationModes:     req.AllowedIsolationModes,
+		AllowDedicatedRaft:        req.AllowDedicatedRaft,
+		AllowVolumeStorage:        req.AllowVolumeStorage,
+		AllowSystemManagedBarrier: req.AllowSystemManagedBarrier,
+		AllowDedicatedWAL:         req.AllowDedicatedWAL,
+	}
+
+	info, err := s.tenantSvc.UpdateEntitlements(r.Context(), id, e)
 	if err != nil {
 		writeErrorJSON(w, mapTenantError(err), err)
 		return
@@ -598,6 +657,7 @@ func tenantToResponse(info *tenant.TenantInfo) *tenantResponse {
 		Name:          info.Name,
 		IsolationType: info.EffectiveIsolationType(),
 		Quotas:        info.Quotas,
+		Entitlements:  info.Entitlements,
 		CreatedAt:     info.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:     info.UpdatedAt.Format(time.RFC3339),
 	}
@@ -851,6 +911,8 @@ func mapTenantError(err error) int {
 	case errors.Is(err, tenant.ErrSystemTenantMustBePrefix):
 		return http.StatusBadRequest
 	case errors.Is(err, tenant.ErrNilQuotas):
+		return http.StatusBadRequest
+	case errors.Is(err, tenant.ErrNilEntitlements):
 		return http.StatusBadRequest
 	case errors.As(err, &ise):
 		return http.StatusBadRequest

@@ -37,23 +37,39 @@ func mapTenantInfo(info *tenant.TenantInfo) transport.TenantInfo {
 	if info.Quotas != nil {
 		ti.Quotas = mapQuotas(info.Quotas)
 	}
+	if info.Entitlements != nil {
+		ti.Entitlements = mapEntitlements(info.Entitlements)
+	}
 	return ti
 }
 
 // mapQuotas converts a quota.Quotas to a transport.TenantQuotas pointer.
 func mapQuotas(q *quota.Quotas) *transport.TenantQuotas {
 	return &transport.TenantQuotas{
-		MaxDatabases:    q.MaxDatabases,
-		MaxRaftGroups:   q.MaxRaftGroups,
-		MaxCollections:  q.MaxCollections,
-		MaxKeys:         q.MaxKeys,
-		MaxStorageBytes: q.MaxStorageBytes,
-		MaxUsers:        q.MaxUsers,
-		MaxRoles:        q.MaxRoles,
-		MaxCertificates: q.MaxCertificates,
-		MaxBackups:      q.MaxBackups,
-		MaxVectorDims:   q.MaxVectorDims,
-		MaxTSMetrics:    q.MaxTSMetrics,
+		MaxDatabases:         q.MaxDatabases,
+		MaxRaftGroups:        q.MaxRaftGroups,
+		MaxReplicasPerGroup:  q.MaxReplicasPerGroup,
+		MaxTotalReplicas:     q.MaxTotalReplicas,
+		MaxCollections:       q.MaxCollections,
+		MaxKeys:              q.MaxKeys,
+		MaxStorageBytes:      q.MaxStorageBytes,
+		MaxDatabaseSizeBytes: q.MaxDatabaseSizeBytes,
+		MaxUsers:             q.MaxUsers,
+		MaxRoles:             q.MaxRoles,
+		MaxCertificates:      q.MaxCertificates,
+		MaxBackups:           q.MaxBackups,
+		MaxVectorDims:        q.MaxVectorDims,
+		MaxTSMetrics:         q.MaxTSMetrics,
+	}
+}
+
+// mapEntitlements converts a quota.Entitlements to a transport.TenantEntitlements pointer.
+func mapEntitlements(e *quota.Entitlements) *transport.TenantEntitlements {
+	return &transport.TenantEntitlements{
+		AllowedIsolationModes:     e.AllowedIsolationModes,
+		AllowDedicatedRaft:        e.AllowDedicatedRaft,
+		AllowVolumeStorage:        e.AllowVolumeStorage,
+		AllowSystemManagedBarrier: e.AllowSystemManagedBarrier,
 	}
 }
 
@@ -73,7 +89,8 @@ func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenan
 		return nil, &NilServiceError{Service: "TenantServicer"}
 	}
 
-	info, err := t.tenantSvc.CreateTenant(ctx, req.ID, req.Name, tenant.IsolationType(req.IsolationType))
+	info, err := t.tenantSvc.CreateTenant(ctx, req.ID, req.Name, tenant.IsolationType(req.IsolationType),
+		tenant.WithBarrierAutoUnseal(req.BarrierAutoUnseal))
 	if err != nil {
 		return nil, err
 	}
@@ -161,17 +178,20 @@ func (t *Transport) UpdateTenantQuotas(ctx context.Context, req *transport.Updat
 	}
 
 	q := &quota.Quotas{
-		MaxDatabases:    req.Quotas.MaxDatabases,
-		MaxRaftGroups:   req.Quotas.MaxRaftGroups,
-		MaxCollections:  req.Quotas.MaxCollections,
-		MaxKeys:         req.Quotas.MaxKeys,
-		MaxStorageBytes: req.Quotas.MaxStorageBytes,
-		MaxUsers:        req.Quotas.MaxUsers,
-		MaxRoles:        req.Quotas.MaxRoles,
-		MaxCertificates: req.Quotas.MaxCertificates,
-		MaxBackups:      req.Quotas.MaxBackups,
-		MaxVectorDims:   req.Quotas.MaxVectorDims,
-		MaxTSMetrics:    req.Quotas.MaxTSMetrics,
+		MaxDatabases:         req.Quotas.MaxDatabases,
+		MaxRaftGroups:        req.Quotas.MaxRaftGroups,
+		MaxReplicasPerGroup:  req.Quotas.MaxReplicasPerGroup,
+		MaxTotalReplicas:     req.Quotas.MaxTotalReplicas,
+		MaxCollections:       req.Quotas.MaxCollections,
+		MaxKeys:              req.Quotas.MaxKeys,
+		MaxStorageBytes:      req.Quotas.MaxStorageBytes,
+		MaxDatabaseSizeBytes: req.Quotas.MaxDatabaseSizeBytes,
+		MaxUsers:             req.Quotas.MaxUsers,
+		MaxRoles:             req.Quotas.MaxRoles,
+		MaxCertificates:      req.Quotas.MaxCertificates,
+		MaxBackups:           req.Quotas.MaxBackups,
+		MaxVectorDims:        req.Quotas.MaxVectorDims,
+		MaxTSMetrics:         req.Quotas.MaxTSMetrics,
 	}
 
 	info, err := t.tenantSvc.UpdateQuotas(ctx, req.TenantID, q)
@@ -180,6 +200,33 @@ func (t *Transport) UpdateTenantQuotas(ctx context.Context, req *transport.Updat
 	}
 
 	return &transport.UpdateTenantQuotasResponse{
+		Tenant: mapTenantInfo(info),
+	}, nil
+}
+
+// UpdateTenantEntitlements updates the feature entitlements for a tenant by
+// delegating to the TenantServicer.
+func (t *Transport) UpdateTenantEntitlements(ctx context.Context, req *transport.UpdateTenantEntitlementsRequest) (*transport.UpdateTenantEntitlementsResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.tenantSvc == nil {
+		return nil, &NilServiceError{Service: "TenantServicer"}
+	}
+
+	e := &quota.Entitlements{
+		AllowedIsolationModes:     req.Entitlements.AllowedIsolationModes,
+		AllowDedicatedRaft:        req.Entitlements.AllowDedicatedRaft,
+		AllowVolumeStorage:        req.Entitlements.AllowVolumeStorage,
+		AllowSystemManagedBarrier: req.Entitlements.AllowSystemManagedBarrier,
+	}
+
+	info, err := t.tenantSvc.UpdateEntitlements(ctx, req.TenantID, e)
+	if err != nil {
+		return nil, err
+	}
+
+	return &transport.UpdateTenantEntitlementsResponse{
 		Tenant: mapTenantInfo(info),
 	}, nil
 }

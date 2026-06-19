@@ -193,7 +193,7 @@ func allowAllTenantScope(_ context.Context, _ string, _ permission.Permission) e
 	return nil
 }
 
-func (m *covMockTenantSvc) CreateTenant(ctx context.Context, id, name string, iso tenant.IsolationType) (*tenant.TenantInfo, error) {
+func (m *covMockTenantSvc) CreateTenant(ctx context.Context, id, name string, iso tenant.IsolationType, _ ...tenant.CreateTenantOption) (*tenant.TenantInfo, error) {
 	if m.createFn != nil {
 		return m.createFn(ctx, id, name, iso)
 	}
@@ -228,6 +228,10 @@ func (m *covMockTenantSvc) UpdateQuotas(ctx context.Context, id string, q *quota
 		return m.updateQuotasFn(ctx, id, q)
 	}
 	return &tenant.TenantInfo{ID: id, Quotas: q}, nil
+}
+
+func (m *covMockTenantSvc) UpdateEntitlements(ctx context.Context, id string, e *quota.Entitlements) (*tenant.TenantInfo, error) {
+	return &tenant.TenantInfo{ID: id, Entitlements: e}, nil
 }
 func (m *covMockTenantSvc) Quotas(ctx context.Context, id string) (*quota.Quotas, error) {
 	return &quota.Quotas{}, nil
@@ -1248,8 +1252,8 @@ func TestCovCeremonyCANotConfiguredError_Error(t *testing.T) {
 func TestCovTenantTools_Registration(t *testing.T) {
 	svc := newCovMockTenantSvc()
 	tools := tenantTools(svc)
-	if len(tools) != 6 {
-		t.Fatalf("expected 6 tools, got %d", len(tools))
+	if len(tools) != 7 {
+		t.Fatalf("expected 7 tools, got %d", len(tools))
 	}
 }
 

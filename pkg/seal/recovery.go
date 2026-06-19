@@ -134,7 +134,7 @@ func (b *StorageBarrier) RecoverWithKeys(ctx context.Context, shareValues []stri
 		}
 	}
 
-	rootKey, err := shamir.Combine(shares)
+	rootKey, err := shamir.CombineUnverified(shares)
 	if err != nil {
 		return ErrShamirCombineFailed
 	}

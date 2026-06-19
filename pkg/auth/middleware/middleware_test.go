@@ -1228,6 +1228,83 @@ func TestRESTMiddleware_CABootstrapPublic(t *testing.T) {
 	}
 }
 
+// TestRESTMiddleware_ClusterPathsPublic verifies that /v1/cluster/ paths bypass
+// user authentication entirely. The cluster peer key-transport plane is
+// authorized inside the handler by node identity (SPIFFE SAN) and placement
+// table, not by user RBAC. Authenticators must NOT be called for these paths.
+func TestRESTMiddleware_ClusterPathsPublic(t *testing.T) {
+	// Only the two EXACT cluster key-transport routes are pre-auth-exempt
+	// (they self-authorize via node cert + placement). A deep/unknown path
+	// under /v1/cluster/ is NOT exempt and must require authentication, so a
+	// future handler mounted there is never silently unauthenticated.
+	cases := []struct {
+		path       string
+		wantExempt bool
+	}{
+		{"/v1/cluster/keydelivery", true},
+		{"/v1/cluster/nodekey", true},
+		{"/v1/cluster/anything/deep", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.path, func(t *testing.T) {
+			authn := &mockAuthenticator{name: "mtls", err: auth.ErrUnauthenticated}
+			m := New(&mockAuthorizer{}, WithAuthenticator(authn))
+			handlerCalled := false
+			next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				handlerCalled = true
+				w.WriteHeader(http.StatusOK)
+			})
+			handler := m.RESTMiddleware(next)
+			req := httptest.NewRequest(http.MethodPost, tc.path, nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if tc.wantExempt {
+				if rec.Code != http.StatusOK || !handlerCalled {
+					t.Errorf("path %s: expected exempt (200 + handler), got %d (called=%v)", tc.path, rec.Code, handlerCalled)
+				}
+				if authn.calls.Load() != 0 {
+					t.Errorf("path %s: authenticator called %d times; exact exempt route must skip authn", tc.path, authn.calls.Load())
+				}
+			} else {
+				if handlerCalled {
+					t.Errorf("path %s: expected NOT exempt (auth required), but handler was called", tc.path)
+				}
+				if authn.calls.Load() == 0 {
+					t.Errorf("path %s: expected authenticator to run (path not exempt), but it did not", tc.path)
+				}
+			}
+		})
+	}
+}
+
+// TestRESTMiddleware_NonClusterV1PathStillRequiresAuth verifies that non-cluster
+// /v1/ paths continue to require authentication even after the cluster exempt
+// was added. Ensures the prefix check does not accidentally exempt everything
+// under /v1/.
+func TestRESTMiddleware_NonClusterV1PathStillRequiresAuth(t *testing.T) {
+	authn := &mockAuthenticator{name: "mtls", err: auth.ErrUnauthenticated}
+	authz := &mockAuthorizer{}
+	m := New(authz, WithAuthenticator(authn))
+
+	next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Error("handler must not be called for unauthenticated /v1/ path")
+	})
+	handler := m.RESTMiddleware(next)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/barrier/status", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusOK {
+		t.Error("expected non-200 for unauthenticated /v1/barrier/status")
+	}
+	if authn.calls.Load() == 0 {
+		t.Error("expected authenticator to be called for /v1/barrier/status")
+	}
+}
+
 func TestRESTMiddleware_JSONContentType(t *testing.T) {
 	authn := &mockAuthenticator{name: "mtls", err: auth.ErrUnauthenticated}
 	authz := &mockAuthorizer{}

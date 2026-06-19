@@ -82,6 +82,10 @@ type watchEventJSON struct {
 // collects events for up to the configured timeout, then returns them.
 func handleWatch(watchSvc service.WatchServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		watchSvc, rerr := resolveWatch(ctx, watchSvc)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
+		}
 		key := mcp.ParseString(req, "key", "")
 		if key == "" {
 			return mcp.NewToolResultError("key is required"), nil

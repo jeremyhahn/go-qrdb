@@ -227,8 +227,9 @@ func parseStringIDs(ids []string) ([]uint64, error) {
 // VectorCreateNamespace creates a new vector namespace with the specified
 // dimensionality, distance metric, and index configuration.
 func (s *qrdbServiceServer) VectorCreateNamespace(ctx context.Context, req *pb.VectorCreateNamespaceRequest) (*pb.VectorCreateNamespaceResponse, error) {
-	if s.vectorSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "vector"}).Error())
+	vectorSvc, svcErr := s.vectorSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
 	var indexConfig map[string]string
@@ -240,7 +241,7 @@ func (s *qrdbServiceServer) VectorCreateNamespace(ctx context.Context, req *pb.V
 		indexConfig = indexParamsToStringMap(params)
 	}
 
-	resp, err := s.vectorSvc.CreateNamespace(ctx, &service.CreateNamespaceRequest{
+	resp, err := vectorSvc.CreateNamespace(ctx, &service.CreateNamespaceRequest{
 		Namespace:      req.GetNamespace(),
 		Dimension:      uint32(req.GetDimension()),
 		DistanceMetric: protoDistanceMetricToString[req.GetDistanceMetric()],
@@ -259,11 +260,12 @@ func (s *qrdbServiceServer) VectorCreateNamespace(ctx context.Context, req *pb.V
 
 // VectorDeleteNamespace removes a namespace and all its vectors.
 func (s *qrdbServiceServer) VectorDeleteNamespace(ctx context.Context, req *pb.VectorDeleteNamespaceRequest) (*emptypb.Empty, error) {
-	if s.vectorSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "vector"}).Error())
+	vectorSvc, svcErr := s.vectorSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
-	_, err := s.vectorSvc.DeleteNamespace(ctx, &service.DeleteNamespaceRequest{
+	_, err := vectorSvc.DeleteNamespace(ctx, &service.DeleteNamespaceRequest{
 		Namespace: req.GetNamespace(),
 		ShardID:   req.GetShardId(),
 	})
@@ -275,11 +277,12 @@ func (s *qrdbServiceServer) VectorDeleteNamespace(ctx context.Context, req *pb.V
 
 // VectorListNamespaces returns all vector namespace names.
 func (s *qrdbServiceServer) VectorListNamespaces(ctx context.Context, req *pb.VectorListNamespacesRequest) (*pb.VectorListNamespacesResponse, error) {
-	if s.vectorSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "vector"}).Error())
+	vectorSvc, svcErr := s.vectorSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
-	resp, err := s.vectorSvc.ListNamespaces(ctx, &service.ListNamespacesRequest{
+	resp, err := vectorSvc.ListNamespaces(ctx, &service.ListNamespacesRequest{
 		ShardID: req.GetShardId(),
 	})
 	if err != nil {
@@ -299,11 +302,12 @@ func (s *qrdbServiceServer) VectorListNamespaces(ctx context.Context, req *pb.Ve
 // VectorGetNamespaceInfo returns metadata about a namespace including
 // dimension, distance metric, index type, and vector count.
 func (s *qrdbServiceServer) VectorGetNamespaceInfo(ctx context.Context, req *pb.VectorGetNamespaceInfoRequest) (*pb.VectorNamespaceInfo, error) {
-	if s.vectorSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "vector"}).Error())
+	vectorSvc, svcErr := s.vectorSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
-	info, err := s.vectorSvc.GetNamespaceInfo(ctx, &service.GetNamespaceInfoRequest{
+	info, err := vectorSvc.GetNamespaceInfo(ctx, &service.GetNamespaceInfoRequest{
 		Namespace: req.GetNamespace(),
 		ShardID:   req.GetShardId(),
 	})
@@ -327,8 +331,9 @@ func (s *qrdbServiceServer) VectorGetNamespaceInfo(ctx context.Context, req *pb.
 
 // VectorUpsert inserts or updates a vector in a namespace.
 func (s *qrdbServiceServer) VectorUpsert(ctx context.Context, req *pb.VectorUpsertRequest) (*pb.VectorUpsertResponse, error) {
-	if s.vectorSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "vector"}).Error())
+	vectorSvc, svcErr := s.vectorSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
 	metadata, err := unmarshalMetadata(req.GetMetadataJson())
@@ -341,7 +346,7 @@ func (s *qrdbServiceServer) VectorUpsert(ctx context.Context, req *pb.VectorUpse
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
-	resp, err := s.vectorSvc.UpsertVector(ctx, &service.UpsertVectorRequest{
+	resp, err := vectorSvc.UpsertVector(ctx, &service.UpsertVectorRequest{
 		Namespace: req.GetNamespace(),
 		ID:        id,
 		Vector:    req.GetVector(),
@@ -360,8 +365,9 @@ func (s *qrdbServiceServer) VectorUpsert(ctx context.Context, req *pb.VectorUpse
 
 // VectorGet retrieves a single vector by ID from the specified namespace.
 func (s *qrdbServiceServer) VectorGet(ctx context.Context, req *pb.VectorGetRequest) (*pb.VectorDataProto, error) {
-	if s.vectorSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "vector"}).Error())
+	vectorSvc, svcErr := s.vectorSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
 	id, err := parseVectorID(req.GetId())
@@ -369,7 +375,7 @@ func (s *qrdbServiceServer) VectorGet(ctx context.Context, req *pb.VectorGetRequ
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
-	data, err := s.vectorSvc.GetVector(ctx, &service.GetVectorRequest{
+	data, err := vectorSvc.GetVector(ctx, &service.GetVectorRequest{
 		Namespace:       req.GetNamespace(),
 		ID:              id,
 		IncludeVector:   true,
@@ -390,8 +396,9 @@ func (s *qrdbServiceServer) VectorGet(ctx context.Context, req *pb.VectorGetRequ
 
 // VectorDelete removes a single vector by ID from the specified namespace.
 func (s *qrdbServiceServer) VectorDelete(ctx context.Context, req *pb.VectorDeleteRequest) (*emptypb.Empty, error) {
-	if s.vectorSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "vector"}).Error())
+	vectorSvc, svcErr := s.vectorSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
 	id, err := parseVectorID(req.GetId())
@@ -399,7 +406,7 @@ func (s *qrdbServiceServer) VectorDelete(ctx context.Context, req *pb.VectorDele
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
-	_, err = s.vectorSvc.DeleteVector(ctx, &service.DeleteVectorRequest{
+	_, err = vectorSvc.DeleteVector(ctx, &service.DeleteVectorRequest{
 		Namespace: req.GetNamespace(),
 		ID:        id,
 		ShardID:   req.GetShardId(),
@@ -412,8 +419,9 @@ func (s *qrdbServiceServer) VectorDelete(ctx context.Context, req *pb.VectorDele
 
 // VectorBatchUpsert inserts or updates multiple vectors in a single operation.
 func (s *qrdbServiceServer) VectorBatchUpsert(ctx context.Context, req *pb.VectorBatchUpsertRequest) (*pb.VectorBatchUpsertResponse, error) {
-	if s.vectorSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "vector"}).Error())
+	vectorSvc, svcErr := s.vectorSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
 	vectors := make([]*service.VectorData, len(req.GetVectors()))
@@ -425,7 +433,7 @@ func (s *qrdbServiceServer) VectorBatchUpsert(ctx context.Context, req *pb.Vecto
 		vectors[i] = vd
 	}
 
-	resp, err := s.vectorSvc.BatchUpsert(ctx, &service.BatchUpsertRequest{
+	resp, err := vectorSvc.BatchUpsert(ctx, &service.BatchUpsertRequest{
 		Namespace: req.GetNamespace(),
 		Vectors:   vectors,
 		ShardID:   req.GetShardId(),
@@ -442,8 +450,9 @@ func (s *qrdbServiceServer) VectorBatchUpsert(ctx context.Context, req *pb.Vecto
 
 // VectorBatchDelete removes multiple vectors by ID in a single operation.
 func (s *qrdbServiceServer) VectorBatchDelete(ctx context.Context, req *pb.VectorBatchDeleteRequest) (*pb.VectorBatchDeleteResponse, error) {
-	if s.vectorSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "vector"}).Error())
+	vectorSvc, svcErr := s.vectorSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
 	ids, err := parseStringIDs(req.GetIds())
@@ -451,7 +460,7 @@ func (s *qrdbServiceServer) VectorBatchDelete(ctx context.Context, req *pb.Vecto
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
-	resp, err := s.vectorSvc.BatchDeleteVectors(ctx, &service.BatchDeleteVectorsRequest{
+	resp, err := vectorSvc.BatchDeleteVectors(ctx, &service.BatchDeleteVectorsRequest{
 		Namespace: req.GetNamespace(),
 		IDs:       ids,
 		ShardID:   req.GetShardId(),
@@ -476,11 +485,12 @@ func (s *qrdbServiceServer) VectorBatchDelete(ctx context.Context, req *pb.Vecto
 
 // VectorList returns a paginated list of vectors in a namespace.
 func (s *qrdbServiceServer) VectorList(ctx context.Context, req *pb.VectorListRequest) (*pb.VectorListResponse, error) {
-	if s.vectorSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "vector"}).Error())
+	vectorSvc, svcErr := s.vectorSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
-	resp, err := s.vectorSvc.ListVectors(ctx, &service.ListVectorsRequest{
+	resp, err := vectorSvc.ListVectors(ctx, &service.ListVectorsRequest{
 		Namespace: req.GetNamespace(),
 		Limit:     int(req.GetLimit()),
 		Cursor:    req.GetCursor(),
@@ -509,8 +519,9 @@ func (s *qrdbServiceServer) VectorList(ctx context.Context, req *pb.VectorListRe
 // VectorUpdateMetadata updates the metadata for an existing vector without
 // modifying the vector data itself.
 func (s *qrdbServiceServer) VectorUpdateMetadata(ctx context.Context, req *pb.VectorUpdateMetadataRequest) (*emptypb.Empty, error) {
-	if s.vectorSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "vector"}).Error())
+	vectorSvc, svcErr := s.vectorSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
 	metadata, err := unmarshalMetadata(req.GetMetadataJson())
@@ -523,7 +534,7 @@ func (s *qrdbServiceServer) VectorUpdateMetadata(ctx context.Context, req *pb.Ve
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
-	_, err = s.vectorSvc.UpdateMetadata(ctx, &service.UpdateVectorMetadataRequest{
+	_, err = vectorSvc.UpdateMetadata(ctx, &service.UpdateVectorMetadataRequest{
 		Namespace: req.GetNamespace(),
 		ID:        id,
 		Metadata:  metadata,
@@ -541,11 +552,12 @@ func (s *qrdbServiceServer) VectorUpdateMetadata(ctx context.Context, req *pb.Ve
 
 // VectorSearchSimilar performs a k-nearest-neighbor search using a query vector.
 func (s *qrdbServiceServer) VectorSearchSimilar(ctx context.Context, req *pb.VectorSearchSimilarRequest) (*pb.VectorSearchSimilarResponse, error) {
-	if s.vectorSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "vector"}).Error())
+	vectorSvc, svcErr := s.vectorSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
-	resp, err := s.vectorSvc.SearchSimilar(ctx, &service.SearchSimilarRequest{
+	resp, err := vectorSvc.SearchSimilar(ctx, &service.SearchSimilarRequest{
 		Namespace:   req.GetNamespace(),
 		QueryVector: req.GetVector(),
 		K:           int(req.GetK()),
@@ -571,8 +583,9 @@ func (s *qrdbServiceServer) VectorSearchSimilar(ctx context.Context, req *pb.Vec
 
 // VectorSearchByMetadata returns vectors matching the given metadata filters.
 func (s *qrdbServiceServer) VectorSearchByMetadata(ctx context.Context, req *pb.VectorSearchByMetadataRequest) (*pb.VectorSearchByMetadataResponse, error) {
-	if s.vectorSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "vector"}).Error())
+	vectorSvc, svcErr := s.vectorSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
 	filters, err := unmarshalMetadata(req.GetFiltersJson())
@@ -580,7 +593,7 @@ func (s *qrdbServiceServer) VectorSearchByMetadata(ctx context.Context, req *pb.
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
-	resp, err := s.vectorSvc.SearchByMetadata(ctx, &service.SearchByMetadataRequest{
+	resp, err := vectorSvc.SearchByMetadata(ctx, &service.SearchByMetadataRequest{
 		Namespace:   req.GetNamespace(),
 		Filters:     filters,
 		Limit:       int(req.GetLimit()),
@@ -610,8 +623,9 @@ func (s *qrdbServiceServer) VectorSearchByMetadata(ctx context.Context, req *pb.
 // VectorHybridSearch combines vector similarity and metadata filtering with
 // configurable weights for each scoring component.
 func (s *qrdbServiceServer) VectorHybridSearch(ctx context.Context, req *pb.VectorHybridSearchRequest) (*pb.VectorHybridSearchResponse, error) {
-	if s.vectorSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "vector"}).Error())
+	vectorSvc, svcErr := s.vectorSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
 	metadataFilter, err := unmarshalMetadata(req.GetMetadataFiltersJson())
@@ -619,7 +633,7 @@ func (s *qrdbServiceServer) VectorHybridSearch(ctx context.Context, req *pb.Vect
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
-	resp, err := s.vectorSvc.HybridSearch(ctx, &service.HybridSearchRequest{
+	resp, err := vectorSvc.HybridSearch(ctx, &service.HybridSearchRequest{
 		Namespace:      req.GetNamespace(),
 		QueryVector:    req.GetVector(),
 		MetadataFilter: metadataFilter,
@@ -645,8 +659,9 @@ func (s *qrdbServiceServer) VectorHybridSearch(ctx context.Context, req *pb.Vect
 // VectorSearchByID performs a k-nearest-neighbor search using an existing
 // vector's ID as the query, returning its most similar neighbors.
 func (s *qrdbServiceServer) VectorSearchByID(ctx context.Context, req *pb.VectorSearchByIDRequest) (*pb.VectorSearchSimilarResponse, error) {
-	if s.vectorSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "vector"}).Error())
+	vectorSvc, svcErr := s.vectorSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
 	id, err := parseVectorID(req.GetId())
@@ -654,7 +669,7 @@ func (s *qrdbServiceServer) VectorSearchByID(ctx context.Context, req *pb.Vector
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
-	resp, err := s.vectorSvc.SearchByID(ctx, &service.SearchByIDRequest{
+	resp, err := vectorSvc.SearchByID(ctx, &service.SearchByIDRequest{
 		Namespace:   req.GetNamespace(),
 		ID:          id,
 		K:           int(req.GetK()),
@@ -696,11 +711,12 @@ func searchResultsToProto(results []*service.VectorSearchResult) ([]*pb.VectorSe
 
 // VectorRebuildIndex triggers an asynchronous index rebuild for a namespace.
 func (s *qrdbServiceServer) VectorRebuildIndex(ctx context.Context, req *pb.VectorRebuildIndexRequest) (*pb.VectorRebuildIndexResponse, error) {
-	if s.vectorSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "vector"}).Error())
+	vectorSvc, svcErr := s.vectorSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
-	resp, err := s.vectorSvc.RebuildIndex(ctx, &service.RebuildIndexRequest{
+	resp, err := vectorSvc.RebuildIndex(ctx, &service.RebuildIndexRequest{
 		Namespace: req.GetNamespace(),
 		ShardID:   req.GetShardId(),
 	})
@@ -716,11 +732,12 @@ func (s *qrdbServiceServer) VectorRebuildIndex(ctx context.Context, req *pb.Vect
 
 // VectorGetRebuildProgress returns the current progress of an index rebuild job.
 func (s *qrdbServiceServer) VectorGetRebuildProgress(ctx context.Context, req *pb.VectorGetRebuildProgressRequest) (*pb.VectorRebuildProgress, error) {
-	if s.vectorSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "vector"}).Error())
+	vectorSvc, svcErr := s.vectorSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
-	progress, err := s.vectorSvc.GetRebuildProgress(ctx, &service.GetRebuildProgressRequest{
+	progress, err := vectorSvc.GetRebuildProgress(ctx, &service.GetRebuildProgressRequest{
 		Namespace: req.GetNamespace(),
 		JobID:     req.GetJobId(),
 	})
@@ -740,11 +757,12 @@ func (s *qrdbServiceServer) VectorGetRebuildProgress(ctx context.Context, req *p
 // VectorGetIndexStats returns statistics about a namespace's vector index
 // including vector count, memory usage, and disk usage.
 func (s *qrdbServiceServer) VectorGetIndexStats(ctx context.Context, req *pb.VectorGetIndexStatsRequest) (*pb.VectorIndexStats, error) {
-	if s.vectorSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "vector"}).Error())
+	vectorSvc, svcErr := s.vectorSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
-	stats, err := s.vectorSvc.GetIndexStats(ctx, &service.GetIndexStatsRequest{
+	stats, err := vectorSvc.GetIndexStats(ctx, &service.GetIndexStatsRequest{
 		Namespace: req.GetNamespace(),
 		ShardID:   req.GetShardId(),
 	})
@@ -768,11 +786,12 @@ func (s *qrdbServiceServer) VectorGetIndexStats(ctx context.Context, req *pb.Vec
 // VectorCompactNamespace triggers an asynchronous compaction of a namespace's
 // storage to reclaim space from deleted vectors.
 func (s *qrdbServiceServer) VectorCompactNamespace(ctx context.Context, req *pb.VectorCompactNamespaceRequest) (*pb.VectorCompactNamespaceResponse, error) {
-	if s.vectorSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "vector"}).Error())
+	vectorSvc, svcErr := s.vectorSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
-	resp, err := s.vectorSvc.CompactNamespace(ctx, &service.CompactNamespaceRequest{
+	resp, err := vectorSvc.CompactNamespace(ctx, &service.CompactNamespaceRequest{
 		Namespace: req.GetNamespace(),
 		ShardID:   req.GetShardId(),
 	})
@@ -787,11 +806,12 @@ func (s *qrdbServiceServer) VectorCompactNamespace(ctx context.Context, req *pb.
 
 // VectorGetCompactionProgress returns the current progress of a compaction job.
 func (s *qrdbServiceServer) VectorGetCompactionProgress(ctx context.Context, req *pb.VectorGetCompactionProgressRequest) (*pb.VectorCompactionProgress, error) {
-	if s.vectorSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "vector"}).Error())
+	vectorSvc, svcErr := s.vectorSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
-	progress, err := s.vectorSvc.GetCompactionProgress(ctx, &service.GetCompactionProgressRequest{
+	progress, err := vectorSvc.GetCompactionProgress(ctx, &service.GetCompactionProgressRequest{
 		Namespace:   req.GetNamespace(),
 		OperationID: req.GetJobId(),
 		ShardID:     req.GetShardId(),

@@ -967,6 +967,8 @@ func mapBarrierCeremonyHTTPError(err error) int {
 		return http.StatusConflict
 	case errors.Is(err, seal.ErrInvalidCredentials):
 		return http.StatusForbidden
+	case errors.Is(err, seal.ErrDecryptionFailed):
+		return http.StatusForbidden
 	case errors.Is(err, service.ErrCeremonyNotConfigured):
 		return http.StatusUnprocessableEntity
 	default:

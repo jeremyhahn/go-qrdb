@@ -33,12 +33,17 @@ func (s *Server) handleKVPut(ctx context.Context, payload []byte) ([]byte, error
 		return nil, &UnmarshalError{Err: err}
 	}
 
+	kvSvc, svcErr := s.kvSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
+	}
+
 	if mode, ok := writeModeFromWire(req.GetWriteMode()); ok {
-		if err := s.kvSvc.PutWithMode(ctx, req.GetKey(), req.GetValue(), mode); err != nil {
+		if err := kvSvc.PutWithMode(ctx, req.GetKey(), req.GetValue(), mode); err != nil {
 			return nil, err
 		}
 	} else {
-		if err := s.kvSvc.Put(ctx, req.GetKey(), req.GetValue()); err != nil {
+		if err := kvSvc.Put(ctx, req.GetKey(), req.GetValue()); err != nil {
 			return nil, err
 		}
 	}
@@ -60,14 +65,19 @@ func (s *Server) handleKVGet(ctx context.Context, payload []byte) ([]byte, error
 		return nil, &UnmarshalError{Err: err}
 	}
 
+	kvSvc, svcErr := s.kvSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
+	}
+
 	var (
 		data []byte
 		err  error
 	)
 	if opts, ok := readOptsFromWire(req.GetConsistency()); ok {
-		data, err = s.kvSvc.GetWithConsistency(ctx, req.GetKey(), opts)
+		data, err = kvSvc.GetWithConsistency(ctx, req.GetKey(), opts)
 	} else {
-		data, err = s.kvSvc.Get(ctx, req.GetKey())
+		data, err = kvSvc.Get(ctx, req.GetKey())
 	}
 	if err != nil {
 		return nil, err
@@ -90,12 +100,17 @@ func (s *Server) handleKVDelete(ctx context.Context, payload []byte) ([]byte, er
 		return nil, &UnmarshalError{Err: err}
 	}
 
+	kvSvc, svcErr := s.kvSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
+	}
+
 	if mode, ok := writeModeFromWire(req.GetWriteMode()); ok {
-		if err := s.kvSvc.DeleteWithMode(ctx, req.GetKey(), mode); err != nil {
+		if err := kvSvc.DeleteWithMode(ctx, req.GetKey(), mode); err != nil {
 			return nil, err
 		}
 	} else {
-		if err := s.kvSvc.Delete(ctx, req.GetKey()); err != nil {
+		if err := kvSvc.Delete(ctx, req.GetKey()); err != nil {
 			return nil, err
 		}
 	}
@@ -117,14 +132,19 @@ func (s *Server) handleKVList(ctx context.Context, payload []byte) ([]byte, erro
 		return nil, &UnmarshalError{Err: err}
 	}
 
+	kvSvc, svcErr := s.kvSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
+	}
+
 	var (
 		keys []string
 		err  error
 	)
 	if opts, ok := readOptsFromWire(req.GetConsistency()); ok {
-		keys, err = s.kvSvc.ListWithConsistency(ctx, req.GetPrefix(), opts)
+		keys, err = kvSvc.ListWithConsistency(ctx, req.GetPrefix(), opts)
 	} else {
-		keys, err = s.kvSvc.List(ctx, req.GetPrefix())
+		keys, err = kvSvc.List(ctx, req.GetPrefix())
 	}
 	if err != nil {
 		return nil, err
@@ -147,14 +167,19 @@ func (s *Server) handleKVScan(ctx context.Context, payload []byte) ([]byte, erro
 		return nil, &UnmarshalError{Err: err}
 	}
 
+	kvSvc, svcErr := s.kvSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
+	}
+
 	var (
 		data map[string][]byte
 		err  error
 	)
 	if opts, ok := readOptsFromWire(req.GetConsistency()); ok {
-		data, err = s.kvSvc.ScanWithConsistency(ctx, req.GetPrefix(), opts)
+		data, err = kvSvc.ScanWithConsistency(ctx, req.GetPrefix(), opts)
 	} else {
-		data, err = s.kvSvc.Scan(ctx, req.GetPrefix())
+		data, err = kvSvc.Scan(ctx, req.GetPrefix())
 	}
 	if err != nil {
 		return nil, err

@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -32,6 +33,7 @@ type mcpTenantInfo struct {
 	Name          string                        `json:"name"`
 	IsolationType transport.TenantIsolationType `json:"isolation_type,omitempty"`
 	Quotas        *transport.TenantQuotas       `json:"quotas,omitempty"`
+	Entitlements  *transport.TenantEntitlements `json:"entitlements,omitempty"`
 	CreatedAt     string                        `json:"created_at"`
 	UpdatedAt     string                        `json:"updated_at"`
 }
@@ -80,6 +82,9 @@ func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenan
 	}
 	if req.IsolationType != "" {
 		args["isolation_type"] = string(req.IsolationType)
+	}
+	if req.BarrierAutoUnseal {
+		args["barrier_auto_unseal"] = true
 	}
 
 	text, err := t.callTool(ctx, "qrdb_tenant_create", args)
@@ -188,18 +193,21 @@ func (t *Transport) UpdateTenantQuotas(ctx context.Context, req *transport.Updat
 	}
 
 	args := map[string]any{
-		"id":                req.TenantID,
-		"max_databases":     req.Quotas.MaxDatabases,
-		"max_raft_groups":   req.Quotas.MaxRaftGroups,
-		"max_collections":   req.Quotas.MaxCollections,
-		"max_keys":          req.Quotas.MaxKeys,
-		"max_storage_bytes": req.Quotas.MaxStorageBytes,
-		"max_users":         req.Quotas.MaxUsers,
-		"max_roles":         req.Quotas.MaxRoles,
-		"max_certificates":  req.Quotas.MaxCertificates,
-		"max_backups":       req.Quotas.MaxBackups,
-		"max_vector_dims":   req.Quotas.MaxVectorDims,
-		"max_ts_metrics":    req.Quotas.MaxTSMetrics,
+		"id":                      req.TenantID,
+		"max_databases":           req.Quotas.MaxDatabases,
+		"max_raft_groups":         req.Quotas.MaxRaftGroups,
+		"max_replicas_per_group":  req.Quotas.MaxReplicasPerGroup,
+		"max_total_replicas":      req.Quotas.MaxTotalReplicas,
+		"max_collections":         req.Quotas.MaxCollections,
+		"max_keys":                req.Quotas.MaxKeys,
+		"max_storage_bytes":       req.Quotas.MaxStorageBytes,
+		"max_database_size_bytes": req.Quotas.MaxDatabaseSizeBytes,
+		"max_users":               req.Quotas.MaxUsers,
+		"max_roles":               req.Quotas.MaxRoles,
+		"max_certificates":        req.Quotas.MaxCertificates,
+		"max_backups":             req.Quotas.MaxBackups,
+		"max_vector_dims":         req.Quotas.MaxVectorDims,
+		"max_ts_metrics":          req.Quotas.MaxTSMetrics,
 	}
 
 	text, err := t.callTool(ctx, "qrdb_tenant_update_quotas", args)
@@ -213,6 +221,34 @@ func (t *Transport) UpdateTenantQuotas(ctx context.Context, req *transport.Updat
 	}
 
 	return &transport.UpdateTenantQuotasResponse{Tenant: mcpTenantInfoToTransport(&info)}, nil
+}
+
+// UpdateTenantEntitlements sets the feature entitlements for a tenant by
+// calling the qrdb_tenant_update_entitlements MCP tool.
+func (t *Transport) UpdateTenantEntitlements(ctx context.Context, req *transport.UpdateTenantEntitlementsRequest) (*transport.UpdateTenantEntitlementsResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	args := map[string]any{
+		"id":                           req.TenantID,
+		"allowed_isolation_modes":      strings.Join(req.Entitlements.AllowedIsolationModes, ","),
+		"allow_dedicated_raft":         req.Entitlements.AllowDedicatedRaft,
+		"allow_volume_storage":         req.Entitlements.AllowVolumeStorage,
+		"allow_system_managed_barrier": req.Entitlements.AllowSystemManagedBarrier,
+	}
+
+	text, err := t.callTool(ctx, "qrdb_tenant_update_entitlements", args)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "UpdateTenantEntitlements", Err: err}
+	}
+
+	var info mcpTenantInfo
+	if jsonErr := json.Unmarshal([]byte(text), &info); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "UpdateTenantEntitlements", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+
+	return &transport.UpdateTenantEntitlementsResponse{Tenant: mcpTenantInfoToTransport(&info)}, nil
 }
 
 // TenantBarrierInit initializes a per-tenant barrier by calling the
@@ -567,5 +603,6 @@ func mcpTenantInfoToTransport(m *mcpTenantInfo) transport.TenantInfo {
 		Name:          m.Name,
 		IsolationType: m.IsolationType,
 		Quotas:        m.Quotas,
+		Entitlements:  m.Entitlements,
 	}
 }

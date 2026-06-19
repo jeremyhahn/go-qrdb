@@ -27,8 +27,9 @@ import (
 // evaluates a set of preconditions (compares) and atomically applies the
 // success operations when all pass, or the failure operations when any fail.
 func (s *Server) handleTransaction(ctx context.Context, payload []byte) ([]byte, error) {
-	if s.txSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "transaction"}
+	txSvc, svcErr := s.txSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
 	}
 
 	var req pb.TransactionRequest
@@ -51,7 +52,7 @@ func (s *Server) handleTransaction(ctx context.Context, payload []byte) ([]byte,
 		failureOps[i] = protoToOp(op)
 	}
 
-	result, err := s.txSvc.Execute(ctx, compares, successOps, failureOps)
+	result, err := txSvc.Execute(ctx, compares, successOps, failureOps)
 	if err != nil {
 		return nil, err
 	}

@@ -84,6 +84,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"log/slog"
 
@@ -391,6 +392,16 @@ type Node struct {
 	// pendingClustered is non-nil when the clustered node was constructed with
 	// a sealed barrier. Unseal consumes it to complete the clustered boot.
 	pendingClustered *pendingClusteredBoot
+
+	// retainedStandalone preserves the standalone boot parameters AFTER boot
+	// completes (completeStandaloneBoot nils pendingStandalone). It lets the
+	// in-process encryption-migration recycle rebuild the data plane under a
+	// keyed barrier without a process restart. Nil for clustered/memory nodes.
+	retainedStandalone *pendingStandaloneBoot
+
+	// migrateMu serializes in-process encryption migrations so only one runs at
+	// a time (each tears down and rebuilds the data plane).
+	migrateMu sync.Mutex
 }
 
 // quicraftCloser is satisfied by *quicraft.Host and allows tests to inject
@@ -489,6 +500,9 @@ func (n *Node) completeBoot(ctx context.Context) error {
 // BuildServices, and wires the server.
 func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStandaloneBoot) error {
 	n.pendingStandalone = nil
+	// Retain the boot parameters so an in-process encryption migration can
+	// rebuild the data plane under a keyed barrier without a process restart.
+	n.retainedStandalone = pending
 
 	var dataPlaneFS vfs.FS
 	if n.barrier != nil && !n.barrier.IsSealed() && pending.backendType == database.BackendPebble {
@@ -636,12 +650,37 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 	}
 	n.svcNode = svcNode
 
+	// Phase 2: bind the cluster-wide replicated volume-pool state now that the
+	// replicated system KV is available. Mirrors cmd/qrdbd/start.go.
+	n.bindReplicatedVolumePool(svcNode)
+
 	if err := n.wireClientAndServer(ctx, svcNode, pending.cfg, pending.serverOpts); err != nil {
 		_ = svcNode.Stop(context.Background())
 		_ = host.Close()
 		return err
 	}
 	return nil
+}
+
+// bindReplicatedVolumePool wires the cluster-wide volume-pool state (Phase 2)
+// once the replicated system KV is available: it binds the pool's round-robin
+// cursor store to the replicated KV and attaches the replicated tenant→slot
+// assignment store to the barrier registry. It is a no-op when the node has no
+// volume pool, runs standalone (ReplicatedState is nil), or has no KV service.
+func (n *Node) bindReplicatedVolumePool(svcNode *lifecycle.Node) {
+	if n.volumePool == nil || svcNode == nil || svcNode.KV == nil {
+		return
+	}
+	if n.volumePool.ReplicatedState != nil {
+		if err := n.volumePool.ReplicatedState.Bind(lifecycle.NewKVStoreAdapter(svcNode.KV)); err != nil && n.logger != nil {
+			n.logger.Warn("node: failed to bind replicated volume-pool cursor; falling back to node-local pick",
+				slog.Any("error", err))
+		}
+	}
+	if n.barrierRegistry != nil {
+		n.barrierRegistry.Attach(seal.WithReplicatedSlotStore(
+			lifecycle.NewReplicatedSealBackend(svcNode.KV, svcNode.Transaction)))
+	}
 }
 
 // Close tears down all node resources in LIFO order. Nil fields are skipped.
@@ -774,8 +813,10 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 
 	// Build the seal subsystem BEFORE data-plane storage so that, once
 	// unsealed, the data-plane PebbleDB can be opened on top of encfs.
+	// Standalone nodes run on a LocalBackend (no replicated KV), so the volume
+	// pool cursor stays node-local (clustered=false).
 	if cfg.Seal.Enabled {
-		sub, err := buildNodeSealSubsystem(ctx, cfg, dataDir, log, nOpts)
+		sub, err := buildNodeSealSubsystem(ctx, cfg, dataDir, log, nOpts, false)
 		if err != nil {
 			return nil, err
 		}
@@ -922,9 +963,11 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 	}
 
 	// Build the seal subsystem BEFORE host construction so encfs wraps the
-	// state machine's Pebble stores once the barrier is unsealed.
+	// state machine's Pebble stores once the barrier is unsealed. Clustered
+	// nodes run on a Raft host, so the volume pool cursor lives in the
+	// replicated system KV (clustered=true), bound once the data plane is up.
 	if cfg.Seal.Enabled {
-		sub, err := buildNodeSealSubsystem(ctx, cfg, dataDir, log, nOpts)
+		sub, err := buildNodeSealSubsystem(ctx, cfg, dataDir, log, nOpts, true)
 		if err != nil {
 			return nil, err
 		}
@@ -1036,7 +1079,7 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 // with the barrier instead of the built-in deferred-software fallback. This
 // is the injection path for cloud KMS (awskms, vault, gcpkms, azurekv) and
 // hardware (tpm2, pkcs11) strategies constructed by higher-level composers.
-func buildNodeSealSubsystem(ctx context.Context, cfg *qrdbconfig.Config, dataDir string, log *slog.Logger, nOpts *nodeOptions) (*nodeSealSubsystem, error) {
+func buildNodeSealSubsystem(ctx context.Context, cfg *qrdbconfig.Config, dataDir string, log *slog.Logger, nOpts *nodeOptions, clustered bool) (*nodeSealSubsystem, error) {
 	sealDataDir := filepath.Join(dataDir, "seal")
 	sealStore, err := pebbleStorage.New(pebbleStorage.DefaultConfig(sealDataDir))
 	if err != nil {
@@ -1117,7 +1160,7 @@ func buildNodeSealSubsystem(ctx context.Context, cfg *qrdbconfig.Config, dataDir
 	// mirrors the daemon's initVolumePoolSubsystem path (cmd/qrdbd/start.go)
 	// so embedders (go-quicbaas, go-xkms) get per-tenant barrier isolation
 	// without requiring the daemon binary.
-	vp, vpErr := qrdbpool.BuildVolumePoolSubsystem(dataDir, cfg.Storage.VolumePools, log)
+	vp, vpErr := qrdbpool.BuildVolumePoolSubsystem(dataDir, cfg.Storage.VolumePools, log, clustered)
 	if vpErr != nil {
 		_ = sealStore.Close()
 		return nil, &StorageCreateError{Backend: "volume-pool", Err: vpErr}
@@ -1179,7 +1222,7 @@ func attemptAutoUnseal(ctx context.Context, barrier *seal.StorageBarrier, sealCf
 			log.Info("node: seal strategy requires operator unseal", "strategy", strategyID)
 			return false
 		}
-		creds = seal.Credentials{Secret: string(passphrase)}
+		creds = seal.Credentials{Secret: passphrase}
 
 	default:
 		// Unknown / hardware strategy. Inspect the barrier's active strategy

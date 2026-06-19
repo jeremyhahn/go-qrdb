@@ -26,6 +26,8 @@ import (
 	mapstructure "github.com/go-viper/mapstructure/v2"
 	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 )
 
 // envPrefix is the environment-variable prefix for config overrides. Nested
@@ -79,6 +81,88 @@ type TenantConfig struct {
 	// multi-tenant production environments; it is automatically enabled
 	// when the process runs in FIPS-140 mode.
 	StrictIsolation bool `yaml:"strict_isolation"`
+
+	// DefaultQuotas are the resource limits applied to tenants whose own
+	// quotas are unset (nil). Conservative production defaults.
+	DefaultQuotas TenantQuotaDefaults `yaml:"default_quotas"`
+
+	// DefaultEntitlements are the feature entitlements applied to tenants whose
+	// own entitlements are unset (nil). Conservative production defaults: only
+	// shared prefix isolation, no dedicated raft/volume tiers.
+	DefaultEntitlements TenantEntitlementDefaults `yaml:"default_entitlements"`
+
+	// QuotaReconcileInterval is how often the background storage-quota
+	// reconciler flushes the in-memory byte accumulator to the persisted
+	// CurrentStorageBytes counters and recomputes the on-disk size of each
+	// dedicated-volume tenant to correct drift. Accepts a Go duration string
+	// (e.g. "5m", "30s"). Default: "5m". Overridable via
+	// QRDB_TENANT_QUOTA_RECONCILE_INTERVAL.
+	QuotaReconcileInterval string `yaml:"quota_reconcile_interval"`
+}
+
+// DefaultQuotaReconcileIntervalString is the default
+// tenant.quota_reconcile_interval when unset.
+const DefaultQuotaReconcileIntervalString = "5m"
+
+// QuotaReconcileIntervalDuration returns the parsed QuotaReconcileInterval, or
+// the default 5m when unset.
+func (c TenantConfig) QuotaReconcileIntervalDuration() (time.Duration, error) {
+	s := strings.TrimSpace(c.QuotaReconcileInterval)
+	if s == "" {
+		s = DefaultQuotaReconcileIntervalString
+	}
+	return parseDuration(s)
+}
+
+// TenantQuotaDefaults configures the operator-settable default resource quotas
+// applied to tenants that have not had explicit quotas set. A value of -1 means
+// unlimited; 0 means use the built-in system default.
+type TenantQuotaDefaults struct {
+	MaxDatabases          int64 `yaml:"max_databases"`
+	MaxRaftGroups         int64 `yaml:"max_raft_groups"`
+	MaxReplicasPerGroup   int64 `yaml:"max_replicas_per_group"`
+	MaxTotalReplicas      int64 `yaml:"max_total_replicas"`
+	MaxStorageBytes       int64 `yaml:"max_storage_bytes"`
+	MaxDatabaseSizeBytes  int64 `yaml:"max_database_size_bytes"`
+	MaxDedicatedWALGroups int64 `yaml:"max_dedicated_wal_groups"`
+}
+
+// ToQuotas converts the config defaults into a quota.Quotas value.
+func (d TenantQuotaDefaults) ToQuotas() *quota.Quotas {
+	return &quota.Quotas{
+		MaxDatabases:          d.MaxDatabases,
+		MaxRaftGroups:         d.MaxRaftGroups,
+		MaxReplicasPerGroup:   d.MaxReplicasPerGroup,
+		MaxTotalReplicas:      d.MaxTotalReplicas,
+		MaxStorageBytes:       d.MaxStorageBytes,
+		MaxDatabaseSizeBytes:  d.MaxDatabaseSizeBytes,
+		MaxDedicatedWALGroups: d.MaxDedicatedWALGroups,
+	}
+}
+
+// TenantEntitlementDefaults configures the operator-settable default feature
+// entitlements applied to tenants that have not had explicit entitlements set.
+type TenantEntitlementDefaults struct {
+	AllowedIsolationModes     []string `yaml:"allowed_isolation_modes"`
+	AllowDedicatedRaft        bool     `yaml:"allow_dedicated_raft"`
+	AllowVolumeStorage        bool     `yaml:"allow_volume_storage"`
+	AllowSystemManagedBarrier bool     `yaml:"allow_system_managed_barrier"`
+	AllowDedicatedWAL         bool     `yaml:"allow_dedicated_wal"`
+}
+
+// ToEntitlements converts the config defaults into a quota.Entitlements value.
+func (d TenantEntitlementDefaults) ToEntitlements() *quota.Entitlements {
+	modes := d.AllowedIsolationModes
+	if len(modes) == 0 {
+		modes = []string{quota.IsolationModePrefix}
+	}
+	return &quota.Entitlements{
+		AllowedIsolationModes:     modes,
+		AllowDedicatedRaft:        d.AllowDedicatedRaft,
+		AllowVolumeStorage:        d.AllowVolumeStorage,
+		AllowSystemManagedBarrier: d.AllowSystemManagedBarrier,
+		AllowDedicatedWAL:         d.AllowDedicatedWAL,
+	}
 }
 
 // CodecConfig configures the dual-codec system for storage and wire encoding.
@@ -599,6 +683,43 @@ type AuthConfig struct {
 	// (fail-closed). When empty, only the legacy OU-based tenant derivation is
 	// used. Default: "".
 	SPIFFETrustDomain string `yaml:"spiffe_trust_domain"`
+
+	// ClusterTrustDomain is the operator-pinned trust domain used for
+	// cluster-peer node identities. It is encoded into every auto-generated
+	// node certificate as a SPIFFE URI SAN
+	// (spiffe://<trust-domain>/node/<raftAddress>) and is pinned by both the
+	// clusterkeys.Receiver (checking incoming peer certs) and the
+	// clusterkeys.Sender (verifying recipient delivery certs). A single value
+	// must be consistent across all nodes in the cluster. Default:
+	// "qrdb.cluster".
+	ClusterTrustDomain string `yaml:"cluster_trust_domain"`
+
+	// PeerAdminURLs is an optional list of peer Raft address → admin HTTPS
+	// base URL mappings (e.g. raft_addr "127.0.0.1:7946", admin_url
+	// "https://127.0.0.1:8443"). The cluster key sender (Phase 4c-1c) uses
+	// this list to locate each follower node's /v1/cluster/nodekey and
+	// /v1/cluster/keydelivery endpoints. When a Raft address is absent from
+	// this list, the sender falls back to replacing the Raft port with the
+	// local admin port — which is correct for production clusters where every
+	// node runs the same admin port on a distinct host, but incorrect for
+	// single-host deployments (e.g. integration tests) where each node uses a
+	// different admin port. Specifying the full peer list via this field
+	// eliminates the fallback ambiguity entirely. Default: nil.
+	//
+	// A list of structs is used rather than a YAML map keyed by IP address
+	// because Viper's default key delimiter (".") causes dotted IP addresses
+	// used as YAML map keys to be parsed as nested path components, corrupting
+	// the decoded value.
+	PeerAdminURLs []PeerAdminEntry `yaml:"peer_admin_urls"`
+}
+
+// PeerAdminEntry maps a single peer's Raft address to its admin HTTPS base URL.
+// It is an element of AuthConfig.PeerAdminURLs.
+type PeerAdminEntry struct {
+	// RaftAddr is the peer's Raft address (e.g. "127.0.0.1:7946").
+	RaftAddr string `yaml:"raft_addr"`
+	// AdminURL is the peer's admin HTTPS base URL (e.g. "https://127.0.0.1:8443").
+	AdminURL string `yaml:"admin_url"`
 }
 
 // AuditConfig configures the dual-backend audit logging system.
@@ -844,6 +965,25 @@ func DefaultConfig() *Config {
 				QueueSize:       10000,
 			},
 		},
+		Tenant: TenantConfig{
+			// Conservative multi-tenant defaults: a tenant with no explicit
+			// quotas/entitlements may create up to 5 databases, consume up to
+			// 1 GiB, and use only shared prefix isolation. Dedicated raft and
+			// volume tiers are denied until the operator grants them.
+			DefaultQuotas: TenantQuotaDefaults{
+				MaxDatabases:        5,
+				MaxRaftGroups:       0,
+				MaxReplicasPerGroup: 3,
+				MaxTotalReplicas:    3,
+				MaxStorageBytes:     1 << 30, // 1 GiB
+			},
+			DefaultEntitlements: TenantEntitlementDefaults{
+				AllowedIsolationModes: []string{quota.IsolationModePrefix},
+				AllowDedicatedRaft:    false,
+				AllowVolumeStorage:    false,
+			},
+			QuotaReconcileInterval: DefaultQuotaReconcileIntervalString,
+		},
 		Auth: AuthConfig{
 			Enabled:       true,
 			AdminUsername: "admin",
@@ -882,7 +1022,7 @@ func DefaultConfig() *Config {
 			NoisePort: 63006,
 		},
 		Databases: []DatabaseConfig{
-			{Name: "default", Engine: "kv", Backend: "pebble"},
+			{Name: "system", Engine: "kv", Backend: "pebble"},
 		},
 		RAG: RAGConfig{
 			DefaultChunkStrategy: "fixed",
@@ -923,7 +1063,7 @@ func Load(path string) (*Config, error) {
 			backend = "pebble"
 		}
 		cfg.Databases = []DatabaseConfig{
-			{Name: "default", Engine: "kv", Backend: backend},
+			{Name: "system", Engine: "kv", Backend: backend},
 		}
 	}
 
@@ -1425,6 +1565,17 @@ func (c *Config) Validate() error {
 			if d <= 0 {
 				return &ValidationError{Field: "seal.share_ttl", Reason: "must be greater than zero"}
 			}
+		}
+	}
+
+	// Tenant validation.
+	if strings.TrimSpace(c.Tenant.QuotaReconcileInterval) != "" {
+		d, err := parseDuration(c.Tenant.QuotaReconcileInterval)
+		if err != nil {
+			return &ValidationError{Field: "tenant.quota_reconcile_interval", Reason: "must be a valid Go duration (e.g. 5m)"}
+		}
+		if d <= 0 {
+			return &ValidationError{Field: "tenant.quota_reconcile_interval", Reason: "must be greater than zero"}
 		}
 	}
 

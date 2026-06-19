@@ -201,6 +201,26 @@ func mapServiceError(err error) error {
 		return status.Error(codes.Internal, err.Error())
 	}
 
+	var snc *ServiceNotConfiguredError
+	if errors.As(err, &snc) {
+		return status.Error(codes.Unimplemented, err.Error())
+	}
+
+	var tnf *service.TenantNotFoundError
+	if errors.As(err, &tnf) {
+		return status.Error(codes.NotFound, err.Error())
+	}
+
+	var dnf *service.DatabaseNotFoundError
+	if errors.As(err, &dnf) {
+		return status.Error(codes.NotFound, err.Error())
+	}
+
+	var bse *service.BarrierSealedError
+	if errors.As(err, &bse) {
+		return status.Error(codes.Unavailable, err.Error())
+	}
+
 	var lhe *lock.LockHeldError
 	if errors.As(err, &lhe) {
 		return status.Error(codes.Aborted, err.Error())

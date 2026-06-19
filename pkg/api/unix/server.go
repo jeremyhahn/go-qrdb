@@ -78,6 +78,7 @@ type Server struct {
 	authFactorSvc    service.AuthFactorServicer
 	tenantBarrierSvc tenant.TenantServicer
 	auditLogger      audit.AuditLogger
+	registry         service.Registry
 	server           *grpc.Server
 	listener         net.Listener
 	serveWg          sync.WaitGroup
@@ -218,6 +219,14 @@ func WithTenantBarrierService(svc tenant.TenantServicer) ServerOption {
 	return func(s *Server) { s.tenantBarrierSvc = svc }
 }
 
+// WithServiceRegistry configures the Unix socket server with a per-(tenant,
+// database) service registry. When set, data-plane RPCs resolve their servicer
+// per scope using the x-qrdb-database metadata value (default system); when nil
+// the singleton service fields are used.
+func WithServiceRegistry(reg service.Registry) ServerOption {
+	return func(s *Server) { s.registry = reg }
+}
+
 // WithKVService configures the Unix socket server with a KV service. This is
 // an alternative to passing kvSvc as a positional parameter and is useful when
 // constructing a server that handles only barrier, cert, or auth services.
@@ -276,6 +285,10 @@ func (s *Server) Start() error {
 		grpc.ChainUnaryInterceptor(
 			recoveryInterceptor,
 			loggingInterceptor,
+			grpcpkg.DatabaseScopeUnaryInterceptor,
+		),
+		grpc.ChainStreamInterceptor(
+			grpcpkg.DatabaseScopeStreamInterceptor,
 		),
 	}
 
@@ -351,6 +364,9 @@ func (s *Server) Start() error {
 	}
 	if s.rebalanceSvc != nil {
 		regOpts = append(regOpts, grpcpkg.WithRegisterRebalanceService(s.rebalanceSvc))
+	}
+	if s.registry != nil {
+		regOpts = append(regOpts, grpcpkg.WithRegisterServiceRegistry(s.registry))
 	}
 
 	// Reuse the gRPC package's service registration.

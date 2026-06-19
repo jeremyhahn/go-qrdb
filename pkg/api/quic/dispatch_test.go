@@ -212,6 +212,7 @@ var expectedMethods = []string{
 	"tenant.Update",
 	"tenant.Delete",
 	"tenant.UpdateQuotas",
+	"tenant.UpdateEntitlements",
 }
 
 func TestBuildHandlers_RegistersAllMethods(t *testing.T) {
@@ -229,12 +230,12 @@ func TestBuildHandlers_RegistersAllMethods(t *testing.T) {
 func TestBuildHandlers_MethodCount(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{})
 
-	// 153 = 144 prior unary handlers + 9 barrier SO handlers
+	// 154 = 144 prior unary handlers + 9 barrier SO handlers
 	// (barrier.OfficerRegister/OfficerList/ShareClaimBegin/ShareClaimComplete/
 	// OfficerClaimStatus/RecoveryOfficerRegister/RecoveryShareClaimBegin/
-	// RecoveryShareClaimComplete/ShamirSealVote). The 2 watch methods
-	// remain on the streaming path, not the unary table.
-	const wantCount = 153
+	// RecoveryShareClaimComplete/ShamirSealVote) + 1 tenant.UpdateEntitlements.
+	// The 2 watch methods remain on the streaming path, not the unary table.
+	const wantCount = 154
 	if got := len(srv.handlers); got != wantCount {
 		t.Fatalf("handler count = %d, want %d", got, wantCount)
 	}
@@ -338,7 +339,7 @@ func TestBuildHandlers_CategoryCounts(t *testing.T) {
 		"cert":     4,
 		"barrier":  22,
 		"ceremony": 9,
-		"tenant":   6,
+		"tenant":   7,
 	}
 
 	for cat, want := range expectedCounts {

@@ -89,7 +89,7 @@ func combineShareValues(t testing.TB, values []string, threshold, total int) []b
 			Value:     v,
 		}
 	}
-	secret, err := quicraftShamir.Combine(shares)
+	secret, err := quicraftShamir.CombineUnverified(shares)
 	if err != nil {
 		t.Fatalf("combineShareValues: %v", err)
 	}

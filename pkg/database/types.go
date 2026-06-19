@@ -411,14 +411,29 @@ func (e *EtcdConfig) Validate() error {
 
 // DatabaseConfig defines the configuration for creating or opening a database.
 type DatabaseConfig struct {
-	TenantID     string                    `yaml:"tenant_id,omitempty"     json:"tenant_id,omitempty"`
-	Name         string                    `yaml:"name"                    json:"name"`
-	Engine       EngineType                `yaml:"engine"                  json:"engine"`
-	Backend      BackendType               `yaml:"backend"                 json:"backend"`
-	Protocol     ProtocolConfig            `yaml:"protocol"                json:"protocol"`
-	DataDir      string                    `yaml:"data_dir,omitempty"      json:"data_dir,omitempty"`
-	Mode         DatabaseMode              `yaml:"mode"                    json:"mode,omitempty"`
-	StorageCodec string                    `yaml:"storage_codec,omitempty" json:"storage_codec,omitempty"`
+	TenantID     string         `yaml:"tenant_id,omitempty"     json:"tenant_id,omitempty"`
+	Name         string         `yaml:"name"                    json:"name"`
+	Engine       EngineType     `yaml:"engine"                  json:"engine"`
+	Backend      BackendType    `yaml:"backend"                 json:"backend"`
+	Protocol     ProtocolConfig `yaml:"protocol"                json:"protocol"`
+	DataDir      string         `yaml:"data_dir,omitempty"      json:"data_dir,omitempty"`
+	Mode         DatabaseMode   `yaml:"mode"                    json:"mode,omitempty"`
+	StorageCodec string         `yaml:"storage_codec,omitempty" json:"storage_codec,omitempty"`
+	// Replicas is the requested replication factor for a dedicated-raft
+	// (IsolationRaft) database: the number of voting replicas to place across
+	// the cluster. It is meaningful only for raft-backed databases; for other
+	// backends/engines it is ignored. Unset (0) defaults to 1 for raft. The
+	// actual multi-node placement is performed by a later stage; this stage
+	// carries, validates, and quota-meters the value.
+	Replicas int `yaml:"replicas,omitempty"      json:"replicas,omitempty"`
+	// DedicatedWAL opts a dedicated-raft (IsolationRaft) database into a
+	// per-tenant-KEY WAL: its Raft log is written to a dedicated WAL store
+	// barrier-encrypted under the owning tenant's barrier instead of the shared
+	// system-barrier WAL (4d Option C). It is meaningful only for raft-backed
+	// databases and is gated by the dedicated_wal entitlement plus the
+	// MaxDedicatedWALGroups quota; when either is unavailable the create falls
+	// back to the shared WAL. For all other backends it is ignored.
+	DedicatedWAL bool                      `yaml:"dedicated_wal,omitempty" json:"dedicated_wal,omitempty"`
 	Raft         *DatabaseRaftConfig       `yaml:"raft"                    json:"raft,omitempty"`
 	Barrier      *DatabaseBarrierConfig    `yaml:"barrier"                 json:"barrier,omitempty"`
 	Connection   *DatabaseConnectionConfig `yaml:"connection"              json:"connection,omitempty"`
@@ -504,6 +519,8 @@ type DatabaseMeta struct {
 	DataDir      string                    `json:"data_dir,omitempty"`
 	Mode         DatabaseMode              `json:"mode,omitempty"`
 	StorageCodec string                    `json:"storage_codec,omitempty"`
+	Replicas     int                       `json:"replicas,omitempty"`
+	DedicatedWAL bool                      `json:"dedicated_wal,omitempty"`
 	Raft         *DatabaseRaftConfig       `json:"raft,omitempty"`
 	Barrier      *DatabaseBarrierConfig    `json:"barrier,omitempty"`
 	Connection   *DatabaseConnectionConfig `json:"connection,omitempty"`
@@ -525,6 +542,8 @@ type DatabaseInfo struct {
 	ShardID      uint64                    `json:"shard_id,omitempty"` // only raft mode
 	Mode         DatabaseMode              `json:"mode,omitempty"`
 	StorageCodec string                    `json:"storage_codec,omitempty"`
+	Replicas     int                       `json:"replicas,omitempty"`      // only raft mode
+	DedicatedWAL bool                      `json:"dedicated_wal,omitempty"` // only raft mode
 	Raft         *DatabaseRaftConfig       `json:"raft,omitempty"`
 	Barrier      *DatabaseBarrierConfig    `json:"barrier,omitempty"`
 	Connection   *DatabaseConnectionConfig `json:"connection,omitempty"`

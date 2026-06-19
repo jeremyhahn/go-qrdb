@@ -84,7 +84,7 @@ var _ http.Handler = (*stubWebUI)(nil)
 // stubTenantServicerForRegistry satisfies tenant.TenantServicer.
 type stubTenantServicerForRegistry struct{}
 
-func (s *stubTenantServicerForRegistry) CreateTenant(_ context.Context, _, _ string, _ tenant.IsolationType) (*tenant.TenantInfo, error) {
+func (s *stubTenantServicerForRegistry) CreateTenant(_ context.Context, _, _ string, _ tenant.IsolationType, _ ...tenant.CreateTenantOption) (*tenant.TenantInfo, error) {
 	return nil, nil
 }
 func (s *stubTenantServicerForRegistry) GetTenant(_ context.Context, _ string) (*tenant.TenantInfo, error) {
@@ -118,6 +118,10 @@ func (s *stubTenantServicerForRegistry) TenantBarrierStatus(_ context.Context, _
 }
 func (s *stubTenantServicerForRegistry) UpdateQuotas(_ context.Context, _ string, _ *quota.Quotas) (*tenant.TenantInfo, error) {
 	return nil, nil
+}
+
+func (s *stubTenantServicerForRegistry) UpdateEntitlements(ctx context.Context, id string, e *quota.Entitlements) (*tenant.TenantInfo, error) {
+	return &tenant.TenantInfo{ID: id, Entitlements: e}, nil
 }
 func (s *stubTenantServicerForRegistry) Quotas(_ context.Context, _ string) (*quota.Quotas, error) {
 	return nil, nil

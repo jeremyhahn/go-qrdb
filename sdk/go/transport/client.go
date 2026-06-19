@@ -802,6 +802,9 @@ type TenantClient interface {
 	// UpdateTenantQuotas sets the resource quotas for a tenant.
 	UpdateTenantQuotas(ctx context.Context, req *UpdateTenantQuotasRequest) (*UpdateTenantQuotasResponse, error)
 
+	// UpdateTenantEntitlements sets the feature entitlements for a tenant.
+	UpdateTenantEntitlements(ctx context.Context, req *UpdateTenantEntitlementsRequest) (*UpdateTenantEntitlementsResponse, error)
+
 	// TenantBarrierInit initializes a per-tenant barrier. For the Shamir
 	// strategy the response carries the generated M-of-N shares; for
 	// none/passphrase the share fields are empty.

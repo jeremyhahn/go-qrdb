@@ -198,6 +198,53 @@ func TestDefaultConfig_StorageDefaults(t *testing.T) {
 	}
 }
 
+func TestDefaultConfig_TenantDefaults(t *testing.T) {
+	cfg := DefaultConfig()
+	dq := cfg.Tenant.DefaultQuotas
+	if dq.MaxDatabases != 5 {
+		t.Errorf("DefaultQuotas.MaxDatabases: got %d, want 5", dq.MaxDatabases)
+	}
+	if dq.MaxRaftGroups != 0 {
+		t.Errorf("DefaultQuotas.MaxRaftGroups: got %d, want 0", dq.MaxRaftGroups)
+	}
+	if dq.MaxStorageBytes != 1<<30 {
+		t.Errorf("DefaultQuotas.MaxStorageBytes: got %d, want %d", dq.MaxStorageBytes, 1<<30)
+	}
+	if dq.MaxReplicasPerGroup != 3 {
+		t.Errorf("DefaultQuotas.MaxReplicasPerGroup: got %d, want 3", dq.MaxReplicasPerGroup)
+	}
+	if dq.MaxTotalReplicas != 3 {
+		t.Errorf("DefaultQuotas.MaxTotalReplicas: got %d, want 3", dq.MaxTotalReplicas)
+	}
+	// ToQuotas must carry the replica caps through to quota.Quotas.
+	qq := dq.ToQuotas()
+	if qq.MaxReplicasPerGroup != 3 || qq.MaxTotalReplicas != 3 {
+		t.Errorf("ToQuotas replica caps: got per-group=%d total=%d, want 3,3",
+			qq.MaxReplicasPerGroup, qq.MaxTotalReplicas)
+	}
+
+	de := cfg.Tenant.DefaultEntitlements
+	if len(de.AllowedIsolationModes) != 1 || de.AllowedIsolationModes[0] != "prefix" {
+		t.Errorf("DefaultEntitlements.AllowedIsolationModes: got %v, want [prefix]", de.AllowedIsolationModes)
+	}
+	if de.AllowDedicatedRaft {
+		t.Error("DefaultEntitlements.AllowDedicatedRaft: got true, want false")
+	}
+	if de.AllowVolumeStorage {
+		t.Error("DefaultEntitlements.AllowVolumeStorage: got true, want false")
+	}
+
+	// Conversion helpers produce the corresponding quota types.
+	q := dq.ToQuotas()
+	if q.MaxDatabases != 5 || q.MaxStorageBytes != 1<<30 {
+		t.Errorf("ToQuotas() = %+v", q)
+	}
+	ents := de.ToEntitlements()
+	if !ents.AllowsIsolation("prefix") || ents.AllowDedicatedRaft || ents.AllowVolumeStorage {
+		t.Errorf("ToEntitlements() = %+v", ents)
+	}
+}
+
 func TestDefaultConfig_TLSDefaults(t *testing.T) {
 	cfg := DefaultConfig()
 	if !cfg.TLS.Enabled {
@@ -357,6 +404,28 @@ func TestLoad_ValidYAML(t *testing.T) {
 	}
 	if cfg.Discovery.Method != "static" {
 		t.Errorf("Method: got %q, want %q", cfg.Discovery.Method, "static")
+	}
+}
+
+func TestLoad_TenantReplicaQuotaDefaults(t *testing.T) {
+	yaml := `
+tenant:
+  default_quotas:
+    max_databases: 7
+    max_replicas_per_group: 5
+    max_total_replicas: 12
+`
+	path := writeTemp(t, yaml)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: unexpected error: %v", err)
+	}
+	dq := cfg.Tenant.DefaultQuotas
+	if dq.MaxReplicasPerGroup != 5 {
+		t.Errorf("MaxReplicasPerGroup: got %d, want 5", dq.MaxReplicasPerGroup)
+	}
+	if dq.MaxTotalReplicas != 12 {
+		t.Errorf("MaxTotalReplicas: got %d, want 12", dq.MaxTotalReplicas)
 	}
 }
 

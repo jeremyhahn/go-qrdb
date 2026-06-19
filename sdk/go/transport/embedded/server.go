@@ -753,7 +753,7 @@ func (s *Server) runAutoUnseal(
 		// Fresh barrier: initialize Shamir, then unseal with the
 		// supplied shares. The seed credential is the bootstrap
 		// passphrase to keep parity with the embedded software path.
-		if _, initErr := barrier.InitializeShamir(ctx, seal.Credentials{Secret: string(softwareSecret)}); initErr != nil {
+		if _, initErr := barrier.InitializeShamir(ctx, seal.Credentials{Secret: softwareSecret}); initErr != nil {
 			return &BarrierUnsealError{Err: initErr}
 		}
 		if unsealErr := barrier.UnsealWithShares(ctx, cfg.ShamirShares); unsealErr != nil {
@@ -763,7 +763,7 @@ func (s *Server) runAutoUnseal(
 
 	default:
 		// StrategyPassphrase (or zero value).
-		creds := seal.Credentials{Secret: string(softwareSecret)}
+		creds := seal.Credentials{Secret: softwareSecret}
 		// Initialize on the very first boot; subsequent boots Unseal.
 		err := barrier.Initialize(ctx, creds)
 		if err == nil {

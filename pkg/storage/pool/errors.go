@@ -107,6 +107,27 @@ func (e *NilStateStoreError) Error() string {
 	return "qrdb/storage/pool: state store must not be nil"
 }
 
+// NilReplicatedKVError is returned by NewBoundReplicatedStateStore and
+// ReplicatedStateStore.Bind when the supplied replicated KV is nil.
+type NilReplicatedKVError struct{}
+
+// Error implements the error interface.
+func (e *NilReplicatedKVError) Error() string {
+	return "qrdb/storage/pool: replicated KV must not be nil"
+}
+
+// ReplicatedStateStoreUnboundError is returned by ReplicatedStateStore.Get
+// and Put when no replicated KV has been bound yet. In clustered mode the
+// replicated cursor store is constructed before the replicated system KV is
+// available and bound once the data plane comes up; an operation issued
+// before binding is a wiring ordering bug.
+type ReplicatedStateStoreUnboundError struct{}
+
+// Error implements the error interface.
+func (e *ReplicatedStateStoreUnboundError) Error() string {
+	return "qrdb/storage/pool: replicated state store has no bound replicated KV"
+}
+
 // VolumePoolStrategyError is returned when a volume-pool YAML config
 // references an unknown strategy name.
 type VolumePoolStrategyError struct {

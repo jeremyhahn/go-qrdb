@@ -1024,7 +1024,7 @@ func TestBatchSvcFor_RegistryError(t *testing.T) {
 
 func TestTenantNotFoundError_ErrorMethod(t *testing.T) {
 	err := &TenantNotFoundError{TenantID: "corp"}
-	want := "rest: tenant not found: corp"
+	want := "service: tenant not found: corp"
 	if err.Error() != want {
 		t.Errorf("got %q, want %q", err.Error(), want)
 	}
@@ -1032,7 +1032,7 @@ func TestTenantNotFoundError_ErrorMethod(t *testing.T) {
 
 func TestDatabaseNotFoundError_ErrorMethod(t *testing.T) {
 	err := &DatabaseNotFoundError{TenantID: "corp", Database: "main"}
-	want := "rest: database not found: main (tenant: corp)"
+	want := "service: database not found: main (tenant: corp)"
 	if err.Error() != want {
 		t.Errorf("got %q, want %q", err.Error(), want)
 	}
@@ -1040,7 +1040,7 @@ func TestDatabaseNotFoundError_ErrorMethod(t *testing.T) {
 
 func TestBarrierSealedError_ErrorMethod(t *testing.T) {
 	err := &BarrierSealedError{TenantID: "corp"}
-	want := "rest: barrier sealed for tenant: corp"
+	want := "service: barrier sealed for tenant: corp"
 	if err.Error() != want {
 		t.Errorf("got %q, want %q", err.Error(), want)
 	}

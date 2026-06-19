@@ -180,6 +180,17 @@ type ServiceTenantInfo = tenantpkg.TenantInfo
 // barrier as returned by ServiceTenantServicer.TenantBarrierStatus.
 type ServiceTenantBarrierStatus = tenantpkg.TenantBarrierStatus
 
+// ServiceTenantBarrierInitResult reports the outcome of a per-tenant barrier
+// initialization (TenantBarrierInit / TenantBarrierInitWithStrategy). It is
+// re-exported so an SDK consumer that implements or wraps the
+// ServiceTenantServicer can name the return type without importing pkg/tenant.
+type ServiceTenantBarrierInitResult = tenantpkg.TenantBarrierInitResult
+
+// ServiceTenantBarrierUnsealProgress reports quorum progress while submitting
+// Shamir shares to unseal a per-tenant barrier (TenantBarrierUnsealShare /
+// TenantBarrierShamirSealVote).
+type ServiceTenantBarrierUnsealProgress = tenantpkg.TenantBarrierUnsealProgress
+
 // NewServiceTenantService creates a new service-layer TenantServicer
 // backed by a metadata store and a BarrierRegistry.
 var NewServiceTenantService = tenantpkg.NewTenantService

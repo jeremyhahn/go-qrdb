@@ -93,6 +93,24 @@ func (b kvSealBackend) Get(ctx context.Context, key string) ([]byte, error) {
 	return data, nil
 }
 
+// NewKVStoreAdapter returns a kvstore.KVStore backed by the given KVServicer.
+// It is the exported form of newKVStoreAdapter, used by daemon/composition-root
+// wiring (cmd/qrdbd) that needs a replicated KV handle — e.g. binding the
+// volume pool's replicated cursor store — without reaching into lifecycle
+// internals. A missing key reads back as (nil, nil) per the kvstore contract.
+func NewKVStoreAdapter(svc service.KVServicer) kvstore.KVStore {
+	return newKVStoreAdapter(svc)
+}
+
+// NewReplicatedSealBackend returns a seal.StorageBackend backed by the
+// replicated system KV. Its PutIfAbsent uses a Raft transaction for
+// cross-node-atomic compare-and-set, which the volume pool's cluster-wide
+// slot-assignment record relies on (first writer wins). tx is required for
+// PutIfAbsent; Get returns seal.ErrSecretNotFound for a missing key.
+func NewReplicatedSealBackend(svc service.KVServicer, tx service.TransactionServicer) seal.StorageBackend {
+	return kvSealBackend{KVStore: newKVStoreAdapter(svc), tx: tx}
+}
+
 // kvStoreAdapter adapts service.KVServicer to the kvstore.KVStore interface
 // so that internal stores (user, role, cert) can use the replicated KV
 // service for storage. Index operations are no-ops: lifecycle-layer stores

@@ -504,6 +504,17 @@ const (
 	// TenantsList grants access to list tenants.
 	TenantsList Permission = "tenants:list"
 
+	// TenantsSetIsolation grants access to change a tenant's data-isolation
+	// mode. This is a privileged provisioning operation distinct from generic
+	// TenantsUpdate (display-name changes), because the isolation tier governs
+	// where and how a tenant's data is physically stored.
+	TenantsSetIsolation Permission = "tenants:set_isolation"
+
+	// TenantsSetEntitlements grants access to change a tenant's feature
+	// entitlements (which isolation tiers and dedicated-storage features the
+	// tenant's plan permits). This is a system-admin plan-management operation.
+	TenantsSetEntitlements Permission = "tenants:set_entitlements"
+
 	// TenantBarrierInit grants a tenant admin the ability to initialize
 	// their own tenant's barrier with a caller-supplied passphrase. This
 	// permission is tenant-scoped (ScopeTenantOnly): it is exercisable only
@@ -555,6 +566,16 @@ const (
 	// DatabasesUpdate covers all database configuration updates (barrier,
 	// connection, etcd, protocol, raft).
 	DatabasesUpdate Permission = "databases:update"
+
+	// DatabasesCreateRaft gates creation of a dedicated Raft-backed database.
+	// It is checked in addition to DatabasesCreate for raft-backed databases,
+	// since a dedicated Raft group is a privileged provisioning operation.
+	DatabasesCreateRaft Permission = "databases:create_raft"
+
+	// DatabasesCreateVolume gates creation of a database on a dedicated storage
+	// volume. It is checked in addition to DatabasesCreate for volume-isolated
+	// databases.
+	DatabasesCreateVolume Permission = "databases:create_volume"
 
 	// Database encryption-barrier lifecycle. Sealing/unsealing a database's
 	// at-rest barrier is a sensitive custody operation, gated separately from
@@ -852,6 +873,7 @@ var categories = []Category{
 		Group: "Management Services",
 		Permissions: []Permission{
 			TenantsCreate, TenantsRead, TenantsUpdate, TenantsDelete, TenantsList,
+			TenantsSetIsolation, TenantsSetEntitlements,
 			TenantsListCross, TenantsCreateCross, TenantsApprove,
 			TenantBarrierInit, TenantBarrierUnseal, TenantBarrierSeal, TenantBarrierStatus,
 			TenantBarrierOfficerRegister, TenantBarrierOfficerList,
@@ -885,6 +907,7 @@ var categories = []Category{
 		Group: "Management Services",
 		Permissions: []Permission{
 			DatabasesCreate, DatabasesRead, DatabasesList, DatabasesDelete, DatabasesUpdate,
+			DatabasesCreateRaft, DatabasesCreateVolume,
 			DatabasesSeal, DatabasesUnseal, DatabasesBarrierStatus,
 		},
 	},

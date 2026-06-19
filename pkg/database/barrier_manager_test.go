@@ -66,7 +66,7 @@ func newTestBarrierManager(t *testing.T) *DatabaseBarrierManager {
 
 // testCreds returns standard test credentials.
 func testCreds() seal.Credentials {
-	return seal.Credentials{Secret: "test-password"}
+	return seal.Credentials{Secret: []byte("test-password")}
 }
 
 // ---------- NewDatabaseBarrierManager tests ----------

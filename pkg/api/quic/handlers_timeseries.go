@@ -30,8 +30,9 @@ import (
 // and stores it via the time-series service. Returns an empty response
 // payload on success.
 func (s *Server) handleTSWrite(ctx context.Context, payload []byte) ([]byte, error) {
-	if s.tsSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "timeseries"}
+	tsSvc, svcErr := s.tsSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
 	}
 
 	var req pb.TSWriteRequest
@@ -47,7 +48,7 @@ func (s *Server) handleTSWrite(ctx context.Context, payload []byte) ([]byte, err
 	ts := time.Unix(0, p.GetTimestampNs())
 	tags := protoTagsToMap(p.GetTags())
 
-	if err := s.tsSvc.Write(ctx, p.GetMetric(), p.GetValue(), ts, tags); err != nil {
+	if err := tsSvc.Write(ctx, p.GetMetric(), p.GetValue(), ts, tags); err != nil {
 		return nil, err
 	}
 
@@ -59,8 +60,9 @@ func (s *Server) handleTSWrite(ctx context.Context, payload []byte) ([]byte, err
 // them atomically via the time-series service. Returns an empty
 // response payload on success.
 func (s *Server) handleTSWriteBatch(ctx context.Context, payload []byte) ([]byte, error) {
-	if s.tsSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "timeseries"}
+	tsSvc, svcErr := s.tsSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
 	}
 
 	var req pb.TSWriteBatchRequest
@@ -73,7 +75,7 @@ func (s *Server) handleTSWriteBatch(ctx context.Context, payload []byte) ([]byte
 		points[i] = protoToDataPoint(p)
 	}
 
-	if err := s.tsSvc.WriteBatch(ctx, points); err != nil {
+	if err := tsSvc.WriteBatch(ctx, points); err != nil {
 		return nil, err
 	}
 
@@ -84,8 +86,9 @@ func (s *Server) handleTSWriteBatch(ctx context.Context, payload []byte) ([]byte
 // service for data points matching the metric within the specified time
 // range, and returns a serialized TSQueryResponse.
 func (s *Server) handleTSQuery(ctx context.Context, payload []byte) ([]byte, error) {
-	if s.tsSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "timeseries"}
+	tsSvc, svcErr := s.tsSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
 	}
 
 	var req pb.TSQueryRequest
@@ -113,9 +116,9 @@ func (s *Server) handleTSQuery(ctx context.Context, payload []byte) ([]byte, err
 		err    error
 	)
 	if ropts, ok := readOptsFromWire(req.GetConsistency()); ok {
-		points, err = s.tsSvc.QueryWithConsistency(ctx, req.GetMetric(), start, end, ropts, opts...)
+		points, err = tsSvc.QueryWithConsistency(ctx, req.GetMetric(), start, end, ropts, opts...)
 	} else {
-		points, err = s.tsSvc.Query(ctx, req.GetMetric(), start, end, opts...)
+		points, err = tsSvc.Query(ctx, req.GetMetric(), start, end, opts...)
 	}
 	if err != nil {
 		return nil, err
@@ -138,8 +141,9 @@ func (s *Server) handleTSQuery(ctx context.Context, payload []byte) ([]byte, err
 // grouped by the requested interval, and returns a serialized
 // TSAggregateResponse.
 func (s *Server) handleTSAggregate(ctx context.Context, payload []byte) ([]byte, error) {
-	if s.tsSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "timeseries"}
+	tsSvc, svcErr := s.tsSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
 	}
 
 	var req pb.TSAggregateRequest
@@ -157,9 +161,9 @@ func (s *Server) handleTSAggregate(ctx context.Context, payload []byte) ([]byte,
 		err     error
 	)
 	if ropts, ok := readOptsFromWire(req.GetConsistency()); ok {
-		results, err = s.tsSvc.AggregateWithConsistency(ctx, req.GetMetric(), start, end, fn, interval, ropts)
+		results, err = tsSvc.AggregateWithConsistency(ctx, req.GetMetric(), start, end, fn, interval, ropts)
 	} else {
-		results, err = s.tsSvc.Aggregate(ctx, req.GetMetric(), start, end, fn, interval)
+		results, err = tsSvc.Aggregate(ctx, req.GetMetric(), start, end, fn, interval)
 	}
 	if err != nil {
 		return nil, err
@@ -304,8 +308,9 @@ func dataPointsToWire(dps []*timeseries.DataPoint) []tsDataPointWire {
 // wire timestamps to time.Time, and stores the data point via the
 // time-series service. Returns an empty response payload on success.
 func (s *Server) handleTSWritePoint(ctx context.Context, payload []byte) ([]byte, error) {
-	if s.tsSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "timeseries"}
+	tsSvc, svcErr := s.tsSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
 	}
 
 	var req tsWritePointWireRequest
@@ -313,7 +318,7 @@ func (s *Server) handleTSWritePoint(ctx context.Context, payload []byte) ([]byte
 		return nil, &UnmarshalError{Err: err}
 	}
 
-	if err := s.tsSvc.WritePoint(ctx, &timeseries.DataPoint{
+	if err := tsSvc.WritePoint(ctx, &timeseries.DataPoint{
 		Metric:    req.Metric,
 		Value:     req.Value,
 		Timestamp: time.Unix(0, req.TimestampNs),
@@ -330,8 +335,9 @@ func (s *Server) handleTSWritePoint(ctx context.Context, payload []byte) ([]byte
 // serialized JSON response containing the result with data points
 // converted to nanosecond wire format.
 func (s *Server) handleTSRichQuery(ctx context.Context, payload []byte) ([]byte, error) {
-	if s.tsSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "timeseries"}
+	tsSvc, svcErr := s.tsSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
 	}
 
 	var req tsRichQueryWireRequest
@@ -364,9 +370,9 @@ func (s *Server) handleTSRichQuery(ctx context.Context, payload []byte) ([]byte,
 			Consistency: level,
 			AllowStale:  level == consistency.Eventual,
 		}
-		result, err = s.tsSvc.QueryRichWithConsistency(ctx, qr, ropts)
+		result, err = tsSvc.QueryRichWithConsistency(ctx, qr, ropts)
 	} else {
-		result, err = s.tsSvc.QueryRich(ctx, qr)
+		result, err = tsSvc.QueryRich(ctx, qr)
 	}
 	if err != nil {
 		return nil, err
@@ -401,8 +407,9 @@ func (s *Server) handleTSRichQuery(ctx context.Context, payload []byte) ([]byte,
 // wire timestamps, and deletes matching data points via the time-series
 // service. Returns an empty response payload on success.
 func (s *Server) handleTSDeleteSeries(ctx context.Context, payload []byte) ([]byte, error) {
-	if s.tsSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "timeseries"}
+	tsSvc, svcErr := s.tsSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
 	}
 
 	var req tsDeleteSeriesWireRequest
@@ -421,7 +428,7 @@ func (s *Server) handleTSDeleteSeries(ctx context.Context, payload []byte) ([]by
 		delReq.EndTime = time.Unix(0, req.EndNs)
 	}
 
-	if err := s.tsSvc.DeleteSeries(ctx, delReq); err != nil {
+	if err := tsSvc.DeleteSeries(ctx, delReq); err != nil {
 		return nil, err
 	}
 
@@ -432,8 +439,9 @@ func (s *Server) handleTSDeleteSeries(ctx context.Context, payload []byte) ([]by
 // the retention policy for the metric, and returns a serialized JSON
 // response with durations expressed as nanoseconds.
 func (s *Server) handleTSGetRetention(ctx context.Context, payload []byte) ([]byte, error) {
-	if s.tsSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "timeseries"}
+	tsSvc, svcErr := s.tsSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
 	}
 
 	var req tsGetRetentionWireRequest
@@ -441,7 +449,7 @@ func (s *Server) handleTSGetRetention(ctx context.Context, payload []byte) ([]by
 		return nil, &UnmarshalError{Err: err}
 	}
 
-	policy, err := s.tsSvc.GetRetentionPolicy(req.Metric)
+	policy, err := tsSvc.GetRetentionPolicy(req.Metric)
 	if err != nil {
 		return nil, err
 	}
@@ -462,8 +470,9 @@ func (s *Server) handleTSGetRetention(ctx context.Context, payload []byte) ([]by
 // policy via the time-series service. Returns an empty response payload
 // on success.
 func (s *Server) handleTSSetRetention(ctx context.Context, payload []byte) ([]byte, error) {
-	if s.tsSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "timeseries"}
+	tsSvc, svcErr := s.tsSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
 	}
 
 	var req tsSetRetentionWireRequest
@@ -471,7 +480,7 @@ func (s *Server) handleTSSetRetention(ctx context.Context, payload []byte) ([]by
 		return nil, &UnmarshalError{Err: err}
 	}
 
-	if err := s.tsSvc.SetRetentionPolicy(req.Metric, &timeseries.RetentionPolicy{
+	if err := tsSvc.SetRetentionPolicy(req.Metric, &timeseries.RetentionPolicy{
 		Duration:    time.Duration(req.DurationNs),
 		Resolution:  time.Duration(req.ResolutionNs),
 		Aggregation: timeseries.AggFunc(req.Aggregation),
@@ -486,8 +495,9 @@ func (s *Server) handleTSSetRetention(ctx context.Context, payload []byte) ([]by
 // time-series service for matching metric names, and returns a serialized
 // JSON response.
 func (s *Server) handleTSListMetrics(ctx context.Context, payload []byte) ([]byte, error) {
-	if s.tsSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "timeseries"}
+	tsSvc, svcErr := s.tsSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
 	}
 
 	var req tsListMetricsWireRequest
@@ -508,9 +518,9 @@ func (s *Server) handleTSListMetrics(ctx context.Context, payload []byte) ([]byt
 			Consistency: level,
 			AllowStale:  level == consistency.Eventual,
 		}
-		metrics, err = s.tsSvc.ListMetricsWithConsistency(ctx, req.Prefix, req.Limit, ropts)
+		metrics, err = tsSvc.ListMetricsWithConsistency(ctx, req.Prefix, req.Limit, ropts)
 	} else {
-		metrics, err = s.tsSvc.ListMetrics(req.Prefix, req.Limit)
+		metrics, err = tsSvc.ListMetrics(req.Prefix, req.Limit)
 	}
 	if err != nil {
 		return nil, err

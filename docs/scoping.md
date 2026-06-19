@@ -32,7 +32,9 @@ time-series, and vector — operates within that tenant.
 
 ## X-QRDB-Database
 
-Specifies the database name within the tenant's shard. If omitted, defaults to `default`.
+Specifies the database name within the tenant's shard. If omitted, defaults to the
+implicit bootstrap database `system` (`tenant.DefaultDatabase`). Selecting `system`
+explicitly is equivalent to supplying no database scope.
 
 ```
 X-QRDB-Database: user-data
@@ -40,7 +42,7 @@ X-QRDB-Database: user-data
 
 | Aspect | Details |
 |--------|---------|
-| **Required** | No (defaults to `default` database) |
+| **Required** | No (defaults to the `system` database) |
 | **Source** | `X-QRDB-Database` header, or the SDK scoped client |
 | **Example Values** | `default`, `users`, `analytics`, `logs` |
 | **Scope** | All KV, transaction, batch, and query operations |
@@ -70,7 +72,7 @@ client.Connect(ctx)
 
 // Tenant is fixed by the credentials the transport authenticated with.
 // The scoped client selects the DATABASE within that tenant.
-kv := client.KV()                       // default database
+kv := client.KV()                       // system (unscoped) database
 kvUsers, _ := client.DatabaseScoped("users")
 val, _ := kvUsers.Get(ctx, "mykey")
 ```
@@ -88,12 +90,21 @@ Isolation holds regardless of the database selected:
    (e.g., tenant-a's `embeddings` namespace is stored separately from tenant-b's `embeddings`),
    preventing namespace-name collision or cross-tenant access
 4. **Crypto Isolation** (optional) — If the tenant uses `IsolationBarrier`, an additional per-tenant DEK encrypts that tenant's KV data.
-   Vector data is encrypted at rest under the cluster `StorageBarrier`; its tenant isolation comes from the namespace partitioning in step 3, not a per-tenant vector DEK
+   Vector data is encrypted at rest under the cluster `StorageBarrier`; its tenant isolation comes from the namespace partitioning in step 3, not a per-tenant vector DEK.
+   A dedicated-isolation tenant (`barrier` or `volume`) also chooses how that barrier's key is managed — self-managed (default) or system-managed auto-unseal — see
+   [seal/multi-tenant.md → Tenant barrier key management](seal/multi-tenant.md#tenant-barrier-key-management)
 
 Tenant and namespace names are validated to exclude control bytes (including the
 internal `\x1f` namespace-scoping separator), preventing key-injection attacks.
 
 ## Tenant Isolation Modes
+
+> Two different axes share the word "isolation". This section covers the
+> **deployment posture** (`tenant.strict_isolation`) that governs whether
+> un-tenanted identities may pool into `system`. The separate **per-tenant
+> isolation ladder** (`prefix` / `barrier` / `volume` / `raft`), which controls
+> how strongly an individual tenant's data is separated, is documented in
+> [multi-tenancy.md](multi-tenancy.md).
 
 QRDB supports two tenant isolation postures, selected via `tenant.strict_isolation`
 in the YAML configuration (or forced to strict by a FIPS-140 build):
@@ -153,6 +164,7 @@ not by a request parameter.
 
 ## See Also
 
+- [multi-tenancy.md](multi-tenancy.md) — Isolation ladder, quotas, and entitlements
 - [databases/README.md](databases/README.md) — Database management and lifecycle
 - [seal/multi-tenant.md](seal/multi-tenant.md) — Tenant encryption isolation
 - [api.md](api.md) — REST and gRPC API reference

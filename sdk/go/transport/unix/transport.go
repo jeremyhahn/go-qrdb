@@ -42,6 +42,7 @@ var (
 	_ transport.KVClient         = (*Transport)(nil)
 	_ transport.AdminClient      = (*Transport)(nil)
 	_ transport.TimeSeriesClient = (*Transport)(nil)
+	_ transport.DatabaseScoper   = (*Transport)(nil)
 )
 
 // Transport implements the QRDB SDK transport interface using gRPC over
@@ -53,6 +54,60 @@ type Transport struct {
 	conn   *grpc.ClientConn
 	client pb.QRDBServiceClient
 	closed atomic.Bool
+
+	// activeDatabase, when non-empty, is appended as x-qrdb-database outgoing
+	// metadata on every RPC so the server resolves data-plane operations under
+	// the {tenant}/{database}/ keyspace. Empty means unscoped (system database).
+	// Set only via WithDatabase; immutable per Transport.
+	activeDatabase string
+}
+
+// dialOptions builds the gRPC dial options for the Unix socket connection,
+// installing the database-scope metadata interceptors when a database is set.
+func (t *Transport) dialOptions() []grpc.DialOption {
+	opts := []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	}
+	if t.activeDatabase != "" {
+		opts = append(opts,
+			grpc.WithChainUnaryInterceptor(transport.DatabaseUnaryClientInterceptor(t.activeDatabase)),
+			grpc.WithChainStreamInterceptor(transport.DatabaseStreamClientInterceptor(t.activeDatabase)),
+		)
+	}
+	return opts
+}
+
+// WithDatabase returns a database-scoped clone of the transport. When the
+// parent is already connected, the clone dials its own (lazy) connection
+// carrying the x-qrdb-database metadata interceptor; when not yet connected,
+// the clone's Connect dials the scoped connection. Scoping to the default
+// ("system") database or the empty string yields an unscoped clone that shares
+// the parent's connection.
+func (t *Transport) WithDatabase(database string) transport.Transport {
+	db := transport.NormalizeDatabaseScope(database)
+	clone := &Transport{config: t.config, activeDatabase: db}
+	clone.closed.Store(t.closed.Load())
+
+	if t.conn == nil {
+		return clone
+	}
+	if db == "" {
+		clone.conn = t.conn
+		clone.client = t.client
+		return clone
+	}
+	conn, err := grpc.NewClient("unix://"+t.config.Address, clone.dialOptions()...)
+	if err != nil {
+		// The target derives solely from static config that the parent already
+		// dialed successfully, so this is unreachable in practice; share the
+		// parent's connection rather than return an unusable client.
+		clone.conn = t.conn
+		clone.client = t.client
+		return clone
+	}
+	clone.conn = conn
+	clone.client = pb.NewQRDBServiceClient(conn)
+	return clone
 }
 
 // New creates a new Unix socket transport with the given options. The
@@ -79,9 +134,7 @@ func (t *Transport) Connect(ctx context.Context) error {
 
 	target := "unix://" + t.config.Address
 
-	conn, err := grpc.NewClient(target,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
+	conn, err := grpc.NewClient(target, t.dialOptions()...)
 	if err != nil {
 		return &transport.ConnectionError{
 			Address: t.config.Address,

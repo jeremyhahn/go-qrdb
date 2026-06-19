@@ -98,7 +98,7 @@ type createTenantCall struct {
 	isolationType tenant.IsolationType
 }
 
-func (f *fakeTenants) CreateTenant(_ context.Context, id, name string, isolationType tenant.IsolationType) (*tenant.TenantInfo, error) {
+func (f *fakeTenants) CreateTenant(_ context.Context, id, name string, isolationType tenant.IsolationType, _ ...tenant.CreateTenantOption) (*tenant.TenantInfo, error) {
 	f.createCalls = append(f.createCalls, createTenantCall{id: id, name: name, isolationType: isolationType})
 	if f.createAlreadyErr {
 		return nil, tenant.ErrTenantAlreadyExists
@@ -273,7 +273,7 @@ func TestBootstrapSystem_PassphraseEmptyButAlreadyUnsealed(t *testing.T) {
 	// Simulate awaitUnseal: the admin initialized+unsealed the barrier with
 	// their passphrase out-of-band before daemon first-boot is reachable.
 	if err := reg.SystemBarrier().Initialize(context.Background(),
-		seal.Credentials{Secret: "operator-passphrase"}); err != nil {
+		seal.Credentials{Secret: []byte("operator-passphrase")}); err != nil {
 		t.Fatalf("pre-initialize passphrase barrier: %v", err)
 	}
 	if reg.SystemBarrier().IsSealed() {
@@ -666,7 +666,7 @@ func TestInitializeTenantBarrier_Passphrase(t *testing.T) {
 	reg := newRegistry(t, seal.NewNoneStrategy())
 
 	err := InitializeTenantBarrier(context.Background(), "acme", StrategyPassphrase,
-		seal.Credentials{Secret: "tenant-passphrase"}, Dependencies{
+		seal.Credentials{Secret: []byte("tenant-passphrase")}, Dependencies{
 			Barriers: reg, Logger: discardLogger(),
 		})
 	if err != nil {
@@ -685,7 +685,7 @@ func TestInitializeTenantBarrier_Passphrase(t *testing.T) {
 	if err := reg.SealTenant("acme"); err != nil {
 		t.Fatalf("SealTenant: %v", err)
 	}
-	if err := reg.UnsealTenant(context.Background(), "acme", seal.Credentials{Secret: "tenant-passphrase"}); err != nil {
+	if err := reg.UnsealTenant(context.Background(), "acme", seal.Credentials{Secret: []byte("tenant-passphrase")}); err != nil {
 		t.Fatalf("UnsealTenant with correct passphrase: %v", err)
 	}
 }

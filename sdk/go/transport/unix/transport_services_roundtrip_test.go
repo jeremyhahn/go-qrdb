@@ -45,7 +45,7 @@ type mockTenantSvc struct {
 	quotasFn func(ctx context.Context, id string, q *quota.Quotas) (*tenantpkg.TenantInfo, error)
 }
 
-func (m *mockTenantSvc) CreateTenant(ctx context.Context, id, name string, iso tenantpkg.IsolationType) (*tenantpkg.TenantInfo, error) {
+func (m *mockTenantSvc) CreateTenant(ctx context.Context, id, name string, iso tenantpkg.IsolationType, _ ...tenantpkg.CreateTenantOption) (*tenantpkg.TenantInfo, error) {
 	if m.createFn != nil {
 		return m.createFn(ctx, id, name, iso)
 	}
@@ -80,6 +80,10 @@ func (m *mockTenantSvc) UpdateQuotas(ctx context.Context, id string, q *quota.Qu
 		return m.quotasFn(ctx, id, q)
 	}
 	return &tenantpkg.TenantInfo{ID: id, Quotas: q}, nil
+}
+
+func (m *mockTenantSvc) UpdateEntitlements(ctx context.Context, id string, e *quota.Entitlements) (*tenantpkg.TenantInfo, error) {
+	return &tenantpkg.TenantInfo{ID: id, Entitlements: e}, nil
 }
 func (m *mockTenantSvc) TenantBarrierInit(_ context.Context, id, _ string, _, _ int) (*tenantpkg.TenantBarrierInitResult, error) {
 	return &tenantpkg.TenantBarrierInitResult{TenantID: id}, nil

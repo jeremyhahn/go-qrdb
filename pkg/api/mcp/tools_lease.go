@@ -65,6 +65,10 @@ func toolLeaseGrant() mcp.Tool {
 // leaseSvc.Grant.
 func handleLeaseGrant(leaseSvc service.LeaseServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		leaseSvc, rerr := resolveLease(ctx, leaseSvc)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
+		}
 		ttl := mcp.ParseInt64(req, "ttl", 0)
 		if ttl <= 0 {
 			return mcp.NewToolResultError("ttl must be greater than 0"), nil
@@ -99,6 +103,10 @@ func toolLeaseRevoke() mcp.Tool {
 // leaseSvc.Revoke.
 func handleLeaseRevoke(leaseSvc service.LeaseServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		leaseSvc, rerr := resolveLease(ctx, leaseSvc)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
+		}
 		leaseID := mcp.ParseInt64(req, "lease_id", 0)
 		if leaseID == 0 {
 			return mcp.NewToolResultError("lease_id is required"), nil
@@ -127,6 +135,10 @@ func toolLeaseKeepAlive() mcp.Tool {
 // leaseSvc.KeepAlive.
 func handleLeaseKeepAlive(leaseSvc service.LeaseServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		leaseSvc, rerr := resolveLease(ctx, leaseSvc)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
+		}
 		leaseID := mcp.ParseInt64(req, "lease_id", 0)
 		if leaseID == 0 {
 			return mcp.NewToolResultError("lease_id is required"), nil
@@ -161,6 +173,10 @@ func toolLeaseTTL() mcp.Tool {
 // leaseSvc.TimeToLive.
 func handleLeaseTTL(leaseSvc service.LeaseServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		leaseSvc, rerr := resolveLease(ctx, leaseSvc)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
+		}
 		leaseID := mcp.ParseInt64(req, "lease_id", 0)
 		if leaseID == 0 {
 			return mcp.NewToolResultError("lease_id is required"), nil
@@ -191,6 +207,10 @@ func toolLeaseList() mcp.Tool {
 // leaseSvc.Leases.
 func handleLeaseList(leaseSvc service.LeaseServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		leaseSvc, rerr := resolveLease(ctx, leaseSvc)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
+		}
 		leases, err := leaseSvc.Leases(ctx)
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_lease_list", Err: err}

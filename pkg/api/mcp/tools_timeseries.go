@@ -150,6 +150,10 @@ func toolTSWrite() mcp.Tool {
 // handleTSWrite returns a tool handler that delegates to tsSvc.Write.
 func handleTSWrite(tsSvc service.TimeSeriesServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		tsSvc, rerr := resolveTS(ctx, tsSvc)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
+		}
 		metric := mcp.ParseString(req, "metric", "")
 		if metric == "" {
 			return mcp.NewToolResultError("metric is required"), nil
@@ -198,6 +202,10 @@ type tsPointJSON struct {
 // tsSvc.WriteBatch.
 func handleTSWriteBatch(tsSvc service.TimeSeriesServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		tsSvc, rerr := resolveTS(ctx, tsSvc)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
+		}
 		pointsStr := mcp.ParseString(req, "points", "")
 		if pointsStr == "" {
 			return mcp.NewToolResultError("points is required"), nil
@@ -265,6 +273,10 @@ func toolTSQuery() mcp.Tool {
 // tsSvc.QueryWithConsistency when a consistency arg is present.
 func handleTSQuery(tsSvc service.TimeSeriesServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		tsSvc, rerr := resolveTS(ctx, tsSvc)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
+		}
 		metric := mcp.ParseString(req, "metric", "")
 		if metric == "" {
 			return mcp.NewToolResultError("metric is required"), nil
@@ -358,6 +370,10 @@ func toolTSAggregate() mcp.Tool {
 // arg is present.
 func handleTSAggregate(tsSvc service.TimeSeriesServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		tsSvc, rerr := resolveTS(ctx, tsSvc)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
+		}
 		metric := mcp.ParseString(req, "metric", "")
 		if metric == "" {
 			return mcp.NewToolResultError("metric is required"), nil
@@ -437,6 +453,10 @@ func toolTSDeleteSeries() mcp.Tool {
 // tsSvc.DeleteSeries.
 func handleTSDeleteSeries(tsSvc service.TimeSeriesServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		tsSvc, rerr := resolveTS(ctx, tsSvc)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
+		}
 		metric := mcp.ParseString(req, "metric", "")
 		if metric == "" {
 			return mcp.NewToolResultError("metric is required"), nil
@@ -482,6 +502,10 @@ func toolTSGetRetentionPolicy() mcp.Tool {
 // tsSvc.GetRetentionPolicy.
 func handleTSGetRetentionPolicy(tsSvc service.TimeSeriesServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		tsSvc, rerr := resolveTS(ctx, tsSvc)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
+		}
 		metric := mcp.ParseString(req, "metric", "")
 		if metric == "" {
 			return mcp.NewToolResultError("metric is required"), nil
@@ -526,6 +550,10 @@ func toolTSSetRetentionPolicy() mcp.Tool {
 // tsSvc.SetRetentionPolicy.
 func handleTSSetRetentionPolicy(tsSvc service.TimeSeriesServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		tsSvc, rerr := resolveTS(ctx, tsSvc)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
+		}
 		metric := mcp.ParseString(req, "metric", "")
 		if metric == "" {
 			return mcp.NewToolResultError("metric is required"), nil
@@ -577,6 +605,10 @@ func toolTSListMetrics() mcp.Tool {
 // consistency arg is present.
 func handleTSListMetrics(tsSvc service.TimeSeriesServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		tsSvc, rerr := resolveTS(ctx, tsSvc)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
+		}
 		prefix := mcp.ParseString(req, "prefix", "")
 		limit := mcp.ParseInt(req, "limit", 0)
 		if limit <= 0 {
@@ -634,6 +666,10 @@ func toolTSWritePoint() mcp.Tool {
 // tsSvc.WritePoint.
 func handleTSWritePoint(tsSvc service.TimeSeriesServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		tsSvc, rerr := resolveTS(ctx, tsSvc)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
+		}
 		metric := mcp.ParseString(req, "metric", "")
 		if metric == "" {
 			return mcp.NewToolResultError("metric is required"), nil
@@ -710,6 +746,10 @@ func toolTSRichQuery() mcp.Tool {
 // arg is present.
 func handleTSRichQuery(tsSvc service.TimeSeriesServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		tsSvc, rerr := resolveTS(ctx, tsSvc)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
+		}
 		metric := mcp.ParseString(req, "metric", "")
 		if metric == "" {
 			return mcp.NewToolResultError("metric is required"), nil

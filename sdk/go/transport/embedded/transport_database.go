@@ -36,10 +36,11 @@ func (t *Transport) CreateDatabase(_ context.Context, req transport.CreateDataba
 		return nil, &NilServiceError{Service: "DatabaseServicer"}
 	}
 	cfg := database.DatabaseConfig{
-		Name:    req.Name,
-		Engine:  database.EngineType(req.Engine),
-		Backend: database.BackendType(req.Backend),
-		Mode:    database.DatabaseMode(req.Mode),
+		Name:     req.Name,
+		Engine:   database.EngineType(req.Engine),
+		Backend:  database.BackendType(req.Backend),
+		Mode:     database.DatabaseMode(req.Mode),
+		Replicas: req.Replicas,
 		Protocol: database.ProtocolConfig{
 			MySQL:      req.Protocol.MySQL,
 			PostgreSQL: req.Protocol.PostgreSQL,
@@ -187,9 +188,10 @@ func toTransportDatabaseInfo(info *database.DatabaseInfo) *transport.DatabaseInf
 			MySQL:      info.Protocol.MySQL,
 			PostgreSQL: info.Protocol.PostgreSQL,
 		},
-		DataDir: info.DataDir,
-		ShardID: info.ShardID,
-		Mode:    string(info.Mode),
+		DataDir:  info.DataDir,
+		ShardID:  info.ShardID,
+		Mode:     string(info.Mode),
+		Replicas: info.Replicas,
 	}
 	if info.Protocol.Etcd != nil {
 		ti.Protocol.Etcd = &transport.EtcdProtocolConfig{

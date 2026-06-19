@@ -430,7 +430,7 @@ func TestNode_Unseal_CompletesBootAndServesRequests(t *testing.T) {
 	assert.Nil(t, n2.Client())
 
 	// Unseal with the correct passphrase → full boot.
-	creds := seal.Credentials{Secret: "my-passphrase"}
+	creds := seal.Credentials{Secret: []byte("my-passphrase")}
 	require.NoError(t, n2.Unseal(context.Background(), creds))
 
 	assert.False(t, n2.IsSealed(), "must be unsealed after Unseal()")
@@ -461,7 +461,7 @@ func TestNode_Unseal_WrongPassphrase_ReturnsError(t *testing.T) {
 	require.True(t, n2.IsSealed())
 
 	// Wrong passphrase must return an UnsealError.
-	err = n2.Unseal(context.Background(), seal.Credentials{Secret: "wrong-passphrase"})
+	err = n2.Unseal(context.Background(), seal.Credentials{Secret: []byte("wrong-passphrase")})
 	var unsealErr *UnsealError
 	require.True(t, errors.As(err, &unsealErr), "expected UnsealError, got %T: %v", err, err)
 	assert.True(t, n2.IsSealed(), "node must remain sealed after failed Unseal")
@@ -483,7 +483,7 @@ func TestNode_Unseal_Idempotent(t *testing.T) {
 	require.False(t, n.IsSealed())
 
 	// Second Unseal on an already-unsealed node must not error.
-	assert.NoError(t, n.Unseal(context.Background(), seal.Credentials{Secret: "idempotent-test"}))
+	assert.NoError(t, n.Unseal(context.Background(), seal.Credentials{Secret: []byte("idempotent-test")}))
 	assert.False(t, n.IsSealed())
 	require.NoError(t, n.Close())
 }
@@ -656,7 +656,7 @@ func TestBuildNodeSealSubsystem_CreatesBarrierAndRegistry(t *testing.T) {
 	cfg.Seal.RootKeyPath = "root-key"
 	cfg.Seal.CredentialStrategy = "barrier"
 
-	sub, err := buildNodeSealSubsystem(context.Background(), cfg, dataDir, slog.Default(), nil)
+	sub, err := buildNodeSealSubsystem(context.Background(), cfg, dataDir, slog.Default(), nil, false)
 	require.NoError(t, err)
 	require.NotNil(t, sub)
 	assert.NotNil(t, sub.barrier)
@@ -676,7 +676,7 @@ func TestBuildNodeSealSubsystem_StrategyNone(t *testing.T) {
 	cfg.Seal.Strategy = string(seal.StrategyNone)
 	cfg.Seal.RootKeyPath = "root-key"
 
-	sub, err := buildNodeSealSubsystem(context.Background(), cfg, dataDir, slog.Default(), nil)
+	sub, err := buildNodeSealSubsystem(context.Background(), cfg, dataDir, slog.Default(), nil, false)
 	require.NoError(t, err)
 	require.NotNil(t, sub)
 	require.NoError(t, sub.close())
@@ -692,7 +692,7 @@ func TestBuildNodeSealSubsystem_InvalidShamirConfig(t *testing.T) {
 	cfg.Seal.ShamirThreshold = 5 // threshold > total is invalid
 	cfg.Seal.ShamirTotal = 3
 
-	_, err := buildNodeSealSubsystem(context.Background(), cfg, dataDir, nil, nil)
+	_, err := buildNodeSealSubsystem(context.Background(), cfg, dataDir, nil, nil, false)
 	require.Error(t, err, "invalid Shamir params must return an error")
 	var sce *StorageCreateError
 	require.True(t, errors.As(err, &sce))

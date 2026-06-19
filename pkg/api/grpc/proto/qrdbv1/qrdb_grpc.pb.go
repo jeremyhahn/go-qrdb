@@ -186,6 +186,7 @@ const (
 	QRDBService_TenantUpdate_FullMethodName                      = "/qrdb.v1.QRDBService/TenantUpdate"
 	QRDBService_TenantDelete_FullMethodName                      = "/qrdb.v1.QRDBService/TenantDelete"
 	QRDBService_TenantUpdateQuotas_FullMethodName                = "/qrdb.v1.QRDBService/TenantUpdateQuotas"
+	QRDBService_TenantUpdateEntitlements_FullMethodName          = "/qrdb.v1.QRDBService/TenantUpdateEntitlements"
 	QRDBService_CredentialSubmit_FullMethodName                  = "/qrdb.v1.QRDBService/CredentialSubmit"
 	QRDBService_CredentialStrategy_FullMethodName                = "/qrdb.v1.QRDBService/CredentialStrategy"
 	QRDBService_CredentialDelete_FullMethodName                  = "/qrdb.v1.QRDBService/CredentialDelete"
@@ -542,6 +543,8 @@ type QRDBServiceClient interface {
 	TenantDelete(ctx context.Context, in *TenantDeleteRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// TenantUpdateQuotas sets the resource quotas for a tenant.
 	TenantUpdateQuotas(ctx context.Context, in *TenantUpdateQuotasRequest, opts ...grpc.CallOption) (*TenantResponse, error)
+	// TenantUpdateEntitlements sets the feature entitlements for a tenant.
+	TenantUpdateEntitlements(ctx context.Context, in *TenantUpdateEntitlementsRequest, opts ...grpc.CallOption) (*TenantResponse, error)
 	// CredentialSubmit submits a named credential value via the active strategy.
 	CredentialSubmit(ctx context.Context, in *CredentialSubmitRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// CredentialStrategy returns the active credential management strategy.
@@ -2160,6 +2163,16 @@ func (c *qRDBServiceClient) TenantUpdateQuotas(ctx context.Context, in *TenantUp
 	return out, nil
 }
 
+func (c *qRDBServiceClient) TenantUpdateEntitlements(ctx context.Context, in *TenantUpdateEntitlementsRequest, opts ...grpc.CallOption) (*TenantResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TenantResponse)
+	err := c.cc.Invoke(ctx, QRDBService_TenantUpdateEntitlements_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *qRDBServiceClient) CredentialSubmit(ctx context.Context, in *CredentialSubmitRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(emptypb.Empty)
@@ -2784,6 +2797,8 @@ type QRDBServiceServer interface {
 	TenantDelete(context.Context, *TenantDeleteRequest) (*emptypb.Empty, error)
 	// TenantUpdateQuotas sets the resource quotas for a tenant.
 	TenantUpdateQuotas(context.Context, *TenantUpdateQuotasRequest) (*TenantResponse, error)
+	// TenantUpdateEntitlements sets the feature entitlements for a tenant.
+	TenantUpdateEntitlements(context.Context, *TenantUpdateEntitlementsRequest) (*TenantResponse, error)
 	// CredentialSubmit submits a named credential value via the active strategy.
 	CredentialSubmit(context.Context, *CredentialSubmitRequest) (*emptypb.Empty, error)
 	// CredentialStrategy returns the active credential management strategy.
@@ -3328,6 +3343,9 @@ func (UnimplementedQRDBServiceServer) TenantDelete(context.Context, *TenantDelet
 }
 func (UnimplementedQRDBServiceServer) TenantUpdateQuotas(context.Context, *TenantUpdateQuotasRequest) (*TenantResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method TenantUpdateQuotas not implemented")
+}
+func (UnimplementedQRDBServiceServer) TenantUpdateEntitlements(context.Context, *TenantUpdateEntitlementsRequest) (*TenantResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method TenantUpdateEntitlements not implemented")
 }
 func (UnimplementedQRDBServiceServer) CredentialSubmit(context.Context, *CredentialSubmitRequest) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method CredentialSubmit not implemented")
@@ -6169,6 +6187,24 @@ func _QRDBService_TenantUpdateQuotas_Handler(srv interface{}, ctx context.Contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _QRDBService_TenantUpdateEntitlements_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TenantUpdateEntitlementsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).TenantUpdateEntitlements(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_TenantUpdateEntitlements_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).TenantUpdateEntitlements(ctx, req.(*TenantUpdateEntitlementsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _QRDBService_CredentialSubmit_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(CredentialSubmitRequest)
 	if err := dec(in); err != nil {
@@ -7319,6 +7355,10 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "TenantUpdateQuotas",
 			Handler:    _QRDBService_TenantUpdateQuotas_Handler,
+		},
+		{
+			MethodName: "TenantUpdateEntitlements",
+			Handler:    _QRDBService_TenantUpdateEntitlements_Handler,
 		},
 		{
 			MethodName: "CredentialSubmit",

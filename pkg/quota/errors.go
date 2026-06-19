@@ -23,6 +23,26 @@ import (
 // Checker is required.
 var ErrNilChecker = errors.New("quota: nil checker")
 
+// ErrNilQuotaFunc is returned when a nil quota-lookup function is passed to
+// NewAccountant.
+var ErrNilQuotaFunc = errors.New("quota: nil quota function")
+
+// ErrNilFlushFunc is returned when a nil flush function is passed to
+// NewAccountant.
+var ErrNilFlushFunc = errors.New("quota: nil flush function")
+
+// ErrNilAccountant is returned when a nil Accountant is passed to
+// NewReconciler.
+var ErrNilAccountant = errors.New("quota: nil accountant")
+
+// ErrNilTenantLister is returned when a nil tenant-enumeration function is
+// passed to NewReconciler.
+var ErrNilTenantLister = errors.New("quota: nil tenant lister")
+
+// ErrNilUsageSetter is returned when a nil usage-setter function is passed to
+// NewReconciler.
+var ErrNilUsageSetter = errors.New("quota: nil usage setter")
+
 // ExceededError is returned when a tenant attempts to create a resource
 // that would exceed their configured quota limit.
 type ExceededError struct {
@@ -49,6 +69,25 @@ type InvalidResourceError struct {
 // Error returns a human-readable description of the unknown resource.
 func (e *InvalidResourceError) Error() string {
 	return "quota: unknown resource type: " + strconv.Itoa(int(e.Resource))
+}
+
+// EntitlementError is returned when a tenant's plan does not permit a
+// requested isolation mode or dedicated-storage feature. Exactly one of Mode
+// or Feature is set, identifying which entitlement was denied.
+type EntitlementError struct {
+	TenantID string
+	// Mode is the denied isolation mode (set for CheckIsolation denials).
+	Mode string
+	// Feature is the denied feature name (set for CheckFeature denials).
+	Feature string
+}
+
+// Error returns a human-readable description of the entitlement violation.
+func (e *EntitlementError) Error() string {
+	if e.Feature != "" {
+		return "quota: tenant " + e.TenantID + " is not entitled to feature: " + e.Feature
+	}
+	return "quota: tenant " + e.TenantID + " is not entitled to isolation mode: " + e.Mode
 }
 
 // UnregisteredCounterError is returned when a counter function has not

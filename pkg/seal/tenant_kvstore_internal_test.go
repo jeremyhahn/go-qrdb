@@ -34,7 +34,7 @@ func newInitializedKVStore(t *testing.T) (*tenantBarrierKVStore, *TenantBarrier)
 		t.Fatalf("NewTenantBarrier: %v", err)
 	}
 	ctx := context.Background()
-	if err := tb.Initialize(ctx, Credentials{Secret: "pw"}); err != nil {
+	if err := tb.Initialize(ctx, Credentials{Secret: []byte("pw")}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	kv, err := NewTenantBarrierKVStore(tb)

@@ -17,6 +17,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
@@ -35,6 +36,7 @@ func tenantTools(svc tenant.TenantServicer) []mcpserver.ServerTool {
 		{Tool: toolTenantUpdate(), Handler: handleTenantUpdate(svc)},
 		{Tool: toolTenantDelete(), Handler: handleTenantDelete(svc)},
 		{Tool: toolTenantUpdateQuotas(), Handler: handleTenantUpdateQuotas(svc)},
+		{Tool: toolTenantUpdateEntitlements(), Handler: handleTenantUpdateEntitlements(svc)},
 	}
 }
 
@@ -53,6 +55,9 @@ func toolTenantCreate() mcp.Tool {
 		mcp.WithString("isolation_type",
 			mcp.Description("Isolation strategy: 'barrier' (default) or 'prefix'."),
 		),
+		mcp.WithBoolean("barrier_auto_unseal",
+			mcp.Description("Opt a dedicated-isolation tenant (barrier/volume) into the system-managed auto-unseal key-management mode (entitlement-gated). Default false = self-managed."),
+		),
 	)
 }
 
@@ -70,8 +75,10 @@ func handleTenantCreate(svc tenant.TenantServicer) mcpserver.ToolHandlerFunc {
 		}
 
 		isolationType := tenant.IsolationType(mcp.ParseString(req, "isolation_type", ""))
+		barrierAutoUnseal := mcp.ParseBoolean(req, "barrier_auto_unseal", false)
 
-		info, err := svc.CreateTenant(ctx, id, name, isolationType)
+		info, err := svc.CreateTenant(ctx, id, name, isolationType,
+			tenant.WithBarrierAutoUnseal(barrierAutoUnseal))
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_tenant_create", Err: err}
 		}
@@ -227,6 +234,12 @@ func toolTenantUpdateQuotas() mcp.Tool {
 		mcp.WithNumber("max_raft_groups",
 			mcp.Description("Maximum number of Raft groups. -1 = unlimited."),
 		),
+		mcp.WithNumber("max_replicas_per_group",
+			mcp.Description("Maximum replication factor per dedicated-raft database. -1 = unlimited."),
+		),
+		mcp.WithNumber("max_total_replicas",
+			mcp.Description("Maximum aggregate replicas across all the tenant's raft groups. -1 = unlimited."),
+		),
 		mcp.WithNumber("max_collections",
 			mcp.Description("Maximum number of collections. -1 = unlimited."),
 		),
@@ -235,6 +248,9 @@ func toolTenantUpdateQuotas() mcp.Tool {
 		),
 		mcp.WithNumber("max_storage_bytes",
 			mcp.Description("Maximum storage in bytes. -1 = unlimited."),
+		),
+		mcp.WithNumber("max_database_size_bytes",
+			mcp.Description("Maximum size in bytes of any single database. -1 = unlimited."),
 		),
 		mcp.WithNumber("max_users",
 			mcp.Description("Maximum number of users. -1 = unlimited."),
@@ -266,17 +282,20 @@ func handleTenantUpdateQuotas(svc tenant.TenantServicer) mcpserver.ToolHandlerFu
 		}
 
 		q := &quota.Quotas{
-			MaxDatabases:    int64(mcp.ParseInt(req, "max_databases", 0)),
-			MaxRaftGroups:   int64(mcp.ParseInt(req, "max_raft_groups", 0)),
-			MaxCollections:  int64(mcp.ParseInt(req, "max_collections", 0)),
-			MaxKeys:         int64(mcp.ParseInt(req, "max_keys", 0)),
-			MaxStorageBytes: int64(mcp.ParseInt(req, "max_storage_bytes", 0)),
-			MaxUsers:        int64(mcp.ParseInt(req, "max_users", 0)),
-			MaxRoles:        int64(mcp.ParseInt(req, "max_roles", 0)),
-			MaxCertificates: int64(mcp.ParseInt(req, "max_certificates", 0)),
-			MaxBackups:      int64(mcp.ParseInt(req, "max_backups", 0)),
-			MaxVectorDims:   int64(mcp.ParseInt(req, "max_vector_dims", 0)),
-			MaxTSMetrics:    int64(mcp.ParseInt(req, "max_ts_metrics", 0)),
+			MaxDatabases:         int64(mcp.ParseInt(req, "max_databases", 0)),
+			MaxRaftGroups:        int64(mcp.ParseInt(req, "max_raft_groups", 0)),
+			MaxReplicasPerGroup:  int64(mcp.ParseInt(req, "max_replicas_per_group", 0)),
+			MaxTotalReplicas:     int64(mcp.ParseInt(req, "max_total_replicas", 0)),
+			MaxCollections:       int64(mcp.ParseInt(req, "max_collections", 0)),
+			MaxKeys:              int64(mcp.ParseInt(req, "max_keys", 0)),
+			MaxStorageBytes:      int64(mcp.ParseInt(req, "max_storage_bytes", 0)),
+			MaxDatabaseSizeBytes: int64(mcp.ParseInt(req, "max_database_size_bytes", 0)),
+			MaxUsers:             int64(mcp.ParseInt(req, "max_users", 0)),
+			MaxRoles:             int64(mcp.ParseInt(req, "max_roles", 0)),
+			MaxCertificates:      int64(mcp.ParseInt(req, "max_certificates", 0)),
+			MaxBackups:           int64(mcp.ParseInt(req, "max_backups", 0)),
+			MaxVectorDims:        int64(mcp.ParseInt(req, "max_vector_dims", 0)),
+			MaxTSMetrics:         int64(mcp.ParseInt(req, "max_ts_metrics", 0)),
 		}
 
 		info, err := svc.UpdateQuotas(ctx, id, q)
@@ -287,6 +306,68 @@ func handleTenantUpdateQuotas(svc tenant.TenantServicer) mcpserver.ToolHandlerFu
 		data, jsonErr := json.Marshal(info)
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_tenant_update_quotas", Err: jsonErr}
+		}
+
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// toolTenantUpdateEntitlements defines the qrdb_tenant_update_entitlements tool schema.
+func toolTenantUpdateEntitlements() mcp.Tool {
+	return mcp.NewTool("qrdb_tenant_update_entitlements",
+		mcp.WithDescription("Set feature entitlements for an existing tenant: which isolation modes and dedicated-storage features the tenant's plan permits."),
+		mcp.WithString("id",
+			mcp.Required(),
+			mcp.Description("The tenant ID to update entitlements for."),
+		),
+		mcp.WithString("allowed_isolation_modes",
+			mcp.Description("Comma-separated list of permitted isolation modes (e.g. \"prefix,volume,raft\")."),
+		),
+		mcp.WithBoolean("allow_dedicated_raft",
+			mcp.Description("Whether the tenant may provision dedicated Raft-backed databases."),
+		),
+		mcp.WithBoolean("allow_volume_storage",
+			mcp.Description("Whether the tenant may provision databases on a dedicated storage volume."),
+		),
+		mcp.WithBoolean("allow_system_managed_barrier",
+			mcp.Description("Whether the tenant may opt into the system-managed auto-unseal key-management mode for its dedicated barrier."),
+		),
+	)
+}
+
+// handleTenantUpdateEntitlements returns a tool handler that sets entitlements
+// for a tenant.
+func handleTenantUpdateEntitlements(svc tenant.TenantServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		id := mcp.ParseString(req, "id", "")
+		if id == "" {
+			return mcp.NewToolResultError("id is required"), nil
+		}
+
+		var modes []string
+		if raw := mcp.ParseString(req, "allowed_isolation_modes", ""); raw != "" {
+			for _, m := range strings.Split(raw, ",") {
+				if trimmed := strings.TrimSpace(m); trimmed != "" {
+					modes = append(modes, trimmed)
+				}
+			}
+		}
+
+		e := &quota.Entitlements{
+			AllowedIsolationModes:     modes,
+			AllowDedicatedRaft:        mcp.ParseBoolean(req, "allow_dedicated_raft", false),
+			AllowVolumeStorage:        mcp.ParseBoolean(req, "allow_volume_storage", false),
+			AllowSystemManagedBarrier: mcp.ParseBoolean(req, "allow_system_managed_barrier", false),
+		}
+
+		info, err := svc.UpdateEntitlements(ctx, id, e)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_tenant_update_entitlements", Err: err}
+		}
+
+		data, jsonErr := json.Marshal(info)
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_tenant_update_entitlements", Err: jsonErr}
 		}
 
 		return mcp.NewToolResultText(string(data)), nil

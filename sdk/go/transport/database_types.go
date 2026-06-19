@@ -48,6 +48,7 @@ type DatabaseInfo struct {
 	DataDir    string                    `json:"dataDir,omitempty"`
 	ShardID    uint64                    `json:"shardId,omitempty"`
 	Mode       string                    `json:"mode,omitempty"`
+	Replicas   int                       `json:"replicas,omitempty"`
 	Raft       *DatabaseRaftConfig       `json:"raft,omitempty"`
 	Barrier    *DatabaseBarrierConfig    `json:"barrier,omitempty"`
 	Connection *DatabaseConnectionConfig `json:"connection,omitempty"`
@@ -89,6 +90,7 @@ type CreateDatabaseRequest struct {
 	Protocol   ProtocolConfig            `json:"protocol,omitempty"`
 	DataDir    string                    `json:"dataDir,omitempty"`
 	Mode       string                    `json:"mode,omitempty"`
+	Replicas   int                       `json:"replicas,omitempty"`
 	Raft       *DatabaseRaftConfig       `json:"raft,omitempty"`
 	Barrier    *DatabaseBarrierConfig    `json:"barrier,omitempty"`
 	Connection *DatabaseConnectionConfig `json:"connection,omitempty"`

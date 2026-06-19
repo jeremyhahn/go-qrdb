@@ -623,7 +623,7 @@ func (e *extMockQUICTenantService) TenantBarrierShamirSealVote(ctx context.Conte
 
 // Delegation pass-through for all other TenantServicer methods.
 
-func (e *extMockQUICTenantService) CreateTenant(ctx context.Context, id, name string, iso tenant.IsolationType) (*tenant.TenantInfo, error) {
+func (e *extMockQUICTenantService) CreateTenant(ctx context.Context, id, name string, iso tenant.IsolationType, _ ...tenant.CreateTenantOption) (*tenant.TenantInfo, error) {
 	return e.mockTenantService.CreateTenant(ctx, id, name, iso)
 }
 func (e *extMockQUICTenantService) GetTenant(ctx context.Context, id string) (*tenant.TenantInfo, error) {
@@ -640,6 +640,10 @@ func (e *extMockQUICTenantService) DeleteTenant(ctx context.Context, id string) 
 }
 func (e *extMockQUICTenantService) UpdateQuotas(ctx context.Context, id string, q *quota.Quotas) (*tenant.TenantInfo, error) {
 	return e.mockTenantService.UpdateQuotas(ctx, id, q)
+}
+
+func (e *extMockQUICTenantService) UpdateEntitlements(ctx context.Context, id string, ent *quota.Entitlements) (*tenant.TenantInfo, error) {
+	return &tenant.TenantInfo{ID: id, Entitlements: ent}, nil
 }
 func (e *extMockQUICTenantService) TenantBarrierInit(ctx context.Context, id, passphrase string, threshold, total int) (*tenant.TenantBarrierInitResult, error) {
 	return e.mockTenantService.TenantBarrierInit(ctx, id, passphrase, threshold, total)

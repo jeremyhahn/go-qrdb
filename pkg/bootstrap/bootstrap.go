@@ -433,7 +433,7 @@ func InitializeTenantBarrier(ctx context.Context, tenantID string, strat seal.St
 	}
 	// Passphrase strategy requires a non-empty secret. There is no derived
 	// default.
-	if seal.IsPassphraseStrategy(strategy) && creds.Secret == "" {
+	if seal.IsPassphraseStrategy(strategy) && len(creds.Secret) == 0 {
 		return &MissingPassphraseError{}
 	}
 	if err := validateStrategy(strategy); err != nil {
@@ -486,7 +486,7 @@ func credentialsForStrategy(strategy seal.StrategyID, passphrase string) (seal.C
 		if passphrase == "" {
 			return seal.Credentials{}, &MissingPassphraseError{}
 		}
-		return seal.Credentials{Secret: passphrase}, nil
+		return seal.Credentials{Secret: []byte(passphrase)}, nil
 	}
 	return seal.Credentials{}, nil
 }

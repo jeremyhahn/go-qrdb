@@ -29,7 +29,7 @@ import (
 
 func TestTenantNotFoundError_Error(t *testing.T) {
 	err := &TenantNotFoundError{TenantID: "acme"}
-	want := "rest: tenant not found: acme"
+	want := "service: tenant not found: acme"
 	if err.Error() != want {
 		t.Errorf("got %q, want %q", err.Error(), want)
 	}
@@ -37,7 +37,7 @@ func TestTenantNotFoundError_Error(t *testing.T) {
 
 func TestDatabaseNotFoundError_Error(t *testing.T) {
 	err := &DatabaseNotFoundError{TenantID: "acme", Database: "mydb"}
-	want := "rest: database not found: mydb (tenant: acme)"
+	want := "service: database not found: mydb (tenant: acme)"
 	if err.Error() != want {
 		t.Errorf("got %q, want %q", err.Error(), want)
 	}
@@ -45,7 +45,7 @@ func TestDatabaseNotFoundError_Error(t *testing.T) {
 
 func TestBarrierSealedError_Error(t *testing.T) {
 	err := &BarrierSealedError{TenantID: "acme"}
-	want := "rest: barrier sealed for tenant: acme"
+	want := "service: barrier sealed for tenant: acme"
 	if err.Error() != want {
 		t.Errorf("got %q, want %q", err.Error(), want)
 	}

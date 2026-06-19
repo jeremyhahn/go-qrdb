@@ -81,6 +81,10 @@ func toolMVCCPutWithLease() mcp.Tool {
 // arg is present.
 func handleMVCCPutWithLease(mvccSvc service.MVCCKVServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		mvccSvc, rerr := resolveMVCC(ctx, mvccSvc)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
+		}
 		key := mcp.ParseString(req, "key", "")
 		if key == "" {
 			return mcp.NewToolResultError("key is required"), nil
@@ -137,6 +141,10 @@ func toolMVCCGetRevision() mcp.Tool {
 // consistency arg is present.
 func handleMVCCGetRevision(mvccSvc service.MVCCKVServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		mvccSvc, rerr := resolveMVCC(ctx, mvccSvc)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
+		}
 		key := mcp.ParseString(req, "key", "")
 		if key == "" {
 			return mcp.NewToolResultError("key is required"), nil
@@ -192,6 +200,10 @@ func toolMVCCGetAtRevision() mcp.Tool {
 // consistency arg is present.
 func handleMVCCGetAtRevision(mvccSvc service.MVCCKVServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		mvccSvc, rerr := resolveMVCC(ctx, mvccSvc)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
+		}
 		key := mcp.ParseString(req, "key", "")
 		if key == "" {
 			return mcp.NewToolResultError("key is required"), nil
@@ -268,6 +280,10 @@ type mvccRangeResponse struct {
 // mvccSvc.RangeWithConsistency when a consistency arg is present.
 func handleMVCCRange(mvccSvc service.MVCCKVServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		mvccSvc, rerr := resolveMVCC(ctx, mvccSvc)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
+		}
 		start := mcp.ParseString(req, "start", "")
 		if start == "" {
 			return mcp.NewToolResultError("start is required"), nil
@@ -344,6 +360,10 @@ func toolMVCCCompact() mcp.Tool {
 // mvccSvc.Compact.
 func handleMVCCCompact(mvccSvc service.MVCCKVServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		mvccSvc, rerr := resolveMVCC(ctx, mvccSvc)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
+		}
 		revision := mcp.ParseInt64(req, "revision", 0)
 		if revision == 0 {
 			return mcp.NewToolResultError("revision is required"), nil
@@ -368,6 +388,10 @@ func toolMVCCCurrentRevision() mcp.Tool {
 // mvccSvc.CurrentRevision.
 func handleMVCCCurrentRevision(mvccSvc service.MVCCKVServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		mvccSvc, rerr := resolveMVCC(ctx, mvccSvc)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
+		}
 		rev, err := mvccSvc.CurrentRevision(ctx)
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_mvcc_current_revision", Err: err}

@@ -38,10 +38,11 @@ func (t *Transport) CreateDatabase(ctx context.Context, req transport.CreateData
 	}
 
 	pbReq := &pb.DatabaseCreateRequest{
-		Name:    req.Name,
-		Engine:  req.Engine,
-		Backend: req.Backend,
-		DataDir: req.DataDir,
+		Name:     req.Name,
+		Engine:   req.Engine,
+		Backend:  req.Backend,
+		DataDir:  req.DataDir,
+		Replicas: uint32(req.Replicas),
 	}
 
 	if req.Protocol.MySQL || req.Protocol.PostgreSQL || req.Protocol.Etcd != nil {
@@ -238,6 +239,7 @@ func protoToDatabaseInfo(resp *pb.DatabaseInfoResponse) *transport.DatabaseInfo 
 		DataDir:  resp.GetDataDir(),
 		ShardID:  resp.GetShardId(),
 		Mode:     resp.GetMode(),
+		Replicas: int(resp.GetReplicas()),
 	}
 
 	if p := resp.GetProtocol(); p != nil {

@@ -116,6 +116,7 @@ import type {
     NamespaceInfo,
     Op,
     PeersResponse,
+    TopologyResponse,
     RangeOptions,
     RangeResponse,
     RebuildIndexRequest,
@@ -170,6 +171,8 @@ import type {
     TenantBarrierStatusResponse,
     UpdateTenantQuotasRequest,
     UpdateTenantQuotasResponse,
+    UpdateTenantEntitlementsRequest,
+    UpdateTenantEntitlementsResponse,
     ConfigInitializedResponse,
     BackupRequest,
     BackupInfo,
@@ -342,6 +345,19 @@ export class WailsClient implements Client {
     /** Tracks whether the embedded server is currently running. */
     private embeddedRunning = false;
 
+    /**
+     * @inheritdoc
+     *
+     * Desktop/embedded multi-database scoping is out of scope for this stage:
+     * the Wails bindings route per-database through their own mechanism rather
+     * than an HTTP header, so this is a no-op passthrough that returns the same
+     * client. It exists only to satisfy the {@link Client} interface on both
+     * transports.
+     */
+    databaseScoped(_name: string): Client {
+        return this;
+    }
+
     // -----------------------------------------------------------------------
     // Connection
     // -----------------------------------------------------------------------
@@ -414,6 +430,9 @@ export class WailsClient implements Client {
             },
             peers: async (): Promise<PeersResponse> => {
                 return b.Peers() as Promise<PeersResponse>;
+            },
+            getTopology: async (): Promise<TopologyResponse> => {
+                return b.GetTopology() as Promise<TopologyResponse>;
             },
             addMember: async (
                 shardId: number,
@@ -1138,6 +1157,9 @@ export class WailsClient implements Client {
             },
             updateQuotas: async (req: UpdateTenantQuotasRequest): Promise<UpdateTenantQuotasResponse> => {
                 return b.UpdateQuotas(toSnake(req)) as Promise<UpdateTenantQuotasResponse>;
+            },
+            updateEntitlements: async (req: UpdateTenantEntitlementsRequest): Promise<UpdateTenantEntitlementsResponse> => {
+                return b.UpdateEntitlements(toSnake(req)) as Promise<UpdateTenantEntitlementsResponse>;
             },
         };
     }

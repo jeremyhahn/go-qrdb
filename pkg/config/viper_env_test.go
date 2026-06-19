@@ -129,3 +129,58 @@ func TestSealShareTTL_InvalidRejected(t *testing.T) {
 		t.Fatal("expected validation error for invalid seal.share_ttl")
 	}
 }
+
+// TestQuotaReconcileInterval_DefaultAndOverride covers the
+// tenant.quota_reconcile_interval plumbing: the 5m default when unset, a YAML
+// override, and a QRDB_TENANT_QUOTA_RECONCILE_INTERVAL env override.
+func TestQuotaReconcileInterval_DefaultAndOverride(t *testing.T) {
+	// Default when the file omits the key.
+	cfg, err := Load(writeMinimalConfig(t, "logging:\n  level: info\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	d, err := cfg.Tenant.QuotaReconcileIntervalDuration()
+	if err != nil {
+		t.Fatalf("QuotaReconcileIntervalDuration: %v", err)
+	}
+	if d.String() != "5m0s" {
+		t.Errorf("default quota_reconcile_interval = %s, want 5m0s", d)
+	}
+
+	// YAML override.
+	cfg, err = Load(writeMinimalConfig(t, "tenant:\n  quota_reconcile_interval: 90s\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Tenant.QuotaReconcileInterval != "90s" {
+		t.Errorf("file quota_reconcile_interval = %q, want 90s", cfg.Tenant.QuotaReconcileInterval)
+	}
+	d, err = cfg.Tenant.QuotaReconcileIntervalDuration()
+	if err != nil {
+		t.Fatalf("QuotaReconcileIntervalDuration: %v", err)
+	}
+	if d.String() != "1m30s" {
+		t.Errorf("parsed quota_reconcile_interval = %s, want 1m30s", d)
+	}
+
+	// Env override (highest precedence).
+	t.Setenv("QRDB_TENANT_QUOTA_RECONCILE_INTERVAL", "10s")
+	cfg, err = Load(writeMinimalConfig(t, "tenant:\n  quota_reconcile_interval: 90s\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Tenant.QuotaReconcileInterval != "10s" {
+		t.Errorf("env quota_reconcile_interval = %q, want 10s (env override)", cfg.Tenant.QuotaReconcileInterval)
+	}
+}
+
+// TestQuotaReconcileInterval_InvalidRejected verifies a bad duration is
+// rejected by validation.
+func TestQuotaReconcileInterval_InvalidRejected(t *testing.T) {
+	if _, err := Load(writeMinimalConfig(t, "tenant:\n  quota_reconcile_interval: not-a-duration\n")); err == nil {
+		t.Fatal("expected validation error for invalid tenant.quota_reconcile_interval")
+	}
+	if _, err := Load(writeMinimalConfig(t, "tenant:\n  quota_reconcile_interval: -5m\n")); err == nil {
+		t.Fatal("expected validation error for non-positive tenant.quota_reconcile_interval")
+	}
+}

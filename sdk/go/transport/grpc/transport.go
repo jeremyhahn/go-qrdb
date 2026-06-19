@@ -43,9 +43,10 @@ import (
 
 // Compile-time interface assertions.
 var (
-	_ transport.Transport   = (*Transport)(nil)
-	_ transport.KVClient    = (*Transport)(nil)
-	_ transport.AdminClient = (*Transport)(nil)
+	_ transport.Transport      = (*Transport)(nil)
+	_ transport.KVClient       = (*Transport)(nil)
+	_ transport.AdminClient    = (*Transport)(nil)
+	_ transport.DatabaseScoper = (*Transport)(nil)
 )
 
 // Transport implements the QRDB SDK transport interface using gRPC. It
@@ -56,6 +57,12 @@ type Transport struct {
 	conn   *grpc.ClientConn
 	client pb.QRDBServiceClient
 	closed atomic.Bool
+
+	// activeDatabase, when non-empty, is appended as x-qrdb-database outgoing
+	// metadata on every RPC so the server resolves data-plane operations under
+	// the {tenant}/{database}/ keyspace. Empty means unscoped (system database).
+	// Set only via WithDatabase; immutable per Transport.
+	activeDatabase string
 }
 
 // New creates a new gRPC transport with the given options. The transport
@@ -543,7 +550,57 @@ func (t *Transport) buildDialOptions() ([]grpc.DialOption, error) {
 		opts = append(opts, grpc.WithUnaryInterceptor(timeoutUnaryInterceptor(t.config.Timeout)))
 	}
 
+	// When a database is scoped, inject the x-qrdb-database metadata on every
+	// RPC. The server only consults it for data-plane handlers; management and
+	// admin RPCs ignore it, so universal injection is safe.
+	if t.activeDatabase != "" {
+		opts = append(opts,
+			grpc.WithChainUnaryInterceptor(transport.DatabaseUnaryClientInterceptor(t.activeDatabase)),
+			grpc.WithChainStreamInterceptor(transport.DatabaseStreamClientInterceptor(t.activeDatabase)),
+		)
+	}
+
 	return opts, nil
+}
+
+// WithDatabase returns a database-scoped clone of the transport. When the
+// parent is already connected, the clone dials its own connection carrying the
+// x-qrdb-database metadata interceptor (grpc.NewClient is lazy, so this incurs
+// no eager I/O); when not yet connected, the clone's Connect dials the scoped
+// connection. Scoping to the default ("system") database or the empty string
+// yields an unscoped clone that shares the parent's connection.
+func (t *Transport) WithDatabase(database string) transport.Transport {
+	db := transport.NormalizeDatabaseScope(database)
+	clone := &Transport{config: t.config, activeDatabase: db}
+	clone.closed.Store(t.closed.Load())
+
+	if t.conn == nil {
+		// Not yet connected: clone.Connect() will dial a scoped connection.
+		return clone
+	}
+	if db == "" {
+		// Unscoped: share the parent's live connection.
+		clone.conn = t.conn
+		clone.client = t.client
+		return clone
+	}
+
+	dialOpts, err := clone.buildDialOptions()
+	if err == nil {
+		var conn *grpc.ClientConn
+		if conn, err = grpc.NewClient(stripScheme(t.config.Address), dialOpts...); err == nil {
+			clone.conn = conn
+			clone.client = pb.NewQRDBServiceClient(conn)
+			return clone
+		}
+	}
+	// buildDialOptions / NewClient derive solely from static config that the
+	// parent already dialed successfully, so this branch is unreachable in
+	// practice; share the parent's connection rather than return an unusable
+	// client.
+	clone.conn = t.conn
+	clone.client = t.client
+	return clone
 }
 
 // timeoutUnaryInterceptor returns a gRPC unary client interceptor that

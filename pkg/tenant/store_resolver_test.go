@@ -119,11 +119,16 @@ func TestStoreResolver_UnknownTenantUsesSharedStore(t *testing.T) {
 // is NOT the shared store, and a round-tripped value is encrypted in the
 // underlying backend (proving crypto separation).
 func TestStoreResolver_BarrierTenantUsesOwnBarrier(t *testing.T) {
-	shared, svc, _, resolver := newResolverFixture(t)
+	shared, svc, reg, resolver := newResolverFixture(t)
 	ctx := context.Background()
 
 	if _, err := svc.CreateTenant(ctx, "secure", "Secure", IsolationBarrier); err != nil {
 		t.Fatalf("CreateTenant(barrier): %v", err)
+	}
+	// Self-managed is the default: the barrier comes up sealed. Initialize it
+	// (the tenant-admin step) so the resolver can route to an unsealed store.
+	if err := reg.InitializeTenant(ctx, "secure", seal.Credentials{}); err != nil {
+		t.Fatalf("InitializeTenant(secure): %v", err)
 	}
 
 	store, err := resolver.Resolve(ctx, "secure")
@@ -162,12 +167,16 @@ func TestStoreResolver_BarrierTenantUsesOwnBarrier(t *testing.T) {
 // (c) Two barrier tenants are isolated: tenant A's record is not resolvable
 // through tenant B's store, and the resolver hands back distinct stores.
 func TestStoreResolver_TwoBarrierTenantsAreIsolated(t *testing.T) {
-	_, svc, _, resolver := newResolverFixture(t)
+	_, svc, reg, resolver := newResolverFixture(t)
 	ctx := context.Background()
 
 	for _, id := range []string{"tenant-a", "tenant-b"} {
 		if _, err := svc.CreateTenant(ctx, id, id, IsolationBarrier); err != nil {
 			t.Fatalf("CreateTenant(%s): %v", id, err)
+		}
+		// Self-managed default: initialize the barrier (tenant-admin step).
+		if err := reg.InitializeTenant(ctx, id, seal.Credentials{}); err != nil {
+			t.Fatalf("InitializeTenant(%s): %v", id, err)
 		}
 	}
 
@@ -206,6 +215,11 @@ func TestStoreResolver_SealedBarrierTenantFailsClosed(t *testing.T) {
 
 	if _, err := svc.CreateTenant(ctx, "vault", "Vault", IsolationBarrier); err != nil {
 		t.Fatalf("CreateTenant(barrier): %v", err)
+	}
+	// Self-managed default: initialize the barrier so it is unsealed before the
+	// test seals it again below.
+	if err := reg.InitializeTenant(ctx, "vault", seal.Credentials{}); err != nil {
+		t.Fatalf("InitializeTenant(vault): %v", err)
 	}
 
 	// Resolve once while unsealed so a wrapper is cached, proving the cached

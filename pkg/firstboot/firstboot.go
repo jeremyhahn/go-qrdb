@@ -112,7 +112,7 @@ type CertBinder interface {
 // (go-quicbaas, go-xkms) ship adapters that satisfy it over their own
 // tenant stores so the same bootstrap path serves every binary.
 type TenantCreator interface {
-	CreateTenant(ctx context.Context, id, displayName string, isolation tenant.IsolationType) (*tenant.TenantInfo, error)
+	CreateTenant(ctx context.Context, id, displayName string, isolation tenant.IsolationType, opts ...tenant.CreateTenantOption) (*tenant.TenantInfo, error)
 }
 
 // RoleCreator is the narrow role-creation surface first-boot needs. Same

@@ -29,8 +29,9 @@ import (
 // method is called. The lease must have been previously granted; when it
 // expires the key is automatically deleted.
 func (s *Server) handlePutWithLease(ctx context.Context, payload []byte) ([]byte, error) {
-	if s.mvccSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "mvcc"}
+	mvccSvc, svcErr := s.mvccSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
 	}
 
 	var req pb.PutWithLeaseRequest
@@ -43,9 +44,9 @@ func (s *Server) handlePutWithLease(ctx context.Context, payload []byte) ([]byte
 		err    error
 	)
 	if mode, ok := writeModeFromWire(req.GetWriteMode()); ok {
-		result, err = s.mvccSvc.PutWithLeaseAndMode(ctx, string(req.GetKey()), req.GetValue(), req.GetLeaseId(), mode)
+		result, err = mvccSvc.PutWithLeaseAndMode(ctx, string(req.GetKey()), req.GetValue(), req.GetLeaseId(), mode)
 	} else {
-		result, err = s.mvccSvc.PutWithLease(ctx, string(req.GetKey()), req.GetValue(), req.GetLeaseId())
+		result, err = mvccSvc.PutWithLease(ctx, string(req.GetKey()), req.GetValue(), req.GetLeaseId())
 	}
 	if err != nil {
 		return nil, err
@@ -63,8 +64,9 @@ func (s *Server) handlePutWithLease(ctx context.Context, payload []byte) ([]byte
 // non-UNSPECIFIED ConsistencyLevel, GetRevisionWithConsistency is used;
 // otherwise the plain GetRevision method is called.
 func (s *Server) handleGetRevision(ctx context.Context, payload []byte) ([]byte, error) {
-	if s.mvccSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "mvcc"}
+	mvccSvc, svcErr := s.mvccSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
 	}
 
 	var req pb.GetRevisionRequest
@@ -77,9 +79,9 @@ func (s *Server) handleGetRevision(ctx context.Context, payload []byte) ([]byte,
 		err    error
 	)
 	if opts, ok := readOptsFromWire(req.GetConsistency()); ok {
-		result, err = s.mvccSvc.GetRevisionWithConsistency(ctx, string(req.GetKey()), opts)
+		result, err = mvccSvc.GetRevisionWithConsistency(ctx, string(req.GetKey()), opts)
 	} else {
-		result, err = s.mvccSvc.GetRevision(ctx, string(req.GetKey()))
+		result, err = mvccSvc.GetRevision(ctx, string(req.GetKey()))
 	}
 	if err != nil {
 		return nil, err
@@ -97,8 +99,9 @@ func (s *Server) handleGetRevision(ctx context.Context, payload []byte) ([]byte,
 // non-UNSPECIFIED ConsistencyLevel, GetAtRevisionWithConsistency is used;
 // otherwise the plain GetAtRevision method is called.
 func (s *Server) handleGetAtRevision(ctx context.Context, payload []byte) ([]byte, error) {
-	if s.mvccSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "mvcc"}
+	mvccSvc, svcErr := s.mvccSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
 	}
 
 	var req pb.GetAtRevisionRequest
@@ -111,9 +114,9 @@ func (s *Server) handleGetAtRevision(ctx context.Context, payload []byte) ([]byt
 		err    error
 	)
 	if opts, ok := readOptsFromWire(req.GetConsistency()); ok {
-		result, err = s.mvccSvc.GetAtRevisionWithConsistency(ctx, string(req.GetKey()), req.GetRevision(), opts)
+		result, err = mvccSvc.GetAtRevisionWithConsistency(ctx, string(req.GetKey()), req.GetRevision(), opts)
 	} else {
-		result, err = s.mvccSvc.GetAtRevision(ctx, string(req.GetKey()), req.GetRevision())
+		result, err = mvccSvc.GetAtRevision(ctx, string(req.GetKey()), req.GetRevision())
 	}
 	if err != nil {
 		return nil, err
@@ -132,13 +135,22 @@ func (s *Server) handleGetAtRevision(ctx context.Context, payload []byte) ([]byt
 // non-UNSPECIFIED ConsistencyLevel, RangeWithConsistency is used; otherwise
 // the plain Range method is called.
 func (s *Server) handleRange(ctx context.Context, payload []byte) ([]byte, error) {
-	if s.mvccSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "mvcc"}
+	mvccSvc, svcErr := s.mvccSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
 	}
 
 	var req pb.RangeRequest
 	if err := proto.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
+	}
+
+	// An absent range start must be rejected rather than forwarded: a nil lower
+	// bound otherwise denotes the start of the shared store, which would scan
+	// across the (tenant, db) namespace boundary. This matches the REST handler,
+	// which rejects an empty start with 400.
+	if len(req.GetStart()) == 0 {
+		return nil, &InvalidArgumentError{Reason: "start is required"}
 	}
 
 	var opts []service.RangeOption
@@ -167,9 +179,9 @@ func (s *Server) handleRange(ctx context.Context, payload []byte) ([]byte, error
 		err   error
 	)
 	if ropts, ok := readOptsFromWire(req.GetConsistency()); ok {
-		kvs, count, err = s.mvccSvc.RangeWithConsistency(ctx, req.GetStart(), req.GetEnd(), ropts, opts...)
+		kvs, count, err = mvccSvc.RangeWithConsistency(ctx, req.GetStart(), req.GetEnd(), ropts, opts...)
 	} else {
-		kvs, count, err = s.mvccSvc.Range(ctx, req.GetStart(), req.GetEnd(), opts...)
+		kvs, count, err = mvccSvc.Range(ctx, req.GetStart(), req.GetEnd(), opts...)
 	}
 	if err != nil {
 		return nil, err
@@ -191,8 +203,9 @@ func (s *Server) handleRange(ctx context.Context, payload []byte) ([]byte, error
 // revision, reclaiming storage space. Compacted revisions can no longer
 // be read via GetAtRevision.
 func (s *Server) handleCompact(ctx context.Context, payload []byte) ([]byte, error) {
-	if s.mvccSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "mvcc"}
+	mvccSvc, svcErr := s.mvccSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
 	}
 
 	var req pb.CompactRequest
@@ -200,7 +213,7 @@ func (s *Server) handleCompact(ctx context.Context, payload []byte) ([]byte, err
 		return nil, &UnmarshalError{Err: err}
 	}
 
-	if err := s.mvccSvc.Compact(ctx, req.GetRevision()); err != nil {
+	if err := mvccSvc.Compact(ctx, req.GetRevision()); err != nil {
 		return nil, err
 	}
 
@@ -210,11 +223,12 @@ func (s *Server) handleCompact(ctx context.Context, payload []byte) ([]byte, err
 // handleCurrentRevision returns the latest committed MVCC revision number.
 // This handler accepts no payload.
 func (s *Server) handleCurrentRevision(ctx context.Context, _ []byte) ([]byte, error) {
-	if s.mvccSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "mvcc"}
+	mvccSvc, svcErr := s.mvccSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
 	}
 
-	rev, err := s.mvccSvc.CurrentRevision(ctx)
+	rev, err := mvccSvc.CurrentRevision(ctx)
 	if err != nil {
 		return nil, err
 	}

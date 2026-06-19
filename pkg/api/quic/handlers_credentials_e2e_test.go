@@ -144,7 +144,7 @@ func credentialE2ERoundTrip(
 	}
 	defer func() { _ = stream.Close() }()
 
-	if err := wire.WriteRequest(stream, method, 1, payload); err != nil {
+	if err := wire.WriteRequest(stream, method, "", 1, payload); err != nil {
 		t.Fatalf("write request: %v", err)
 	}
 	if err := stream.Close(); err != nil {

@@ -233,7 +233,7 @@ func (b *StorageBarrier) UnsealWithShare(ctx context.Context, shareValue string)
 		}
 	} else {
 		// Credential mode: the reconstructed secret is the password.
-		if err := b.Unseal(ctx, Credentials{Secret: string(secret)}); err != nil {
+		if err := b.Unseal(ctx, Credentials{Secret: secret}); err != nil {
 			return nil, err
 		}
 	}
@@ -289,7 +289,7 @@ func (b *StorageBarrier) UnsealWithShares(ctx context.Context, shareValues []str
 		}
 	}
 
-	secret, err := shamir.Combine(shares)
+	secret, err := shamir.CombineUnverified(shares)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrShamirCombineFailed, err)
 	}
@@ -301,5 +301,5 @@ func (b *StorageBarrier) UnsealWithShares(ctx context.Context, shareValues []str
 		return b.unsealDirect(ctx, secret)
 	}
 
-	return b.Unseal(ctx, Credentials{Secret: string(secret)})
+	return b.Unseal(ctx, Credentials{Secret: secret})
 }

@@ -135,11 +135,16 @@ func openStorage(name string, backend BackendType, dataDir string) (storage.Stor
 		}
 		return store, nil
 	case BackendRaft:
-		return nil, &StorageCreateError{
-			Name:    name,
-			Backend: string(backend),
-			Err:     &InvalidBackendError{Backend: "raft (not yet implemented)"},
-		}
+		// A dedicated-raft database's authoritative data plane is a per-database
+		// Raft shard hosted on the shared system Host by the server-layer
+		// RaftBackendFactory (IsolationRaft): the shard's state-machine data lives
+		// under the tenant's DataRoot ({DataRoot}/databases/{db}/shard-<N>) and is
+		// reached through the request resolver, not through this Backend. The
+		// Manager still opens a Backend so the database's meta.json, catalog
+		// membership, and shard-ID allocation are tracked uniformly with every
+		// other backend; that bookkeeping role is served by a lightweight
+		// in-memory placeholder. The placeholder is never used for the data plane.
+		return memory.NewStorage(), nil
 	default:
 		return nil, &InvalidBackendError{Backend: string(backend)}
 	}

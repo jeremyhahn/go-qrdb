@@ -102,6 +102,10 @@ type txOpJSON struct {
 // handleTxExecute returns a tool handler that delegates to txSvc.Execute.
 func handleTxExecute(txSvc service.TransactionServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		txSvc, rerr := resolveTx(ctx, txSvc)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
+		}
 		comparesStr := mcp.ParseString(req, "compares", "")
 		if comparesStr == "" {
 			return mcp.NewToolResultError("compares is required"), nil

@@ -299,6 +299,11 @@ type qrdbServiceServer struct {
 	collectionSvc service.CollectionServicer
 	backupSvc     service.BackupServicer
 	rebalanceSvc  service.RebalanceServicer
+
+	// registry, when set, resolves data-plane services per (tenant, database)
+	// scope. When nil the singleton service fields above are used (embedded /
+	// single-database deployments).
+	registry service.Registry
 }
 
 // ---------------------------------------------------------------------------
@@ -307,16 +312,17 @@ type qrdbServiceServer struct {
 
 // Put stores a key-value pair via Raft consensus.
 func (s *qrdbServiceServer) Put(ctx context.Context, req *pb.PutRequest) (*pb.PutResponse, error) {
-	if s.kvSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "kv"}).Error())
+	kvSvc, svcErr := s.kvSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 	if mode, ok := writeModeFromProto(req.GetWriteMode()); ok {
-		if err := s.kvSvc.PutWithMode(ctx, req.GetKey(), req.GetValue(), mode); err != nil {
+		if err := kvSvc.PutWithMode(ctx, req.GetKey(), req.GetValue(), mode); err != nil {
 			return nil, mapServiceError(err)
 		}
 		return &pb.PutResponse{}, nil
 	}
-	if err := s.kvSvc.Put(ctx, req.GetKey(), req.GetValue()); err != nil {
+	if err := kvSvc.Put(ctx, req.GetKey(), req.GetValue()); err != nil {
 		return nil, mapServiceError(err)
 	}
 	return &pb.PutResponse{}, nil
@@ -324,17 +330,18 @@ func (s *qrdbServiceServer) Put(ctx context.Context, req *pb.PutRequest) (*pb.Pu
 
 // Get retrieves a value by key using a linearizable read.
 func (s *qrdbServiceServer) Get(ctx context.Context, req *pb.GetRequest) (*pb.GetResponse, error) {
-	if s.kvSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "kv"}).Error())
+	kvSvc, svcErr := s.kvSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 	var (
 		data []byte
 		err  error
 	)
 	if opts, ok := readOptionsFromProto(req.GetConsistency()); ok {
-		data, err = s.kvSvc.GetWithConsistency(ctx, req.GetKey(), opts)
+		data, err = kvSvc.GetWithConsistency(ctx, req.GetKey(), opts)
 	} else {
-		data, err = s.kvSvc.Get(ctx, req.GetKey())
+		data, err = kvSvc.Get(ctx, req.GetKey())
 	}
 	if err != nil {
 		return nil, mapServiceError(err)
@@ -344,16 +351,17 @@ func (s *qrdbServiceServer) Get(ctx context.Context, req *pb.GetRequest) (*pb.Ge
 
 // Delete removes a key via Raft consensus.
 func (s *qrdbServiceServer) Delete(ctx context.Context, req *pb.DeleteRequest) (*pb.DeleteResponse, error) {
-	if s.kvSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "kv"}).Error())
+	kvSvc, svcErr := s.kvSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 	if mode, ok := writeModeFromProto(req.GetWriteMode()); ok {
-		if err := s.kvSvc.DeleteWithMode(ctx, req.GetKey(), mode); err != nil {
+		if err := kvSvc.DeleteWithMode(ctx, req.GetKey(), mode); err != nil {
 			return nil, mapServiceError(err)
 		}
 		return &pb.DeleteResponse{}, nil
 	}
-	if err := s.kvSvc.Delete(ctx, req.GetKey()); err != nil {
+	if err := kvSvc.Delete(ctx, req.GetKey()); err != nil {
 		return nil, mapServiceError(err)
 	}
 	return &pb.DeleteResponse{}, nil
@@ -361,17 +369,18 @@ func (s *qrdbServiceServer) Delete(ctx context.Context, req *pb.DeleteRequest) (
 
 // List returns sorted keys matching a prefix.
 func (s *qrdbServiceServer) List(ctx context.Context, req *pb.ListRequest) (*pb.ListResponse, error) {
-	if s.kvSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "kv"}).Error())
+	kvSvc, svcErr := s.kvSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 	var (
 		keys []string
 		err  error
 	)
 	if opts, ok := readOptionsFromProto(req.GetConsistency()); ok {
-		keys, err = s.kvSvc.ListWithConsistency(ctx, req.GetPrefix(), opts)
+		keys, err = kvSvc.ListWithConsistency(ctx, req.GetPrefix(), opts)
 	} else {
-		keys, err = s.kvSvc.List(ctx, req.GetPrefix())
+		keys, err = kvSvc.List(ctx, req.GetPrefix())
 	}
 	if err != nil {
 		return nil, mapServiceError(err)
@@ -381,17 +390,18 @@ func (s *qrdbServiceServer) List(ctx context.Context, req *pb.ListRequest) (*pb.
 
 // Scan returns key-value pairs matching a prefix.
 func (s *qrdbServiceServer) Scan(ctx context.Context, req *pb.ScanRequest) (*pb.ScanResponse, error) {
-	if s.kvSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "kv"}).Error())
+	kvSvc, svcErr := s.kvSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 	var (
 		data map[string][]byte
 		err  error
 	)
 	if opts, ok := readOptionsFromProto(req.GetConsistency()); ok {
-		data, err = s.kvSvc.ScanWithConsistency(ctx, req.GetPrefix(), opts)
+		data, err = kvSvc.ScanWithConsistency(ctx, req.GetPrefix(), opts)
 	} else {
-		data, err = s.kvSvc.Scan(ctx, req.GetPrefix())
+		data, err = kvSvc.Scan(ctx, req.GetPrefix())
 	}
 	if err != nil {
 		return nil, mapServiceError(err)
@@ -612,8 +622,9 @@ func (s *qrdbServiceServer) GetTopology(ctx context.Context, _ *emptypb.Empty) (
 
 // PutWithLease stores a key-value pair with an attached lease.
 func (s *qrdbServiceServer) PutWithLease(ctx context.Context, req *pb.PutWithLeaseRequest) (*pb.PutWithLeaseResponse, error) {
-	if s.mvccSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "mvcc"}).Error())
+	mvccSvc, svcErr := s.mvccSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
 	var (
@@ -621,9 +632,9 @@ func (s *qrdbServiceServer) PutWithLease(ctx context.Context, req *pb.PutWithLea
 		err    error
 	)
 	if mode, ok := writeModeFromProto(req.GetWriteMode()); ok {
-		result, err = s.mvccSvc.PutWithLeaseAndMode(ctx, req.GetKey(), req.GetValue(), req.GetLeaseId(), mode)
+		result, err = mvccSvc.PutWithLeaseAndMode(ctx, req.GetKey(), req.GetValue(), req.GetLeaseId(), mode)
 	} else {
-		result, err = s.mvccSvc.PutWithLease(ctx, req.GetKey(), req.GetValue(), req.GetLeaseId())
+		result, err = mvccSvc.PutWithLease(ctx, req.GetKey(), req.GetValue(), req.GetLeaseId())
 	}
 	if err != nil {
 		return nil, mapServiceError(err)
@@ -633,8 +644,9 @@ func (s *qrdbServiceServer) PutWithLease(ctx context.Context, req *pb.PutWithLea
 
 // GetRevision retrieves a key-value pair with full MVCC revision metadata.
 func (s *qrdbServiceServer) GetRevision(ctx context.Context, req *pb.GetRevisionRequest) (*pb.GetRevisionResponse, error) {
-	if s.mvccSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "mvcc"}).Error())
+	mvccSvc, svcErr := s.mvccSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
 	var (
@@ -642,9 +654,9 @@ func (s *qrdbServiceServer) GetRevision(ctx context.Context, req *pb.GetRevision
 		err    error
 	)
 	if opts, ok := readOptionsFromProto(req.GetConsistency()); ok {
-		result, err = s.mvccSvc.GetRevisionWithConsistency(ctx, req.GetKey(), opts)
+		result, err = mvccSvc.GetRevisionWithConsistency(ctx, req.GetKey(), opts)
 	} else {
-		result, err = s.mvccSvc.GetRevision(ctx, req.GetKey())
+		result, err = mvccSvc.GetRevision(ctx, req.GetKey())
 	}
 	if err != nil {
 		return nil, mapServiceError(err)
@@ -654,8 +666,9 @@ func (s *qrdbServiceServer) GetRevision(ctx context.Context, req *pb.GetRevision
 
 // GetAtRevision retrieves a key-value pair at a historical revision.
 func (s *qrdbServiceServer) GetAtRevision(ctx context.Context, req *pb.GetAtRevisionRequest) (*pb.GetAtRevisionResponse, error) {
-	if s.mvccSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "mvcc"}).Error())
+	mvccSvc, svcErr := s.mvccSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
 	var (
@@ -663,9 +676,9 @@ func (s *qrdbServiceServer) GetAtRevision(ctx context.Context, req *pb.GetAtRevi
 		err    error
 	)
 	if opts, ok := readOptionsFromProto(req.GetConsistency()); ok {
-		result, err = s.mvccSvc.GetAtRevisionWithConsistency(ctx, req.GetKey(), req.GetRevision(), opts)
+		result, err = mvccSvc.GetAtRevisionWithConsistency(ctx, req.GetKey(), req.GetRevision(), opts)
 	} else {
-		result, err = s.mvccSvc.GetAtRevision(ctx, req.GetKey(), req.GetRevision())
+		result, err = mvccSvc.GetAtRevision(ctx, req.GetKey(), req.GetRevision())
 	}
 	if err != nil {
 		return nil, mapServiceError(err)
@@ -675,8 +688,17 @@ func (s *qrdbServiceServer) GetAtRevision(ctx context.Context, req *pb.GetAtRevi
 
 // Range returns key-value pairs in the half-open interval [start, end).
 func (s *qrdbServiceServer) Range(ctx context.Context, req *pb.RangeRequest) (*pb.RangeResponse, error) {
-	if s.mvccSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "mvcc"}).Error())
+	mvccSvc, svcErr := s.mvccSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
+	}
+
+	// An absent range start must be rejected rather than forwarded: a nil lower
+	// bound otherwise denotes the start of the shared store, which would scan
+	// across the (tenant, db) namespace boundary. This matches the REST handler,
+	// which rejects an empty start with 400.
+	if len(req.GetStart()) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "start is required")
 	}
 
 	var opts []service.RangeOption
@@ -705,9 +727,9 @@ func (s *qrdbServiceServer) Range(ctx context.Context, req *pb.RangeRequest) (*p
 		err   error
 	)
 	if ropts, ok := readOptionsFromProto(req.GetConsistency()); ok {
-		kvs, count, err = s.mvccSvc.RangeWithConsistency(ctx, req.GetStart(), req.GetEnd(), ropts, opts...)
+		kvs, count, err = mvccSvc.RangeWithConsistency(ctx, req.GetStart(), req.GetEnd(), ropts, opts...)
 	} else {
-		kvs, count, err = s.mvccSvc.Range(ctx, req.GetStart(), req.GetEnd(), opts...)
+		kvs, count, err = mvccSvc.Range(ctx, req.GetStart(), req.GetEnd(), opts...)
 	}
 	if err != nil {
 		return nil, mapServiceError(err)
@@ -723,11 +745,12 @@ func (s *qrdbServiceServer) Range(ctx context.Context, req *pb.RangeRequest) (*p
 
 // Compact discards all MVCC revisions older than the specified revision.
 func (s *qrdbServiceServer) Compact(ctx context.Context, req *pb.CompactRequest) (*emptypb.Empty, error) {
-	if s.mvccSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "mvcc"}).Error())
+	mvccSvc, svcErr := s.mvccSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
-	if err := s.mvccSvc.Compact(ctx, req.GetRevision()); err != nil {
+	if err := mvccSvc.Compact(ctx, req.GetRevision()); err != nil {
 		return nil, mapServiceError(err)
 	}
 	return &emptypb.Empty{}, nil
@@ -735,11 +758,12 @@ func (s *qrdbServiceServer) Compact(ctx context.Context, req *pb.CompactRequest)
 
 // CurrentRevision returns the latest committed MVCC revision.
 func (s *qrdbServiceServer) CurrentRevision(ctx context.Context, _ *emptypb.Empty) (*pb.CurrentRevisionResponse, error) {
-	if s.mvccSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "mvcc"}).Error())
+	mvccSvc, svcErr := s.mvccSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
-	rev, err := s.mvccSvc.CurrentRevision(ctx)
+	rev, err := mvccSvc.CurrentRevision(ctx)
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -752,8 +776,9 @@ func (s *qrdbServiceServer) CurrentRevision(ctx context.Context, _ *emptypb.Empt
 
 // Transaction executes an atomic compare-and-swap transaction.
 func (s *qrdbServiceServer) Transaction(ctx context.Context, req *pb.TransactionRequest) (*pb.TransactionResponse, error) {
-	if s.txSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "transaction"}).Error())
+	txSvc, svcErr := s.txSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
 	compares := make([]service.Compare, len(req.GetCompares()))
@@ -771,7 +796,7 @@ func (s *qrdbServiceServer) Transaction(ctx context.Context, req *pb.Transaction
 		failureOps[i] = protoToOp(op)
 	}
 
-	result, err := s.txSvc.Execute(ctx, compares, successOps, failureOps)
+	result, err := txSvc.Execute(ctx, compares, successOps, failureOps)
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -794,8 +819,9 @@ func (s *qrdbServiceServer) Transaction(ctx context.Context, req *pb.Transaction
 
 // Batch executes multiple operations atomically.
 func (s *qrdbServiceServer) Batch(ctx context.Context, req *pb.BatchRequest) (*pb.BatchResponse, error) {
-	if s.batchSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "batch"}).Error())
+	batchSvc, svcErr := s.batchSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
 	ops := make([]service.Op, len(req.GetOps()))
@@ -803,7 +829,7 @@ func (s *qrdbServiceServer) Batch(ctx context.Context, req *pb.BatchRequest) (*p
 		ops[i] = protoToOp(op)
 	}
 
-	results, err := s.batchSvc.Execute(ctx, ops)
+	results, err := batchSvc.Execute(ctx, ops)
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -823,11 +849,11 @@ func (s *qrdbServiceServer) Batch(ctx context.Context, req *pb.BatchRequest) (*p
 // Watch creates a server-streaming watcher that delivers events for the
 // specified key or prefix.
 func (s *qrdbServiceServer) Watch(req *pb.WatchRequest, stream grpc.ServerStreamingServer[pb.WatchResponse]) error {
-	if s.watchSvc == nil {
-		return status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "watch"}).Error())
-	}
-
 	ctx := stream.Context()
+	watchSvc, svcErr := s.watchSvcFor(ctx)
+	if svcErr != nil {
+		return mapServiceError(svcErr)
+	}
 
 	// Build watch options from the request.
 	var opts []watch.WatchOption
@@ -846,9 +872,9 @@ func (s *qrdbServiceServer) Watch(req *pb.WatchRequest, stream grpc.ServerStream
 	var err error
 
 	if len(req.GetRangeEnd()) > 0 {
-		w, err = s.watchSvc.WatchPrefix(ctx, string(req.GetKey()), opts...)
+		w, err = watchSvc.WatchPrefix(ctx, string(req.GetKey()), opts...)
 	} else {
-		w, err = s.watchSvc.Watch(ctx, string(req.GetKey()), opts...)
+		w, err = watchSvc.Watch(ctx, string(req.GetKey()), opts...)
 	}
 	if err != nil {
 		return mapServiceError(err)
@@ -904,11 +930,12 @@ func (s *qrdbServiceServer) Watch(req *pb.WatchRequest, stream grpc.ServerStream
 
 // LeaseGrant creates a new lease with the specified TTL.
 func (s *qrdbServiceServer) LeaseGrant(ctx context.Context, req *pb.LeaseGrantRequest) (*pb.LeaseGrantResponse, error) {
-	if s.leaseSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "lease"}).Error())
+	leaseSvc, svcErr := s.leaseSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
-	l, err := s.leaseSvc.Grant(ctx, req.GetTtl())
+	l, err := leaseSvc.Grant(ctx, req.GetTtl())
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -917,11 +944,12 @@ func (s *qrdbServiceServer) LeaseGrant(ctx context.Context, req *pb.LeaseGrantRe
 
 // LeaseRevoke immediately expires a lease and deletes attached keys.
 func (s *qrdbServiceServer) LeaseRevoke(ctx context.Context, req *pb.LeaseRevokeRequest) (*emptypb.Empty, error) {
-	if s.leaseSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "lease"}).Error())
+	leaseSvc, svcErr := s.leaseSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
-	if err := s.leaseSvc.Revoke(ctx, req.GetLeaseId()); err != nil {
+	if err := leaseSvc.Revoke(ctx, req.GetLeaseId()); err != nil {
 		return nil, mapServiceError(err)
 	}
 	return &emptypb.Empty{}, nil
@@ -929,11 +957,12 @@ func (s *qrdbServiceServer) LeaseRevoke(ctx context.Context, req *pb.LeaseRevoke
 
 // LeaseKeepAlive resets the TTL on an existing lease.
 func (s *qrdbServiceServer) LeaseKeepAlive(ctx context.Context, req *pb.LeaseKeepAliveRequest) (*pb.LeaseKeepAliveResponse, error) {
-	if s.leaseSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "lease"}).Error())
+	leaseSvc, svcErr := s.leaseSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
-	l, err := s.leaseSvc.KeepAlive(ctx, req.GetLeaseId())
+	l, err := leaseSvc.KeepAlive(ctx, req.GetLeaseId())
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -942,11 +971,12 @@ func (s *qrdbServiceServer) LeaseKeepAlive(ctx context.Context, req *pb.LeaseKee
 
 // LeaseTimeToLive returns the current state of a lease.
 func (s *qrdbServiceServer) LeaseTimeToLive(ctx context.Context, req *pb.LeaseTimeToLiveRequest) (*pb.LeaseTimeToLiveResponse, error) {
-	if s.leaseSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "lease"}).Error())
+	leaseSvc, svcErr := s.leaseSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
-	l, err := s.leaseSvc.TimeToLive(ctx, req.GetLeaseId())
+	l, err := leaseSvc.TimeToLive(ctx, req.GetLeaseId())
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -955,11 +985,12 @@ func (s *qrdbServiceServer) LeaseTimeToLive(ctx context.Context, req *pb.LeaseTi
 
 // LeaseList returns all active leases.
 func (s *qrdbServiceServer) LeaseList(ctx context.Context, _ *emptypb.Empty) (*pb.LeaseListResponse, error) {
-	if s.leaseSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "lease"}).Error())
+	leaseSvc, svcErr := s.leaseSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
-	leases, err := s.leaseSvc.Leases(ctx)
+	leases, err := leaseSvc.Leases(ctx)
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -1081,15 +1112,16 @@ func (s *qrdbServiceServer) LockList(ctx context.Context, req *pb.LockListReques
 
 // IndexCreate creates a new secondary index.
 func (s *qrdbServiceServer) IndexCreate(ctx context.Context, req *pb.IndexCreateRequest) (*emptypb.Empty, error) {
-	if s.indexSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "index"}).Error())
+	indexSvc, svcErr := s.indexSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
 	cfg := index.IndexConfig{
 		Unique: req.GetUnique(),
 		Sparse: req.GetSparse(),
 	}
-	if err := s.indexSvc.CreateIndex(ctx, req.GetName(), req.GetFieldName(), cfg); err != nil {
+	if err := indexSvc.CreateIndex(ctx, req.GetName(), req.GetFieldName(), cfg); err != nil {
 		return nil, mapServiceError(err)
 	}
 	return &emptypb.Empty{}, nil
@@ -1097,11 +1129,12 @@ func (s *qrdbServiceServer) IndexCreate(ctx context.Context, req *pb.IndexCreate
 
 // IndexDrop removes a secondary index.
 func (s *qrdbServiceServer) IndexDrop(ctx context.Context, req *pb.IndexDropRequest) (*emptypb.Empty, error) {
-	if s.indexSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "index"}).Error())
+	indexSvc, svcErr := s.indexSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
-	if err := s.indexSvc.DropIndex(ctx, req.GetName()); err != nil {
+	if err := indexSvc.DropIndex(ctx, req.GetName()); err != nil {
 		return nil, mapServiceError(err)
 	}
 	return &emptypb.Empty{}, nil
@@ -1109,11 +1142,12 @@ func (s *qrdbServiceServer) IndexDrop(ctx context.Context, req *pb.IndexDropRequ
 
 // IndexQuery returns entry keys matching an exact value in an index.
 func (s *qrdbServiceServer) IndexQuery(ctx context.Context, req *pb.IndexQueryRequest) (*pb.IndexQueryResponse, error) {
-	if s.indexSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "index"}).Error())
+	indexSvc, svcErr := s.indexSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
-	keys, err := s.indexSvc.Query(ctx, req.GetIndexName(), req.GetValue())
+	keys, err := indexSvc.Query(ctx, req.GetIndexName(), req.GetValue())
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -1122,11 +1156,12 @@ func (s *qrdbServiceServer) IndexQuery(ctx context.Context, req *pb.IndexQueryRe
 
 // IndexScan returns entries in an index within a value range.
 func (s *qrdbServiceServer) IndexScan(ctx context.Context, req *pb.IndexScanRequest) (*pb.IndexScanResponse, error) {
-	if s.indexSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "index"}).Error())
+	indexSvc, svcErr := s.indexSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
-	result, err := s.indexSvc.Scan(ctx, req.GetIndexName(), req.GetStart(), req.GetEnd())
+	result, err := indexSvc.Scan(ctx, req.GetIndexName(), req.GetStart(), req.GetEnd())
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -1143,11 +1178,12 @@ func (s *qrdbServiceServer) IndexScan(ctx context.Context, req *pb.IndexScanRequ
 
 // IndexList returns the names of all registered indexes.
 func (s *qrdbServiceServer) IndexList(ctx context.Context, _ *emptypb.Empty) (*pb.IndexListResponse, error) {
-	if s.indexSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "index"}).Error())
+	indexSvc, svcErr := s.indexSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
-	names, err := s.indexSvc.ListIndexes(ctx)
+	names, err := indexSvc.ListIndexes(ctx)
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -1161,8 +1197,9 @@ func (s *qrdbServiceServer) IndexList(ctx context.Context, _ *emptypb.Empty) (*p
 
 // TSWrite stores a single time-series data point.
 func (s *qrdbServiceServer) TSWrite(ctx context.Context, req *pb.TSWriteRequest) (*emptypb.Empty, error) {
-	if s.tsSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "timeseries"}).Error())
+	tsSvc, svcErr := s.tsSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
 	p := req.GetPoint()
@@ -1173,7 +1210,7 @@ func (s *qrdbServiceServer) TSWrite(ctx context.Context, req *pb.TSWriteRequest)
 	ts := time.Unix(0, p.GetTimestampNs())
 	tags := protoTagsToMap(p.GetTags())
 
-	if err := s.tsSvc.Write(ctx, p.GetMetric(), p.GetValue(), ts, tags); err != nil {
+	if err := tsSvc.Write(ctx, p.GetMetric(), p.GetValue(), ts, tags); err != nil {
 		return nil, mapServiceError(err)
 	}
 	return &emptypb.Empty{}, nil
@@ -1181,8 +1218,9 @@ func (s *qrdbServiceServer) TSWrite(ctx context.Context, req *pb.TSWriteRequest)
 
 // TSWriteBatch stores multiple time-series data points atomically.
 func (s *qrdbServiceServer) TSWriteBatch(ctx context.Context, req *pb.TSWriteBatchRequest) (*emptypb.Empty, error) {
-	if s.tsSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "timeseries"}).Error())
+	tsSvc, svcErr := s.tsSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
 	points := make([]timeseries.DataPoint, len(req.GetPoints()))
@@ -1190,7 +1228,7 @@ func (s *qrdbServiceServer) TSWriteBatch(ctx context.Context, req *pb.TSWriteBat
 		points[i] = protoToDataPoint(p)
 	}
 
-	if err := s.tsSvc.WriteBatch(ctx, points); err != nil {
+	if err := tsSvc.WriteBatch(ctx, points); err != nil {
 		return nil, mapServiceError(err)
 	}
 	return &emptypb.Empty{}, nil
@@ -1198,8 +1236,9 @@ func (s *qrdbServiceServer) TSWriteBatch(ctx context.Context, req *pb.TSWriteBat
 
 // TSQuery retrieves data points for a metric within a time range.
 func (s *qrdbServiceServer) TSQuery(ctx context.Context, req *pb.TSQueryRequest) (*pb.TSQueryResponse, error) {
-	if s.tsSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "timeseries"}).Error())
+	tsSvc, svcErr := s.tsSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
 	start := time.Unix(0, req.GetStartNs())
@@ -1222,9 +1261,9 @@ func (s *qrdbServiceServer) TSQuery(ctx context.Context, req *pb.TSQueryRequest)
 		err    error
 	)
 	if ropts, ok := readOptionsFromProto(req.GetConsistency()); ok {
-		points, err = s.tsSvc.QueryWithConsistency(ctx, req.GetMetric(), start, end, ropts, opts...)
+		points, err = tsSvc.QueryWithConsistency(ctx, req.GetMetric(), start, end, ropts, opts...)
 	} else {
-		points, err = s.tsSvc.Query(ctx, req.GetMetric(), start, end, opts...)
+		points, err = tsSvc.Query(ctx, req.GetMetric(), start, end, opts...)
 	}
 	if err != nil {
 		return nil, mapServiceError(err)
@@ -1239,8 +1278,9 @@ func (s *qrdbServiceServer) TSQuery(ctx context.Context, req *pb.TSQueryRequest)
 
 // TSAggregate computes an aggregation over data points in a time range.
 func (s *qrdbServiceServer) TSAggregate(ctx context.Context, req *pb.TSAggregateRequest) (*pb.TSAggregateResponse, error) {
-	if s.tsSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "timeseries"}).Error())
+	tsSvc, svcErr := s.tsSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
 	start := time.Unix(0, req.GetStartNs())
@@ -1253,9 +1293,9 @@ func (s *qrdbServiceServer) TSAggregate(ctx context.Context, req *pb.TSAggregate
 		err     error
 	)
 	if ropts, ok := readOptionsFromProto(req.GetConsistency()); ok {
-		results, err = s.tsSvc.AggregateWithConsistency(ctx, req.GetMetric(), start, end, fn, interval, ropts)
+		results, err = tsSvc.AggregateWithConsistency(ctx, req.GetMetric(), start, end, fn, interval, ropts)
 	} else {
-		results, err = s.tsSvc.Aggregate(ctx, req.GetMetric(), start, end, fn, interval)
+		results, err = tsSvc.Aggregate(ctx, req.GetMetric(), start, end, fn, interval)
 	}
 	if err != nil {
 		return nil, mapServiceError(err)
@@ -1270,8 +1310,9 @@ func (s *qrdbServiceServer) TSAggregate(ctx context.Context, req *pb.TSAggregate
 
 // TSWritePoint stores a single validated DataPoint.
 func (s *qrdbServiceServer) TSWritePoint(ctx context.Context, req *pb.TSWriteRequest) (*emptypb.Empty, error) {
-	if s.tsSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "timeseries"}).Error())
+	tsSvc, svcErr := s.tsSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
 	p := req.GetPoint()
@@ -1286,7 +1327,7 @@ func (s *qrdbServiceServer) TSWritePoint(ctx context.Context, req *pb.TSWriteReq
 		Tags:      protoTagsToMap(p.GetTags()),
 	}
 
-	if err := s.tsSvc.WritePoint(ctx, dp); err != nil {
+	if err := tsSvc.WritePoint(ctx, dp); err != nil {
 		return nil, mapServiceError(err)
 	}
 	return &emptypb.Empty{}, nil
@@ -1295,8 +1336,9 @@ func (s *qrdbServiceServer) TSWritePoint(ctx context.Context, req *pb.TSWriteReq
 // TSRichQuery performs a rich query with filtering, aggregation,
 // downsampling, and grouping.
 func (s *qrdbServiceServer) TSRichQuery(ctx context.Context, req *pb.TSRichQueryRequest) (*pb.TSRichQueryResponse, error) {
-	if s.tsSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "timeseries"}).Error())
+	tsSvc, svcErr := s.tsSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
 	qr := &timeseries.QueryRequest{
@@ -1316,9 +1358,9 @@ func (s *qrdbServiceServer) TSRichQuery(ctx context.Context, req *pb.TSRichQuery
 		err    error
 	)
 	if ropts, ok := readOptionsFromProto(req.GetConsistency()); ok {
-		result, err = s.tsSvc.QueryRichWithConsistency(ctx, qr, ropts)
+		result, err = tsSvc.QueryRichWithConsistency(ctx, qr, ropts)
 	} else {
-		result, err = s.tsSvc.QueryRich(ctx, qr)
+		result, err = tsSvc.QueryRich(ctx, qr)
 	}
 	if err != nil {
 		return nil, mapServiceError(err)
@@ -1365,8 +1407,9 @@ func (s *qrdbServiceServer) TSRichQuery(ctx context.Context, req *pb.TSRichQuery
 
 // TSDeleteSeries deletes data points matching the request criteria.
 func (s *qrdbServiceServer) TSDeleteSeries(ctx context.Context, req *pb.TSDeleteSeriesRequest) (*emptypb.Empty, error) {
-	if s.tsSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "timeseries"}).Error())
+	tsSvc, svcErr := s.tsSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
 	dr := &timeseries.DeleteRequest{
@@ -1381,7 +1424,7 @@ func (s *qrdbServiceServer) TSDeleteSeries(ctx context.Context, req *pb.TSDelete
 		dr.EndTime = time.Unix(0, req.GetEndNs())
 	}
 
-	if err := s.tsSvc.DeleteSeries(ctx, dr); err != nil {
+	if err := tsSvc.DeleteSeries(ctx, dr); err != nil {
 		return nil, mapServiceError(err)
 	}
 	return &emptypb.Empty{}, nil
@@ -1389,11 +1432,12 @@ func (s *qrdbServiceServer) TSDeleteSeries(ctx context.Context, req *pb.TSDelete
 
 // TSGetRetention retrieves the retention policy for a metric.
 func (s *qrdbServiceServer) TSGetRetention(ctx context.Context, req *pb.TSGetRetentionRequest) (*pb.TSRetentionPolicyResponse, error) {
-	if s.tsSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "timeseries"}).Error())
+	tsSvc, svcErr := s.tsSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
-	policy, err := s.tsSvc.GetRetentionPolicy(req.GetMetric())
+	policy, err := tsSvc.GetRetentionPolicy(req.GetMetric())
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -1407,8 +1451,9 @@ func (s *qrdbServiceServer) TSGetRetention(ctx context.Context, req *pb.TSGetRet
 
 // TSSetRetention sets the retention policy for a metric.
 func (s *qrdbServiceServer) TSSetRetention(ctx context.Context, req *pb.TSSetRetentionRequest) (*emptypb.Empty, error) {
-	if s.tsSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "timeseries"}).Error())
+	tsSvc, svcErr := s.tsSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
 	policy := &timeseries.RetentionPolicy{
@@ -1417,7 +1462,7 @@ func (s *qrdbServiceServer) TSSetRetention(ctx context.Context, req *pb.TSSetRet
 		Aggregation: protoAggFuncMap[req.GetAggregation()],
 	}
 
-	if err := s.tsSvc.SetRetentionPolicy(req.GetMetric(), policy); err != nil {
+	if err := tsSvc.SetRetentionPolicy(req.GetMetric(), policy); err != nil {
 		return nil, mapServiceError(err)
 	}
 	return &emptypb.Empty{}, nil
@@ -1425,8 +1470,9 @@ func (s *qrdbServiceServer) TSSetRetention(ctx context.Context, req *pb.TSSetRet
 
 // TSListMetrics returns metric names matching the optional prefix.
 func (s *qrdbServiceServer) TSListMetrics(ctx context.Context, req *pb.TSListMetricsRequest) (*pb.TSListMetricsResponse, error) {
-	if s.tsSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "timeseries"}).Error())
+	tsSvc, svcErr := s.tsSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
 	var (
@@ -1434,9 +1480,9 @@ func (s *qrdbServiceServer) TSListMetrics(ctx context.Context, req *pb.TSListMet
 		err     error
 	)
 	if ropts, ok := readOptionsFromProto(req.GetConsistency()); ok {
-		metrics, err = s.tsSvc.ListMetricsWithConsistency(ctx, req.GetPrefix(), int(req.GetLimit()), ropts)
+		metrics, err = tsSvc.ListMetricsWithConsistency(ctx, req.GetPrefix(), int(req.GetLimit()), ropts)
 	} else {
-		metrics, err = s.tsSvc.ListMetrics(req.GetPrefix(), int(req.GetLimit()))
+		metrics, err = tsSvc.ListMetrics(req.GetPrefix(), int(req.GetLimit()))
 	}
 	if err != nil {
 		return nil, mapServiceError(err)

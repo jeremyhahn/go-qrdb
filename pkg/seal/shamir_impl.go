@@ -128,7 +128,7 @@ func (a *shamirShareAccumulator) Reconstruct(_ context.Context) ([]byte, error) 
 		})
 	}
 
-	return shamir.Combine(combineShares)
+	return shamir.CombineUnverified(combineShares)
 }
 
 // Reset destroys every accumulated share enclave and resets the TTL timer.

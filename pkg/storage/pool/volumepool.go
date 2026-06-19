@@ -47,6 +47,15 @@ type VolumePoolSubsystem struct {
 	// shutdown handler.
 	PerTenantRegistry pebblestore.PerTenantRegistry
 
+	// ReplicatedState is the cluster-wide round-robin cursor store. It is
+	// non-nil only in clustered mode, where it backs the pool strategies in
+	// place of the node-local PebbleStateStore so the cursor is a single
+	// replicated value that survives leader failover. It is constructed
+	// unbound; the caller binds it to the replicated system KV via Bind once
+	// the data plane is available (see cmd/qrdbd/start.go). Nil in standalone
+	// mode, where StateStore (node-local Pebble) backs the strategies.
+	ReplicatedState *ReplicatedStateStore
+
 	// DefaultPoolName is the name of the pool that
 	// BarrierRegistry.RegisterTenant draws from when called with a nil
 	// backend. Hardcoded to "default".
@@ -77,7 +86,16 @@ func (v *VolumePoolSubsystem) Close() error {
 // dataDir is the node's data directory; the volume-pool state store opens a
 // dedicated Pebble at <dataDir>/volumepool so the cursor lives independently
 // of the system-tenant data plane.
-func BuildVolumePoolSubsystem(dataDir string, pools []qrdbconfig.VolumePoolConfig, logger *slog.Logger) (*VolumePoolSubsystem, error) {
+//
+// clustered selects where the round-robin cursor lives. When false (standalone
+// / single-node), strategies use the node-local PebbleStateStore. When true
+// (raft / clustered), strategies use a ReplicatedStateStore so the cursor — and
+// therefore relative-slot assignment — is a single cluster-wide decision that
+// survives leader failover. The replicated store is returned unbound in
+// ReplicatedState; the caller binds it to the replicated system KV once the
+// data plane is up. The node-local Pebble is still opened in clustered mode so
+// StateStore stays a valid lifetime-pinned handle for diagnostics.
+func BuildVolumePoolSubsystem(dataDir string, pools []qrdbconfig.VolumePoolConfig, logger *slog.Logger, clustered bool) (*VolumePoolSubsystem, error) {
 	if len(pools) == 0 {
 		return nil, nil
 	}
@@ -97,9 +115,18 @@ func BuildVolumePoolSubsystem(dataDir string, pools []qrdbconfig.VolumePoolConfi
 		return nil, &VolumePoolStorageError{Err: err}
 	}
 
+	// Cursor backing store: node-local Pebble in standalone mode, replicated
+	// system KV (late-bound) in clustered mode.
+	var cursorStore objpool.StateStore = stateStore
+	var replicatedState *ReplicatedStateStore
+	if clustered {
+		replicatedState = NewReplicatedStateStore()
+		cursorStore = replicatedState
+	}
+
 	innerMgr := objpool.NewManager()
 	for _, poolCfg := range pools {
-		strategy, err := BuildPoolStrategy(poolCfg.Strategy, stateStore)
+		strategy, err := BuildPoolStrategy(poolCfg.Strategy, cursorStore)
 		if err != nil {
 			_ = stateStorage.Close()
 			return nil, err
@@ -130,6 +157,7 @@ func BuildVolumePoolSubsystem(dataDir string, pools []qrdbconfig.VolumePoolConfi
 	return &VolumePoolSubsystem{
 		Manager:           mgr,
 		StateStore:        stateStore,
+		ReplicatedState:   replicatedState,
 		PerTenantRegistry: perTenantReg,
 		DefaultPoolName:   "default",
 		stateStorage:      stateStorage,
@@ -138,8 +166,10 @@ func BuildVolumePoolSubsystem(dataDir string, pools []qrdbconfig.VolumePoolConfi
 
 // BuildPoolStrategy constructs a pool.Strategy from the YAML strategy string.
 // An empty string defaults to round_robin so configs that omit it get sensible
-// behaviour.
-func BuildPoolStrategy(name string, state *PebbleStateStore) (objpool.Strategy, error) {
+// behaviour. state is the cursor backing store: a *PebbleStateStore in
+// standalone mode or a *ReplicatedStateStore in clustered mode (both satisfy
+// objpool.StateStore).
+func BuildPoolStrategy(name string, state objpool.StateStore) (objpool.Strategy, error) {
 	if state == nil {
 		return nil, &NilStateStoreError{}
 	}

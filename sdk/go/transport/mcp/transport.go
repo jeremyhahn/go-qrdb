@@ -56,6 +56,71 @@ type Transport struct {
 	client    *mcpclient.Client
 	mcpServer *mcpserver.MCPServer
 	closed    atomic.Bool
+
+	// database is the target database scope passed as the "database" argument
+	// on data-plane tool calls. An empty string (or the default "system"
+	// scope) selects the server's implicit bootstrap database. It is set via
+	// WithDatabase.
+	database string
+}
+
+// Compile-time assertion that the MCP transport supports database scoping.
+var _ transport.DatabaseScoper = (*Transport)(nil)
+
+// WithDatabase returns a database-scoped clone of the transport that passes the
+// given database scope as the "database" argument on its data-plane tool calls
+// while sharing the parent's MCP client connection. Scoping to the empty string
+// or the default "system" database yields an unscoped clone (no database
+// argument is added). It implements transport.DatabaseScoper.
+func (t *Transport) WithDatabase(database string) transport.Transport {
+	clone := &Transport{
+		config:    t.config,
+		client:    t.client,
+		mcpServer: t.mcpServer,
+		database:  transport.NormalizeDatabaseScope(database),
+	}
+	clone.closed.Store(t.closed.Load())
+	return clone
+}
+
+// mcpDataPlaneExactTools is the set of data-plane MCP tool names with no shared
+// prefix (KV and watch). Only data-plane tool calls carry the database scope
+// argument; management, admin, and barrier tools are tenant- or cluster-global
+// and ignore it.
+var mcpDataPlaneExactTools = map[string]bool{
+	"qrdb_put":    true,
+	"qrdb_get":    true,
+	"qrdb_delete": true,
+	"qrdb_list":   true,
+	"qrdb_scan":   true,
+	"qrdb_watch":  true,
+}
+
+// mcpDataPlanePrefixes are the name prefixes of the remaining data-plane MCP
+// tool families (MVCC, transaction, batch, lease, secondary index, time-series,
+// and vector).
+var mcpDataPlanePrefixes = []string{
+	"qrdb_mvcc_",
+	"qrdb_tx_",
+	"qrdb_batch_",
+	"qrdb_lease_",
+	"qrdb_index_",
+	"qrdb_ts_",
+	"qrdb_vector_",
+}
+
+// isDataPlaneTool reports whether the named tool targets a data-plane endpoint
+// and therefore should carry the database scope argument.
+func isDataPlaneTool(tool string) bool {
+	if mcpDataPlaneExactTools[tool] {
+		return true
+	}
+	for _, p := range mcpDataPlanePrefixes {
+		if strings.HasPrefix(tool, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // New creates a new MCP transport with the given options. The Address
@@ -743,6 +808,15 @@ type serverShardInfo struct {
 // the text content from the first TextContent result. If the result
 // contains an error (IsError=true), a toolResultError is returned.
 func (t *Transport) callTool(ctx context.Context, tool string, args map[string]any) (string, error) {
+	// Carry the database scope on data-plane tool calls so the server resolves
+	// the request against the correct (tenant, database) keyspace.
+	if t.database != "" && isDataPlaneTool(tool) {
+		if args == nil {
+			args = map[string]any{}
+		}
+		args["database"] = t.database
+	}
+
 	req := mcp.CallToolRequest{}
 	req.Params.Name = tool
 	if args != nil {

@@ -23,7 +23,7 @@ type stubbedTenantServicer struct {
 	err error
 }
 
-func (s *stubbedTenantServicer) CreateTenant(ctx context.Context, id, name string, iso tenant.IsolationType) (*tenant.TenantInfo, error) {
+func (s *stubbedTenantServicer) CreateTenant(ctx context.Context, id, name string, iso tenant.IsolationType, _ ...tenant.CreateTenantOption) (*tenant.TenantInfo, error) {
 	if s.err != nil {
 		return nil, s.err
 	}

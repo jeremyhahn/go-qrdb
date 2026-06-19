@@ -196,7 +196,7 @@ func (s *qrdbServiceServer) DatabaseUnseal(ctx context.Context, req *pb.Database
 	if s.databaseSvc == nil {
 		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "database"}).Error())
 	}
-	if err := s.databaseSvc.UnsealDatabase(ctx, req.GetName(), seal.Credentials{Secret: req.GetSecret()}); err != nil {
+	if err := s.databaseSvc.UnsealDatabase(ctx, req.GetName(), seal.Credentials{Secret: []byte(req.GetSecret())}); err != nil {
 		return nil, mapServiceError(err)
 	}
 	return &emptypb.Empty{}, nil
@@ -235,10 +235,11 @@ func databaseBarrierStatusToProto(st *seal.BarrierStatus) *pb.DatabaseBarrierSta
 // domain DatabaseConfig.
 func protoDatabaseCreateToConfig(req *pb.DatabaseCreateRequest) database.DatabaseConfig {
 	cfg := database.DatabaseConfig{
-		Name:    req.GetName(),
-		Engine:  database.EngineType(req.GetEngine()),
-		Backend: database.BackendType(req.GetBackend()),
-		DataDir: req.GetDataDir(),
+		Name:     req.GetName(),
+		Engine:   database.EngineType(req.GetEngine()),
+		Backend:  database.BackendType(req.GetBackend()),
+		DataDir:  req.GetDataDir(),
+		Replicas: int(req.GetReplicas()),
 	}
 
 	if p := req.GetProtocol(); p != nil {
@@ -365,6 +366,7 @@ func databaseInfoToProto(info *database.DatabaseInfo) *pb.DatabaseInfoResponse {
 		ShardId:  info.ShardID,
 		Mode:     string(info.Mode),
 		TenantId: info.TenantID,
+		Replicas: uint32(info.Replicas),
 	}
 
 	resp.Protocol = domainProtocolConfigToProto(info.Protocol)

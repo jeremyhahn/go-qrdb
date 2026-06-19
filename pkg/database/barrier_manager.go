@@ -63,7 +63,7 @@ func (m *DatabaseBarrierManager) EnsureBarrier(
 		RootKeyPath: "db/" + dbName + "/root-key",
 	}
 
-	strategy, err := seal.NewSoftwareStrategy([]byte(creds.Secret))
+	strategy, err := seal.NewSoftwareStrategy(creds.Secret)
 	if err != nil {
 		return &BarrierCreateError{Name: dbName, Err: err}
 	}

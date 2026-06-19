@@ -42,7 +42,27 @@ var (
 	_ transport.KVClient         = (*Transport)(nil)
 	_ transport.AdminClient      = (*Transport)(nil)
 	_ transport.TimeSeriesClient = (*Transport)(nil)
+	_ transport.DatabaseScoper   = (*Transport)(nil)
 )
+
+// dbHeaderRoundTripper injects the X-QRDB-Database header on data-plane
+// requests before delegating to the underlying RoundTripper. It is a no-op
+// when database is empty or the request path is not a data-plane endpoint.
+type dbHeaderRoundTripper struct {
+	base     http.RoundTripper
+	database string
+}
+
+// RoundTrip implements http.RoundTripper.
+func (rt *dbHeaderRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if rt.database != "" && transport.IsDataPlanePath(req.URL.Path) {
+		// Clone before mutating headers per the RoundTripper contract.
+		clone := req.Clone(req.Context())
+		clone.Header.Set(transport.DatabaseHeader, rt.database)
+		return rt.base.RoundTrip(clone)
+	}
+	return rt.base.RoundTrip(req)
+}
 
 // Transport implements the QRDB SDK transport interface using HTTP/2 REST
 // requests. It communicates with the QRDB REST API server, which uses the
@@ -58,6 +78,16 @@ type Transport struct {
 	client  *http.Client
 	baseURL string
 	closed  atomic.Bool
+
+	// activeDatabase, when non-empty, is sent as the X-QRDB-Database header on
+	// every data-plane request so the server namespaces the operation under
+	// {tenant}/{database}/. Empty means unscoped (server uses the system
+	// database). It is set only via WithDatabase and is immutable per Transport.
+	activeDatabase string
+
+	// baseRT is the underlying RoundTripper (HTTP/2 transport) shared across
+	// database-scoped clones so they reuse the same connection pool.
+	baseRT http.RoundTripper
 }
 
 // New creates a new REST transport with the given options. The transport
@@ -104,8 +134,9 @@ func (t *Transport) Connect(ctx context.Context) error {
 		timeout = 30 * time.Second
 	}
 
+	t.baseRT = httpTransport
 	t.client = &http.Client{
-		Transport: httpTransport,
+		Transport: t.scopedRoundTripper(),
 		Timeout:   timeout,
 	}
 
@@ -726,6 +757,38 @@ func (t *Transport) GetTopology(ctx context.Context) (*transport.TopologyRespons
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+// scopedRoundTripper wraps the base RoundTripper so that data-plane requests
+// carry the active database header. When no database is scoped it returns the
+// base transport unchanged.
+func (t *Transport) scopedRoundTripper() http.RoundTripper {
+	if t.activeDatabase == "" {
+		return t.baseRT
+	}
+	return &dbHeaderRoundTripper{base: t.baseRT, database: t.activeDatabase}
+}
+
+// WithDatabase returns a database-scoped clone of the transport. The clone
+// shares the same underlying HTTP connection pool and configuration but tags
+// every data-plane request with the X-QRDB-Database header. Scoping to the
+// default ("system") database, or the empty string, yields an unscoped clone.
+func (t *Transport) WithDatabase(database string) transport.Transport {
+	db := transport.NormalizeDatabaseScope(database)
+	clone := &Transport{
+		config:         t.config,
+		baseURL:        t.baseURL,
+		baseRT:         t.baseRT,
+		activeDatabase: db,
+	}
+	clone.closed.Store(t.closed.Load())
+	if t.client != nil {
+		clone.client = &http.Client{
+			Transport: clone.scopedRoundTripper(),
+			Timeout:   t.client.Timeout,
+		}
+	}
+	return clone
+}
 
 // buildTLSConfig constructs the TLS configuration from the transport config.
 func (t *Transport) buildTLSConfig() (*tls.Config, error) {

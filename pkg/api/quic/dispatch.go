@@ -220,6 +220,7 @@ func (s *Server) buildHandlers() {
 	s.handlers["tenant.Update"] = s.handleTenantUpdate
 	s.handlers["tenant.Delete"] = s.handleTenantDelete
 	s.handlers["tenant.UpdateQuotas"] = s.handleTenantUpdateQuotas
+	s.handlers["tenant.UpdateEntitlements"] = s.handleTenantUpdateEntitlements
 
 	// Credential management
 	if s.credentialSvc != nil {

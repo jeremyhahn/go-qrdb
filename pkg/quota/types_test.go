@@ -46,6 +46,58 @@ func TestResourceStringKnownValues(t *testing.T) {
 	}
 }
 
+// --- Replica resources (Phase 4c-1a) ---
+
+func TestReplicaResourceStrings(t *testing.T) {
+	if got := ResourceReplicasPerGroup.String(); got != "replicas_per_group" {
+		t.Errorf("ResourceReplicasPerGroup.String() = %q, want %q", got, "replicas_per_group")
+	}
+	if got := ResourceTotalReplicas.String(); got != "total_replicas" {
+		t.Errorf("ResourceTotalReplicas.String() = %q, want %q", got, "total_replicas")
+	}
+}
+
+func TestReplicaResourceLimits(t *testing.T) {
+	q := &Quotas{MaxReplicasPerGroup: 3, MaxTotalReplicas: 9}
+	if got, err := q.Limit(ResourceReplicasPerGroup); err != nil || got != 3 {
+		t.Errorf("Limit(ResourceReplicasPerGroup) = %d, %v; want 3, nil", got, err)
+	}
+	if got, err := q.Limit(ResourceTotalReplicas); err != nil || got != 9 {
+		t.Errorf("Limit(ResourceTotalReplicas) = %d, %v; want 9, nil", got, err)
+	}
+}
+
+// TestReplicasPerGroupCurrentUsageAlwaysZero verifies the per-group cap resource
+// reports zero current usage (it is a per-request cap, not a cumulative counter)
+// and that its setter is a no-op.
+func TestReplicasPerGroupCurrentUsageAlwaysZero(t *testing.T) {
+	q := &Quotas{}
+	if got, err := q.CurrentUsage(ResourceReplicasPerGroup); err != nil || got != 0 {
+		t.Errorf("CurrentUsage(ResourceReplicasPerGroup) = %d, %v; want 0, nil", got, err)
+	}
+	if err := q.SetCurrentUsage(ResourceReplicasPerGroup, 7); err != nil {
+		t.Errorf("SetCurrentUsage(ResourceReplicasPerGroup) error = %v", err)
+	}
+	if got, _ := q.CurrentUsage(ResourceReplicasPerGroup); got != 0 {
+		t.Errorf("CurrentUsage(ResourceReplicasPerGroup) after set = %d, want 0 (no-op)", got)
+	}
+}
+
+// TestTotalReplicasCurrentUsageRoundTrip verifies the aggregate-budget counter
+// behaves like a normal cumulative resource.
+func TestTotalReplicasCurrentUsageRoundTrip(t *testing.T) {
+	q := &Quotas{}
+	if err := q.SetCurrentUsage(ResourceTotalReplicas, 5); err != nil {
+		t.Fatalf("SetCurrentUsage(ResourceTotalReplicas): %v", err)
+	}
+	if got, err := q.CurrentUsage(ResourceTotalReplicas); err != nil || got != 5 {
+		t.Errorf("CurrentUsage(ResourceTotalReplicas) = %d, %v; want 5, nil", got, err)
+	}
+	if q.CurrentTotalReplicas != 5 {
+		t.Errorf("CurrentTotalReplicas field = %d, want 5", q.CurrentTotalReplicas)
+	}
+}
+
 func TestResourceStringUnknownValue(t *testing.T) {
 	r := Resource(999)
 	got := r.String()

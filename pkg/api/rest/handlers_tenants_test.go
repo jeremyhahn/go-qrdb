@@ -53,7 +53,7 @@ type mockTenantService struct {
 	tenantBarrierStatusFn func(ctx context.Context, tenantID string) (*tenant.TenantBarrierStatus, error)
 }
 
-func (m *mockTenantService) CreateTenant(ctx context.Context, id, name string, isolationType tenant.IsolationType) (*tenant.TenantInfo, error) {
+func (m *mockTenantService) CreateTenant(ctx context.Context, id, name string, isolationType tenant.IsolationType, _ ...tenant.CreateTenantOption) (*tenant.TenantInfo, error) {
 	if m.createTenantFn != nil {
 		return m.createTenantFn(ctx, id, name, isolationType)
 	}
@@ -93,6 +93,10 @@ func (m *mockTenantService) UpdateQuotas(ctx context.Context, tenantID string, q
 		return m.updateQuotasFn(ctx, tenantID, quotas)
 	}
 	return nil, nil
+}
+
+func (m *mockTenantService) UpdateEntitlements(ctx context.Context, id string, e *quota.Entitlements) (*tenant.TenantInfo, error) {
+	return &tenant.TenantInfo{ID: id, Entitlements: e}, nil
 }
 
 func (m *mockTenantService) TenantBarrierInit(ctx context.Context, tenantID, passphrase string, threshold, shares int) (*tenant.TenantBarrierInitResult, error) {
@@ -1261,7 +1265,7 @@ func (e *extMockTenantService) TenantBarrierShamirSealVote(ctx context.Context, 
 
 // Delegation pass-through methods (all other TenantServicer methods).
 
-func (e *extMockTenantService) CreateTenant(ctx context.Context, id, name string, isolationType tenant.IsolationType) (*tenant.TenantInfo, error) {
+func (e *extMockTenantService) CreateTenant(ctx context.Context, id, name string, isolationType tenant.IsolationType, _ ...tenant.CreateTenantOption) (*tenant.TenantInfo, error) {
 	return e.mockTenantService.CreateTenant(ctx, id, name, isolationType)
 }
 func (e *extMockTenantService) GetTenant(ctx context.Context, tenantID string) (*tenant.TenantInfo, error) {

@@ -34,6 +34,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	quicraftseal "github.com/jeremyhahn/go-quicraft/pkg/seal"
 )
 
 // ---------------------------------------------------------------------------
@@ -187,6 +188,8 @@ func TestMapBarrierCeremonyHTTPError(t *testing.T) {
 		{"ShamirBarrierRequiresQuorum", seal.ErrShamirBarrierRequiresQuorum, http.StatusUnprocessableEntity},
 		{"SealVoteVerificationFailed", seal.ErrSealVoteVerificationFailed, http.StatusForbidden},
 		{"UnsealKeyMismatch", seal.ErrUnsealKeyMismatch, http.StatusForbidden},
+		{"DecryptionFailed", seal.ErrDecryptionFailed, http.StatusForbidden},
+		{"WrappedUnsealDecryption", &quicraftseal.UnsealError{Strategy: "passphrase", Err: quicraftseal.ErrDecryptionFailed}, http.StatusForbidden},
 		{"WrappedRootKeyCorrupt", seal.ErrWrappedRootKeyCorrupt, http.StatusInternalServerError},
 		{"AlreadyUnsealed", seal.ErrAlreadyUnsealed, http.StatusConflict},
 		{"AlreadyInitialized", seal.ErrAlreadyInitialized, http.StatusConflict},

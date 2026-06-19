@@ -22,6 +22,8 @@ import (
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/placement"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 )
 
@@ -159,13 +161,47 @@ const bytesPerSecondEstimate = 100 * 1024 * 1024 // 100 MB/s
 const hotspotThreshold = 1.5
 
 // RebalanceService implements RebalanceServicer backed by a QuicRaft host.
+// The optional placementStore, keyDeliverer, barrierLookup, and selfNodeID
+// fields enable Phase 4c-2 dedicated-tenant Raft group MOVE operations.
+// When nil, ExecuteRebalance falls back to the generic system-shard path
+// (RequestAddNode only), leaving existing non-IsolationRaft behavior intact.
 type RebalanceService struct {
-	host Host
+	host           Host
+	placementStore *placement.Store
+	keyDeliverer   RebalanceKeyDeliverer
+	barrierLookup  RebalanceBarrierLookup
+	selfNodeID     string
 }
 
 // NewRebalanceService creates a new RebalanceServicer backed by the given host.
-func NewRebalanceService(host Host) RebalanceServicer {
-	return &RebalanceService{host: host}
+// Functional opts configure Phase 4c-2 dedicated-tenant move capabilities;
+// an empty opts list produces the same generic-shard-only behaviour as before.
+func NewRebalanceService(host Host, opts ...RebalanceServiceOption) RebalanceServicer {
+	s := &RebalanceService{host: host}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
+}
+
+// SetRebalanceDeps injects the placement store, key deliverer, barrier lookup,
+// and local node ID after construction. This mirrors the SetDistributor pattern
+// used by DatabaseService: lifecycle.BuildServices constructs RebalanceService
+// before the clusterkeys.Sender (which needs the LeaderAdminResolver built in
+// start.go) is available, so post-construction injection is required.
+//
+// Passing nil for any argument disables the corresponding capability without
+// affecting generic-shard rebalancing.
+func (s *RebalanceService) SetRebalanceDeps(
+	ps *placement.Store,
+	d RebalanceKeyDeliverer,
+	lookup RebalanceBarrierLookup,
+	selfNodeID string,
+) {
+	s.placementStore = ps
+	s.keyDeliverer = d
+	s.barrierLookup = lookup
+	s.selfNodeID = selfNodeID
 }
 
 // GetShardStats returns statistics for a single shard. It queries the
@@ -341,9 +377,20 @@ func (s *RebalanceService) CreateRebalancePlan(ctx context.Context, opts *Rebala
 	}, nil
 }
 
-// ExecuteRebalance executes the given rebalance plan by adding members to
-// destination nodes and removing them from source nodes. Each move
-// transfers leadership by adding a new replica on the target node.
+// ExecuteRebalance executes the given rebalance plan. For each move it first
+// consults the placement table (when available) to determine whether the shard
+// belongs to a dedicated-tenant Raft group:
+//
+//   - Dedicated-tenant shard: routes through moveTenantGroupShard which
+//     delivers the barrier key, calls RequestAddNode, updates the placement,
+//     and calls RequestRemoveNode to evict the source. The placement update
+//     drives orphan teardown on the source node via TenantShardReconciler.
+//
+//   - Generic (system) shard: unchanged path — calls RequestAddNode only, as
+//     system shards share the cluster-wide barrier key and need no key delivery.
+//
+// When placementStore is nil all moves are treated as generic shards, so
+// existing deployments without Phase 4c-2 wiring are unaffected.
 func (s *RebalanceService) ExecuteRebalance(ctx context.Context, plan *RebalancePlanResult) (*RebalanceExecutionResult, error) {
 	if plan == nil {
 		return nil, &RebalanceExecuteError{Err: &nilPlanError{}}
@@ -355,8 +402,22 @@ func (s *RebalanceService) ExecuteRebalance(ctx context.Context, plan *Rebalance
 
 	info := s.host.GetNodeHostInfo(quicraft.NodeHostInfoOption{SkipLogInfo: true})
 
+	// Build a shardID→Placement index. A shard present in this index belongs to
+	// a dedicated-tenant Raft group and requires the full tenant-aware MOVE.
+	placementIndex := s.buildShardPlacementIndex(ctx)
+
 	for _, move := range plan.Moves {
-		// Find the shard info to get the config change index.
+		// Dedicated-tenant path.
+		if p, ok := placementIndex[move.ShardID]; ok {
+			if err := s.moveTenantGroupShard(ctx, move, p); err != nil {
+				failed++
+				continue
+			}
+			completed++
+			continue
+		}
+
+		// Generic (system-shard) path: RequestAddNode only.
 		var shardInfo *quicraft.ShardInfo
 		for i, si := range info.ShardInfoList {
 			if si.ShardID == move.ShardID {
@@ -369,16 +430,14 @@ func (s *RebalanceService) ExecuteRebalance(ctx context.Context, plan *Rebalance
 			continue
 		}
 
-		// Find the next available replica ID.
-		var maxReplicaID uint64
+		var maxID uint64
 		for rid := range shardInfo.Nodes {
-			if rid > maxReplicaID {
-				maxReplicaID = rid
+			if rid > maxID {
+				maxID = rid
 			}
 		}
-		newReplicaID := maxReplicaID + 1
+		newReplicaID := maxID + 1
 
-		// Add the new replica on the destination node.
 		rs, err := s.host.RequestAddNode(ctx, move.ShardID, newReplicaID, move.ToNode, 0)
 		if err != nil {
 			failed++
@@ -409,6 +468,218 @@ func (s *RebalanceService) ExecuteRebalance(ctx context.Context, plan *Rebalance
 		Duration:       duration,
 		FinalImbalance: finalImbalance,
 	}, nil
+}
+
+// buildShardPlacementIndex lists all placements from the store and returns a
+// map of ShardID → *Placement. Returns nil when placementStore is nil or when
+// List fails (callers treat a nil map as an empty index).
+func (s *RebalanceService) buildShardPlacementIndex(ctx context.Context) map[uint64]*placement.Placement {
+	if s.placementStore == nil {
+		return nil
+	}
+	placements, err := s.placementStore.List(ctx)
+	if err != nil {
+		return nil
+	}
+	idx := make(map[uint64]*placement.Placement, len(placements))
+	for _, p := range placements {
+		idx[p.ShardID] = p
+	}
+	return idx
+}
+
+// moveTenantGroupShard executes a single MOVE for a dedicated-tenant Raft group:
+//
+//  a. Locate the source replica in the placement entry.
+//  b. Assign a new replica ID (max existing ID + 1).
+//  c. Deliver the tenant barrier key to the destination node (when configured).
+//  d. Call RequestAddNode to admit the destination into the Raft group.
+//  e. Update the placement to include the destination and exclude the source.
+//  f. Call RequestRemoveNode to evict the source from Raft consensus.
+//
+// Failure semantics:
+//   - Steps a–d fail: no placement change has been made; the move is counted
+//     as failed and the cluster is left in its pre-move state.
+//   - Step e (placement-update) fails: RequestAddNode has committed the
+//     destination as a Raft member. The function returns a RebalanceMoveError
+//     so the caller counts the move as failed, but does NOT attempt to remove
+//     the newly added destination — doing so would require another Raft
+//     config-change and could leave the group in a worse state on error.
+//   - Step f (remove-node) fails: the placement already reflects the intended
+//     post-move state (dst in, src out). TenantShardReconciler will eventually
+//     stop the src shard when it reconciles the updated placement. The move is
+//     counted as failed so the caller can alert or retry.
+func (s *RebalanceService) moveTenantGroupShard(ctx context.Context, move RebalanceMovePlan, p *placement.Placement) error {
+	// Step a: locate the source replica.
+	srcReplica, ok := findReplicaByAddr(p, move.FromNode)
+	if !ok {
+		return &RebalanceMoveError{
+			ShardID:  move.ShardID,
+			TenantID: p.TenantID,
+			Step:     "find-source",
+			Err:      &sourceReplicaNotFoundError{ShardID: move.ShardID, FromNode: move.FromNode},
+		}
+	}
+
+	// Step b: assign destination replica ID.
+	newReplicaID := placementMaxReplicaID(p) + 1
+
+	// Build the destination Replica. NodeID == RaftAddr by cluster convention.
+	dstReplica := placement.Replica{
+		ReplicaID: newReplicaID,
+		NodeID:    move.ToNode,
+		RaftAddr:  move.ToNode,
+		DataRoot:  placementSharedDataRoot(p),
+	}
+
+	// Step c: deliver the tenant barrier key to the destination.
+	if s.keyDeliverer != nil && s.barrierLookup != nil {
+		if err := s.deliverKeyToDst(ctx, p, dstReplica); err != nil {
+			return &RebalanceMoveError{
+				ShardID:  move.ShardID,
+				TenantID: p.TenantID,
+				Step:     "key-delivery",
+				Err:      err,
+			}
+		}
+	}
+
+	// Step d: admit the destination into the Raft group.
+	rs, err := s.host.RequestAddNode(ctx, move.ShardID, newReplicaID, move.ToNode, 0)
+	if err != nil {
+		return &RebalanceMoveError{
+			ShardID:  move.ShardID,
+			TenantID: p.TenantID,
+			Step:     "add-node",
+			Err:      err,
+		}
+	}
+	if _, err := rs.Result(); err != nil {
+		return &RebalanceMoveError{
+			ShardID:  move.ShardID,
+			TenantID: p.TenantID,
+			Step:     "add-node-result",
+			Err:      err,
+		}
+	}
+
+	// Step e: update the placement — add dst, remove src.
+	updated := clonePlacementWithReplica(p, dstReplica)
+	updated = dropReplicaFromPlacement(updated, srcReplica.ReplicaID)
+	if err := s.placementStore.Put(ctx, updated); err != nil {
+		return &RebalanceMoveError{
+			ShardID:  move.ShardID,
+			TenantID: p.TenantID,
+			Step:     "placement-update",
+			Err:      err,
+		}
+	}
+
+	// Step f: evict the source from Raft consensus.
+	rsRm, err := s.host.RequestRemoveNode(ctx, move.ShardID, srcReplica.ReplicaID, 0)
+	if err != nil {
+		return &RebalanceMoveError{
+			ShardID:  move.ShardID,
+			TenantID: p.TenantID,
+			Step:     "remove-node",
+			Err:      err,
+		}
+	}
+	if _, err := rsRm.Result(); err != nil {
+		return &RebalanceMoveError{
+			ShardID:  move.ShardID,
+			TenantID: p.TenantID,
+			Step:     "remove-node-result",
+			Err:      err,
+		}
+	}
+
+	return nil
+}
+
+// deliverKeyToDst ships the tenant barrier key to dstReplica. It constructs a
+// single-replica Placement containing only the destination so that
+// DistributeTenantKey delivers the key to exactly that one recipient (it skips
+// the local node, identified by selfNodeID, which already holds the key as the
+// current leader). autoUnseal is true when the tenant barrier runs under the
+// system barrier strategy (system-managed); false for self-managed strategies.
+func (s *RebalanceService) deliverKeyToDst(ctx context.Context, p *placement.Placement, dst placement.Replica) error {
+	tb, err := s.barrierLookup.GetTenant(p.TenantID)
+	if err != nil {
+		return err
+	}
+	autoUnseal := tb.Barrier().ActiveStrategy() == seal.StrategySystemBarrier
+
+	// A single-replica placement ensures DistributeTenantKey delivers to
+	// exactly dst (selfNodeID != dst.NodeID, so the skip check passes).
+	singleReplica := &placement.Placement{
+		TenantID: p.TenantID,
+		Database: p.Database,
+		ShardID:  p.ShardID,
+		RF:       1,
+		Replicas: []placement.Replica{dst},
+	}
+	return s.keyDeliverer.DistributeTenantKey(ctx, singleReplica, tb.Barrier(), s.selfNodeID, autoUnseal)
+}
+
+// findReplicaByAddr returns the Replica whose NodeID or RaftAddr matches addr
+// and true, or a zero Replica and false when no match is found.
+func findReplicaByAddr(p *placement.Placement, addr string) (placement.Replica, bool) {
+	for _, r := range p.Replicas {
+		if r.NodeID == addr || r.RaftAddr == addr {
+			return r, true
+		}
+	}
+	return placement.Replica{}, false
+}
+
+// placementMaxReplicaID returns the largest ReplicaID across all replicas in p.
+// Returns 0 for an empty placement (the first replica will get ID 1).
+func placementMaxReplicaID(p *placement.Placement) uint64 {
+	var max uint64
+	for _, r := range p.Replicas {
+		if r.ReplicaID > max {
+			max = r.ReplicaID
+		}
+	}
+	return max
+}
+
+// placementSharedDataRoot returns the DataRoot from the first replica in p.
+// By cluster convention all replicas in a Placement share the same DataRoot
+// value (set to the node's configured data directory by the scheduler).
+func placementSharedDataRoot(p *placement.Placement) string {
+	if len(p.Replicas) > 0 {
+		return p.Replicas[0].DataRoot
+	}
+	return ""
+}
+
+// clonePlacementWithReplica returns a copy of p with r appended to Replicas.
+// RF is updated to reflect the new replica count.
+func clonePlacementWithReplica(p *placement.Placement, r placement.Replica) *placement.Placement {
+	replicas := make([]placement.Replica, len(p.Replicas)+1)
+	copy(replicas, p.Replicas)
+	replicas[len(p.Replicas)] = r
+	clone := *p
+	clone.Replicas = replicas
+	clone.RF = len(replicas)
+	return &clone
+}
+
+// dropReplicaFromPlacement returns a copy of p with the replica identified by
+// replicaID removed. RF is updated accordingly.
+func dropReplicaFromPlacement(p *placement.Placement, replicaID uint64) *placement.Placement {
+	replicas := make([]placement.Replica, 0, len(p.Replicas))
+	for _, r := range p.Replicas {
+		if r.ReplicaID != replicaID {
+			replicas = append(replicas, r)
+		}
+	}
+	clone := *p
+	clone.Replicas = replicas
+	clone.RF = len(replicas)
+	return &clone
 }
 
 // GetImbalanceReport returns the current cluster balance report including

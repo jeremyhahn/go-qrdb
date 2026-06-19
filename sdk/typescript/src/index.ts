@@ -103,6 +103,8 @@ export type {
     PeerInfo,
     DrainResponse,
     CapabilitiesResponse,
+    TopologyResponse,
+    ShardInfo,
     OKResponse,
     ErrorResponse,
 
@@ -329,8 +331,11 @@ export type {
     TenantBarrierUnsealProgress,
     TenantBarrierStatusResponse,
     TenantQuotas,
+    TenantEntitlements,
     UpdateTenantQuotasRequest,
     UpdateTenantQuotasResponse,
+    UpdateTenantEntitlementsRequest,
+    UpdateTenantEntitlementsResponse,
 
     // Server config
     ConfigInitializedResponse,

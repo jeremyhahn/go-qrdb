@@ -34,8 +34,8 @@ import (
 // would orphan every epoch), and no stored data is re-encrypted.
 //
 // The authenticated decrypt of the wrapped blob also provides the
-// out-of-band secret validation that shamir.Combine requires when shares
-// carry no integrity digest: garbage or stale shares produce a UK whose
+// out-of-band secret validation that shamir.CombineUnverified requires
+// when shares carry no integrity digest: garbage or stale shares produce a UK whose
 // AEAD open fails, surfacing ErrUnsealKeyMismatch instead of silently
 // unsealing with a wrong key.
 //

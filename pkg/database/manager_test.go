@@ -531,7 +531,7 @@ func TestManager_NewManager_NilLogger(t *testing.T) {
 	}
 }
 
-func TestManager_Create_RaftBackend_ReturnsError(t *testing.T) {
+func TestManager_Create_RaftBackend_PlaceholderBackend(t *testing.T) {
 	mgr := newTestManager(t)
 	defer func() { _ = mgr.Close() }()
 
@@ -540,13 +540,16 @@ func TestManager_Create_RaftBackend_ReturnsError(t *testing.T) {
 		Engine:  EngineKV,
 		Backend: BackendRaft,
 	}
-	_, err := mgr.Create(cfg)
-	if err == nil {
-		t.Fatal("Create(raft) returned nil, want error for unsupported raft backend")
+	// A raft-backed database is created with an in-memory placeholder Backend so
+	// its meta.json and catalog membership are tracked; the authoritative data
+	// plane is the per-database shard on the shared system Host (IsolationRaft),
+	// wired at the server layer.
+	db, err := mgr.Create(cfg)
+	if err != nil {
+		t.Fatalf("Create(raft) returned unexpected error: %v", err)
 	}
-	var storageErr *StorageCreateError
-	if !errors.As(err, &storageErr) {
-		t.Fatalf("Create(raft) error type = %T, want *StorageCreateError", err)
+	if db.Info().Backend != BackendRaft {
+		t.Fatalf("Create(raft) backend = %q, want %q", db.Info().Backend, BackendRaft)
 	}
 }
 

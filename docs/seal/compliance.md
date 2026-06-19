@@ -160,6 +160,7 @@ Each phase includes compliance verification:
 ## See Also
 
 - [roles.md](../auth/roles.md) — Canonical six-role definitions and SoD constraints
+- [enabling-encryption.md](enabling-encryption.md) — Encryption-at-rest lifecycle: why disabling encryption is not a casual toggle, enabling it on an existing `none` deployment, and encrypted-backup recovery
 - [custodians.md](../seal/custodians.md) — Custodian lifecycle and share-delivery protocol
 - [auth-factors.md](../seal/auth-factors.md) — `Factor` framework + `FactorRegistry` (hardware factor implementations ship in go-xkms)
 - [audit/README.md](../audit/README.md) — Audit event schema and retrieval API

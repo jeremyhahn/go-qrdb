@@ -63,11 +63,13 @@ type connectionConfigResponse struct {
 
 // createDatabaseRequest is the JSON payload for POST /v1/databases.
 type createDatabaseRequest struct {
-	Name     string `json:"name"`
-	Engine   string `json:"engine"`
-	Backend  string `json:"backend"`
-	DataDir  string `json:"dataDir,omitempty"`
-	Protocol struct {
+	Name         string `json:"name"`
+	Engine       string `json:"engine"`
+	Backend      string `json:"backend"`
+	DataDir      string `json:"dataDir,omitempty"`
+	Replicas     int    `json:"replicas,omitempty"`
+	DedicatedWAL bool   `json:"dedicatedWal,omitempty"`
+	Protocol     struct {
 		MySQL      bool `json:"mysql"`
 		PostgreSQL bool `json:"postgresql"`
 	} `json:"protocol"`
@@ -173,17 +175,19 @@ type updateDatabaseConnectionRequest struct {
 
 // databaseInfoResponse is the JSON representation of a database instance.
 type databaseInfoResponse struct {
-	Name       string                    `json:"name"`
-	Engine     string                    `json:"engine"`
-	Backend    string                    `json:"backend"`
-	Status     string                    `json:"status"`
-	Protocol   protocolConfigResponse    `json:"protocol,omitempty"`
-	DataDir    string                    `json:"dataDir,omitempty"`
-	ShardID    uint64                    `json:"shardId,omitempty"`
-	Mode       string                    `json:"mode,omitempty"`
-	Raft       *raftConfigResponse       `json:"raft,omitempty"`
-	Barrier    *barrierConfigResponse    `json:"barrier,omitempty"`
-	Connection *connectionConfigResponse `json:"connection,omitempty"`
+	Name         string                    `json:"name"`
+	Engine       string                    `json:"engine"`
+	Backend      string                    `json:"backend"`
+	Status       string                    `json:"status"`
+	Protocol     protocolConfigResponse    `json:"protocol,omitempty"`
+	DataDir      string                    `json:"dataDir,omitempty"`
+	ShardID      uint64                    `json:"shardId,omitempty"`
+	Mode         string                    `json:"mode,omitempty"`
+	Replicas     int                       `json:"replicas,omitempty"`
+	DedicatedWAL bool                      `json:"dedicatedWal,omitempty"`
+	Raft         *raftConfigResponse       `json:"raft,omitempty"`
+	Barrier      *barrierConfigResponse    `json:"barrier,omitempty"`
+	Connection   *connectionConfigResponse `json:"connection,omitempty"`
 }
 
 // raftConfigResponse is the JSON representation of Raft consensus configuration
@@ -262,10 +266,12 @@ func (s *Server) handleCreateDatabase(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfg := database.DatabaseConfig{
-		Name:    req.Name,
-		Engine:  database.EngineType(req.Engine),
-		Backend: database.BackendType(req.Backend),
-		DataDir: req.DataDir,
+		Name:         req.Name,
+		Engine:       database.EngineType(req.Engine),
+		Backend:      database.BackendType(req.Backend),
+		DataDir:      req.DataDir,
+		Replicas:     req.Replicas,
+		DedicatedWAL: req.DedicatedWAL,
 		Protocol: database.ProtocolConfig{
 			MySQL:      req.Protocol.MySQL,
 			PostgreSQL: req.Protocol.PostgreSQL,
@@ -554,9 +560,11 @@ func databaseInfoToResponse(info *database.DatabaseInfo) databaseInfoResponse {
 			MySQL:      info.Protocol.MySQL,
 			PostgreSQL: info.Protocol.PostgreSQL,
 		},
-		DataDir: info.DataDir,
-		ShardID: info.ShardID,
-		Mode:    string(info.Mode),
+		DataDir:      info.DataDir,
+		ShardID:      info.ShardID,
+		Mode:         string(info.Mode),
+		Replicas:     info.Replicas,
+		DedicatedWAL: info.DedicatedWAL,
 	}
 	if info.Protocol.Etcd != nil {
 		resp.Protocol.Etcd = &etcdConfigResponse{

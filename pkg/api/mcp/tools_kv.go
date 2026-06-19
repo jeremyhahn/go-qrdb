@@ -72,6 +72,10 @@ func toolPut() mcp.Tool {
 // kvSvc.PutWithMode when a write_mode arg is present.
 func handlePut(kvSvc service.KVServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		kvSvc, rerr := resolveKV(ctx, kvSvc)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
+		}
 		key := mcp.ParseString(req, "key", "")
 		if key == "" {
 			return mcp.NewToolResultError("key is required"), nil
@@ -118,6 +122,10 @@ func toolGet() mcp.Tool {
 // kvSvc.GetWithConsistency when a consistency arg is present.
 func handleGet(kvSvc service.KVServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		kvSvc, rerr := resolveKV(ctx, kvSvc)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
+		}
 		key := mcp.ParseString(req, "key", "")
 		if key == "" {
 			return mcp.NewToolResultError("key is required"), nil
@@ -163,6 +171,10 @@ func toolDelete() mcp.Tool {
 // kvSvc.DeleteWithMode when a write_mode arg is present.
 func handleDelete(kvSvc service.KVServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		kvSvc, rerr := resolveKV(ctx, kvSvc)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
+		}
 		key := mcp.ParseString(req, "key", "")
 		if key == "" {
 			return mcp.NewToolResultError("key is required"), nil
@@ -204,6 +216,10 @@ func toolList() mcp.Tool {
 // kvSvc.ListWithConsistency when a consistency arg is present.
 func handleList(kvSvc service.KVServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		kvSvc, rerr := resolveKV(ctx, kvSvc)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
+		}
 		prefix := mcp.ParseString(req, "prefix", "")
 
 		opts, optsSet, optsErr := readOptsFromArg(req)
@@ -250,6 +266,10 @@ func toolScan() mcp.Tool {
 // kvSvc.ScanWithConsistency when a consistency arg is present.
 func handleScan(kvSvc service.KVServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		kvSvc, rerr := resolveKV(ctx, kvSvc)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
+		}
 		prefix := mcp.ParseString(req, "prefix", "")
 
 		opts, optsSet, optsErr := readOptsFromArg(req)

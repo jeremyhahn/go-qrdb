@@ -24,7 +24,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	quicraftseal "github.com/jeremyhahn/go-quicraft/pkg/seal"
 )
 
 // ---------------------------------------------------------------------------
@@ -372,6 +374,50 @@ func TestBarrierHandlers_Unseal_ServiceError(t *testing.T) {
 	if rec.Code == http.StatusNoContent {
 		t.Fatal("expected error status, got 204")
 	}
+}
+
+// TestBarrierHandlers_Unseal_WrongPassphrase proves a wrong passphrase — which
+// surfaces as a go-quicraft *UnsealError wrapping ErrDecryptionFailed — is
+// mapped to 403 Forbidden (client-supplied bad credential), NOT 500. Regression
+// guard: a wrong passphrase used to leak the raw decryption error as a 500.
+func TestBarrierHandlers_Unseal_WrongPassphrase(t *testing.T) {
+	svc := &mockBarrierService{
+		unsealFn: func(_ context.Context, _ string) error {
+			return &quicraftseal.UnsealError{
+				Strategy: "passphrase",
+				Err:      quicraftseal.ErrDecryptionFailed,
+			}
+		},
+	}
+	srv := newBarrierTestServer(t, svc)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/barrier/unseal",
+		strings.NewReader(`{"secret":"wrong"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusForbidden)
+}
+
+// TestBarrierHandlers_Unseal_WrongPassphraseSentinel proves the qrdb-level
+// re-exported sentinel (seal.ErrDecryptionFailed) maps to 403 the same way the
+// wrapped go-quicraft error does.
+func TestBarrierHandlers_Unseal_WrongPassphraseSentinel(t *testing.T) {
+	svc := &mockBarrierService{
+		unsealFn: func(_ context.Context, _ string) error {
+			return seal.ErrDecryptionFailed
+		},
+	}
+	srv := newBarrierTestServer(t, svc)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/barrier/unseal",
+		strings.NewReader(`{"secret":"wrong"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusForbidden)
 }
 
 // ---------------------------------------------------------------------------

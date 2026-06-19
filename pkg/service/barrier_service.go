@@ -292,13 +292,13 @@ func NewBarrierServiceWithCeremony(barrier *seal.StorageBarrier, svc *ceremony.C
 // BarrierInitialize initializes the barrier with a secret credential by
 // delegating to the StorageBarrier's Initialize method.
 func (s *BarrierService) BarrierInitialize(ctx context.Context, secret string) error {
-	return s.barrier.Initialize(ctx, seal.Credentials{Secret: secret})
+	return s.barrier.Initialize(ctx, seal.Credentials{Secret: []byte(secret)})
 }
 
 // BarrierUnseal unseals the barrier with a secret credential by delegating
 // to the StorageBarrier's Unseal method.
 func (s *BarrierService) BarrierUnseal(ctx context.Context, secret string) error {
-	return s.barrier.Unseal(ctx, seal.Credentials{Secret: secret})
+	return s.barrier.Unseal(ctx, seal.Credentials{Secret: []byte(secret)})
 }
 
 // BarrierSeal transitions the barrier to the sealed state. For Shamir-protected
@@ -339,7 +339,7 @@ func (s *BarrierService) BarrierInitializeShamir(ctx context.Context, secret str
 		})
 	}
 
-	result, err := s.barrier.InitializeShamir(ctx, seal.Credentials{Secret: secret})
+	result, err := s.barrier.InitializeShamir(ctx, seal.Credentials{Secret: []byte(secret)})
 	if err != nil {
 		return nil, err
 	}

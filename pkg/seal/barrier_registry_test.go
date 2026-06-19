@@ -103,7 +103,7 @@ func TestBarrierRegistry_RegisterTenant_EmptyID(t *testing.T) {
 func TestBarrierRegistry_RegisterTenantDefault_Success(t *testing.T) {
 	reg := newTestRegistry(t)
 	ctx := context.Background()
-	creds := Credentials{Secret: "tenant-pw"}
+	creds := Credentials{Secret: []byte("tenant-pw")}
 
 	tb, err := reg.RegisterTenantDefault("default-tenant")
 	if err != nil {
@@ -320,7 +320,7 @@ func TestBarrierRegistry_TenantLifecycle(t *testing.T) {
 	reg := newTestRegistry(t)
 	base := NewMemoryBackend()
 	ctx := context.Background()
-	creds := Credentials{Secret: "tenant-pw"}
+	creds := Credentials{Secret: []byte("tenant-pw")}
 
 	_, err := reg.RegisterTenant(context.Background(), "tenant-1", base, BarrierConfig{}, testSoftwareStrategy(t))
 	if err != nil {
@@ -376,7 +376,7 @@ func TestBarrierRegistry_TenantLifecycle(t *testing.T) {
 
 func TestBarrierRegistry_InitializeTenant_NotFound(t *testing.T) {
 	reg := newTestRegistry(t)
-	err := reg.InitializeTenant(context.Background(), "ghost", Credentials{Secret: "pw"})
+	err := reg.InitializeTenant(context.Background(), "ghost", Credentials{Secret: []byte("pw")})
 	if err != ErrTenantNotFound {
 		t.Errorf("expected ErrTenantNotFound, got %v", err)
 	}
@@ -384,7 +384,7 @@ func TestBarrierRegistry_InitializeTenant_NotFound(t *testing.T) {
 
 func TestBarrierRegistry_UnsealTenant_NotFound(t *testing.T) {
 	reg := newTestRegistry(t)
-	err := reg.UnsealTenant(context.Background(), "ghost", Credentials{Secret: "pw"})
+	err := reg.UnsealTenant(context.Background(), "ghost", Credentials{Secret: []byte("pw")})
 	if err != ErrTenantNotFound {
 		t.Errorf("expected ErrTenantNotFound, got %v", err)
 	}
@@ -450,7 +450,7 @@ func TestBarrierRegistry_ListTenants_MultipleTenants(t *testing.T) {
 func TestBarrierRegistry_SealAll(t *testing.T) {
 	reg := newTestRegistry(t)
 	ctx := context.Background()
-	creds := Credentials{Secret: "pw"}
+	creds := Credentials{Secret: []byte("pw")}
 
 	// Initialize system barrier.
 	if err := reg.SystemBarrier().Initialize(ctx, creds); err != nil {
@@ -496,7 +496,7 @@ func TestBarrierRegistry_SealAll(t *testing.T) {
 func TestBarrierRegistry_Close(t *testing.T) {
 	reg := newTestRegistry(t)
 	ctx := context.Background()
-	creds := Credentials{Secret: "pw"}
+	creds := Credentials{Secret: []byte("pw")}
 
 	// Initialize system barrier.
 	if err := reg.SystemBarrier().Initialize(ctx, creds); err != nil {

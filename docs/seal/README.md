@@ -24,6 +24,7 @@ The first two ship inside qrdb. The third ships in go-xkms and is **registered i
 - [custodians.md](custodians.md) — Custodian registration, revocation, dual-factor auth.
 - [multi-tenant.md](multi-tenant.md) — Per-tenant barrier isolation via `NamespacedBackend`.
 - [compliance.md](compliance.md) — FIPS, FedRAMP, PCI-DSS, HIPAA mapping.
+- [enabling-encryption.md](enabling-encryption.md) — Encryption-at-rest lifecycle: transparent decryption, strategy-fixed-at-init, enabling encryption on an existing `none` deployment via backup/restore, and how encrypted backups are recovered.
 - [../pin/README.md](../pin/README.md) — PIN backend used by the SO/User PIN ceremony.
 
 ## Three-Layer Architecture
@@ -174,6 +175,8 @@ Use cases:
 `StrategyNone` is registered in the default registry alongside `StrategySoftware`. Operators opt in with `qrdbd init --barrier-strategy none` or by selecting it explicitly via `WithSealStrategy(NewNoneStrategy())`.
 
 > **Operational note**: When `none` is selected, the audit log marks every barrier operation with `strategy: none` so the absence of encryption is permanently visible in the trail. The xkms `--require-encryption` compliance gate refuses to come up against a `none`-mode barrier.
+
+> **Enabling encryption later**: the sealing strategy is fixed at initialization, so a `none` deployment cannot flip to `passphrase`/`shamir` in place — doing so is a planned backup/restore migration into a freshly-keyed instance. The Seal Manager GUI reflects this: a `none` (or unconfigured) barrier shows an **"Encryption Not Configured"** panel with no Seal/Unseal controls (there is nothing to seal). See [enabling-encryption.md](enabling-encryption.md).
 
 ## Features
 

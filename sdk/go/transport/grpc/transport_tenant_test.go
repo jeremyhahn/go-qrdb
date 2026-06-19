@@ -50,7 +50,7 @@ type fakeTenantServicer struct {
 
 var _ tenantpkg.TenantServicer = (*fakeTenantServicer)(nil)
 
-func (f *fakeTenantServicer) CreateTenant(_ context.Context, id, name string, iso tenantpkg.IsolationType) (*tenantpkg.TenantInfo, error) {
+func (f *fakeTenantServicer) CreateTenant(_ context.Context, id, name string, iso tenantpkg.IsolationType, _ ...tenantpkg.CreateTenantOption) (*tenantpkg.TenantInfo, error) {
 	return &tenantpkg.TenantInfo{ID: id, Name: name, IsolationType: iso}, nil
 }
 func (f *fakeTenantServicer) GetTenant(_ context.Context, id string) (*tenantpkg.TenantInfo, error) {
@@ -67,6 +67,10 @@ func (f *fakeTenantServicer) UpdateTenant(_ context.Context, id string, _ tenant
 }
 func (f *fakeTenantServicer) UpdateQuotas(_ context.Context, id string, q *quota.Quotas) (*tenantpkg.TenantInfo, error) {
 	return &tenantpkg.TenantInfo{ID: id, Quotas: q}, nil
+}
+
+func (f *fakeTenantServicer) UpdateEntitlements(ctx context.Context, id string, e *quota.Entitlements) (*tenantpkg.TenantInfo, error) {
+	return &tenantpkg.TenantInfo{ID: id, Entitlements: e}, nil
 }
 func (f *fakeTenantServicer) TenantBarrierInitWithStrategy(ctx context.Context, id, passphrase string, threshold, shares int, _ seal.StrategyID) (*tenantpkg.TenantBarrierInitResult, error) {
 	if err := f.callInitFn(ctx, id, passphrase, threshold, shares); err != nil {

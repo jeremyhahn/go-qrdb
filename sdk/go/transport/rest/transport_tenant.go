@@ -37,6 +37,7 @@ type restTenant struct {
 	Name          string                        `json:"name"`
 	IsolationType transport.TenantIsolationType `json:"isolation_type,omitempty"`
 	Quotas        *transport.TenantQuotas       `json:"quotas,omitempty"`
+	Entitlements  *transport.TenantEntitlements `json:"entitlements,omitempty"`
 	CreatedAtStr  string                        `json:"createdAt"`
 	UpdatedAtStr  string                        `json:"updatedAt"`
 	CreatedAtAlt  string                        `json:"created_at"`
@@ -108,6 +109,7 @@ func (r *restTenant) toTenantInfo() transport.TenantInfo {
 		Name:          r.Name,
 		IsolationType: r.IsolationType,
 		Quotas:        r.Quotas,
+		Entitlements:  r.Entitlements,
 	}
 	if ts := pickFirstNonEmpty(r.CreatedAtStr, r.CreatedAtAlt); ts != "" {
 		if parsed, err := time.Parse(time.RFC3339Nano, ts); err == nil {
@@ -250,6 +252,37 @@ func (t *Transport) UpdateTenantQuotas(ctx context.Context, req *transport.Updat
 		return nil, err
 	}
 	return &transport.UpdateTenantQuotasResponse{Tenant: wire.toTenantInfo()}, nil
+}
+
+// UpdateTenantEntitlements sets the feature entitlements for a tenant.
+// Maps to PATCH /v1/tenants/{id}/entitlements.
+func (t *Transport) UpdateTenantEntitlements(ctx context.Context, req *transport.UpdateTenantEntitlementsRequest) (*transport.UpdateTenantEntitlementsResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	data, err := json.Marshal(&req.Entitlements)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "UpdateTenantEntitlements", Err: &jsonEncodeError{Err: err}}
+	}
+	path := "/v1/tenants/" + url.PathEscape(req.TenantID) + "/entitlements"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPatch, t.baseURL+path, bytes.NewReader(data))
+	if err != nil {
+		return nil, &transport.RequestError{Method: "UpdateTenantEntitlements", Err: err}
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := t.client.Do(httpReq)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "UpdateTenantEntitlements", Err: err}
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, t.decodeErrorResponse("UpdateTenantEntitlements", resp)
+	}
+	var wire restTenant
+	if err := json.NewDecoder(resp.Body).Decode(&wire); err != nil {
+		return nil, &transport.RequestError{Method: "UpdateTenantEntitlements", Err: &jsonDecodeError{Err: err}}
+	}
+	return &transport.UpdateTenantEntitlementsResponse{Tenant: wire.toTenantInfo()}, nil
 }
 
 // TenantBarrierInit initializes a per-tenant barrier.

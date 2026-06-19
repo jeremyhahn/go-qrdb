@@ -14,6 +14,12 @@
 
 package sdk
 
+import "github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+
 // TranslateMemberEventForTest exposes the unexported membership-event
 // translator to the external test package.
 var TranslateMemberEventForTest = translateMemberEvent
+
+// TransportForTest exposes the client's underlying transport to the external
+// test package for scope-delegation assertions.
+func (c *Client) TransportForTest() transport.Transport { return c.transport }

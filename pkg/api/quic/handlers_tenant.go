@@ -44,7 +44,8 @@ func (s *Server) handleTenantCreate(ctx context.Context, payload []byte) ([]byte
 		return nil, &UnmarshalError{Err: err}
 	}
 
-	info, err := s.tenantSvc.CreateTenant(ctx, req.GetId(), req.GetName(), tenant.IsolationType(req.GetIsolationType()))
+	info, err := s.tenantSvc.CreateTenant(ctx, req.GetId(), req.GetName(), tenant.IsolationType(req.GetIsolationType()),
+		tenant.WithBarrierAutoUnseal(req.GetBarrierAutoUnseal()))
 	if err != nil {
 		return nil, err
 	}
@@ -165,20 +166,66 @@ func (s *Server) handleTenantUpdateQuotas(ctx context.Context, payload []byte) (
 	}
 
 	q := &quota.Quotas{
-		MaxDatabases:    pbQ.GetMaxDatabases(),
-		MaxRaftGroups:   pbQ.GetMaxRaftGroups(),
-		MaxCollections:  pbQ.GetMaxCollections(),
-		MaxKeys:         pbQ.GetMaxKeys(),
-		MaxStorageBytes: pbQ.GetMaxStorageBytes(),
-		MaxUsers:        pbQ.GetMaxUsers(),
-		MaxRoles:        pbQ.GetMaxRoles(),
-		MaxCertificates: pbQ.GetMaxCertificates(),
-		MaxBackups:      pbQ.GetMaxBackups(),
-		MaxVectorDims:   pbQ.GetMaxVectorDims(),
-		MaxTSMetrics:    pbQ.GetMaxTsMetrics(),
+		MaxDatabases:        pbQ.GetMaxDatabases(),
+		MaxRaftGroups:       pbQ.GetMaxRaftGroups(),
+		MaxReplicasPerGroup: pbQ.GetMaxReplicasPerGroup(),
+		MaxTotalReplicas:    pbQ.GetMaxTotalReplicas(),
+		MaxCollections:      pbQ.GetMaxCollections(),
+		MaxKeys:             pbQ.GetMaxKeys(),
+		MaxStorageBytes:     pbQ.GetMaxStorageBytes(),
+		MaxUsers:            pbQ.GetMaxUsers(),
+		MaxRoles:            pbQ.GetMaxRoles(),
+		MaxCertificates:     pbQ.GetMaxCertificates(),
+		MaxBackups:          pbQ.GetMaxBackups(),
+		MaxVectorDims:       pbQ.GetMaxVectorDims(),
+		MaxTSMetrics:        pbQ.GetMaxTsMetrics(),
 	}
 
 	info, err := s.tenantSvc.UpdateQuotas(ctx, req.GetId(), q)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := proto.Marshal(tenantInfoToProto(info))
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return resp, nil
+}
+
+// tenantEntitlementError is returned when a TenantUpdateEntitlements request
+// carries no entitlements.
+type tenantEntitlementError struct{}
+
+// Error returns the error string.
+func (e *tenantEntitlementError) Error() string {
+	return "tenant: entitlements field is required"
+}
+
+// handleTenantUpdateEntitlements sets the feature entitlements for an existing tenant.
+func (s *Server) handleTenantUpdateEntitlements(ctx context.Context, payload []byte) ([]byte, error) {
+	if s.tenantSvc == nil {
+		return nil, &ServiceNotConfiguredError{Service: "tenant"}
+	}
+
+	var req pb.TenantUpdateEntitlementsRequest
+	if err := proto.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+
+	pbE := req.GetEntitlements()
+	if pbE == nil {
+		return nil, &tenantEntitlementError{}
+	}
+
+	e := &quota.Entitlements{
+		AllowedIsolationModes:     pbE.GetAllowedIsolationModes(),
+		AllowDedicatedRaft:        pbE.GetAllowDedicatedRaft(),
+		AllowVolumeStorage:        pbE.GetAllowVolumeStorage(),
+		AllowSystemManagedBarrier: pbE.GetAllowSystemManagedBarrier(),
+	}
+
+	info, err := s.tenantSvc.UpdateEntitlements(ctx, req.GetId(), e)
 	if err != nil {
 		return nil, err
 	}
@@ -204,17 +251,28 @@ func tenantInfoToProto(info *tenant.TenantInfo) *pb.TenantResponse {
 	}
 	if info.Quotas != nil {
 		resp.Quotas = &pb.TenantQuotas{
-			MaxDatabases:    info.Quotas.MaxDatabases,
-			MaxRaftGroups:   info.Quotas.MaxRaftGroups,
-			MaxCollections:  info.Quotas.MaxCollections,
-			MaxKeys:         info.Quotas.MaxKeys,
-			MaxStorageBytes: info.Quotas.MaxStorageBytes,
-			MaxUsers:        info.Quotas.MaxUsers,
-			MaxRoles:        info.Quotas.MaxRoles,
-			MaxCertificates: info.Quotas.MaxCertificates,
-			MaxBackups:      info.Quotas.MaxBackups,
-			MaxVectorDims:   info.Quotas.MaxVectorDims,
-			MaxTsMetrics:    info.Quotas.MaxTSMetrics,
+			MaxDatabases:         info.Quotas.MaxDatabases,
+			MaxRaftGroups:        info.Quotas.MaxRaftGroups,
+			MaxReplicasPerGroup:  info.Quotas.MaxReplicasPerGroup,
+			MaxTotalReplicas:     info.Quotas.MaxTotalReplicas,
+			MaxCollections:       info.Quotas.MaxCollections,
+			MaxKeys:              info.Quotas.MaxKeys,
+			MaxStorageBytes:      info.Quotas.MaxStorageBytes,
+			MaxDatabaseSizeBytes: info.Quotas.MaxDatabaseSizeBytes,
+			MaxUsers:             info.Quotas.MaxUsers,
+			MaxRoles:             info.Quotas.MaxRoles,
+			MaxCertificates:      info.Quotas.MaxCertificates,
+			MaxBackups:           info.Quotas.MaxBackups,
+			MaxVectorDims:        info.Quotas.MaxVectorDims,
+			MaxTsMetrics:         info.Quotas.MaxTSMetrics,
+		}
+	}
+	if info.Entitlements != nil {
+		resp.Entitlements = &pb.TenantEntitlements{
+			AllowedIsolationModes:     info.Entitlements.AllowedIsolationModes,
+			AllowDedicatedRaft:        info.Entitlements.AllowDedicatedRaft,
+			AllowVolumeStorage:        info.Entitlements.AllowVolumeStorage,
+			AllowSystemManagedBarrier: info.Entitlements.AllowSystemManagedBarrier,
 		}
 	}
 	return resp

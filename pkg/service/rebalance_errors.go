@@ -76,3 +76,46 @@ func (e *ImbalanceReportError) Error() string {
 func (e *ImbalanceReportError) Unwrap() error {
 	return e.Err
 }
+
+// RebalanceMoveError is returned when a single dedicated-tenant shard MOVE
+// fails during ExecuteRebalance. It carries the shard, the tenant whose group
+// was being moved, the name of the step that failed, and the underlying cause.
+type RebalanceMoveError struct {
+	// ShardID is the Raft shard that was being moved.
+	ShardID uint64
+
+	// TenantID is the tenant whose dedicated Raft group was being moved.
+	TenantID string
+
+	// Step names the move phase that failed: "find-source", "key-delivery",
+	// "add-node", "add-node-result", "placement-update", "remove-node", or
+	// "remove-node-result".
+	Step string
+
+	// Err is the underlying error that caused the step to fail.
+	Err error
+}
+
+// Error returns a human-readable description of the MOVE failure.
+func (e *RebalanceMoveError) Error() string {
+	return "service: rebalance move shard " + strconv.FormatUint(e.ShardID, 10) +
+		" tenant " + e.TenantID + " failed at " + e.Step + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error for use with errors.Is and errors.As.
+func (e *RebalanceMoveError) Unwrap() error { return e.Err }
+
+// sourceReplicaNotFoundError is returned when the FromNode address in a
+// RebalanceMovePlan cannot be matched to any Replica in the Placement entry
+// for a dedicated-tenant shard. This is a programming-time configuration
+// error: the plan must name a node that currently hosts the shard.
+type sourceReplicaNotFoundError struct {
+	ShardID  uint64
+	FromNode string
+}
+
+// Error returns a human-readable description.
+func (e *sourceReplicaNotFoundError) Error() string {
+	return "rebalance: source replica not found for shard " +
+		strconv.FormatUint(e.ShardID, 10) + " node " + e.FromNode
+}

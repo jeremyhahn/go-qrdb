@@ -47,7 +47,7 @@ type stubTenantBarrierSvc struct {
 }
 
 // CreateTenant returns nil, nil; the option tests do not exercise it.
-func (s *stubTenantBarrierSvc) CreateTenant(_ context.Context, _, _ string, _ tenant.IsolationType) (*tenant.TenantInfo, error) {
+func (s *stubTenantBarrierSvc) CreateTenant(_ context.Context, _, _ string, _ tenant.IsolationType, _ ...tenant.CreateTenantOption) (*tenant.TenantInfo, error) {
 	return nil, nil
 }
 
@@ -67,6 +67,10 @@ func (s *stubTenantBarrierSvc) UpdateTenant(_ context.Context, _ string, _ tenan
 
 func (s *stubTenantBarrierSvc) UpdateQuotas(_ context.Context, _ string, _ *quota.Quotas) (*tenant.TenantInfo, error) {
 	return nil, nil
+}
+
+func (s *stubTenantBarrierSvc) UpdateEntitlements(ctx context.Context, id string, e *quota.Entitlements) (*tenant.TenantInfo, error) {
+	return &tenant.TenantInfo{ID: id, Entitlements: e}, nil
 }
 
 // TenantBarrierInit records arguments and returns the configured error.

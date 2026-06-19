@@ -53,6 +53,11 @@ var SealedWindowAllowlist = []string{
 	"/v1/barrier/recovery/officers/",
 	"/v1/init/",
 	"/v1/bootstrap/",
+	// Cluster peer key-transport paths must work regardless of sealed state so
+	// follower replicas can receive their tenant barrier key before unsealing.
+	// The receiver self-authorises via node-cert + placement check; the auth
+	// middleware also pre-exempts /v1/cluster/ unconditionally.
+	"/v1/cluster/",
 }
 
 // sealedResponseBody is the JSON envelope returned to clients while

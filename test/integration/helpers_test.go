@@ -32,6 +32,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -2182,4 +2183,443 @@ func httpVectorListNS(t *testing.T, ca *testCA, port int) []string {
 	}
 	t.Fatalf("httpVectorListNS: %v (after %d attempts)", lastErr, maxRetries)
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4c (IsolationRaft) helpers
+// ---------------------------------------------------------------------------
+
+// generateNodeCertWithSPIFFE creates a leaf certificate signed by this CA
+// with a SPIFFE URI SAN of the form spiffe://<trustDomain>/node/<raftAddr>.
+// This is required for Phase 4c-1c cluster key delivery: the sender's
+// fetchNodeKey verifies the recipient certificate carries the SPIFFE SAN and
+// rejects the transfer when it is absent (ErrRecipientUntrusted).
+func (ca *testCA) generateNodeCertWithSPIFFE(t *testing.T, raftAddr, trustDomain string) (certPath, keyPath string) {
+	t.Helper()
+
+	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generateNodeCertWithSPIFFE: generate key: %v", err)
+	}
+
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		t.Fatalf("generateNodeCertWithSPIFFE: serial: %v", err)
+	}
+
+	spiffeURIStr := fmt.Sprintf("spiffe://%s/node/%s", trustDomain, raftAddr)
+	spiffeURI, err := url.Parse(spiffeURIStr)
+	if err != nil {
+		t.Fatalf("generateNodeCertWithSPIFFE: parse spiffe uri %q: %v", spiffeURIStr, err)
+	}
+
+	dnsNames := []string{"localhost"}
+	ips := []net.IP{
+		net.IPv4(127, 0, 0, 1),
+		net.IPv6loopback,
+		net.IPv4zero,
+		net.IPv6zero,
+	}
+	if hostname, err := os.Hostname(); err == nil && hostname != "" {
+		dnsNames = append(dnsNames, hostname)
+	}
+	if addrs, err := net.InterfaceAddrs(); err == nil {
+		for _, addr := range addrs {
+			if ipNet, ok := addr.(*net.IPNet); ok && !ipNet.IP.IsLoopback() {
+				ips = append(ips, ipNet.IP)
+			}
+		}
+	}
+
+	template := &x509.Certificate{
+		SerialNumber: serial,
+		Subject: pkix.Name{
+			Organization: []string{"go-quicraft-test"},
+			CommonName:   "test-node",
+		},
+		DNSNames:    dnsNames,
+		IPAddresses: ips,
+		URIs:        []*url.URL{spiffeURI},
+		NotBefore:   time.Now().Add(-1 * time.Minute),
+		NotAfter:    time.Now().Add(1 * time.Hour),
+		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage: []x509.ExtKeyUsage{
+			x509.ExtKeyUsageServerAuth,
+			x509.ExtKeyUsageClientAuth,
+		},
+		BasicConstraintsValid: true,
+	}
+
+	certDER, err := x509.CreateCertificate(rand.Reader, template, ca.cert, &leafKey.PublicKey, ca.key)
+	if err != nil {
+		t.Fatalf("generateNodeCertWithSPIFFE: create cert: %v", err)
+	}
+
+	keyDER, err := x509.MarshalECPrivateKey(leafKey)
+	if err != nil {
+		t.Fatalf("generateNodeCertWithSPIFFE: marshal key: %v", err)
+	}
+
+	leafCertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	leafKeyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+
+	dir := t.TempDir()
+	certPath = filepath.Join(dir, "cert.pem")
+	keyPath = filepath.Join(dir, "key.pem")
+
+	if err := os.WriteFile(certPath, leafCertPEM, 0600); err != nil {
+		t.Fatalf("generateNodeCertWithSPIFFE: write cert: %v", err)
+	}
+	if err := os.WriteFile(keyPath, leafKeyPEM, 0600); err != nil {
+		t.Fatalf("generateNodeCertWithSPIFFE: write key: %v", err)
+	}
+
+	return certPath, keyPath
+}
+
+// generateClientCertForTenant creates a client certificate signed by this CA
+// with CN=admin and OU=<tenantID>. The mTLS authenticator derives the caller
+// identity from the certificate fields: OU becomes the tenant ID and CN
+// becomes the username. This cert is used to invoke tenant-scoped REST
+// endpoints (e.g. POST /v1/databases) as the given tenant.
+func (ca *testCA) generateClientCertForTenant(t *testing.T, tenantID string) (certPath, keyPath string) {
+	t.Helper()
+
+	clientKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generateClientCertForTenant: generate key: %v", err)
+	}
+
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		t.Fatalf("generateClientCertForTenant: serial: %v", err)
+	}
+
+	template := &x509.Certificate{
+		SerialNumber: serial,
+		Subject: pkix.Name{
+			Organization:       []string{"go-quicraft-test"},
+			CommonName:         "admin",
+			OrganizationalUnit: []string{tenantID},
+		},
+		NotBefore: time.Now().Add(-1 * time.Minute),
+		NotAfter:  time.Now().Add(1 * time.Hour),
+		KeyUsage:  x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage: []x509.ExtKeyUsage{
+			x509.ExtKeyUsageClientAuth,
+		},
+		BasicConstraintsValid: true,
+	}
+
+	certDER, err := x509.CreateCertificate(rand.Reader, template, ca.cert, &clientKey.PublicKey, ca.key)
+	if err != nil {
+		t.Fatalf("generateClientCertForTenant: create cert: %v", err)
+	}
+
+	keyDER, err := x509.MarshalECPrivateKey(clientKey)
+	if err != nil {
+		t.Fatalf("generateClientCertForTenant: marshal key: %v", err)
+	}
+
+	clientCertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	clientKeyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+
+	dir := t.TempDir()
+	certPath = filepath.Join(dir, "cert.pem")
+	keyPath = filepath.Join(dir, "key.pem")
+
+	if err := os.WriteFile(certPath, clientCertPEM, 0600); err != nil {
+		t.Fatalf("generateClientCertForTenant: write cert: %v", err)
+	}
+	if err := os.WriteFile(keyPath, clientKeyPEM, 0600); err != nil {
+		t.Fatalf("generateClientCertForTenant: write key: %v", err)
+	}
+
+	return certPath, keyPath
+}
+
+// mtlsHTTPClientFromFiles creates an mTLS HTTP client using cert/key PEM
+// files rather than generating an in-memory admin cert. Use this when a test
+// needs a non-system-tenant identity (e.g. OU=t1 for IsolationRaft flows).
+func mtlsHTTPClientFromFiles(t *testing.T, ca *testCA, certPath, keyPath string, timeout time.Duration) *http.Client {
+	t.Helper()
+
+	certPEM, err := os.ReadFile(certPath)
+	if err != nil {
+		t.Fatalf("mtlsHTTPClientFromFiles: read cert: %v", err)
+	}
+	keyPEM, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatalf("mtlsHTTPClientFromFiles: read key: %v", err)
+	}
+
+	cert, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		t.Fatalf("mtlsHTTPClientFromFiles: X509KeyPair: %v", err)
+	}
+
+	return &http.Client{
+		Timeout: timeout,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				RootCAs:      ca.Pool,
+				Certificates: []tls.Certificate{cert},
+				MinVersion:   tls.VersionTLS13,
+			},
+			ForceAttemptHTTP2: true,
+		},
+	}
+}
+
+// writeIsolationRaftConfig writes a minimal qrdbd YAML configuration file
+// that enables IsolationRaft tenant databases. It sets:
+//   - seal.enabled: true with passphrase strategy (required for barrier-isolated
+//     tenants; the sealed-window phase must be driven through init/unseal before
+//     the full server starts — see initAndUnsealBarrier)
+//   - storage.volume_pools with the given volumePoolDir as the sole path
+//   - tenant.default_entitlements allowing raft isolation + dedicated raft
+//     + system-managed barriers
+//   - tenant.default_quotas with unlimited databases/raft-groups/replicas
+//   - auth.peer_admin_urls mapping each peer's Raft address to its admin HTTPS
+//     URL (required for Phase 4c-1c key delivery in single-host test clusters
+//     where each node uses a distinct admin port)
+//
+// peerAdminURLs maps raftAddr (e.g. "127.0.0.1:24576") to adminURL (e.g.
+// "https://127.0.0.1:24579"). Pass nil to omit the mapping (uses fallback).
+//
+// Returns the path to the written config file.
+func writeIsolationRaftConfig(t *testing.T, volumePoolDir string, peerAdminURLs map[string]string) string {
+	t.Helper()
+
+	// Build the peer_admin_urls YAML block as a list of {raft_addr, admin_url}
+	// structs. A list is required because Viper uses "." as its internal key
+	// delimiter, which causes dotted IP addresses used as YAML map keys to be
+	// parsed as nested path components and decoded incorrectly.
+	peerAdminSection := ""
+	if len(peerAdminURLs) > 0 {
+		lines := "  peer_admin_urls:\n"
+		for raftAddr, adminURL := range peerAdminURLs {
+			lines += fmt.Sprintf("    - raft_addr: %q\n      admin_url: %q\n", raftAddr, adminURL)
+		}
+		peerAdminSection = "auth:\n" + lines
+	}
+
+	yaml := fmt.Sprintf(`seal:
+  enabled: true
+  strategy: passphrase
+storage:
+  volume_pools:
+    - name: default
+      paths:
+        - %s
+      strategy: round_robin
+tenant:
+  default_entitlements:
+    allowed_isolation_modes:
+      - prefix
+      - raft
+    allow_dedicated_raft: true
+    allow_system_managed_barrier: true
+    allow_dedicated_wal: true
+  default_quotas:
+    max_databases: -1
+    max_raft_groups: -1
+    max_replicas_per_group: -1
+    max_total_replicas: -1
+    max_dedicated_wal_groups: -1
+%s`, volumePoolDir, peerAdminSection)
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "qrdbd.yaml")
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0600); err != nil {
+		t.Fatalf("writeIsolationRaftConfig: write: %v", err)
+	}
+	return cfgPath
+}
+
+// waitForBarrierStatusReachable polls GET /v1/barrier/status on the given
+// admin port until a 200 is received, indicating the sealed-window server is
+// up and accepting requests. Uses mtlsHTTPClient because the server requires
+// a client certificate for TLS even during the sealed-window phase.
+func waitForBarrierStatusReachable(t *testing.T, ca *testCA, port int, timeout time.Duration) {
+	t.Helper()
+
+	rawURL := fmt.Sprintf("https://127.0.0.1:%d/v1/barrier/status", port)
+	client := mtlsHTTPClient(t, ca, 5*time.Second)
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		resp, err := client.Get(rawURL)
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("timed out after %v waiting for barrier status at port %d", timeout, port)
+}
+
+// initAndUnsealBarrier initializes and unseals the system barrier on the
+// given admin port. It calls POST /v1/barrier/initialize followed by
+// POST /v1/barrier/unseal with the provided passphrase. The sealed-window
+// server (which starts before the Raft host when seal.enabled=true) accepts
+// these calls without RBAC because auth middleware is absent there — the
+// barrier credential itself is the authorization.
+func initAndUnsealBarrier(t *testing.T, ca *testCA, port int, passphrase string) {
+	t.Helper()
+
+	client := mtlsHTTPClient(t, ca, 10*time.Second)
+
+	// Initialize the barrier.
+	initBody, initStatus := iraftAPIPost(t, client,
+		fmt.Sprintf("https://127.0.0.1:%d/v1/barrier/initialize", port),
+		map[string]interface{}{"secret": passphrase},
+	)
+	if initStatus != http.StatusNoContent {
+		t.Fatalf("barrier init on port %d: status %d, body: %s", port, initStatus, initBody)
+	}
+
+	// Unseal the barrier. A successful Initialize already transitions the
+	// barrier to the unsealed state (pkg/seal: StorageBarrier.Initialize sets
+	// stateUnsealed), so this explicit unseal is redundant on the first boot and
+	// the daemon answers 409 ErrAlreadyUnsealed. Accept that as success: the
+	// only goal here is to guarantee the barrier ends up unsealed. A genuine
+	// unseal failure (wrong passphrase, sealed without init) still surfaces.
+	unsealBody, unsealStatus := iraftAPIPost(t, client,
+		fmt.Sprintf("https://127.0.0.1:%d/v1/barrier/unseal", port),
+		map[string]interface{}{"secret": passphrase},
+	)
+	if unsealStatus != http.StatusNoContent && unsealStatus != http.StatusConflict {
+		t.Fatalf("barrier unseal on port %d: status %d, body: %s", port, unsealStatus, unsealBody)
+	}
+}
+
+// iraftAPIPost sends a JSON POST to the given URL using the provided client and
+// body. It returns the response body bytes and status code without fataling on
+// non-2xx responses, allowing callers to inspect errors.
+func iraftAPIPost(t *testing.T, client *http.Client, rawURL string, body interface{}) ([]byte, int) {
+	t.Helper()
+
+	b, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("iraftAPIPost marshal: %v", err)
+	}
+
+	resp, err := client.Post(rawURL, "application/json", bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("iraftAPIPost %s: %v", rawURL, err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	return respBody, resp.StatusCode
+}
+
+// iraftAPIGet performs a GET request using the provided client and returns the
+// response body bytes and status code.
+func iraftAPIGet(t *testing.T, client *http.Client, rawURL string) ([]byte, int) {
+	t.Helper()
+
+	resp, err := client.Get(rawURL)
+	if err != nil {
+		t.Fatalf("iraftAPIGet %s: %v", rawURL, err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	return body, resp.StatusCode
+}
+
+// ---------------------------------------------------------------------------
+// Dedicated-raft database scoped KV helpers
+// ---------------------------------------------------------------------------
+
+// dbScopedPutTolerant sends a single PUT /kv/{key} with the
+// X-QRDB-Database header set to dbName using the provided client. The header
+// causes the REST service registry to route the request to the tenant's
+// dedicated Raft shard (IsolationRaft path in restServiceRegistry.resolve).
+//
+// It returns (statusCode, error) without fataling on transient failures
+// (network errors, 5xx, 503 forwarding). It calls t.Fatalf immediately on
+// HTTP 401/403 since those indicate a configuration error (wrong role
+// permissions), not a transient condition. Use this function inside polling
+// loops to allow the dedicated group time to elect a leader.
+func dbScopedPutTolerant(t *testing.T, client *http.Client, port int, dbName, key string, value []byte) (int, error) {
+	t.Helper()
+	rawURL := fmt.Sprintf("https://127.0.0.1:%d/kv/%s", port, key)
+	req, err := http.NewRequest(http.MethodPut, rawURL, bytes.NewReader(value))
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("X-QRDB-Database", dbName)
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		t.Fatalf("dbScopedPutTolerant %s (db=%s): auth error status=%d body=%s",
+			key, dbName, resp.StatusCode, body)
+	}
+	return resp.StatusCode, nil
+}
+
+// dbScopedGetTolerant sends a single GET /kv/{key} with the
+// X-QRDB-Database header set to dbName using the provided client.
+//
+// It returns (body, statusCode) without fataling on transient failures
+// (network errors, 404 while the dedicated group is recovering). It calls
+// t.Fatalf immediately on HTTP 401/403. Use this function inside polling
+// loops to wait for keys to become visible on a restarted dedicated shard.
+func dbScopedGetTolerant(t *testing.T, client *http.Client, port int, dbName, key string) ([]byte, int) {
+	t.Helper()
+	rawURL := fmt.Sprintf("https://127.0.0.1:%d/kv/%s", port, key)
+	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, 0
+	}
+	req.Header.Set("X-QRDB-Database", dbName)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, 0
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		t.Fatalf("dbScopedGetTolerant %s (db=%s): auth error status=%d body=%s",
+			key, dbName, resp.StatusCode, body)
+	}
+	return body, resp.StatusCode
+}
+
+// waitForShardCount polls GET /admin/topology on the given port until
+// ShardCount >= wantCount, or the deadline expires. It is used to verify that
+// the reconciler (Phase 4c-1d) has started the dedicated raft shard — which it
+// only does once the tenant barrier is unsealed — proving barrier key delivery
+// (Phase 4c-1c) also succeeded.
+func waitForShardCount(t *testing.T, client *http.Client, port int, wantCount int, timeout time.Duration) {
+	t.Helper()
+
+	rawURL := fmt.Sprintf("https://127.0.0.1:%d/admin/topology", port)
+	deadline := time.Now().Add(timeout)
+	var lastCount int
+	var lastBody string
+	for time.Now().Before(deadline) {
+		body, status := iraftAPIGet(t, client, rawURL)
+		if status == http.StatusOK {
+			var topo struct {
+				ShardCount int `json:"shard_count"`
+			}
+			if err := json.Unmarshal(body, &topo); err == nil {
+				lastCount = topo.ShardCount
+				if topo.ShardCount >= wantCount {
+					return
+				}
+			}
+		}
+		lastBody = string(body)
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatalf("timed out after %v waiting for shard count >= %d on port %d (last count: %d, last body: %s)",
+		timeout, wantCount, port, lastCount, lastBody)
 }

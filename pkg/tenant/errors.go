@@ -65,6 +65,10 @@ var (
 	// to UpdateQuotas.
 	ErrNilQuotas = errors.New("tenant: nil quotas")
 
+	// ErrNilEntitlements is returned when a nil entitlements pointer is
+	// provided to UpdateEntitlements.
+	ErrNilEntitlements = errors.New("tenant: nil entitlements")
+
 	// ErrTenantSealed is returned by the store resolver when a
 	// barrier-isolated tenant's barrier is sealed. IAM routing fails
 	// closed on this error: a barrier tenant's data is NEVER served from

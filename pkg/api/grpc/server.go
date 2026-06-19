@@ -82,6 +82,10 @@ type Server struct {
 	listener          net.Listener
 	tls               *tls.Config
 
+	// registry, when set, resolves data-plane services per (tenant, database)
+	// scope. When nil the singleton service fields are used.
+	registry service.Registry
+
 	// sealedWindowProbe controls the sealed-window interceptors. When
 	// set and IsSealed() returns true, every method whose trailing
 	// component is not on SealedWindowAllowlist is rejected with
@@ -278,6 +282,15 @@ func WithSealedWindowProbe(probe sealedWindowProbe) ServerOption {
 	return func(s *Server) { s.sealedWindowProbe = probe }
 }
 
+// WithServiceRegistry configures the gRPC server with a per-(tenant, database)
+// service registry. When set, every data-plane RPC resolves its servicer from
+// the registry using the authenticated tenant and the x-qrdb-database metadata
+// value (defaulting to the system database). When nil the server uses the
+// singleton service fields, preserving single-database and embedded behaviour.
+func WithServiceRegistry(reg service.Registry) ServerOption {
+	return func(s *Server) { s.registry = reg }
+}
+
 // WithKVService configures the gRPC server with a KV service. This is an
 // alternative to passing kvSvc as a positional parameter and is useful when
 // constructing a server that handles only barrier, cert, or auth services.
@@ -330,6 +343,7 @@ func (s *Server) Start() error {
 	unaryInterceptors := []grpc.UnaryServerInterceptor{
 		recoveryInterceptor,
 		loggingInterceptor,
+		DatabaseScopeUnaryInterceptor,
 	}
 	if s.authMW != nil {
 		unaryInterceptors = append(unaryInterceptors, s.authMW.UnaryInterceptor())
@@ -341,6 +355,7 @@ func (s *Server) Start() error {
 	streamInterceptors := []grpc.StreamServerInterceptor{
 		streamRecoveryInterceptor,
 		streamLoggingInterceptor,
+		DatabaseScopeStreamInterceptor,
 	}
 	if s.authMW != nil {
 		streamInterceptors = append(streamInterceptors, s.authMW.StreamInterceptor())
@@ -389,6 +404,7 @@ func (s *Server) Start() error {
 		collectionSvc: s.collectionSvc,
 		backupSvc:     s.backupSvc,
 		rebalanceSvc:  s.rebalanceSvc,
+		registry:      s.registry,
 	}
 	pb.RegisterQRDBServiceServer(s.server, svc)
 

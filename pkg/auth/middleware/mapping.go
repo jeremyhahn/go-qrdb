@@ -231,12 +231,13 @@ var grpcPermissions = map[string]permission.Permission{
 	pb.QRDBService_CeremonySubmitUnsealShare_FullMethodName:     permission.BarrierUnsealShare,
 
 	// Tenant management.
-	pb.QRDBService_TenantCreate_FullMethodName:       permission.TenantsCreate,
-	pb.QRDBService_TenantGet_FullMethodName:          permission.TenantsRead,
-	pb.QRDBService_TenantList_FullMethodName:         permission.TenantsList,
-	pb.QRDBService_TenantUpdate_FullMethodName:       permission.TenantsUpdate,
-	pb.QRDBService_TenantUpdateQuotas_FullMethodName: permission.TenantsUpdate,
-	pb.QRDBService_TenantDelete_FullMethodName:       permission.TenantsDelete,
+	pb.QRDBService_TenantCreate_FullMethodName:             permission.TenantsCreate,
+	pb.QRDBService_TenantGet_FullMethodName:                permission.TenantsRead,
+	pb.QRDBService_TenantList_FullMethodName:               permission.TenantsList,
+	pb.QRDBService_TenantUpdate_FullMethodName:             permission.TenantsUpdate,
+	pb.QRDBService_TenantUpdateQuotas_FullMethodName:       permission.TenantsUpdate,
+	pb.QRDBService_TenantUpdateEntitlements_FullMethodName: permission.TenantsSetEntitlements,
+	pb.QRDBService_TenantDelete_FullMethodName:             permission.TenantsDelete,
 
 	// Backup management.
 	pb.QRDBService_BackupCreate_FullMethodName:  permission.BackupCreate,
@@ -575,10 +576,11 @@ var restPathParamPermissions = map[string]permission.Permission{
 	// in-handler via authorizeTenantBarrierOp, which validates the request's
 	// {id} against the caller's own tenant — a check the path-agnostic
 	// middleware cannot perform.
-	"GET /v1/tenants/{id}":         permission.TenantsRead,
-	"PUT /v1/tenants/{id}":         permission.TenantsUpdate,
-	"DELETE /v1/tenants/{id}":      permission.TenantsDelete,
-	"POST /v1/tenants/{id}/quotas": permission.TenantsUpdate,
+	"GET /v1/tenants/{id}":                permission.TenantsRead,
+	"PUT /v1/tenants/{id}":                permission.TenantsUpdate,
+	"DELETE /v1/tenants/{id}":             permission.TenantsDelete,
+	"POST /v1/tenants/{id}/quotas":        permission.TenantsUpdate,
+	"PATCH /v1/tenants/{id}/entitlements": permission.TenantsSetEntitlements,
 
 	// Backup management (per-backup routes dispatched via /v1/backups/).
 	"GET /v1/backups/{id}":         permission.BackupRead,
@@ -940,12 +942,13 @@ var quicPermissions = map[string]permission.Permission{
 	"lock.List":    permission.LocksList,
 
 	// Tenant management.
-	"tenant.Create":       permission.TenantsCreate,
-	"tenant.Get":          permission.TenantsRead,
-	"tenant.List":         permission.TenantsList,
-	"tenant.Update":       permission.TenantsUpdate,
-	"tenant.UpdateQuotas": permission.TenantsUpdate,
-	"tenant.Delete":       permission.TenantsDelete,
+	"tenant.Create":             permission.TenantsCreate,
+	"tenant.Get":                permission.TenantsRead,
+	"tenant.List":               permission.TenantsList,
+	"tenant.Update":             permission.TenantsUpdate,
+	"tenant.UpdateQuotas":       permission.TenantsUpdate,
+	"tenant.UpdateEntitlements": permission.TenantsSetEntitlements,
+	"tenant.Delete":             permission.TenantsDelete,
 
 	// Backup management.
 	"backup.Create":  permission.BackupCreate,
@@ -1129,12 +1132,13 @@ var mcpPermissions = map[string]permission.Permission{
 	"qrdb_cert_list":     permission.CertsList,
 
 	// Tenant management
-	"qrdb_tenant_create":        permission.TenantsCreate,
-	"qrdb_tenant_get":           permission.TenantsRead,
-	"qrdb_tenant_update":        permission.TenantsUpdate,
-	"qrdb_tenant_update_quotas": permission.TenantsUpdate,
-	"qrdb_tenant_delete":        permission.TenantsDelete,
-	"qrdb_tenant_list":          permission.TenantsList,
+	"qrdb_tenant_create":              permission.TenantsCreate,
+	"qrdb_tenant_get":                 permission.TenantsRead,
+	"qrdb_tenant_update":              permission.TenantsUpdate,
+	"qrdb_tenant_update_quotas":       permission.TenantsUpdate,
+	"qrdb_tenant_update_entitlements": permission.TenantsSetEntitlements,
+	"qrdb_tenant_delete":              permission.TenantsDelete,
+	"qrdb_tenant_list":                permission.TenantsList,
 
 	// Backup management.
 	"qrdb_backup_create":  permission.BackupCreate,

@@ -233,6 +233,27 @@ func (c *Client) WithTenant(tenantID string) (transport.KVClient, error) {
 	return transport.WithTenant(c.KV(), tenantID)
 }
 
+// DatabaseScoped returns a client whose data-plane operations target the named
+// database within the authenticated tenant's keyspace. The returned client
+// shares the underlying connection but carries its own immutable database
+// scope, so scopes never leak across clients and no global mutable state is
+// involved. Scoping to the default ("system") database or the empty string
+// yields an unscoped client.
+//
+// When the active transport does not support per-database scoping (e.g. the
+// embedded transport, which operates on a single in-process database), the
+// receiver is returned unchanged.
+func (c *Client) DatabaseScoped(name string) *Client {
+	if c.closed.Load() {
+		return c
+	}
+	scoper, ok := c.transport.(transport.DatabaseScoper)
+	if !ok {
+		return c
+	}
+	return &Client{transport: scoper.WithDatabase(name)}
+}
+
 // Permissions returns a PermissionClient exposing the read-only
 // permission registry. The transport must implement
 // transport.PermissionProvider; otherwise the returned client is nil

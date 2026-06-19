@@ -27,8 +27,9 @@ import (
 // secondary index with the specified name, field, and configuration
 // via the index service, and returns an empty response payload.
 func (s *Server) handleIndexCreate(ctx context.Context, payload []byte) ([]byte, error) {
-	if s.indexSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "index"}
+	indexSvc, svcErr := s.indexSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
 	}
 
 	var req pb.IndexCreateRequest
@@ -40,7 +41,7 @@ func (s *Server) handleIndexCreate(ctx context.Context, payload []byte) ([]byte,
 		Unique: req.GetUnique(),
 		Sparse: req.GetSparse(),
 	}
-	if err := s.indexSvc.CreateIndex(ctx, req.GetName(), req.GetFieldName(), cfg); err != nil {
+	if err := indexSvc.CreateIndex(ctx, req.GetName(), req.GetFieldName(), cfg); err != nil {
 		return nil, err
 	}
 
@@ -50,8 +51,9 @@ func (s *Server) handleIndexCreate(ctx context.Context, payload []byte) ([]byte,
 // handleIndexDrop unmarshals an IndexDropRequest, removes the specified
 // secondary index, and returns an empty response payload.
 func (s *Server) handleIndexDrop(ctx context.Context, payload []byte) ([]byte, error) {
-	if s.indexSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "index"}
+	indexSvc, svcErr := s.indexSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
 	}
 
 	var req pb.IndexDropRequest
@@ -59,7 +61,7 @@ func (s *Server) handleIndexDrop(ctx context.Context, payload []byte) ([]byte, e
 		return nil, &UnmarshalError{Err: err}
 	}
 
-	if err := s.indexSvc.DropIndex(ctx, req.GetName()); err != nil {
+	if err := indexSvc.DropIndex(ctx, req.GetName()); err != nil {
 		return nil, err
 	}
 
@@ -70,8 +72,9 @@ func (s *Server) handleIndexDrop(ctx context.Context, payload []byte) ([]byte, e
 // index for entries matching the exact value, and returns a serialized
 // IndexQueryResponse containing the matching entry IDs.
 func (s *Server) handleIndexQuery(ctx context.Context, payload []byte) ([]byte, error) {
-	if s.indexSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "index"}
+	indexSvc, svcErr := s.indexSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
 	}
 
 	var req pb.IndexQueryRequest
@@ -79,7 +82,7 @@ func (s *Server) handleIndexQuery(ctx context.Context, payload []byte) ([]byte, 
 		return nil, &UnmarshalError{Err: err}
 	}
 
-	keys, err := s.indexSvc.Query(ctx, req.GetIndexName(), req.GetValue())
+	keys, err := indexSvc.Query(ctx, req.GetIndexName(), req.GetValue())
 	if err != nil {
 		return nil, err
 	}
@@ -95,8 +98,9 @@ func (s *Server) handleIndexQuery(ctx context.Context, payload []byte) ([]byte, 
 // index for entries within the value range [start, end], and returns a
 // serialized IndexScanResponse with grouped entries.
 func (s *Server) handleIndexScan(ctx context.Context, payload []byte) ([]byte, error) {
-	if s.indexSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "index"}
+	indexSvc, svcErr := s.indexSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
 	}
 
 	var req pb.IndexScanRequest
@@ -104,7 +108,7 @@ func (s *Server) handleIndexScan(ctx context.Context, payload []byte) ([]byte, e
 		return nil, &UnmarshalError{Err: err}
 	}
 
-	result, err := s.indexSvc.Scan(ctx, req.GetIndexName(), req.GetStart(), req.GetEnd())
+	result, err := indexSvc.Scan(ctx, req.GetIndexName(), req.GetStart(), req.GetEnd())
 	if err != nil {
 		return nil, err
 	}
@@ -127,11 +131,12 @@ func (s *Server) handleIndexScan(ctx context.Context, payload []byte) ([]byte, e
 // handleIndexList lists all registered indexes and returns a serialized
 // IndexListResponse containing the index names.
 func (s *Server) handleIndexList(ctx context.Context, _ []byte) ([]byte, error) {
-	if s.indexSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "index"}
+	indexSvc, svcErr := s.indexSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
 	}
 
-	names, err := s.indexSvc.ListIndexes(ctx)
+	names, err := indexSvc.ListIndexes(ctx)
 	if err != nil {
 		return nil, err
 	}

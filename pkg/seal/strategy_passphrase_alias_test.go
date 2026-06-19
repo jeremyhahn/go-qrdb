@@ -70,7 +70,7 @@ func TestBarrier_PassphraseRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	registry := NewDefaultStrategyRegistry()
 	backend := NewMemoryBackend()
-	creds := Credentials{Secret: "round-trip-passphrase"}
+	creds := Credentials{Secret: []byte("round-trip-passphrase")}
 	cfg := BarrierConfig{RootKeyPath: "passphrase/root-key"}
 
 	sealStrat := buildRegisteredStrategy(t, registry, StrategyPassphrase)
@@ -113,7 +113,7 @@ func TestBarrier_PassphraseRoundTrip(t *testing.T) {
 	if err := guard.Seal(); err != nil {
 		t.Fatalf("Seal(guard): %v", err)
 	}
-	if err := guard.Unseal(ctx, Credentials{Secret: "wrong-passphrase"}); err == nil {
+	if err := guard.Unseal(ctx, Credentials{Secret: []byte("wrong-passphrase")}); err == nil {
 		t.Fatal("Unseal with wrong passphrase: expected error, got nil")
 	}
 }

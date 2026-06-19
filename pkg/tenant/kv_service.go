@@ -74,7 +74,7 @@ func NewKVTenantService(store kvstore.KVStore, logger *slog.Logger) (TenantServi
 // ErrBarrierIsolationUnavailable: the no-seal service has no barrier registry
 // and cannot honor barrier isolation. Failing closed here prevents persisting
 // a barrier-isolated tenant whose barrier never exists.
-func (s *kvTenantService) CreateTenant(ctx context.Context, id, name string, isolationType IsolationType) (*TenantInfo, error) {
+func (s *kvTenantService) CreateTenant(ctx context.Context, id, name string, isolationType IsolationType, _ ...CreateTenantOption) (*TenantInfo, error) {
 	if id == "" {
 		return nil, ErrEmptyTenantID
 	}
@@ -87,7 +87,10 @@ func (s *kvTenantService) CreateTenant(ctx context.Context, id, name string, iso
 	if isolationType == "" {
 		isolationType = IsolationPrefix
 	}
-	if isolationType == IsolationBarrier {
+	if isolationType == IsolationBarrier || isolationType == IsolationRaft {
+		// Both require a seal barrier registry (raft additionally needs a
+		// dedicated DataRoot + per-database shard). The no-seal service cannot
+		// honor either, so fail closed rather than persist an unusable tenant.
 		return nil, ErrBarrierIsolationUnavailable
 	}
 
@@ -280,6 +283,87 @@ func (s *kvTenantService) UpdateQuotas(ctx context.Context, tenantID string, quo
 	return info, nil
 }
 
+// UpdateEntitlements updates the feature entitlements for an existing tenant.
+func (s *kvTenantService) UpdateEntitlements(ctx context.Context, tenantID string, entitlements *quota.Entitlements) (*TenantInfo, error) {
+	if tenantID == "" {
+		return nil, ErrEmptyTenantID
+	}
+	if entitlements == nil {
+		return nil, ErrNilEntitlements
+	}
+
+	info, err := s.GetTenant(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+
+	info.Entitlements = entitlements
+	info.UpdatedAt = time.Now().UTC()
+
+	data, err := json.Marshal(info)
+	if err != nil {
+		return nil, &StoreError{Op: "marshal", Err: err}
+	}
+
+	key := metadataPrefix + tenantID
+	if err := s.store.Put(ctx, key, data); err != nil {
+		return nil, &StoreError{Op: "put", Err: err}
+	}
+
+	s.logger.Info("tenant entitlements updated", slog.String("tenant_id", tenantID))
+
+	return info, nil
+}
+
+// CheckIsolation returns nil if the tenant is entitled to the given isolation
+// mode, or a *quota.EntitlementError otherwise. The system tenant is implicitly
+// entitled to every mode. The no-seal KV service configures no operator
+// defaults, so nil entitlements fall back to the conservative built-in
+// defaults (prefix-only). Implements quota.EntitlementChecker.
+func (s *kvTenantService) CheckIsolation(ctx context.Context, tenantID, mode string) error {
+	if tenantID == SystemTenantID {
+		return nil
+	}
+	ents, err := s.effectiveEntitlements(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	if ents.AllowsIsolation(mode) {
+		return nil
+	}
+	return &quota.EntitlementError{TenantID: tenantID, Mode: mode}
+}
+
+// CheckFeature returns nil if the tenant is entitled to the named feature, or a
+// *quota.EntitlementError otherwise. The system tenant is implicitly entitled
+// to every feature. Implements quota.EntitlementChecker.
+func (s *kvTenantService) CheckFeature(ctx context.Context, tenantID, feature string) error {
+	if tenantID == SystemTenantID {
+		return nil
+	}
+	ents, err := s.effectiveEntitlements(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	if ents.AllowsFeature(feature) {
+		return nil
+	}
+	return &quota.EntitlementError{TenantID: tenantID, Feature: feature}
+}
+
+// effectiveEntitlements returns the tenant's own entitlements when set,
+// otherwise the conservative built-in defaults (prefix-only).
+func (s *kvTenantService) effectiveEntitlements(ctx context.Context, tenantID string) (*quota.Entitlements, error) {
+	info, err := s.GetTenant(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	if info.Entitlements != nil {
+		return info.Entitlements, nil
+	}
+	return quota.DefaultEntitlements(), nil
+}
+
 // IncrementQuotaUsage increments the current-usage counter for the given
 // resource by delta and persists the change. Returns QuotaExceededError
 // when the resulting usage would exceed the configured limit.
@@ -373,6 +457,43 @@ func (s *kvTenantService) DecrementQuotaUsage(ctx context.Context, tenantID stri
 		slog.String("tenant_id", tenantID),
 		slog.String("resource", resource.String()),
 		slog.Int64("delta", delta))
+	return info, nil
+}
+
+// SetQuotaUsage overwrites the current-usage counter for the given resource to
+// the supplied absolute value and persists the change without enforcing the
+// configured limit. It is used by the storage-quota reconciler to correct drift
+// from the in-memory accumulator. Negative values are clamped to zero.
+func (s *kvTenantService) SetQuotaUsage(ctx context.Context, tenantID string, resource quota.Resource, value int64) (*TenantInfo, error) {
+	if tenantID == "" {
+		return nil, ErrEmptyTenantID
+	}
+	if value < 0 {
+		value = 0
+	}
+	info, err := s.GetTenant(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	if info.Quotas == nil {
+		info.Quotas = &quota.Quotas{}
+	}
+	if qErr := info.Quotas.SetCurrentUsage(resource, value); qErr != nil {
+		return nil, &StoreError{Op: "set-quota-usage", Err: qErr}
+	}
+	info.UpdatedAt = time.Now().UTC()
+	data, err := json.Marshal(info)
+	if err != nil {
+		return nil, &StoreError{Op: "marshal", Err: err}
+	}
+	key := metadataPrefix + tenantID
+	if err := s.store.Put(ctx, key, data); err != nil {
+		return nil, &StoreError{Op: "put", Err: err}
+	}
+	s.logger.Debug("quota usage set",
+		slog.String("tenant_id", tenantID),
+		slog.String("resource", resource.String()),
+		slog.Int64("value", value))
 	return info, nil
 }
 

@@ -34,6 +34,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/kv"
 	"github.com/jeremyhahn/go-qrdb/pkg/lock"
+	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -868,7 +869,10 @@ func mapHTTPError(err error) int {
 	var tnf *TenantNotFoundError
 	var dnf *DatabaseNotFoundError
 	var bse *BarrierSealedError
+	var ibu *IsolationBackendUnavailableError
 	var smnc *service.SMNotConfiguredError
+	var qee *quota.ExceededError
+	var qent *quota.EntitlementError
 
 	switch {
 	case errors.As(err, &knf):
@@ -969,6 +973,16 @@ func mapHTTPError(err error) int {
 		return http.StatusNotFound
 	case errors.As(err, &bse):
 		return http.StatusServiceUnavailable
+	case errors.As(err, &ibu):
+		// Required isolation backend not wired — fail closed as 503 rather than
+		// silently serving the tenant from the shared store.
+		return http.StatusServiceUnavailable
+	case errors.As(err, &qee):
+		// Numeric quota exceeded — surface as 429 Too Many Requests.
+		return http.StatusTooManyRequests
+	case errors.As(err, &qent):
+		// Feature entitlement denied — surface as 403 Forbidden.
+		return http.StatusForbidden
 	case errors.As(err, &smnc):
 		// SM subsystem not configured — surface as 501 Not Implemented so
 		// clients know the operation is not supported by this server instance.

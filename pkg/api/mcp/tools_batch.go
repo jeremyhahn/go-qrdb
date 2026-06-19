@@ -49,6 +49,10 @@ func toolBatchExecute() mcp.Tool {
 // batchSvc.Execute.
 func handleBatchExecute(batchSvc service.BatchServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		batchSvc, rerr := resolveBatch(ctx, batchSvc)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
+		}
 		opsStr := mcp.ParseString(req, "ops", "")
 		if opsStr == "" {
 			return mcp.NewToolResultError("ops is required"), nil

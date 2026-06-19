@@ -413,18 +413,21 @@ describe('Outbound transform — tenants.updateQuotas sends snake_case quota fie
         vi.unstubAllGlobals();
     });
 
-    it('maxDatabases, maxKeys, maxStorageBytes all become snake_case', async () => {
+    it('POSTs a FLAT snake_case quota body (no wrapper, no tenant_id)', async () => {
         const client = await connectedClient();
-        const calls = installMockFetch({ tenant: { id: 'q1' } });
+        const calls = installMockFetch({ id: 'q1' });
 
         await client.tenants.updateQuotas({
             tenantId: 'q1',
             quotas: {
                 maxDatabases: 5,
                 maxRaftGroups: 3,
+                maxReplicasPerGroup: 3,
+                maxTotalReplicas: 9,
                 maxCollections: 10,
                 maxKeys: 1000,
                 maxStorageBytes: 500000,
+                maxDatabaseSizeBytes: 250000,
                 maxUsers: 20,
                 maxRoles: 10,
                 maxCertificates: 50,
@@ -435,19 +438,61 @@ describe('Outbound transform — tenants.updateQuotas sends snake_case quota fie
         });
 
         expect(calls).toHaveLength(1);
+        // The canonical REST route is POST /v1/tenants/{id}/quotas with a flat
+        // body decoded into setTenantQuotasRequest (top-level max_* fields).
+        expect(calls[0].method).toBe('POST');
+        expect(calls[0].url).toContain('/v1/tenants/q1/quotas');
         const body = calls[0].body as Record<string, unknown>;
-        // tenantId is present in body (alongside URL path) as tenant_id.
-        expect(body['tenant_id']).toBe('q1');
-        const quotas = body['quotas'] as Record<string, unknown>;
-        // Simple camelCase fields convert correctly.
-        expect(quotas['max_databases']).toBe(5);
-        expect(quotas['max_keys']).toBe(1000);
-        expect(quotas['max_storage_bytes']).toBe(500000);
-        expect(quotas['max_raft_groups']).toBe(3);
-        expect(quotas['max_users']).toBe(20);
+        // The flat quota fields appear at the top level, not under a wrapper.
+        expect(body['quotas']).toBeUndefined();
+        expect(body['tenant_id']).toBeUndefined();
+        expect(body['max_databases']).toBe(5);
+        expect(body['max_keys']).toBe(1000);
+        expect(body['max_storage_bytes']).toBe(500000);
+        expect(body['max_database_size_bytes']).toBe(250000);
+        expect(body['max_raft_groups']).toBe(3);
+        expect(body['max_replicas_per_group']).toBe(3);
+        expect(body['max_total_replicas']).toBe(9);
+        expect(body['max_users']).toBe(20);
         // camelCase originals must not appear.
-        expect(quotas['maxDatabases']).toBeUndefined();
-        expect(quotas['maxKeys']).toBeUndefined();
+        expect(body['maxDatabases']).toBeUndefined();
+        expect(body['maxKeys']).toBeUndefined();
+    });
+});
+
+describe('Outbound transform — tenants.updateEntitlements PATCHes snake_case fields', () => {
+    beforeEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it('sends a PATCH to /entitlements with snake_case entitlement fields', async () => {
+        const client = await connectedClient();
+        // The real PATCH /v1/tenants/{id}/entitlements handler returns the BARE
+        // updated tenant (not a {tenant} wrapper), exactly like the quotas
+        // handler. The SDK must wrap it to honor UpdateTenantEntitlementsResponse.
+        const calls = installMockFetch({ id: 'e1', name: 'E One' });
+
+        const resp = await client.tenants.updateEntitlements({
+            tenantId: 'e1',
+            entitlements: {
+                allowedIsolationModes: ['prefix', 'volume'],
+                allowDedicatedRaft: true,
+                allowVolumeStorage: false,
+            },
+        });
+
+        expect(calls).toHaveLength(1);
+        expect(calls[0].method).toBe('PATCH');
+        expect(calls[0].url).toContain('/v1/tenants/e1/entitlements');
+        const body = calls[0].body as Record<string, unknown>;
+        expect(body['allowed_isolation_modes']).toEqual(['prefix', 'volume']);
+        expect(body['allow_dedicated_raft']).toBe(true);
+        expect(body['allow_volume_storage']).toBe(false);
+        // camelCase originals must not appear.
+        expect(body['allowDedicatedRaft']).toBeUndefined();
+        // The bare-tenant response is wrapped to match the SDK contract so the
+        // UI can read resp.tenant (mirrors updateQuotas).
+        expect(resp.tenant.id).toBe('e1');
     });
 });
 
@@ -526,5 +571,165 @@ describe('Outbound transform — users.create body contains correct field names'
         expect(body['role_ids']).toEqual(['editor', 'viewer']);
         // camelCase key must not appear.
         expect(body['roleIds']).toBeUndefined();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Inbound transform — kv.scan must base64-decode each value so the REST client
+// returns the same plaintext the Wails client does (KVBinding.Scan uses
+// string(v)) and stays consistent with the REST single-key get(). Go marshals
+// the scan response's map[string][]byte as base64, so undecoded values would
+// surface base64 in the UI and corrupt edits on save.
+// ---------------------------------------------------------------------------
+
+describe('Inbound transform — kv.scan base64-decodes values to plaintext', () => {
+    beforeEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it('decodes base64 scan values to UTF-8 plaintext', async () => {
+        const client = await connectedClient();
+        // "aGVsbG8tZW5jcnlwdGVkLXdvcmxk" === base64("hello-encrypted-world").
+        installMockFetch({ pairs: { 'chrometest/key1': 'aGVsbG8tZW5jcnlwdGVkLXdvcmxk' } });
+
+        const result = await client.kv.scan('chrometest');
+
+        expect(result).toEqual({ 'chrometest/key1': 'hello-encrypted-world' });
+    });
+
+    it('decodes multibyte UTF-8 scan values correctly', async () => {
+        const client = await connectedClient();
+        // "aMOpbGxv" === base64(UTF-8 bytes of "héllo").
+        installMockFetch({ pairs: { 'chrometest/accent': 'aMOpbGxv' } });
+
+        const result = await client.kv.scan('chrometest');
+
+        expect(result).toEqual({ 'chrometest/accent': 'héllo' });
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Active-database scope — a databaseScoped() client injects X-QRDB-Database on
+// data-plane requests, the unscoped client never sends it, and management/admin
+// requests never carry it even on a scoped client.
+// ---------------------------------------------------------------------------
+
+describe('Active-database scope — X-QRDB-Database header injection', () => {
+    beforeEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it('scoped kv.put sends X-QRDB-Database: db2', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({});
+
+        await client.databaseScoped('db2').kv.put('k', 'v');
+
+        expect(calls).toHaveLength(1);
+        expect(calls[0].headers['x-qrdb-database']).toBe('db2');
+    });
+
+    it('scoped kv.get sends X-QRDB-Database: db2', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch('value');
+
+        await client.databaseScoped('db2').kv.get('k');
+
+        expect(calls).toHaveLength(1);
+        const url = new URL(calls[0].url);
+        expect(url.pathname).toBe('/kv/k');
+        expect(calls[0].headers['x-qrdb-database']).toBe('db2');
+    });
+
+    it('scoped kv.scan sends X-QRDB-Database: db2', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({ pairs: {} });
+
+        await client.databaseScoped('db2').kv.scan('prefix');
+
+        expect(calls).toHaveLength(1);
+        const url = new URL(calls[0].url);
+        expect(url.pathname).toBe('/kv/scan');
+        expect(calls[0].headers['x-qrdb-database']).toBe('db2');
+    });
+
+    it('scoped data-plane calls beyond kv also carry the header', async () => {
+        const client = await connectedClient().then((c) => c.databaseScoped('analytics'));
+        const calls = installMockFetch({ succeeded: true, revision: 1, responses: [] });
+
+        await client.transaction.execute({ compares: [], successOps: [], failureOps: [] });
+        await client.index.list();
+        await client.lease.list();
+
+        expect(calls).toHaveLength(3);
+        for (const call of calls) {
+            expect(call.headers['x-qrdb-database']).toBe('analytics');
+        }
+    });
+
+    it('unscoped client sends NO X-QRDB-Database header', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({});
+
+        await client.kv.put('k', 'v');
+
+        expect(calls).toHaveLength(1);
+        expect(calls[0].headers['x-qrdb-database']).toBeUndefined();
+    });
+
+    it('databaseScoped("") returns an unscoped client (no header)', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({});
+
+        await client.databaseScoped('').kv.put('k', 'v');
+
+        expect(calls).toHaveLength(1);
+        expect(calls[0].headers['x-qrdb-database']).toBeUndefined();
+    });
+
+    it('databaseScoped("system") returns an unscoped client (no header)', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({});
+
+        await client.databaseScoped('system').kv.put('k', 'v');
+
+        expect(calls).toHaveLength(1);
+        expect(calls[0].headers['x-qrdb-database']).toBeUndefined();
+    });
+
+    it('admin call on a scoped client does NOT carry the header (databases.list)', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({ databases: [] });
+
+        await client.databaseScoped('db2').database.list();
+
+        expect(calls).toHaveLength(1);
+        const url = new URL(calls[0].url);
+        expect(url.pathname).toBe('/v1/databases/list');
+        expect(calls[0].headers['x-qrdb-database']).toBeUndefined();
+    });
+
+    it('admin call on a scoped client does NOT carry the header (users.list)', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({ users: [], total: 0 });
+
+        await client.databaseScoped('db2').users.list({});
+
+        expect(calls).toHaveLength(1);
+        const url = new URL(calls[0].url);
+        expect(url.pathname).toBe('/users/list');
+        expect(calls[0].headers['x-qrdb-database']).toBeUndefined();
+    });
+
+    it('does not mutate the source client when scoping', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({});
+
+        client.databaseScoped('db2');
+        // The original client remains unscoped after deriving a scoped one.
+        await client.kv.put('k', 'v');
+
+        expect(calls).toHaveLength(1);
+        expect(calls[0].headers['x-qrdb-database']).toBeUndefined();
     });
 });

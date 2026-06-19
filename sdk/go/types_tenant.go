@@ -53,6 +53,12 @@ type TenantPatch = tenant.TenantPatch
 // pkg/tenant.IsolationType.)
 type TenantIsolationType = tenant.IsolationType
 
+// CreateTenantOption configures optional CreateTenant behavior. (Aliases
+// pkg/tenant.CreateTenantOption.) Re-exported so SDK consumers that
+// implement the first-boot TenantCreator seam can name the variadic
+// option type without importing pkg/tenant directly.
+type CreateTenantOption = tenant.CreateTenantOption
+
 // TenantIsolationBarrier is the per-tenant barrier isolation mode. (Aliases
 // pkg/tenant.IsolationBarrier.)
 const TenantIsolationBarrier = tenant.IsolationBarrier

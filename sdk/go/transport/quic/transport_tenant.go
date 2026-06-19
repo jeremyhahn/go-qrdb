@@ -36,9 +36,10 @@ func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenan
 	}
 
 	payload, err := proto.Marshal(&pb.TenantCreateRequest{
-		Id:            req.ID,
-		Name:          req.Name,
-		IsolationType: string(req.IsolationType),
+		Id:                req.ID,
+		Name:              req.Name,
+		IsolationType:     string(req.IsolationType),
+		BarrierAutoUnseal: req.BarrierAutoUnseal,
 	})
 	if err != nil {
 		return nil, &transport.RequestError{Method: "CreateTenant", Err: err}
@@ -161,17 +162,20 @@ func (t *Transport) UpdateTenantQuotas(ctx context.Context, req *transport.Updat
 	payload, err := proto.Marshal(&pb.TenantUpdateQuotasRequest{
 		Id: req.TenantID,
 		Quotas: &pb.TenantQuotas{
-			MaxDatabases:    req.Quotas.MaxDatabases,
-			MaxRaftGroups:   req.Quotas.MaxRaftGroups,
-			MaxCollections:  req.Quotas.MaxCollections,
-			MaxKeys:         req.Quotas.MaxKeys,
-			MaxStorageBytes: req.Quotas.MaxStorageBytes,
-			MaxUsers:        req.Quotas.MaxUsers,
-			MaxRoles:        req.Quotas.MaxRoles,
-			MaxCertificates: req.Quotas.MaxCertificates,
-			MaxBackups:      req.Quotas.MaxBackups,
-			MaxVectorDims:   req.Quotas.MaxVectorDims,
-			MaxTsMetrics:    req.Quotas.MaxTSMetrics,
+			MaxDatabases:         req.Quotas.MaxDatabases,
+			MaxRaftGroups:        req.Quotas.MaxRaftGroups,
+			MaxReplicasPerGroup:  req.Quotas.MaxReplicasPerGroup,
+			MaxTotalReplicas:     req.Quotas.MaxTotalReplicas,
+			MaxCollections:       req.Quotas.MaxCollections,
+			MaxKeys:              req.Quotas.MaxKeys,
+			MaxStorageBytes:      req.Quotas.MaxStorageBytes,
+			MaxDatabaseSizeBytes: req.Quotas.MaxDatabaseSizeBytes,
+			MaxUsers:             req.Quotas.MaxUsers,
+			MaxRoles:             req.Quotas.MaxRoles,
+			MaxCertificates:      req.Quotas.MaxCertificates,
+			MaxBackups:           req.Quotas.MaxBackups,
+			MaxVectorDims:        req.Quotas.MaxVectorDims,
+			MaxTsMetrics:         req.Quotas.MaxTSMetrics,
 		},
 	})
 	if err != nil {
@@ -189,6 +193,39 @@ func (t *Transport) UpdateTenantQuotas(ctx context.Context, req *transport.Updat
 	}
 
 	return &transport.UpdateTenantQuotasResponse{Tenant: quicProtoToTenantInfo(&resp)}, nil
+}
+
+// UpdateTenantEntitlements sets the feature entitlements for a tenant via the
+// QUIC tenant.UpdateEntitlements handler.
+func (t *Transport) UpdateTenantEntitlements(ctx context.Context, req *transport.UpdateTenantEntitlementsRequest) (*transport.UpdateTenantEntitlementsResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	payload, err := proto.Marshal(&pb.TenantUpdateEntitlementsRequest{
+		Id: req.TenantID,
+		Entitlements: &pb.TenantEntitlements{
+			AllowedIsolationModes:     req.Entitlements.AllowedIsolationModes,
+			AllowDedicatedRaft:        req.Entitlements.AllowDedicatedRaft,
+			AllowVolumeStorage:        req.Entitlements.AllowVolumeStorage,
+			AllowSystemManagedBarrier: req.Entitlements.AllowSystemManagedBarrier,
+		},
+	})
+	if err != nil {
+		return nil, &transport.RequestError{Method: "UpdateTenantEntitlements", Err: err}
+	}
+
+	respBytes, err := t.call(ctx, "tenant.UpdateEntitlements", payload)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "UpdateTenantEntitlements", Err: err}
+	}
+
+	var resp pb.TenantResponse
+	if err := proto.Unmarshal(respBytes, &resp); err != nil {
+		return nil, &transport.RequestError{Method: "UpdateTenantEntitlements", Err: err}
+	}
+
+	return &transport.UpdateTenantEntitlementsResponse{Tenant: quicProtoToTenantInfo(&resp)}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -463,17 +500,29 @@ func quicProtoToTenantInfo(resp *pb.TenantResponse) transport.TenantInfo {
 
 	if pbQ := resp.GetQuotas(); pbQ != nil {
 		info.Quotas = &transport.TenantQuotas{
-			MaxDatabases:    pbQ.GetMaxDatabases(),
-			MaxRaftGroups:   pbQ.GetMaxRaftGroups(),
-			MaxCollections:  pbQ.GetMaxCollections(),
-			MaxKeys:         pbQ.GetMaxKeys(),
-			MaxStorageBytes: pbQ.GetMaxStorageBytes(),
-			MaxUsers:        pbQ.GetMaxUsers(),
-			MaxRoles:        pbQ.GetMaxRoles(),
-			MaxCertificates: pbQ.GetMaxCertificates(),
-			MaxBackups:      pbQ.GetMaxBackups(),
-			MaxVectorDims:   pbQ.GetMaxVectorDims(),
-			MaxTSMetrics:    pbQ.GetMaxTsMetrics(),
+			MaxDatabases:         pbQ.GetMaxDatabases(),
+			MaxRaftGroups:        pbQ.GetMaxRaftGroups(),
+			MaxReplicasPerGroup:  pbQ.GetMaxReplicasPerGroup(),
+			MaxTotalReplicas:     pbQ.GetMaxTotalReplicas(),
+			MaxCollections:       pbQ.GetMaxCollections(),
+			MaxKeys:              pbQ.GetMaxKeys(),
+			MaxStorageBytes:      pbQ.GetMaxStorageBytes(),
+			MaxDatabaseSizeBytes: pbQ.GetMaxDatabaseSizeBytes(),
+			MaxUsers:             pbQ.GetMaxUsers(),
+			MaxRoles:             pbQ.GetMaxRoles(),
+			MaxCertificates:      pbQ.GetMaxCertificates(),
+			MaxBackups:           pbQ.GetMaxBackups(),
+			MaxVectorDims:        pbQ.GetMaxVectorDims(),
+			MaxTSMetrics:         pbQ.GetMaxTsMetrics(),
+		}
+	}
+
+	if pbE := resp.GetEntitlements(); pbE != nil {
+		info.Entitlements = &transport.TenantEntitlements{
+			AllowedIsolationModes:     pbE.GetAllowedIsolationModes(),
+			AllowDedicatedRaft:        pbE.GetAllowDedicatedRaft(),
+			AllowVolumeStorage:        pbE.GetAllowVolumeStorage(),
+			AllowSystemManagedBarrier: pbE.GetAllowSystemManagedBarrier(),
 		}
 	}
 

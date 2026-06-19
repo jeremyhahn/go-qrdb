@@ -1222,7 +1222,7 @@ func newMockTenantBarrierOnlySvc() *mockTenantBarrierOnlySvc {
 	return &mockTenantBarrierOnlySvc{}
 }
 
-func (m *mockTenantBarrierOnlySvc) CreateTenant(_ context.Context, id, name string, iso tenantpkg.IsolationType) (*tenantpkg.TenantInfo, error) {
+func (m *mockTenantBarrierOnlySvc) CreateTenant(_ context.Context, id, name string, iso tenantpkg.IsolationType, _ ...tenantpkg.CreateTenantOption) (*tenantpkg.TenantInfo, error) {
 	return &tenantpkg.TenantInfo{ID: id, Name: name, IsolationType: iso}, nil
 }
 func (m *mockTenantBarrierOnlySvc) GetTenant(_ context.Context, id string) (*tenantpkg.TenantInfo, error) {
@@ -1237,6 +1237,10 @@ func (m *mockTenantBarrierOnlySvc) UpdateTenant(_ context.Context, id string, p 
 }
 func (m *mockTenantBarrierOnlySvc) UpdateQuotas(_ context.Context, id string, q *quota.Quotas) (*tenantpkg.TenantInfo, error) {
 	return &tenantpkg.TenantInfo{ID: id, Quotas: q}, nil
+}
+
+func (m *mockTenantBarrierOnlySvc) UpdateEntitlements(ctx context.Context, id string, e *quota.Entitlements) (*tenantpkg.TenantInfo, error) {
+	return &tenantpkg.TenantInfo{ID: id, Entitlements: e}, nil
 }
 func (m *mockTenantBarrierOnlySvc) IncrementQuotaUsage(_ context.Context, _ string, _ quota.Resource, _ int64) (*tenantpkg.TenantInfo, error) {
 	return nil, nil

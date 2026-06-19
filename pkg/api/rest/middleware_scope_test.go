@@ -75,8 +75,8 @@ func TestScopeMiddleware_NoHeaders_DefaultsApplied(t *testing.T) {
 	if gotTenant != "system" {
 		t.Errorf("tenant: got %q, want %q", gotTenant, "system")
 	}
-	if gotDB != "default" {
-		t.Errorf("database: got %q, want %q", gotDB, "default")
+	if gotDB != "system" {
+		t.Errorf("database: got %q, want %q", gotDB, "system")
 	}
 }
 
@@ -93,8 +93,8 @@ func TestScopeMiddleware_EmptyDatabaseHeader_DefaultApplied(t *testing.T) {
 	if gotTenant != "bob-corp" {
 		t.Errorf("tenant: got %q, want %q", gotTenant, "bob-corp")
 	}
-	if gotDB != "default" {
-		t.Errorf("database: got %q, want %q", gotDB, "default")
+	if gotDB != "system" {
+		t.Errorf("database: got %q, want %q", gotDB, "system")
 	}
 }
 
@@ -165,8 +165,8 @@ func TestScopeMiddleware_NextHandlerReceivesUpdatedContext(t *testing.T) {
 func TestDatabaseFromContext_MissingKey_ReturnsDefault(t *testing.T) {
 	ctx := httptest.NewRequest(http.MethodGet, "/", nil).Context()
 	got := databaseFromContext(ctx)
-	if got != "default" {
-		t.Errorf("got %q, want %q", got, "default")
+	if got != "system" {
+		t.Errorf("got %q, want %q", got, "system")
 	}
 }
 

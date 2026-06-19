@@ -48,9 +48,10 @@ func isWatchMethod(method string) bool {
 // canceled), the watcher's event channel closes, or the server is shutting
 // down. The wire framing matches the SDK QUIC client's watchStream reader.
 func (s *Server) handleWatchStream(ctx context.Context, stream *quicgo.Stream, requestID uint64, prefix bool, payload []byte) {
-	if s.watchSvc == nil {
-		_ = wire.WriteResponse(stream, requestID, wire.StatusUnimplemented,
-			[]byte((&ServiceNotConfiguredError{Service: "watch"}).Error()))
+	watchSvc, svcErr := s.watchSvcFor(ctx)
+	if svcErr != nil {
+		statusCode, errPayload := mapServiceError(svcErr)
+		_ = wire.WriteResponse(stream, requestID, statusCode, errPayload)
 		return
 	}
 
@@ -91,9 +92,9 @@ func (s *Server) handleWatchStream(ctx context.Context, stream *quicgo.Stream, r
 		err error
 	)
 	if prefix || len(req.GetRangeEnd()) > 0 {
-		w, err = s.watchSvc.WatchPrefix(watchCtx, string(req.GetKey()), opts...)
+		w, err = watchSvc.WatchPrefix(watchCtx, string(req.GetKey()), opts...)
 	} else {
-		w, err = s.watchSvc.Watch(watchCtx, string(req.GetKey()), opts...)
+		w, err = watchSvc.Watch(watchCtx, string(req.GetKey()), opts...)
 	}
 	if err != nil {
 		statusCode, errPayload := mapServiceError(err)

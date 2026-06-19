@@ -232,26 +232,21 @@ func TestEmbeddedBackendFactory_Create_RaftBackend(t *testing.T) {
 		Backend: BackendRaft,
 	}
 
-	_, err := factory.Create(cfg, "")
-	if err == nil {
-		t.Fatal("Create raft backend: expected error, got nil")
+	// A dedicated-raft database's authoritative data plane is a per-database
+	// shard on the shared system Host managed by the server-layer
+	// RaftBackendFactory (IsolationRaft). The Manager still opens a Backend so
+	// the database's meta.json, catalog membership, and shard-ID allocation are
+	// tracked uniformly; that bookkeeping role is served by a lightweight
+	// in-memory placeholder, which must be created without error.
+	backend, err := factory.Create(cfg, "")
+	if err != nil {
+		t.Fatalf("Create raft backend: unexpected error: %v", err)
 	}
-
-	var target *StorageCreateError
-	if !errors.As(err, &target) {
-		t.Fatalf("Create raft backend: expected *StorageCreateError, got %T: %v", err, err)
+	if backend == nil {
+		t.Fatal("Create raft backend: expected non-nil placeholder backend")
 	}
-	if target.Name != "test-raft" {
-		t.Errorf("StorageCreateError.Name: got %q, want %q", target.Name, "test-raft")
-	}
-	if target.Backend != "raft" {
-		t.Errorf("StorageCreateError.Backend: got %q, want %q", target.Backend, "raft")
-	}
-
-	// The underlying error should be an InvalidBackendError.
-	var inner *InvalidBackendError
-	if !errors.As(err, &inner) {
-		t.Fatalf("Create raft backend: expected nested *InvalidBackendError, got %T: %v", target.Err, target.Err)
+	if err := backend.Close(); err != nil {
+		t.Fatalf("Close raft placeholder backend: %v", err)
 	}
 }
 
@@ -594,14 +589,16 @@ func TestOpenStorage_Pebble(t *testing.T) {
 }
 
 func TestOpenStorage_Raft(t *testing.T) {
-	_, err := openStorage("raft-db", BackendRaft, "")
-	if err == nil {
-		t.Fatal("openStorage raft: expected error, got nil")
+	// openStorage returns a lightweight in-memory placeholder for the raft
+	// backend: the authoritative data plane is the per-database shard on the
+	// shared system Host (IsolationRaft), wired at the server layer. The
+	// placeholder lets the Manager track meta.json/catalog/shard-ID uniformly.
+	store, err := openStorage("raft-db", BackendRaft, "")
+	if err != nil {
+		t.Fatalf("openStorage raft: unexpected error: %v", err)
 	}
-
-	var target *StorageCreateError
-	if !errors.As(err, &target) {
-		t.Fatalf("openStorage raft: expected *StorageCreateError, got %T: %v", err, err)
+	if store == nil {
+		t.Fatal("openStorage raft: returned nil placeholder store")
 	}
 }
 

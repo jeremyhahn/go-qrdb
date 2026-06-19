@@ -202,6 +202,47 @@ func TestRegisterTenantPooledWithStrategy_NoPoolConfigured(t *testing.T) {
 	}
 }
 
+// TestRegisterTenantPooledSystemManaged_RegistrationSucceeds verifies that
+// RegisterTenantPooledSystemManaged opens a pooled per-tenant Pebble and
+// registers the tenant with a SystemBarrierStrategy.
+func TestRegisterTenantPooledSystemManaged_RegistrationSucceeds(t *testing.T) {
+	ctx := context.Background()
+	reg, _, _ := newPooledRegistry(t)
+
+	// Unseal the system barrier so the SystemBarrierStrategy is functional.
+	if err := reg.SystemBarrier().Initialize(ctx, seal.Credentials{Secret: []byte("pool-test-pass")}); err != nil {
+		t.Fatalf("system barrier Initialize: %v", err)
+	}
+
+	tb, err := reg.RegisterTenantPooledSystemManaged(ctx, "sys-mgd-tenant")
+	if err != nil {
+		t.Fatalf("RegisterTenantPooledSystemManaged: %v", err)
+	}
+	if tb == nil {
+		t.Fatal("expected non-nil TenantBarrier")
+	}
+
+	// The registered barrier should be retrievable.
+	if got, gerr := reg.GetTenant("sys-mgd-tenant"); gerr != nil || got == nil {
+		t.Fatalf("GetTenant after RegisterTenantPooledSystemManaged: %v", gerr)
+	}
+}
+
+// TestRegisterTenantPooledSystemManaged_NoPool verifies that the function
+// propagates ErrPoolNotConfigured when no volume pool is attached.
+func TestRegisterTenantPooledSystemManaged_NoPool(t *testing.T) {
+	system := newPoolSystemBarrier(t)
+	reg, err := seal.NewBarrierRegistry(poolTestLogger(), system)
+	if err != nil {
+		t.Fatalf("NewBarrierRegistry: %v", err)
+	}
+
+	_, err = reg.RegisterTenantPooledSystemManaged(context.Background(), "sys-mgd-nopool")
+	if !errors.Is(err, seal.ErrPoolNotConfigured) {
+		t.Errorf("RegisterTenantPooledSystemManaged without pool: got %v, want ErrPoolNotConfigured", err)
+	}
+}
+
 // keysOf returns the StrategyID keys of a strategies map for diagnostics.
 func keysOf(m map[seal.StrategyID]seal.SealingStrategy) []seal.StrategyID {
 	ids := make([]seal.StrategyID, 0, len(m))

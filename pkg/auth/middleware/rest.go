@@ -47,10 +47,18 @@ func (m *AuthMiddleware) RESTMiddleware(next http.Handler) http.Handler {
 		// certificate; /v1/ca/bootstrap lets joining nodes fetch the trust
 		// anchor before they have credentials; /v1/config/initialized lets the
 		// first-boot setup wizard check provisioning state before any user or
-		// certificate exists.
+		// certificate exists; the two /v1/cluster/ key-transport routes are the
+		// cluster peer plane — authorized by node identity (peer cert SPIFFE SAN)
+		// and the placement table inside the handler itself, not by user RBAC.
+		//
+		// The cluster paths are matched EXACTLY (not by prefix) so that a future
+		// handler accidentally mounted under /v1/cluster/ is not silently left
+		// unauthenticated; each exact path here is a route that self-authorizes.
 		if r.URL.Path == "/health" ||
 			r.URL.Path == "/v1/ca/bootstrap" ||
-			r.URL.Path == "/v1/config/initialized" {
+			r.URL.Path == "/v1/config/initialized" ||
+			r.URL.Path == "/v1/cluster/keydelivery" ||
+			r.URL.Path == "/v1/cluster/nodekey" {
 			next.ServeHTTP(w, r)
 			return
 		}

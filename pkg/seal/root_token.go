@@ -61,7 +61,7 @@ func (b *StorageBarrier) GenerateRootToken(ctx context.Context, shareValues []st
 		}
 	}
 
-	secret, err := shamir.Combine(shares)
+	secret, err := shamir.CombineUnverified(shares)
 	if err != nil {
 		return nil, ErrShamirCombineFailed
 	}
@@ -171,7 +171,7 @@ func (b *StorageBarrier) verifyCredentialMode(ctx context.Context, secret []byte
 		return nil, ErrRootTokenVerificationFailed
 	}
 
-	rootKey, err := strategy.UnsealRootKey(ctx, &sealed, Credentials{Secret: string(secret)})
+	rootKey, err := strategy.UnsealRootKey(ctx, &sealed, Credentials{Secret: secret})
 	if err != nil {
 		return nil, ErrRootTokenVerificationFailed
 	}

@@ -38,7 +38,8 @@ func (s *qrdbServiceServer) TenantCreate(ctx context.Context, req *pb.TenantCrea
 		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "tenant"}).Error())
 	}
 
-	info, err := s.tenantSvc.CreateTenant(ctx, req.GetId(), req.GetName(), tenant.IsolationType(req.GetIsolationType()))
+	info, err := s.tenantSvc.CreateTenant(ctx, req.GetId(), req.GetName(), tenant.IsolationType(req.GetIsolationType()),
+		tenant.WithBarrierAutoUnseal(req.GetBarrierAutoUnseal()))
 	if err != nil {
 		return nil, mapTenantError(err)
 	}
@@ -123,20 +124,49 @@ func (s *qrdbServiceServer) TenantUpdateQuotas(ctx context.Context, req *pb.Tena
 	}
 
 	q := &quota.Quotas{
-		MaxDatabases:    pbQ.GetMaxDatabases(),
-		MaxRaftGroups:   pbQ.GetMaxRaftGroups(),
-		MaxCollections:  pbQ.GetMaxCollections(),
-		MaxKeys:         pbQ.GetMaxKeys(),
-		MaxStorageBytes: pbQ.GetMaxStorageBytes(),
-		MaxUsers:        pbQ.GetMaxUsers(),
-		MaxRoles:        pbQ.GetMaxRoles(),
-		MaxCertificates: pbQ.GetMaxCertificates(),
-		MaxBackups:      pbQ.GetMaxBackups(),
-		MaxVectorDims:   pbQ.GetMaxVectorDims(),
-		MaxTSMetrics:    pbQ.GetMaxTsMetrics(),
+		MaxDatabases:         pbQ.GetMaxDatabases(),
+		MaxRaftGroups:        pbQ.GetMaxRaftGroups(),
+		MaxReplicasPerGroup:  pbQ.GetMaxReplicasPerGroup(),
+		MaxTotalReplicas:     pbQ.GetMaxTotalReplicas(),
+		MaxCollections:       pbQ.GetMaxCollections(),
+		MaxKeys:              pbQ.GetMaxKeys(),
+		MaxStorageBytes:      pbQ.GetMaxStorageBytes(),
+		MaxDatabaseSizeBytes: pbQ.GetMaxDatabaseSizeBytes(),
+		MaxUsers:             pbQ.GetMaxUsers(),
+		MaxRoles:             pbQ.GetMaxRoles(),
+		MaxCertificates:      pbQ.GetMaxCertificates(),
+		MaxBackups:           pbQ.GetMaxBackups(),
+		MaxVectorDims:        pbQ.GetMaxVectorDims(),
+		MaxTSMetrics:         pbQ.GetMaxTsMetrics(),
 	}
 
 	info, err := s.tenantSvc.UpdateQuotas(ctx, req.GetId(), q)
+	if err != nil {
+		return nil, mapTenantError(err)
+	}
+
+	return tenantToProto(info), nil
+}
+
+// TenantUpdateEntitlements sets the feature entitlements for an existing tenant.
+func (s *qrdbServiceServer) TenantUpdateEntitlements(ctx context.Context, req *pb.TenantUpdateEntitlementsRequest) (*pb.TenantResponse, error) {
+	if s.tenantSvc == nil {
+		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "tenant"}).Error())
+	}
+
+	pbE := req.GetEntitlements()
+	if pbE == nil {
+		return nil, status.Error(codes.InvalidArgument, "entitlements is required")
+	}
+
+	e := &quota.Entitlements{
+		AllowedIsolationModes:     pbE.GetAllowedIsolationModes(),
+		AllowDedicatedRaft:        pbE.GetAllowDedicatedRaft(),
+		AllowVolumeStorage:        pbE.GetAllowVolumeStorage(),
+		AllowSystemManagedBarrier: pbE.GetAllowSystemManagedBarrier(),
+	}
+
+	info, err := s.tenantSvc.UpdateEntitlements(ctx, req.GetId(), e)
 	if err != nil {
 		return nil, mapTenantError(err)
 	}
@@ -163,7 +193,23 @@ func tenantToProto(info *tenant.TenantInfo) *pb.TenantResponse {
 	if info.Quotas != nil {
 		resp.Quotas = quotaToProto(info.Quotas)
 	}
+	if info.Entitlements != nil {
+		resp.Entitlements = entitlementsToProto(info.Entitlements)
+	}
 	return resp
+}
+
+// entitlementsToProto converts a quota.Entitlements to its protobuf form.
+func entitlementsToProto(e *quota.Entitlements) *pb.TenantEntitlements {
+	if e == nil {
+		return nil
+	}
+	return &pb.TenantEntitlements{
+		AllowedIsolationModes:     e.AllowedIsolationModes,
+		AllowDedicatedRaft:        e.AllowDedicatedRaft,
+		AllowVolumeStorage:        e.AllowVolumeStorage,
+		AllowSystemManagedBarrier: e.AllowSystemManagedBarrier,
+	}
 }
 
 // quotaToProto converts a quota.Quotas to its protobuf representation.
@@ -172,17 +218,20 @@ func quotaToProto(q *quota.Quotas) *pb.TenantQuotas {
 		return nil
 	}
 	return &pb.TenantQuotas{
-		MaxDatabases:    q.MaxDatabases,
-		MaxRaftGroups:   q.MaxRaftGroups,
-		MaxCollections:  q.MaxCollections,
-		MaxKeys:         q.MaxKeys,
-		MaxStorageBytes: q.MaxStorageBytes,
-		MaxUsers:        q.MaxUsers,
-		MaxRoles:        q.MaxRoles,
-		MaxCertificates: q.MaxCertificates,
-		MaxBackups:      q.MaxBackups,
-		MaxVectorDims:   q.MaxVectorDims,
-		MaxTsMetrics:    q.MaxTSMetrics,
+		MaxDatabases:         q.MaxDatabases,
+		MaxRaftGroups:        q.MaxRaftGroups,
+		MaxReplicasPerGroup:  q.MaxReplicasPerGroup,
+		MaxTotalReplicas:     q.MaxTotalReplicas,
+		MaxCollections:       q.MaxCollections,
+		MaxKeys:              q.MaxKeys,
+		MaxStorageBytes:      q.MaxStorageBytes,
+		MaxDatabaseSizeBytes: q.MaxDatabaseSizeBytes,
+		MaxUsers:             q.MaxUsers,
+		MaxRoles:             q.MaxRoles,
+		MaxCertificates:      q.MaxCertificates,
+		MaxBackups:           q.MaxBackups,
+		MaxVectorDims:        q.MaxVectorDims,
+		MaxTsMetrics:         q.MaxTSMetrics,
 	}
 }
 
@@ -212,6 +261,8 @@ func mapTenantError(err error) error {
 	case errors.Is(err, tenant.ErrSystemTenantMustBePrefix):
 		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, tenant.ErrNilQuotas):
+		return status.Error(codes.InvalidArgument, err.Error())
+	case errors.Is(err, tenant.ErrNilEntitlements):
 		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.As(err, &ise):
 		return status.Error(codes.InvalidArgument, err.Error())

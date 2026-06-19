@@ -37,6 +37,8 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/logger"
+	"github.com/jeremyhahn/go-qrdb/pkg/placement"
+	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -149,6 +151,17 @@ type Infra struct {
 	// implicit owner). This should be set to true in multi-tenant production
 	// environments and is automatically engaged under FIPS-140.
 	StrictTenantIsolation bool
+
+	// DefaultTenantQuotas are the operator-configured default resource quotas
+	// applied to tenants whose own quotas are unset. When nil, nil-quota
+	// tenants fall back to the zero-value Quotas (all limits at system default).
+	DefaultTenantQuotas *quota.Quotas
+
+	// DefaultTenantEntitlements are the operator-configured default feature
+	// entitlements applied to tenants whose own entitlements are unset. When
+	// nil, nil-entitlement tenants fall back to the conservative built-in
+	// defaults (prefix-only isolation; dedicated raft/volume denied).
+	DefaultTenantEntitlements *quota.Entitlements
 }
 
 // Node aggregates all services built by BuildServices and provides a
@@ -200,6 +213,13 @@ type Node struct {
 	// while prefix/system tenants use the shared system store. It is a
 	// forward seam for the SDK to expose; there is no SDK accessor yet.
 	StoreResolver tenant.StoreResolver
+
+	// PlacementStore is the replicated placement table for dedicated tenant
+	// Raft groups (Phase 4c). It is always non-nil: the DatabaseService writes
+	// a database's computed placement here on create, and the daemon threads it
+	// into the RaftBackendFactory so the table is the source of truth for
+	// resolving a dedicated-raft database's shard.
+	PlacementStore *placement.Store
 
 	// closers are called in reverse order on Stop.
 	closers []func() error
@@ -318,7 +338,26 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		dbManager = database.NewManager(log, infra.DataDir)
 		n.addCloser(func() error { return dbManager.Close() })
 	}
-	n.Database = service.NewDatabaseService(dbManager)
+
+	// Replicated placement table (Phase 4c) over the shared system KV, plus the
+	// load-aware scheduler over the live cluster topology (host roster +
+	// RebalanceService load scoring). These are wired into the DatabaseService
+	// so a dedicated-raft database's replica placement is computed and persisted
+	// at create time; the store is also exposed on the Node so the daemon can
+	// make it the RaftBackendFactory's source of truth.
+	var placementOpts []service.DatabaseServiceOption
+	if store, perr := placement.NewStore(authStore); perr == nil {
+		n.PlacementStore = store
+		if scheduler, serr := placement.NewScheduler(service.NewHostTopologyProvider(infra.Host, n.Rebalance)); serr == nil {
+			placementOpts = []service.DatabaseServiceOption{
+				service.WithPlacementStore(store),
+				service.WithPlacementScheduler(scheduler),
+				service.WithDatabaseLogger(log),
+			}
+		}
+	}
+
+	n.Database = service.NewDatabaseService(dbManager, placementOpts...)
 
 	// Vector service with PebbleDB-backed storage. Route encryption through
 	// the shared Encryptor so vector storage and the MVCC state machine use
@@ -410,15 +449,73 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		n.Tenant = kvTenantSvc
 	}
 
+	// Wire tenant-driven quota and entitlement enforcement into the database
+	// service now that the tenant service exists. The tenant service is both
+	// the quota.QuotaProvider and the quota.EntitlementChecker; CreateForTenant
+	// consults them (the entitlement plane first, then the numeric quota plane)
+	// before provisioning a tenant-scoped database. System-tenant creates
+	// short-circuit ahead of both checks.
+	if n.Tenant != nil {
+		dbOpts := buildDatabaseQuotaOpts(n.Tenant, log)
+		if len(dbOpts) > 0 {
+			// Rebuild with both the quota/entitlement options and the placement
+			// options so neither set is dropped when the tenant service exists.
+			dbOpts = append(dbOpts, placementOpts...)
+			n.Database = service.NewDatabaseService(dbManager, dbOpts...)
+		}
+	}
+
 	return n, nil
+}
+
+// buildDatabaseQuotaOpts derives the DatabaseService options that wire the
+// tenant service's quota and entitlement enforcement. Returns nil when the
+// tenant service is not a QuotaProvider (no enforcement possible).
+func buildDatabaseQuotaOpts(tenantSvc tenant.TenantServicer, log *slog.Logger) []service.DatabaseServiceOption {
+	provider, ok := tenantSvc.(quota.QuotaProvider)
+	if !ok {
+		return nil
+	}
+	quotaSvc, err := quota.NewService(provider, log)
+	if err != nil {
+		return nil
+	}
+	// Current-usage counters read the persisted per-tenant usage record.
+	quotaSvc.RegisterCounter(quota.ResourceDatabases, func(ctx context.Context, tenantID string) (int64, error) {
+		return tenantSvc.GetQuotaUsage(ctx, tenantID, quota.ResourceDatabases)
+	})
+	quotaSvc.RegisterCounter(quota.ResourceRaftGroups, func(ctx context.Context, tenantID string) (int64, error) {
+		return tenantSvc.GetQuotaUsage(ctx, tenantID, quota.ResourceRaftGroups)
+	})
+	quotaSvc.RegisterCounter(quota.ResourceTotalReplicas, func(ctx context.Context, tenantID string) (int64, error) {
+		return tenantSvc.GetQuotaUsage(ctx, tenantID, quota.ResourceTotalReplicas)
+	})
+	// ResourceReplicasPerGroup is a per-group cap evaluated against a zero
+	// current usage; the counter always reports zero so a CheckN reduces to
+	// "requested replicas <= MaxReplicasPerGroup".
+	quotaSvc.RegisterCounter(quota.ResourceReplicasPerGroup, func(ctx context.Context, tenantID string) (int64, error) {
+		return 0, nil
+	})
+	opts := []service.DatabaseServiceOption{service.WithQuotaChecker(quotaSvc)}
+	if ec, ok := tenantSvc.(quota.EntitlementChecker); ok {
+		opts = append(opts, service.WithEntitlementChecker(ec))
+	}
+	// Route IsolationVolume database storage under the tenant's DataRoot.
+	if lookup, ok := tenantSvc.(service.TenantInfoLookup); ok {
+		opts = append(opts, service.WithTenantInfoLookup(lookup))
+	}
+	// Record per-database raft-group usage so MaxRaftGroups is enforced for each
+	// dedicated-raft (IsolationRaft) database.
+	if rec, ok := tenantSvc.(service.QuotaUsageRecorder); ok {
+		opts = append(opts, service.WithQuotaUsageRecorder(rec))
+	}
+	return opts
 }
 
 // buildSealServices constructs the security services that depend on the
 // seal barrier: BarrierService, CredentialService, CeremonyService,
 // TenantService, and CertProvider.
 func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Logger) error {
-	_ = ctx // reserved for future use by barrier operations
-
 	if infra.CredentialCoreSvc != nil {
 		n.Credential = service.NewCredentialService(infra.CredentialCoreSvc)
 
@@ -452,12 +549,33 @@ func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Log
 				tenantOpts = append(tenantOpts, tenant.WithTenantCeremonyCA(coreSvc.CA()))
 			}
 		}
+		// Tenant metadata (TenantInfo) is replicated cluster state: back it with
+		// the REPLICATED system shard via the KV service — exactly like the
+		// user, role, and placement stores — so a tenant created on one node is
+		// visible on every node. The per-tenant barrier lifecycle still runs
+		// through infra.BarrierRegistry; only TenantInfo persistence moves onto
+		// Raft consensus. (Previously this used infra.SealBarrier, the
+		// node-local seal store, which left a created tenant invisible to
+		// followers and broke tenant resolution after a leader change/restart.)
+		tenantMetaStore := kvSealBackend{KVStore: newKVStoreAdapter(n.KV), tx: n.Transaction}
 		tenantSvcInst, err := tenant.NewTenantService(
-			infra.SealBarrier, infra.BarrierRegistry, log, tenantOpts...)
+			tenantMetaStore, infra.BarrierRegistry, log, tenantOpts...)
 		if err != nil {
 			return &TenantServiceError{Err: err}
 		}
 		n.Tenant = tenantSvcInst
+
+		// One-time, non-fatal compatibility migration: older builds persisted
+		// TenantInfo to the node-local seal store. Copy any such records that are
+		// not yet in the replicated store so existing tenants survive the upgrade.
+		// On a fresh cluster the source is empty and this is a no-op.
+		if migrated, mErr := tenant.MigrateMetadata(ctx, infra.SealBarrier, tenantMetaStore, log); mErr != nil {
+			log.Warn("tenant metadata migration failed; continuing",
+				slog.String("error", mErr.Error()))
+		} else if migrated > 0 {
+			log.Info("migrated tenant metadata from local seal store to replicated store",
+				slog.Int("count", migrated))
+		}
 
 		// CertProvider uses the KV service as its underlying store and the
 		// barrier for transparent encryption of certificate material.
@@ -526,6 +644,17 @@ func BuildSealServicesOnly(ctx context.Context, infra Infra) (*Node, error) {
 		if ca := ceremonyCoreSvc.CA(); ca != nil {
 			tenantOpts = append(tenantOpts, tenant.WithTenantCeremonyCA(ca))
 		}
+		// The sealed-window service graph has no Raft host (the data plane
+		// cannot be opened while the storage barrier is sealed), so this tenant
+		// service is necessarily backed by the node-local seal store rather than
+		// the replicated system shard. That is acceptable because the
+		// sealed-window listener exposes ONLY the barrier, ceremony, and
+		// credential services — tenant CRUD is never invoked during the sealed
+		// window. The replicated, cluster-visible tenant service is built
+		// post-host in BuildServices (buildSealServices); per-tenant barrier
+		// restore at boot uses the barrier registry's own persisted
+		// __registry:tenant_root/ records, not TenantInfo, so this seal-backed
+		// instance is never consulted for tenant resolution.
 		tenantSvcInst, err := tenant.NewTenantService(
 			infra.SealBarrier, infra.BarrierRegistry, log, tenantOpts...)
 		if err != nil {
@@ -552,12 +681,17 @@ func resolveReplicaID(id uint64) uint64 {
 // Infra. When Infra.StrategyRegistry is non-nil, WithStrategyRegistry is
 // included so the TenantService can resolve hardware/cloud seal strategies.
 func buildTenantServiceOpts(infra Infra) []tenant.TenantServiceOption {
-	if infra.StrategyRegistry == nil {
-		return nil
+	var opts []tenant.TenantServiceOption
+	if infra.StrategyRegistry != nil {
+		opts = append(opts, tenant.WithStrategyRegistry(infra.StrategyRegistry))
 	}
-	return []tenant.TenantServiceOption{
-		tenant.WithStrategyRegistry(infra.StrategyRegistry),
+	if infra.DefaultTenantQuotas != nil {
+		opts = append(opts, tenant.WithDefaultQuotas(infra.DefaultTenantQuotas))
 	}
+	if infra.DefaultTenantEntitlements != nil {
+		opts = append(opts, tenant.WithDefaultEntitlements(infra.DefaultTenantEntitlements))
+	}
+	return opts
 }
 
 // newKVStoreAdapter returns a kvstore.KVStore backed by the given KVServicer.

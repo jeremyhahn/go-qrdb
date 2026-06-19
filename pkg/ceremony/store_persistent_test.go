@@ -30,7 +30,7 @@ import (
 func unsealedTestBarrier(t *testing.T) *seal.StorageBarrier {
 	t.Helper()
 	b := testBarrier(t)
-	require.NoError(t, b.Initialize(context.Background(), seal.Credentials{Secret: "test-master-password"}))
+	require.NoError(t, b.Initialize(context.Background(), seal.Credentials{Secret: []byte("test-master-password")}))
 	require.False(t, b.IsSealed())
 	return b
 }
@@ -299,7 +299,7 @@ func TestOfficerRegistry_Reload_AfterUnseal(t *testing.T) {
 
 	// Seal then unseal.
 	require.NoError(t, barrier.Seal())
-	require.NoError(t, barrier.Unseal(context.Background(), seal.Credentials{Secret: "test-master-password"}))
+	require.NoError(t, barrier.Unseal(context.Background(), seal.Credentials{Secret: []byte("test-master-password")}))
 
 	// Drop the in-memory cache to simulate a fresh process.
 	reg.mu.Lock()

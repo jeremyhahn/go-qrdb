@@ -40,6 +40,7 @@ func (s *Server) handleDatabaseCreate(ctx context.Context, payload []byte) ([]by
 		Backend:  database.BackendType(req.Backend),
 		DataDir:  req.DataDir,
 		Mode:     database.DatabaseMode(req.Mode),
+		Replicas: req.Replicas,
 		Protocol: req.Protocol.toDomain(),
 		Raft:     req.Raft,
 		Barrier:  req.Barrier,
@@ -293,6 +294,7 @@ type databaseCreateRequest struct {
 	Backend    string                             `json:"backend"`
 	DataDir    string                             `json:"dataDir,omitempty"`
 	Mode       string                             `json:"mode,omitempty"`
+	Replicas   int                                `json:"replicas,omitempty"`
 	Protocol   databaseCreateProtocolConfig       `json:"protocol,omitempty"`
 	Raft       *database.DatabaseRaftConfig       `json:"raft,omitempty"`
 	Barrier    *database.DatabaseBarrierConfig    `json:"barrier,omitempty"`

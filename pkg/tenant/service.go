@@ -51,16 +51,80 @@ const (
 	// prefixing against the shared system store. No per-tenant barrier is
 	// applied. This is the default when no isolation type is specified.
 	IsolationPrefix IsolationType = "prefix"
+
+	// IsolationVolume gives a tenant a dedicated filesystem DataRoot
+	// (allocated from the configured volume pool) hosting a per-tenant local
+	// Raft cluster with FULL engines (KV/MVCC/lease/watch/timeseries). The
+	// tenant's data lives entirely under its DataRoot and is encrypted at
+	// rest under the tenant's own DEK via a per-tenant barrier (registered
+	// like IsolationBarrier). Requires the volume pool and the seal
+	// subsystem to be configured. This is the Phase-2 dedicated-volume mode.
+	IsolationVolume IsolationType = "volume"
+
+	// IsolationRaft gives a tenant a dedicated Raft GROUP per database. Like
+	// IsolationVolume the tenant gets a dedicated filesystem DataRoot (from the
+	// volume pool) and a per-tenant barrier, but each database runs as its own
+	// Raft shard on the SHARED system Host: the shard's state-machine data is
+	// rooted under {DataRoot}/databases/{db} (encrypted under the tenant DEK)
+	// while the Raft log stays in the shared host LogDB. Requires the volume
+	// pool and the seal subsystem. This is the Phase-4 dedicated-raft mode.
+	// MVP: each group is a single local replica; multi-node auto-placement is a
+	// Phase-4c follow-on.
+	IsolationRaft IsolationType = "raft"
 )
 
 // TenantInfo holds tenant metadata persisted in the storage backend.
 type TenantInfo struct {
-	ID            string        `json:"id"`
-	Name          string        `json:"name"`
-	IsolationType IsolationType `json:"isolation_type,omitempty"`
-	Quotas        *quota.Quotas `json:"quotas,omitempty"`
-	CreatedAt     time.Time     `json:"created_at"`
-	UpdatedAt     time.Time     `json:"updated_at"`
+	ID            string              `json:"id"`
+	Name          string              `json:"name"`
+	IsolationType IsolationType       `json:"isolation_type,omitempty"`
+	Quotas        *quota.Quotas       `json:"quotas,omitempty"`
+	Entitlements  *quota.Entitlements `json:"entitlements,omitempty"`
+	// DataRoot is the dedicated filesystem root allocated from the volume
+	// pool for IsolationVolume tenants. It is the parent of the tenant's
+	// "barrier" (IAM Pebble) and "databases" (per-tenant Raft host state)
+	// subdirectories. Empty for prefix/barrier tenants.
+	DataRoot string `json:"data_root,omitempty"`
+	// BarrierAutoUnseal selects the dedicated-isolation tenant's barrier
+	// key-management mode. False (the secure default) means self-managed: the
+	// tenant admin initializes and unseals their own barrier, which comes up
+	// sealed after a restart. True means system-managed auto-unseal: the tenant
+	// root key is wrapped under the system barrier so the barrier is
+	// auto-initialized at create and re-attached credential-free at boot. Only
+	// meaningful for IsolationBarrier / IsolationVolume tenants.
+	BarrierAutoUnseal bool      `json:"barrier_auto_unseal,omitempty"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
+}
+
+// CreateTenantOption configures optional CreateTenant behavior. Options are
+// applied left to right; later options override earlier ones.
+type CreateTenantOption func(*createTenantConfig)
+
+// createTenantConfig accumulates the resolved CreateTenant options.
+type createTenantConfig struct {
+	// barrierAutoUnseal requests the system-managed auto-unseal key-management
+	// mode for a dedicated-isolation tenant. Default false (self-managed).
+	barrierAutoUnseal bool
+}
+
+// WithBarrierAutoUnseal selects the tenant's barrier key-management mode. Pass
+// true to opt into system-managed auto-unseal (entitlement-gated); the default
+// (false) is the secure self-managed mode where the tenant admin holds the
+// barrier key. Only meaningful for IsolationBarrier / IsolationVolume tenants.
+func WithBarrierAutoUnseal(autoUnseal bool) CreateTenantOption {
+	return func(c *createTenantConfig) { c.barrierAutoUnseal = autoUnseal }
+}
+
+// resolveCreateTenantOptions folds the variadic options into a config.
+func resolveCreateTenantOptions(opts []CreateTenantOption) createTenantConfig {
+	var cfg createTenantConfig
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
+	return cfg
 }
 
 // EffectiveIsolationType returns the tenant's isolation type, defaulting
@@ -94,8 +158,10 @@ type TenantServicer interface {
 	// CreateTenant creates a new tenant with the given ID, name, and
 	// isolation type. When isolationType is empty, IsolationPrefix is
 	// used (barrier isolation is opt-in). Registers barrier-isolated
-	// tenants in the barrier registry and persists metadata.
-	CreateTenant(ctx context.Context, id, name string, isolationType IsolationType) (*TenantInfo, error)
+	// tenants in the barrier registry and persists metadata. Optional
+	// CreateTenantOptions select the barrier key-management mode (see
+	// WithBarrierAutoUnseal); the default is self-managed.
+	CreateTenant(ctx context.Context, id, name string, isolationType IsolationType, opts ...CreateTenantOption) (*TenantInfo, error)
 
 	// GetTenant retrieves tenant metadata by ID.
 	GetTenant(ctx context.Context, tenantID string) (*TenantInfo, error)
@@ -116,6 +182,11 @@ type TenantServicer interface {
 	// UpdateQuotas updates the resource quotas for a tenant and
 	// persists the change to the metadata store.
 	UpdateQuotas(ctx context.Context, tenantID string, quotas *quota.Quotas) (*TenantInfo, error)
+
+	// UpdateEntitlements updates the feature entitlements for a tenant and
+	// persists the change to the metadata store. A nil entitlements pointer
+	// returns ErrNilEntitlements.
+	UpdateEntitlements(ctx context.Context, tenantID string, entitlements *quota.Entitlements) (*TenantInfo, error)
 
 	// IncrementQuotaUsage increments the current-usage counter for the given
 	// resource by delta (must be > 0) and persists the change. It returns
@@ -294,6 +365,8 @@ type TenantService struct {
 	distributor      seal.CeremonyDistributor
 	tenantCeremonies *ceremony.TenantCeremonyRegistry
 	ceremonyCA       ceremony.CeremonyCA
+	defaultQuotas    *quota.Quotas
+	defaultEnts      *quota.Entitlements
 	logger           *slog.Logger
 }
 
@@ -327,10 +400,25 @@ func WithTenantCeremonyCA(ca ceremony.CeremonyCA) TenantServiceOption {
 	return func(s *TenantService) { s.ceremonyCA = ca }
 }
 
+// WithDefaultQuotas injects the operator-configured default quotas applied to
+// tenants whose own Quotas are nil. When unset, a nil-quota tenant uses the
+// zero-value Quotas (all limits at system default).
+func WithDefaultQuotas(q *quota.Quotas) TenantServiceOption {
+	return func(s *TenantService) { s.defaultQuotas = q }
+}
+
+// WithDefaultEntitlements injects the operator-configured default entitlements
+// applied to tenants whose own Entitlements are nil. When unset, the
+// conservative built-in defaults (quota.DefaultEntitlements) are used.
+func WithDefaultEntitlements(e *quota.Entitlements) TenantServiceOption {
+	return func(s *TenantService) { s.defaultEnts = e }
+}
+
 // Compile-time interface checks.
 var (
-	_ TenantServicer      = (*TenantService)(nil)
-	_ quota.QuotaProvider = (*TenantService)(nil)
+	_ TenantServicer           = (*TenantService)(nil)
+	_ quota.QuotaProvider      = (*TenantService)(nil)
+	_ quota.EntitlementChecker = (*TenantService)(nil)
 )
 
 // NewTenantService creates a new TenantService. The store parameter is
@@ -369,7 +457,8 @@ func NewTenantService(
 // isolation is strictly opt-in). It validates inputs, checks for duplicates,
 // registers barrier-isolated tenants in the barrier registry with default
 // configuration, and persists metadata in the storage backend.
-func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isolationType IsolationType) (*TenantInfo, error) {
+func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isolationType IsolationType, opts ...CreateTenantOption) (*TenantInfo, error) {
+	cfg := resolveCreateTenantOptions(opts)
 	if id == "" {
 		return nil, ErrEmptyTenantID
 	}
@@ -389,7 +478,7 @@ func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isola
 	// barrier is still sealed. Reject barrier isolation for it. (External
 	// creation of the system tenant is already blocked by the reserved-id
 	// check above; this guards the internal-call bootstrap path too.)
-	if id == SystemTenantID && isolationType == IsolationBarrier {
+	if id == SystemTenantID && (isolationType == IsolationBarrier || isolationType == IsolationVolume || isolationType == IsolationRaft) {
 		return nil, ErrSystemTenantMustBePrefix
 	}
 
@@ -410,28 +499,103 @@ func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isola
 	// barrier-isolated tenant gets a durable, independent backend from the
 	// volume pool (RegisterTenantPooled) and is initialized immediately so
 	// its DEK exists; the barrier is unsealed and ready to serve IAM data.
-	if isolationType == IsolationBarrier {
-		if _, regErr := s.registry.RegisterTenantPooled(ctx, id); regErr != nil {
+	// A system-managed (auto-unseal) barrier is entitlement-gated: the plan
+	// must permit it explicitly. The secure default (self-managed) is always
+	// allowed for any dedicated-isolation tenant.
+	if cfg.barrierAutoUnseal && (isolationType == IsolationBarrier || isolationType == IsolationVolume || isolationType == IsolationRaft) {
+		if err := s.CheckFeature(ctx, id, quota.FeatureSystemManagedBarrier); err != nil {
+			return nil, err
+		}
+	}
+
+	var dataRoot string
+	switch isolationType {
+	case IsolationBarrier:
+		if err := s.registerDedicatedBarrier(ctx, id, cfg.barrierAutoUnseal); err != nil {
+			return nil, err
+		}
+	case IsolationVolume:
+		// Entitlement plane: the tenant's plan (or the operator defaults, since
+		// the metadata record does not exist yet) must permit volume isolation
+		// and dedicated volume storage.
+		if err := s.CheckIsolation(ctx, id, quota.IsolationModeVolume); err != nil {
+			return nil, err
+		}
+		if err := s.CheckFeature(ctx, id, quota.FeatureVolumeStorage); err != nil {
+			return nil, err
+		}
+		// Allocate the dedicated DataRoot from the volume pool and register the
+		// per-tenant barrier (rooted at {DataRoot}/barrier) so the volume is
+		// encrypted under the tenant's own DEK. For a system-managed tenant the
+		// DEK is wrapped under the (already-unsealed) system barrier and the
+		// barrier is initialized immediately so boot re-attach can unseal it
+		// credential-free. For a self-managed tenant the barrier is registered
+		// SEALED and left uninitialized: the tenant admin drives Initialize and
+		// Unseal, and the per-tenant Host builds lazily only after unseal.
+		root, _, regErr := s.registry.RegisterVolumeTenant(ctx, id, "", cfg.barrierAutoUnseal)
+		if regErr != nil {
 			if errors.Is(regErr, seal.ErrTenantAlreadyExists) {
 				return nil, ErrTenantAlreadyExists
 			}
-			return nil, &BarrierError{TenantID: id, Op: "register", Err: regErr}
+			return nil, &BarrierError{TenantID: id, Op: "register-volume", Err: regErr}
 		}
-		if initErr := s.registry.InitializeTenant(ctx, id, seal.Credentials{}); initErr != nil {
-			// Roll back the registration so a failed init does not leave a
-			// dangling, uninitialized barrier behind.
-			_ = s.registry.UnregisterTenant(id)
-			return nil, &BarrierError{TenantID: id, Op: "initialize", Err: initErr}
+		dataRoot = root
+		if cfg.barrierAutoUnseal {
+			if initErr := s.registry.InitializeTenant(ctx, id, seal.Credentials{}); initErr != nil {
+				_ = s.registry.UnregisterTenant(id)
+				return nil, &BarrierError{TenantID: id, Op: "initialize", Err: initErr}
+			}
+		}
+	case IsolationRaft:
+		// Entitlement plane: the tenant's plan (or operator defaults, since the
+		// metadata record does not exist yet) must permit raft isolation and the
+		// dedicated-raft feature.
+		if err := s.CheckIsolation(ctx, id, quota.IsolationModeRaft); err != nil {
+			return nil, err
+		}
+		if err := s.CheckFeature(ctx, id, quota.FeatureDedicatedRaft); err != nil {
+			return nil, err
+		}
+		// Allocate the dedicated DataRoot from the volume pool and register the
+		// per-tenant barrier exactly as for IsolationVolume (rooted at
+		// {DataRoot}/barrier) so each per-database raft shard's state-machine
+		// data is encrypted under the tenant's own DEK. The shards themselves run
+		// on the SHARED system Host (one shard per database) and are started by
+		// the server-layer RaftBackendFactory; only the barrier + DataRoot are
+		// provisioned here. System-managed vs self-managed key handling matches
+		// IsolationVolume.
+		root, _, regErr := s.registry.RegisterVolumeTenant(ctx, id, "", cfg.barrierAutoUnseal)
+		if regErr != nil {
+			if errors.Is(regErr, seal.ErrTenantAlreadyExists) {
+				return nil, ErrTenantAlreadyExists
+			}
+			return nil, &BarrierError{TenantID: id, Op: "register-raft", Err: regErr}
+		}
+		dataRoot = root
+		if cfg.barrierAutoUnseal {
+			if initErr := s.registry.InitializeTenant(ctx, id, seal.Credentials{}); initErr != nil {
+				_ = s.registry.UnregisterTenant(id)
+				return nil, &BarrierError{TenantID: id, Op: "initialize", Err: initErr}
+			}
 		}
 	}
 
 	now := time.Now().UTC()
 	info := &TenantInfo{
-		ID:            id,
-		Name:          name,
-		IsolationType: isolationType,
-		CreatedAt:     now,
-		UpdatedAt:     now,
+		ID:                id,
+		Name:              name,
+		IsolationType:     isolationType,
+		DataRoot:          dataRoot,
+		BarrierAutoUnseal: cfg.barrierAutoUnseal,
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}
+	// A volume tenant runs exactly one local Raft group (its per-tenant Host),
+	// shared by all of its databases. Record that one group in the usage
+	// counter so MaxRaftGroups accounting is accurate; the entitlement plane
+	// above is the gate for whether the tenant may use volume isolation at all.
+	if isolationType == IsolationVolume {
+		info.Quotas = &quota.Quotas{CurrentRaftGroups: 1}
 	}
 
 	data, err := json.Marshal(info)
@@ -453,6 +617,36 @@ func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isola
 		slog.String("isolation_type", string(isolationType)))
 
 	return info, nil
+}
+
+// registerDedicatedBarrier registers an IsolationBarrier tenant's per-tenant
+// barrier in the chosen key-management mode. For a system-managed (auto-unseal)
+// tenant the DEK is wrapped under the system barrier and the barrier is
+// initialized immediately so it is unsealed and ready and re-attaches
+// credential-free at boot. For a self-managed tenant the barrier is registered
+// SEALED and left uninitialized; the tenant admin drives Initialize/Unseal via
+// the TenantBarrier* endpoints. Registration is rolled back on a failed init so
+// no dangling, uninitialized barrier is left behind.
+func (s *TenantService) registerDedicatedBarrier(ctx context.Context, id string, autoUnseal bool) error {
+	register := s.registry.RegisterTenantPooled
+	if autoUnseal {
+		register = s.registry.RegisterTenantPooledSystemManaged
+	}
+	if _, regErr := register(ctx, id); regErr != nil {
+		if errors.Is(regErr, seal.ErrTenantAlreadyExists) {
+			return ErrTenantAlreadyExists
+		}
+		return &BarrierError{TenantID: id, Op: "register", Err: regErr}
+	}
+	if !autoUnseal {
+		// Self-managed: leave the barrier sealed for the tenant admin.
+		return nil
+	}
+	if initErr := s.registry.InitializeTenant(ctx, id, seal.Credentials{}); initErr != nil {
+		_ = s.registry.UnregisterTenant(id)
+		return &BarrierError{TenantID: id, Op: "initialize", Err: initErr}
+	}
+	return nil
 }
 
 // UpdateTenant applies a partial update to an existing tenant. Non-empty
@@ -515,6 +709,66 @@ func (s *TenantService) GetTenant(ctx context.Context, tenantID string) (*Tenant
 	}
 
 	return &info, nil
+}
+
+// MigrateMetadata copies tenant metadata records from src into dst for any
+// tenant ID not already present in dst. It is a one-time, idempotent
+// compatibility shim for deployments whose TenantInfo records were persisted
+// to a node-local seal store before tenant metadata moved onto the replicated
+// system shard (see the tenant-store wiring in the lifecycle package). Records
+// already present in dst are left untouched. Per-record destination errors are
+// logged and skipped so a transient backend issue (e.g. no elected leader yet)
+// never aborts boot — the next boot retries because the record is still absent
+// from dst. It returns the number of records copied into dst.
+//
+// On a freshly initialized cluster src holds no tenant metadata and this is a
+// no-op.
+func MigrateMetadata(ctx context.Context, src, dst seal.StorageBackend, logger *slog.Logger) (int, error) {
+	if src == nil || dst == nil {
+		return 0, ErrNilStore
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+
+	keys, err := src.List(ctx, metadataPrefix)
+	if err != nil {
+		return 0, &StoreError{Op: "migrate-list", Err: err}
+	}
+
+	migrated := 0
+	for _, key := range keys {
+		data, err := src.Get(ctx, key)
+		if err != nil {
+			if errors.Is(err, seal.ErrSecretNotFound) {
+				continue
+			}
+			logger.Warn("tenant metadata migration: source record unreadable; skipping",
+				slog.String("key", key), slog.String("error", err.Error()))
+			continue
+		}
+
+		// Skip records already present in the destination.
+		if _, derr := dst.Get(ctx, key); derr == nil {
+			continue
+		} else if !errors.Is(derr, seal.ErrSecretNotFound) {
+			logger.Warn("tenant metadata migration: destination read failed; skipping",
+				slog.String("key", key), slog.String("error", derr.Error()))
+			continue
+		}
+
+		if perr := dst.Put(ctx, key, data); perr != nil {
+			logger.Warn("tenant metadata migration: destination write failed; skipping",
+				slog.String("key", key), slog.String("error", perr.Error()))
+			continue
+		}
+
+		migrated++
+		logger.Info("tenant metadata migrated to replicated store",
+			slog.String("key", key))
+	}
+
+	return migrated, nil
 }
 
 // ListTenants returns metadata for all registered tenants by scanning
@@ -622,18 +876,117 @@ func (s *TenantService) UpdateQuotas(ctx context.Context, tenantID string, quota
 	return info, nil
 }
 
+// UpdateEntitlements updates the feature entitlements for a tenant and persists
+// the change to the metadata store. The tenant must exist; a nil entitlements
+// pointer returns ErrNilEntitlements.
+func (s *TenantService) UpdateEntitlements(ctx context.Context, tenantID string, entitlements *quota.Entitlements) (*TenantInfo, error) {
+	if tenantID == "" {
+		return nil, ErrEmptyTenantID
+	}
+	if entitlements == nil {
+		return nil, ErrNilEntitlements
+	}
+
+	info, err := s.GetTenant(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+
+	info.Entitlements = entitlements
+	info.UpdatedAt = time.Now().UTC()
+
+	data, err := json.Marshal(info)
+	if err != nil {
+		return nil, &StoreError{Op: "marshal", Err: err}
+	}
+
+	key := metadataPrefix + tenantID
+	if err := s.store.Put(ctx, key, data); err != nil {
+		return nil, &StoreError{Op: "put", Err: err}
+	}
+
+	s.logger.Info("tenant entitlements updated", slog.String("tenant_id", tenantID))
+
+	return info, nil
+}
+
 // Quotas returns the resource limits configured for the given tenant.
-// When the tenant has no quotas configured, a zero-value Quotas is
-// returned (all limits at system default). Implements quota.QuotaProvider.
+// When the tenant has no quotas configured, the operator-configured default
+// quotas are returned, or a zero-value Quotas (all limits at system default)
+// when no defaults are configured. Implements quota.QuotaProvider.
 func (s *TenantService) Quotas(ctx context.Context, tenantID string) (*quota.Quotas, error) {
 	info, err := s.GetTenant(ctx, tenantID)
 	if err != nil {
 		return nil, err
 	}
-	if info.Quotas == nil {
-		return &quota.Quotas{}, nil
+	if info.Quotas != nil {
+		return info.Quotas, nil
 	}
-	return info.Quotas, nil
+	if s.defaultQuotas != nil {
+		return s.defaultQuotas, nil
+	}
+	return &quota.Quotas{}, nil
+}
+
+// effectiveEntitlements returns the entitlements in force for the tenant: its
+// own Entitlements when set, otherwise the operator-configured defaults, and
+// finally the conservative built-in defaults (prefix-only) when neither is set.
+func (s *TenantService) effectiveEntitlements(ctx context.Context, tenantID string) (*quota.Entitlements, error) {
+	info, err := s.GetTenant(ctx, tenantID)
+	if err != nil {
+		// A not-yet-provisioned tenant has the configured defaults. This lets
+		// CreateTenant gate the requested isolation mode against the operator's
+		// default entitlements before the metadata record exists, instead of
+		// surfacing the lookup miss as an error.
+		if errors.Is(err, ErrTenantNotFound) {
+			if s.defaultEnts != nil {
+				return s.defaultEnts, nil
+			}
+			return quota.DefaultEntitlements(), nil
+		}
+		return nil, err
+	}
+	if info.Entitlements != nil {
+		return info.Entitlements, nil
+	}
+	if s.defaultEnts != nil {
+		return s.defaultEnts, nil
+	}
+	return quota.DefaultEntitlements(), nil
+}
+
+// CheckIsolation returns nil if the tenant is entitled to the given isolation
+// mode, or a *quota.EntitlementError otherwise. The system tenant is implicitly
+// entitled to every mode. Implements quota.EntitlementChecker.
+func (s *TenantService) CheckIsolation(ctx context.Context, tenantID, mode string) error {
+	if tenantID == SystemTenantID {
+		return nil
+	}
+	ents, err := s.effectiveEntitlements(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	if ents.AllowsIsolation(mode) {
+		return nil
+	}
+	return &quota.EntitlementError{TenantID: tenantID, Mode: mode}
+}
+
+// CheckFeature returns nil if the tenant is entitled to the named feature, or a
+// *quota.EntitlementError otherwise. The system tenant is implicitly entitled
+// to every feature. Implements quota.EntitlementChecker.
+func (s *TenantService) CheckFeature(ctx context.Context, tenantID, feature string) error {
+	if tenantID == SystemTenantID {
+		return nil
+	}
+	ents, err := s.effectiveEntitlements(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	if ents.AllowsFeature(feature) {
+		return nil
+	}
+	return &quota.EntitlementError{TenantID: tenantID, Feature: feature}
 }
 
 // IncrementQuotaUsage increments the current-usage counter for the given
@@ -733,6 +1086,46 @@ func (s *TenantService) DecrementQuotaUsage(ctx context.Context, tenantID string
 		slog.String("resource", resource.String()),
 		slog.Int64("delta", delta),
 		slog.Int64("current", next))
+	return info, nil
+}
+
+// SetQuotaUsage overwrites the current-usage counter for the given resource to
+// the supplied absolute value and persists the change. Unlike
+// IncrementQuotaUsage it does NOT enforce the configured limit, so the true
+// usage can be recorded even when it exceeds the limit (subsequent writes are
+// then blocked by enforcement). It is used by the storage-quota reconciler to
+// correct drift from the in-memory accumulator. Negative values are clamped to
+// zero.
+func (s *TenantService) SetQuotaUsage(ctx context.Context, tenantID string, resource quota.Resource, value int64) (*TenantInfo, error) {
+	if tenantID == "" {
+		return nil, ErrEmptyTenantID
+	}
+	if value < 0 {
+		value = 0
+	}
+	info, err := s.GetTenant(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	if info.Quotas == nil {
+		info.Quotas = &quota.Quotas{}
+	}
+	if err := info.Quotas.SetCurrentUsage(resource, value); err != nil {
+		return nil, &StoreError{Op: "set-quota-usage", Err: err}
+	}
+	info.UpdatedAt = time.Now().UTC()
+	data, err := json.Marshal(info)
+	if err != nil {
+		return nil, &StoreError{Op: "marshal", Err: err}
+	}
+	key := metadataPrefix + tenantID
+	if err := s.store.Put(ctx, key, data); err != nil {
+		return nil, &StoreError{Op: "put", Err: err}
+	}
+	s.logger.Debug("quota usage set",
+		slog.String("tenant_id", tenantID),
+		slog.String("resource", resource.String()),
+		slog.Int64("value", value))
 	return info, nil
 }
 
@@ -850,7 +1243,7 @@ func (s *TenantService) TenantBarrierInitWithStrategy(
 	// Credentials struct is empty (the strategy's KEK handles wrapping).
 	creds := seal.Credentials{}
 	if seal.IsPassphraseStrategy(strategyID) {
-		creds.Secret = passphrase
+		creds.Secret = []byte(passphrase)
 	}
 
 	// Register a sealed shell when the tenant barrier is not yet
@@ -1014,7 +1407,7 @@ func (s *TenantService) TenantBarrierUnseal(ctx context.Context, tenantID string
 		return err
 	}
 
-	creds := seal.Credentials{Secret: string(key)}
+	creds := seal.Credentials{Secret: key}
 
 	if err := s.registry.UnsealTenant(ctx, tenantID, creds); err != nil {
 		return &BarrierError{TenantID: tenantID, Op: "unseal", Err: err}
@@ -1131,10 +1524,15 @@ func (s *TenantService) TenantBarrierStatus(ctx context.Context, tenantID string
 		}, nil
 	}
 
+	// A registered barrier may be initialized (auto-unseal/system-managed, or a
+	// self-managed barrier the tenant admin has initialized) or registered but
+	// not yet initialized (a fresh self-managed barrier). InitializedAt is the
+	// authoritative signal: it is persisted at Initialize time and recovered on
+	// a warm boot, so it stays non-zero even while the barrier is sealed.
 	return &TenantBarrierStatus{
 		TenantID:        tenantID,
 		Sealed:          st.Sealed,
-		Initialized:     true,
+		Initialized:     !st.InitializedAt.IsZero(),
 		Strategy:        string(st.Strategy),
 		HardwareBacked:  st.HardwareBacked,
 		ShamirThreshold: st.ShamirThreshold,

@@ -72,12 +72,18 @@ type Server struct {
 	authFactorSvc     service.AuthFactorServicer
 	userAuthFactorSvc service.UserAuthFactorServicer
 	auditLogger       audit.AuditLogger
-	addr              string
-	tlsConfig         *tls.Config
-	authMW            *authmw.AuthMiddleware
-	mcpSrv            *mcpserver.MCPServer
-	httpSrv           *http.Server
-	listener          net.Listener
+	// registry, when set, resolves data-plane services per (tenant, database)
+	// scope. The tenant comes from the authenticated identity; the database
+	// from the optional "database" tool argument. When nil, the singleton
+	// service fields are used, preserving single-database and embedded
+	// deployments.
+	registry  service.Registry
+	addr      string
+	tlsConfig *tls.Config
+	authMW    *authmw.AuthMiddleware
+	mcpSrv    *mcpserver.MCPServer
+	httpSrv   *http.Server
+	listener  net.Listener
 }
 
 // ServerOption configures optional Server dependencies.
@@ -286,6 +292,16 @@ func WithAuditLogger(l audit.AuditLogger) ServerOption {
 	return func(s *Server) { s.auditLogger = l }
 }
 
+// WithServiceRegistry configures the MCP server with a per-(tenant, database)
+// service registry. When set, data-plane tool handlers resolve their servicer
+// from the registry using the authenticated tenant and the optional "database"
+// tool argument; when nil they use the singleton service fields. This gives the
+// MCP transport the same per-database keyspace isolation as the REST, gRPC,
+// QUIC, and Unix transports.
+func WithServiceRegistry(reg service.Registry) ServerOption {
+	return func(s *Server) { s.registry = reg }
+}
+
 // WithKVService registers KV tools on the MCP server. This is an alternative
 // to passing kvSvc as a positional parameter and is useful when constructing
 // a server that handles only barrier, cert, or auth services.
@@ -323,6 +339,11 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	}
 	if s.authMW != nil {
 		mcpOpts = append(mcpOpts, mcpserver.WithToolHandlerMiddleware(s.toolAuthzMiddleware()))
+	}
+	if s.registry != nil {
+		// Bind the registry and the request's database scope into the per-call
+		// context so data-plane tool handlers resolve per (tenant, database).
+		mcpOpts = append(mcpOpts, mcpserver.WithToolHandlerMiddleware(s.databaseScopeMiddleware()))
 	}
 	s.mcpSrv = mcpserver.NewMCPServer(
 		"qrdb",

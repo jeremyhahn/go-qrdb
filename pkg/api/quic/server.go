@@ -82,6 +82,12 @@ type Server struct {
 	authMW            *authmw.AuthMiddleware
 	auditLogger       audit.AuditLogger
 
+	// registry, when set, resolves data-plane services per (tenant, database)
+	// scope. The tenant comes from the authenticated identity; the database
+	// from the request frame's database field. When nil, the singleton service
+	// fields are used, preserving single-database and embedded deployments.
+	registry service.Registry
+
 	addr      string
 	tlsConfig *tls.Config
 	listener  *quicgo.Listener
@@ -241,6 +247,16 @@ func WithAuthMiddleware(mw *authmw.AuthMiddleware) ServerOption {
 	return func(s *Server) { s.authMW = mw }
 }
 
+// WithServiceRegistry configures the QUIC server with a per-(tenant, database)
+// service registry. When set, data-plane handlers resolve their servicer from
+// the registry using the authenticated tenant and the database field carried
+// in the request frame; when nil they use the singleton service fields. This
+// gives the native QUIC transport the same per-database keyspace isolation as
+// the REST, gRPC, and Unix transports.
+func WithServiceRegistry(reg service.Registry) ServerOption {
+	return func(s *Server) { s.registry = reg }
+}
+
 // WithKVService configures the QUIC server with a KV service. This is an
 // alternative to passing kvSvc as a positional parameter and is useful when
 // constructing a server that handles only barrier, cert, or auth services.
@@ -384,7 +400,7 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 		}
 	}()
 
-	method, requestID, payload, err := wire.ReadRequest(stream)
+	method, database, requestID, payload, err := wire.ReadRequest(stream)
 	if err != nil {
 		slog.Debug("quic: failed to read request", "error", err)
 		return
@@ -392,9 +408,14 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 
 	start := time.Now()
 
-	// Build context with connection state for auth.
+	// Build context with connection state for auth and the database scope for
+	// per-(tenant, database) service resolution. The tenant dimension flows
+	// separately from the authenticated identity (set during authenticate);
+	// only the database is sourced from the request frame. An empty database
+	// resolves to the implicit bootstrap database.
 	ctx := context.Background()
 	ctx = withConnectionState(ctx, conn)
+	ctx = tenant.WithDatabase(ctx, database)
 
 	// Auth: authenticate and authorize if middleware is configured.
 	if s.authMW != nil {

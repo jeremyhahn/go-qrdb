@@ -17,36 +17,10 @@ package rest
 import "github.com/jeremyhahn/go-qrdb/pkg/service"
 
 // ServiceRegistry resolves per-(tenant, database) service instances for
-// data-plane request routing. Each method returns the service scoped to
-// the given (tenant, db) pair, or a typed error when the tenant or
-// database does not exist.
+// data-plane request routing. It is the REST-package alias of the
+// transport-neutral service.Registry so that the same registry implementation
+// is shared by every API protocol (REST, gRPC, Unix, QUIC, MCP) without
+// duplicating the namespace/resolve logic.
 //
 // Implementations must be safe for concurrent use.
-type ServiceRegistry interface {
-	// KVService returns the KVServicer for the given (tenant, db) scope.
-	KVService(tenant, db string) (service.KVServicer, error)
-
-	// MVCCService returns the MVCCKVServicer for the given scope.
-	MVCCService(tenant, db string) (service.MVCCKVServicer, error)
-
-	// WatchService returns the WatchServicer for the given scope.
-	WatchService(tenant, db string) (service.WatchServicer, error)
-
-	// LeaseService returns the LeaseServicer for the given scope.
-	LeaseService(tenant, db string) (service.LeaseServicer, error)
-
-	// IndexService returns the IndexServicer for the given scope.
-	IndexService(tenant, db string) (service.IndexServicer, error)
-
-	// TimeSeriesService returns the TimeSeriesServicer for the given scope.
-	TimeSeriesService(tenant, db string) (service.TimeSeriesServicer, error)
-
-	// VectorService returns the VectorServicer for the given scope.
-	VectorService(tenant, db string) (service.VectorServicer, error)
-
-	// TransactionService returns the TransactionServicer for the given scope.
-	TransactionService(tenant, db string) (service.TransactionServicer, error)
-
-	// BatchService returns the BatchServicer for the given scope.
-	BatchService(tenant, db string) (service.BatchServicer, error)
-}
+type ServiceRegistry = service.Registry

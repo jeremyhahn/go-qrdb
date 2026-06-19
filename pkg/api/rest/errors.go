@@ -14,6 +14,8 @@
 
 package rest
 
+import "github.com/jeremyhahn/go-qrdb/pkg/service"
+
 // StartError is returned when the REST HTTP server fails to start
 // listening on the configured address.
 type StartError struct {
@@ -290,38 +292,25 @@ func (e *SQLQueryError) Unwrap() error {
 }
 
 // TenantNotFoundError is returned when the tenant ID from the authenticated
-// identity does not match any provisioned tenant. Maps to HTTP 404.
-type TenantNotFoundError struct {
-	TenantID string
-}
-
-// Error returns a human-readable description.
-func (e *TenantNotFoundError) Error() string {
-	return "rest: tenant not found: " + e.TenantID
-}
+// identity does not match any provisioned tenant. Maps to HTTP 404. It is an
+// alias of the transport-neutral service.TenantNotFoundError so the shared
+// registry implementation can be consumed by every protocol.
+type TenantNotFoundError = service.TenantNotFoundError
 
 // DatabaseNotFoundError is returned when the database name from
 // X-QRDB-Database does not exist within the resolved tenant. Maps to HTTP 404.
-type DatabaseNotFoundError struct {
-	TenantID string
-	Database string
-}
-
-// Error returns a human-readable description.
-func (e *DatabaseNotFoundError) Error() string {
-	return "rest: database not found: " + e.Database + " (tenant: " + e.TenantID + ")"
-}
+// Alias of service.DatabaseNotFoundError.
+type DatabaseNotFoundError = service.DatabaseNotFoundError
 
 // BarrierSealedError is returned when the tenant's active barrier is sealed,
-// preventing data-plane access. Maps to HTTP 503.
-type BarrierSealedError struct {
-	TenantID string
-}
+// preventing data-plane access. Maps to HTTP 503. Alias of
+// service.BarrierSealedError.
+type BarrierSealedError = service.BarrierSealedError
 
-// Error returns a human-readable description.
-func (e *BarrierSealedError) Error() string {
-	return "rest: barrier sealed for tenant: " + e.TenantID
-}
+// IsolationBackendUnavailableError is returned when a tenant's isolation mode
+// requires a dedicated storage backend that is not wired into this server.
+// Maps to HTTP 503. Alias of service.IsolationBackendUnavailableError.
+type IsolationBackendUnavailableError = service.IsolationBackendUnavailableError
 
 // ValidationError is returned when a required field is absent or invalid in
 // the request payload. Maps to HTTP 400.

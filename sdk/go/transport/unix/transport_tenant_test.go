@@ -43,7 +43,7 @@ type mockTenantBarrierSvc struct {
 }
 
 // CreateTenant is unused by the barrier transport tests.
-func (m *mockTenantBarrierSvc) CreateTenant(_ context.Context, _, _ string, _ tenantpkg.IsolationType) (*tenantpkg.TenantInfo, error) {
+func (m *mockTenantBarrierSvc) CreateTenant(_ context.Context, _, _ string, _ tenantpkg.IsolationType, _ ...tenantpkg.CreateTenantOption) (*tenantpkg.TenantInfo, error) {
 	return nil, nil
 }
 func (m *mockTenantBarrierSvc) GetTenant(_ context.Context, _ string) (*tenantpkg.TenantInfo, error) {
@@ -58,6 +58,10 @@ func (m *mockTenantBarrierSvc) UpdateTenant(_ context.Context, _ string, _ tenan
 }
 func (m *mockTenantBarrierSvc) UpdateQuotas(_ context.Context, _ string, _ *quota.Quotas) (*tenantpkg.TenantInfo, error) {
 	return nil, nil
+}
+
+func (m *mockTenantBarrierSvc) UpdateEntitlements(ctx context.Context, id string, e *quota.Entitlements) (*tenantpkg.TenantInfo, error) {
+	return &tenantpkg.TenantInfo{ID: id, Entitlements: e}, nil
 }
 
 // TenantBarrierInit dispatches to initFn or returns nil.

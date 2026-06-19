@@ -28,7 +28,7 @@ func (b *StorageBarrier) ChangePassword(ctx context.Context, newCreds Credential
 		return ErrSealed
 	}
 
-	if newCreds.Secret == "" {
+	if len(newCreds.Secret) == 0 {
 		return ErrInvalidPassphrase
 	}
 

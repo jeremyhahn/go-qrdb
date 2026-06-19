@@ -345,6 +345,36 @@ func TestHandleRange_Success(t *testing.T) {
 	}
 }
 
+// TestHandleRange_RejectsEmptyStart is the defense-in-depth guard for finding
+// C-1: an absent range start denotes the start of the shared store, scanning
+// across the (tenant, db) namespace boundary, so handleRange must reject it.
+func TestHandleRange_RejectsEmptyStart(t *testing.T) {
+	called := false
+	mvccSvc := &mockMVCCKVService{
+		rangeFn: func(_ context.Context, _, _ []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
+			called = true
+			return nil, 0, nil
+		},
+	}
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithMVCC(mvccSvc))
+	ctx := context.Background()
+
+	for _, start := range [][]byte{nil, {}} {
+		payload, err := proto.Marshal(&pb.RangeRequest{Start: start, End: []byte("z")})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		_, err = srv.handleRange(ctx, payload)
+		var iae *InvalidArgumentError
+		if !errors.As(err, &iae) {
+			t.Fatalf("handleRange empty start err = %v, want *InvalidArgumentError", err)
+		}
+	}
+	if called {
+		t.Fatal("rejected Range must not reach the MVCC service")
+	}
+}
+
 func TestHandleRange_WithOptions(t *testing.T) {
 	var capturedOpts bool
 	mvccSvc := &mockMVCCKVService{

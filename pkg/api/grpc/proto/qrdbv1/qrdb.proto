@@ -572,6 +572,9 @@ service QRDBService {
     // TenantUpdateQuotas sets the resource quotas for a tenant.
     rpc TenantUpdateQuotas(TenantUpdateQuotasRequest) returns (TenantResponse);
 
+    // TenantUpdateEntitlements sets the feature entitlements for a tenant.
+    rpc TenantUpdateEntitlements(TenantUpdateEntitlementsRequest) returns (TenantResponse);
+
     // -----------------------------------------------------------------------
     // Credential operations
     // -----------------------------------------------------------------------
@@ -2129,6 +2132,10 @@ message DatabaseCreateRequest {
     string data_dir = 4;
     DatabaseProtocolConfig protocol = 5;
     DatabaseRaftConfig raft = 6;
+    // replicas is the requested replication factor for a dedicated-raft
+    // database. Meaningful only for raft-backed databases; ignored otherwise.
+    // Unset (0) defaults to 1 replica.
+    uint32 replicas = 7;
 }
 
 // DatabaseGetRequest retrieves information about a specific database.
@@ -2160,6 +2167,9 @@ message DatabaseInfoResponse {
     DatabaseBarrierConfig barrier = 10;
     DatabaseConnectionConfig connection = 11;
     string tenant_id = 12;
+    // replicas is the replication factor of a dedicated-raft database. Zero for
+    // non-raft databases.
+    uint32 replicas = 13;
 }
 
 // DatabaseProtocolConfig holds wire protocol settings for a database.
@@ -2603,6 +2613,23 @@ message TenantQuotas {
     int64 max_backups       = 9;
     int64 max_vector_dims   = 10;
     int64 max_ts_metrics    = 11;
+    int64 max_database_size_bytes = 12;
+    // max_replicas_per_group caps the replication factor of any single
+    // dedicated-raft database. max_total_replicas caps the aggregate replicas a
+    // tenant may hold across all of its raft groups. -1 = unlimited; 0 = default.
+    int64 max_replicas_per_group = 13;
+    int64 max_total_replicas = 14;
+}
+
+// TenantEntitlements describes which isolation tiers and dedicated-storage
+// features a tenant's plan permits.
+message TenantEntitlements {
+    repeated string allowed_isolation_modes = 1;
+    bool allow_dedicated_raft               = 2;
+    bool allow_volume_storage               = 3;
+    // allow_system_managed_barrier permits a tenant to opt into the
+    // system-managed auto-unseal key-management mode for its dedicated barrier.
+    bool allow_system_managed_barrier       = 4;
 }
 
 // TenantResponse is the shared response shape for tenant CRUD operations.
@@ -2613,6 +2640,7 @@ message TenantResponse {
     TenantQuotas quotas         = 4;
     string       created_at     = 5;
     string       updated_at     = 6;
+    TenantEntitlements entitlements = 7;
 }
 
 // TenantCreateRequest creates a new tenant.
@@ -2620,6 +2648,10 @@ message TenantCreateRequest {
     string id             = 1;
     string name           = 2;
     string isolation_type = 3;
+    // barrier_auto_unseal opts a dedicated-isolation tenant (barrier/volume)
+    // into the system-managed auto-unseal key-management mode. The default
+    // (false) is the secure self-managed mode. Entitlement-gated.
+    bool barrier_auto_unseal = 4;
 }
 
 // TenantGetRequest retrieves a tenant by ID.
@@ -2648,6 +2680,12 @@ message TenantDeleteRequest {
 message TenantUpdateQuotasRequest {
     string       id     = 1;
     TenantQuotas quotas = 2;
+}
+
+// TenantUpdateEntitlementsRequest sets the feature entitlements for a tenant.
+message TenantUpdateEntitlementsRequest {
+    string             id           = 1;
+    TenantEntitlements entitlements = 2;
 }
 
 // ===========================================================================

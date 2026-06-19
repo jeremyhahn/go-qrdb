@@ -82,7 +82,7 @@ func newTestBarrier(t *testing.T) (
 	// Initialize transitions the barrier to the unsealed state directly.
 	// A subsequent Unseal call is not needed and would return ErrAlreadyUnsealed.
 	ctx := context.Background()
-	if err := b.Initialize(ctx, seal.Credentials{Secret: string(passphrase)}); err != nil {
+	if err := b.Initialize(ctx, seal.Credentials{Secret: []byte(passphrase)}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 
@@ -288,12 +288,16 @@ func TestBuildServices_WithBarrierRegistry_InstallsRoutingServices(t *testing.T)
 
 	ctx := context.Background()
 
-	// Create a barrier-isolated tenant. This registers and initializes the
-	// tenant's own (unsealed) barrier via the registry, so the resolver can
-	// route the tenant's IAM data to that barrier-backed store.
+	// Create a barrier-isolated tenant. Under the self-managed default the
+	// barrier is registered SEALED; initialize it (the tenant-admin step) so it
+	// is unsealed and the resolver can route the tenant's IAM data to that
+	// barrier-backed store.
 	const barrierTenant = "secure-tenant"
 	if _, err := node.Tenant.CreateTenant(ctx, barrierTenant, "Secure Tenant", tenant.IsolationBarrier); err != nil {
 		t.Fatalf("CreateTenant(barrier): %v", err)
+	}
+	if err := registry.InitializeTenant(ctx, barrierTenant, seal.Credentials{}); err != nil {
+		t.Fatalf("InitializeTenant(barrier): %v", err)
 	}
 
 	// Write a user into the barrier tenant. The routing decorator must send

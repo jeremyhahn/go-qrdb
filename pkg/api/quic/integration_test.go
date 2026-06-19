@@ -183,7 +183,7 @@ func roundTrip(
 	}
 	defer func() { _ = stream.Close() }()
 
-	if err := wire.WriteRequest(stream, method, requestID, payload); err != nil {
+	if err := wire.WriteRequest(stream, method, "", requestID, payload); err != nil {
 		t.Fatalf("write request: %v", err)
 	}
 
@@ -468,7 +468,7 @@ func TestIntegration_MultipleStreams(t *testing.T) {
 			}
 			defer func() { _ = stream.Close() }()
 
-			if err := wire.WriteRequest(stream, "kv.Put", uint64(idx+1), payload); err != nil {
+			if err := wire.WriteRequest(stream, "kv.Put", "", uint64(idx+1), payload); err != nil {
 				t.Errorf("stream %d: write: %v", idx, err)
 				return
 			}

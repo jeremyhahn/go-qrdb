@@ -41,6 +41,16 @@ filesystem level.
 Database names must match `^[a-zA-Z0-9_-]+$` (alphanumeric characters,
 hyphens, and underscores only).
 
+A request selects its database with the `X-QRDB-Database` header (REST), the
+`x-qrdb-database` gRPC/Unix metadata key, the QUIC envelope `database` field, or
+the MCP `database` tool argument; the Go/TypeScript SDKs expose
+`client.DatabaseScoped(name)` / `client.databaseScoped(name)`. When no scope is
+supplied, the request resolves to the implicit bootstrap database `system`
+(`tenant.DefaultDatabase`). The **tenant**, by contrast, is never client-supplied
+— it comes from the authenticated identity. See [scoping.md](../scoping.md) for
+the request-time scoping model and [multi-tenancy.md](../multi-tenancy.md) for the
+per-tenant isolation ladder, quotas, and entitlements.
+
 ---
 
 ## Engine Types
@@ -262,6 +272,16 @@ The `qrdb database` command group manages databases from the command line.
 
 ```bash
 qrdb database create <name> --engine kv --backend pebble
+```
+
+Create a dedicated-Raft database with a replication factor. `--replicas` applies
+to the `raft` backend only and defaults to `1`; a higher value is validated
+against the tenant's `MaxReplicasPerGroup` / `MaxTotalReplicas` quota and clamped
+to the live cluster size (multi-node replication of tenant raft groups is in
+development — see [multi-tenancy.md](../multi-tenancy.md)):
+
+```bash
+qrdb database create payments --engine kv --backend raft --replicas 3
 ```
 
 Create with etcd protocol enabled:
@@ -535,6 +555,23 @@ Databases with barrier encryption enabled follow a seal/unseal lifecycle:
 4. **Drop** -- When a database is dropped, its DEK is deleted
    (via `DeleteDatabaseDEK`) and all encrypted data is removed.
 
+### Per-tenant barrier key management
+
+For multi-tenant deployments, a tenant that uses a **dedicated** isolation mode
+(`barrier` or `volume`) chooses how its encryption barrier's key is managed:
+
+- **Self-managed** (default) -- the tenant admin initializes and unseals the
+  barrier; it comes up sealed after every restart, and neither the operator nor
+  the system holds the tenant key.
+- **System-managed auto-unseal** (opt-in, entitlement-gated) -- the tenant root
+  key is wrapped under the system barrier so the barrier auto-unseals at boot
+  with no credential.
+
+The mode is selected at tenant creation (`barrier_auto_unseal`) and the opt-in
+mode is gated by the `allow_system_managed_barrier` entitlement. See
+[seal/multi-tenant.md → Tenant barrier key management](../seal/multi-tenant.md#tenant-barrier-key-management)
+for the full trade-offs, lifecycle, and CLI/SDK/REST examples.
+
 ---
 
 ## Migration
@@ -642,3 +679,5 @@ with `atomic.Value` (values: `open`, `closed`, `error`).
 - [Architecture Overview](../01-architecture.md)
 - [Configuration Reference](../12-configuration.md)
 - [API Reference](../api.md)
+- [Tenant & Database Scoping](../scoping.md)
+- [Multi-Tenancy: Isolation, Quotas & Entitlements](../multi-tenancy.md)

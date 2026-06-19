@@ -32,8 +32,8 @@ func TestConfig_DefaultConfig_HasDefaultDatabase(t *testing.T) {
 	}
 
 	db := cfg.Databases[0]
-	if db.Name != "default" {
-		t.Errorf("Databases[0].Name: got %q, want %q", db.Name, "default")
+	if db.Name != "system" {
+		t.Errorf("Databases[0].Name: got %q, want %q", db.Name, "system")
 	}
 	if db.Engine != "kv" {
 		t.Errorf("Databases[0].Engine: got %q, want %q", db.Engine, "kv")
@@ -272,8 +272,8 @@ tls:
 	}
 
 	db := cfg.Databases[0]
-	if db.Name != "default" {
-		t.Errorf("Databases[0].Name: got %q, want %q", db.Name, "default")
+	if db.Name != "system" {
+		t.Errorf("Databases[0].Name: got %q, want %q", db.Name, "system")
 	}
 	if db.Engine != "kv" {
 		t.Errorf("Databases[0].Engine: got %q, want %q", db.Engine, "kv")
@@ -314,8 +314,8 @@ databases: []
 	}
 
 	db := cfg.Databases[0]
-	if db.Name != "default" {
-		t.Errorf("Databases[0].Name: got %q, want %q", db.Name, "default")
+	if db.Name != "system" {
+		t.Errorf("Databases[0].Name: got %q, want %q", db.Name, "system")
 	}
 	if db.Engine != "kv" {
 		t.Errorf("Databases[0].Engine: got %q, want %q", db.Engine, "kv")

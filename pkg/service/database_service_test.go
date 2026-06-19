@@ -688,3 +688,158 @@ func TestDatabaseService_CreateForTenant_QuotaPasses(t *testing.T) {
 		t.Errorf("quota.Check() resource = %v, want ResourceDatabases", checkedResource)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Entitlement + raft-group quota enforcement tests
+// ---------------------------------------------------------------------------
+
+// mockEntitlementChecker is a test double for quota.EntitlementChecker.
+type mockEntitlementChecker struct {
+	isolationFn func(ctx context.Context, tenantID, mode string) error
+	featureFn   func(ctx context.Context, tenantID, feature string) error
+}
+
+func (m *mockEntitlementChecker) CheckIsolation(ctx context.Context, tenantID, mode string) error {
+	if m.isolationFn != nil {
+		return m.isolationFn(ctx, tenantID, mode)
+	}
+	return nil
+}
+
+func (m *mockEntitlementChecker) CheckFeature(ctx context.Context, tenantID, feature string) error {
+	if m.featureFn != nil {
+		return m.featureFn(ctx, tenantID, feature)
+	}
+	return nil
+}
+
+func raftDBConfig(name string) database.DatabaseConfig {
+	cfg := testDBConfig(name)
+	cfg.Backend = database.BackendRaft
+	return cfg
+}
+
+// TestCreateForTenant_EntitlementRejected verifies a raft-backed create is
+// rejected (before the manager is touched) when the tenant's plan does not
+// permit the dedicated-raft feature.
+func TestCreateForTenant_EntitlementRejected(t *testing.T) {
+	dataDir := t.TempDir()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	mgr := database.NewManager(logger, dataDir)
+	t.Cleanup(func() { _ = mgr.Close() })
+
+	entChecker := &mockEntitlementChecker{
+		featureFn: func(_ context.Context, tenantID, feature string) error {
+			return &quota.EntitlementError{TenantID: tenantID, Feature: feature}
+		},
+	}
+	svc := NewDatabaseService(mgr, WithEntitlementChecker(entChecker))
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+
+	_, err := svc.CreateForTenant(ctx, raftDBConfig("dedicated"))
+	var entErr *quota.EntitlementError
+	if !errors.As(err, &entErr) {
+		t.Fatalf("CreateForTenant() error = %v, want *quota.EntitlementError", err)
+	}
+	if entErr.Feature != quota.FeatureDedicatedRaft {
+		t.Errorf("EntitlementError.Feature = %q, want %q", entErr.Feature, quota.FeatureDedicatedRaft)
+	}
+}
+
+// TestCreateForTenant_IsolationModeRejected verifies the isolation-mode
+// entitlement gate fires for raft-backed databases.
+func TestCreateForTenant_IsolationModeRejected(t *testing.T) {
+	dataDir := t.TempDir()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	mgr := database.NewManager(logger, dataDir)
+	t.Cleanup(func() { _ = mgr.Close() })
+
+	var checkedMode string
+	entChecker := &mockEntitlementChecker{
+		isolationFn: func(_ context.Context, tenantID, mode string) error {
+			checkedMode = mode
+			return &quota.EntitlementError{TenantID: tenantID, Mode: mode}
+		},
+	}
+	svc := NewDatabaseService(mgr, WithEntitlementChecker(entChecker))
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+
+	_, err := svc.CreateForTenant(ctx, raftDBConfig("dedicated"))
+	var entErr *quota.EntitlementError
+	if !errors.As(err, &entErr) {
+		t.Fatalf("CreateForTenant() error = %v, want *quota.EntitlementError", err)
+	}
+	if checkedMode != quota.IsolationModeRaft {
+		t.Errorf("CheckIsolation mode = %q, want %q", checkedMode, quota.IsolationModeRaft)
+	}
+}
+
+// TestCreateForTenant_RaftGroupQuotaExceeded verifies that the
+// ResourceRaftGroups quota is checked (in addition to ResourceDatabases) for
+// raft-backed databases.
+func TestCreateForTenant_RaftGroupQuotaExceeded(t *testing.T) {
+	dataDir := t.TempDir()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	mgr := database.NewManager(logger, dataDir)
+	t.Cleanup(func() { _ = mgr.Close() })
+
+	var checkedResources []quota.Resource
+	checker := &mockDatabaseQuotaChecker{
+		checkFn: func(_ context.Context, _ string, resource quota.Resource) error {
+			checkedResources = append(checkedResources, resource)
+			if resource == quota.ResourceRaftGroups {
+				return &quota.ExceededError{Resource: resource, Current: 0, Limit: 0}
+			}
+			return nil
+		},
+	}
+	svc := NewDatabaseService(mgr,
+		WithEntitlementChecker(&mockEntitlementChecker{}),
+		WithQuotaChecker(checker),
+	)
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+
+	_, err := svc.CreateForTenant(ctx, raftDBConfig("dedicated"))
+	var qErr *quota.ExceededError
+	if !errors.As(err, &qErr) {
+		t.Fatalf("CreateForTenant() error = %v, want *quota.ExceededError", err)
+	}
+	if qErr.Resource != quota.ResourceRaftGroups {
+		t.Errorf("ExceededError.Resource = %v, want ResourceRaftGroups", qErr.Resource)
+	}
+	// Both the databases and raft-groups resources must have been checked.
+	sawDatabases, sawRaft := false, false
+	for _, r := range checkedResources {
+		if r == quota.ResourceDatabases {
+			sawDatabases = true
+		}
+		if r == quota.ResourceRaftGroups {
+			sawRaft = true
+		}
+	}
+	if !sawDatabases || !sawRaft {
+		t.Errorf("checked resources = %v, want both ResourceDatabases and ResourceRaftGroups", checkedResources)
+	}
+}
+
+// TestCreateForTenant_SystemTenantBypassesChecks verifies the system tenant
+// short-circuits ahead of both the entitlement and quota planes.
+func TestCreateForTenant_SystemTenantBypassesChecks(t *testing.T) {
+	dataDir := t.TempDir()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	mgr := database.NewManager(logger, dataDir)
+	t.Cleanup(func() { _ = mgr.Close() })
+
+	entChecker := &mockEntitlementChecker{
+		featureFn: func(_ context.Context, _, _ string) error {
+			t.Fatal("entitlement checker must not be consulted for the system tenant")
+			return nil
+		},
+	}
+	svc := NewDatabaseService(mgr, WithEntitlementChecker(entChecker))
+	ctx := tenant.WithTenantID(context.Background(), tenant.SystemTenantID)
+
+	if _, err := svc.CreateForTenant(ctx, testDBConfig("sysdb")); err != nil {
+		t.Fatalf("CreateForTenant(system) error = %v", err)
+	}
+}

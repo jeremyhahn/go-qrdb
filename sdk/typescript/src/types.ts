@@ -68,6 +68,37 @@ export interface PeerInfo {
     readonly isLeader: boolean;
 }
 
+// ---------------------------------------------------------------------------
+// Topology types
+// ---------------------------------------------------------------------------
+
+/** Per-shard placement detail returned by GET /admin/topology. */
+export interface ShardInfo {
+    /** Shard identifier. */
+    readonly shardId: number;
+    /** Replica identifier for this node's replica of the shard. */
+    readonly replicaId: number;
+    /** Whether this node is currently the shard leader. */
+    readonly isLeader: boolean;
+    /** Replica ID of the current shard leader. Zero when unknown. */
+    readonly leaderId: number;
+    /** Mapping of replica ID → Raft transport address for all known members.
+     * Keys are stringified uint64 replica IDs (JSON always uses string keys). */
+    readonly nodes: Readonly<Record<string, string>>;
+}
+
+/** Cluster topology as seen from a single node. Returned by GET /admin/topology. */
+export interface TopologyResponse {
+    /** Node identifier of the responding node. */
+    readonly nodeId: string;
+    /** Raft transport address of the responding node. */
+    readonly raftAddress: string;
+    /** Total number of Raft groups (shards) this node participates in. */
+    readonly shardCount: number;
+    /** Per-shard placement details for each Raft group. */
+    readonly shards: readonly ShardInfo[];
+}
+
 /** Result of a drain operation. */
 export interface DrainResponse {
     /** Status string indicating drain result. */
@@ -1871,6 +1902,11 @@ export interface DatabaseInfo {
     readonly shard_id?: number;
     /** Database mode (e.g. "embedded", "remote"). */
     readonly mode?: string;
+    /** Replication factor of a dedicated-raft database. Zero for non-raft. */
+    readonly replicas?: number;
+    /** Whether this dedicated-raft database's Raft log is encrypted under the
+     * tenant's own key. Only meaningful for the raft backend. */
+    readonly dedicatedWal?: boolean;
     /** Raft consensus configuration. */
     readonly raft?: DatabaseRaftConfig;
     /** Encryption barrier configuration. */
@@ -1894,6 +1930,14 @@ export interface CreateDatabaseRequest {
     readonly dataDir?: string;
     /** Database mode (e.g. "embedded", "remote"). */
     readonly mode?: string;
+    /** Replication factor for a dedicated-raft database. Meaningful only for the
+     * raft backend; unset defaults to 1 replica. */
+    readonly replicas?: number;
+    /** Enables per-database dedicated WAL encryption under the tenant's own key.
+     * Gated on the tenant's `allow_dedicated_wal` entitlement and the
+     * `max_dedicated_wal_groups` quota. Only honoured for the raft backend;
+     * a non-raft request silently clears the flag server-side. */
+    readonly dedicatedWal?: boolean;
     /** Raft consensus configuration. */
     readonly raft?: DatabaseRaftConfig;
     /** Encryption barrier configuration. */
@@ -2017,12 +2061,30 @@ export interface TenantQuotas {
     readonly maxDatabases: number;
     /** Maximum number of raft groups (shards) across all databases. */
     readonly maxRaftGroups: number;
+    /**
+     * Maximum replication factor (voting replicas) any single dedicated-raft
+     * database may request at create time. Evaluated per group.
+     */
+    readonly maxReplicasPerGroup: number;
+    /**
+     * Maximum aggregate number of replicas the tenant may hold across all of
+     * its dedicated-raft groups (the capacity/billing lever).
+     */
+    readonly maxTotalReplicas: number;
+    /**
+     * Maximum number of dedicated-raft groups for which this tenant may enable
+     * the per-database WAL encryption feature. -1 = unlimited, 0 = system
+     * default. Wire name: `max_dedicated_wal_groups`.
+     */
+    readonly maxDedicatedWalGroups: number;
     /** Maximum number of collections across all databases. */
     readonly maxCollections: number;
     /** Maximum total KV entries. */
     readonly maxKeys: number;
     /** Maximum total storage in bytes. */
     readonly maxStorageBytes: number;
+    /** Maximum size in bytes of any single database. */
+    readonly maxDatabaseSizeBytes: number;
     /** Maximum users in this tenant. */
     readonly maxUsers: number;
     /** Maximum roles in this tenant. */
@@ -2038,12 +2100,43 @@ export interface TenantQuotas {
 }
 
 /**
- * Physical isolation strategy for a tenant.
- *
- * - `"barrier"` — namespace key prefix plus optional per-tenant encryption barrier.
- * - `"prefix"`  — namespace key prefix only (no additional crypto layer).
+ * Feature entitlements describe which isolation tiers and dedicated-storage
+ * features a tenant's plan permits.
  */
-export type TenantIsolationType = 'barrier' | 'prefix';
+export interface TenantEntitlements {
+    /** Permitted isolation modes, e.g. "prefix", "barrier", "volume", "raft". */
+    readonly allowedIsolationModes?: string[];
+    /** Whether the tenant may provision dedicated Raft-backed databases. */
+    readonly allowDedicatedRaft?: boolean;
+    /** Whether the tenant may provision databases on a dedicated volume. */
+    readonly allowVolumeStorage?: boolean;
+    /**
+     * Whether the tenant may opt into the system-managed auto-unseal
+     * key-management mode for its dedicated barrier. When false (the secure
+     * default) the tenant must self-manage its barrier keys.
+     */
+    readonly allowSystemManagedBarrier?: boolean;
+    /**
+     * Whether the tenant may opt a dedicated-raft database into per-database
+     * WAL encryption (the `dedicatedWal` create-database flag). Requires the
+     * `max_dedicated_wal_groups` quota. Wire name: `allow_dedicated_wal`.
+     */
+    readonly allowDedicatedWal?: boolean;
+}
+
+/**
+ * Physical isolation strategy for a tenant. Mirrors the Go
+ * `tenant.IsolationType` constants.
+ *
+ * - `"prefix"`  — shared-store namespace key prefix only (no extra crypto layer).
+ * - `"barrier"` — namespace key prefix plus a per-tenant encryption barrier.
+ * - `"volume"`  — dedicated filesystem data root per tenant (plus a barrier),
+ *   a dedicated-storage tier. Requires the daemon's volume pool.
+ * - `"raft"`    — dedicated Raft group per database on a dedicated data root,
+ *   a dedicated-storage tier. Multi-node replication of those groups is in
+ *   development; databases run single-replica today.
+ */
+export type TenantIsolationType = 'prefix' | 'barrier' | 'volume' | 'raft';
 
 /** Information about a tenant. */
 export interface TenantInfo {
@@ -2058,6 +2151,8 @@ export interface TenantInfo {
     readonly isolationType?: TenantIsolationType;
     /** Resource quotas for this tenant, if configured. */
     readonly quotas?: TenantQuotas;
+    /** Feature entitlements for this tenant, if configured. */
+    readonly entitlements?: TenantEntitlements;
     /** ISO 8601 creation timestamp. */
     readonly createdAt: string;
     /** ISO 8601 last-updated timestamp. */
@@ -2076,6 +2171,12 @@ export interface CreateTenantRequest {
      * subsystem to be enabled on the server).
      */
     readonly isolationType?: TenantIsolationType;
+    /**
+     * Opt a dedicated-isolation tenant (barrier/volume) into the system-managed
+     * auto-unseal key-management mode (entitlement-gated). Defaults to `false`
+     * (the secure self-managed mode where the tenant admin holds the key).
+     */
+    readonly barrierAutoUnseal?: boolean;
 }
 
 /** Request to apply a partial update to an existing tenant. */
@@ -2213,6 +2314,20 @@ export interface UpdateTenantQuotasRequest {
 
 /** Response from updating tenant quotas. */
 export interface UpdateTenantQuotasResponse {
+    /** The updated tenant. */
+    readonly tenant: TenantInfo;
+}
+
+/** Request to update a tenant's feature entitlements. */
+export interface UpdateTenantEntitlementsRequest {
+    /** Target tenant identifier. */
+    readonly tenantId: string;
+    /** The new entitlement configuration. */
+    readonly entitlements: TenantEntitlements;
+}
+
+/** Response from updating tenant entitlements. */
+export interface UpdateTenantEntitlementsResponse {
     /** The updated tenant. */
     readonly tenant: TenantInfo;
 }

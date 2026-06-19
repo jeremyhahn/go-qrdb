@@ -27,7 +27,7 @@ func TestChangePassword_Success(t *testing.T) {
 	require.NoError(t, err)
 
 	// Initialize with the old password.
-	err = b.Initialize(ctx, Credentials{Secret: oldPassword})
+	err = b.Initialize(ctx, Credentials{Secret: []byte(oldPassword)})
 	require.NoError(t, err)
 
 	// Store a value while unsealed so we can verify data survives the change.
@@ -35,7 +35,7 @@ func TestChangePassword_Success(t *testing.T) {
 	require.NoError(t, err)
 
 	// Change the password.
-	err = b.ChangePassword(ctx, Credentials{Secret: newPassword})
+	err = b.ChangePassword(ctx, Credentials{Secret: []byte(newPassword)})
 	require.NoError(t, err)
 
 	// Data written before the password change is still readable.
@@ -50,7 +50,7 @@ func TestChangePassword_Success(t *testing.T) {
 
 	// Unseal with the new password succeeds (the in-memory strategy was
 	// swapped to the new one by ChangePassword).
-	err = b.Unseal(ctx, Credentials{Secret: newPassword})
+	err = b.Unseal(ctx, Credentials{Secret: []byte(newPassword)})
 	require.NoError(t, err)
 	assert.False(t, b.IsSealed())
 
@@ -76,10 +76,10 @@ func TestChangePassword_OldPasswordFailsOnNewBarrier(t *testing.T) {
 	b, err := NewStorageBarrier(testLogger(), base, cfg, oldStrat)
 	require.NoError(t, err)
 
-	err = b.Initialize(ctx, Credentials{Secret: oldPassword})
+	err = b.Initialize(ctx, Credentials{Secret: []byte(oldPassword)})
 	require.NoError(t, err)
 
-	err = b.ChangePassword(ctx, Credentials{Secret: newPassword})
+	err = b.ChangePassword(ctx, Credentials{Secret: []byte(newPassword)})
 	require.NoError(t, err)
 
 	err = b.Seal()
@@ -94,7 +94,7 @@ func TestChangePassword_OldPasswordFailsOnNewBarrier(t *testing.T) {
 	b2, err := NewStorageBarrier(testLogger(), base, cfg, oldStrat2)
 	require.NoError(t, err)
 
-	err = b2.Unseal(ctx, Credentials{Secret: oldPassword})
+	err = b2.Unseal(ctx, Credentials{Secret: []byte(oldPassword)})
 	assert.Error(t, err, "unseal with old password strategy should fail after password change")
 
 	// Create a third barrier with the NEW password strategy -- it succeeds.
@@ -104,7 +104,7 @@ func TestChangePassword_OldPasswordFailsOnNewBarrier(t *testing.T) {
 	b3, err := NewStorageBarrier(testLogger(), base, cfg, newStrat)
 	require.NoError(t, err)
 
-	err = b3.Unseal(ctx, Credentials{Secret: newPassword})
+	err = b3.Unseal(ctx, Credentials{Secret: []byte(newPassword)})
 	require.NoError(t, err)
 	assert.False(t, b3.IsSealed())
 }
@@ -115,7 +115,7 @@ func TestChangePassword_Sealed(t *testing.T) {
 	require.NoError(t, err)
 
 	// Barrier is sealed (never initialized) -- should return ErrSealed.
-	err = b.ChangePassword(context.Background(), Credentials{Secret: "new-password"})
+	err = b.ChangePassword(context.Background(), Credentials{Secret: []byte("new-password")})
 	assert.ErrorIs(t, err, ErrSealed)
 }
 
@@ -125,10 +125,10 @@ func TestChangePassword_EmptyPassword(t *testing.T) {
 	b, err := NewStorageBarrier(testLogger(), NewMemoryBackend(), cfg, testSoftwareStrategy(t))
 	require.NoError(t, err)
 
-	err = b.Initialize(ctx, Credentials{Secret: "init-password"})
+	err = b.Initialize(ctx, Credentials{Secret: []byte("init-password")})
 	require.NoError(t, err)
 
-	err = b.ChangePassword(ctx, Credentials{Secret: ""})
+	err = b.ChangePassword(ctx, Credentials{Secret: []byte("")})
 	assert.ErrorIs(t, err, ErrInvalidPassphrase)
 }
 
@@ -146,10 +146,10 @@ func TestChangePassword_NoSoftwareStrategy(t *testing.T) {
 	b, err := NewStorageBarrier(testLogger(), NewMemoryBackend(), cfg, hwStrat)
 	require.NoError(t, err)
 
-	err = b.Initialize(ctx, Credentials{Secret: "hw-password"})
+	err = b.Initialize(ctx, Credentials{Secret: []byte("hw-password")})
 	require.NoError(t, err)
 
-	err = b.ChangePassword(ctx, Credentials{Secret: "new-password"})
+	err = b.ChangePassword(ctx, Credentials{Secret: []byte("new-password")})
 	assert.ErrorIs(t, err, ErrStrategyNotFound)
 }
 
@@ -163,10 +163,10 @@ func TestChangePassword_AuditEvent(t *testing.T) {
 	b, err := NewStorageBarrier(testLogger(), NewMemoryBackend(), cfg, testSoftwareStrategy(t))
 	require.NoError(t, err)
 
-	err = b.Initialize(ctx, Credentials{Secret: "password"})
+	err = b.Initialize(ctx, Credentials{Secret: []byte("password")})
 	require.NoError(t, err)
 
-	err = b.ChangePassword(ctx, Credentials{Secret: "new-password"})
+	err = b.ChangePassword(ctx, Credentials{Secret: []byte("new-password")})
 	require.NoError(t, err)
 
 	// Find the change_password audit event.
@@ -190,14 +190,14 @@ func TestChangePassword_PersistNewBlob(t *testing.T) {
 	b, err := NewStorageBarrier(testLogger(), base, cfg, testSoftwareStrategy(t))
 	require.NoError(t, err)
 
-	err = b.Initialize(ctx, Credentials{Secret: "password-a"})
+	err = b.Initialize(ctx, Credentials{Secret: []byte("password-a")})
 	require.NoError(t, err)
 
 	// Capture the sealed blob before the change.
 	blobBefore, err := base.Get(ctx, "test/root-key")
 	require.NoError(t, err)
 
-	err = b.ChangePassword(ctx, Credentials{Secret: "password-b"})
+	err = b.ChangePassword(ctx, Credentials{Secret: []byte("password-b")})
 	require.NoError(t, err)
 
 	// The sealed blob must have changed in the base backend.

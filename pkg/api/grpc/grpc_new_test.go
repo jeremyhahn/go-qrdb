@@ -1382,6 +1382,28 @@ func TestGRPC_Range_Success(t *testing.T) {
 	}
 }
 
+// TestGRPC_Range_RejectsEmptyStart is the defense-in-depth guard for finding
+// C-1: an absent range start denotes the start of the shared store, which would
+// scan across the (tenant, db) namespace boundary, so the handler must reject it
+// with InvalidArgument rather than forward it.
+func TestGRPC_Range_RejectsEmptyStart(t *testing.T) {
+	// rangeResult is populated: if the handler wrongly forwarded the rejected
+	// request, the call would succeed instead of returning InvalidArgument.
+	mvccSvc := &mockMVCCService{rangeResult: []*kv.KeyValue{{Key: []byte("leak")}}, rangeCount: 1}
+	client, cleanup := startTestServerFull(t, WithMVCC(mvccSvc))
+	defer cleanup()
+
+	for _, start := range [][]byte{nil, {}} {
+		_, err := client.Range(context.Background(), &pb.RangeRequest{Start: start, End: []byte("z")})
+		if err == nil {
+			t.Fatalf("Range with empty start must be rejected, not forwarded")
+		}
+		if status.Code(err) != codes.InvalidArgument {
+			t.Fatalf("Range empty start code = %v, want InvalidArgument", status.Code(err))
+		}
+	}
+}
+
 func TestGRPC_Range_WithOptions(t *testing.T) {
 	mvccSvc := &mockMVCCService{
 		rangeResult: []*kv.KeyValue{{Key: []byte("a")}},

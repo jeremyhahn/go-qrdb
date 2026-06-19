@@ -76,6 +76,10 @@ func toolIndexCreate() mcp.Tool {
 // indexSvc.CreateIndex.
 func handleIndexCreate(indexSvc service.IndexServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		indexSvc, rerr := resolveIndex(ctx, indexSvc)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
+		}
 		name := mcp.ParseString(req, "name", "")
 		if name == "" {
 			return mcp.NewToolResultError("name is required"), nil
@@ -113,6 +117,10 @@ func toolIndexDrop() mcp.Tool {
 // indexSvc.DropIndex.
 func handleIndexDrop(indexSvc service.IndexServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		indexSvc, rerr := resolveIndex(ctx, indexSvc)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
+		}
 		name := mcp.ParseString(req, "name", "")
 		if name == "" {
 			return mcp.NewToolResultError("name is required"), nil
@@ -145,6 +153,10 @@ func toolIndexQuery() mcp.Tool {
 // indexSvc.Query.
 func handleIndexQuery(indexSvc service.IndexServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		indexSvc, rerr := resolveIndex(ctx, indexSvc)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
+		}
 		indexName := mcp.ParseString(req, "index_name", "")
 		if indexName == "" {
 			return mcp.NewToolResultError("index_name is required"), nil
@@ -196,6 +208,10 @@ func toolIndexScan() mcp.Tool {
 // indexSvc.Scan.
 func handleIndexScan(indexSvc service.IndexServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		indexSvc, rerr := resolveIndex(ctx, indexSvc)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
+		}
 		indexName := mcp.ParseString(req, "index_name", "")
 		if indexName == "" {
 			return mcp.NewToolResultError("index_name is required"), nil
@@ -243,6 +259,10 @@ func toolIndexList() mcp.Tool {
 // indexSvc.ListIndexes.
 func handleIndexList(indexSvc service.IndexServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		indexSvc, rerr := resolveIndex(ctx, indexSvc)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
+		}
 		names, err := indexSvc.ListIndexes(ctx)
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_index_list", Err: err}

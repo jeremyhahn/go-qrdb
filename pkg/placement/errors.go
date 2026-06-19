@@ -1,0 +1,108 @@
+// Copyright 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package placement
+
+import (
+	"errors"
+	"strconv"
+)
+
+// Sentinel errors. Callers match these with errors.Is; the richer typed errors
+// below wrap the matching sentinel via Unwrap.
+var (
+	// ErrNilTopology is returned by NewScheduler when no TopologyProvider is
+	// supplied.
+	ErrNilTopology = errors.New("placement: topology provider must not be nil")
+
+	// ErrNilKV is returned by NewStore when no KV backend is supplied.
+	ErrNilKV = errors.New("placement: kv backend must not be nil")
+
+	// ErrInvalidRF is returned by Place when the requested replication factor
+	// is not positive.
+	ErrInvalidRF = errors.New("placement: replication factor must be positive")
+
+	// ErrNilDataRootFunc is returned by Place when PlaceRequest.DataRootForNode
+	// is nil.
+	ErrNilDataRootFunc = errors.New("placement: data-root function must not be nil")
+
+	// ErrEmptyTenant is returned when a tenant ID is empty.
+	ErrEmptyTenant = errors.New("placement: tenant id must not be empty")
+
+	// ErrEmptyDatabase is returned when a database name is empty.
+	ErrEmptyDatabase = errors.New("placement: database name must not be empty")
+
+	// ErrZeroShard is returned by Place when the requested shard ID is zero.
+	ErrZeroShard = errors.New("placement: shard id must not be zero")
+
+	// ErrInsufficientNodes is returned by Place when fewer than RF healthy,
+	// distinct nodes are available to satisfy anti-affinity.
+	ErrInsufficientNodes = errors.New("placement: insufficient healthy nodes for replication factor")
+
+	// ErrPlacementNotFound is returned by Store.Get when no placement exists
+	// for the requested (tenant, database).
+	ErrPlacementNotFound = errors.New("placement: placement not found")
+
+	// ErrWatchUnsupported is returned by Store.Watch when the backing KV does
+	// not implement Watcher.
+	ErrWatchUnsupported = errors.New("placement: watch not supported by kv backend")
+)
+
+// InsufficientNodesError reports that the cluster cannot satisfy a placement's
+// replication factor with distinct healthy nodes. It unwraps to
+// ErrInsufficientNodes.
+type InsufficientNodesError struct {
+	// Have is the number of healthy, distinct candidate nodes found.
+	Have int
+
+	// Need is the requested replication factor.
+	Need int
+}
+
+// Error implements the error interface.
+func (e *InsufficientNodesError) Error() string {
+	return "placement: insufficient healthy nodes: have " + strconv.Itoa(e.Have) +
+		", need " + strconv.Itoa(e.Need)
+}
+
+// Unwrap returns ErrInsufficientNodes so errors.Is matches the sentinel.
+func (e *InsufficientNodesError) Unwrap() error { return ErrInsufficientNodes }
+
+// StoreError wraps a failure reading or writing the placement table for a
+// (tenant, database) pair. It identifies the entry and the operation.
+type StoreError struct {
+	// TenantID owns the placement entry.
+	TenantID string
+
+	// Database is the database name.
+	Database string
+
+	// Op is the failing operation (e.g. "put", "get", "delete", "list").
+	Op string
+
+	// Err is the underlying cause.
+	Err error
+}
+
+// Error implements the error interface.
+func (e *StoreError) Error() string {
+	target := e.TenantID + "/" + e.Database
+	if e.Database == "" {
+		target = e.TenantID
+	}
+	return "placement: " + e.Op + " " + target + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error for errors.Is/As.
+func (e *StoreError) Unwrap() error { return e.Err }

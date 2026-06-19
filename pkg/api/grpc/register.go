@@ -161,6 +161,15 @@ func WithRegisterRebalanceService(svc service.RebalanceServicer) RegisterOption 
 	return func(s *qrdbServiceServer) { s.rebalanceSvc = svc }
 }
 
+// WithRegisterServiceRegistry attaches a per-(tenant, database) service
+// registry for the registered gRPC service. When set, data-plane RPCs resolve
+// their servicer per scope; when nil the singleton service fields are used.
+// The Unix socket transport uses this to share the gRPC service implementation
+// with full database scoping.
+func WithRegisterServiceRegistry(reg service.Registry) RegisterOption {
+	return func(s *qrdbServiceServer) { s.registry = reg }
+}
+
 // RegisterService registers the QRDBServiceServer on the given gRPC server
 // using the provided KV and admin service implementations. kvSvc and adminSvc
 // may be nil when only non-KV services (barrier, cert, auth) are needed;

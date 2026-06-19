@@ -71,7 +71,7 @@ func (t *Transport) watchStream(ctx context.Context, method string, key, rangeEn
 	}
 
 	requestID := t.requestID.Add(1)
-	if err := wire.WriteRequest(stream, method, requestID, payload); err != nil {
+	if err := wire.WriteRequest(stream, method, t.database, requestID, payload); err != nil {
 		stream.CancelWrite(0)
 		stream.CancelRead(0)
 		return nil, &streamError{Err: err}
