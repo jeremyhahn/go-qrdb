@@ -116,9 +116,13 @@ func (p *nodeMigrationProvider) MintKeyedTarget(ctx context.Context, scope servi
 	if err != nil {
 		return nil, err
 	}
+	// The barrier config MUST mirror buildNodeSealSubsystem's system barrier
+	// config (which sets only RootKeyPath, leaving DeploymentID at its zero
+	// value). DeploymentID participates in DEK derivation, so a mismatch here
+	// would encrypt the migrated data under a key the restart boot cannot
+	// reproduce. Keep this in lock-step with buildNodeSealSubsystem.
 	cfg := seal.BarrierConfig{
-		RootKeyPath:  canonicalRootKeyPath(n) + stagingRootKeySuffix,
-		DeploymentID: n.retainedStandalone.cfg.Raft.DeploymentID,
+		RootKeyPath: canonicalRootKeyPath(n) + stagingRootKeySuffix,
 	}
 	target, err := seal.NewStorageBarrier(n.logger, seal.NewStorageAdapter(n.sealStore), cfg, strat)
 	if err != nil {
@@ -163,7 +167,7 @@ func (p *nodeMigrationProvider) Reopen(ctx context.Context, scope service.Barrie
 		}
 		backend := seal.NewStorageAdapter(n.sealStore)
 		keyed, berr := seal.NewStorageBarrier(n.logger, backend,
-			seal.BarrierConfig{RootKeyPath: canonicalRootKeyPath(n), DeploymentID: n.retainedStandalone.cfg.Raft.DeploymentID}, strat)
+			seal.BarrierConfig{RootKeyPath: canonicalRootKeyPath(n)}, strat)
 		if berr != nil {
 			return berr
 		}
@@ -242,19 +246,53 @@ func canonicalRootKeyStrategy(ctx context.Context, n *Node) (seal.StrategyID, er
 	return sealed.Strategy, nil
 }
 
+// persistedRootKeyStrategy reads the persisted sealed root-key blob at
+// rootKeyPath and returns its sealing strategy, or "" when no blob exists or it
+// cannot be decoded. It lets the boot sequence detect a barrier that was
+// migrated to a keyed strategy after the fact (enable-encryption) so it can
+// register the matching strategy even when the config still names the
+// pre-migration one.
+func persistedRootKeyStrategy(ctx context.Context, backend seal.StorageBackend, rootKeyPath string) seal.StrategyID {
+	blob, err := backend.Get(ctx, rootKeyPath)
+	if err != nil || len(blob) == 0 {
+		return ""
+	}
+	var sealed struct {
+		Strategy seal.StrategyID `json:"strategy"`
+	}
+	if json.Unmarshal(blob, &sealed) != nil {
+		return ""
+	}
+	return sealed.Strategy
+}
+
+// strategyRegistered reports whether a strategy with the given ID is already in
+// the slice.
+func strategyRegistered(strategies []seal.SealingStrategy, id seal.StrategyID) bool {
+	for _, s := range strategies {
+		if s.ID() == id {
+			return true
+		}
+	}
+	return false
+}
+
 // keyedStrategyFor builds the keyed sealing strategy for the migration options.
 func keyedStrategyFor(opts seal.MigrationOptions) (seal.SealingStrategy, error) {
 	return keyedStrategyForStrategy(opts.TargetStrategy, opts.Credentials)
 }
 
-func keyedStrategyForStrategy(id seal.StrategyID, creds seal.Credentials) (seal.SealingStrategy, error) {
+func keyedStrategyForStrategy(id seal.StrategyID, _ seal.Credentials) (seal.SealingStrategy, error) {
 	switch id {
-	case seal.StrategyPassphrase:
-		return seal.NewSoftwareStrategy(creds.Secret)
-	case seal.StrategyShamir:
-		// Shamir target: the share quorum drives unseal; a deferred software
-		// strategy initialized with the secret seeds the keyed root key.
-		return seal.NewSoftwareStrategy(creds.Secret)
+	case seal.StrategyPassphrase, seal.StrategyShamir:
+		// Use the SAME passphrase strategy the boot path uses for software
+		// barriers (NewDeferredSoftwareStrategy). The sealed root-key blob must
+		// be unsealable by the strategy the node registers on a subsequent boot;
+		// minting the target with a different software strategy implementation
+		// would seal a blob the restart path cannot decrypt. The passphrase is
+		// supplied to Initialize/Unseal via Credentials, which the deferred
+		// strategy captures at first use.
+		return seal.NewDeferredSoftwareStrategy(), nil
 	default:
 		return nil, seal.ErrMigrationInvalidTarget
 	}

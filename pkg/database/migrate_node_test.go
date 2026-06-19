@@ -16,6 +16,7 @@ package database
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"testing"
@@ -24,6 +25,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 )
 
 // initNoneBarrier returns an initialized none barrier over the shared backend.
@@ -242,6 +244,266 @@ func TestNodeStoreMigration_InPlaceMechanism(t *testing.T) {
 		}
 	}
 	assertNotPlaintext(t, dir, noneEnc, data)
+}
+
+// TestNodeStoreMigration_ReopenWithDeferredAndNone reproduces the node restart
+// conditions: after a none->passphrase migration whose target was minted with
+// the deferred-software strategy, a fresh barrier registered with BOTH none
+// (config) and deferred-software (persisted-strategy detection) must unseal
+// from the canonical key and read the migrated data.
+func TestNodeStoreMigration_ReopenWithDeferredAndNone(t *testing.T) {
+	ctx := context.Background()
+	const pw = "deferred-pass"
+	sealBackend := seal.NewMemoryBackend()
+	source := initNoneBarrier(t, sealBackend, "root-key")
+
+	// Mint the keyed target with the DEFERRED software strategy (matching the
+	// node migration path) at a staging path in the same backend.
+	deferred := seal.NewDeferredSoftwareStrategy()
+	target, err := seal.NewStorageBarrier(reencTestLogger(), sealBackend,
+		seal.BarrierConfig{RootKeyPath: "root-key.migrating", DeploymentID: 1}, deferred)
+	if err != nil {
+		t.Fatalf("target barrier: %v", err)
+	}
+	if err := target.Initialize(ctx, seal.Credentials{Secret: []byte(pw)}); err != nil {
+		t.Fatalf("init target: %v", err)
+	}
+
+	dir := t.TempDir() + "/pebble"
+	data := map[string]string{"a": "1", "b": "2", "c": "3"}
+	writeStore(t, dir, atrest.New(source), data)
+
+	mig := &NodeStoreMigration{Source: source, Target: target, StoreDirs: []string{dir}, Logger: reencTestLogger()}
+	if err := mig.Run(ctx, seal.MigrationOptions{
+		TargetStrategy: seal.StrategyPassphrase, Mechanism: seal.MechanismSwap,
+		Availability: seal.AvailabilityQuiesced, Credentials: seal.Credentials{Secret: []byte(pw)},
+	}); err != nil {
+		t.Fatalf("migration: %v", err)
+	}
+
+	// Reopen exactly as the node boot does: register [none, deferred-software].
+	reopened, err := seal.NewStorageBarrier(reencTestLogger(), sealBackend,
+		seal.BarrierConfig{RootKeyPath: "root-key", DeploymentID: 1},
+		seal.NewNoneStrategy(), seal.NewDeferredSoftwareStrategy())
+	if err != nil {
+		t.Fatalf("reopen barrier: %v", err)
+	}
+	if got := reopened.PersistedStrategy(ctx); got != seal.StrategyPassphrase {
+		t.Fatalf("PersistedStrategy = %q, want passphrase", got)
+	}
+	if err := reopened.Unseal(ctx, seal.Credentials{Secret: []byte(pw)}); err != nil {
+		t.Fatalf("unseal reopened: %v", err)
+	}
+	got := readAll(t, dir, atrest.New(reopened))
+	for k, v := range data {
+		if got[k] != v {
+			t.Fatalf("key %q = %q, want %q", k, got[k], v)
+		}
+	}
+}
+
+// TestNodeStoreMigration_DiskSealStoreReopen mirrors a full node restart: the
+// seal store is a real on-disk Pebble closed after migration and re-opened as a
+// fresh instance over the same directory (as a process restart would), proving
+// the canonical keyed root key persists durably and the migrated data decrypts.
+func TestNodeStoreMigration_DiskSealStoreReopen(t *testing.T) {
+	ctx := context.Background()
+	const pw = "disk-reopen-pass"
+	sealDir := t.TempDir() + "/seal"
+	dir := t.TempDir() + "/pebble"
+	data := map[string]string{"a": "1", "b": "2", "c": "3"}
+
+	// --- session 1: none barrier, write data, migrate to passphrase ---------
+	store1, err := pebblestore.New(pebblestore.DefaultConfig(sealDir))
+	if err != nil {
+		t.Fatalf("seal store: %v", err)
+	}
+	be1 := seal.NewStorageAdapter(store1)
+	source := initNoneBarrierBackend(t, be1, "root-key")
+	writeStore(t, dir, atrest.New(source), data)
+
+	target, err := seal.NewStorageBarrier(reencTestLogger(), be1,
+		seal.BarrierConfig{RootKeyPath: "root-key.migrating", DeploymentID: 1}, seal.NewDeferredSoftwareStrategy())
+	if err != nil {
+		t.Fatalf("target: %v", err)
+	}
+	if err := target.Initialize(ctx, seal.Credentials{Secret: []byte(pw)}); err != nil {
+		t.Fatalf("init target: %v", err)
+	}
+	mig := &NodeStoreMigration{Source: source, Target: target, StoreDirs: []string{dir}, Logger: reencTestLogger()}
+	if err := mig.Run(ctx, seal.MigrationOptions{
+		TargetStrategy: seal.StrategyPassphrase, Mechanism: seal.MechanismSwap,
+		Availability: seal.AvailabilityQuiesced, Credentials: seal.Credentials{Secret: []byte(pw)},
+	}); err != nil {
+		t.Fatalf("migration: %v", err)
+	}
+	if err := store1.Close(); err != nil { // close seal store as a shutdown would
+		t.Fatalf("close seal store: %v", err)
+	}
+
+	// --- session 2: reopen the seal store from disk, unseal, read -----------
+	store2, err := pebblestore.New(pebblestore.DefaultConfig(sealDir))
+	if err != nil {
+		t.Fatalf("reopen seal store: %v", err)
+	}
+	defer func() { _ = store2.Close() }()
+	be2 := seal.NewStorageAdapter(store2)
+	reopened, err := seal.NewStorageBarrier(reencTestLogger(), be2,
+		seal.BarrierConfig{RootKeyPath: "root-key", DeploymentID: 1},
+		seal.NewNoneStrategy(), seal.NewDeferredSoftwareStrategy())
+	if err != nil {
+		t.Fatalf("reopen barrier: %v", err)
+	}
+	if got := reopened.PersistedStrategy(ctx); got != seal.StrategyPassphrase {
+		t.Fatalf("PersistedStrategy after disk reopen = %q, want passphrase", got)
+	}
+	if err := reopened.Unseal(ctx, seal.Credentials{Secret: []byte(pw)}); err != nil {
+		t.Fatalf("unseal after disk reopen: %v", err)
+	}
+	got := readAll(t, dir, atrest.New(reopened))
+	for k, v := range data {
+		if got[k] != v {
+			t.Fatalf("key %q = %q after disk reopen, want %q", k, got[k], v)
+		}
+	}
+}
+
+// TestRecoverInterruptedMigration_RollForward simulates a crash in the
+// dangerous window — the data dir is already keyed but the canonical root key
+// is still "none" (the root-key adopt had not run). Recovery must adopt the
+// staging keyed blob so the node boots keyed with data intact.
+func TestRecoverInterruptedMigration_RollForward(t *testing.T) {
+	ctx := context.Background()
+	const pw = "recover-fwd-pass"
+	backend := seal.NewMemoryBackend()
+	dir := t.TempDir() + "/pebble"
+	data := map[string]string{"a": "1", "b": "2"}
+
+	// Keyed barrier at the staging path; its blob is the keyed root key.
+	keyed, err := seal.NewStorageBarrier(reencTestLogger(), backend,
+		seal.BarrierConfig{RootKeyPath: "root-key.migrating"}, seal.NewDeferredSoftwareStrategy())
+	if err != nil {
+		t.Fatalf("keyed barrier: %v", err)
+	}
+	if err := keyed.Initialize(ctx, seal.Credentials{Secret: []byte(pw)}); err != nil {
+		t.Fatalf("init keyed: %v", err)
+	}
+	// The data dir is already the keyed copy (swap completed pre-crash).
+	writeStore(t, dir, atrest.New(keyed), data)
+
+	// Canonical root key is still the none marker (adopt did NOT run yet).
+	none := initNoneBarrierBackend(t, backend, "root-key")
+	_ = none
+
+	// Journal records the committing phase + the staging path.
+	j := &seal.MigrationJournal{
+		SourceStrategy: seal.StrategyNone, TargetStrategy: seal.StrategyPassphrase,
+		Mechanism: seal.MechanismSwap, Phase: seal.PhaseCommitting,
+		StagingRootKeyPath: "root-key.migrating",
+	}
+	jblob, _ := json.Marshal(j)
+	if err := backend.Put(ctx, "root-key.migration", jblob); err != nil {
+		t.Fatalf("write journal: %v", err)
+	}
+
+	// Recover.
+	if err := RecoverInterruptedMigration(ctx, backend, "root-key", []string{dir}); err != nil {
+		t.Fatalf("RecoverInterruptedMigration: %v", err)
+	}
+
+	// Canonical root key is now keyed; journal + staging are gone.
+	if got := persistedStrategy(ctx, backend, "root-key"); got != seal.StrategyPassphrase {
+		t.Fatalf("canonical strategy after recovery = %q, want passphrase", got)
+	}
+	if jj, _ := seal.LoadMigrationJournalFrom(ctx, backend, "root-key"); jj != nil {
+		t.Fatal("journal must be cleared after recovery")
+	}
+
+	// Data is readable through a keyed barrier unsealed from the (now keyed)
+	// canonical root key.
+	reopened, err := seal.NewStorageBarrier(reencTestLogger(), backend,
+		seal.BarrierConfig{RootKeyPath: "root-key"}, seal.NewDeferredSoftwareStrategy())
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	if err := reopened.Unseal(ctx, seal.Credentials{Secret: []byte(pw)}); err != nil {
+		t.Fatalf("unseal recovered: %v", err)
+	}
+	got := readAll(t, dir, atrest.New(reopened))
+	for k, v := range data {
+		if got[k] != v {
+			t.Fatalf("key %q = %q, want %q", k, got[k], v)
+		}
+	}
+}
+
+// TestRecoverInterruptedMigration_RollBack simulates a crash before commit: a
+// keyed staging copy exists but the original is intact and the root key is
+// still none. Recovery must discard the staging copy and clear the journal.
+func TestRecoverInterruptedMigration_RollBack(t *testing.T) {
+	ctx := context.Background()
+	backend := seal.NewMemoryBackend()
+	dir := t.TempDir() + "/pebble"
+	data := map[string]string{"x": "1"}
+
+	none := initNoneBarrierBackend(t, backend, "root-key")
+	writeStore(t, dir, atrest.New(none), data) // original none store, intact
+
+	// A partial keyed staging copy exists.
+	require := func(cond bool, msg string) {
+		if !cond {
+			t.Fatal(msg)
+		}
+	}
+	if err := os.MkdirAll(dir+keyedSuffix, 0o700); err != nil {
+		t.Fatalf("mkdir keyed: %v", err)
+	}
+
+	j := &seal.MigrationJournal{Phase: seal.PhaseCopying, TargetStrategy: seal.StrategyPassphrase}
+	jblob, _ := json.Marshal(j)
+	if err := backend.Put(ctx, "root-key.migration", jblob); err != nil {
+		t.Fatalf("write journal: %v", err)
+	}
+
+	if err := RecoverInterruptedMigration(ctx, backend, "root-key", []string{dir}); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+
+	// Staging copy removed, journal cleared, original none store intact.
+	if _, err := os.Stat(dir + keyedSuffix); !os.IsNotExist(err) {
+		t.Fatal("keyed staging dir must be removed on rollback")
+	}
+	if jj, _ := seal.LoadMigrationJournalFrom(ctx, backend, "root-key"); jj != nil {
+		t.Fatal("journal must be cleared after rollback")
+	}
+	if got := persistedStrategy(ctx, backend, "root-key"); got != seal.StrategyNone {
+		t.Fatalf("canonical strategy after rollback = %q, want none", got)
+	}
+	got := readAll(t, dir, atrest.New(none))
+	require(got["x"] == "1", "original data must survive rollback")
+}
+
+// TestRecoverInterruptedMigration_NoJournal is a no-op when no migration ran.
+func TestRecoverInterruptedMigration_NoJournal(t *testing.T) {
+	ctx := context.Background()
+	backend := seal.NewMemoryBackend()
+	if err := RecoverInterruptedMigration(ctx, backend, "root-key", []string{t.TempDir()}); err != nil {
+		t.Fatalf("recover (no journal) = %v, want nil", err)
+	}
+}
+
+// initNoneBarrierBackend is initNoneBarrier over a caller-supplied backend.
+func initNoneBarrierBackend(t *testing.T, backend seal.StorageBackend, rootKeyPath string) *seal.StorageBarrier {
+	t.Helper()
+	b, err := seal.NewStorageBarrier(reencTestLogger(), backend,
+		seal.BarrierConfig{RootKeyPath: rootKeyPath, DeploymentID: 1}, seal.NewNoneStrategy())
+	if err != nil {
+		t.Fatalf("none barrier: %v", err)
+	}
+	if err := b.Initialize(context.Background(), seal.Credentials{}); err != nil {
+		t.Fatalf("init none: %v", err)
+	}
+	return b
 }
 
 // TestNodeStoreMigration_RejectsUnknownMechanism confirms an unknown mechanism

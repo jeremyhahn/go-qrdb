@@ -193,6 +193,64 @@ type MigrationJournal struct {
 	Error string `json:"error,omitempty"`
 }
 
+// RootKeyPath returns the storage key under which this barrier's sealed root
+// key is persisted. Exposed so an encryption migration can record the staging
+// barrier's path in its journal for crash recovery.
+func (b *StorageBarrier) RootKeyPath() string { return b.config.RootKeyPath }
+
+// LoadMigrationJournalFrom reads the migration journal directly from a storage
+// backend (without a constructed barrier), for crash recovery during boot
+// before the barrier is unsealed. rootKeyPath is the canonical root-key path;
+// the journal lives at rootKeyPath + the journal suffix. Returns (nil, nil)
+// when no journal is present.
+func LoadMigrationJournalFrom(ctx context.Context, backend StorageBackend, rootKeyPath string) (*MigrationJournal, error) {
+	blob, err := backend.Get(ctx, rootKeyPath+migrationJournalSuffix)
+	if err != nil {
+		if isSecretNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if len(blob) == 0 {
+		return nil, nil
+	}
+	var j MigrationJournal
+	if err := json.Unmarshal(blob, &j); err != nil {
+		return nil, err
+	}
+	return &j, nil
+}
+
+// ClearMigrationJournalFrom removes the migration journal directly from a
+// backend (crash-recovery cleanup). A missing journal is not an error.
+func ClearMigrationJournalFrom(ctx context.Context, backend StorageBackend, rootKeyPath string) error {
+	err := backend.Delete(ctx, rootKeyPath+migrationJournalSuffix)
+	if err != nil && isSecretNotFound(err) {
+		return nil
+	}
+	return err
+}
+
+// PersistedStrategy returns the sealing strategy recorded in the persisted
+// sealed root-key blob, or "" when the barrier is not yet initialized or the
+// blob cannot be read. It lets boot logic discover a barrier that was migrated
+// to a keyed strategy after the fact (enable-encryption) so it can auto-unseal
+// with the migrated strategy even when the static config still names the
+// pre-migration one — the barrier is self-describing from its persisted state.
+func (b *StorageBarrier) PersistedStrategy(ctx context.Context) StrategyID {
+	blob, err := b.base.Get(ctx, b.config.RootKeyPath)
+	if err != nil || len(blob) == 0 {
+		return ""
+	}
+	var sealed struct {
+		Strategy StrategyID `json:"strategy"`
+	}
+	if json.Unmarshal(blob, &sealed) != nil {
+		return ""
+	}
+	return sealed.Strategy
+}
+
 // Committed reports whether the migration has passed the point of no return
 // (PhaseCommitting or PhaseComplete). Recovery from a committed journal must
 // roll FORWARD to the keyed store and never restore the plaintext source.

@@ -1101,6 +1101,16 @@ func buildNodeSealSubsystem(ctx context.Context, cfg *qrdbconfig.Config, dataDir
 		barrierCfg.RootKeyPath = "root-key"
 	}
 
+	// Reconcile an encryption migration interrupted by a crash BEFORE the
+	// barrier is built or data stores are opened: roll a committed migration
+	// forward (so the keyed data + keyed root key are both in place) or a
+	// not-yet-committed one back. Idempotent and credential-free, so safe on
+	// every boot; a no-op when no migration journal is present.
+	if rerr := database.RecoverInterruptedMigration(ctx, sealBackend, barrierCfg.RootKeyPath,
+		[]string{filepath.Join(dataDir, "pebble"), filepath.Join(dataDir, "vector")}); rerr != nil {
+		log.Warn("node: encryption-migration crash recovery failed", "error", rerr)
+	}
+
 	switch {
 	case strategyID == seal.StrategyShamir:
 		shamirStrat, shamirErr := seal.NewShamirStrategy(
@@ -1127,6 +1137,23 @@ func buildNodeSealSubsystem(ctx context.Context, cfg *qrdbconfig.Config, dataDir
 	default:
 		// Passphrase / deferred software strategy.
 		strategies = append(strategies, seal.NewDeferredSoftwareStrategy())
+	}
+
+	// Restart-survival for enable-encryption: if the persisted root-key blob was
+	// migrated to a keyed strategy the config-derived set does not cover (e.g.
+	// the barrier was migrated none -> passphrase but the config still names
+	// "none"), register that strategy too so the node unseals correctly after a
+	// migration + restart. The barrier is self-describing from its persisted
+	// sealed root key.
+	if persisted := persistedRootKeyStrategy(ctx, sealBackend, barrierCfg.RootKeyPath); persisted != "" && !strategyRegistered(strategies, persisted) {
+		switch persisted {
+		case seal.StrategyPassphrase:
+			strategies = append(strategies, seal.NewDeferredSoftwareStrategy())
+		case seal.StrategyShamir:
+			if shamirStrat, e := seal.NewShamirStrategy(cfg.Seal.ShamirThreshold, cfg.Seal.ShamirTotal); e == nil {
+				strategies = append(strategies, shamirStrat)
+			}
+		}
 	}
 
 	for _, s := range strategies {
@@ -1203,6 +1230,13 @@ func attemptAutoUnseal(ctx context.Context, barrier *seal.StorageBarrier, sealCf
 	strategyID := seal.StrategyID(sealCfg.CanonicalStrategy())
 	if strategyID == "" {
 		strategyID = seal.StrategyPassphrase
+	}
+	// Prefer the strategy recorded in the persisted root key: a barrier migrated
+	// to a keyed strategy after the fact (enable-encryption) must auto-unseal
+	// with the migrated strategy even when the static config still names the
+	// pre-migration one (the config is not rewritten by the migration).
+	if persisted := barrier.PersistedStrategy(ctx); persisted != "" {
+		strategyID = persisted
 	}
 
 	var creds seal.Credentials

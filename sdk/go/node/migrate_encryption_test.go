@@ -86,6 +86,38 @@ func TestNode_EnableEncryption_SystemNoneToPassphrase(t *testing.T) {
 	got, gerr := kv2.Get(ctx, "post/migration")
 	require.NoError(t, gerr)
 	require.Equal(t, "ok", string(got))
+
+	// --- Restart-survival: close the node and re-open it from the SAME data
+	// dir with the config STILL naming strategy "none" (the migration does not
+	// rewrite the config). The boot must self-heal — registering the migrated
+	// (keyed) strategy from the persisted root key — and unseal with the
+	// passphrase, with all data intact.
+	require.NoError(t, n.Close())
+
+	cfg2 := qrdbconfig.DefaultConfig()
+	cfg2.Raft.DataDir = cfg.Raft.DataDir // same data dir
+	cfg2.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendPebble)}}
+	cfg2.Seal.Enabled = true
+	cfg2.Seal.Strategy = "none" // unchanged on disk — the node must self-heal
+	cfg2.Protocols.REST = false
+	cfg2.Protocols.GRPC = false
+	cfg2.Protocols.QUIC = false
+	cfg2.Protocols.Unix = false
+	cfg2.Protocols.MCP = false
+
+	// The keyed barrier requires the passphrase to unseal on boot.
+	n2, err := NewStandaloneNode(ctx, cfg2, nil, WithSealPassphrase([]byte("enable-enc-pass")))
+	require.NoError(t, err, "node must boot from a migrated data dir even with config strategy=none")
+	t.Cleanup(func() { _ = n2.Close() })
+	require.False(t, n2.IsSealed(), "migrated node must unseal on restart")
+
+	kv3 := n2.KVService()
+	require.NotNil(t, kv3)
+	for k, v := range want {
+		gotR, rerr := kv3.Get(ctx, k)
+		require.NoErrorf(t, rerr, "Get(%q) after restart", k)
+		require.Equalf(t, v, string(gotR), "value for %q after restart", k)
+	}
 }
 
 // TestNode_EnableEncryption_InPlaceMechanism repeats the migration with the

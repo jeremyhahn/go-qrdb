@@ -16,6 +16,7 @@ package database
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"os"
 
@@ -92,6 +93,16 @@ func (m *NodeStoreMigration) Run(ctx context.Context, opts seal.MigrationOptions
 	j, err := m.Source.BeginMigration(ctx, opts)
 	if err != nil {
 		return err
+	}
+	// Record the keyed target's root-key path so crash recovery can adopt its
+	// sealed blob if the process dies mid-commit (after the data dirs are
+	// swapped but before the canonical root key is updated).
+	if m.Target != nil {
+		j.StagingRootKeyPath = m.Target.RootKeyPath()
+		if cerr := m.Source.CheckpointMigration(ctx, j); cerr != nil {
+			err = cerr
+			return err
+		}
 	}
 	// Roll back staging copies if we fail before reaching the commit point.
 	defer func() {
@@ -177,6 +188,13 @@ func (m *NodeStoreMigration) Run(ctx context.Context, opts seal.MigrationOptions
 func swapDir(dir string) error {
 	keyedDir := dir + keyedSuffix
 	backupDir := dir + backupSuffix
+	// Idempotent for recovery: if the keyed copy is absent the swap already
+	// completed for this dir (dir holds the keyed data), so there is nothing to
+	// do. Without this guard a second call would move the keyed dir aside with
+	// no replacement, destroying it.
+	if _, err := os.Stat(keyedDir); os.IsNotExist(err) {
+		return nil
+	}
 	// Move original aside (if still present and not already backed up).
 	if _, err := os.Stat(dir); err == nil {
 		if _, berr := os.Stat(backupDir); berr == nil {
@@ -211,3 +229,87 @@ func (m *NodeStoreMigration) rollback(ctx context.Context, j *MigrationJournalRe
 // MigrationJournalRef is a local alias so the rollback signature reads clearly;
 // the journal type itself is owned by pkg/seal.
 type MigrationJournalRef = seal.MigrationJournal
+
+// RecoverInterruptedMigration reconciles a migration that was interrupted by a
+// crash, using the persisted journal, BEFORE the data stores are opened. It is
+// idempotent and credential-free (it only moves directories and the sealed
+// root-key blob, never deriving keys), so it is safe to run on every boot.
+//
+//   - No journal: nothing to do.
+//   - Committed (PhaseCommitting/Complete): ROLL FORWARD — finish any pending
+//     directory swaps and ensure the canonical root key is the keyed one
+//     (adopting the staging blob if the crash struck between the swaps and the
+//     root-key update). This rescues the dangerous mid-commit window where the
+//     data dirs are keyed but the root key is still "none" (which would
+//     otherwise wedge the node).
+//   - Not committed (pending/copying/verifying/failed): ROLL BACK — discard the
+//     keyed staging copies and restore any pre-migration backups.
+//
+// In both terminal cases the journal and transient artifacts are removed.
+func RecoverInterruptedMigration(ctx context.Context, backend seal.StorageBackend, canonicalRootKeyPath string, storeDirs []string) error {
+	j, err := seal.LoadMigrationJournalFrom(ctx, backend, canonicalRootKeyPath)
+	if err != nil {
+		return err
+	}
+	if j == nil {
+		return nil
+	}
+
+	if j.Committed() {
+		// Roll forward: ensure every store dir holds its keyed copy.
+		for _, dir := range storeDirs {
+			if serr := swapDir(dir); serr != nil {
+				return &MigrateStoreDirError{Dir: dir, Err: serr}
+			}
+		}
+		// Ensure the canonical root key is the keyed one. If the crash struck
+		// before the root-key update, the staging blob still holds it.
+		if persisted := persistedStrategy(ctx, backend, canonicalRootKeyPath); persisted == seal.StrategyNone || persisted == "" {
+			if j.StagingRootKeyPath != "" {
+				if blob, gerr := backend.Get(ctx, j.StagingRootKeyPath); gerr == nil && len(blob) > 0 {
+					if perr := backend.Put(ctx, canonicalRootKeyPath, blob); perr != nil {
+						return perr
+					}
+				}
+			}
+		}
+		// Cleanup: drop backups + staging blob + journal.
+		for _, dir := range storeDirs {
+			_ = os.RemoveAll(dir + backupSuffix)
+		}
+		if j.StagingRootKeyPath != "" {
+			_ = backend.Delete(ctx, j.StagingRootKeyPath)
+		}
+		return seal.ClearMigrationJournalFrom(ctx, backend, canonicalRootKeyPath)
+	}
+
+	// Roll back: discard keyed staging copies, restore any swapped originals.
+	for _, dir := range storeDirs {
+		_ = os.RemoveAll(dir + keyedSuffix)
+		if _, berr := os.Stat(dir + backupSuffix); berr == nil {
+			// A backup exists (a swap began): restore it over any partial dir.
+			_ = os.RemoveAll(dir)
+			_ = os.Rename(dir+backupSuffix, dir)
+		}
+	}
+	if j.StagingRootKeyPath != "" {
+		_ = backend.Delete(ctx, j.StagingRootKeyPath)
+	}
+	return seal.ClearMigrationJournalFrom(ctx, backend, canonicalRootKeyPath)
+}
+
+// persistedStrategy reads the sealing strategy from a persisted sealed root-key
+// blob, or "" when absent/undecodable.
+func persistedStrategy(ctx context.Context, backend seal.StorageBackend, rootKeyPath string) seal.StrategyID {
+	blob, err := backend.Get(ctx, rootKeyPath)
+	if err != nil || len(blob) == 0 {
+		return ""
+	}
+	var sealed struct {
+		Strategy seal.StrategyID `json:"strategy"`
+	}
+	if json.Unmarshal(blob, &sealed) != nil {
+		return ""
+	}
+	return sealed.Strategy
+}
