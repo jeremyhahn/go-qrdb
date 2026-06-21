@@ -74,6 +74,9 @@ type setTenantQuotasRequest struct {
 	MaxBackups           int64 `json:"max_backups"`
 	MaxVectorDims        int64 `json:"max_vector_dims"`
 	MaxTSMetrics         int64 `json:"max_ts_metrics"`
+	// SystemBarrierQuota governs an isolated tenant's use of the shared system
+	// barrier (bytes): 0 makes the option unavailable, -1 unlimited, >0 a cap.
+	SystemBarrierQuota int64 `json:"system_barrier_quota"`
 }
 
 // setTenantEntitlementsRequest is the JSON payload for
@@ -84,6 +87,9 @@ type setTenantEntitlementsRequest struct {
 	AllowVolumeStorage        bool     `json:"allow_volume_storage,omitempty"`
 	AllowSystemManagedBarrier bool     `json:"allow_system_managed_barrier,omitempty"`
 	AllowDedicatedWAL         bool     `json:"allow_dedicated_wal,omitempty"`
+	// AllowedBarrierModes lists the dedicated-barrier sealing strategies the
+	// isolated tenant may select (none/passphrase/shamir or an xkms hardware id).
+	AllowedBarrierModes []string `json:"allowed_barrier_modes,omitempty"`
 }
 
 // tenantBarrierInitRequest is the JSON payload for
@@ -447,6 +453,7 @@ func (s *Server) handleSetTenantQuotas(w http.ResponseWriter, r *http.Request, i
 		MaxBackups:           req.MaxBackups,
 		MaxVectorDims:        req.MaxVectorDims,
 		MaxTSMetrics:         req.MaxTSMetrics,
+		SystemBarrierQuota:   req.SystemBarrierQuota,
 	}
 
 	info, err := s.tenantSvc.UpdateQuotas(r.Context(), id, q)
@@ -473,6 +480,7 @@ func (s *Server) handleSetTenantEntitlements(w http.ResponseWriter, r *http.Requ
 		AllowVolumeStorage:        req.AllowVolumeStorage,
 		AllowSystemManagedBarrier: req.AllowSystemManagedBarrier,
 		AllowDedicatedWAL:         req.AllowDedicatedWAL,
+		AllowedBarrierModes:       req.AllowedBarrierModes,
 	}
 
 	info, err := s.tenantSvc.UpdateEntitlements(r.Context(), id, e)

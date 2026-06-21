@@ -64,14 +64,17 @@ WITH_CODEC_AVRO     ?= 1
 WITH_CODEC_PROTOBUF ?= 1
 
 # Object-storage (go-objstore) cloud backends, used by the objstore storage
-# backend and the backup/restore targets. Default on (server posture); tag names
-# match go-objstore exactly. The provider umbrellas enable the whole family.
-WITH_AWS_S3        ?= 1
-WITH_MINIO         ?= 1
-WITH_GCP_STORAGE   ?= 1
-WITH_AZURE_BLOB    ?= 1
-WITH_GLACIER       ?= 1
-WITH_AZURE_ARCHIVE ?= 1
+# backend and the backup/restore targets. These gate code in go-objstore (the
+# SDKs live THERE, never in qrdb's module): qrdb stays cloud-SDK-free and simple
+# by default. Default OFF — opt-in for deployments that want cloud backup
+# destinations; downstream composers (xkms, quicbaas) enable what they need. Tag
+# names match go-objstore exactly. The provider umbrellas enable the whole family.
+WITH_AWS_S3        ?= 0
+WITH_MINIO         ?= 0
+WITH_GCP_STORAGE   ?= 0
+WITH_AZURE_BLOB    ?= 0
+WITH_GLACIER       ?= 0
+WITH_AZURE_ARCHIVE ?= 0
 WITH_AWS   ?= 0
 WITH_GCP   ?= 0
 WITH_AZURE ?= 0

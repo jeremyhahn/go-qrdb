@@ -1122,3 +1122,7 @@ func TestUserFactorFromQUIC_Fields(t *testing.T) {
 		t.Errorf("expected type 'totp', got %q", got.Type)
 	}
 }
+
+func (m *mockTenantSvc) CheckBarrierMode(_ context.Context, _ string, _ seal.StrategyID) error {
+	return nil
+}

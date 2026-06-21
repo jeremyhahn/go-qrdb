@@ -1673,3 +1673,7 @@ func TestHandleTenantBarrierSealVote_ServiceError(t *testing.T) {
 		t.Fatalf("expected non-200 status on seal vote service error, got %d", rec.Code)
 	}
 }
+
+func (m *mockTenantService) CheckBarrierMode(_ context.Context, _ string, _ seal.StrategyID) error {
+	return nil
+}

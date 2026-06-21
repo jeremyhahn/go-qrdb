@@ -80,6 +80,8 @@ import type {
     DeleteNamespaceRequest,
     DeleteVectorRequest,
     EmbeddedConfig,
+    EnableEncryptionRequest,
+    EnableEncryptionResponse,
     ExportCertRequest,
     ExportCertResponse,
     GenerateCertRequest,
@@ -1049,6 +1051,12 @@ export class WailsClient implements Client {
             },
             status: async (): Promise<SealStatus> => {
                 return b.Status() as Promise<SealStatus>;
+            },
+            enableEncryption: async (req: EnableEncryptionRequest): Promise<EnableEncryptionResponse> => {
+                // Mirrors the other write-barrier bindings (e.g. BarrierUnseal,
+                // SubmitSealVote): the desktop Go SealBinding exposes a matching
+                // EnableEncryption method that delegates to the SDK seal client.
+                return b.EnableEncryption(toSnake(req)) as Promise<EnableEncryptionResponse>;
             },
         };
     }

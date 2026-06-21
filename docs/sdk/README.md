@@ -104,6 +104,37 @@ It provides the same client interface with two transport implementations:
 
 See [TypeScript SDK documentation](../typescript-sdk/README.md) for details.
 
+## Error Types & Interfaces (re-exports)
+
+The SDK re-exports canonical error sentinels and the encryption migrator interface
+for use by composing services. These are error types that appear in error responses
+across all transports:
+
+```go
+import qrdbsdk "github.com/jeremyhahn/go-qrdb/sdk/go"
+
+// Encryption-related errors
+_ = qrdbsdk.ErrSharedBarrierImmutable       // Tenant on shared barrier cannot enable encryption
+_ = qrdbsdk.ErrMigrationInProgress         // Enable-encryption already running
+_ = qrdbsdk.ErrMigrationSourceNotNone      // Invalid source strategy
+_ = qrdbsdk.ErrMigrationInvalidMechanism   // Bad migration mechanism
+_ = qrdbsdk.ErrMigrationInvalidAvailability
+_ = qrdbsdk.ErrMigrationInvalidTarget
+_ = qrdbsdk.ErrMigrationProviderUnavailable
+
+// Encryption migrator interface (for custom integrations)
+var _ qrdbsdk.EncryptionMigrator
+
+// Entitlement errors (quota/feature gating)
+var _ qrdbsdk.EntitlementError
+
+// Barrier scope for tenant-scoped enable-encryption (value type)
+scope := qrdbsdk.BarrierScope{
+    Kind:     qrdbsdk.ScopeTenant,
+    TenantID: "acme",
+}
+```
+
 ## TLS Configuration
 
 Certificate verification: configured CA file → OS trust store → reject.

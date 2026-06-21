@@ -19,6 +19,7 @@ import (
 	"strconv"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
+	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	qrdbpool "github.com/jeremyhahn/go-qrdb/pkg/storage/pool"
 )
 
@@ -613,37 +614,9 @@ type VolumePoolStrategyError = qrdbpool.VolumePoolStrategyError
 type VolumePoolPathError = qrdbpool.VolumePoolPathError
 
 // VolumeReattachError is returned when an IsolationVolume tenant cannot be
-// re-bound to its on-disk state during daemon boot (barrier re-registration,
-// unseal, or per-tenant Host construction failed).
-type VolumeReattachError struct {
-	TenantID string
-	Err      error
-}
-
-// Error implements the error interface.
-func (e *VolumeReattachError) Error() string {
-	return "qrdbd: re-attach volume tenant " + e.TenantID + ": " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error for errors.Is/As.
-func (e *VolumeReattachError) Unwrap() error { return e.Err }
+// re-bound to its on-disk state during daemon boot. Aliased from pkg/server.
+type VolumeReattachError = server.VolumeReattachError
 
 // RaftReattachError is returned when an IsolationRaft tenant cannot be re-bound
-// to its on-disk state during daemon boot (barrier re-registration, unseal, or
-// a dedicated database shard re-start failed).
-type RaftReattachError struct {
-	TenantID string
-	Database string
-	Err      error
-}
-
-// Error implements the error interface.
-func (e *RaftReattachError) Error() string {
-	if e.Database != "" {
-		return "qrdbd: re-attach raft tenant " + e.TenantID + "/" + e.Database + ": " + e.Err.Error()
-	}
-	return "qrdbd: re-attach raft tenant " + e.TenantID + ": " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error for errors.Is/As.
-func (e *RaftReattachError) Unwrap() error { return e.Err }
+// to its on-disk state during daemon boot. Aliased from pkg/server.
+type RaftReattachError = server.RaftReattachError

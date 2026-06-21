@@ -168,6 +168,26 @@ var (
 
 	// ErrNonceReuse is returned when a nonce is reused.
 	ErrNonceReuse = seal.ErrNonceReuse
+
+	// ErrMigrationInvalidTarget is returned when the requested target strategy
+	// for an enable-encryption migration is invalid (e.g. "none").
+	ErrMigrationInvalidTarget = seal.ErrMigrationInvalidTarget
+
+	// ErrMigrationSourceNotNone is returned when enable-encryption is requested
+	// on a barrier that is not using the none strategy (already keyed).
+	ErrMigrationSourceNotNone = seal.ErrMigrationSourceNotNone
+
+	// ErrMigrationInvalidMechanism is returned for an unknown enable-encryption
+	// migration mechanism.
+	ErrMigrationInvalidMechanism = seal.ErrMigrationInvalidMechanism
+
+	// ErrMigrationInvalidAvailability is returned for an unknown enable-encryption
+	// migration availability mode.
+	ErrMigrationInvalidAvailability = seal.ErrMigrationInvalidAvailability
+
+	// ErrMigrationInProgress is returned when an enable-encryption migration is
+	// already running for the scope.
+	ErrMigrationInProgress = seal.ErrMigrationInProgress
 )
 
 // ---------------------------------------------------------------------------

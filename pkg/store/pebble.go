@@ -33,6 +33,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
+	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
@@ -208,6 +209,9 @@ func (s *PebbleStateMachine) Open(_ context.Context, initialDir string, _ <-chan
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if s.opts != nil && s.opts.Logger == nil {
+		s.opts.Logger = pebbleStorage.NewLogger(nil)
+	}
 	db, err := pebble.Open(initialDir, s.opts)
 	if err != nil {
 		return 0, &OpenError{Dir: initialDir, Err: err}

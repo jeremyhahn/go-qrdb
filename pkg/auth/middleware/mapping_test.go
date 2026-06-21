@@ -652,6 +652,20 @@ func TestLookupREST_PathParamRoutes(t *testing.T) {
 		{"DELETE", "/v1/tenants/t-1", permission.TenantsDelete},
 		{"POST", "/v1/tenants/t-1/quotas", permission.TenantsUpdate},
 		{"PATCH", "/v1/tenants/t-1/entitlements", permission.TenantsSetEntitlements},
+		// Per-tenant barrier sub-routes (tenant-scoped; handler also checks {id}).
+		// These MUST resolve a permission or they are default-denied (403) with
+		// auth enabled, making the per-tenant barrier API unreachable.
+		{"GET", "/v1/tenants/t-1/barrier/status", permission.TenantBarrierStatus},
+		{"GET", "/v1/tenants/t-1/barrier/officers", permission.TenantBarrierOfficerList},
+		{"GET", "/v1/tenants/t-1/barrier/officers/claim-status", permission.TenantBarrierOfficerList},
+		{"POST", "/v1/tenants/t-1/barrier/init", permission.TenantBarrierInit},
+		{"POST", "/v1/tenants/t-1/barrier/unseal", permission.TenantBarrierUnseal},
+		{"POST", "/v1/tenants/t-1/barrier/unseal-share", permission.TenantBarrierUnseal},
+		{"POST", "/v1/tenants/t-1/barrier/seal", permission.TenantBarrierSeal},
+		{"POST", "/v1/tenants/t-1/barrier/seal-vote", permission.TenantBarrierSealVote},
+		{"POST", "/v1/tenants/t-1/barrier/officers", permission.TenantBarrierOfficerRegister},
+		{"POST", "/v1/tenants/t-1/barrier/officers/alice/claim/begin", permission.IdentityGated},
+		{"POST", "/v1/tenants/t-1/barrier/officers/alice/claim/complete", permission.IdentityGated},
 		// Database config sub-resources are updated with PATCH (not POST).
 		{"PATCH", "/v1/databases/db1/etcd", permission.DatabasesUpdate},
 		{"PATCH", "/v1/databases/db1/raft", permission.DatabasesUpdate},

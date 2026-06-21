@@ -138,6 +138,7 @@ func (s *qrdbServiceServer) TenantUpdateQuotas(ctx context.Context, req *pb.Tena
 		MaxBackups:           pbQ.GetMaxBackups(),
 		MaxVectorDims:        pbQ.GetMaxVectorDims(),
 		MaxTSMetrics:         pbQ.GetMaxTsMetrics(),
+		SystemBarrierQuota:   pbQ.GetSystemBarrierQuota(),
 	}
 
 	info, err := s.tenantSvc.UpdateQuotas(ctx, req.GetId(), q)
@@ -164,6 +165,7 @@ func (s *qrdbServiceServer) TenantUpdateEntitlements(ctx context.Context, req *p
 		AllowDedicatedRaft:        pbE.GetAllowDedicatedRaft(),
 		AllowVolumeStorage:        pbE.GetAllowVolumeStorage(),
 		AllowSystemManagedBarrier: pbE.GetAllowSystemManagedBarrier(),
+		AllowedBarrierModes:       pbE.GetAllowedBarrierModes(),
 	}
 
 	info, err := s.tenantSvc.UpdateEntitlements(ctx, req.GetId(), e)
@@ -209,6 +211,7 @@ func entitlementsToProto(e *quota.Entitlements) *pb.TenantEntitlements {
 		AllowDedicatedRaft:        e.AllowDedicatedRaft,
 		AllowVolumeStorage:        e.AllowVolumeStorage,
 		AllowSystemManagedBarrier: e.AllowSystemManagedBarrier,
+		AllowedBarrierModes:       e.AllowedBarrierModes,
 	}
 }
 
@@ -232,6 +235,7 @@ func quotaToProto(q *quota.Quotas) *pb.TenantQuotas {
 		MaxBackups:           q.MaxBackups,
 		MaxVectorDims:        q.MaxVectorDims,
 		MaxTsMetrics:         q.MaxTSMetrics,
+		SystemBarrierQuota:   q.SystemBarrierQuota,
 	}
 }
 

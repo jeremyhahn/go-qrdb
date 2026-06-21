@@ -125,6 +125,10 @@ type TenantQuotaDefaults struct {
 	MaxStorageBytes       int64 `yaml:"max_storage_bytes"`
 	MaxDatabaseSizeBytes  int64 `yaml:"max_database_size_bytes"`
 	MaxDedicatedWALGroups int64 `yaml:"max_dedicated_wal_groups"`
+	// SystemBarrierQuota governs an isolated tenant's use of the shared system
+	// barrier (bytes): 0 (default) makes the option unavailable, -1 unlimited,
+	// >0 a cap accounted against the system tenant's storage.
+	SystemBarrierQuota int64 `yaml:"system_barrier_quota"`
 }
 
 // ToQuotas converts the config defaults into a quota.Quotas value.
@@ -137,6 +141,7 @@ func (d TenantQuotaDefaults) ToQuotas() *quota.Quotas {
 		MaxStorageBytes:       d.MaxStorageBytes,
 		MaxDatabaseSizeBytes:  d.MaxDatabaseSizeBytes,
 		MaxDedicatedWALGroups: d.MaxDedicatedWALGroups,
+		SystemBarrierQuota:    d.SystemBarrierQuota,
 	}
 }
 
@@ -148,6 +153,11 @@ type TenantEntitlementDefaults struct {
 	AllowVolumeStorage        bool     `yaml:"allow_volume_storage"`
 	AllowSystemManagedBarrier bool     `yaml:"allow_system_managed_barrier"`
 	AllowDedicatedWAL         bool     `yaml:"allow_dedicated_wal"`
+	// AllowedBarrierModes lists the dedicated-barrier sealing strategies an
+	// isolated tenant may select (e.g. none/passphrase/shamir or an xkms hardware
+	// strategy id). Empty permits the built-in software defaults and fail-closes
+	// hardware modes.
+	AllowedBarrierModes []string `yaml:"allowed_barrier_modes"`
 }
 
 // ToEntitlements converts the config defaults into a quota.Entitlements value.
@@ -162,6 +172,7 @@ func (d TenantEntitlementDefaults) ToEntitlements() *quota.Entitlements {
 		AllowVolumeStorage:        d.AllowVolumeStorage,
 		AllowSystemManagedBarrier: d.AllowSystemManagedBarrier,
 		AllowDedicatedWAL:         d.AllowDedicatedWAL,
+		AllowedBarrierModes:       d.AllowedBarrierModes,
 	}
 }
 
@@ -859,10 +870,16 @@ func (c SealConfig) ShareTTLDuration() (time.Duration, error) {
 // seal strategy. "software" is accepted as a deprecated alias for
 // "passphrase": rejecting it would hard-break existing configs that the
 // validation message itself documents as a supported deprecated alias.
+// "none" is a barrier-present-but-unencrypted strategy: the at-rest store is
+// wrapped by the barrier in zero-epoch (plaintext) format so it can later be
+// migrated to a keyed strategy in place via `qrdb barrier enable-encryption`
+// (see docs/seal/enabling-encryption.md). It is the canonical source state for
+// enabling encryption after the fact.
 var validSealStrategies = map[string]struct{}{
 	"passphrase": {},
 	"shamir":     {},
 	"software":   {},
+	"none":       {},
 }
 
 // sealStrategyAliases maps deprecated seal strategy spellings to their

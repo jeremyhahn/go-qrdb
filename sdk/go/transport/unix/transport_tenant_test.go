@@ -461,3 +461,7 @@ func TestTransport_TenantBarrier_ClosedTransport(t *testing.T) {
 		})
 	}
 }
+
+func (m *mockTenantBarrierSvc) CheckBarrierMode(_ context.Context, _ string, _ seal.StrategyID) error {
+	return nil
+}

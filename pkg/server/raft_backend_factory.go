@@ -48,6 +48,12 @@ var ErrRaftDatabaseUnknown = errors.New("server: dedicated-raft database not fou
 // without the shared host, barrier registry, or database-info source configured.
 var ErrRaftBackendUnavailable = errors.New("server: raft backend factory not configured")
 
+// ErrShardMigrationInProgress is returned by Services while a tenant's dedicated
+// raft shards are being recycled by an encryption migration. It is retryable:
+// once the keyed barrier is installed and the shards re-attach, the resolve
+// succeeds.
+var ErrShardMigrationInProgress = errors.New("server: tenant raft shard encryption migration in progress")
+
 // RaftBackendError wraps a failure starting, resolving, or stopping a dedicated
 // per-database raft shard. It identifies the (tenant, db) pair and the operation.
 type RaftBackendError struct {
@@ -82,6 +88,7 @@ type raftShard struct {
 	tenantID string
 	database string
 	shardID  uint64
+	dataDir  string // absolute shard DataDir (absDir); SM Pebble at {dataDir}/shard-{shardID}
 	hub      *watch.Hub
 	lessor   *lease.Lessor
 	services *DatabaseServices
@@ -143,6 +150,19 @@ type RaftBackendFactory struct {
 
 	mu     sync.Mutex
 	shards map[raftShardKey]*raftShard
+
+	// migrating marks tenant IDs whose barrier is mid-encryption-recycle. While
+	// set, Services returns ErrShardMigrationInProgress for ANY of that tenant's
+	// databases instead of lazily rebuilding a shard against the stale
+	// (pre-migration) tenant barrier — the IsolationRaft analogue of
+	// TenantHostRegistry.migrating. Keyed by tenantID (string).
+	migrating sync.Map
+
+	// recodeOverride, when non-nil, replaces the per-store re-encryption step in
+	// MigrateTenantEncryption. It is a TEST-ONLY seam used to inject a recode
+	// failure and exercise the crash-safe rollback path (staging removal, journal
+	// failure, barrier-untouched, shard re-attach). Production leaves it nil.
+	recodeOverride recodeFunc
 }
 
 // RaftBackendOption customizes a RaftBackendFactory.
@@ -273,6 +293,14 @@ func (f *RaftBackendFactory) Services(ctx context.Context, tenantID, db string) 
 	key := raftShardKey{tenantID: tenantID, database: db}
 	if rs, ok := f.shards[key]; ok {
 		return rs.services, nil
+	}
+	// Do not lazily rebuild any shard whose TENANT barrier is mid-recycle: it would
+	// open the stale (pre-migration) barrier against data being re-encrypted and
+	// cache the broken shard. Guard is tenant-granular (keyed by tenantID) so a db
+	// that was not yet started when the recycle began is also blocked. The caller
+	// retries once the migration completes.
+	if _, migrating := f.migrating.Load(tenantID); migrating {
+		return nil, &RaftBackendError{TenantID: tenantID, Database: db, Op: "resolve", Err: ErrShardMigrationInProgress}
 	}
 
 	tb, err := f.barrierReg.GetTenant(tenantID)
@@ -484,6 +512,7 @@ func (f *RaftBackendFactory) startShardAsMember(
 		tenantID:     tenantID,
 		database:     db,
 		shardID:      shardID,
+		dataDir:      absDir,
 		hub:          hub,
 		lessor:       lessor,
 		services:     buildDataPlaneServices(f.adapter, shardID, hub),

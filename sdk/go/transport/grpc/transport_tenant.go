@@ -134,6 +134,7 @@ func (t *Transport) UpdateTenantQuotas(ctx context.Context, req *transport.Updat
 			MaxBackups:           req.Quotas.MaxBackups,
 			MaxVectorDims:        req.Quotas.MaxVectorDims,
 			MaxTsMetrics:         req.Quotas.MaxTSMetrics,
+			SystemBarrierQuota:   req.Quotas.SystemBarrierQuota,
 		},
 	})
 	if err != nil {
@@ -157,6 +158,7 @@ func (t *Transport) UpdateTenantEntitlements(ctx context.Context, req *transport
 			AllowDedicatedRaft:        req.Entitlements.AllowDedicatedRaft,
 			AllowVolumeStorage:        req.Entitlements.AllowVolumeStorage,
 			AllowSystemManagedBarrier: req.Entitlements.AllowSystemManagedBarrier,
+			AllowedBarrierModes:       req.Entitlements.AllowedBarrierModes,
 		},
 	})
 	if err != nil {
@@ -452,6 +454,7 @@ func protoToTenantInfo(resp *pb.TenantResponse) transport.TenantInfo {
 			MaxBackups:           pbQ.GetMaxBackups(),
 			MaxVectorDims:        pbQ.GetMaxVectorDims(),
 			MaxTSMetrics:         pbQ.GetMaxTsMetrics(),
+			SystemBarrierQuota:   pbQ.GetSystemBarrierQuota(),
 		}
 		info.Quotas = q
 	}
@@ -462,6 +465,7 @@ func protoToTenantInfo(resp *pb.TenantResponse) transport.TenantInfo {
 			AllowDedicatedRaft:        pbE.GetAllowDedicatedRaft(),
 			AllowVolumeStorage:        pbE.GetAllowVolumeStorage(),
 			AllowSystemManagedBarrier: pbE.GetAllowSystemManagedBarrier(),
+			AllowedBarrierModes:       pbE.GetAllowedBarrierModes(),
 		}
 	}
 

@@ -1670,3 +1670,7 @@ func TestMapAuthFactorGRPCError_AllCases(t *testing.T) {
 		})
 	}
 }
+
+func (m *mockTenantBarrierOnlySvc) CheckBarrierMode(_ context.Context, _ string, _ seal.StrategyID) error {
+	return nil
+}

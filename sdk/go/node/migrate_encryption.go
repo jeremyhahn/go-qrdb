@@ -47,28 +47,65 @@ func (e *MigrationNotSupportedError) Error() string {
 // strategy in place on this running node, with no process restart. It is the
 // node-level entrypoint behind the BarrierService enable-encryption operation.
 //
-// The node implements service.BarrierMigrationProvider via nodeMigrationProvider
-// and drives the migration through service.EncryptionMigrationService, which
-// enforces the scope/authority model (system = admin; tenant = the tenant's own
-// dedicated barrier only; shared-barrier tenants are rejected).
+// Scope routing is handled by the cached n.encMigrator (a
+// server.scopedEncryptionMigrator built in wireClientAndServer):
+//   - ScopeSystem  → nodeSystemMigrator.EnableEncryption (holds migrateMu)
+//   - ScopeTenant  → server.TenantHostRegistry.MigrateEncryption (per-tenant guard)
+//
+// Both the direct in-process call here and the transport handlers on every
+// protocol server flow through the same scoped-router semantics, guaranteeing
+// identical routing, authority, and entitlement checks.
 func (n *Node) EnableEncryption(ctx context.Context, scope service.BarrierScope, opts seal.MigrationOptions) error {
-	n.migrateMu.Lock()
-	defer n.migrateMu.Unlock()
-
-	if n.barrierRegistry == nil {
-		return &MigrationNotSupportedError{Reason: "no barrier registry (seal not enabled)"}
+	if n.encMigrator == nil {
+		if n.barrierRegistry == nil {
+			return &MigrationNotSupportedError{Reason: "no barrier registry (seal not enabled)"}
+		}
+		return &MigrationNotSupportedError{Reason: "node not yet fully booted; call Unseal first"}
 	}
-	prov := &nodeMigrationProvider{node: n}
-	svc := service.NewEncryptionMigrationService(n.barrierRegistry, prov, n.logger)
+	return n.encMigrator.EnableEncryption(ctx, scope, opts)
+}
+
+// nodeSystemMigrator adapts *Node to service.EncryptionMigrator for the system
+// scope only. It holds n.migrateMu for the entire duration of each system
+// migration so the data-plane tear-down and rebuild are serialized. Tenant
+// scope is NOT handled here; the scoped router in n.encMigrator (built by
+// server.NewScopedEncryptionMigrator) intercepts tenant scope and routes it to
+// TenantHostRegistry.MigrateEncryption before this adapter is ever consulted.
+type nodeSystemMigrator struct {
+	node *Node
+}
+
+// EnableEncryption handles system-scope migration by building an
+// EncryptionMigrationService over the node's barrier registry and the
+// nodeMigrationProvider, then calling EnableSystemEncryption. The migrateMu
+// lock is held for the entire operation so concurrent system migrations are
+// serialized and the data-plane recycle (tear-down → re-encrypt → rebuild) is
+// atomic from the caller's perspective.
+func (m *nodeSystemMigrator) EnableEncryption(ctx context.Context, scope service.BarrierScope, opts seal.MigrationOptions) error {
 	switch scope.Kind {
 	case service.ScopeSystem:
+		m.node.migrateMu.Lock()
+		defer m.node.migrateMu.Unlock()
+
+		if m.node.barrierRegistry == nil {
+			return &MigrationNotSupportedError{Reason: "no barrier registry (seal not enabled)"}
+		}
+		prov := &nodeMigrationProvider{node: m.node}
+		svc := service.NewEncryptionMigrationService(m.node.barrierRegistry, prov, m.node.logger)
 		return svc.EnableSystemEncryption(ctx, opts)
 	case service.ScopeTenant:
-		return svc.EnableTenantEncryption(ctx, scope.TenantID, opts)
+		// Tenant scope must be routed via TenantHostRegistry, which recycles
+		// only the targeted tenant's Host (not the system data plane). The scoped
+		// router in Node.encMigrator intercepts tenant scope before reaching this
+		// adapter, so this branch is defensive dead code in normal operation.
+		return &MigrationNotSupportedError{Reason: "tenant scope must be routed via TenantHostRegistry (scoped router intercepted before this adapter)"}
 	default:
 		return &MigrationNotSupportedError{Reason: "unknown scope " + string(scope.Kind)}
 	}
 }
+
+// Compile-time check that nodeSystemMigrator implements service.EncryptionMigrator.
+var _ service.EncryptionMigrator = (*nodeSystemMigrator)(nil)
 
 // nodeMigrationProvider implements service.BarrierMigrationProvider against a
 // live Node, performing the online in-process data-plane recycle. It is
@@ -82,11 +119,14 @@ type nodeMigrationProvider struct {
 }
 
 // StoreDirs returns the encfs-wrapped store directories owned by the scoped
-// barrier on this node, filtered to those that exist.
+// barrier on this node, filtered to those that exist. Only system scope is
+// handled here; tenant scope is routed by the scoped router in Node.encMigrator
+// to TenantHostRegistry.MigrateEncryption before nodeMigrationProvider is
+// consulted, so the tenant branch below is defensive dead code.
 func (p *nodeMigrationProvider) StoreDirs(_ context.Context, scope service.BarrierScope) ([]string, error) {
 	n := p.node
 	if scope.Kind != service.ScopeSystem {
-		return nil, &MigrationNotSupportedError{Reason: "tenant-scoped migration is not yet wired on this node"}
+		return nil, &MigrationNotSupportedError{Reason: "tenant scope is handled by TenantHostRegistry via the scoped router; nodeMigrationProvider is system-only"}
 	}
 	if n.retainedStandalone == nil {
 		return nil, &MigrationNotSupportedError{Reason: "data-plane boot params not retained (clustered or sealed node)"}
@@ -106,29 +146,23 @@ func (p *nodeMigrationProvider) StoreDirs(_ context.Context, scope service.Barri
 }
 
 // MintKeyedTarget creates an initialized+unsealed keyed barrier over the seal
-// store at a staging root-key path, for the system scope.
+// store at a staging root-key path, for the system scope. Tenant scope is
+// routed by the scoped router to TenantHostRegistry before reaching here.
 func (p *nodeMigrationProvider) MintKeyedTarget(ctx context.Context, scope service.BarrierScope, opts seal.MigrationOptions) (*seal.StorageBarrier, error) {
 	n := p.node
 	if scope.Kind != service.ScopeSystem {
-		return nil, &MigrationNotSupportedError{Reason: "tenant-scoped migration is not yet wired on this node"}
+		return nil, &MigrationNotSupportedError{Reason: "tenant scope is handled by TenantHostRegistry via the scoped router; nodeMigrationProvider is system-only"}
 	}
 	strat, err := keyedStrategyFor(opts)
 	if err != nil {
 		return nil, err
 	}
-	// The barrier config MUST mirror buildNodeSealSubsystem's system barrier
-	// config (which sets only RootKeyPath, leaving DeploymentID at its zero
-	// value). DeploymentID participates in DEK derivation, so a mismatch here
-	// would encrypt the migrated data under a key the restart boot cannot
-	// reproduce. Keep this in lock-step with buildNodeSealSubsystem.
-	cfg := seal.BarrierConfig{
-		RootKeyPath: canonicalRootKeyPath(n) + stagingRootKeySuffix,
-	}
-	target, err := seal.NewStorageBarrier(n.logger, seal.NewStorageAdapter(n.sealStore), cfg, strat)
+	// Mint over the system barrier's exact backend + config (same DeploymentID,
+	// same RootKeyPath base). DeploymentID participates in DEK derivation, so
+	// minting via the source barrier guarantees the migrated data is reproducible
+	// by the normal boot path (which constructs the system barrier identically).
+	target, err := n.barrier.MintKeyedSibling(ctx, stagingRootKeySuffix, strat, opts.Credentials)
 	if err != nil {
-		return nil, err
-	}
-	if err := target.Initialize(ctx, opts.Credentials); err != nil {
 		return nil, err
 	}
 	p.creds = opts.Credentials
@@ -151,7 +185,7 @@ func (p *nodeMigrationProvider) Quiesce(_ context.Context, _ service.BarrierScop
 func (p *nodeMigrationProvider) Reopen(ctx context.Context, scope service.BarrierScope) error {
 	n := p.node
 	if scope.Kind != service.ScopeSystem {
-		return &MigrationNotSupportedError{Reason: "tenant-scoped migration is not yet wired on this node"}
+		return &MigrationNotSupportedError{Reason: "tenant scope is handled by TenantHostRegistry via the scoped router; nodeMigrationProvider is system-only"}
 	}
 	committedStrategy, err := canonicalRootKeyStrategy(ctx, n)
 	if err != nil {

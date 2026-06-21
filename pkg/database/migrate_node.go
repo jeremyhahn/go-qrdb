@@ -67,6 +67,35 @@ type NodeStoreMigration struct {
 	Target    *seal.StorageBarrier
 	StoreDirs []string
 	Logger    *slog.Logger
+
+	// journal optionally overrides where the crash-safe migration journal calls
+	// (Begin/Checkpoint/Finish/AdoptMigratedRootKey) are routed. When nil — the
+	// production default — they go to Source. It exists purely as a test seam for
+	// fault injection of the journal's defensive error branches; it never changes
+	// behaviour in production callers, which leave it unset.
+	journal migrationJournalStore
+}
+
+// migrationJournalStore captures exactly the crash-safe journal operations Run
+// drives during a migration. *seal.StorageBarrier satisfies it, so the live
+// barrier is the default implementation.
+type migrationJournalStore interface {
+	BeginMigration(context.Context, seal.MigrationOptions) (*seal.MigrationJournal, error)
+	CheckpointMigration(context.Context, *seal.MigrationJournal) error
+	FinishMigration(context.Context) error
+	AdoptMigratedRootKey(context.Context, *seal.StorageBarrier) error
+}
+
+// Compile-time assertion that the live barrier satisfies the journal seam.
+var _ migrationJournalStore = (*seal.StorageBarrier)(nil)
+
+// journalStore returns the journal sink: the test override when set, otherwise
+// the live Source barrier.
+func (m *NodeStoreMigration) journalStore() migrationJournalStore {
+	if m.journal != nil {
+		return m.journal
+	}
+	return m.Source
 }
 
 // Run executes the migration end to end with crash-safe journalling. On
@@ -90,30 +119,34 @@ func (m *NodeStoreMigration) Run(ctx context.Context, opts seal.MigrationOptions
 	src := atrest.New(m.Source)
 	dst := atrest.New(m.Target)
 
-	j, err := m.Source.BeginMigration(ctx, opts)
+	j, err := m.journalStore().BeginMigration(ctx, opts)
 	if err != nil {
 		return err
 	}
-	// Record the keyed target's root-key path so crash recovery can adopt its
-	// sealed blob if the process dies mid-commit (after the data dirs are
-	// swapped but before the canonical root key is updated).
-	if m.Target != nil {
-		j.StagingRootKeyPath = m.Target.RootKeyPath()
-		if cerr := m.Source.CheckpointMigration(ctx, j); cerr != nil {
-			err = cerr
-			return err
-		}
-	}
 	// Roll back staging copies if we fail before reaching the commit point.
+	// Registered BEFORE the StagingRootKeyPath checkpoint below so a failure of
+	// THAT checkpoint also rolls the journal to a terminal phase — otherwise a
+	// leftover non-terminal journal makes the next BeginMigration return
+	// ErrMigrationInProgress and wedge every retry.
 	defer func() {
 		if err != nil && !j.Committed() {
 			m.rollback(ctx, j)
 		}
 	}()
+	// Record the keyed target's root-key path so crash recovery can adopt its
+	// sealed blob if the process dies mid-commit (after the data dirs are
+	// swapped but before the canonical root key is updated).
+	if m.Target != nil {
+		j.StagingRootKeyPath = m.Target.RootKeyPath()
+		if cerr := m.journalStore().CheckpointMigration(ctx, j); cerr != nil {
+			err = cerr
+			return err
+		}
+	}
 
 	// --- Copy phase: re-encrypt each store into a keyed sibling. ----------
 	j.Phase = seal.PhaseCopying
-	if err = m.Source.CheckpointMigration(ctx, j); err != nil {
+	if err = m.journalStore().CheckpointMigration(ctx, j); err != nil {
 		return err
 	}
 	for _, dir := range m.StoreDirs {
@@ -127,14 +160,14 @@ func (m *NodeStoreMigration) Run(ctx context.Context, opts seal.MigrationOptions
 			return err
 		}
 		j.Stores[dir] = true
-		if err = m.Source.CheckpointMigration(ctx, j); err != nil {
+		if err = m.journalStore().CheckpointMigration(ctx, j); err != nil {
 			return err
 		}
 	}
 
 	// --- Verify phase: prove no data loss before the point of no return. --
 	j.Phase = seal.PhaseVerifying
-	if err = m.Source.CheckpointMigration(ctx, j); err != nil {
+	if err = m.journalStore().CheckpointMigration(ctx, j); err != nil {
 		return err
 	}
 	for _, dir := range m.StoreDirs {
@@ -146,7 +179,7 @@ func (m *NodeStoreMigration) Run(ctx context.Context, opts seal.MigrationOptions
 
 	// --- Commit phase: point of no return; recovery rolls FORWARD. --------
 	j.Phase = seal.PhaseCommitting
-	if err = m.Source.CheckpointMigration(ctx, j); err != nil {
+	if err = m.journalStore().CheckpointMigration(ctx, j); err != nil {
 		return err
 	}
 	// 1. Swap each keyed copy into place, keeping a backup of the original.
@@ -157,7 +190,7 @@ func (m *NodeStoreMigration) Run(ctx context.Context, opts seal.MigrationOptions
 		}
 	}
 	// 2. Adopt the keyed root key as the canonical root key.
-	if err = m.Source.AdoptMigratedRootKey(ctx, m.Target); err != nil {
+	if err = m.journalStore().AdoptMigratedRootKey(ctx, m.Target); err != nil {
 		return err
 	}
 	// 3. Remove the pre-migration backups now that the commit is durable.
@@ -167,10 +200,10 @@ func (m *NodeStoreMigration) Run(ctx context.Context, opts seal.MigrationOptions
 
 	// --- Done. -----------------------------------------------------------
 	j.Phase = seal.PhaseComplete
-	if err = m.Source.CheckpointMigration(ctx, j); err != nil {
+	if err = m.journalStore().CheckpointMigration(ctx, j); err != nil {
 		return err
 	}
-	if err = m.Source.FinishMigration(ctx); err != nil {
+	if err = m.journalStore().FinishMigration(ctx); err != nil {
 		return err
 	}
 	if m.Logger != nil {
@@ -223,7 +256,7 @@ func (m *NodeStoreMigration) rollback(ctx context.Context, j *MigrationJournalRe
 		_ = os.RemoveAll(dir + keyedSuffix)
 	}
 	j.Phase = seal.PhaseFailed
-	_ = m.Source.CheckpointMigration(ctx, j)
+	_ = m.journalStore().CheckpointMigration(ctx, j)
 }
 
 // MigrationJournalRef is a local alias so the rollback signature reads clearly;

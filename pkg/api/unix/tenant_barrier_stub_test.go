@@ -172,3 +172,7 @@ func (s *stubTenantBarrierSvc) TenantBarrierShamirSealVote(_ context.Context, _,
 
 // Compile-time interface check.
 var _ tenant.TenantServicer = (*stubTenantBarrierSvc)(nil)
+
+func (s *stubTenantBarrierSvc) CheckBarrierMode(_ context.Context, _ string, _ seal.StrategyID) error {
+	return nil
+}

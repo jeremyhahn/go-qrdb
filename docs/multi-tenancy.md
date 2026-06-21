@@ -118,6 +118,100 @@ Changing a tenant's isolation type after it holds data is rejected with
 
 ---
 
+## Encryption-at-rest on embedded nodes
+
+An embedded node (created via `sdk/go/node.NewStandaloneNode` or
+`NewClusteredNode`) can enable encryption on per-tenant barriers by using the
+`node.WithTenantIsolation()` option and calling `node.EnableEncryption()`. This
+drives the same encrypt-in-place recycle and per-node reconciliation as the
+daemon, with no duplication of migration logic. See [embedding.md](embedding.md)
+and [seal/enabling-encryption.md](seal/enabling-encryption.md) for the full
+API and migration details.
+
+---
+
+## Tenant barrier governance
+
+A tenant with a dedicated cryptographic barrier (`IsolationBarrier`, `IsolationVolume`, or `IsolationRaft`)
+may customize which sealing strategies are allowed and whether the shared system barrier can be used
+as a fallback. These settings are part of the **entitlements** and **quotas** planes and control at-rest
+encryption behavior per tenant.
+
+### AllowedBarrierModes — restrict permitted seal strategies
+
+`AllowedBarrierModes` is a list of seal strategy identifiers that an isolated tenant may select
+for its dedicated barrier. It gates both tenant-created barriers (via
+`POST /v1/tenants/{id}/barrier/init`) and system-initiated barriers (e.g., when
+`TenantInfo.BarrierAutoUnseal` is set to `true`).
+
+**Behavior:**
+
+- **Empty list** (default, most permissive): The tenant may use any built-in software sealing
+  strategy (`"none"`, `"passphrase"`, `"shamir"`). Hardware and cloud-KMS strategies (e.g.,
+  `"tpm2"`, `"pkcs11"`, `"aws-kms"`) are **fail-closed** — they must be explicitly granted to be
+  used.
+- **Non-empty list**: Exactly those strategy IDs are permitted; any unlisted strategy is rejected
+  with an `EntitlementError`. For example, `allowed_barrier_modes: ["passphrase", "tpm2"]`
+  permits only `passphrase` and TPM-backed strategies, rejecting `shamir` and others.
+
+**Configuration:**
+
+Per tenant:
+```bash
+qrdb tenant set-entitlement acme --allowed-barrier-modes none,passphrase,shamir
+```
+
+Deployment default (YAML):
+```yaml
+tenant:
+  default_entitlements:
+    allowed_barrier_modes: [passphrase]  # Only passphrase permitted
+```
+
+**Checked at:** Tenant barrier initialization (`TenantBarrierInitWithStrategy`), and when
+system-managed auto-unseal selects a strategy on behalf of the tenant.
+
+### SystemBarrierQuota — permit use of the shared system barrier
+
+`SystemBarrierQuota` gates whether an **isolated** tenant (one using `IsolationBarrier`, `IsolationVolume`,
+or `IsolationRaft`) may opt to use the **shared system barrier** for its encryption instead of a dedicated
+per-tenant barrier. This is independent of the tenant's `BarrierAutoUnseal` setting — a quota is about
+*whether* system-barrier data is permitted at all; `BarrierAutoUnseal` is about *how* a dedicated
+barrier's key is managed.
+
+**Behavior:**
+
+- **`0` (default, most restrictive)**: The tenant **may not** use the shared system barrier. The
+  option is unavailable; all barrier operations against this tenant must use a dedicated barrier.
+  Attempting to route data through the system barrier is rejected with `ErrSystemBarrierNotAllowed`.
+- **`-1`** (unlimited): The tenant may use the shared system barrier with no byte cap.
+- **`> 0`** (capped): The tenant may use the shared system barrier up to this many bytes. Usage is
+  tracked in `CurrentSystemBarrierBytes` and compared against the quota on each operation. Exceeding
+  the quota is rejected with `ErrQuotaExceeded`.
+
+**Configuration:**
+
+Per tenant:
+```bash
+qrdb tenant update-quotas acme --system-barrier-quota 1073741824  # 1 GiB
+```
+
+Deployment default (YAML):
+```yaml
+tenant:
+  default_quotas:
+    system_barrier_quota: 0  # Deny by default (secure)
+```
+
+**Helpers on `quota.Quotas`:**
+- `AllowsSystemBarrier() bool` — returns true iff `SystemBarrierQuota != 0`
+- `SystemBarrierBytesRemaining() int64` — how many more bytes the tenant may consume
+
+**Note:** The system tenant itself is **exempt** from this quota and always has unlimited access
+to its own barrier; this quota applies only to isolated non-system tenants.
+
+---
+
 ## The three governance planes
 
 The planes are deliberately kept orthogonal. A provisioning call must pass
@@ -166,7 +260,7 @@ drift (interval set by `tenant.quota_reconcile_interval`, default `5m`).
 
 ### Entitlements
 
-`quota.Entitlements` gates which tiers a plan may use at all — checked **before**
+`quota.Entitlements` gates which tiers and features a plan may use at all — checked **before**
 the numeric quota:
 
 | Field | Permits |
@@ -175,11 +269,12 @@ the numeric quota:
 | `AllowDedicatedRaft` | Provisioning dedicated Raft-backed databases |
 | `AllowVolumeStorage` | Provisioning databases on a dedicated volume |
 | `AllowSystemManagedBarrier` | Opting a dedicated-isolation tenant into system-managed barrier auto-unseal |
+| `AllowedBarrierModes` | The sealing strategies an isolated tenant may select for its dedicated barrier (e.g. `["passphrase","shamir","tpm2"]`); empty = built-in software defaults + fail-close hardware |
 
 A request for a mode or feature the plan does not grant is rejected with an
-`*EntitlementError`. The built-in defaults are conservative: prefix-only, with
-dedicated raft, volume storage, and system-managed barrier all denied until an
-operator grants them.
+`*EntitlementError`. The built-in defaults are conservative: prefix-only isolation,
+with dedicated raft, volume storage, system-managed barrier, and hardware seal
+strategies all denied until an operator grants them.
 
 ---
 
@@ -196,18 +291,21 @@ tenant:
     max_replicas_per_group: 3
     max_total_replicas: 3
     max_storage_bytes: 1073741824   # 1 GiB
+    system_barrier_quota: 0         # Isolated tenants denied system-barrier use by default
   default_entitlements:
     allowed_isolation_modes: [prefix]
     allow_dedicated_raft: false
     allow_volume_storage: false
     allow_system_managed_barrier: false
+    allowed_barrier_modes: []       # Empty = software defaults (none/passphrase/shamir); hardware fail-closed
   quota_reconcile_interval: 5m
 ```
 
 These are the built-in defaults: a tenant with no explicit plan may create up to
-5 databases, consume up to 1 GiB, and use only shared `prefix` isolation. The
-dedicated raft and volume tiers stay denied until the operator grants them. See
-[12-configuration.md](12-configuration.md) for the full reference.
+5 databases, consume up to 1 GiB, use only shared `prefix` isolation, and use only
+built-in software seal strategies. The dedicated raft and volume tiers, system-managed
+barrier, system-barrier quota, and hardware seal strategies all stay denied until the
+operator grants them. See [12-configuration.md](12-configuration.md) for the full reference.
 
 ---
 

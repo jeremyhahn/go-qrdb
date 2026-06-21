@@ -351,6 +351,38 @@ func (s *kvTenantService) CheckFeature(ctx context.Context, tenantID, feature st
 	return &quota.EntitlementError{TenantID: tenantID, Feature: feature}
 }
 
+// CheckBarrierMode returns nil if the tenant may use the given barrier sealing
+// strategy. The shared system-barrier option (seal.StrategySystemBarrier) is
+// gated by the tenant's SystemBarrierQuota (0 ⇒ unavailable); every other
+// (dedicated) mode is gated by AllowedBarrierModes. The system tenant is exempt.
+func (s *kvTenantService) CheckBarrierMode(ctx context.Context, tenantID string, mode seal.StrategyID) error {
+	if tenantID == SystemTenantID {
+		return nil
+	}
+	if mode == seal.StrategySystemBarrier {
+		info, err := s.GetTenant(ctx, tenantID)
+		if err != nil {
+			return err
+		}
+		q := info.Quotas
+		if q == nil {
+			q = &quota.Quotas{}
+		}
+		if q.AllowsSystemBarrier() {
+			return nil
+		}
+		return &quota.EntitlementError{TenantID: tenantID, Feature: "barrier_mode:" + string(mode)}
+	}
+	ents, err := s.effectiveEntitlements(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	if ents.AllowsBarrierMode(string(mode)) {
+		return nil
+	}
+	return &quota.EntitlementError{TenantID: tenantID, Feature: "barrier_mode:" + string(mode)}
+}
+
 // effectiveEntitlements returns the tenant's own entitlements when set,
 // otherwise the conservative built-in defaults (prefix-only).
 func (s *kvTenantService) effectiveEntitlements(ctx context.Context, tenantID string) (*quota.Entitlements, error) {

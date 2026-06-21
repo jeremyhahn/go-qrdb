@@ -155,3 +155,19 @@ func (e *AuthFactorWiringError) Error() string {
 
 // Unwrap returns the underlying error.
 func (e *AuthFactorWiringError) Unwrap() error { return e.Err }
+
+// TenantInfraError indicates that the per-tenant isolation stack (built by
+// server.BuildTenantInfra) could not be assembled or that a boot re-attach of
+// an existing IsolationVolume tenant failed. This is only returned when
+// WithTenantIsolation() is active.
+type TenantInfraError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *TenantInfraError) Error() string {
+	return "node: failed to build tenant infrastructure: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *TenantInfraError) Unwrap() error { return e.Err }

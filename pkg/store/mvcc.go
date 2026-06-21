@@ -143,6 +143,9 @@ func (s *MVCCStateMachine) Open(_ context.Context, initialDir string, _ <-chan s
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if s.opts != nil && s.opts.Logger == nil {
+		s.opts.Logger = pebbleStorage.NewLogger(nil)
+	}
 	db, err := pebble.Open(initialDir, s.opts)
 	if err != nil {
 		return 0, &OpenError{Dir: initialDir, Err: err}

@@ -3537,3 +3537,7 @@ func TestEmbeddedIndex_Dispatch_List(t *testing.T) {
 		t.Fatalf("dispatch: %v", err)
 	}
 }
+
+func (m *mockTenantService) CheckBarrierMode(_ context.Context, _ string, _ seal.StrategyID) error {
+	return nil
+}

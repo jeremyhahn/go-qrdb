@@ -519,11 +519,12 @@ func TestAll_TotalCount(t *testing.T) {
 	//   + 7 project + 4 ollama) = 328 total.
 	// + 7 SO share-distribution perms (3 seal:officer_*/submit_seal_vote
 	//   + 4 tenant_barrier:officer_*/claim_share/seal_vote) = 335 total.
-	// + 4 multi-tenant quota/entitlement perms (tenants:set_isolation,
-	//   tenants:set_entitlements, databases:create_raft,
-	//   databases:create_volume) = 339 total.
-	// + 1 enable-encryption migration perm (seal:enable_encryption) = 340 total.
-	const expectedTotal = 340
+	// + 5 multi-tenant quota/entitlement perms (tenants:set_isolation,
+	//   tenants:set_entitlements, tenants:set_quotas, databases:create_raft,
+	//   databases:create_volume) = 340 total.
+	// + 1 enable-encryption migration perm (seal:enable_encryption) = 341 total.
+	// + 1 tenant barrier enable-encryption perm (tenant_barrier:enable_encryption) = 342 total.
+	const expectedTotal = 342
 	all := All()
 	if len(all) != expectedTotal {
 		t.Fatalf("All() count: got %d, want %d", len(all), expectedTotal)

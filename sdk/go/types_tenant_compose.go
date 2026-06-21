@@ -103,6 +103,12 @@ type Entitlements = quota.Entitlements
 // pkg/quota.DefaultEntitlements.)
 var DefaultEntitlements = quota.DefaultEntitlements
 
+// EntitlementError is returned when a tenant requests a feature its plan does
+// not permit (e.g. a disallowed barrier mode, dedicated WAL, or isolation
+// tier). A composing service should map it to a 403 at its API boundary.
+// (Aliases pkg/quota.EntitlementError.)
+type EntitlementError = quota.EntitlementError
+
 // ---------------------------------------------------------------------------
 // Strategy registry interface + system-managed auto-unseal strategy
 // ---------------------------------------------------------------------------

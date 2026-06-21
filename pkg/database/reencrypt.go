@@ -24,7 +24,11 @@ import (
 	"github.com/cockroachdb/pebble/v2"
 	"github.com/cockroachdb/pebble/v2/vfs"
 
+	"github.com/jeremyhahn/go-quicraft/pkg/logdb/waldb"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 )
 
 // encfsMagic is the 4-byte sentinel that prefixes every encfs-encrypted file
@@ -92,6 +96,7 @@ func (e *ReencryptVerifyMismatchError) Error() string {
 func ReencryptPebbleStore(ctx context.Context, srcDir string, srcEnc *atrest.Encryptor, dstDir string, dstEnc *atrest.Encryptor) (int64, error) {
 	srcOpts := &pebble.Options{ReadOnly: true}
 	srcEnc.Apply(srcOpts)
+	srcOpts.Logger = pebblestore.NewLogger(nil)
 	src, err := pebble.Open(srcDir, srcOpts)
 	if err != nil {
 		return 0, &ReencryptOpenError{Dir: srcDir, Err: err}
@@ -100,6 +105,7 @@ func ReencryptPebbleStore(ctx context.Context, srcDir string, srcEnc *atrest.Enc
 
 	dstOpts := &pebble.Options{}
 	dstEnc.Apply(dstOpts)
+	dstOpts.Logger = pebblestore.NewLogger(nil)
 	dst, err := pebble.Open(dstDir, dstOpts)
 	if err != nil {
 		return 0, &ReencryptOpenError{Dir: dstDir, Err: err}
@@ -282,6 +288,40 @@ func copyFileRaw(srcPath, dstPath string) error {
 	return out.Close()
 }
 
+// ReencryptWALStore re-encrypts a Raft WAL/LogDB at srcDir — read under the
+// source barrier — into a freshly-opened LogDB at dstDir written under the
+// destination barrier, returning the number of Raft nodes copied. It is the
+// WAL counterpart to ReencryptPebbleStore, used for barriers that back a Raft
+// host (per-tenant IsolationVolume/IsolationRaft) whose replication log is
+// encrypted by go-quicraft (not encfs). A nil barrier denotes a plaintext side.
+func ReencryptWALStore(srcDir string, src *seal.StorageBarrier, dstDir string, dst *seal.StorageBarrier) (int, error) {
+	var srcWAL, dstWAL waldb.WALBarrier
+	if src != nil {
+		srcWAL = src.EpochBarrier()
+	}
+	if dst != nil {
+		dstWAL = dst.EpochBarrier()
+	}
+	return waldb.Reencrypt(srcDir, srcWAL, dstDir, dstWAL)
+}
+
+// SwapStoreDir atomically replaces dir with dir+keyedSuffix, moving the
+// original to dir+backupSuffix. It is the exported swap used by orchestrators
+// outside this package (e.g. the per-tenant host recycle in pkg/server) and is
+// idempotent for crash recovery (a no-op when the keyed copy is absent).
+func SwapStoreDir(dir string) error { return swapDir(dir) }
+
+// RemoveStoreBackup removes the pre-migration backup left by SwapStoreDir once
+// the commit is durable.
+func RemoveStoreBackup(dir string) { _ = os.RemoveAll(dir + backupSuffix) }
+
+// KeyedDirSuffix / BackupDirSuffix expose the staging/backup suffixes so
+// out-of-package orchestrators can clean up transient artifacts.
+const (
+	KeyedDirSuffix  = keyedSuffix
+	BackupDirSuffix = backupSuffix
+)
+
 // VerifyReencryptedStore confirms that the destination store at dstDir (read
 // through dstEnc) reproduces every key/value of the source store at srcDir
 // (read through srcEnc), and that neither contains records the other lacks. It
@@ -290,6 +330,7 @@ func copyFileRaw(srcPath, dstPath string) error {
 func VerifyReencryptedStore(ctx context.Context, srcDir string, srcEnc *atrest.Encryptor, dstDir string, dstEnc *atrest.Encryptor) error {
 	srcOpts := &pebble.Options{ReadOnly: true}
 	srcEnc.Apply(srcOpts)
+	srcOpts.Logger = pebblestore.NewLogger(nil)
 	src, err := pebble.Open(srcDir, srcOpts)
 	if err != nil {
 		return &ReencryptOpenError{Dir: srcDir, Err: err}
@@ -298,6 +339,7 @@ func VerifyReencryptedStore(ctx context.Context, srcDir string, srcEnc *atrest.E
 
 	dstOpts := &pebble.Options{ReadOnly: true}
 	dstEnc.Apply(dstOpts)
+	dstOpts.Logger = pebblestore.NewLogger(nil)
 	dst, err := pebble.Open(dstDir, dstOpts)
 	if err != nil {
 		return &ReencryptOpenError{Dir: dstDir, Err: err}

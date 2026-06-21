@@ -140,11 +140,12 @@ func Seal(recipientPub *ecdsa.PublicKey, meta Meta, plaintext []byte) (*Envelope
 // Receiver opens delivery envelopes addressed to one node, enforcing target
 // match, a freshness window, and replay defense before HPKE decryption.
 type Receiver struct {
-	priv   *ecdsa.PrivateKey
-	nodeID string
-	guard  *ReplayGuard
-	ttl    time.Duration
-	now    func() time.Time
+	priv    *ecdsa.PrivateKey
+	nodeID  string
+	guard   *ReplayGuard
+	noGuard bool
+	ttl     time.Duration
+	now     func() time.Time
 }
 
 // ReceiverOption configures a Receiver.
@@ -169,6 +170,19 @@ func WithReplayGuard(g *ReplayGuard) ReceiverOption {
 	}
 }
 
+// WithoutReplayGuard disables the per-nonce replay guard for this Receiver. Use
+// it ONLY when the same envelope is legitimately opened more than once and replay
+// is bounded by another mechanism. The cluster-migration receiver uses it: the
+// envelope lives in the consensus-protected replicated record (not the network),
+// it is HPKE-bound to its scope + target node, idempotency comes from the
+// migration generation guard, and a retryable per-node recycle re-opens the same
+// envelope on each pass — a replay guard would brick that legitimate retry. Do
+// NOT use it on the network-facing key-delivery receiver, where replay defense is
+// required.
+func WithoutReplayGuard() ReceiverOption {
+	return func(r *Receiver) { r.noGuard = true }
+}
+
 // NewReceiver builds a Receiver bound to this node's ECDSA P-256 mTLS private
 // key and its NodeID. The private key is validated as DHKEM-usable up front.
 func NewReceiver(priv *ecdsa.PrivateKey, nodeID string, opts ...ReceiverOption) (*Receiver, error) {
@@ -190,7 +204,7 @@ func NewReceiver(priv *ecdsa.PrivateKey, nodeID string, opts ...ReceiverOption) 
 	for _, opt := range opts {
 		opt(r)
 	}
-	if r.guard == nil {
+	if r.guard == nil && !r.noGuard {
 		r.guard = NewReplayGuard(r.ttl)
 	}
 	return r, nil
@@ -231,7 +245,7 @@ func (r *Receiver) Open(env *Envelope) ([]byte, error) {
 	// (each pinned for the full TTL) — a cheap memory-amplification DoS. A
 	// legitimate replay still decrypts identically here and then trips the
 	// guard; its re-decrypted plaintext is wiped before returning.
-	if r.guard.observe(env.Nonce) {
+	if r.guard != nil && r.guard.observe(env.Nonce) {
 		enclave.WipeBytes(plaintext)
 		return nil, ErrReplay
 	}

@@ -53,12 +53,27 @@ much they may consume.
 
 | Plane | Controls | Enforced at | State |
 |---|---|---|---|
-| RBAC permissions | which ops a principal may call | transport middleware | exists |
-| Numeric quotas | how many of a resource | service layer (pre-delegate) | partial (DBs only) |
-| Feature entitlements | which isolation tiers a plan permits | service layer (pre-quota) | none |
+| RBAC permissions | which ops a principal may call | transport middleware | complete |
+| Numeric quotas | how many of a resource + system-barrier byte budget | service layer (pre-delegate) | complete |
+| Feature entitlements | which isolation tiers + seal strategies a plan permits | service layer (pre-quota) | complete |
 
 RBAC (`databases:create`) and entitlements (plan allows dedicated raft?) are
 orthogonal — both must pass. Do **not** merge entitlements into RBAC roles.
+
+### Quota fields (numeric caps)
+
+| Field | Caps | Used for |
+|-------|------|----------|
+| `MaxDatabases`, `MaxRaftGroups`, `MaxReplicasPerGroup`, `MaxTotalReplicas`, `MaxStorageBytes`, `MaxDatabaseSizeBytes` | Resource limits | Controlling tenant provisioning |
+| **`SystemBarrierQuota`** | Bytes, gated (0=denied, -1=unlimited, >0=capped) | Controlling isolated tenants' use of the shared system barrier for encryption |
+
+### Entitlement fields (feature flags)
+
+| Field | Controls | Semantics |
+|-------|----------|-----------|
+| `AllowedIsolationModes` | Which isolation rungs a tenant may use | Empty list = default + others must be explicitly listed |
+| `AllowDedicatedRaft`, `AllowVolumeStorage`, `AllowSystemManagedBarrier` | Which features are available | Boolean: true = enabled, false = disabled |
+| **`AllowedBarrierModes`** | Which sealing strategies a tenant's dedicated barrier may use | Empty list = built-in software (none/passphrase/shamir) only; non-empty = exact allowlist; hardware strategies fail-closed by default |
 
 ## Phases
 

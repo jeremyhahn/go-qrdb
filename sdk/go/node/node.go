@@ -85,6 +85,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"log/slog"
 
@@ -98,6 +99,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	raftbackend "github.com/jeremyhahn/go-qrdb/pkg/backend/raft"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
+	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
@@ -109,6 +111,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/file"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
@@ -175,6 +178,19 @@ type nodeOptions struct {
 	// forwarded to the embedded transport via embedded.WithFactorVerifier,
 	// which keys the verifier by its Type() (last-write-wins per type).
 	loginFactorVerifiers []embedded.FactorVerifier
+
+	// tenantIsolation enables the IsolationVolume tenant stack. When true,
+	// completeStandaloneBoot calls server.BuildTenantInfra to restore volume
+	// tenants and wire the TenantHostRegistry into the multi-protocol server and
+	// the scoped encryption migrator. Default false (no behavior change for
+	// existing embedders).
+	tenantIsolation bool
+
+	// defaultTenantEntitlements are the operator-configured default feature
+	// entitlements injected into lifecycle.Infra so the built-in TenantService
+	// allows the isolation modes and features needed by the embedder. When nil
+	// the TenantService uses quota.DefaultEntitlements (prefix isolation only).
+	defaultTenantEntitlements *quota.Entitlements
 }
 
 // NodeOption is a functional option for NewStandaloneNode / NewClusteredNode.
@@ -251,6 +267,27 @@ func WithLoginFactorVerifier(v embedded.FactorVerifier) NodeOption {
 		}
 		o.loginFactorVerifiers = append(o.loginFactorVerifiers, v)
 	}
+}
+
+// WithTenantIsolation enables IsolationVolume tenant support on the node.
+// When set, completeStandaloneBoot calls server.BuildTenantInfra to restore
+// persisted volume tenants and wires the TenantHostRegistry into the
+// multi-protocol server and the scoped encryption migrator so per-tenant
+// enable-encryption reaches the right recycle path. Default false: no
+// behavior change for existing embedders. Requires cfg.Seal.Enabled and at
+// least one configured volume pool.
+func WithTenantIsolation() NodeOption {
+	return func(o *nodeOptions) { o.tenantIsolation = true }
+}
+
+// WithDefaultTenantEntitlements injects the operator-configured default
+// feature entitlements into the node's built-in TenantService. This
+// overrides the conservative quota.DefaultEntitlements (prefix isolation
+// only) so the embedder can permit IsolationVolume, dedicated volume
+// storage, system-managed barriers, and other enterprise features without
+// standing up a separate TenantService. A nil argument is accepted (no-op).
+func WithDefaultTenantEntitlements(ent *quota.Entitlements) NodeOption {
+	return func(o *nodeOptions) { o.defaultTenantEntitlements = ent }
 }
 
 // ---------------------------------------------------------------------------
@@ -399,9 +436,46 @@ type Node struct {
 	// keyed barrier without a process restart. Nil for clustered/memory nodes.
 	retainedStandalone *pendingStandaloneBoot
 
-	// migrateMu serializes in-process encryption migrations so only one runs at
-	// a time (each tears down and rebuilds the data plane).
+	// migrateMu serializes in-process system-scope encryption migrations so only
+	// one system migration runs at a time (each tears down and rebuilds the data
+	// plane). Per-tenant migrations use the TenantHostRegistry's per-tenant
+	// migrating guard and do not contend on this mutex.
 	migrateMu sync.Mutex
+
+	// tenantIsolation records whether WithTenantIsolation() was supplied at
+	// construction. Copied from nodeOptions so completeStandaloneBoot can
+	// consult it after Unseal completes (nodeOptions is a local variable in the
+	// constructor).
+	tenantIsolation bool
+
+	// defaultTenantEntitlements are forwarded to lifecycle.Infra so the built-in
+	// TenantService permits the isolation modes and features the embedder needs.
+	defaultTenantEntitlements *quota.Entitlements
+
+	// tenantHosts is the IsolationVolume per-tenant Host registry built by
+	// server.BuildTenantInfra when tenantIsolation is true. It is nil for nodes
+	// that do not opt in to tenant isolation.
+	tenantHosts *server.TenantHostRegistry
+
+	// raftBackend is the IsolationRaft factory. Non-nil on a clustered node
+	// that has WithTenantIsolation() set and a configured barrier registry.
+	// It is shared with wireClientAndServer (which adds
+	// server.WithRaftBackendFactory) and with the scoped encryption migrator
+	// so tenant-scope enable-encryption reaches per-raft-shard recyclers.
+	raftBackend *server.RaftBackendFactory
+
+	// dbManager tracks the per-database metadata and shard-ID allocation for
+	// dedicated IsolationRaft databases. Created by completeClusteredBoot and
+	// closed in LIFO order after all raft shards are stopped and the main host
+	// is closed, mirroring the daemon's deferred manager.Close() ordering.
+	dbManager *database.Manager
+
+	// encMigrator is the scoped encryption migrator built in wireClientAndServer.
+	// It routes system scope to the nodeSystemMigrator (which holds migrateMu)
+	// and tenant scope to tenantHosts.MigrateEncryption. Both Node.EnableEncryption
+	// and the multi-protocol server's transport handlers route through the same
+	// underlying scoped-router semantics.
+	encMigrator service.EncryptionMigrator
 }
 
 // quicraftCloser is satisfied by *quicraft.Host and allows tests to inject
@@ -545,7 +619,8 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		// TenantService so per-tenant hardware/cloud seal strategies resolve.
 		// This must happen here (before BuildServices), not via server.New,
 		// because the TenantService is constructed inside BuildServices.
-		StrategyRegistry: server.ResolveCryptoOptions(pending.serverOpts...).StrategyRegistry,
+		StrategyRegistry:          server.ResolveCryptoOptions(pending.serverOpts...).StrategyRegistry,
+		DefaultTenantEntitlements: n.defaultTenantEntitlements,
 	})
 	if err != nil {
 		_ = localHost.Close()
@@ -554,6 +629,33 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		return &ServicesCreateError{Err: err}
 	}
 	n.svcNode = svcNode
+
+	// Build the IsolationVolume tenant stack when the caller opted in via
+	// WithTenantIsolation and the prerequisites are all present. The guard
+	// n.tenantHosts == nil ensures this runs only on the first boot, not on
+	// the in-process recycle triggered by an encryption migration (where
+	// n.tenantHosts is already set and the tenant Hosts keep running through
+	// the system data-plane tear-down and rebuild).
+	if n.tenantIsolation && n.barrierRegistry != nil && n.volumePool != nil && svcNode.Tenant != nil && n.tenantHosts == nil {
+		ti, tiErr := server.BuildTenantInfra(server.TenantInfraConfig{
+			Ctx:        ctx,
+			BarrierReg: n.barrierRegistry,
+			TenantSvc:  svcNode.Tenant,
+			VolumePool: n.volumePool,
+			Logger:     n.logger,
+			// Phase 1: Host, Manager, ReplicaID, RaftAddr, SystemTenant,
+			// PlacementStore, MultiplexLogDB are all left zero — IsolationRaft
+			// is not wired in the embedded standalone node yet (Phase 2).
+		})
+		if tiErr != nil {
+			_ = svcNode.Stop(context.Background())
+			_ = localHost.Close()
+			_ = n.stg.Close()
+			n.stg = nil
+			return &TenantInfraError{Err: tiErr}
+		}
+		n.tenantHosts = ti.Hosts
+	}
 
 	if err := n.wireClientAndServer(ctx, svcNode, pending.cfg, pending.serverOpts); err != nil {
 		_ = svcNode.Stop(context.Background())
@@ -627,6 +729,24 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 	}
 	n.host = host
 
+	// Build the database manager with a shard allocator so dedicated-raft
+	// database shard IDs are tracked and auto-incremented. OpenAll re-scans
+	// the databases directory, loads persisted meta.json records, and advances
+	// the allocator past the highest known shard ID — the same sequence the
+	// daemon performs before BuildServices. The manager is shared with
+	// lifecycle.BuildServices (which skips creating its own when non-nil) and
+	// with BuildTenantInfra (reattachRaftTenants walks manager.List()). The
+	// node owns the manager's lifetime; lifecycle does NOT add a closer for an
+	// externally-supplied manager.
+	shardAlloc := shard.NewAllocator()
+	dbManager := database.NewManager(n.logger, pending.cfg.Raft.DataDir, database.WithAllocator(shardAlloc))
+	if err := dbManager.OpenAll(); err != nil {
+		_ = host.Close()
+		_ = dbManager.Close()
+		return &StorageCreateError{Backend: "database-manager", Err: err}
+	}
+	n.dbManager = dbManager
+
 	hostAdapter := raftbackend.New(host)
 
 	svcNode, err := lifecycle.BuildServices(ctx, lifecycle.Infra{
@@ -639,13 +759,20 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		SealBarrier:       n.barrier,
 		BarrierRegistry:   n.barrierRegistry,
 		CredentialCoreSvc: n.credCoreSvc,
+		// DatabaseManager is shared so the shard allocator is not reset
+		// mid-flight and lifecycle does not open a second manager on the same
+		// data directory.
+		DatabaseManager: dbManager,
 		// Forward an injected (xkms) seal StrategyRegistry into the
 		// TenantService (constructed inside BuildServices) so per-tenant
 		// hardware/cloud seal strategies resolve in clustered mode too.
-		StrategyRegistry: server.ResolveCryptoOptions(pending.serverOpts...).StrategyRegistry,
+		StrategyRegistry:          server.ResolveCryptoOptions(pending.serverOpts...).StrategyRegistry,
+		DefaultTenantEntitlements: n.defaultTenantEntitlements,
 	})
 	if err != nil {
 		_ = host.Close()
+		_ = dbManager.Close()
+		n.dbManager = nil
 		return &ServicesCreateError{Err: err}
 	}
 	n.svcNode = svcNode
@@ -653,6 +780,61 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 	// Phase 2: bind the cluster-wide replicated volume-pool state now that the
 	// replicated system KV is available. Mirrors cmd/qrdbd/start.go.
 	n.bindReplicatedVolumePool(svcNode)
+
+	// Wire the IsolationRaft + IsolationVolume tenant infrastructure when the
+	// caller opted in via WithTenantIsolation and the prerequisites are present.
+	// The guard n.tenantHosts == nil prevents a double-build on the in-process
+	// encryption-migration recycle (where the clustered boot does not rebuild;
+	// only the standalone path rebuilds via completeStandaloneBoot). In the
+	// clustered path there is no in-process system-migration recycle today, but
+	// the guard matches the standalone pattern for consistency.
+	if n.tenantIsolation && n.barrierRegistry != nil && n.volumePool != nil && svcNode.Tenant != nil && n.tenantHosts == nil {
+		// Wait for the system shard to elect a leader before building tenant
+		// infrastructure. reattachRaftTenants calls ListTenants which requires
+		// a linearizable read; that read fails if the shard has no leader yet.
+		// The daemon relies on other boot steps (REST/gRPC/QUIC setup) to
+		// provide this window; the embedded node must wait explicitly.
+		if readyErr := waitSystemShardReady(host, shard.ShardKV); readyErr != nil {
+			_ = svcNode.Stop(context.Background())
+			_ = host.Close()
+			_ = dbManager.Close()
+			n.dbManager = nil
+			return readyErr
+		}
+		ti, tiErr := server.BuildTenantInfra(server.TenantInfraConfig{
+			Ctx:        ctx,
+			BarrierReg: n.barrierRegistry,
+			TenantSvc:  svcNode.Tenant,
+			VolumePool: n.volumePool,
+			Logger:     n.logger,
+			// Host is the shared quicraft.Host that carries IsolationRaft shards.
+			// Passing it here enables NewRaftBackendFactoryFromManager and
+			// reattachRaftTenants so clustered embedded nodes gain full
+			// IsolationRaft parity with the daemon. PlacementStore comes from
+			// the just-built svcNode so shard placement is replicated into the
+			// system KV. MultiplexLogDB is intentionally nil: the embedded node
+			// has no WAL mux; dedicated-raft DBs fall back to the shared system
+			// WAL (Option A from 4d Option C).
+			Host:           host,
+			Manager:        dbManager,
+			ReplicaID:      pending.cfg.Raft.ReplicaID,
+			RaftAddr:       pending.cfg.Raft.RaftAddress,
+			SystemTenant:   tenant.SystemTenantID,
+			PlacementStore: svcNode.PlacementStore,
+		})
+		if tiErr != nil {
+			_ = svcNode.Stop(context.Background())
+			_ = host.Close()
+			_ = dbManager.Close()
+			n.dbManager = nil
+			return &TenantInfraError{Err: tiErr}
+		}
+		n.tenantHosts = ti.Hosts
+		n.raftBackend = ti.Raft
+		if ti.Reconciler != nil {
+			go ti.Reconciler.Run(ctx)
+		}
+	}
 
 	if err := n.wireClientAndServer(ctx, svcNode, pending.cfg, pending.serverOpts); err != nil {
 		_ = svcNode.Stop(context.Background())
@@ -712,9 +894,31 @@ func (n *Node) Close() error {
 		record(n.svcNode.Stop(context.Background()))
 		n.svcNode = nil
 	}
+	// Stop dedicated IsolationRaft shards on the shared host BEFORE closing the
+	// host itself — each shard holds an active raft group registered with the
+	// host's quicraft state machine and its own Pebble instance rooted in the
+	// tenant DataRoot. Stopping them first allows quicraft to flush in-flight
+	// entries and release the shard's Pebble locks. Mirrors the daemon's
+	// raftBackendReg.CloseAll() call before host.Close() in start.go.
+	if n.raftBackend != nil {
+		record(n.raftBackend.CloseAll())
+		n.raftBackend = nil
+	}
 	if n.host != nil {
 		record(n.host.Close())
 		n.host = nil
+	}
+	// Close per-tenant IsolationVolume Hosts BEFORE sealing barriers: each
+	// tenant Host holds an open reference to its per-tenant barrier (via the
+	// per-tenant quicraft EpochBarrier) and its underlying Pebble instance.
+	// Closing them first ensures quicraft can shut down cleanly and that the
+	// per-tenant barriers' key material is wiped by the Host's own Close path
+	// before the registry-level SealAll below zeroes the root-key enclaves.
+	// Mirrors cmd/qrdbd/start.go shutdown ordering (hostReg.CloseAll before
+	// barrierRegistry.SealAll).
+	if n.tenantHosts != nil {
+		record(n.tenantHosts.CloseAll())
+		n.tenantHosts = nil
 	}
 	// Seal before dropping references: Seal zeroes the EpochBarrier root
 	// key and DEKs and is idempotent, so a still-sealed barrier is a no-op.
@@ -753,6 +957,15 @@ func (n *Node) Close() error {
 		record(n.stg.Close())
 		n.stg = nil
 		n.pebbleDB = nil
+	}
+	// Close the database manager last — after all raft shards, host, and
+	// storage are down — mirroring the daemon's deferred dbManager.Close()
+	// at the top of its run function (last to run, LIFO). The manager holds
+	// only metadata bookkeeping and in-memory placeholder backends for raft
+	// databases; closing it is always safe at this point.
+	if n.dbManager != nil {
+		record(n.dbManager.Close())
+		n.dbManager = nil
 	}
 	return firstErr
 }
@@ -801,9 +1014,11 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 	}
 
 	n := &Node{
-		logger:               log,
-		sessionIssuer:        nOpts.sessionIssuer,
-		loginFactorVerifiers: nOpts.loginFactorVerifiers,
+		logger:                    log,
+		sessionIssuer:             nOpts.sessionIssuer,
+		loginFactorVerifiers:      nOpts.loginFactorVerifiers,
+		tenantIsolation:           nOpts.tenantIsolation,
+		defaultTenantEntitlements: nOpts.defaultTenantEntitlements,
 	}
 
 	backendType, dataDir, err := resolveBackend(cfg)
@@ -895,7 +1110,8 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 		// TenantService even on the no-seal data path, so the option a
 		// composer passes via server.WithStrategyRegistry is honored rather
 		// than silently dropped.
-		StrategyRegistry: server.ResolveCryptoOptions(serverOpts...).StrategyRegistry,
+		StrategyRegistry:          server.ResolveCryptoOptions(serverOpts...).StrategyRegistry,
+		DefaultTenantEntitlements: n.defaultTenantEntitlements,
 	})
 	if err != nil {
 		_ = localHost.Close()
@@ -952,9 +1168,11 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 	}
 
 	n := &Node{
-		logger:               log,
-		sessionIssuer:        nOpts.sessionIssuer,
-		loginFactorVerifiers: nOpts.loginFactorVerifiers,
+		logger:                    log,
+		sessionIssuer:             nOpts.sessionIssuer,
+		loginFactorVerifiers:      nOpts.loginFactorVerifiers,
+		tenantIsolation:           nOpts.tenantIsolation,
+		defaultTenantEntitlements: nOpts.defaultTenantEntitlements,
 	}
 
 	dataDir := cfg.Raft.DataDir
@@ -1356,11 +1574,44 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	if n.authFactorSvc != nil {
 		allOpts = append(allOpts, server.WithAuthFactorService(n.authFactorSvc))
 	}
-	// Expose enable-encryption when a barrier registry is present: the node
-	// itself is the EncryptionMigrator (it performs the in-process recycle).
+
+	// Build the system-scope migrator adapter that holds migrateMu for the
+	// duration of each in-process system data-plane recycle.
+	sysMig := &nodeSystemMigrator{node: n}
+
+	// Expose enable-encryption when a barrier registry is present. The
+	// nodeSystemMigrator handles system scope; the server's
+	// effectiveEncryptionMigrator auto-composes a scopedEncryptionMigrator
+	// that routes tenant scope to TenantHostRegistry when tenantHosts is wired.
 	if n.barrierRegistry != nil {
-		allOpts = append(allOpts, server.WithEncryptionMigrator(n))
+		allOpts = append(allOpts,
+			server.WithEncryptionMigrator(sysMig),
+			server.WithBarrierRegistry(n.barrierRegistry),
+		)
 	}
+	// Wire the IsolationVolume tenant host registry into every transport so
+	// per-tenant data-plane requests reach the right isolated shard. Together
+	// with WithEncryptionMigrator(sysMig), this causes the server's internal
+	// effectiveEncryptionMigrator to build a scopedEncryptionMigrator that
+	// routes system scope to sysMig and tenant scope to tenantHosts.
+	if n.tenantHosts != nil {
+		allOpts = append(allOpts, server.WithTenantHostRegistry(n.tenantHosts))
+	}
+	// Wire the IsolationRaft backend factory into every transport so
+	// dedicated-raft tenant database requests resolve to the right live shard
+	// on the shared system host. Non-nil only on a clustered node that has
+	// WithTenantIsolation() set; nil on standalone nodes (which use IsolationVolume
+	// only in Phase 1).
+	if n.raftBackend != nil {
+		allOpts = append(allOpts, server.WithRaftBackendFactory(n.raftBackend))
+	}
+
+	// Build and cache the scoped migration router used by Node.EnableEncryption.
+	// This mirrors what the server builds internally via effectiveEncryptionMigrator,
+	// so the direct in-process call and every transport handler share the same
+	// routing semantics (system → sysMig → migrateMu; tenant → tenantHosts).
+	n.encMigrator = server.NewScopedEncryptionMigrator(sysMig, n.tenantHosts, n.raftBackend, n.barrierRegistry, svcNode.Tenant)
+
 	srv := server.New(serverCfg, svcNode.KV, svcNode.Admin, allOpts...)
 	if err := srv.Start(); err != nil {
 		_ = client.Close()
@@ -1669,6 +1920,30 @@ func createNodeEngine(backendType database.BackendType, stg storage.Storage, pdb
 		return nil, err
 	}
 	return eng, nil
+}
+
+// systemShardReadyTimeout is the maximum duration completeClusteredBoot waits
+// for the system shard to elect a leader before building tenant infrastructure.
+// Mirrors tenantShardLeaderTimeout in pkg/server/tenant_host.go.
+const systemShardReadyTimeout = 15 * time.Second
+
+// waitSystemShardReady blocks until the system shard has a leader or the
+// deadline elapses. It is called inside completeClusteredBoot before
+// BuildTenantInfra so that reattachRaftTenants can safely issue a linearizable
+// read against the replicated tenant store. The daemon relies on other
+// initialization steps (REST/gRPC/QUIC setup) to provide this window; the
+// embedded node must wait explicitly because boot completes without those.
+func waitSystemShardReady(host *quicraft.Host, shardID uint64) error {
+	deadline := time.Now().Add(systemShardReadyTimeout)
+	for {
+		if _, ok, err := host.GetLeaderID(shardID); err == nil && ok {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return &HostCreateError{Err: errors.New("system shard leader election timeout")}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 // buildClusteredHost creates the quicraft.Host and starts the KV shard.

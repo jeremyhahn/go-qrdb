@@ -860,6 +860,11 @@ func TestTenantService_BarrierInitWithStrategy_UnknownStrategy(t *testing.T) {
 	if _, err := svc.CreateTenant(ctx, tenantID, "Unknown Strategy", ""); err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
+	// Entitle the tenant to "tpm2" so the barrier-mode governance gate passes and
+	// the request reaches the strategy-resolution path under test.
+	if _, err := svc.UpdateEntitlements(ctx, tenantID, &quota.Entitlements{AllowedBarrierModes: []string{"tpm2"}}); err != nil {
+		t.Fatalf("UpdateEntitlements: %v", err)
+	}
 
 	_, err = svc.TenantBarrierInitWithStrategy(ctx, tenantID, "irrelevant", 0, 0, "tpm2")
 	var invErr *InvalidStrategyError
@@ -881,6 +886,10 @@ func TestTenantService_BarrierInitWithStrategy_NoRegistryUnknown(t *testing.T) {
 	const tenantID = "no-registry-hw"
 	if _, err := svc.CreateTenant(ctx, tenantID, "No Registry HW", ""); err != nil {
 		t.Fatalf("CreateTenant: %v", err)
+	}
+	// Entitle the tenant to "tpm2" so the request reaches the no-registry path.
+	if _, err := svc.UpdateEntitlements(ctx, tenantID, &quota.Entitlements{AllowedBarrierModes: []string{"tpm2"}}); err != nil {
+		t.Fatalf("UpdateEntitlements: %v", err)
 	}
 
 	_, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, "", 0, 0, "tpm2")
@@ -1369,5 +1378,51 @@ func TestTenantService_CreateInternalCallAllowsSystemID(t *testing.T) {
 	}
 	if info.ID != SystemTenantID {
 		t.Errorf("ID = %q, want %q", info.ID, SystemTenantID)
+	}
+}
+
+// TestTenantService_CheckBarrierMode_Governance proves the barrier-mode
+// governance gate: dedicated modes are gated by AllowedBarrierModes, the shared
+// system-barrier option by SystemBarrierQuota, and the system tenant is exempt.
+func TestTenantService_CheckBarrierMode_Governance(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctx := context.Background()
+	const tid = "gov"
+	if _, err := svc.CreateTenant(ctx, tid, "Gov", ""); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+
+	// Default entitlements (empty AllowedBarrierModes) -> software allowed.
+	if err := svc.CheckBarrierMode(ctx, tid, seal.StrategyPassphrase); err != nil {
+		t.Fatalf("passphrase should be allowed by default: %v", err)
+	}
+	// Hardware denied without an explicit grant.
+	if err := svc.CheckBarrierMode(ctx, tid, seal.StrategyID("tpm2")); err == nil {
+		t.Fatal("tpm2 must be denied without an explicit AllowedBarrierModes grant")
+	}
+
+	// System-barrier option denied while SystemBarrierQuota == 0 (default).
+	if err := svc.CheckBarrierMode(ctx, tid, seal.StrategySystemBarrier); err == nil {
+		t.Fatal("system-barrier option must be denied with SystemBarrierQuota=0")
+	}
+	// Granting the quota enables it.
+	if _, err := svc.UpdateQuotas(ctx, tid, &quota.Quotas{SystemBarrierQuota: 1 << 20}); err != nil {
+		t.Fatalf("UpdateQuotas: %v", err)
+	}
+	if err := svc.CheckBarrierMode(ctx, tid, seal.StrategySystemBarrier); err != nil {
+		t.Fatalf("system-barrier should be allowed with SystemBarrierQuota>0: %v", err)
+	}
+
+	// Granting tpm2 explicitly enables it.
+	if _, err := svc.UpdateEntitlements(ctx, tid, &quota.Entitlements{AllowedBarrierModes: []string{"tpm2"}}); err != nil {
+		t.Fatalf("UpdateEntitlements: %v", err)
+	}
+	if err := svc.CheckBarrierMode(ctx, tid, seal.StrategyID("tpm2")); err != nil {
+		t.Fatalf("tpm2 should be allowed once granted: %v", err)
+	}
+
+	// The system tenant is exempt from all gates.
+	if err := svc.CheckBarrierMode(ctx, SystemTenantID, seal.StrategySystemBarrier); err != nil {
+		t.Fatalf("system tenant must be exempt: %v", err)
 	}
 }

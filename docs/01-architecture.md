@@ -419,6 +419,21 @@ Package dependency summary:
 | `server`      | `service`, `config`, `api/*`     | `prometheus`    |
 | `config`      | (none)                           | `yaml.v3`       |
 | `cmd/qrdbd`   | `server`, `config`, `store`      | `cobra`         |
+| `sdk/go/node` | `server`, `config`, `store`      | (none)           |
+
+## 5.5. Daemon and Embedded Sibling Composition
+
+Both the standalone daemon (`cmd/qrdbd`) and the embedded SDK node (`sdk/go/node`)
+are sibling composition roots that call `server.New()` over the shared `pkg/server`
+core. The daemon is **not** built on the node; rather, both are built on the same
+foundation.
+
+A new compositor, `pkg/server.BuildTenantInfra(TenantInfraConfig)`, is used by
+both roots to wire the per-tenant infrastructure (tenant host registry, Raft backend
+factory, encryption migrator). This converges daemon and embedded paths on the same
+code for per-tenant features, enabling the embedded node to offer daemon-parity
+capabilities like tenant-scoped enable-encryption via `node.WithTenantIsolation()`
+and `node.EnableEncryption()`.
 
 ## 6. Key Design Decisions
 

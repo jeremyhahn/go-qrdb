@@ -41,8 +41,22 @@ func volTestLogger() *slog.Logger {
 
 // newVolumePooledRegistry builds a BarrierRegistry backed by a single-path
 // local volume pool and a per-tenant Pebble registry, suitable for registering
-// IsolationVolume tenants in package-server tests.
+// IsolationVolume tenants in package-server tests. The system barrier uses the
+// software (passphrase) strategy, so tenants inherit an encrypted posture.
 func newVolumePooledRegistry(t *testing.T) *seal.BarrierRegistry {
+	t.Helper()
+	sysStrat, err := seal.NewSoftwareStrategy([]byte("vol-host-test"))
+	if err != nil {
+		t.Fatalf("NewSoftwareStrategy: %v", err)
+	}
+	return newVolumePooledRegistryWith(t, sysStrat)
+}
+
+// newVolumePooledRegistryWith builds the same volume-pooled registry as
+// newVolumePooledRegistry but seals the system barrier with the supplied
+// strategy. Pass seal.NewNoneStrategy() to register UNENCRYPTED volume tenants
+// (the source state for an enable-encryption migration test).
+func newVolumePooledRegistryWith(t *testing.T, sysStrat seal.SealingStrategy) *seal.BarrierRegistry {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -67,10 +81,6 @@ func newVolumePooledRegistry(t *testing.T) *seal.BarrierRegistry {
 	}
 
 	sysStore := seal.NewMemoryBackend()
-	sysStrat, err := seal.NewSoftwareStrategy([]byte("vol-host-test"))
-	if err != nil {
-		t.Fatalf("NewSoftwareStrategy: %v", err)
-	}
 	system, err := seal.NewStorageBarrier(volTestLogger(), sysStore,
 		seal.BarrierConfig{RootKeyPath: "system/root-key"}, sysStrat)
 	if err != nil {

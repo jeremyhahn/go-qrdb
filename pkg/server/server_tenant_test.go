@@ -303,3 +303,7 @@ func TestWithTenantService_ServerIntegration(t *testing.T) {
 		t.Errorf("tenantSvc: got %v, want %v", srv.opts.tenantSvc, svc)
 	}
 }
+
+func (m *mockTenantServicer) CheckBarrierMode(_ context.Context, _ string, _ seal.StrategyID) error {
+	return nil
+}

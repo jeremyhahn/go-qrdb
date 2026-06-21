@@ -15247,8 +15247,11 @@ type TenantQuotas struct {
 	// tenant may hold across all of its raft groups. -1 = unlimited; 0 = default.
 	MaxReplicasPerGroup int64 `protobuf:"varint,13,opt,name=max_replicas_per_group,json=maxReplicasPerGroup,proto3" json:"max_replicas_per_group,omitempty"`
 	MaxTotalReplicas    int64 `protobuf:"varint,14,opt,name=max_total_replicas,json=maxTotalReplicas,proto3" json:"max_total_replicas,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// system_barrier_quota governs an isolated tenant's use of the shared system
+	// barrier (bytes): 0 makes the option unavailable, -1 unlimited, >0 a cap.
+	SystemBarrierQuota int64 `protobuf:"varint,15,opt,name=system_barrier_quota,json=systemBarrierQuota,proto3" json:"system_barrier_quota,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *TenantQuotas) Reset() {
@@ -15379,6 +15382,13 @@ func (x *TenantQuotas) GetMaxTotalReplicas() int64 {
 	return 0
 }
 
+func (x *TenantQuotas) GetSystemBarrierQuota() int64 {
+	if x != nil {
+		return x.SystemBarrierQuota
+	}
+	return 0
+}
+
 // TenantEntitlements describes which isolation tiers and dedicated-storage
 // features a tenant's plan permits.
 type TenantEntitlements struct {
@@ -15389,8 +15399,11 @@ type TenantEntitlements struct {
 	// allow_system_managed_barrier permits a tenant to opt into the
 	// system-managed auto-unseal key-management mode for its dedicated barrier.
 	AllowSystemManagedBarrier bool `protobuf:"varint,4,opt,name=allow_system_managed_barrier,json=allowSystemManagedBarrier,proto3" json:"allow_system_managed_barrier,omitempty"`
-	unknownFields             protoimpl.UnknownFields
-	sizeCache                 protoimpl.SizeCache
+	// allowed_barrier_modes lists the dedicated-barrier sealing strategies the
+	// isolated tenant may select (none/passphrase/shamir or an xkms hardware id).
+	AllowedBarrierModes []string `protobuf:"bytes,5,rep,name=allowed_barrier_modes,json=allowedBarrierModes,proto3" json:"allowed_barrier_modes,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *TenantEntitlements) Reset() {
@@ -15449,6 +15462,13 @@ func (x *TenantEntitlements) GetAllowSystemManagedBarrier() bool {
 		return x.AllowSystemManagedBarrier
 	}
 	return false
+}
+
+func (x *TenantEntitlements) GetAllowedBarrierModes() []string {
+	if x != nil {
+		return x.AllowedBarrierModes
+	}
+	return nil
 }
 
 // TenantResponse is the shared response shape for tenant CRUD operations.
@@ -23994,7 +24014,7 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\vshare_bytes\x18\x06 \x01(\fR\n" +
 	"shareBytes\"J\n" +
 	"%CeremonyEnrollExternalOfficerResponse\x12!\n" +
-	"\fsealed_share\x18\x01 \x01(\tR\vsealedShare\"\xb9\x04\n" +
+	"\fsealed_share\x18\x01 \x01(\tR\vsealedShare\"\xeb\x04\n" +
 	"\fTenantQuotas\x12#\n" +
 	"\rmax_databases\x18\x01 \x01(\x03R\fmaxDatabases\x12&\n" +
 	"\x0fmax_raft_groups\x18\x02 \x01(\x03R\rmaxRaftGroups\x12'\n" +
@@ -24011,12 +24031,14 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\x0emax_ts_metrics\x18\v \x01(\x03R\fmaxTsMetrics\x125\n" +
 	"\x17max_database_size_bytes\x18\f \x01(\x03R\x14maxDatabaseSizeBytes\x123\n" +
 	"\x16max_replicas_per_group\x18\r \x01(\x03R\x13maxReplicasPerGroup\x12,\n" +
-	"\x12max_total_replicas\x18\x0e \x01(\x03R\x10maxTotalReplicas\"\xf1\x01\n" +
+	"\x12max_total_replicas\x18\x0e \x01(\x03R\x10maxTotalReplicas\x120\n" +
+	"\x14system_barrier_quota\x18\x0f \x01(\x03R\x12systemBarrierQuota\"\xa5\x02\n" +
 	"\x12TenantEntitlements\x126\n" +
 	"\x17allowed_isolation_modes\x18\x01 \x03(\tR\x15allowedIsolationModes\x120\n" +
 	"\x14allow_dedicated_raft\x18\x02 \x01(\bR\x12allowDedicatedRaft\x120\n" +
 	"\x14allow_volume_storage\x18\x03 \x01(\bR\x12allowVolumeStorage\x12?\n" +
-	"\x1callow_system_managed_barrier\x18\x04 \x01(\bR\x19allowSystemManagedBarrier\"\x89\x02\n" +
+	"\x1callow_system_managed_barrier\x18\x04 \x01(\bR\x19allowSystemManagedBarrier\x122\n" +
+	"\x15allowed_barrier_modes\x18\x05 \x03(\tR\x13allowedBarrierModes\"\x89\x02\n" +
 	"\x0eTenantResponse\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12%\n" +

@@ -124,52 +124,53 @@ type Server struct {
 
 // serverOptions holds optional dependencies injected via ServerOption.
 type serverOptions struct {
-	tlsConfig       *tls.Config
-	caCertPool      *x509.CertPool
-	gatherer        prometheus.Gatherer
-	resolver        rest.LeaderAdminResolver
-	host            rest.Host
-	kvSvc           service.KVServicer
-	adminSvc        service.AdminServicer
-	userSvc         user.UserServicer
-	roleSvc         role.RoleServicer
-	certProv        cert.CertProvider
-	authMW          *authmw.AuthMiddleware
-	caBootstrapCert []byte
-	caBootstrapKey  []byte
-	batchSvc        service.BatchServicer
-	txSvc           service.TransactionServicer
-	mvccSvc         service.MVCCKVServicer
-	leaseSvc        service.LeaseServicer
-	lockSvc         service.LockServicer
-	tsSvc           service.TimeSeriesServicer
-	indexSvc        service.IndexServicer
-	vectorSvc       service.VectorServicer
-	embeddingSvc    service.EmbeddingServicer
-	ragSvc          service.RAGServicer
-	watchSvc        service.WatchServicer
-	databaseSvc     service.DatabaseServicer
-	dbManager       *database.Manager
-	barrierSvc      service.BarrierServicer
-	encMigrator     service.EncryptionMigrator
-	ceremonySvc     service.CeremonyServicer
-	credentialSvc   service.CredentialServicer
-	ceremonyCA      ceremony.CeremonyCA
-	collectionSvc   service.CollectionServicer
-	barrierRegistry *seal.BarrierRegistry
-	tenantDEKMgr    dek.TenantDEKManager
-	tenantSvc       tenant.TenantServicer
-	backupSvc       service.BackupServicer
-	rebalanceSvc    service.RebalanceServicer
-	dbRegistry      *DatabaseServiceRegistry
-	tenantHosts     *TenantHostRegistry
-	raftBackend     *RaftBackendFactory
-	quotaAccountant *quota.Accountant
-	webUI           http.Handler
-	auditLogger     audit.AuditLogger
-	authFactorSvc   service.AuthFactorServicer
-	custodianSvc    custodian.Servicer
-	soAuthenticator *auth.SOAuthenticator
+	tlsConfig          *tls.Config
+	caCertPool         *x509.CertPool
+	gatherer           prometheus.Gatherer
+	resolver           rest.LeaderAdminResolver
+	host               rest.Host
+	kvSvc              service.KVServicer
+	adminSvc           service.AdminServicer
+	userSvc            user.UserServicer
+	roleSvc            role.RoleServicer
+	certProv           cert.CertProvider
+	authMW             *authmw.AuthMiddleware
+	caBootstrapCert    []byte
+	caBootstrapKey     []byte
+	batchSvc           service.BatchServicer
+	txSvc              service.TransactionServicer
+	mvccSvc            service.MVCCKVServicer
+	leaseSvc           service.LeaseServicer
+	lockSvc            service.LockServicer
+	tsSvc              service.TimeSeriesServicer
+	indexSvc           service.IndexServicer
+	vectorSvc          service.VectorServicer
+	embeddingSvc       service.EmbeddingServicer
+	ragSvc             service.RAGServicer
+	watchSvc           service.WatchServicer
+	databaseSvc        service.DatabaseServicer
+	dbManager          *database.Manager
+	barrierSvc         service.BarrierServicer
+	encMigrator        service.EncryptionMigrator
+	clusterEncMigrator service.EncryptionMigrator
+	ceremonySvc        service.CeremonyServicer
+	credentialSvc      service.CredentialServicer
+	ceremonyCA         ceremony.CeremonyCA
+	collectionSvc      service.CollectionServicer
+	barrierRegistry    *seal.BarrierRegistry
+	tenantDEKMgr       dek.TenantDEKManager
+	tenantSvc          tenant.TenantServicer
+	backupSvc          service.BackupServicer
+	rebalanceSvc       service.RebalanceServicer
+	dbRegistry         *DatabaseServiceRegistry
+	tenantHosts        *TenantHostRegistry
+	raftBackend        *RaftBackendFactory
+	quotaAccountant    *quota.Accountant
+	webUI              http.Handler
+	auditLogger        audit.AuditLogger
+	authFactorSvc      service.AuthFactorServicer
+	custodianSvc       custodian.Servicer
+	soAuthenticator    *auth.SOAuthenticator
 
 	// sealStrategy overrides the default seal strategy used when no
 	// strategyRegistry is configured. When both are nil the daemon
@@ -386,6 +387,15 @@ func WithBarrierService(svc service.BarrierServicer) ServerOption {
 // the migration endpoint on the protocol servers that support it (REST today).
 func WithEncryptionMigrator(m service.EncryptionMigrator) ServerOption {
 	return func(o *serverOptions) { o.encMigrator = m }
+}
+
+// WithClusterEncryptionMigrator configures the cluster-coordination migrator the
+// transports use INSTEAD of the local scoped router: it writes the replicated
+// migration intent and seals per-node credentials, and the per-node reconcilers
+// drive the actual recycles. When set it takes precedence over the wrapped
+// scoped router in effectiveEncryptionMigrator.
+func WithClusterEncryptionMigrator(m service.EncryptionMigrator) ServerOption {
+	return func(o *serverOptions) { o.clusterEncMigrator = m }
 }
 
 // WithCeremonyService configures the ceremony service for all protocol servers.
@@ -893,8 +903,8 @@ func (s *Server) startREST() error {
 	if s.opts.barrierSvc != nil {
 		restOpts = append(restOpts, rest.WithBarrierService(s.opts.barrierSvc))
 	}
-	if s.opts.encMigrator != nil {
-		restOpts = append(restOpts, rest.WithEncryptionMigrator(s.opts.encMigrator))
+	if m := s.effectiveEncryptionMigrator(); m != nil {
+		restOpts = append(restOpts, rest.WithEncryptionMigrator(m))
 	}
 	if s.opts.pinBackend != nil {
 		restOpts = append(restOpts, rest.WithPINBackend(s.opts.pinBackend))
@@ -1012,8 +1022,8 @@ func (s *Server) startGRPC() error {
 	if s.opts.barrierSvc != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithBarrierService(s.opts.barrierSvc))
 	}
-	if s.opts.encMigrator != nil {
-		grpcOpts = append(grpcOpts, grpcapi.WithEncryptionMigrator(s.opts.encMigrator))
+	if m := s.effectiveEncryptionMigrator(); m != nil {
+		grpcOpts = append(grpcOpts, grpcapi.WithEncryptionMigrator(m))
 	}
 	if s.opts.pinBackend != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithPINBackend(s.opts.pinBackend))

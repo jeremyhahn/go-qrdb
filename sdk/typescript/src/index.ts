@@ -298,6 +298,8 @@ export type {
     SealStatus,
     BootstrapResult,
     UnsealProgress,
+    EnableEncryptionRequest,
+    EnableEncryptionResponse,
 
     // Officer / share-claim
     OfficerRegisterRequest,

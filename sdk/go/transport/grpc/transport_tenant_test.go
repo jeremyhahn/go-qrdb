@@ -534,3 +534,7 @@ func TestTransport_TenantBarrier_DeadlineRespected(t *testing.T) {
 		t.Fatal("expected deadline-exceeded error")
 	}
 }
+
+func (m *fakeTenantServicer) CheckBarrierMode(_ context.Context, _ string, _ seal.StrategyID) error {
+	return nil
+}

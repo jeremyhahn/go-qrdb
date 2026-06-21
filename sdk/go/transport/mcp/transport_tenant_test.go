@@ -575,3 +575,7 @@ func TestTenantBarrierStatus_Closed(t *testing.T) {
 		t.Fatalf("expected *transport.ClosedError, got %T", err)
 	}
 }
+
+func (m *mockTenantSvc) CheckBarrierMode(_ context.Context, _ string, _ seal.StrategyID) error {
+	return nil
+}

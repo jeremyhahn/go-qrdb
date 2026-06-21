@@ -30,6 +30,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 )
 
 const (
@@ -103,6 +104,11 @@ func NewWithDir(dataDir string, opts ...StorageOption) (*Storage, error) {
 	pOpts := &pebble.Options{}
 	for _, opt := range opts {
 		opt(pOpts)
+	}
+	// Route Pebble's internal WAL/compaction chatter to slog DEBUG unless an
+	// option already supplied a logger.
+	if pOpts.Logger == nil {
+		pOpts.Logger = pebblestore.NewLogger(nil)
 	}
 	db, err := pebble.Open(dataDir, pOpts)
 	if err != nil {

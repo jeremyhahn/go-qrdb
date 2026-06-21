@@ -27,11 +27,11 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/jeremyhahn/go-quicraft/pkg/enclave"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-quicraft/pkg/enclave"
 )
 
 // AdminURLResolver resolves the admin HTTPS base URL for a given Raft address.
@@ -153,6 +153,30 @@ func (s *Sender) fetchNodeKey(ctx context.Context, adminURL, expectedNodeID stri
 	return ecPub, nil
 }
 
+// SealFor authenticates the target replica's delivery certificate (chains to the
+// cluster CA AND its SPIFFE SAN matches target.NodeID) and HPKE-seals plaintext
+// to its verified public key, returning the envelope WITHOUT delivering it. It is
+// for callers that persist the per-recipient envelope themselves — e.g. a
+// cluster-migration coordinator embedding it in a replicated record — rather than
+// POSTing it. The same recipient-authentication that protects Deliver applies, so
+// the sealed credential is bound to the genuine target node. The caller owns
+// plaintext and must wipe it after SealFor returns.
+func (s *Sender) SealFor(ctx context.Context, target placement.Replica, meta keydelivery.Meta, plaintext []byte) (*keydelivery.Envelope, error) {
+	adminURL := s.resolver.ResolveAdminURL(target.RaftAddr)
+	if adminURL == "" {
+		return nil, ErrResolveURL
+	}
+	pub, err := s.fetchNodeKey(ctx, adminURL, target.NodeID)
+	if err != nil {
+		return nil, err
+	}
+	env, err := keydelivery.Seal(pub, meta, plaintext)
+	if err != nil {
+		return nil, errors.Join(ErrDelivery, err)
+	}
+	return env, nil
+}
+
 // Deliver seals plaintext to the given replica's delivery key and POSTs the
 // HPKE envelope to the replica's /v1/cluster/keydelivery endpoint.
 // The caller owns plaintext and must wipe it after Deliver returns.
@@ -161,13 +185,9 @@ func (s *Sender) Deliver(ctx context.Context, target placement.Replica, meta key
 	if adminURL == "" {
 		return ErrResolveURL
 	}
-	pub, err := s.fetchNodeKey(ctx, adminURL, target.NodeID)
+	env, err := s.SealFor(ctx, target, meta, plaintext)
 	if err != nil {
 		return err
-	}
-	env, err := keydelivery.Seal(pub, meta, plaintext)
-	if err != nil {
-		return errors.Join(ErrDelivery, err)
 	}
 	body, err := json.Marshal(env)
 	if err != nil {

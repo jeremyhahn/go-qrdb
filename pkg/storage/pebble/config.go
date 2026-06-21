@@ -16,6 +16,7 @@
 package pebble
 
 import (
+	"log/slog"
 	"time"
 
 	"github.com/cockroachdb/pebble/v2"
@@ -130,6 +131,15 @@ type Config struct {
 	// and snapshot files are transparently encrypted at rest. When nil
 	// PebbleDB falls back to its default OS-backed FS.
 	FS vfs.FS
+
+	// Logger is the structured logger Pebble's internal events are routed
+	// through. When nil, slog.Default() is used. Pebble's operational chatter
+	// (WAL discovery/creation, compactions, flushes) is emitted at DEBUG level
+	// so it stays out of default INFO-level logs; only Pebble errors surface at
+	// ERROR. This is what keeps a standalone store's startup from littering the
+	// log with "Found N WALs" / "[JOB N] WAL ..." lines while preserving real
+	// failure reporting.
+	Logger *slog.Logger
 }
 
 // Validate checks the configuration for invalid values.
@@ -304,6 +314,12 @@ func (c *Config) ToPebbleOptions() *pebble.Options {
 	if c.FS != nil {
 		opts.FS = c.FS
 	}
+
+	// Route Pebble's internal logging through slog so its operational chatter
+	// (WAL/compaction/flush INFO lines) lands at DEBUG — invisible at the default
+	// INFO level — instead of Pebble's stdlib DefaultLogger printing it raw to
+	// stderr. Errors and fatals are preserved.
+	opts.Logger = newSlogPebbleLogger(c.Logger)
 
 	for i := range opts.Levels {
 		opts.Levels[i] = pebble.LevelOptions{

@@ -26,6 +26,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/interfaces"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector/schema"
 )
 
@@ -99,6 +100,12 @@ func NewPebbleVectorStorage(config *Config, logger interfaces.Logger, opts ...St
 	// Apply storage options (e.g. encryption FS wrapper).
 	for _, opt := range opts {
 		opt(pOpts)
+	}
+
+	// Route Pebble's internal WAL/compaction chatter to slog DEBUG (quiet at the
+	// default INFO level) unless an option already supplied a logger.
+	if pOpts.Logger == nil {
+		pOpts.Logger = pebblestore.NewLogger(nil)
 	}
 
 	// Open the database

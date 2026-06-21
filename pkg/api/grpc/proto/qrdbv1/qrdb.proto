@@ -2645,6 +2645,9 @@ message TenantQuotas {
     // tenant may hold across all of its raft groups. -1 = unlimited; 0 = default.
     int64 max_replicas_per_group = 13;
     int64 max_total_replicas = 14;
+    // system_barrier_quota governs an isolated tenant's use of the shared system
+    // barrier (bytes): 0 makes the option unavailable, -1 unlimited, >0 a cap.
+    int64 system_barrier_quota = 15;
 }
 
 // TenantEntitlements describes which isolation tiers and dedicated-storage
@@ -2656,6 +2659,9 @@ message TenantEntitlements {
     // allow_system_managed_barrier permits a tenant to opt into the
     // system-managed auto-unseal key-management mode for its dedicated barrier.
     bool allow_system_managed_barrier       = 4;
+    // allowed_barrier_modes lists the dedicated-barrier sealing strategies the
+    // isolated tenant may select (none/passphrase/shamir or an xkms hardware id).
+    repeated string allowed_barrier_modes   = 5;
 }
 
 // TenantResponse is the shared response shape for tenant CRUD operations.

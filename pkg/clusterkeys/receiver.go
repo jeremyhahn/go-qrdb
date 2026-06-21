@@ -35,11 +35,11 @@ import (
 	"net/http"
 	"sync/atomic"
 
-	"github.com/jeremyhahn/go-quicraft/pkg/enclave"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-quicraft/pkg/enclave"
 )
 
 // PlacementGetter retrieves a Placement for a (tenant, database) pair.
@@ -143,13 +143,13 @@ func NewReceiver(
 // Handler returns an http.HandlerFunc for POST /v1/cluster/keydelivery.
 // It enforces the following in order:
 //
-//  a. Peer-cert chain verification against the cluster CA (when cert is
-//     present); node SPIFFE SAN checked if present (best-effort).
-//  b. JSON-decode the keydelivery.Envelope (400 on malformed body).
-//  c. Placement-table gate: this node must appear as the replica assigned for
-//     the envelope's (tenant, database, shard, replica) (403 on mismatch).
-//  d. keydelivery.Receiver.Open: HPKE decryption + freshness + replay guard.
-//  e. Mode dispatch (map-based) to importSystemManaged or importSelfManaged.
+//	a. Peer-cert chain verification against the cluster CA (when cert is
+//	   present); node SPIFFE SAN checked if present (best-effort).
+//	b. JSON-decode the keydelivery.Envelope (400 on malformed body).
+//	c. Placement-table gate: this node must appear as the replica assigned for
+//	   the envelope's (tenant, database, shard, replica) (403 on mismatch).
+//	d. keydelivery.Receiver.Open: HPKE decryption + freshness + replay guard.
+//	e. Mode dispatch (map-based) to importSystemManaged or importSelfManaged.
 func (r *Receiver) Handler() http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		if req.Method != http.MethodPost {

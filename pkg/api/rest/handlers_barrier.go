@@ -19,6 +19,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -418,7 +419,13 @@ func (s *Server) handleBarrierEnableEncryption(w http.ResponseWriter, r *http.Re
 	// used because the request context is cancelled once the response returns.
 	go func() {
 		time.Sleep(migrationStartGrace)
-		_ = s.encMigrator.EnableEncryption(context.Background(), scope, opts)
+		if err := s.encMigrator.EnableEncryption(context.Background(), scope, opts); err != nil {
+			slog.Error("enable-encryption migration failed",
+				slog.String("scope", string(scope.Kind)),
+				slog.String("tenant", scope.TenantID),
+				slog.String("strategy", string(opts.TargetStrategy)),
+				slog.Any("error", err))
+		}
 	}()
 
 	writeJSON(w, map[string]interface{}{

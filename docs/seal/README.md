@@ -34,7 +34,8 @@ go-quicraft/pkg/seal/          Interfaces + memguard + minimal Barrier + Softwar
         ↑
 go-qrdb/pkg/seal/              StorageBarrier: multi-tenant, storage wrapping, recovery, root tokens,
                                share exchange, StrategyRegistry (Software + None pre-registered)
-go-qrdb/pkg/dek/               ClusterDEKManager, TenantDEKManager
+go-qrdb/pkg/keydelivery/       Per-node tenant root-key transport over mTLS + HPKE
+go-qrdb/pkg/clusterkeys/       Node-identity and peer-authentication for key delivery
         ↑
 go-xkms/pkg/seal/              Hardware strategies (TPM2, PKCS#11, AWS KMS, GCP KMS, Azure KV, Vault)
                                registered into a qrdb StrategyRegistry at composition time
@@ -50,7 +51,8 @@ go-xkms/pkg/seal/              Hardware strategies (TPM2, PKCS#11, AWS KMS, GCP 
 |------------|----------|--------|-------------|
 | `passphrase` | `seal.StrategyPassphrase` | go-quicraft (re-exported) | Single passphrase, FIPS-aware KDF (Argon2id or PBKDF2-SHA256). The default. |
 | `shamir`   | `seal.StrategyShamir`   | go-qrdb (`pkg/seal/strategy_shamir.go`) | M-of-N quorum unseal; the Shamir secret is a random unseal key that AEAD-wraps the root key (Vault-style indirection, see [shamir.md](shamir.md)). |
-| `none`     | `seal.StrategyNone`     | go-quicraft (re-exported) | Barrier disabled; data stored plaintext. Dev/test or OS-level FDE deployments. |
+| `none`     | `seal.StrategyNone`     | go-quicraft (re-exported) | Barrier disabled; data stored plaintext. Dev/test or OS-level FDE deployments. Valid enable-encryption source (plaintext→keyed migration). |
+| `system-barrier` | `seal.StrategySystemBarrier` | go-qrdb (tenant strategy only) | Auto-unseal with per-tenant root key wrapped under the system barrier; no per-tenant credential required. System-managed convenience mode for dedicated tenants. Valid enable-encryption source (credential-free→keyed migration). |
 
 > **Config alias:** the YAML `seal.strategy` field accepts `software` as a **deprecated alias** for `passphrase`. It is canonicalized once at config load (`SealConfig.CanonicalStrategy()`), so every consumer sees the canonical `passphrase` ID — the software/passphrase strategy reports `ID() == "passphrase"`.
 
@@ -183,71 +185,41 @@ Use cases:
 | Feature | Description | Documentation |
 |---------|-------------|---------------|
 | Shamir threshold unsealing | M-of-N quorum-based unseal with share accumulation | [shamir.md](shamir.md) |
-| Multi-tenant barriers | Independent DEK per tenant via BarrierRegistry | [multi-tenant.md](multi-tenant.md) |
-| Recovery keys | Independent Shamir split of the DEK for disaster recovery | [shamir.md](shamir.md) |
+| Multi-tenant barriers | Independent barrier per tenant via BarrierRegistry, with per-node-independent key custody | [multi-tenant.md](multi-tenant.md) |
+| Recovery keys | Independent Shamir split of the root key for disaster recovery | [shamir.md](shamir.md) |
 | Rekey | New unseal key + share set; cryptographically revokes all prior shares without rotating the root key | [shamir.md](shamir.md) |
 | Root token generation | One-time admin token via share reconstruction | [shamir.md](shamir.md) |
 | Audit logging | Structured audit events for all barrier operations | Inline below |
-| Cluster auto-unseal | ShareExchangeCoordinator for distributed share exchange | Inline below |
-| Cluster DEK management | Cluster-wide DEK with envelope encryption | [DEK Package](#dek-package) |
-| Tenant DEK management | Per-tenant DEK isolation | [DEK Package](#dek-package) |
+| Per-node key custody | Each node holds its own system barrier KEK; tenant keys securely transported via mTLS+HPKE | [Per-Node Key Architecture](#per-node-key-architecture) |
+| Tenant key delivery | Secure cross-node transport of tenant root keys with per-node re-wrapping | [../multi-tenancy.md](../multi-tenancy.md#per-node-independent-key-design) |
 
-## DEK Package
+## Per-Node Key Architecture
 
-The `pkg/dek/` package manages Data Encryption Keys at the cluster and tenant level. It keeps all encryption logic in the database layer, with no transitive xkms dependency.
+qrdb uses a **per-node-independent key model** (not a shared cluster-wide DEK):
 
-### ClusterDEKManager
+- Each cluster node holds its own **system barrier** with its own **master key (KEK)**. The KEK is never
+  shared across nodes and is managed per-node by the system barrier's configured strategy.
+- **Per-tenant barriers** in multi-node clusters: when a tenant database replicates across nodes,
+  each replica node receives the tenant's root key over a secure channel and re-wraps it under that
+  *node's own system barrier* for storage. This preserves per-node KEK independence — a compromised
+  node key does not expose tenant keys on other nodes.
+- **Key delivery**: `pkg/keydelivery/` implements secure cross-node transport of tenant root keys
+  over the cluster mTLS control plane, with HPKE encryption to bind the payload to the recipient
+  node's certificate. `pkg/clusterkeys/` handles node-identity authentication. See
+  [../multi-tenancy.md → Per-node-independent key design](../multi-tenancy.md#per-node-independent-key-design).
 
-Manages the cluster-wide DEK used for encrypting data at rest across all nodes.
+## Transparent At-Rest Encryption via StorageBarrier
 
-- Uses `seal.EncryptionBarrier` to wrap/unwrap the cluster DEK
-- Supports key rotation with version tracking
-- Background re-encryption after rotation with configurable batch size and concurrency
-- Per-node synchronization state tracking
-- Depends only on `*slog.Logger` and `seal.EncryptionBarrier`
+All persistent data is encrypted transparently at rest via the `StorageBarrier`:
 
-```
-Key Hierarchy:
-  Master Key (per node, in-memory only)
-      └── seal.EncryptionBarrier wraps Cluster DEK
-              └── Cluster DEK wraps Tenant DEKs
-```
+- **System data** (KV, MVCC, raft log) is barrier-encrypted under the system barrier's master key.
+- **Tenant data** on dedicated isolation modes (volume, raft) is barrier-encrypted under the tenant's
+  own master key (which is persisted under the system barrier for system-managed auto-unseal, or
+  under the tenant's strategy for self-managed).
+- The barrier operates transparently: callers put/get plaintext, the barrier handles encryption/decryption
+  automatically.
 
-### TenantDEKManager
-
-Manages per-tenant DEKs, each isolated and wrapped by the cluster DEK.
-
-- Creates, retrieves, rotates, and deletes per-tenant DEKs
-- Wraps tenant DEKs using stdlib `crypto/aes` + `crypto/cipher` (AES-256-GCM)
-- Pure Go stdlib cryptography
-- Stores wrapped DEKs at `__sys:dek/tenant/{tenantID}` in a `StorageBackend`
-
-```go
-type TenantDEKManager interface {
-    GetOrCreateTenantDEK(ctx context.Context, tenantID string) ([]byte, error)
-    GetTenantDEK(ctx context.Context, tenantID string) ([]byte, error)
-    RotateTenantDEK(ctx context.Context, tenantID string) error
-    DeleteTenantDEK(ctx context.Context, tenantID string) error
-    GetTenantDEKStatus(ctx context.Context, tenantID string) (*TenantDEKStatus, error)
-}
-```
-
-### SDK Access
-
-Both DEK managers are accessible through the Go SDK via `client.DEK()`, which returns a `transport.DEKClient`. All transports (REST, gRPC, UNIX, MCP, embedded) implement this interface.
-
-```go
-dekClient := client.DEK()
-
-// Cluster DEK
-err := dekClient.InitializeClusterDEK(ctx, &transport.InitClusterDEKRequest{
-    Algorithm: "AES-256-GCM",
-    KeyBytes:  32,
-})
-
-// Tenant DEK
-tenantDEK, err := dekClient.GetOrCreateTenantDEK(ctx, "tenant-123")
-```
+See [multi-tenant.md](multi-tenant.md) for the full tenant-barrier lifecycle and key-management modes.
 
 ## ShareExchangeCoordinator
 

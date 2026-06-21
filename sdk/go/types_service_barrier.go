@@ -17,6 +17,28 @@ package sdk
 import "github.com/jeremyhahn/go-qrdb/pkg/service"
 
 // ---------------------------------------------------------------------------
+// Enable-encryption service sentinel errors
+//
+// Re-exported so a composing service (e.g. go-quicbaas, go-xkms) can map an
+// enable-encryption denial to the right API status at its own boundary without
+// importing pkg/service directly. ErrSharedBarrierImmutable maps to 403,
+// ErrMigrationProviderUnavailable to 501, ErrTenantBarrierNotFound to 404.
+// ---------------------------------------------------------------------------
+var (
+	// ErrSharedBarrierImmutable is returned when a tenant on the shared system
+	// barrier attempts to change its encryption; it must be isolated first.
+	ErrSharedBarrierImmutable = service.ErrSharedBarrierImmutable
+
+	// ErrMigrationProviderUnavailable is returned when enable-encryption is not
+	// available on this node (no BarrierMigrationProvider wired).
+	ErrMigrationProviderUnavailable = service.ErrMigrationProviderUnavailable
+
+	// ErrTenantBarrierNotFound is returned when a tenant-scoped migration names a
+	// tenant that has no dedicated barrier.
+	ErrTenantBarrierNotFound = service.ErrTenantBarrierNotFound
+)
+
+// ---------------------------------------------------------------------------
 // Barrier service (service-layer barrier lifecycle)
 // ---------------------------------------------------------------------------
 

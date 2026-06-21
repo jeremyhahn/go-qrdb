@@ -31,6 +31,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/clustermig"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
@@ -221,6 +222,12 @@ type Node struct {
 	// resolving a dedicated-raft database's shard.
 	PlacementStore *placement.Store
 
+	// ClusterMigStore is the replicated coordination plane for cluster-wide
+	// enable-encryption migrations (Phase D). It lives in the same system KV as
+	// the placement table; the daemon threads it into the migration coordinator +
+	// per-node reconciler. Non-nil whenever the system KV is available.
+	ClusterMigStore *clustermig.Store
+
 	// closers are called in reverse order on Stop.
 	closers []func() error
 }
@@ -345,6 +352,9 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	// so a dedicated-raft database's replica placement is computed and persisted
 	// at create time; the store is also exposed on the Node so the daemon can
 	// make it the RaftBackendFactory's source of truth.
+	// Cluster-migration coordination plane over the same replicated system KV.
+	n.ClusterMigStore = clustermig.NewStore(authStore)
+
 	var placementOpts []service.DatabaseServiceOption
 	if store, perr := placement.NewStore(authStore); perr == nil {
 		n.PlacementStore = store

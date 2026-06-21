@@ -1554,6 +1554,56 @@ export interface BootstrapResult {
     readonly shareCount: number;
 }
 
+/**
+ * Parameters for enabling at-rest encryption on a previously-unencrypted
+ * ("none") barrier. The migration re-encrypts all at-rest data under a newly
+ * minted keyed strategy.
+ *
+ * Scope is selected by `tenantId`: omit it (or pass an empty string) to migrate
+ * the SYSTEM barrier (admin scope); set it to migrate that tenant's OWN
+ * dedicated barrier. A tenant whose data lives on the shared system barrier
+ * cannot change its encryption and the server rejects the request.
+ */
+export interface EnableEncryptionRequest {
+    /**
+     * Target tenant's dedicated barrier. Omit or leave empty for the system
+     * barrier (admin scope).
+     */
+    readonly tenantId?: string;
+    /** Target keyed strategy to migrate to. */
+    readonly strategy: 'passphrase' | 'shamir';
+    /**
+     * Re-encryption mechanism: "swap" (default) mints a keyed sibling and
+     * atomically swaps it in; "in-place" rewrites records under the new key.
+     */
+    readonly mechanism?: 'swap' | 'in-place';
+    /**
+     * Availability mode: "quiesced" (default) briefly pauses the data plane;
+     * "online" migrates while serving traffic.
+     */
+    readonly availability?: 'quiesced' | 'online';
+    /** Unseal passphrase for the keyed barrier (passphrase strategy). */
+    readonly passphrase?: string;
+    /** Minimum number of shares required to unseal (M in M-of-N, shamir strategy). */
+    readonly shamirThreshold?: number;
+    /** Total number of shares to generate (N in M-of-N, shamir strategy). */
+    readonly shamirTotal?: number;
+}
+
+/**
+ * Acknowledgement that an enable-encryption migration has started. The work
+ * runs asynchronously; callers observe completion by polling the barrier status
+ * until the reported strategy changes from "none" to the keyed strategy.
+ */
+export interface EnableEncryptionResponse {
+    /** Migration lifecycle status (e.g. "migration_started"). */
+    readonly status: string;
+    /** Scope the migration targets: "system" or "tenant". */
+    readonly scope: string;
+    /** Human-readable note describing how to observe completion. */
+    readonly note?: string;
+}
+
 // ---------------------------------------------------------------------------
 // Security Officer (SO) and share-claim types
 // ---------------------------------------------------------------------------
@@ -2097,6 +2147,12 @@ export interface TenantQuotas {
     readonly maxVectorDims: number;
     /** Maximum time-series metrics. */
     readonly maxTSMetrics: number;
+    /**
+     * Bytes an isolated tenant may consume by opting to use the shared system
+     * barrier: 0 makes that option unavailable, -1 unlimited, >0 a cap accounted
+     * against the system tenant. Wire name: `system_barrier_quota`.
+     */
+    readonly systemBarrierQuota?: number;
 }
 
 /**
@@ -2122,6 +2178,13 @@ export interface TenantEntitlements {
      * `max_dedicated_wal_groups` quota. Wire name: `allow_dedicated_wal`.
      */
     readonly allowDedicatedWal?: boolean;
+    /**
+     * Dedicated-barrier sealing strategies the isolated tenant may select
+     * (none/passphrase/shamir or an xkms hardware strategy id). Empty permits
+     * the built-in software defaults and fail-closes hardware modes. Wire name:
+     * `allowed_barrier_modes`.
+     */
+    readonly allowedBarrierModes?: string[];
 }
 
 /**

@@ -205,6 +205,9 @@ func (m *covMockTenantSvc) GetTenant(ctx context.Context, id string) (*tenant.Te
 	}
 	return &tenant.TenantInfo{ID: id, Name: "test"}, nil
 }
+func (m *covMockTenantSvc) CheckBarrierMode(_ context.Context, _ string, _ seal.StrategyID) error {
+	return nil
+}
 func (m *covMockTenantSvc) ListTenants(ctx context.Context) ([]tenant.TenantInfo, error) {
 	if m.listFn != nil {
 		return m.listFn(ctx)

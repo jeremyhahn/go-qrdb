@@ -25,6 +25,13 @@ var ErrTenantHostUnavailable = errors.New("server: tenant host registry not conf
 // DataRoot recorded in its metadata (it was never allocated from the pool).
 var ErrTenantDataRootUnset = errors.New("server: tenant data root is unset")
 
+// ErrTenantMigrationInProgress is returned by Services while a tenant's barrier
+// is mid encryption-migration recycle. It is RETRYABLE: once the migration
+// commits and replaces the barrier, the next call builds the Host under the
+// keyed barrier. Building during the window would wrap the host with the stale
+// source barrier and fail against the already-keyed at-rest stores.
+var ErrTenantMigrationInProgress = errors.New("server: tenant encryption migration in progress")
+
 // ErrTenantShardNoLeader is returned when a per-tenant Host's local shard fails
 // to elect a leader within the readiness timeout.
 var ErrTenantShardNoLeader = errors.New("server: tenant shard did not elect a leader")
@@ -44,3 +51,39 @@ func (e *TenantHostError) Error() string {
 
 // Unwrap returns the underlying error for errors.Is/As.
 func (e *TenantHostError) Unwrap() error { return e.Err }
+
+// VolumeReattachError is returned when an IsolationVolume tenant cannot be
+// re-bound to its on-disk state during boot (barrier re-registration, unseal,
+// or per-tenant Host construction failed).
+type VolumeReattachError struct {
+	TenantID string
+	Err      error
+}
+
+// Error implements the error interface.
+func (e *VolumeReattachError) Error() string {
+	return "qrdbd: re-attach volume tenant " + e.TenantID + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error for errors.Is/As.
+func (e *VolumeReattachError) Unwrap() error { return e.Err }
+
+// RaftReattachError is returned when an IsolationRaft tenant cannot be re-bound
+// to its on-disk state during boot (barrier re-registration, unseal, or a
+// dedicated database shard re-start failed).
+type RaftReattachError struct {
+	TenantID string
+	Database string
+	Err      error
+}
+
+// Error implements the error interface.
+func (e *RaftReattachError) Error() string {
+	if e.Database != "" {
+		return "qrdbd: re-attach raft tenant " + e.TenantID + "/" + e.Database + ": " + e.Err.Error()
+	}
+	return "qrdbd: re-attach raft tenant " + e.TenantID + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error for errors.Is/As.
+func (e *RaftReattachError) Unwrap() error { return e.Err }

@@ -17,8 +17,10 @@ package database
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/cockroachdb/pebble/v2"
@@ -516,5 +518,43 @@ func TestNodeStoreMigration_RejectsUnknownMechanism(t *testing.T) {
 	opts := seal.MigrationOptions{TargetStrategy: seal.StrategyPassphrase, Mechanism: "bogus", Availability: seal.AvailabilityQuiesced}
 	if err := mig.Run(context.Background(), opts); err == nil {
 		t.Fatal("orchestrator must reject an unknown mechanism")
+	}
+}
+
+// TestNodeStoreMigration_RecodeFailureRollsBack proves a copy-phase failure
+// (a store dir that is not a valid Pebble store) surfaces a MigrateStoreDirError
+// and the rollback defer discards the keyed staging copies, leaving the source
+// untouched.
+func TestNodeStoreMigration_RecodeFailureRollsBack(t *testing.T) {
+	ctx := context.Background()
+	sealBackend := seal.NewMemoryBackend()
+	source := initNoneBarrier(t, sealBackend, "root-key")
+	target := initKeyedBarrier(t, sealBackend, "root-key.migrating", "pw")
+
+	// A path that exists as a FILE (not a directory) makes Pebble open fail.
+	badDir := filepath.Join(t.TempDir(), "not-a-store")
+	if err := os.WriteFile(badDir, []byte("x"), 0o600); err != nil {
+		t.Fatalf("seed bad store: %v", err)
+	}
+
+	mig := &NodeStoreMigration{Source: source, Target: target, StoreDirs: []string{badDir}, Logger: reencTestLogger()}
+	opts := seal.MigrationOptions{
+		TargetStrategy: seal.StrategyPassphrase,
+		Mechanism:      seal.MechanismSwap,
+		Availability:   seal.AvailabilityQuiesced,
+		Credentials:    seal.Credentials{Secret: []byte("pw")},
+	}
+	err := mig.Run(ctx, opts)
+	var dirErr *MigrateStoreDirError
+	if !errors.As(err, &dirErr) {
+		t.Fatalf("err = %v, want *MigrateStoreDirError", err)
+	}
+	// Rollback removed the keyed staging copy.
+	if _, serr := os.Stat(badDir + KeyedDirSuffix); !os.IsNotExist(serr) {
+		t.Fatalf("rollback must remove the keyed staging copy")
+	}
+	// The source canonical root key is still none (commit never reached).
+	if got := source.Status().Strategy; got != seal.StrategyNone {
+		t.Fatalf("source strategy = %q, want none after rollback", got)
 	}
 }

@@ -43,6 +43,16 @@ type TenantHostRegistry struct {
 
 	mu    sync.Mutex
 	hosts map[string]*tenantHost
+
+	// migrating marks tenants whose barrier is mid encryption-migration recycle.
+	// While set, Services must NOT lazily (re)build the tenant Host: the barrier
+	// is being swapped from the source (none) to a keyed barrier and the at-rest
+	// stores are being re-encrypted, so a build started in this window would wrap
+	// the host with the stale source barrier and fail to decrypt the already-keyed
+	// WAL/SM — and cache that broken host. Set for the duration of
+	// MigrateEncryption (up to the barrier replacement); a concurrent Services
+	// returns ErrTenantMigrationInProgress (retryable) instead.
+	migrating sync.Map // tenantID -> struct{}
 }
 
 // tenantInfoSource is the minimal tenant-metadata lookup the registry needs to
@@ -101,6 +111,12 @@ func (r *TenantHostRegistry) Services(ctx context.Context, tenantID string) (*Da
 	defer r.mu.Unlock()
 	if th, ok := r.hosts[tenantID]; ok {
 		return th.services, nil
+	}
+	// Refuse to (re)build while an encryption migration is recycling this
+	// tenant's barrier: a build here would wrap the host with the stale source
+	// barrier and fail to decrypt the already-keyed at-rest stores. Retryable.
+	if _, migrating := r.migrating.Load(tenantID); migrating {
+		return nil, &TenantHostError{TenantID: tenantID, Op: "resolve", Err: ErrTenantMigrationInProgress}
 	}
 
 	tb, err := r.barrierReg.GetTenant(tenantID)

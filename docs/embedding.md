@@ -145,7 +145,7 @@ For multi-node deployments configure mTLS in `cfg.TLS` before calling the builde
 
 ## Daemon-only concerns
 
-The following concerns are **not** provided by the builders. They remain in `cmd/qrdbd` and are passed in as `server.ServerOption` or callbacks by the daemon:
+The following concerns are **not** provided by the builders and remain in `cmd/qrdbd`. They can be passed in as `server.ServerOption` or callbacks if the embedder wants them:
 
 | Concern | How the daemon handles it |
 |---|---|
@@ -157,6 +157,70 @@ The following concerns are **not** provided by the builders. They remain in `cmd
 | Auth middleware | `server.WithAuthMiddleware(...)` |
 
 Embedders that need these features pass the corresponding `server.ServerOption` values in the `serverOpts` slice.
+
+---
+
+## Per-Tenant Infrastructure & Enable-Encryption
+
+Both the daemon (`cmd/qrdbd`) and the embedded node (`sdk/go/node`) are sibling
+composition roots over the shared `pkg/server` core. A new compositor,
+`server.BuildTenantInfra()`, is used by both to wire the per-tenant infrastructure
+(tenant host registry, Raft backend factory, encryption migrator), enabling parity
+across daemon and embedded paths.
+
+To opt in to per-tenant features on an embedded node, use the
+`node.WithTenantIsolation()` builder option:
+
+```go
+n, err := node.NewStandaloneNode(ctx, cfg, nil,
+    node.WithTenantIsolation(),
+)
+```
+
+### Seal barrier (encryption at rest)
+
+Enable the barrier in config and supply the passphrase via `WithSealPassphrase`:
+
+```go
+cfg.Seal.Enabled  = true
+cfg.Seal.Strategy = "passphrase"
+
+n, err := node.NewStandaloneNode(ctx, cfg, nil,
+    node.WithSealPassphrase([]byte("admin-secret")),
+    node.WithTenantIsolation(),
+)
+```
+
+The barrier is auto-unsealed during construction. All on-disk data is encrypted
+at rest via the storage barrier.
+
+### Tenant-scoped enable-encryption (with isolation enabled)
+
+Migrate a tenant's barrier from plaintext or auto-unseal to a keyed strategy:
+
+```go
+import qrdbsdk "github.com/jeremyhahn/go-qrdb/sdk/go"
+
+// scope is passed by value (qrdbsdk.BarrierScope = service.BarrierScope);
+// opts is qrdbsdk.MigrationOptions (= seal.MigrationOptions).
+scope := qrdbsdk.BarrierScope{
+    Kind:     qrdbsdk.ScopeTenant,
+    TenantID: "acme",
+}
+
+err := n.EnableEncryption(ctx, scope, qrdbsdk.MigrationOptions{
+    TargetStrategy: qrdbsdk.StrategyPassphrase,
+    Mechanism:      qrdbsdk.MechanismSwap,
+    Availability:   qrdbsdk.AvailabilityOnline,
+    Credentials:    qrdbsdk.Credentials{Secret: []byte("tenant-secret")},
+})
+```
+
+Both `StrategyNone` (plaintext) and `StrategySystemBarrier` (auto-unseal) are
+valid migration sources. User-credential strategies (`passphrase`, `shamir`) are
+not eligible sources. The embedded node recycles the tenant's dedicated Raft host
+in-process with no data loss. See
+[seal/enabling-encryption.md](seal/enabling-encryption.md) for full details.
 
 ---
 

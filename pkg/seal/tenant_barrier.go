@@ -59,6 +59,15 @@ func NewTenantBarrier(
 	}, nil
 }
 
+// WrapTenantBarrier wraps an existing *StorageBarrier as a TenantBarrier for
+// the given tenant. It is used by the per-tenant encryption-migration commit:
+// after the tenant's data is re-encrypted and the keyed barrier is reopened
+// (StorageBarrier.ReopenKeyed), the result is wrapped and swapped into the
+// registry via ReplaceTenantBarrier.
+func WrapTenantBarrier(tenantID string, barrier *StorageBarrier) *TenantBarrier {
+	return &TenantBarrier{tenantID: tenantID, barrier: barrier}
+}
+
 // TenantID returns the identifier of this tenant barrier.
 func (t *TenantBarrier) TenantID() string { return t.tenantID }
 

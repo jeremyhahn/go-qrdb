@@ -55,6 +55,17 @@ type Quotas struct {
 	// unlimited; 0 means use the system default (which is 0 — opt-in only).
 	MaxDedicatedWALGroups int64 `json:"max_dedicated_wal_groups"`
 
+	// SystemBarrierQuota governs whether an ISOLATED tenant may opt to use the
+	// shared SYSTEM barrier for its data instead of a dedicated barrier, and how
+	// much system-tenant storage it may consume doing so (in bytes). It is the
+	// admin's lever for controlling system-tenant disk consumption:
+	//   0  -> the "use the system barrier" option is NOT available to the tenant
+	//         (the secure/default-deny value);
+	//   -1 -> unlimited;
+	//   >0 -> permitted up to this many bytes (checked against
+	//         CurrentSystemBarrierBytes).
+	SystemBarrierQuota int64 `json:"system_barrier_quota"`
+
 	// Current usage counters (persisted with the tenant record).
 	CurrentDatabases          int64 `json:"current_databases,omitempty"`
 	CurrentRaftGroups         int64 `json:"current_raft_groups,omitempty"`
@@ -70,6 +81,33 @@ type Quotas struct {
 	CurrentVectorDims         int64 `json:"current_vector_dims,omitempty"`
 	CurrentTSMetrics          int64 `json:"current_ts_metrics,omitempty"`
 	CurrentDedicatedWALGroups int64 `json:"current_dedicated_wal_groups,omitempty"`
+	// CurrentSystemBarrierBytes tracks how much system-tenant storage this tenant
+	// is consuming via the "use the system barrier" option, checked against
+	// SystemBarrierQuota.
+	CurrentSystemBarrierBytes int64 `json:"current_system_barrier_bytes,omitempty"`
+}
+
+// AllowsSystemBarrier reports whether an isolated tenant may opt to use the
+// shared system barrier. The option is available iff SystemBarrierQuota is
+// non-zero (>0 = capped at that many bytes, -1 = unlimited); a quota of 0 (the
+// default) makes the option unavailable.
+func (q *Quotas) AllowsSystemBarrier() bool {
+	return q.SystemBarrierQuota != 0
+}
+
+// SystemBarrierBytesRemaining returns how many more bytes the tenant may consume
+// via the system-barrier option: a large sentinel for unlimited (-1), else the
+// configured quota minus current usage (never negative). Zero means either the
+// option is unavailable or the quota is exhausted.
+func (q *Quotas) SystemBarrierBytesRemaining() int64 {
+	if q.SystemBarrierQuota < 0 {
+		return 1<<62 - 1
+	}
+	rem := q.SystemBarrierQuota - q.CurrentSystemBarrierBytes
+	if rem < 0 {
+		return 0
+	}
+	return rem
 }
 
 // Isolation mode identifiers used by the entitlement layer. These mirror the
@@ -131,12 +169,52 @@ type Entitlements struct {
 	// DedicatedWAL create request is denied with an EntitlementError and the
 	// group falls back to the shared system-barrier WAL.
 	AllowDedicatedWAL bool `json:"allow_dedicated_wal,omitempty"`
+
+	// AllowedBarrierModes lists the dedicated-barrier sealing strategies an
+	// isolated tenant may select for its own barrier (e.g. "none", "passphrase",
+	// "shamir", or an xkms-registered hardware strategy id like "tpm2"/"pkcs11").
+	// An EMPTY list means the built-in software defaults (none/passphrase/shamir)
+	// are permitted and any hardware strategy must be explicitly granted — so
+	// hardware modes are fail-closed. A non-empty list is the exact allowed set.
+	// It does NOT govern the "use the shared system barrier" option, which is
+	// gated by the SystemBarrierQuota (see Quotas).
+	AllowedBarrierModes []string `json:"allowed_barrier_modes,omitempty"`
+}
+
+// defaultBarrierModes are the built-in software sealing strategies an isolated
+// tenant may select when AllowedBarrierModes is unset. Hardware strategies are
+// intentionally excluded (they must be explicitly granted).
+var defaultBarrierModes = map[string]struct{}{
+	"none":       {},
+	"passphrase": {},
+	"shamir":     {},
 }
 
 // AllowsIsolation reports whether mode is present in AllowedIsolationModes.
 func (e *Entitlements) AllowsIsolation(mode string) bool {
 	for _, m := range e.AllowedIsolationModes {
 		if m == mode {
+			return true
+		}
+	}
+	return false
+}
+
+// AllowsBarrierMode reports whether an isolated tenant may select the given
+// dedicated-barrier sealing strategy. With an empty AllowedBarrierModes the
+// built-in software defaults (none/passphrase/shamir) are permitted and all
+// other modes (hardware) are denied; with a non-empty list only listed modes are
+// permitted. The "software" alias is normalized to "passphrase".
+func (e *Entitlements) AllowsBarrierMode(mode string) bool {
+	if mode == "software" {
+		mode = "passphrase"
+	}
+	if len(e.AllowedBarrierModes) == 0 {
+		_, ok := defaultBarrierModes[mode]
+		return ok
+	}
+	for _, m := range e.AllowedBarrierModes {
+		if m == mode || (m == "software" && mode == "passphrase") {
 			return true
 		}
 	}

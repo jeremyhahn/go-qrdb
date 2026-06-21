@@ -238,7 +238,18 @@ func ClearMigrationJournalFrom(ctx context.Context, backend StorageBackend, root
 // with the migrated strategy even when the static config still names the
 // pre-migration one — the barrier is self-describing from its persisted state.
 func (b *StorageBarrier) PersistedStrategy(ctx context.Context) StrategyID {
-	blob, err := b.base.Get(ctx, b.config.RootKeyPath)
+	return PersistedStrategyFrom(ctx, b.base, b.config.RootKeyPath)
+}
+
+// PersistedStrategyFrom reads the sealing strategy recorded in the sealed
+// root-key blob at rootKeyPath in the given backend, returning "" when no blob
+// exists or it cannot be decoded. It is the barrier-free form of
+// PersistedStrategy, for boot logic that must decide which strategies to
+// register BEFORE constructing the StorageBarrier — e.g. a barrier migrated
+// none->keyed via enable-encryption must register the migrated keyed strategy
+// even when the static config still names "none", so the re-init can unseal it.
+func PersistedStrategyFrom(ctx context.Context, backend StorageBackend, rootKeyPath string) StrategyID {
+	blob, err := backend.Get(ctx, rootKeyPath)
 	if err != nil || len(blob) == 0 {
 		return ""
 	}
@@ -319,8 +330,13 @@ func (b *StorageBarrier) beginMigrationJournal(ctx context.Context, opts Migrati
 	if err := opts.Validate(); err != nil {
 		return nil, err
 	}
-	// Enabling encryption is only defined from a none-strategy source.
-	if active, _ := b.activeStrategy.Load().(StrategyID); active != StrategyNone {
+	// Enabling encryption is only defined from credential-free source strategies:
+	// StrategyNone (plaintext, unencrypted) and StrategySystemBarrier (the tenant
+	// root key is wrapped by the system barrier and can be unwrapped credential-free
+	// whenever the system barrier is unsealed). User-credential-bound strategies
+	// (passphrase, Shamir) are not a valid migration source.
+	active, _ := b.activeStrategy.Load().(StrategyID)
+	if active != StrategyNone && active != StrategySystemBarrier {
 		return nil, ErrMigrationSourceNotNone
 	}
 	existing, err := b.LoadMigrationJournal(ctx)
@@ -332,7 +348,7 @@ func (b *StorageBarrier) beginMigrationJournal(ctx context.Context, opts Migrati
 	}
 	now := time.Now().UTC()
 	j := &MigrationJournal{
-		SourceStrategy: StrategyNone,
+		SourceStrategy: active,
 		TargetStrategy: opts.TargetStrategy,
 		Mechanism:      opts.Mechanism,
 		Availability:   opts.Availability,
@@ -347,11 +363,11 @@ func (b *StorageBarrier) beginMigrationJournal(ctx context.Context, opts Migrati
 	return j, nil
 }
 
-// BeginMigration validates opts, ensures the barrier is a none-strategy source
-// with no migration already in flight, and writes the initial journal. The
-// returned journal is threaded through the migration and checkpointed via
-// CheckpointMigration as phases advance. It is the exported entrypoint the
-// data-plane orchestrator uses.
+// BeginMigration validates opts, ensures the barrier is a credential-free source
+// (StrategyNone or StrategySystemBarrier) with no migration already in flight,
+// and writes the initial journal. The returned journal is threaded through the
+// migration and checkpointed via CheckpointMigration as phases advance. It is
+// the exported entrypoint the data-plane orchestrator uses.
 func (b *StorageBarrier) BeginMigration(ctx context.Context, opts MigrationOptions) (*MigrationJournal, error) {
 	return b.beginMigrationJournal(ctx, opts)
 }
@@ -368,6 +384,20 @@ func (b *StorageBarrier) FinishMigration(ctx context.Context) error {
 	return b.clearMigrationJournal(ctx)
 }
 
+// DeleteRootKey removes this barrier's persisted sealed root-key blob from the
+// backend. It is used to clean up a STAGING sibling barrier (minted via
+// MintKeyedSibling) when a migration rolls back: without this, the orphaned
+// staging blob makes the next MintKeyedSibling's Initialize fail with
+// ErrAlreadyInitialized, permanently wedging every retry. Unlike Delete it is not
+// seal-gated — cleanup of a staging blob must succeed regardless of seal state. A
+// missing blob is not an error.
+func (b *StorageBarrier) DeleteRootKey(ctx context.Context) error {
+	if err := b.base.Delete(ctx, b.config.RootKeyPath); err != nil && !isSecretNotFound(err) {
+		return err
+	}
+	return nil
+}
+
 // isSecretNotFound reports whether err signals a missing backend key,
 // centralising the sentinel check the journal loader/clearer share with the
 // metadata loader.
@@ -380,6 +410,67 @@ func isSecretNotFound(err error) bool {
 // (pkg/database), which owns Pebble + pkg/atrest knowledge. pkg/seal owns only
 // the barrier-side primitives above (options, journal, key material, and the
 // strategy transition below).
+
+// MintKeyedSibling creates and initializes a fresh keyed barrier over THIS
+// barrier's exact backend and config — same StorageBackend, same DeploymentID
+// (which participates in DEK derivation) — at the root-key path
+// b.RootKeyPath()+stagingSuffix. It is the uniform way an encryption migration
+// mints its target for either the system barrier or a per-tenant barrier: by
+// mirroring the source's backend + config, the keyed data it produces is
+// reproducible by the normal boot path, and the sibling's sealed root key can
+// be adopted onto the canonical path at commit (AdoptMigratedRootKey).
+//
+// strategy must be a keyed strategy and SHOULD be the same implementation the
+// boot path registers for that strategy ID (e.g. NewDeferredSoftwareStrategy
+// for passphrase) so the sealed blob is unsealable after a restart. creds carry
+// the unseal credential.
+func (b *StorageBarrier) MintKeyedSibling(ctx context.Context, stagingSuffix string, strategy SealingStrategy, creds Credentials) (*StorageBarrier, error) {
+	cfg := BarrierConfig{
+		RootKeyPath:  b.config.RootKeyPath + stagingSuffix,
+		DeploymentID: b.config.DeploymentID,
+	}
+	sib, err := NewStorageBarrier(b.logger, b.base, cfg, strategy)
+	if err != nil {
+		return nil, err
+	}
+	// The staging root-key path is owned EXCLUSIVELY by the migration subsystem
+	// (a fixed suffix off this barrier's path), so any pre-existing blob there is
+	// an abandoned staging key from a prior interrupted migration — never a live
+	// barrier. Clear it before Initialize so the first-writer CAS in Initialize
+	// does not fail with ErrAlreadyInitialized. This makes mint idempotent and
+	// self-healing: a migration can always be retried (in-process or after a
+	// crash) without every caller having to remember to delete the staging blob on
+	// its rollback path. Concurrency-safe because per-barrier migrations are
+	// serialized by the caller's migrating guard.
+	if derr := sib.DeleteRootKey(ctx); derr != nil {
+		return nil, derr
+	}
+	if err := sib.Initialize(ctx, creds); err != nil {
+		return nil, err
+	}
+	return sib, nil
+}
+
+// ReopenKeyed constructs a fresh barrier over THIS barrier's backend and config
+// (canonical RootKeyPath, same DeploymentID) using the given keyed strategy and
+// unseals it. It is the post-commit step of an encryption migration: after
+// AdoptMigratedRootKey has written the keyed root key onto the canonical path,
+// the live (none) barrier is replaced with the value ReopenKeyed returns. The
+// caller has already quiesced the stores the barrier protects.
+func (b *StorageBarrier) ReopenKeyed(ctx context.Context, strategy SealingStrategy, creds Credentials) (*StorageBarrier, error) {
+	cfg := BarrierConfig{
+		RootKeyPath:  b.config.RootKeyPath,
+		DeploymentID: b.config.DeploymentID,
+	}
+	nb, err := NewStorageBarrier(b.logger, b.base, cfg, strategy)
+	if err != nil {
+		return nil, err
+	}
+	if err := nb.Unseal(ctx, creds); err != nil && !errors.Is(err, ErrAlreadyUnsealed) {
+		return nil, err
+	}
+	return nb, nil
+}
 
 // AdoptMigratedRootKey commits an encryption migration on the barrier side: it
 // overwrites this (none) barrier's persisted root-key blob with the keyed root
@@ -408,6 +499,10 @@ func (b *StorageBarrier) AdoptMigratedRootKey(ctx context.Context, target *Stora
 		return ErrMigrationInvalidTarget
 	}
 
+	// Capture the source strategy before overwriting it so the audit log is accurate
+	// regardless of whether the source was StrategyNone or StrategySystemBarrier.
+	sourceStrategy, _ := b.activeStrategy.Load().(StrategyID)
+
 	sealed := target.barrier.SealedRootKeyData()
 	if sealed == nil {
 		return ErrNilSealedData
@@ -431,6 +526,6 @@ func (b *StorageBarrier) AdoptMigratedRootKey(ctx context.Context, target *Stora
 	}
 
 	emitAudit(b.config.AuditLogger, "enable_encryption", "barrier", b.config.RootKeyPath,
-		"allow", map[string]string{"from": string(StrategyNone), "to": string(targetStrategy)})
+		"allow", map[string]string{"from": string(sourceStrategy), "to": string(targetStrategy)})
 	return nil
 }

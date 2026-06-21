@@ -748,3 +748,7 @@ func TestQuotaToProto_AllFields(t *testing.T) {
 		t.Errorf("MaxTsMetrics: expected 11, got %d", got.GetMaxTsMetrics())
 	}
 }
+
+func (m *mockTenantService) CheckBarrierMode(_ context.Context, _ string, _ seal.StrategyID) error {
+	return nil
+}

@@ -70,7 +70,12 @@ deliberate, one-way migration that turns encryption *on*.
 ## Enabling encryption after the fact
 
 A barrier initialized with `none` can be migrated to a keyed strategy in place,
-re-encrypting all at-rest data, with **no process restart**:
+re-encrypting all at-rest data, with **no process restart**. The source state is
+a daemon (or embedded node) configured with `seal.enabled: true` and
+`seal.strategy: none` — a barrier-present-but-unencrypted store (zero-epoch
+plaintext) that is initialized with an empty secret and serves normally until
+migrated. A self-managed tenant barrier reaches the same state via
+`POST /v1/tenants/{id}/barrier/init` with `{"strategy":"none"}`.
 
 ```
 # system barrier (admin)
@@ -96,6 +101,15 @@ How it works:
    started; poll `qrdb barrier status` until the strategy changes from `none`
    to the chosen strategy to confirm completion.
 
+**Post-migration unseal (system scope).** A **system**-scope migration recycles
+the whole node data plane in process and the keyed barrier comes back up
+**sealed** — the daemon does not hold the credential you just set. Unseal once
+with the new credential (`qrdb barrier unseal …`, or submit the Shamir quorum)
+to resume serving. A **tenant**-scope migration recycles only that tenant's Host
+and reopens its barrier **unsealed** (the migration holds the supplied
+credential), so no unseal step is needed and the rest of the node keeps serving
+throughout.
+
 **Scope is never global.** It is either the **system** barrier (admin authority,
 `seal:enable_encryption`) or a single tenant's **dedicated** barrier (`--tenant`).
 A tenant on the **shared system barrier** inherits the system settings and
@@ -110,7 +124,180 @@ data yet).
 
 > **Transport support:** the operation is available over REST (`POST
 > /v1/barrier/enable-encryption`) and gRPC / unix (the default CLI transport).
-> The QUIC, MCP, and embedded transports return `NotImplemented`.
+> The QUIC, MCP, and embedded `BarrierClient` *transports* return
+> `NotImplemented` — enable-encryption runs on the node, not through that
+> transport. An embedded node instead drives it directly via the
+> `node.EnableEncryption(ctx, scope, opts)` API
+> (see [Embedded-node tenant enable-encryption](#embedded-node-tenant-enable-encryption) below).
+>
+> **Deployment-path support:** both scopes work in process (no OS restart) on the
+> standalone `qrdbd` daemon AND the embedder / SDK-node path (`sdk/go/node`, used
+> by downstream composers such as xkms and quicbaas):
+> - **tenant** scope recycles the tenant's dedicated IsolationVolume Host,
+>   re-encrypting its state-machine Pebble and Raft write-ahead log in place; the
+>   rest of the node keeps serving.
+> - **system** scope recycles the node's whole data plane. On the daemon this is
+>   an in-process re-initialization (the OS process never exits): it quiesces the
+>   data plane, re-encrypts the system Raft host's WAL + state-machine Pebble and
+>   the vector store, adopts the keyed root key, and re-runs boot under the keyed
+>   barrier (which then awaits the post-migration unseal described above).
+
+## Cluster-wide enable-encryption (multi-node)
+
+A multi-node cluster (`RF > 1`) can migrate a previously-unencrypted barrier
+cluster-wide with **no shared key, no global coordination beyond the intent
+record, and rolling per-node recycling**. Each node independently recycles its own
+replica while the Raft group stays available; zero data loss is guaranteed by the
+logical snapshot boundary and per-node key derivation (see
+[per-node-barrier-architecture.md](per-node-barrier-architecture.md) § 4).
+
+### How cluster enable-encryption works
+
+**Single command, system-wide fan-out:**
+
+```bash
+# System barrier (admin scope) — all nodes migrate
+qrdb barrier enable-encryption --strategy passphrase --passphrase '…'
+
+# Tenant's dedicated barrier only — all replica nodes of that tenant migrate
+qrdb barrier enable-encryption --tenant acme --strategy passphrase --passphrase '…'
+```
+
+**Internally (Phase D architecture):**
+
+1. **Coordinator (leader only):** Routes the request to a cluster coordinator if
+   the scope has `RF > 1`. The leader resolves the owning nodes (system scope =
+   all cluster members; tenant scope = the placement Replicas), seals the unlock
+   credential individually to each owner's public key via HPKE envelopes, writes
+   a **replicated migration intent** record under `__sys:encmig/{tenant}/{db}` to
+   the system KV, and returns `202 Accepted` immediately.
+
+2. **Per-node credential delivery (no secret in the Raft log):** The migration
+   intent record carries a `Credentials: map[nodeID][]byte` field holding, for each
+   owner, that node's private HPKE-sealed unlock credential. No plaintext secret
+   ever appears in the replicated state or the Raft log — only the per-recipient
+   ciphertext blobs. Each node can open only its own entry with its private key.
+
+3. **Per-node reconciler (all nodes):** Each owning node detects the replicated
+   intent (either immediately via change-feed or on reboot). It opens its own
+   sealed credential, runs the **proven single-node recycle** on its local replica,
+   and writes back a per-node status. The migration is complete when all owners
+   ack the current `Generation` with a terminal-success phase.
+
+4. **Rolling execution:** Nodes self-pace. For system-scope, each node's local
+   system recycle is independent (no shared key). For tenant-scope, all replicas
+   hold the same tenant barrier but encrypt independently, so mixed state (some
+   replicas keyed, others not) is safe throughout — the Raft group never blocks
+   on a laggard.
+
+### Scope differences
+
+| Aspect | System barrier | Tenant dedicated barrier (IsolationRaft) |
+|---|---|---|
+| **Unseal after migration** | Each node boots sealed; operator unseals each with the new passphrase (system-scope bootstrap unavoidable) | Tenant barrier reopens unsealed; no unseal step needed; rest of node serves throughout |
+| **Data-plane impact** | System-scope recycles quiesce the entire node data plane briefly (in-process reboot of all Raft hosts) | Tenant-scope recycles only that tenant's local replicas; no system impact |
+| **Cluster availability** | Can be orchestrated rolling (one node at a time); the system Raft group stays available throughout | All tenant replicas stay available; other tenants unaffected |
+| **Single-node vs cluster** | Same endpoint + no `--tenant` flag covers both | Same endpoint + `--tenant` flag covers both |
+
+### Failure modes and recovery
+
+- **Node down during migration:** The replicated intent record lives in the system
+  KV, so the node discovers it on reboot (or the next reconciler pass). It reads
+  the replicated intent, checks that it hasn't acked the current `Generation`,
+  opens its sealed credential, and resumes the recycle. The `Generation` guard
+  ensures idempotency — a node cannot be re-cycled for the same generation twice.
+
+- **Leader change:** The intent and per-node statuses live in replicated state.
+  A new leader re-derives outstanding work from the replicated record and
+  continues. The cluster never blocks on a laggard.
+
+- **Mid-migration crash:** Each node's local recycle is crash-safe via the
+  `MigrationJournal` (existing mechanism, deployed in single-node migrations).
+  On restart, the journal roll-forwards or rolls back the replica deterministically,
+  and the node re-publishes its phase to the replicated status.
+
+### Observing completion
+
+Poll the barrier status to observe per-node progress:
+
+```bash
+qrdb barrier status                    # system scope
+qrdb barrier status --tenant acme      # tenant scope
+```
+
+The response includes the strategy (changes from `none` to `passphrase`/`shamir`
+when all replicas are keyed) and, for tenant-scope, per-node migration phases.
+Clients may also watch the change-feed for the replicated intent record if
+available.
+
+### Operator notes
+
+- **Unseal required (system-scope).** After a system-scope cluster migration,
+  each node boots sealed and must be unsealed with the new passphrase before it
+  resumes serving. This is inherent to system-barrier bootstrap and is the same
+  as initializing the barrier for the first time.
+
+- **Online (tenant-scope).** Tenant-scope migrations are fully online — no unseal
+  step, no maintenance window. The migration command returns 202, and the nodes
+  self-reconcile in the background.
+
+- **Pre-migration backup recommended.** As with single-node migrations, it is
+  prudent to take a verified backup before initiating a cluster migration.
+
+## Embedded-node tenant enable-encryption
+
+An embedded node (via `sdk/go/node.NewStandaloneNode` or `NewClusteredNode`) can
+enable encryption on tenant barriers programmatically:
+
+```go
+import (
+    "github.com/jeremyhahn/go-qrdb/sdk/go/node"
+    qrdbsdk "github.com/jeremyhahn/go-qrdb/sdk/go"
+)
+
+// Enable encryption on a specific tenant's barrier. scope is passed by value
+// (qrdbsdk.BarrierScope = service.BarrierScope); opts is qrdbsdk.MigrationOptions
+// (= seal.MigrationOptions).
+scope := qrdbsdk.BarrierScope{
+    Kind:     qrdbsdk.ScopeTenant,
+    TenantID: "acme",
+}
+
+err := n.EnableEncryption(ctx, scope, qrdbsdk.MigrationOptions{
+    TargetStrategy: qrdbsdk.StrategyPassphrase,
+    Mechanism:      qrdbsdk.MechanismSwap,
+    Availability:   qrdbsdk.AvailabilityOnline,
+    Credentials:    qrdbsdk.Credentials{Secret: []byte("tenant-secret")},
+})
+```
+
+The embedded node must have been created with `node.WithTenantIsolation()` to
+enable tenant-scoped encryption:
+
+```go
+n, err := node.NewStandaloneNode(ctx, cfg, nil,
+    node.WithTenantIsolation(),
+)
+```
+
+**Supported deployment paths:**
+
+- **Standalone (LocalBackend):** System-scope and IsolationVolume tenant-scope
+  enable-encryption are supported.
+- **Clustered (real quicraft.Host):** System-scope, IsolationVolume tenant-scope,
+  and IsolationRaft tenant-scope enable-encryption are all supported.
+
+In both cases, the embedded node uses the same `scopedEncryptionMigrator` and
+recycle logic as the daemon — there is no duplication of migration code between
+embedded and daemon paths.
+
+**Valid migration sources:** Both `StrategyNone` (plaintext) and `StrategySystemBarrier`
+(auto-unseal dedicated tenants) are credential-free sources eligible for
+enable-encryption. User-credential strategies (`passphrase`, `shamir`) are not
+valid sources. Tenants on the **shared system barrier** (not a dedicated barrier)
+are rejected with `ErrSharedBarrierImmutable`.
+
+---
 
 ## Backups and how encrypted data is "decrypted"
 

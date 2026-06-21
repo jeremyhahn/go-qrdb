@@ -16,7 +16,7 @@ documented in [../multi-tenancy.md](../multi-tenancy.md).
 
 | Strategy | Keyspace Prefixing | Cryptographic Barrier | Notes |
 |----------|--------------------|-----------------------|-------|
-| **IsolationPrefix** (`prefix`, default) | Yes (`tenantID:key`) | No | Logical separation only, no at-rest encryption. Lowest cost. |
+| **IsolationPrefix** (`prefix`, default) | Yes (`tenantID:key`) | No | Logical separation only, no at-rest encryption. Lowest cost. Shared system barrier is immutable; enable-encryption rejected via `ErrSharedBarrierImmutable`. |
 | **IsolationBarrier** (`barrier`) | Yes (`tenantID:key`) | Yes (per-tenant DEK over IAM data) | Per-tenant barrier over the tenant's IAM data; KV data plane still rides the shared shard. |
 | **IsolationVolume** (`volume`) | n/a (own DataRoot) | Yes (per-tenant DEK over all data) | Per-tenant local Raft host on a dedicated filesystem `DataRoot`; all data, including the WAL, encrypted under the tenant DEK. |
 | **IsolationRaft** (`raft`) | n/a (own DataRoot) | Yes (per-tenant DEK over SM data) | Dedicated Raft group per database; SM data under the tenant `DataRoot` + DEK per node, raft log in the shared host LogDB (encrypted under system DEK). Multi-node replication is production-ready: replicas are placed across distinct healthy nodes, keys are securely transported to each node via HPKE+mTLS, and replicas auto-start after restart. |
@@ -68,6 +68,8 @@ The per-tenant data Host is built **lazily, only after the barrier is unsealed**
 When `barrier_auto_unseal` is `true`, the tenant root key is AEAD-wrapped under the **system barrier's** master key using the `system-barrier` sealing strategy (the locked "Single KEK/DEK" custody model — see [multi-tenant-isolation-quota.md](../design/multi-tenant-isolation-quota.md)). The barrier is **auto-initialized at create** and **auto-unsealed credential-free at boot** whenever the system barrier is unsealed (which it always is after the daemon's own unseal). No per-tenant credential is held or required.
 
 This trades separation for convenience: the system custodies the tenant key, so a system-tenant operator can reach the tenant's data, and the barrier survives an unattended restart. **It is not suitable for high-security tenants** — those should stay on the self-managed default.
+
+**Enable-encryption from auto-unseal:** A tenant on the `StrategySystemBarrier` strategy (auto-unseal) can enable encryption by migrating to a keyed strategy (passphrase/shamir). This is a credential-free migration source, just like `StrategyNone`, because the system barrier custody means the credential-loading path is moot. The tenant barrier transitions from system-managed to self-managed at this point, and the tenant admin becomes responsible for the new credential.
 
 System-managed auto-unseal is gated by the `AllowSystemManagedBarrier` entitlement (feature id `system_managed_barrier`). A create request that sets `barrier_auto_unseal: true` for a tenant whose plan does not grant the entitlement is rejected with an `EntitlementError`; the self-managed default is always permitted.
 
@@ -199,9 +201,9 @@ type TenantBarrier struct {
 - Cross-tenant access returns `ErrSealed` (tenant barrier not unsealed for the requester)
 - System barrier and tenant barriers have independent lifecycles
 - **Vector data is barrier-encrypted at rest**: the vector PebbleDB store is wrapped by
-  the cluster `StorageBarrier`'s encrypting FS, so vectors, metadata, and index data are
-  encrypted at rest under the cluster DEK — the same model as the KV/MVCC store (not a
-  per-tenant vector DEK). Tenant *isolation* of vectors comes from tenant-partitioned
+  the system `StorageBarrier`'s encrypting FS, so vectors, metadata, and index data are
+  encrypted at rest under that barrier's (per-node) DEK — the same model as the KV/MVCC
+  store (not a per-tenant vector DEK). Tenant *isolation* of vectors comes from tenant-partitioned
   namespace keys (e.g., `tenant-a`'s `embeddings` is stored separately from `tenant-b`'s),
   preventing cross-tenant collision and access.
 

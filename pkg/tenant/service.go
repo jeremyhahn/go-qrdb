@@ -188,6 +188,12 @@ type TenantServicer interface {
 	// returns ErrNilEntitlements.
 	UpdateEntitlements(ctx context.Context, tenantID string, entitlements *quota.Entitlements) (*TenantInfo, error)
 
+	// CheckBarrierMode returns nil if the tenant may use the given barrier
+	// sealing strategy: dedicated modes are gated by AllowedBarrierModes, the
+	// shared system-barrier option by SystemBarrierQuota. The system tenant is
+	// exempt. Returns a *quota.EntitlementError otherwise.
+	CheckBarrierMode(ctx context.Context, tenantID string, mode seal.StrategyID) error
+
 	// IncrementQuotaUsage increments the current-usage counter for the given
 	// resource by delta (must be > 0) and persists the change. It returns
 	// QuotaExceededError when the resulting usage would exceed the configured
@@ -972,6 +978,36 @@ func (s *TenantService) CheckIsolation(ctx context.Context, tenantID, mode strin
 	return &quota.EntitlementError{TenantID: tenantID, Mode: mode}
 }
 
+// CheckBarrierMode returns nil if the tenant may use the given barrier sealing
+// strategy for its isolated barrier, or a *quota.EntitlementError otherwise. The
+// system tenant is implicitly entitled to every mode. The shared system-barrier
+// option (seal.StrategySystemBarrier) is gated by the tenant's SystemBarrierQuota
+// (0 ⇒ unavailable); every other (dedicated) mode is gated by AllowedBarrierModes.
+// Implements the barrier-mode half of the tenant governance plane.
+func (s *TenantService) CheckBarrierMode(ctx context.Context, tenantID string, mode seal.StrategyID) error {
+	if tenantID == SystemTenantID {
+		return nil
+	}
+	if mode == seal.StrategySystemBarrier {
+		quotas, err := s.Quotas(ctx, tenantID)
+		if err != nil {
+			return err
+		}
+		if quotas.AllowsSystemBarrier() {
+			return nil
+		}
+		return &quota.EntitlementError{TenantID: tenantID, Feature: "barrier_mode:" + string(mode)}
+	}
+	ents, err := s.effectiveEntitlements(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	if ents.AllowsBarrierMode(string(mode)) {
+		return nil
+	}
+	return &quota.EntitlementError{TenantID: tenantID, Feature: "barrier_mode:" + string(mode)}
+}
+
 // CheckFeature returns nil if the tenant is entitled to the named feature, or a
 // *quota.EntitlementError otherwise. The system tenant is implicitly entitled
 // to every feature. Implements quota.EntitlementChecker.
@@ -1207,6 +1243,13 @@ func (s *TenantService) TenantBarrierInitWithStrategy(
 		return nil, ErrEmptyTenantID
 	}
 	if err := enforceTenantScope(ctx, tenantID, "initialize"); err != nil {
+		return nil, err
+	}
+
+	// Governance: the tenant must be entitled to the requested barrier mode.
+	// Dedicated modes (none/passphrase/shamir/hardware) are gated by
+	// AllowedBarrierModes; the shared system-barrier option by SystemBarrierQuota.
+	if err := s.CheckBarrierMode(ctx, tenantID, strategyID); err != nil {
 		return nil, err
 	}
 

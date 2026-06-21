@@ -31,6 +31,14 @@ barrier init-shamir    --passphrase <pp>
                        --total M
                        [--so-pin <pin>]              (optional; requires --user-pin)
                        [--user-pin <pin>]            (optional; requires --so-pin)
+barrier enable-encryption  --strategy <passphrase|shamir>
+                           [--tenant <id>]           (system barrier by default)
+                           [--passphrase <pp>]       (required for passphrase; Shamir unseal at quorum)
+                           [--shamir-threshold N]    (Shamir: threshold)
+                           [--shamir-total M]        (Shamir: total shares)
+                           [--mechanism swap|in-place]    (default: swap)
+                           [--availability quiesced|online] (default: quiesced)
+                           [-y | --assume-yes]
 barrier unseal         --passphrase <pp>             (passphrase / single-secret only)
 barrier unseal-shares  --share <s1> [--share <s2> ...]   (repeatable)
                        | --shares-file <path>        ('-' = stdin)
@@ -215,7 +223,45 @@ been removed; proto field 4 is reserved). `barrier rekey` accepts only
 `--so-pin`; user-PIN rotation is a separate ceremony because the wire
 request has no `UserPin` field.
 
-### 3.8 `barrier recovery generate`
+### 3.8 `barrier enable-encryption`
+
+Migrate a previously-unencrypted barrier (initialized with `--barrier-strategy
+none`) to a keyed sealing strategy in place, re-encrypting all at-rest data
+without downtime. Supports both system-scope (default) and per-tenant
+migrations via `--tenant <id>`.
+
+```bash
+qrdb barrier enable-encryption --strategy passphrase --passphrase 'new-passphrase'
+qrdb barrier enable-encryption --tenant acme --strategy shamir \
+  --shamir-threshold 2 --shamir-total 3 --passphrase 'root-seed'
+```
+
+The migration runs asynchronously on the server: the barrier strategy is
+updated and data re-encryption begins immediately. The command returns once
+the migration has started; poll `qrdb barrier status` (or `qrdb barrier
+status --tenant <id>` for per-tenant) until the reported strategy changes
+from `"none"` to the target strategy to confirm completion.
+
+When `--tenant` is supplied, the request migrates that tenant's dedicated
+barrier. Tenants using the shared system barrier (the default `prefix`
+isolation) cannot change encryption — the server rejects the request with
+`ErrInvalidTenantIsolation` because a tenant on the shared barrier holds no
+independent encryption key.
+
+Flags:
+
+| Flag | Required | Default | Description |
+|------|----------|---------|-------------|
+| `--strategy` | Yes | | Target strategy: `passphrase` or `shamir` |
+| `--passphrase` | Yes for `passphrase` | | Unseal passphrase for the keyed barrier |
+| `--shamir-threshold` | For `shamir` | (config default) | M value for M-of-N threshold |
+| `--shamir-total` | For `shamir` | (config default) | N value for M-of-N shares |
+| `--tenant` | No | (system barrier) | Scope the migration to a tenant's dedicated barrier |
+| `--mechanism` | No | `swap` | Re-encryption method: `swap` or `in-place` |
+| `--availability` | No | `quiesced` | Availability mode: `quiesced` or `online` |
+| `-y`, `--assume-yes` | No | | Skip the confirmation prompt |
+
+### 3.9 `barrier recovery generate`
 
 Generate a fresh M-of-N recovery key set. Recovery keys live in a
 parallel KMS slot — they are **not** the same as Shamir unseal shares.
@@ -224,7 +270,7 @@ parallel KMS slot — they are **not** the same as Shamir unseal shares.
 qrdb barrier recovery generate --threshold 3 --total 5 --so-pin SO12345
 ```
 
-### 3.9 `barrier recovery recover`
+### 3.10 `barrier recovery recover`
 
 Restore the barrier by submitting M-of-N recovery keys.
 
@@ -234,7 +280,7 @@ qrdb barrier recovery recover --share key-a --share key-b --share key-c
 
 ---
 
-## 3.10 Security Officer verbs (`barrier officer`, `barrier shamir-seal-vote`, `barrier recovery officer`)
+## 3.11 Security Officer verbs (`barrier officer`, `barrier shamir-seal-vote`, `barrier recovery officer`)
 
 These verbs implement the **Security Officer share-distribution model**
 (see [../seal/shamir.md](../seal/shamir.md) and

@@ -36,6 +36,31 @@ func newNoneBarrier(t *testing.T) (*StorageBarrier, StorageBackend) {
 	return b, backend
 }
 
+// TestMintKeyedSibling_Idempotent proves a second mint over the same staging
+// suffix succeeds even when a prior mint left a staging blob behind (an
+// interrupted/rolled-back migration). Without the self-healing DeleteRootKey in
+// MintKeyedSibling, the second Initialize would fail with ErrAlreadyInitialized
+// and permanently wedge every migration retry.
+func TestMintKeyedSibling_Idempotent(t *testing.T) {
+	ctx := context.Background()
+	src, _ := newNoneBarrier(t)
+
+	strat := NewDeferredSoftwareStrategy()
+	first, err := src.MintKeyedSibling(ctx, ".migrating", strat, Credentials{Secret: []byte("pw")})
+	if err != nil {
+		t.Fatalf("first MintKeyedSibling: %v", err)
+	}
+	_ = first.Close()
+	// The staging blob from the first mint is still on the backend (simulating a
+	// rolled-back / interrupted migration that didn't delete it). A second mint
+	// must still succeed.
+	second, err := src.MintKeyedSibling(ctx, ".migrating", NewDeferredSoftwareStrategy(), Credentials{Secret: []byte("pw")})
+	if err != nil {
+		t.Fatalf("second MintKeyedSibling over leftover staging blob: %v (mint not idempotent — retries would wedge)", err)
+	}
+	_ = second.Close()
+}
+
 func TestMigrationOptions_Validate(t *testing.T) {
 	tests := []struct {
 		name string
@@ -206,6 +231,52 @@ func TestBeginMigrationJournal_RejectsInvalidOptionsAndNonNoneSource(t *testing.
 	good := MigrationOptions{TargetStrategy: StrategyShamir, Mechanism: MechanismSwap, Availability: AvailabilityQuiesced, ShamirThreshold: 2, ShamirTotal: 3}
 	if _, err := keyed.beginMigrationJournal(ctx, good); !errors.Is(err, ErrMigrationSourceNotNone) {
 		t.Fatalf("keyed-source begin = %v, want ErrMigrationSourceNotNone", err)
+	}
+}
+
+// TestBeginMigrationJournal_AcceptsSystemBarrierSource verifies that a tenant
+// barrier sealed under the SystemBarrierStrategy (auto-unseal) is accepted as a
+// valid enable-encryption migration source. The SourceStrategy in the written
+// journal must reflect the actual active strategy (StrategySystemBarrier), not
+// the legacy hardcoded StrategyNone.
+func TestBeginMigrationJournal_AcceptsSystemBarrierSource(t *testing.T) {
+	ctx := context.Background()
+
+	// Build and initialise the system barrier that acts as the tenant KEK.
+	sys, _ := newNoneBarrier(t)
+	defer func() { _ = sys.Close() }()
+
+	// Build a tenant barrier whose root key is wrapped by the system barrier.
+	sysStrat := NewSystemBarrierStrategy(sys)
+	tenant, err := NewStorageBarrier(testLogger(), NewMemoryBackend(),
+		BarrierConfig{RootKeyPath: "tenant"}, sysStrat)
+	if err != nil {
+		t.Fatalf("NewStorageBarrier tenant: %v", err)
+	}
+	defer func() { _ = tenant.Close() }()
+	if err := tenant.Initialize(ctx, Credentials{}); err != nil {
+		t.Fatalf("Initialize system-barrier tenant: %v", err)
+	}
+
+	// beginMigrationJournal must accept StrategySystemBarrier as a valid source.
+	opts := MigrationOptions{
+		TargetStrategy: StrategyPassphrase,
+		Mechanism:      MechanismSwap,
+		Availability:   AvailabilityQuiesced,
+		Credentials:    Credentials{Secret: []byte("tenant-pw")},
+	}
+	j, err := tenant.beginMigrationJournal(ctx, opts)
+	if err != nil {
+		t.Fatalf("beginMigrationJournal system-barrier source: %v", err)
+	}
+	if j.SourceStrategy != StrategySystemBarrier {
+		t.Fatalf("SourceStrategy = %q, want %q", j.SourceStrategy, StrategySystemBarrier)
+	}
+	if j.TargetStrategy != StrategyPassphrase {
+		t.Fatalf("TargetStrategy = %q, want %q", j.TargetStrategy, StrategyPassphrase)
+	}
+	if j.Phase != PhasePending {
+		t.Fatalf("Phase = %q, want %q", j.Phase, PhasePending)
 	}
 }
 

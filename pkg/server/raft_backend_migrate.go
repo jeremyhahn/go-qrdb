@@ -1,0 +1,295 @@
+// Copyright 2026 Jeremy Hahn
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package server
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+)
+
+// recodeFunc re-encrypts a store directory from srcEnc into dstDir under dstEnc,
+// returning the bytes processed. database.ReencryptPebbleStore /
+// ReencryptStoreFiles satisfy it; a test seam may substitute a failing impl to
+// exercise the migration rollback path.
+type recodeFunc func(ctx context.Context, srcDir string, srcEnc *atrest.Encryptor, dstDir string, dstEnc *atrest.Encryptor) (int64, error)
+
+// shardMigrTarget is one local dedicated-raft shard to recycle during a tenant's
+// encryption migration: its on-disk state-machine Pebble dir and (when the
+// shard opted into a per-tenant-KEY WAL, 4d Option C) its dedicated WAL dir.
+type shardMigrTarget struct {
+	key    raftShardKey
+	smDir  string // {dataDir}/shard-{shardID} — encfs Pebble under the tenant barrier
+	walDir string // {dataDir}/wal — dedicated WAL, or "" for a shared-WAL (Route A) shard
+}
+
+// tenantStartedShards snapshots every locally-started dedicated raft shard owned
+// by tenantID, with the on-disk dirs each recycle must re-encrypt. All of a
+// tenant's dedicated-raft databases share ONE per-tenant barrier, so enabling
+// encryption on that barrier must recode every one of the tenant's local shards
+// together — recoding a subset would strand the rest behind a keyed barrier they
+// can no longer open.
+func (f *RaftBackendFactory) tenantStartedShards(tenantID string) []shardMigrTarget {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []shardMigrTarget
+	for k, rs := range f.shards {
+		if k.tenantID != tenantID {
+			continue
+		}
+		t := shardMigrTarget{
+			key:   k,
+			smDir: filepath.Join(rs.dataDir, fmt.Sprintf("shard-%d", rs.shardID)),
+		}
+		if rs.dedicatedWAL != nil {
+			t.walDir = filepath.Join(rs.dataDir, dedicatedWALSubdir)
+		}
+		out = append(out, t)
+	}
+	return out
+}
+
+// MigrateTenantEncryption migrates an IsolationRaft tenant's dedicated barrier
+// from none to a keyed strategy, re-encrypting every one of the tenant's local
+// dedicated-raft shards (each shard's state-machine Pebble plus its dedicated WAL
+// when present) in place under a single barrier recycle, then installing the
+// keyed barrier and re-attaching the shards. Only the named tenant's shards are
+// affected; the shared host, the system barrier, and every other tenant keep
+// serving uninterrupted. It is the IsolationRaft analogue of
+// TenantHostRegistry.MigrateEncryption (which serves IsolationVolume tenants).
+//
+// opts.TargetStrategy must be a keyed strategy. The migration is crash-safe via
+// the tenant barrier's journal: copy -> verify -> atomic swap -> adopt key, with
+// one mint/adopt covering all of the tenant's shards. On any pre-commit failure
+// the staging copies are removed and the shards re-attach under the untouched
+// (none) barrier, so the tenant is never stranded behind closed shards.
+func (f *RaftBackendFactory) MigrateTenantEncryption(ctx context.Context, tenantID string, opts seal.MigrationOptions) (err error) {
+	if f == nil || f.barrierReg == nil || f.host == nil {
+		return &RaftBackendError{TenantID: tenantID, Op: "migrate", Err: ErrRaftBackendUnavailable}
+	}
+	if verr := opts.Validate(); verr != nil {
+		return verr
+	}
+
+	tb, err := f.barrierReg.GetTenant(tenantID)
+	if err != nil {
+		return &RaftBackendError{TenantID: tenantID, Op: "migrate-barrier-lookup", Err: err}
+	}
+	source := tb.Barrier()
+	if source == nil {
+		return &RaftBackendError{TenantID: tenantID, Op: "migrate-barrier-lookup", Err: ErrRaftBackendUnavailable}
+	}
+	// The tenant barrier is shared across the tenant's shards (and stays
+	// registry-owned across a per-shard stop), so it must already be unsealed —
+	// closing one shard never seals it. A sealed source means the tenant key is
+	// not present on this node; there is nothing to migrate locally.
+	if source.IsSealed() {
+		return &RaftBackendError{TenantID: tenantID, Op: "migrate", Err: seal.ErrSealed}
+	}
+
+	// Block lazy shard rebuilds against the stale barrier at TENANT granularity
+	// BEFORE snapshotting the shard set — so a db that starts concurrently cannot
+	// slip between the snapshot and the guard and escape the recode (the
+	// IsolationVolume sibling guards first thing for the same reason). The early
+	// defer is a safety net for the return paths below that precede the finalize
+	// defer; the finalize defer clears the guard again (idempotent) before
+	// re-attaching.
+	f.migrating.Store(tenantID, struct{}{})
+	defer f.migrating.Delete(tenantID)
+
+	shards := f.tenantStartedShards(tenantID)
+	if len(shards) == 0 {
+		return &RaftBackendError{TenantID: tenantID, Op: "migrate", Err: ErrRaftDatabaseUnknown}
+	}
+
+	mintStrat, err := keyedTenantStrategy(opts)
+	if err != nil {
+		return err
+	}
+	target, err := source.MintKeyedSibling(ctx, migrateStagingSuffix, mintStrat, opts.Credentials)
+	if err != nil {
+		return &RaftBackendError{TenantID: tenantID, Op: "migrate-mint", Err: err}
+	}
+	// Always remove the staging keyed root-key blob and zero its key enclave on
+	// return — on success (the keyed root key is adopted to the canonical path, so
+	// the staging copy is redundant) and on failure (rollback). MintKeyedSibling
+	// is itself idempotent against a leftover blob; this keeps the backend clean.
+	defer func() { _ = target.DeleteRootKey(ctx) }()
+	defer func() { _ = target.Close() }()
+
+	j, err := source.BeginMigration(ctx, opts)
+	if err != nil {
+		return err
+	}
+	j.StagingRootKeyPath = target.RootKeyPath()
+
+	quiesced := false
+	// Finalize defer — registered immediately after BeginMigration, BEFORE the
+	// first CheckpointMigration, so ANY post-begin failure rolls the journal to a
+	// terminal PhaseFailed. Otherwise a leftover non-terminal journal makes the
+	// next BeginMigration return ErrMigrationInProgress and wedge every retry.
+	defer func() {
+		if err != nil && !j.Committed() {
+			for _, s := range shards {
+				_ = os.RemoveAll(s.smDir + database.KeyedDirSuffix)
+				if s.walDir != "" {
+					_ = os.RemoveAll(s.walDir + database.KeyedDirSuffix)
+				}
+			}
+			j.Phase = seal.PhaseFailed
+			_ = source.CheckpointMigration(ctx, j)
+			_ = source.FinishMigration(ctx)
+		}
+		// Clear the guard (idempotent), then re-attach every quiesced shard: after a
+		// successful commit under the keyed barrier, after a failure under the
+		// untouched none barrier. Either way the tenant is never left dark.
+		f.migrating.Delete(tenantID)
+		if quiesced {
+			for _, s := range shards {
+				if aerr := f.Attach(ctx, s.key.tenantID, s.key.database); aerr != nil && err == nil {
+					err = &RaftBackendError{TenantID: s.key.tenantID, Database: s.key.database, Op: "migrate-reattach", Err: aerr}
+				}
+			}
+		}
+	}()
+
+	if cerr := source.CheckpointMigration(ctx, j); cerr != nil {
+		err = cerr
+		return err
+	}
+
+	// Quiesce: stop each shard (releasing its SM Pebble lock + closing its
+	// dedicated WAL). The shared tenant barrier stays unsealed throughout.
+	for _, s := range shards {
+		if cerr := f.Close(s.key.tenantID, s.key.database); cerr != nil {
+			err = &RaftBackendError{TenantID: s.key.tenantID, Database: s.key.database, Op: "migrate-quiesce", Err: cerr}
+			return err
+		}
+	}
+	quiesced = true
+
+	srcEnc := atrest.New(source)
+	dstEnc := atrest.New(target)
+	recode := database.ReencryptPebbleStore
+	if opts.Mechanism == seal.MechanismInPlace {
+		recode = database.ReencryptStoreFiles
+	}
+	if f.recodeOverride != nil { // test-only: inject a recode failure (rollback path)
+		recode = f.recodeOverride
+	}
+
+	// Copy: re-encrypt each shard's SM Pebble + dedicated WAL into keyed siblings.
+	j.Phase = seal.PhaseCopying
+	if cerr := source.CheckpointMigration(ctx, j); cerr != nil {
+		err = cerr
+		return err
+	}
+	for _, s := range shards {
+		smKeyed := s.smDir + database.KeyedDirSuffix
+		_ = os.RemoveAll(smKeyed)
+		if _, cerr := recode(ctx, s.smDir, srcEnc, smKeyed, dstEnc); cerr != nil {
+			err = &RaftBackendError{TenantID: tenantID, Database: s.key.database, Op: "migrate-recode-sm", Err: cerr}
+			return err
+		}
+		if s.walDir != "" {
+			walKeyed := s.walDir + database.KeyedDirSuffix
+			_ = os.RemoveAll(walKeyed)
+			if _, cerr := database.ReencryptWALStore(s.walDir, source, walKeyed, target); cerr != nil {
+				err = &RaftBackendError{TenantID: tenantID, Database: s.key.database, Op: "migrate-recode-wal", Err: cerr}
+				return err
+			}
+		}
+	}
+
+	// Verify each SM round-trip (no data loss). WALs are verified implicitly by
+	// the shard re-attach below, which replays them into the keyed state machine.
+	j.Phase = seal.PhaseVerifying
+	if cerr := source.CheckpointMigration(ctx, j); cerr != nil {
+		err = cerr
+		return err
+	}
+	for _, s := range shards {
+		if verr := database.VerifyReencryptedStore(ctx, s.smDir, srcEnc, s.smDir+database.KeyedDirSuffix, dstEnc); verr != nil {
+			err = &RaftBackendError{TenantID: tenantID, Database: s.key.database, Op: "migrate-verify-sm", Err: verr}
+			return err
+		}
+	}
+
+	// Commit (point of no return): swap every dir, then adopt the keyed root key
+	// once for the whole tenant barrier.
+	j.Phase = seal.PhaseCommitting
+	if cerr := source.CheckpointMigration(ctx, j); cerr != nil {
+		err = cerr
+		return err
+	}
+	for _, s := range shards {
+		if serr := database.SwapStoreDir(s.smDir); serr != nil {
+			err = &RaftBackendError{TenantID: tenantID, Database: s.key.database, Op: "migrate-swap-sm", Err: serr}
+			return err
+		}
+		if s.walDir != "" {
+			if serr := database.SwapStoreDir(s.walDir); serr != nil {
+				err = &RaftBackendError{TenantID: tenantID, Database: s.key.database, Op: "migrate-swap-wal", Err: serr}
+				return err
+			}
+		}
+	}
+	if aerr := source.AdoptMigratedRootKey(ctx, target); aerr != nil {
+		err = aerr
+		return err
+	}
+	for _, s := range shards {
+		database.RemoveStoreBackup(s.smDir)
+		if s.walDir != "" {
+			database.RemoveStoreBackup(s.walDir)
+		}
+	}
+
+	// Install the keyed barrier: reopen from the now-keyed canonical root key and
+	// replace the live (none) tenant barrier so re-attach and any concurrent
+	// resolve use the keyed barrier.
+	reopenStrat, serr := keyedTenantStrategy(opts)
+	if serr != nil {
+		err = serr
+		return err
+	}
+	keyed, rerr := source.ReopenKeyed(ctx, reopenStrat, opts.Credentials)
+	if rerr != nil {
+		err = &RaftBackendError{TenantID: tenantID, Op: "migrate-reopen-barrier", Err: rerr}
+		return err
+	}
+	if perr := f.barrierReg.ReplaceTenantBarrier(tenantID, seal.WrapTenantBarrier(tenantID, keyed)); perr != nil {
+		err = &RaftBackendError{TenantID: tenantID, Op: "migrate-replace-barrier", Err: perr}
+		return err
+	}
+
+	j.Phase = seal.PhaseComplete
+	_ = source.CheckpointMigration(ctx, j)
+	_ = source.FinishMigration(ctx)
+
+	f.logger.Info("tenant raft-shard encryption migration complete",
+		slog.String("tenant", tenantID),
+		slog.String("strategy", string(opts.TargetStrategy)),
+		slog.Int("shards", len(shards)))
+	// The deferred re-attach reopens every shard under the keyed barrier.
+	return nil
+}

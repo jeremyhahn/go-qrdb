@@ -520,6 +520,11 @@ const (
 	// tenant's plan permits). This is a system-admin plan-management operation.
 	TenantsSetEntitlements Permission = "tenants:set_entitlements"
 
+	// TenantsSetQuotas grants access to change a tenant's engine-level resource
+	// quotas (max databases, keys, storage bytes, etc.). This is a privileged
+	// plan-management operation exercisable only by system administrators.
+	TenantsSetQuotas Permission = "tenants:set_quotas"
+
 	// TenantBarrierInit grants a tenant admin the ability to initialize
 	// their own tenant's barrier with a caller-supplied passphrase. This
 	// permission is tenant-scoped (ScopeTenantOnly): it is exercisable only
@@ -559,6 +564,12 @@ const (
 	// TenantBarrierSealVote grants a tenant Security Officer the ability to submit
 	// a seal vote for their tenant's barrier. Tenant-scoped (ScopeTenantOnly).
 	TenantBarrierSealVote Permission = "tenant_barrier:seal_vote"
+
+	// TenantBarrierEnableEncryption grants access to migrate a tenant's dedicated
+	// barrier from the none (unencrypted) strategy to a keyed strategy in place.
+	// This is a privileged operation equivalent to SealEnableEncryption scoped to
+	// a single tenant's barrier. Tenant-scoped (ScopeTenantOnly).
+	TenantBarrierEnableEncryption Permission = "tenant_barrier:enable_encryption"
 )
 
 // Database management permissions. A database is a logical engine/storage
@@ -879,11 +890,12 @@ var categories = []Category{
 		Group: "Management Services",
 		Permissions: []Permission{
 			TenantsCreate, TenantsRead, TenantsUpdate, TenantsDelete, TenantsList,
-			TenantsSetIsolation, TenantsSetEntitlements,
+			TenantsSetIsolation, TenantsSetEntitlements, TenantsSetQuotas,
 			TenantsListCross, TenantsCreateCross, TenantsApprove,
 			TenantBarrierInit, TenantBarrierUnseal, TenantBarrierSeal, TenantBarrierStatus,
 			TenantBarrierOfficerRegister, TenantBarrierOfficerList,
 			TenantBarrierClaimShare, TenantBarrierSealVote,
+			TenantBarrierEnableEncryption,
 		},
 	},
 	{

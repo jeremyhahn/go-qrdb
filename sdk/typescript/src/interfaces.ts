@@ -159,6 +159,8 @@ import type {
     SealStatus,
     BootstrapResult,
     UnsealProgress,
+    EnableEncryptionRequest,
+    EnableEncryptionResponse,
 
     // Officer / share-claim
     OfficerRegisterRequest,
@@ -1303,6 +1305,36 @@ export interface SealClient {
      * @returns Seal status including share counts.
      */
     status(): Promise<SealStatus>;
+
+    /**
+     * Enables at-rest encryption on a barrier that was initialized without it
+     * (strategy "none"), re-encrypting all stored data under a newly minted
+     * keyed strategy.
+     *
+     * Scope is selected by `req.tenantId`:
+     * - Omitted/empty → the SYSTEM barrier (admin scope). Requires admin
+     *   privileges.
+     * - Present → that tenant's OWN dedicated barrier. A tenant whose data
+     *   lives on the shared system barrier cannot change its encryption; the
+     *   server rejects such a request with a 403 (shared-barrier immutable).
+     *
+     * The source barrier MUST currently be unencrypted: if it already uses a
+     * keyed strategy, or a migration is already in progress, the server rejects
+     * the call with a 409 conflict. Invalid options yield a 400; an unavailable
+     * migration provider yields a 501.
+     *
+     * The migration runs ASYNCHRONOUSLY. A successful call returns
+     * "migration_started"; callers must then POLL {@link status} until the
+     * reported `strategy` changes from "none" to the keyed strategy to confirm
+     * completion.
+     *
+     * @param req - Migration parameters including scope, target strategy, and credentials.
+     * @returns Acknowledgement that the migration has started.
+     * @throws {@link import('./errors.js').TransportError} with statusCode 403 (shared barrier),
+     *   409 (source not "none" or migration in progress), 400 (invalid options), or
+     *   501 (migration provider unavailable).
+     */
+    enableEncryption(req: EnableEncryptionRequest): Promise<EnableEncryptionResponse>;
 }
 
 // ---------------------------------------------------------------------------

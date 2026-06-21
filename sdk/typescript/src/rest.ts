@@ -83,6 +83,8 @@ import type {
     DeleteNamespaceRequest,
     DeleteVectorRequest,
     EmbeddedConfig,
+    EnableEncryptionRequest,
+    EnableEncryptionResponse,
     ExportCertRequest,
     ExportCertResponse,
     GenerateCertRequest,
@@ -1808,6 +1810,22 @@ export class RestClient implements Client {
                     }
                     throw err;
                 }
+            },
+            enableEncryption: async (req: EnableEncryptionRequest): Promise<EnableEncryptionResponse> => {
+                this.ensureConnected();
+                // Build the snake_case payload, omitting empty/zero optional
+                // fields so the server's `omitempty` tags see exactly what the
+                // caller set (e.g. an absent tenant_id selects the system scope).
+                const payload: Record<string, unknown> = { strategy: req.strategy };
+                if (req.tenantId) payload.tenant_id = req.tenantId;
+                if (req.mechanism) payload.mechanism = req.mechanism;
+                if (req.availability) payload.availability = req.availability;
+                if (req.passphrase) payload.passphrase = req.passphrase;
+                if (req.shamirThreshold) payload.shamir_threshold = req.shamirThreshold;
+                if (req.shamirTotal) payload.shamir_total = req.shamirTotal;
+                return this.fetchJSON<EnableEncryptionResponse>('/v1/barrier/enable-encryption',
+                    { method: 'POST', ...jsonBody(payload) },
+                );
             },
         };
     }

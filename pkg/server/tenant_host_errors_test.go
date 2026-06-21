@@ -37,6 +37,39 @@ func TestTenantHostError_ErrorAndUnwrap(t *testing.T) {
 	}
 }
 
+func TestVolumeReattachError_ErrorAndUnwrap(t *testing.T) {
+	inner := errors.New("boom")
+	e := &VolumeReattachError{TenantID: "acme", Err: inner}
+	const want = "qrdbd: re-attach volume tenant acme: boom"
+	if got := e.Error(); got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+	if e.Unwrap() != inner {
+		t.Error("Unwrap did not return the wrapped error")
+	}
+}
+
+func TestRaftReattachError_WithDatabase(t *testing.T) {
+	inner := errors.New("boom")
+	e := &RaftReattachError{TenantID: "acme", Database: "app", Err: inner}
+	const want = "qrdbd: re-attach raft tenant acme/app: boom"
+	if got := e.Error(); got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+	if e.Unwrap() != inner {
+		t.Error("Unwrap did not return the wrapped error")
+	}
+}
+
+func TestRaftReattachError_WithoutDatabase(t *testing.T) {
+	inner := errors.New("boom")
+	e := &RaftReattachError{TenantID: "acme", Err: inner}
+	const want = "qrdbd: re-attach raft tenant acme: boom"
+	if got := e.Error(); got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+}
+
 func TestTenantHostSentinelErrors(t *testing.T) {
 	// The package-level sentinels carry stable, distinct messages.
 	cases := []struct {

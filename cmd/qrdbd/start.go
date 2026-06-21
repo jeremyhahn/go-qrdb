@@ -44,10 +44,12 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
+	raftbackend "github.com/jeremyhahn/go-qrdb/pkg/backend/raft"
 	"github.com/jeremyhahn/go-qrdb/pkg/bootstrap"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterkeys"
+	"github.com/jeremyhahn/go-qrdb/pkg/clustermig"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/custodian"
@@ -988,927 +990,971 @@ func runStart(f *startFlags) error {
 		context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer sigStop()
 
-	// Build the seal subsystem BEFORE the state machine factory and
-	// before host construction. The data-plane Pebble instance is opened
-	// on top of seal/encfs which requires the barrier to be unsealed;
-	// we therefore (1) build the barrier+credential+registry up front,
-	// (2) thread store.WithEncryptingFS into the SM factory, and (3)
-	// run a pre-host sealed-window listener that holds the boot until
-	// the operator drives unseal via the public API.
-	var sealSub *sealSubsystem
-	if f.sealConfig.Enabled {
-		var subErr error
-		sealSub, subErr = initSealSubsystem(f, sigCtx)
-		if subErr != nil {
-			return subErr
-		}
-		defer func() { _ = sealSub.Close() }()
-	}
+	// System-scope enable-encryption recycles the data plane IN-PROCESS: the
+	// migration handler enqueues onto migrateCh and the boot loop below tears the
+	// data plane down, re-encrypts the system host's stores, adopts the keyed
+	// root key, and re-runs the boot body (which rebuilds the seal subsystem from
+	// the now-keyed root key). The OS process never exits. Tenant-scope migration
+	// is handled separately by the per-tenant Host registry.
+	migrateCh := make(chan *systemMigrationRequest, 1)
+	sysMigrator := newDaemonSystemMigrator(migrateCh)
+	for {
+		var rebootForMigration bool
+		bootErr := func() error {
+			// Per-iteration context: an in-process migration cancels it so this
+			// iteration's long-lived goroutines (lease sweeper, quota/tenant
+			// reconcilers, dynamic membership) stop before the data plane is torn
+			// down. It is a child of sigCtx, so process shutdown still cancels it.
+			bootCtx, bootCancel := context.WithCancel(sigCtx)
+			defer bootCancel()
 
-	// Build the volume-pool subsystem when the YAML config declares
-	// pools. Barrier-mode tenants registered via RegisterTenant(ctx,
-	// id, nil, ...) draw their per-tenant Pebble path from this pool.
-	// When no pools are configured the subsystem is nil and the seal
-	// registry rejects pooled RegisterTenant calls with
-	// ErrPoolNotConfigured — keyspace-mode tenants are unaffected.
-	volumePool, err := initVolumePoolSubsystem(f.dataDir, f.storageConfig.VolumePools, slog.Default())
-	if err != nil {
-		return err
-	}
-	if volumePool != nil {
-		defer func() { _ = volumePool.Close() }()
-		// Attach the pool resources to the barrier registry built in
-		// initSealSubsystem so RegisterTenant can satisfy nil-backend
-		// calls for barrier-mode tenants. When sealSub is nil (seal
-		// disabled) the pool subsystem still tracks per-tenant Pebble
-		// lifecycle for direct callers that build their own registry.
-		if sealSub != nil && sealSub.BarrierRegistry != nil {
-			sealSub.BarrierRegistry.Attach(
-				seal.WithVolumePool(volumePool.Manager, volumePool.StateStore, volumePool.DefaultPoolName),
-				seal.WithPerTenantRegistry(volumePool.PerTenantRegistry),
-			)
-		}
-	}
-
-	// Build the single at-rest Encryptor for this node. Every Pebble store
-	// opened by the daemon (MVCC state machine, vector storage) routes through
-	// this one instance so the barrier-driven encfs wiring lives in one place.
-	// A nil sealSub produces a no-op Encryptor; plaintext deployments and tests
-	// are unaffected.
-	var sealBarrierForEnc *seal.StorageBarrier
-	if sealSub != nil {
-		sealBarrierForEnc = sealSub.SealBarrier
-	}
-	enc := atrest.New(sealBarrierForEnc)
-
-	// Wire the same system barrier into the shared Raft LogDB/WAL so the
-	// replication log is encrypted at rest, not just the state-machine
-	// Pebble. Without this the committed KV entries (keys and values) sit
-	// in cleartext in the WAL until log compaction. The underlying
-	// EpochBarrier satisfies quicraft.Barrier; it MUST be unsealed before
-	// NewHost opens the LogDB. The boot sequence below drives the barrier
-	// through the sealed-window unseal (awaitUnseal) before initializeNode
-	// constructs the Host, so by the time WithBarrier is engaged the
-	// barrier is unsealed — the same precondition the SM Pebble relies on.
-	// When seal is disabled sealBarrierForEnc is nil and the WAL stays
-	// plaintext (a no-op, consistent with encryption being off).
-	if sealBarrierForEnc != nil {
-		f.walSystemBarrier = sealBarrierForEnc.EpochBarrier()
-		f.walBarrier = f.walSystemBarrier
-	}
-
-	// Build a subsystem-aware state machine factory for "mvcc" and
-	// "pebble" SM types. Other types fall back to the registry default.
-	// When the seal subsystem is enabled, store.WithEncryptor wraps every
-	// Pebble file the SM creates (sstables, WAL, manifest, snapshots) with
-	// the barrier-driven encfs via the shared Encryptor above.
-	pebbleOpts := []store.Option{store.WithEncryptor(enc)}
-	switch f.smType {
-	case "mvcc":
-		f.createFn = store.NewMVCCCreateFuncWith(pebbleOpts,
-			store.WithLessor(lr),
-			store.WithWatchHub(watchHub),
-			store.WithTimeSeriesEnabled(),
-		)
-	case "pebble":
-		f.createFn = store.NewPebbleCreateFuncWith(pebbleOpts,
-			func(s *store.PebbleStateMachine) {
-				s.SetLessor(lr)
-				s.SetWatchHub(watchHub)
-				s.SetTimeSeriesEnabled(true)
-			},
-		)
-	}
-
-	// The ceremony CA signs Security Officer client-certificate CSRs so
-	// the resulting certs chain to the same CA the server trusts for
-	// mTLS — the prerequisite for the share-free officer claim flow.
-	// nil with BYO TLS certificates (no CA private key available).
-	ceremonyCA, err := ceremonyCAFromBundle(bundle)
-	if err != nil {
-		return err
-	}
-
-	// Pre-host sealed-window listener. While the barrier is sealed the
-	// data plane cannot start (Pebble.Open would fail with ErrSealed
-	// because every file open is encfs-wrapped). We bring up an
-	// API-only server with the seal services and the sealed-window
-	// probe installed, then poll the barrier until the operator drives
-	// the public unseal API. Once IsSealed flips false we tear the
-	// listener down and let the regular boot continue. The returned
-	// seal Node is threaded into BuildServices below so that officer
-	// registrations and enclave-held shares from the sealed window
-	// survive into the post-unseal service graph.
-	var sealedWindowNode *lifecycle.Node
-	if sealSub != nil && sealSub.SealBarrier.IsSealed() {
-		sealNode, err := awaitUnseal(sigCtx, f, bundle, sealSub, ceremonyCA)
-		var canceled *awaitUnsealCanceledError
-		if errors.As(err, &canceled) {
-			slog.Info("daemon shutdown during sealed boot")
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		sealedWindowNode = sealNode
-	}
-
-	host, err := initializeNode(sigCtx, f, bundle)
-	if err != nil {
-		return err
-	}
-
-	// SIGHUP triggers manual TLS certificate reload (for scripted rotation).
-	sighupCh := make(chan os.Signal, 1)
-	signal.Notify(sighupCh, syscall.SIGHUP)
-	go func() {
-		for range sighupCh {
-			handleSIGHUP(bundle.Reloader, slog.Default())
-		}
-	}()
-	defer signal.Stop(sighupCh)
-
-	// Build the service layer.
-	adapter := newHostAdapter(host)
-
-	// Use a bootstrap-specific adapter that reads from the local SM
-	// (StaleRead) instead of going through ReadIndex. This avoids
-	// a startup deadlock where the Raft ReadIndex pipeline is not
-	// yet warmed up after leader election.
-	bootAdapter := newBootstrapHostAdapter(adapter)
-	bootKVSvc := service.NewKVService(bootAdapter, shard.ShardKV)
-
-	// The seal subsystem (barrier, credential service, barrier registry)
-	// was constructed earlier, before host initialization, so the data
-	// plane could be opened on top of seal/encfs once the operator drove
-	// unseal. Pull the references out here for use in DEK construction
-	// and the lifecycle service graph.
-	var sealBarrier *seal.StorageBarrier
-	var credCoreSvc *credentials.CredentialService
-	var barrierRegistry *seal.BarrierRegistry
-	if sealSub != nil {
-		sealBarrier = sealSub.SealBarrier
-		credCoreSvc = sealSub.CredCoreSvc
-		barrierRegistry = sealSub.BarrierRegistry
-	}
-
-	// Initialize tenant DEK manager for per-tenant data encryption key
-	// management. The cluster DEK manager wraps the seal barrier to provide
-	// a shared cluster-level DEK that wraps each tenant's isolated DEK.
-	// A dedicated PebbleDB directory persists the wrapped tenant DEKs.
-	var tenantDEKMgr dek.TenantDEKManager
-	if sealBarrier != nil && barrierRegistry != nil {
-		clusterDEKMgr, cdErr := dek.NewClusterDEKManager(sealBarrier, slog.Default())
-		if cdErr != nil {
-			_ = shutdownNode(host)
-			return &ClusterDEKError{Err: cdErr}
-		}
-		dekDataDir := filepath.Join(f.dataDir, "dek")
-		if err := os.MkdirAll(dekDataDir, 0o700); err != nil {
-			_ = shutdownNode(host)
-			return &DEKStorageError{Err: err}
-		}
-		dekStore, dekStoreErr := pebblestore.New(&pebblestore.Config{DataDir: dekDataDir})
-		if dekStoreErr != nil {
-			_ = shutdownNode(host)
-			return &DEKStorageError{Err: dekStoreErr}
-		}
-		defer func() { _ = dekStore.Close() }()
-		dekBackend := seal.NewStorageAdapter(dekStore)
-		tdm, tdmErr := dek.NewTenantDEKManager(clusterDEKMgr, dekBackend, slog.Default(), nil)
-		if tdmErr != nil {
-			_ = shutdownNode(host)
-			return &TenantDEKError{Err: tdmErr}
-		}
-		tenantDEKMgr = tdm
-		slog.Info("tenant DEK manager initialized", slog.String("data_dir", dekDataDir))
-	}
-
-	// Construct all services via the shared lifecycle package. Seal-gated
-	// services (barrier, ceremony, credential, tenant, cert) are wired when
-	// sealBarrier and barrierRegistry are non-nil. The barrier/credential/
-	// registry instances reused here are the same ones constructed earlier
-	// for the pre-host sealed-window listener; the listener was stopped
-	// before initializeNode, so this BuildServices call is the single
-	// owner of the barrier services for the rest of the daemon's lifetime.
-	// Strict tenant isolation: FIPS-140 always enforces it; operators opt in
-	// via config.Tenant.StrictIsolation (stored in f.strictTenantIsolation by
-	// applyConfigToFlags). Mirrors the strictSoD resolution pattern above.
-	strictTenant := fips140.Enabled() || f.strictTenantIsolation
-	if !strictTenant {
-		slog.Warn("tenant isolation: standard mode active — un-tenanted vector namespace creation is NOT refused; " +
-			"identities with no explicit tenant pool into the 'system' tenant. " +
-			"Set tenant.strict_isolation: true (or build with FIPS-140) to enforce per-tenant isolation.")
-	}
-
-	// Reuse the ceremony core service from the sealed-window listener when
-	// one exists: officer registrations performed while sealed are
-	// cache-only and distributed shares live in the service's in-memory
-	// enclaves, so constructing a fresh instance here would orphan both.
-	var ceremonyCoreSvc *ceremony.CeremonyService
-	if sealedWindowNode != nil && sealedWindowNode.Ceremony != nil {
-		if coreSvc, ok := service.CeremonyServiceCore(sealedWindowNode.Ceremony); ok {
-			ceremonyCoreSvc = coreSvc
-		}
-	}
-
-	svcNode, err := lifecycle.BuildServices(sigCtx, lifecycle.Infra{
-		Host:                      adapter,
-		WatchHub:                  watchHub,
-		DataDir:                   f.dataDir,
-		DatabaseManager:           dbManager,
-		KVOptions:                 nil,
-		SealBarrier:               sealBarrier,
-		BarrierRegistry:           barrierRegistry,
-		CredentialCoreSvc:         credCoreSvc,
-		CeremonyDataDir:           filepath.Join(f.dataDir, "seal"),
-		CeremonyCA:                ceremonyCA,
-		CeremonyCoreSvc:           ceremonyCoreSvc,
-		Logger:                    slog.Default(),
-		EmbeddingConfig:           f.embeddingConfig,
-		RAGConfig:                 f.ragConfig,
-		StrictTenantIsolation:     strictTenant,
-		DefaultTenantQuotas:       f.tenantConfig.DefaultQuotas.ToQuotas(),
-		DefaultTenantEntitlements: f.tenantConfig.DefaultEntitlements.ToEntitlements(),
-		Encryptor:                 enc,
-	})
-	if err != nil {
-		_ = shutdownNode(host)
-		return err
-	}
-	defer func() { _ = svcNode.Stop(context.Background()) }()
-
-	// Unpack the services that the rest of this function references by name.
-	// The lifecycle Node owns lifecycle management (vector storage close, etc.);
-	// we keep named local variables here for readability in the server assembly.
-	adminSvc := svcNode.Admin
-	kvSvc := svcNode.KV
-	batchSvc := svcNode.Batch
-	txSvc := svcNode.Transaction
-	mvccSvc := svcNode.MVCC
-	leaseSvc := svcNode.Lease
-	tsSvc := svcNode.TimeSeries
-	indexSvc := svcNode.Index
-	watchSvc := svcNode.Watch
-	lockSvc := svcNode.Lock
-	collectionSvc := svcNode.Collection
-	dbSvc := svcNode.Database
-	vectorSvc := svcNode.Vector
-	barrierSvc := svcNode.Barrier
-	ceremonySvc := svcNode.Ceremony
-	tenantSvcInst := svcNode.Tenant
-
-	// Create a codec-free KV service for the auth middleware. System stores
-	// (user, role, audit) write raw JSON — they must NOT go through the
-	// storage/wire codec pipeline, which expects user data to be encoded
-	// in the configured storage codec (e.g. msgpack).
-	authKVSvc := service.NewKVService(adapter, shard.ShardKV)
-
-	// Always bootstrap user and role stores. These are organizational
-	// primitives that operators may need regardless of whether auth
-	// enforcement is enabled (e.g. pre-provisioning identities before
-	// enabling auth, managing users in dev/test with auth disabled).
-	//
-	// Two KV services are used:
-	//   - bootKVSvc (StaleRead) for initial bootstrap operations when
-	//     ReadIndex is not yet warmed up.
-	//   - authKVSvc (SyncRead, no codec) for runtime store operations,
-	//     ensuring linearizable reads for user/role CRUD.
-	//
-	// Resolve the RBAC posture once: a FIPS 140-3 build forces strict
-	// separation of duties; otherwise the config flag selects it. The
-	// value flows into both the first-boot role provisioning and the RBAC
-	// authorizer so seeding and enforcement agree.
-	strictSoD := fips140.Enabled() || f.separationOfDuties
-	slog.Info("RBAC posture resolved",
-		slog.Bool("separation_of_duties", strictSoD),
-		slog.Bool("fips140", fips140.Enabled()),
-		slog.Bool("config_separation_of_duties", f.separationOfDuties),
-	)
-	// When seal is enabled the system barrier has already been
-	// initialized+unsealed out-of-band (admin barrier API for passphrase, the
-	// SO ceremony for shamir) during awaitUnseal above. Route first-boot
-	// through the seal-aware bootstrap.BootstrapSystem so the orchestrator
-	// observes the already-unsealed barrier (BarrierAlreadyInitialized) and
-	// runs first-boot without demanding any credential. The strategy mapping
-	// mirrors initSealSubsystem: "shamir" → shamir, everything else (the
-	// daemon's deferred-software default) → passphrase. When seal is disabled
-	// sealSub is nil and bootstrapUserRoleStores keeps the direct
-	// firstboot.Initialize path (BootstrapSystem requires a barrier registry).
-	var bootBarriers *seal.BarrierRegistry
-	bootStrategy := bootstrap.StrategyPassphrase
-	if sealSub != nil {
-		bootBarriers = sealSub.BarrierRegistry
-		if f.sealConfig.Strategy == "shamir" {
-			bootStrategy = bootstrap.StrategyShamir
-		}
-	}
-	mgmtResult, err := bootstrapUserRoleStores(sigCtx, bootKVSvc, authKVSvc, host, shard.ShardKV, f.replicaID, tenantSvcInst, strictSoD, bootBarriers, bootStrategy)
-	if err != nil {
-		_ = shutdownNode(host)
-		if sigCtx.Err() != nil {
-			slog.Info("user/role store bootstrap canceled by shutdown signal")
-			return nil
-		}
-		return err
-	}
-
-	// Compliance-grade AuditLogger is always constructed, regardless of
-	// --auth-enabled, because FIPS/FedRAMP/PCI-DSS/HIPAA require an audit
-	// trail even in environments where RBAC is disabled. The AuditLogger is
-	// injected into all protocol servers so the /v1/audit/events endpoint
-	// is available and seal/ceremony/custodian operations emit events.
-	runtimeKVAdapter := newKVServiceAdapter(authKVSvc, nil, nil)
-	chainFile, err := audit.NewFileLogger(filepath.Join(f.dataDir, "audit-events.ndjson"))
-	if err != nil {
-		_ = shutdownNode(host)
-		return &AuthBootstrapError{Step: "compliance audit file", Err: err}
-	}
-	complianceAudit := audit.NewAggregateLogger(
-		chainFile,
-		audit.NewRingBuffer(10000),
-		audit.NewSlogSink(),
-	)
-	defer func() { _ = complianceAudit.Close() }()
-	_ = runtimeKVAdapter // used below when auth is enabled
-
-	// Bootstrap authentication enforcement (RBAC, legacy audit logger, auth
-	// middleware, custodian service, SO authenticator, auth factor service).
-	// Only enabled when --auth-enabled=true. The user and role stores are
-	// already initialized above and reused here.
-	var authResult *authBootstrapResult
-	if f.authEnabled {
-		authResult, err = bootstrapAuthEnforcement(sigCtx, mgmtResult, authKVSvc, f.dataDir, host, complianceAudit, strictSoD, f.spiffeTrustDomain)
-		if err != nil {
-			_ = shutdownNode(host)
-			// Context cancellation from signal is a clean shutdown, not an error.
-			if sigCtx.Err() != nil {
-				slog.Info("auth bootstrap canceled by shutdown signal")
-				return nil
+			// Build the seal subsystem BEFORE the state machine factory and
+			// before host construction. The data-plane Pebble instance is opened
+			// on top of seal/encfs which requires the barrier to be unsealed;
+			// we therefore (1) build the barrier+credential+registry up front,
+			// (2) thread store.WithEncryptingFS into the SM factory, and (3)
+			// run a pre-host sealed-window listener that holds the boot until
+			// the operator drives unseal via the public API.
+			var sealSub *sealSubsystem
+			if f.sealConfig.Enabled {
+				var subErr error
+				sealSub, subErr = initSealSubsystem(f, sigCtx)
+				if subErr != nil {
+					return subErr
+				}
+				defer func() { _ = sealSub.Close() }()
 			}
-			return err
-		}
-		defer func() { _ = authResult.auditLogger.Close() }()
-	} else {
-		slog.Warn("authentication disabled: all endpoints accessible without credentials")
-	}
 
-	// Warm up the ReadIndex pipeline by performing a SyncRead. After
-	// a leader election (including restart), Raft requires a committed
-	// no-op entry before ReadIndex is operational. Without this warmup,
-	// the auth middleware's SyncRead-backed user store lookups would
-	// fail until the pipeline is ready, returning 503 to early clients.
-	warmupReadIndex(sigCtx, kvSvc)
-
-	// Phase 2: make the volume pool a cluster-wide replicated concept. Bind the
-	// pool's round-robin cursor to the replicated system KV (so the cursor is a
-	// single value that survives leader failover) and attach the replicated
-	// tenant→relative-slot assignment store to the barrier registry (so every
-	// replica resolves the SAME relative slot for a tenant — realized at its own
-	// local pool base — instead of running a divergent node-local pool.Pick).
-	// Both must be wired before RestoreVolumeTenants below, which seeds the
-	// assignment from node-local DataRoot records for pre-Phase-2 clusters.
-	if volumePool != nil && kvSvc != nil {
-		if volumePool.ReplicatedState != nil {
-			if bindErr := volumePool.ReplicatedState.Bind(lifecycle.NewKVStoreAdapter(kvSvc)); bindErr != nil {
-				slog.Default().Warn("start: failed to bind replicated volume-pool cursor; falling back to node-local pick",
-					slog.Any("error", bindErr))
+			// Build the volume-pool subsystem when the YAML config declares
+			// pools. Barrier-mode tenants registered via RegisterTenant(ctx,
+			// id, nil, ...) draw their per-tenant Pebble path from this pool.
+			// When no pools are configured the subsystem is nil and the seal
+			// registry rejects pooled RegisterTenant calls with
+			// ErrPoolNotConfigured — keyspace-mode tenants are unaffected.
+			volumePool, err := initVolumePoolSubsystem(f.dataDir, f.storageConfig.VolumePools, slog.Default())
+			if err != nil {
+				return err
 			}
-		}
-		if barrierRegistry != nil {
-			barrierRegistry.Attach(seal.WithReplicatedSlotStore(
-				lifecycle.NewReplicatedSealBackend(kvSvc, txSvc)))
-		}
-	}
-
-	// Restore every per-tenant barrier (IsolationVolume + IsolationRaft) from
-	// THIS node's own persisted tenant-root records before re-attaching either
-	// tenant type. RestoreVolumeTenants re-registers and (for auto-unseal
-	// tenants) unseals each barrier using the node-local DataRoot recorded by
-	// RegisterVolumeTenant on a prior run (create on the leader, key delivery on
-	// followers). This is the authoritative barrier-restore path for EVERY node
-	// and must run before the reattach passes: TenantInfo is replicated cluster
-	// metadata, so every node sees every dedicated tenant, but the DataRoot
-	// carried in TenantInfo belongs to the CREATING node and is invalid
-	// elsewhere — each node's key material lives at its own recorded DataRoot.
-	// Failures are logged and deferred to the reconciler rather than aborting.
-	if barrierRegistry != nil && volumePool != nil {
-		if err := barrierRegistry.RestoreVolumeTenants(sigCtx); err != nil {
-			slog.Default().Warn("start: RestoreVolumeTenants failed; some tenant barriers may be deferred",
-				slog.Any("error", err))
-		}
-	}
-
-	// Per-tenant volume Host registry (Phase 2 IsolationVolume). Each volume
-	// tenant runs a dedicated single-node Raft Host on its own DataRoot with
-	// full engines, encrypted under the tenant DEK. Requires the seal subsystem
-	// (per-tenant barrier) and the volume pool (DataRoot allocation). Boot
-	// re-attach eagerly rebuilds the Host of each volume tenant whose barrier is
-	// locally available (restored above) so persisted data is reachable after a
-	// restart; tenants with no local barrier are deferred to lazy attach.
-	var tenantHostReg *server.TenantHostRegistry
-	if barrierRegistry != nil && tenantSvcInst != nil && volumePool != nil {
-		tenantHostReg = server.NewTenantHostRegistryFromServicer(barrierRegistry, tenantSvcInst, slog.Default())
-		if err := reattachVolumeTenants(sigCtx, tenantSvcInst, barrierRegistry, tenantHostReg, slog.Default()); err != nil {
-			_ = tenantHostReg.CloseAll()
-			_ = shutdownNode(host)
-			return err
-		}
-	}
-
-	// Dedicated per-database raft groups (Phase 4b IsolationRaft). Each
-	// IsolationRaft tenant runs one Raft shard per database on the SHARED system
-	// Host: the shard's state-machine data lives under the tenant's DataRoot
-	// ({DataRoot}/databases/{db}/shard-<N>), encrypted under the tenant DEK,
-	// while the Raft log stays in the shared host LogDB. Requires the seal
-	// subsystem (per-tenant barrier) and the volume pool (DataRoot allocation).
-	// Boot re-attach re-registers + (for system-managed tenants) unseals each
-	// raft tenant's barrier and re-starts its database shards before serving.
-	var raftBackendReg *server.RaftBackendFactory
-	if barrierRegistry != nil && tenantSvcInst != nil && volumePool != nil {
-		// Make the replicated placement table (Phase 4c) the source of truth for
-		// resolving a dedicated-raft database's shard. The factory falls back to
-		// the meta.json-derived source for databases without a placement entry,
-		// so Phase-4b single-node databases keep working unchanged. The local
-		// node is identified by its Raft address, matching the placement
-		// replicas' NodeID.
-		var raftOpts []server.RaftBackendOption
-		if svcNode.PlacementStore != nil {
-			raftOpts = append(raftOpts,
-				server.WithPlacementInfoSource(svcNode.PlacementStore, f.raftAddress, barrierRegistry.LocalTenantDataRoot))
-		}
-		// 4d Option C: hand the multiplex LogDB to the factory so dedicated-raft
-		// databases that opted into a per-tenant-KEY WAL get their Raft log routed
-		// to a tenant-barrier-encrypted dedicated WAL. Nil when seal is disabled or
-		// single-node, in which case every shard uses the shared system WAL.
-		if f.walMux != nil {
-			raftOpts = append(raftOpts, server.WithMultiplexLogDB(f.walMux))
-		}
-		raftBackendReg = server.NewRaftBackendFactoryFromManager(
-			host, f.replicaID, f.raftAddress, barrierRegistry, dbManager, tenant.SystemTenantID, slog.Default(), raftOpts...)
-
-		// Eagerly re-attach dedicated raft database shards for tenants whose
-		// barrier is now locally available (registered + unsealed by
-		// RestoreVolumeTenants above). Tenants with no local key material on this
-		// node are deferred to the TenantShardReconciler, which attaches them once
-		// key delivery completes.
-		if err := reattachRaftTenants(sigCtx, tenantSvcInst, barrierRegistry, raftBackendReg, dbManager, slog.Default()); err != nil {
-			_ = raftBackendReg.CloseAll()
-			if tenantHostReg != nil {
-				_ = tenantHostReg.CloseAll()
-			}
-			_ = shutdownNode(host)
-			return err
-		}
-
-		// Phase 4c-1d: TenantShardReconciler drives ongoing convergence between
-		// the replicated placement table and the set of locally started dedicated
-		// raft shards. The boot pass in Run (called immediately) re-attaches every
-		// shard assigned to this node. After that, the reconciler either watches
-		// placement events (if the backing KV supports Watch) or polls on a 5 s
-		// ticker. Barrier readiness is wired so shards whose tenant key has not
-		// yet arrived are silently deferred rather than surfacing an error.
-		if svcNode.PlacementStore != nil {
-			reconciler := server.NewTenantShardReconciler(
-				svcNode.PlacementStore,
-				raftBackendReg,
-				f.raftAddress,
-				slog.Default(),
-				server.WithBarrierReadiness(barrierRegistry),
-			)
-			go reconciler.Run(sigCtx)
-		}
-	}
-
-	// Storage-byte quota accountant (Phase 3). Enforces each non-system
-	// tenant's MaxStorageBytes on the write path (rejecting over-limit writes
-	// with quota.ExceededError -> HTTP 429) and accumulates usage in memory;
-	// the reconciler below flushes it to the persisted counter and corrects
-	// drift. Requires the tenant service (the quota.QuotaProvider + the
-	// Increment/Decrement usage mutator). The wrapper installs only for tenants
-	// with a positive limit, so unlimited/system workloads are unaffected.
-	quotaAccountant := buildQuotaAccountant(tenantSvcInst)
-
-	// Build leader forwarding resolver so writes on non-leader nodes
-	// are transparently proxied to the current leader. Uses HTTPS scheme
-	// since the admin server now runs TLS.
-	adminPortStr := strconv.Itoa(f.adminPort)
-	registry := rest.NewPeerAdminRegistryTLS(adminPortStr)
-
-	// Register the local node so other nodes forwarding back to us can
-	// be detected as a loop (and for symmetry with peer registrations).
-	localAdminURL := "https://" + net.JoinHostPort("127.0.0.1", adminPortStr)
-	registry.Register(f.raftAddress, localAdminURL)
-
-	// Pre-register peer admin URLs from config (Phase 4c-1c). This is required
-	// when cluster nodes share a host but use distinct admin ports (e.g.
-	// integration tests). In production clusters where every node uses the
-	// same admin port on a distinct host, the fallback derivation inside
-	// peerAdminRegistry.ResolveAdminURL is sufficient and this map is empty.
-	for peerRaftAddr, peerAdminURL := range f.peerAdminURLs {
-		if peerRaftAddr == f.raftAddress {
-			continue // local node already registered above
-		}
-		registry.Register(peerRaftAddr, peerAdminURL)
-	}
-
-	// Phase 4c-1c: Cluster peer key-transport (clusterkeys). Build the HPKE
-	// receiver and sender only when the seal subsystem and placement table are
-	// both present (clustered, IsolationRaft-capable deployment). Single-node or
-	// non-clustered nodes skip this and leave the routes un-mounted.
-	//
-	// clusterTrustDomain is the single invariant that ties the node cert SPIFFE
-	// SAN (stamped into auto-generated certs by resolveTLS), the receiver's
-	// peer-cert verification, and the sender's recipient-cert authentication.
-	// All three MUST use the same value; it is sourced from f.clusterTrustDomain
-	// which defaults to "qrdb.cluster" and can be overridden via the
-	// --cluster-trust-domain flag or YAML auth.cluster_trust_domain.
-	var ckReceiver *clusterkeys.Receiver
-	var ckSender *clusterkeys.Sender
-	if barrierRegistry != nil && svcNode.PlacementStore != nil {
-		// Parse the node's ECDSA P-256 private key from the TLS bundle. This is
-		// the same key that the node certificate was issued for, making it the
-		// HPKE recipient key (DHKEM-P-256). A parse failure disables key transport
-		// rather than aborting the daemon — single-node and passphrase-sealed
-		// deployments do not strictly need this.
-		var nodePriv *ecdsa.PrivateKey
-		if block, _ := pem.Decode(bundle.KeyPEM); block != nil {
-			if p, parseErr := x509.ParseECPrivateKey(block.Bytes); parseErr == nil {
-				nodePriv = p
-			} else {
-				slog.Warn("clusterkeys: failed to parse node private key, peer key transport disabled",
-					slog.Any("error", parseErr))
-			}
-		}
-		if nodePriv != nil {
-			kdReceiver, kdErr := keydelivery.NewReceiver(nodePriv, f.raftAddress)
-			if kdErr != nil {
-				slog.Warn("clusterkeys: key delivery receiver init failed, peer key transport disabled",
-					slog.Any("error", kdErr))
-			} else {
-				var ckrErr error
-				ckReceiver, ckrErr = clusterkeys.NewReceiver(
-					kdReceiver,
-					barrierRegistry,
-					svcNode.PlacementStore,
-					f.clusterTrustDomain,
-					f.raftAddress,
-					bundle.CACertPool,
-					bundle.CertPEM,
-					slog.Default(),
-				)
-				if ckrErr != nil {
-					slog.Warn("clusterkeys: cluster key receiver init failed, peer key transport disabled",
-						slog.Any("error", ckrErr))
+			if volumePool != nil {
+				defer func() { _ = volumePool.Close() }()
+				// Attach the pool resources to the barrier registry built in
+				// initSealSubsystem so RegisterTenant can satisfy nil-backend
+				// calls for barrier-mode tenants. When sealSub is nil (seal
+				// disabled) the pool subsystem still tracks per-tenant Pebble
+				// lifecycle for direct callers that build their own registry.
+				if sealSub != nil && sealSub.BarrierRegistry != nil {
+					sealSub.BarrierRegistry.Attach(
+						seal.WithVolumePool(volumePool.Manager, volumePool.StateStore, volumePool.DefaultPoolName),
+						seal.WithPerTenantRegistry(volumePool.PerTenantRegistry),
+					)
 				}
 			}
-		}
-	}
-	if ckReceiver != nil {
-		// Build an mTLS *http.Client presenting the node cert and trusting the
-		// cluster CA pool. TLS 1.3 is pinned; the cert is loaded from the bundle
-		// to avoid touching the file system after hot-reload may have swapped it.
-		nodeCert, certErr := tls.X509KeyPair(bundle.CertPEM, bundle.KeyPEM)
-		if certErr != nil {
-			slog.Warn("clusterkeys: failed to build mTLS client cert, sender disabled",
-				slog.Any("error", certErr))
-		} else {
-			mtlsTransport := &http.Transport{
-				TLSClientConfig: &tls.Config{
-					Certificates: []tls.Certificate{nodeCert},
-					RootCAs:      bundle.CACertPool,
-					MinVersion:   tls.VersionTLS13,
-				},
-				ForceAttemptHTTP2: true,
+
+			// Build the single at-rest Encryptor for this node. Every Pebble store
+			// opened by the daemon (MVCC state machine, vector storage) routes through
+			// this one instance so the barrier-driven encfs wiring lives in one place.
+			// A nil sealSub produces a no-op Encryptor; plaintext deployments and tests
+			// are unaffected.
+			var sealBarrierForEnc *seal.StorageBarrier
+			if sealSub != nil {
+				sealBarrierForEnc = sealSub.SealBarrier
 			}
-			mtlsClient := &http.Client{
-				Timeout:   15 * time.Second,
-				Transport: mtlsTransport,
+			enc := atrest.New(sealBarrierForEnc)
+
+			// Wire the same system barrier into the shared Raft LogDB/WAL so the
+			// replication log is encrypted at rest, not just the state-machine
+			// Pebble. Without this the committed KV entries (keys and values) sit
+			// in cleartext in the WAL until log compaction. The underlying
+			// EpochBarrier satisfies quicraft.Barrier; it MUST be unsealed before
+			// NewHost opens the LogDB. The boot sequence below drives the barrier
+			// through the sealed-window unseal (awaitUnseal) before initializeNode
+			// constructs the Host, so by the time WithBarrier is engaged the
+			// barrier is unsealed — the same precondition the SM Pebble relies on.
+			// When seal is disabled sealBarrierForEnc is nil and the WAL stays
+			// plaintext (a no-op, consistent with encryption being off).
+			if sealBarrierForEnc != nil {
+				f.walSystemBarrier = sealBarrierForEnc.EpochBarrier()
+				f.walBarrier = f.walSystemBarrier
 			}
-			var senderErr error
-			ckSender, senderErr = clusterkeys.NewSender(
-				registry,
-				mtlsClient,
-				bundle.CACertPool,
-				f.clusterTrustDomain,
-				slog.Default(),
+
+			// Build a subsystem-aware state machine factory for "mvcc" and
+			// "pebble" SM types. Other types fall back to the registry default.
+			// When the seal subsystem is enabled, store.WithEncryptor wraps every
+			// Pebble file the SM creates (sstables, WAL, manifest, snapshots) with
+			// the barrier-driven encfs via the shared Encryptor above.
+			pebbleOpts := []store.Option{store.WithEncryptor(enc)}
+			switch f.smType {
+			case "mvcc":
+				f.createFn = store.NewMVCCCreateFuncWith(pebbleOpts,
+					store.WithLessor(lr),
+					store.WithWatchHub(watchHub),
+					store.WithTimeSeriesEnabled(),
+				)
+			case "pebble":
+				f.createFn = store.NewPebbleCreateFuncWith(pebbleOpts,
+					func(s *store.PebbleStateMachine) {
+						s.SetLessor(lr)
+						s.SetWatchHub(watchHub)
+						s.SetTimeSeriesEnabled(true)
+					},
+				)
+			}
+
+			// The ceremony CA signs Security Officer client-certificate CSRs so
+			// the resulting certs chain to the same CA the server trusts for
+			// mTLS — the prerequisite for the share-free officer claim flow.
+			// nil with BYO TLS certificates (no CA private key available).
+			ceremonyCA, err := ceremonyCAFromBundle(bundle)
+			if err != nil {
+				return err
+			}
+
+			// Pre-host sealed-window listener. While the barrier is sealed the
+			// data plane cannot start (Pebble.Open would fail with ErrSealed
+			// because every file open is encfs-wrapped). We bring up an
+			// API-only server with the seal services and the sealed-window
+			// probe installed, then poll the barrier until the operator drives
+			// the public unseal API. Once IsSealed flips false we tear the
+			// listener down and let the regular boot continue. The returned
+			// seal Node is threaded into BuildServices below so that officer
+			// registrations and enclave-held shares from the sealed window
+			// survive into the post-unseal service graph.
+			var sealedWindowNode *lifecycle.Node
+			if sealSub != nil && sealSub.SealBarrier.IsSealed() {
+				sealNode, err := awaitUnseal(sigCtx, f, bundle, sealSub, ceremonyCA)
+				var canceled *awaitUnsealCanceledError
+				if errors.As(err, &canceled) {
+					slog.Info("daemon shutdown during sealed boot")
+					return nil
+				}
+				if err != nil {
+					return err
+				}
+				sealedWindowNode = sealNode
+			}
+
+			host, err := initializeNode(sigCtx, f, bundle)
+			if err != nil {
+				return err
+			}
+
+			// SIGHUP triggers manual TLS certificate reload (for scripted rotation).
+			sighupCh := make(chan os.Signal, 1)
+			signal.Notify(sighupCh, syscall.SIGHUP)
+			go func() {
+				for range sighupCh {
+					handleSIGHUP(bundle.Reloader, slog.Default())
+				}
+			}()
+			defer signal.Stop(sighupCh)
+
+			// Build the service layer.
+			adapter := newHostAdapter(host)
+
+			// Use a bootstrap-specific adapter that reads from the local SM
+			// (StaleRead) instead of going through ReadIndex. This avoids
+			// a startup deadlock where the Raft ReadIndex pipeline is not
+			// yet warmed up after leader election.
+			bootAdapter := newBootstrapHostAdapter(adapter)
+			bootKVSvc := service.NewKVService(bootAdapter, shard.ShardKV)
+
+			// The seal subsystem (barrier, credential service, barrier registry)
+			// was constructed earlier, before host initialization, so the data
+			// plane could be opened on top of seal/encfs once the operator drove
+			// unseal. Pull the references out here for use in DEK construction
+			// and the lifecycle service graph.
+			var sealBarrier *seal.StorageBarrier
+			var credCoreSvc *credentials.CredentialService
+			var barrierRegistry *seal.BarrierRegistry
+			if sealSub != nil {
+				sealBarrier = sealSub.SealBarrier
+				credCoreSvc = sealSub.CredCoreSvc
+				barrierRegistry = sealSub.BarrierRegistry
+			}
+
+			// Initialize tenant DEK manager for per-tenant data encryption key
+			// management. The cluster DEK manager wraps the seal barrier to provide
+			// a shared cluster-level DEK that wraps each tenant's isolated DEK.
+			// A dedicated PebbleDB directory persists the wrapped tenant DEKs.
+			var tenantDEKMgr dek.TenantDEKManager
+			if sealBarrier != nil && barrierRegistry != nil {
+				clusterDEKMgr, cdErr := dek.NewClusterDEKManager(sealBarrier, slog.Default())
+				if cdErr != nil {
+					_ = shutdownNode(host)
+					return &ClusterDEKError{Err: cdErr}
+				}
+				dekDataDir := filepath.Join(f.dataDir, "dek")
+				if err := os.MkdirAll(dekDataDir, 0o700); err != nil {
+					_ = shutdownNode(host)
+					return &DEKStorageError{Err: err}
+				}
+				dekStore, dekStoreErr := pebblestore.New(&pebblestore.Config{DataDir: dekDataDir})
+				if dekStoreErr != nil {
+					_ = shutdownNode(host)
+					return &DEKStorageError{Err: dekStoreErr}
+				}
+				defer func() { _ = dekStore.Close() }()
+				dekBackend := seal.NewStorageAdapter(dekStore)
+				tdm, tdmErr := dek.NewTenantDEKManager(clusterDEKMgr, dekBackend, slog.Default(), nil)
+				if tdmErr != nil {
+					_ = shutdownNode(host)
+					return &TenantDEKError{Err: tdmErr}
+				}
+				tenantDEKMgr = tdm
+				slog.Info("tenant DEK manager initialized", slog.String("data_dir", dekDataDir))
+			}
+
+			// Construct all services via the shared lifecycle package. Seal-gated
+			// services (barrier, ceremony, credential, tenant, cert) are wired when
+			// sealBarrier and barrierRegistry are non-nil. The barrier/credential/
+			// registry instances reused here are the same ones constructed earlier
+			// for the pre-host sealed-window listener; the listener was stopped
+			// before initializeNode, so this BuildServices call is the single
+			// owner of the barrier services for the rest of the daemon's lifetime.
+			// Strict tenant isolation: FIPS-140 always enforces it; operators opt in
+			// via config.Tenant.StrictIsolation (stored in f.strictTenantIsolation by
+			// applyConfigToFlags). Mirrors the strictSoD resolution pattern above.
+			strictTenant := fips140.Enabled() || f.strictTenantIsolation
+			if !strictTenant {
+				slog.Warn("tenant isolation: standard mode active — un-tenanted vector namespace creation is NOT refused; " +
+					"identities with no explicit tenant pool into the 'system' tenant. " +
+					"Set tenant.strict_isolation: true (or build with FIPS-140) to enforce per-tenant isolation.")
+			}
+
+			// Reuse the ceremony core service from the sealed-window listener when
+			// one exists: officer registrations performed while sealed are
+			// cache-only and distributed shares live in the service's in-memory
+			// enclaves, so constructing a fresh instance here would orphan both.
+			var ceremonyCoreSvc *ceremony.CeremonyService
+			if sealedWindowNode != nil && sealedWindowNode.Ceremony != nil {
+				if coreSvc, ok := service.CeremonyServiceCore(sealedWindowNode.Ceremony); ok {
+					ceremonyCoreSvc = coreSvc
+				}
+			}
+
+			svcNode, err := lifecycle.BuildServices(sigCtx, lifecycle.Infra{
+				Host:                      adapter,
+				WatchHub:                  watchHub,
+				DataDir:                   f.dataDir,
+				DatabaseManager:           dbManager,
+				KVOptions:                 nil,
+				SealBarrier:               sealBarrier,
+				BarrierRegistry:           barrierRegistry,
+				CredentialCoreSvc:         credCoreSvc,
+				CeremonyDataDir:           filepath.Join(f.dataDir, "seal"),
+				CeremonyCA:                ceremonyCA,
+				CeremonyCoreSvc:           ceremonyCoreSvc,
+				Logger:                    slog.Default(),
+				EmbeddingConfig:           f.embeddingConfig,
+				RAGConfig:                 f.ragConfig,
+				StrictTenantIsolation:     strictTenant,
+				DefaultTenantQuotas:       f.tenantConfig.DefaultQuotas.ToQuotas(),
+				DefaultTenantEntitlements: f.tenantConfig.DefaultEntitlements.ToEntitlements(),
+				Encryptor:                 enc,
+			})
+			if err != nil {
+				_ = shutdownNode(host)
+				return err
+			}
+			// Guarded so the system-migration path (which closes svcNode early to
+			// release its vector-store Pebble lock for re-encryption, then nils it)
+			// does not double-Stop — lifecycle.Node.Stop is not idempotent.
+			defer func() {
+				if svcNode != nil {
+					_ = svcNode.Stop(context.Background())
+				}
+			}()
+
+			// Unpack the services that the rest of this function references by name.
+			// The lifecycle Node owns lifecycle management (vector storage close, etc.);
+			// we keep named local variables here for readability in the server assembly.
+			adminSvc := svcNode.Admin
+			kvSvc := svcNode.KV
+			batchSvc := svcNode.Batch
+			txSvc := svcNode.Transaction
+			mvccSvc := svcNode.MVCC
+			leaseSvc := svcNode.Lease
+			tsSvc := svcNode.TimeSeries
+			indexSvc := svcNode.Index
+			watchSvc := svcNode.Watch
+			lockSvc := svcNode.Lock
+			collectionSvc := svcNode.Collection
+			dbSvc := svcNode.Database
+			vectorSvc := svcNode.Vector
+			barrierSvc := svcNode.Barrier
+			ceremonySvc := svcNode.Ceremony
+			tenantSvcInst := svcNode.Tenant
+
+			// Create a codec-free KV service for the auth middleware. System stores
+			// (user, role, audit) write raw JSON — they must NOT go through the
+			// storage/wire codec pipeline, which expects user data to be encoded
+			// in the configured storage codec (e.g. msgpack).
+			authKVSvc := service.NewKVService(adapter, shard.ShardKV)
+
+			// Always bootstrap user and role stores. These are organizational
+			// primitives that operators may need regardless of whether auth
+			// enforcement is enabled (e.g. pre-provisioning identities before
+			// enabling auth, managing users in dev/test with auth disabled).
+			//
+			// Two KV services are used:
+			//   - bootKVSvc (StaleRead) for initial bootstrap operations when
+			//     ReadIndex is not yet warmed up.
+			//   - authKVSvc (SyncRead, no codec) for runtime store operations,
+			//     ensuring linearizable reads for user/role CRUD.
+			//
+			// Resolve the RBAC posture once: a FIPS 140-3 build forces strict
+			// separation of duties; otherwise the config flag selects it. The
+			// value flows into both the first-boot role provisioning and the RBAC
+			// authorizer so seeding and enforcement agree.
+			strictSoD := fips140.Enabled() || f.separationOfDuties
+			slog.Info("RBAC posture resolved",
+				slog.Bool("separation_of_duties", strictSoD),
+				slog.Bool("fips140", fips140.Enabled()),
+				slog.Bool("config_separation_of_duties", f.separationOfDuties),
 			)
-			if senderErr != nil {
-				slog.Warn("clusterkeys: sender init failed, peer key distribution disabled",
-					slog.Any("error", senderErr))
+			// When seal is enabled the system barrier has already been
+			// initialized+unsealed out-of-band (admin barrier API for passphrase, the
+			// SO ceremony for shamir) during awaitUnseal above. Route first-boot
+			// through the seal-aware bootstrap.BootstrapSystem so the orchestrator
+			// observes the already-unsealed barrier (BarrierAlreadyInitialized) and
+			// runs first-boot without demanding any credential. The strategy mapping
+			// mirrors initSealSubsystem: "shamir" → shamir, everything else (the
+			// daemon's deferred-software default) → passphrase. When seal is disabled
+			// sealSub is nil and bootstrapUserRoleStores keeps the direct
+			// firstboot.Initialize path (BootstrapSystem requires a barrier registry).
+			var bootBarriers *seal.BarrierRegistry
+			bootStrategy := bootstrap.StrategyPassphrase
+			if sealSub != nil {
+				bootBarriers = sealSub.BarrierRegistry
+				if f.sealConfig.Strategy == "shamir" {
+					bootStrategy = bootstrap.StrategyShamir
+				}
 			}
-		}
-	}
-	// Post-construction injection: wire the sender into the DatabaseService.
-	// lifecycle.BuildServices constructs DatabaseService before the sender is
-	// available (the sender needs the LeaderAdminResolver which is created
-	// here), so SetDistributor is used instead of a construction-time option.
-	if ckSender != nil {
-		if concrete, ok := dbSvc.(*service.DatabaseService); ok {
-			concrete.SetDistributor(ckSender, barrierRegistry, f.raftAddress)
-		}
-	}
+			mgmtResult, err := bootstrapUserRoleStores(sigCtx, bootKVSvc, authKVSvc, host, shard.ShardKV, f.replicaID, tenantSvcInst, strictSoD, bootBarriers, bootStrategy)
+			if err != nil {
+				_ = shutdownNode(host)
+				if sigCtx.Err() != nil {
+					slog.Info("user/role store bootstrap canceled by shutdown signal")
+					return nil
+				}
+				return err
+			}
 
-	// Phase 4c-2: post-construction injection into RebalanceService.
-	// lifecycle.BuildServices constructs RebalanceService before the
-	// clusterkeys.Sender (and the placement store) are available, so
-	// SetRebalanceDeps mirrors the SetDistributor pattern used above.
-	// All three dependencies are nil-guarded: when any is absent (single-node
-	// or non-IsolationRaft deployment) SetRebalanceDeps disables the
-	// dedicated-tenant MOVE path and the generic system-shard path is used.
-	if svcNode.Rebalance != nil {
-		if concrete, ok := svcNode.Rebalance.(*service.RebalanceService); ok {
-			concrete.SetRebalanceDeps(
-				svcNode.PlacementStore,
-				ckSender,
-				barrierRegistry,
-				f.raftAddress,
+			// Compliance-grade AuditLogger is always constructed, regardless of
+			// --auth-enabled, because FIPS/FedRAMP/PCI-DSS/HIPAA require an audit
+			// trail even in environments where RBAC is disabled. The AuditLogger is
+			// injected into all protocol servers so the /v1/audit/events endpoint
+			// is available and seal/ceremony/custodian operations emit events.
+			runtimeKVAdapter := newKVServiceAdapter(authKVSvc, nil, nil)
+			chainFile, err := audit.NewFileLogger(filepath.Join(f.dataDir, "audit-events.ndjson"))
+			if err != nil {
+				_ = shutdownNode(host)
+				return &AuthBootstrapError{Step: "compliance audit file", Err: err}
+			}
+			complianceAudit := audit.NewAggregateLogger(
+				chainFile,
+				audit.NewRingBuffer(10000),
+				audit.NewSlogSink(),
 			)
+			defer func() { _ = complianceAudit.Close() }()
+			_ = runtimeKVAdapter // used below when auth is enabled
+
+			// Bootstrap authentication enforcement (RBAC, legacy audit logger, auth
+			// middleware, custodian service, SO authenticator, auth factor service).
+			// Only enabled when --auth-enabled=true. The user and role stores are
+			// already initialized above and reused here.
+			var authResult *authBootstrapResult
+			if f.authEnabled {
+				authResult, err = bootstrapAuthEnforcement(sigCtx, mgmtResult, authKVSvc, f.dataDir, host, complianceAudit, strictSoD, f.spiffeTrustDomain)
+				if err != nil {
+					_ = shutdownNode(host)
+					// Context cancellation from signal is a clean shutdown, not an error.
+					if sigCtx.Err() != nil {
+						slog.Info("auth bootstrap canceled by shutdown signal")
+						return nil
+					}
+					return err
+				}
+				defer func() { _ = authResult.auditLogger.Close() }()
+			} else {
+				slog.Warn("authentication disabled: all endpoints accessible without credentials")
+			}
+
+			// Warm up the ReadIndex pipeline by performing a SyncRead. After
+			// a leader election (including restart), Raft requires a committed
+			// no-op entry before ReadIndex is operational. Without this warmup,
+			// the auth middleware's SyncRead-backed user store lookups would
+			// fail until the pipeline is ready, returning 503 to early clients.
+			warmupReadIndex(sigCtx, kvSvc)
+
+			// Phase 2: make the volume pool a cluster-wide replicated concept. Bind the
+			// pool's round-robin cursor to the replicated system KV (so the cursor is a
+			// single value that survives leader failover) and attach the replicated
+			// tenant→relative-slot assignment store to the barrier registry (so every
+			// replica resolves the SAME relative slot for a tenant — realized at its own
+			// local pool base — instead of running a divergent node-local pool.Pick).
+			// Both must be wired before RestoreVolumeTenants below, which seeds the
+			// assignment from node-local DataRoot records for pre-Phase-2 clusters.
+			if volumePool != nil && kvSvc != nil {
+				if volumePool.ReplicatedState != nil {
+					if bindErr := volumePool.ReplicatedState.Bind(lifecycle.NewKVStoreAdapter(kvSvc)); bindErr != nil {
+						slog.Default().Warn("start: failed to bind replicated volume-pool cursor; falling back to node-local pick",
+							slog.Any("error", bindErr))
+					}
+				}
+				if barrierRegistry != nil {
+					barrierRegistry.Attach(seal.WithReplicatedSlotStore(
+						lifecycle.NewReplicatedSealBackend(kvSvc, txSvc)))
+				}
+			}
+
+			// Build per-tenant isolation infrastructure (IsolationVolume host
+			// registry, IsolationRaft factory, TenantShardReconciler). Any
+			// registries opened by the composer are closed on error before it
+			// returns, so only shutdownNode is needed here on failure.
+			ti, err := server.BuildTenantInfra(server.TenantInfraConfig{
+				Ctx:            sigCtx,
+				BarrierReg:     barrierRegistry,
+				TenantSvc:      tenantSvcInst,
+				VolumePool:     volumePool,
+				Logger:         slog.Default(),
+				Host:           host,
+				Manager:        dbManager,
+				ReplicaID:      f.replicaID,
+				RaftAddr:       f.raftAddress,
+				SystemTenant:   tenant.SystemTenantID,
+				PlacementStore: svcNode.PlacementStore,
+				MultiplexLogDB: f.walMux,
+			})
+			if err != nil {
+				_ = shutdownNode(host)
+				return err
+			}
+			tenantHostReg := ti.Hosts
+			raftBackendReg := ti.Raft
+			if ti.Reconciler != nil {
+				go ti.Reconciler.Run(bootCtx)
+			}
+
+			// Storage-byte quota accountant (Phase 3). Enforces each non-system
+			// tenant's MaxStorageBytes on the write path (rejecting over-limit writes
+			// with quota.ExceededError -> HTTP 429) and accumulates usage in memory;
+			// the reconciler below flushes it to the persisted counter and corrects
+			// drift. Requires the tenant service (the quota.QuotaProvider + the
+			// Increment/Decrement usage mutator). The wrapper installs only for tenants
+			// with a positive limit, so unlimited/system workloads are unaffected.
+			quotaAccountant := buildQuotaAccountant(tenantSvcInst)
+
+			// Build leader forwarding resolver so writes on non-leader nodes
+			// are transparently proxied to the current leader. Uses HTTPS scheme
+			// since the admin server now runs TLS.
+			adminPortStr := strconv.Itoa(f.adminPort)
+			registry := rest.NewPeerAdminRegistryTLS(adminPortStr)
+
+			// Register the local node so other nodes forwarding back to us can
+			// be detected as a loop (and for symmetry with peer registrations).
+			localAdminURL := "https://" + net.JoinHostPort("127.0.0.1", adminPortStr)
+			registry.Register(f.raftAddress, localAdminURL)
+
+			// Pre-register peer admin URLs from config (Phase 4c-1c). This is required
+			// when cluster nodes share a host but use distinct admin ports (e.g.
+			// integration tests). In production clusters where every node uses the
+			// same admin port on a distinct host, the fallback derivation inside
+			// peerAdminRegistry.ResolveAdminURL is sufficient and this map is empty.
+			for peerRaftAddr, peerAdminURL := range f.peerAdminURLs {
+				if peerRaftAddr == f.raftAddress {
+					continue // local node already registered above
+				}
+				registry.Register(peerRaftAddr, peerAdminURL)
+			}
+
+			// Phase 4c-1c: Cluster peer key-transport (clusterkeys). Build the HPKE
+			// receiver and sender only when the seal subsystem and placement table are
+			// both present (clustered, IsolationRaft-capable deployment). Single-node or
+			// non-clustered nodes skip this and leave the routes un-mounted.
+			//
+			// clusterTrustDomain is the single invariant that ties the node cert SPIFFE
+			// SAN (stamped into auto-generated certs by resolveTLS), the receiver's
+			// peer-cert verification, and the sender's recipient-cert authentication.
+			// All three MUST use the same value; it is sourced from f.clusterTrustDomain
+			// which defaults to "qrdb.cluster" and can be overridden via the
+			// --cluster-trust-domain flag or YAML auth.cluster_trust_domain.
+			var ckReceiver *clusterkeys.Receiver
+			var ckSender *clusterkeys.Sender
+			// nodePriv is lifted to the boot-body scope so the Phase D cluster
+			// enable-encryption coordination (below) can reuse the node's HPKE key
+			// for sealing/opening per-node migration credentials.
+			var nodePriv *ecdsa.PrivateKey
+			if barrierRegistry != nil && svcNode.PlacementStore != nil {
+				// Parse the node's ECDSA P-256 private key from the TLS bundle. This is
+				// the same key that the node certificate was issued for, making it the
+				// HPKE recipient key (DHKEM-P-256). A parse failure disables key transport
+				// rather than aborting the daemon — single-node and passphrase-sealed
+				// deployments do not strictly need this.
+				if block, _ := pem.Decode(bundle.KeyPEM); block != nil {
+					if p, parseErr := x509.ParseECPrivateKey(block.Bytes); parseErr == nil {
+						nodePriv = p
+					} else {
+						slog.Warn("clusterkeys: failed to parse node private key, peer key transport disabled",
+							slog.Any("error", parseErr))
+					}
+				}
+				if nodePriv != nil {
+					kdReceiver, kdErr := keydelivery.NewReceiver(nodePriv, f.raftAddress)
+					if kdErr != nil {
+						slog.Warn("clusterkeys: key delivery receiver init failed, peer key transport disabled",
+							slog.Any("error", kdErr))
+					} else {
+						var ckrErr error
+						ckReceiver, ckrErr = clusterkeys.NewReceiver(
+							kdReceiver,
+							barrierRegistry,
+							svcNode.PlacementStore,
+							f.clusterTrustDomain,
+							f.raftAddress,
+							bundle.CACertPool,
+							bundle.CertPEM,
+							slog.Default(),
+						)
+						if ckrErr != nil {
+							slog.Warn("clusterkeys: cluster key receiver init failed, peer key transport disabled",
+								slog.Any("error", ckrErr))
+						}
+					}
+				}
+			}
+			if ckReceiver != nil {
+				// Build an mTLS *http.Client presenting the node cert and trusting the
+				// cluster CA pool. TLS 1.3 is pinned; the cert is loaded from the bundle
+				// to avoid touching the file system after hot-reload may have swapped it.
+				nodeCert, certErr := tls.X509KeyPair(bundle.CertPEM, bundle.KeyPEM)
+				if certErr != nil {
+					slog.Warn("clusterkeys: failed to build mTLS client cert, sender disabled",
+						slog.Any("error", certErr))
+				} else {
+					mtlsTransport := &http.Transport{
+						TLSClientConfig: &tls.Config{
+							Certificates: []tls.Certificate{nodeCert},
+							RootCAs:      bundle.CACertPool,
+							MinVersion:   tls.VersionTLS13,
+						},
+						ForceAttemptHTTP2: true,
+					}
+					mtlsClient := &http.Client{
+						Timeout:   15 * time.Second,
+						Transport: mtlsTransport,
+					}
+					var senderErr error
+					ckSender, senderErr = clusterkeys.NewSender(
+						registry,
+						mtlsClient,
+						bundle.CACertPool,
+						f.clusterTrustDomain,
+						slog.Default(),
+					)
+					if senderErr != nil {
+						slog.Warn("clusterkeys: sender init failed, peer key distribution disabled",
+							slog.Any("error", senderErr))
+					}
+				}
+			}
+			// Post-construction injection: wire the sender into the DatabaseService.
+			// lifecycle.BuildServices constructs DatabaseService before the sender is
+			// available (the sender needs the LeaderAdminResolver which is created
+			// here), so SetDistributor is used instead of a construction-time option.
+			if ckSender != nil {
+				if concrete, ok := dbSvc.(*service.DatabaseService); ok {
+					concrete.SetDistributor(ckSender, barrierRegistry, f.raftAddress)
+				}
+			}
+
+			// Phase 4c-2: post-construction injection into RebalanceService.
+			// lifecycle.BuildServices constructs RebalanceService before the
+			// clusterkeys.Sender (and the placement store) are available, so
+			// SetRebalanceDeps mirrors the SetDistributor pattern used above.
+			// All three dependencies are nil-guarded: when any is absent (single-node
+			// or non-IsolationRaft deployment) SetRebalanceDeps disables the
+			// dedicated-tenant MOVE path and the generic system-shard path is used.
+			if svcNode.Rebalance != nil {
+				if concrete, ok := svcNode.Rebalance.(*service.RebalanceService); ok {
+					concrete.SetRebalanceDeps(
+						svcNode.PlacementStore,
+						ckSender,
+						barrierRegistry,
+						f.raftAddress,
+					)
+				}
+			}
+
+			// Phase 4c-1d: wire the Raft host into DatabaseService so CreateForTenant
+			// can call AddFollowerNode for each follower replica immediately after the
+			// placement is persisted. raftBackendReg being non-nil implies the shared
+			// host is configured for IsolationRaft tenants. The raftFollowerAdder
+			// adapter wraps host.RequestAddNode + rs.Result() into the narrow
+			// service.RaftHost interface (AddFollowerNode → error only).
+			if raftBackendReg != nil {
+				if concrete, ok := dbSvc.(*service.DatabaseService); ok {
+					concrete.SetRaftHost(&raftFollowerAdder{host: host})
+				}
+			}
+
+			// Phase D: cluster-wide enable-encryption coordination. Wired only when
+			// the replicated coordination store and the node HPKE key are both
+			// available (a TLS-secured, KV-backed deployment). When present, the
+			// transports write a replicated migration intent (with per-node sealed
+			// credentials) via clusterMig and every node's reconciler performs its
+			// local recycle; otherwise the direct system migrator is used unchanged.
+			var clusterMig *clusterCoordinatorMigrator
+			if svcNode.ClusterMigStore != nil && nodePriv != nil && barrierRegistry != nil {
+				localMig := server.NewScopedEncryptionMigrator(
+					sysMigrator, tenantHostReg, raftBackendReg, barrierRegistry, tenantSvcInst)
+				topology := service.NewHostTopologyProvider(raftbackend.New(host), svcNode.Rebalance)
+				ownerResolver := server.NewClusterOwnerResolver(
+					svcNode.PlacementStore, topology, shard.ShardKV, f.raftAddress)
+				sealer := &daemonCredentialSealer{
+					sender: ckSender, selfNode: f.raftAddress, selfPub: &nodePriv.PublicKey,
+				}
+				localReplicaID := f.replicaID
+				isLeader := func() bool {
+					id, ok, lerr := host.GetLeaderID(shard.ShardKV)
+					return lerr == nil && ok && id == localReplicaID
+				}
+				coord := clustermig.NewCoordinator(svcNode.ClusterMigStore, ownerResolver, sealer,
+					isLeader, func() int64 { return time.Now().Unix() })
+
+				migReceiver, mrErr := keydelivery.NewReceiver(nodePriv, f.raftAddress,
+					keydelivery.WithTTL(migrationCredentialTTL), keydelivery.WithoutReplayGuard())
+				if mrErr != nil {
+					slog.Warn("cluster enable-encryption disabled: credential receiver init failed",
+						slog.Any("error", mrErr))
+				} else {
+					clusterMig = &clusterCoordinatorMigrator{
+						coord:      coord,
+						barrierReg: barrierRegistry,
+						modeCheck:  tenantSvcInst,
+					}
+					reconciler := clustermig.NewReconciler(svcNode.ClusterMigStore, f.raftAddress,
+						&daemonLocalRecycler{migrator: localMig, barrierReg: barrierRegistry},
+						&daemonCredentialOpener{receiver: migReceiver, selfNode: f.raftAddress},
+						func() int64 { return time.Now().Unix() }, slog.Default())
+					go runClusterMigReconciler(bootCtx, reconciler, coord, svcNode.ClusterMigStore)
+					slog.Info("cluster enable-encryption coordination enabled",
+						slog.String("node", f.raftAddress))
+				}
+			}
+
+			// Build server configuration using the QRDB config type required by
+			// the server.New constructor.
+			serverCfg := buildServerConfig(f)
+
+			// Configure mTLS on the TLS listener. An explicit operator selection
+			// (--tls-client-auth flag or YAML tls.client_auth) was already applied
+			// after resolveTLS and always wins. Otherwise the mode is derived from
+			// the auth posture: when auth is enabled, VerifyClientCertIfGiven
+			// allows public endpoints (like /health) to work without a client
+			// certificate while still validating certs when provided; when auth
+			// is disabled, NoClientCert disables client cert verification
+			// entirely.
+			if !f.tlsClientAuthSet {
+				if f.authEnabled {
+					bundle.TLSConfig.ClientAuth = tls.VerifyClientCertIfGiven
+					bundle.TLSConfig.ClientCAs = bundle.CACertPool
+				} else {
+					bundle.TLSConfig.ClientAuth = tls.NoClientCert
+				}
+			}
+
+			// Create and start the multi-protocol server.
+			serverOpts := []server.ServerOption{
+				server.WithTLS(bundle.TLSConfig),
+				server.WithCACertPool(bundle.CACertPool),
+				server.WithLeaderForwarding(registry),
+				server.WithHost(host),
+				server.WithBatch(batchSvc),
+				server.WithTransaction(txSvc),
+				server.WithMVCC(mvccSvc),
+				server.WithLease(leaseSvc),
+				server.WithLockService(lockSvc),
+				server.WithTimeSeries(tsSvc),
+				server.WithIndex(indexSvc),
+				server.WithWatch(watchSvc),
+				server.WithVector(vectorSvc),
+				server.WithCollectionService(collectionSvc),
+				server.WithDatabaseService(dbSvc),
+				server.WithDatabaseManager(dbManager),
+			}
+			// User and role management services are always wired — they are
+			// organizational primitives independent of auth enforcement.
+			serverOpts = append(serverOpts,
+				server.WithUserService(mgmtResult.userSvc),
+				server.WithRoleService(mgmtResult.roleSvc),
+			)
+			// Compliance audit logger is always wired so the /v1/audit/events
+			// endpoint is available regardless of auth-enabled state.
+			serverOpts = append(serverOpts, server.WithAuditLogger(complianceAudit))
+
+			// Auth factor service is always constructed (factor implementations
+			// return ErrFactorDisabled for absent hardware, which handlers map to
+			// HTTP 501 -- the correct response for "feature not available in this
+			// deployment"). Exposed via /v1/authfactors/* for consumers like xkms.
+			if svc, err := service.NewAuthFactorService(service.AuthFactorServiceConfig{
+				Factors: defaultAuthFactors(),
+				KV:      authKVSvc,
+			}); err == nil {
+				serverOpts = append(serverOpts, server.WithAuthFactorService(svc))
+			}
+
+			if authResult != nil {
+				serverOpts = append(serverOpts,
+					server.WithAuthMiddleware(authResult.authMW),
+				)
+				if authResult.custodianSvc != nil {
+					serverOpts = append(serverOpts, server.WithCustodianService(authResult.custodianSvc))
+				}
+				if authResult.soAuthenticator != nil {
+					serverOpts = append(serverOpts, server.WithSOAuthenticator(authResult.soAuthenticator))
+				}
+			}
+			if barrierSvc != nil {
+				serverOpts = append(serverOpts, server.WithBarrierService(barrierSvc))
+			}
+			if ceremonySvc != nil {
+				serverOpts = append(serverOpts, server.WithCeremonyService(ceremonySvc))
+			}
+			if ceremonyCA != nil {
+				serverOpts = append(serverOpts, server.WithCeremonyCA(ceremonyCA))
+			}
+			if svcNode.CertProv != nil {
+				serverOpts = append(serverOpts, server.WithCertProvider(svcNode.CertProv))
+			}
+			if svcNode.Credential != nil {
+				serverOpts = append(serverOpts, server.WithCredentialService(svcNode.Credential))
+			}
+			if barrierRegistry != nil {
+				serverOpts = append(serverOpts, server.WithBarrierRegistry(barrierRegistry))
+			}
+			// When the storage barrier is enabled, install the sealed-window
+			// middleware on REST and the equivalent interceptors on gRPC.
+			// While the barrier is sealed every endpoint not on the allowlist
+			// returns 503 / Unavailable; once unsealed both wrappers become
+			// passthrough. See pkg/api/rest/middleware_sealed.go and
+			// pkg/api/grpc/sealed_window_interceptor.go for the canonical
+			// allowlists.
+			if sealBarrier != nil {
+				serverOpts = append(serverOpts, server.WithSealedWindowProbe(sealBarrier))
+			}
+			if tenantDEKMgr != nil {
+				serverOpts = append(serverOpts, server.WithTenantDEKManager(tenantDEKMgr))
+			}
+			if tenantHostReg != nil {
+				serverOpts = append(serverOpts, server.WithTenantHostRegistry(tenantHostReg))
+			}
+			// System-scope enable-encryption migrator. The server's scoped-migrator
+			// composite routes ScopeSystem here (in-process recycle via the boot loop)
+			// and ScopeTenant to the tenant Host registry above.
+			serverOpts = append(serverOpts, server.WithEncryptionMigrator(sysMigrator))
+			// Phase D: when cluster coordination is wired, the transports hit the
+			// coordinator (write replicated intent + seal per-node credentials)
+			// instead of recycling locally; the per-node reconcilers do the recycle.
+			if clusterMig != nil {
+				serverOpts = append(serverOpts, server.WithClusterEncryptionMigrator(clusterMig))
+			}
+			if raftBackendReg != nil {
+				serverOpts = append(serverOpts, server.WithRaftBackendFactory(raftBackendReg))
+			}
+			if quotaAccountant != nil {
+				serverOpts = append(serverOpts, server.WithQuotaAccountant(quotaAccountant))
+			}
+			if ckReceiver != nil {
+				serverOpts = append(serverOpts, server.WithClusterKeyReceiver(ckReceiver))
+			}
+			if tenantSvcInst != nil {
+				serverOpts = append(serverOpts, server.WithTenantService(tenantSvcInst))
+				// The structurally-privileged system tenant is created earlier in
+				// startup by pkg/firstboot.Initialize (called from
+				// bootstrapUserRoleStores). No additional CreateTenant call is
+				// needed here; first-boot is idempotent across daemon restarts.
+			}
+			if svcNode.Backup != nil {
+				serverOpts = append(serverOpts, server.WithBackupService(svcNode.Backup))
+			}
+			if svcNode.Rebalance != nil {
+				serverOpts = append(serverOpts, server.WithRebalanceService(svcNode.Rebalance))
+			}
+			if bootServers != nil {
+				serverOpts = append(serverOpts, server.WithCABootstrap(bundle.CACertPEM, bundle.CAKeyPEM))
+			}
+			if svcNode.Embedding != nil {
+				serverOpts = append(serverOpts, server.WithEmbedding(svcNode.Embedding))
+			}
+			if svcNode.RAG != nil {
+				serverOpts = append(serverOpts, server.WithRAG(svcNode.RAG))
+			}
+			if h := webUIHandler(); h != nil {
+				serverOpts = append(serverOpts, server.WithWebUI(h))
+			}
+
+			// Build per-database service registry for multi-database routing.
+			// Currently all databases share the system shard services. As per-database
+			// shard allocation (Phase 1.2) is enabled, each database will get its
+			// own service set backed by a dedicated shard.
+			dbRegistry := server.NewDatabaseServiceRegistry("system")
+			dbRegistry.Register("system", &server.DatabaseServices{
+				Name:        "system",
+				ShardID:     shard.ShardKV,
+				KV:          kvSvc,
+				MVCC:        mvccSvc,
+				Batch:       batchSvc,
+				Transaction: txSvc,
+				Lease:       leaseSvc,
+				TimeSeries:  tsSvc,
+				Index:       indexSvc,
+				Watch:       watchSvc,
+				Collection:  collectionSvc,
+				Vector:      vectorSvc,
+			})
+			serverOpts = append(serverOpts, server.WithDatabaseServiceRegistry(dbRegistry))
+
+			srv := server.New(serverCfg, kvSvc, adminSvc, serverOpts...)
+			if err := srv.Start(); err != nil {
+				_ = shutdownNode(host)
+				return err
+			}
+
+			// Leader-side lease-expiry sweeper. Leases granted with a TTL must be
+			// auto-revoked when they elapse so their attached keys are deleted and
+			// watchers receive the DELETE notification. Only the Raft leader proposes
+			// the revoke (routed through consensus via leaseSvc.Revoke); every replica
+			// applies it. The leadership gate is re-evaluated each tick, so the loop is
+			// correct across elections and a no-op on followers. Skipped when the lease
+			// service is absent (embeddable deployments without lease support).
+			if leaseSvc != nil {
+				go lr.RunExpiry(bootCtx, lease.DefaultExpiryInterval,
+					func() bool {
+						leaderID, ok, lerr := host.GetLeaderID(shard.ShardKV)
+						return lerr == nil && ok && leaderID == f.replicaID
+					},
+					leaseSvc.Revoke,
+					slog.Default(),
+				)
+			}
+
+			// Storage-quota reconciler (Phase 3). Periodically flushes the in-memory
+			// byte accumulator to the persisted CurrentStorageBytes counters and, for
+			// each dedicated-volume tenant, recomputes the true on-disk size of its
+			// DataRoot to correct drift. Stops cleanly on signal (sigCtx cancellation),
+			// performing a final flush. Shared/prefix tenants rely on the flushed
+			// accumulator value (documented approximation). Skipped when the accountant
+			// or tenant service is absent.
+			if quotaAccountant != nil && tenantSvcInst != nil {
+				if rec := buildQuotaReconciler(quotaAccountant, tenantSvcInst, f.tenantConfig); rec != nil {
+					go rec.Run(bootCtx)
+					slog.Info("storage-quota reconciler started")
+				}
+			}
+
+			// Opt-in dynamic Raft membership: register self under a lease and, on the
+			// leader, reconcile the Raft group as nodes join and leave. OFF by default.
+			var membershipMgr *cluster.MembershipManager
+			if f.dynamicMembership {
+				membershipMgr, err = startDynamicMembership(bootCtx, f, kvSvc, adminSvc, mvccSvc, leaseSvc, watchSvc)
+				if err != nil {
+					srv.Stop()
+					_ = shutdownNode(host)
+					return err
+				}
+				slog.Info("dynamic membership manager started",
+					"shard_id", f.shardID, "node_id", f.replicaID)
+			}
+
+			slog.Info("qrdbd node started, waiting for signals")
+
+			// Block until a shutdown signal or an in-process system encryption migration.
+			select {
+			case <-sigCtx.Done():
+				slog.Info("received signal, shutting down")
+
+				if membershipMgr != nil {
+					if err := membershipMgr.Close(); err != nil {
+						slog.Error("membership manager close failed", slog.Any("error", err))
+					}
+				}
+
+				// Clean up bootstrap servers and cert reloader.
+				if bootServers != nil {
+					bootServers.Stop()
+				}
+				if bundle.Reloader != nil {
+					_ = bundle.Reloader.Stop()
+				}
+
+				// Stop all dedicated per-database raft shards first so their Pebble locks on
+				// {DataRoot}/databases/{db} are released (the shared host itself is closed
+				// later, below) before the barrier per-tenant Pebbles are closed.
+				if raftBackendReg != nil {
+					if err := raftBackendReg.CloseAll(); err != nil {
+						slog.Error("dedicated raft shard close-all failed", slog.Any("error", err))
+					}
+				}
+
+				// Close all per-tenant volume Hosts first so their Raft shards stop and
+				// their Pebble locks on {DataRoot}/databases are released before the
+				// barrier per-tenant Pebbles (which live under {DataRoot}/barrier) are
+				// closed below.
+				if tenantHostReg != nil {
+					if err := tenantHostReg.CloseAll(); err != nil {
+						slog.Error("per-tenant volume host close-all failed", slog.Any("error", err))
+					}
+				}
+
+				// Close all per-tenant Pebbles allocated through the volume pool.
+				// We use a short-lived background context here because sigCtx is
+				// already cancelled by the time we reach this point.
+				if volumePool != nil && volumePool.PerTenantRegistry != nil {
+					closed := volumePool.PerTenantRegistry.List()
+					if err := volumePool.PerTenantRegistry.CloseAll(context.Background()); err != nil {
+						slog.Error("per-tenant pebble close-all failed",
+							slog.Any("error", err),
+							slog.Int("count", len(closed)))
+					} else {
+						slog.Info("closed per-tenant pebbles on shutdown",
+							slog.Int("count", len(closed)))
+					}
+				}
+
+				srv.Stop()
+				return shutdownNode(host)
+			case req := <-migrateCh:
+				// In-process system encryption migration: quiesce, re-encrypt the
+				// system host's stores, adopt the keyed root key, and signal the boot
+				// loop to re-initialize (the barrier comes back up sealed, pending
+				// operator unseal with the newly-set credential).
+				reboot, mErr := handleSystemMigration(req, f, srv, svcNode, host, raftBackendReg, tenantHostReg, membershipMgr, bootCancel, sealSub)
+				// handleSystemMigration stopped svcNode to release its store locks
+				// for re-encryption; nil it so the deferred Stop above is skipped.
+				svcNode = nil
+				rebootForMigration = reboot
+				if reboot && volumePool != nil && volumePool.PerTenantRegistry != nil {
+					// handleSystemMigration closed the tenant Hosts; now release the
+					// per-tenant volume-pool Pebble locks too. VolumePoolSubsystem.Close
+					// (the deferred call) only closes the pool state store, so without
+					// this the next boot iteration would fail to reattach volume tenants
+					// on their still-locked per-tenant Pebbles.
+					if cerr := volumePool.PerTenantRegistry.CloseAll(context.Background()); cerr != nil {
+						slog.Error("per-tenant pebble close during migration failed", slog.Any("error", cerr))
+					}
+				}
+				return mErr
+			}
+		}()
+		if bootErr != nil {
+			return bootErr
 		}
-	}
-
-	// Phase 4c-1d: wire the Raft host into DatabaseService so CreateForTenant
-	// can call AddFollowerNode for each follower replica immediately after the
-	// placement is persisted. raftBackendReg being non-nil implies the shared
-	// host is configured for IsolationRaft tenants. The raftFollowerAdder
-	// adapter wraps host.RequestAddNode + rs.Result() into the narrow
-	// service.RaftHost interface (AddFollowerNode → error only).
-	if raftBackendReg != nil {
-		if concrete, ok := dbSvc.(*service.DatabaseService); ok {
-			concrete.SetRaftHost(&raftFollowerAdder{host: host})
+		if !rebootForMigration {
+			return nil
 		}
+		slog.Info("re-initializing data plane in-process after system encryption migration")
 	}
-
-	// Build server configuration using the QRDB config type required by
-	// the server.New constructor.
-	serverCfg := buildServerConfig(f)
-
-	// Configure mTLS on the TLS listener. An explicit operator selection
-	// (--tls-client-auth flag or YAML tls.client_auth) was already applied
-	// after resolveTLS and always wins. Otherwise the mode is derived from
-	// the auth posture: when auth is enabled, VerifyClientCertIfGiven
-	// allows public endpoints (like /health) to work without a client
-	// certificate while still validating certs when provided; when auth
-	// is disabled, NoClientCert disables client cert verification
-	// entirely.
-	if !f.tlsClientAuthSet {
-		if f.authEnabled {
-			bundle.TLSConfig.ClientAuth = tls.VerifyClientCertIfGiven
-			bundle.TLSConfig.ClientCAs = bundle.CACertPool
-		} else {
-			bundle.TLSConfig.ClientAuth = tls.NoClientCert
-		}
-	}
-
-	// Create and start the multi-protocol server.
-	serverOpts := []server.ServerOption{
-		server.WithTLS(bundle.TLSConfig),
-		server.WithCACertPool(bundle.CACertPool),
-		server.WithLeaderForwarding(registry),
-		server.WithHost(host),
-		server.WithBatch(batchSvc),
-		server.WithTransaction(txSvc),
-		server.WithMVCC(mvccSvc),
-		server.WithLease(leaseSvc),
-		server.WithLockService(lockSvc),
-		server.WithTimeSeries(tsSvc),
-		server.WithIndex(indexSvc),
-		server.WithWatch(watchSvc),
-		server.WithVector(vectorSvc),
-		server.WithCollectionService(collectionSvc),
-		server.WithDatabaseService(dbSvc),
-		server.WithDatabaseManager(dbManager),
-	}
-	// User and role management services are always wired — they are
-	// organizational primitives independent of auth enforcement.
-	serverOpts = append(serverOpts,
-		server.WithUserService(mgmtResult.userSvc),
-		server.WithRoleService(mgmtResult.roleSvc),
-	)
-	// Compliance audit logger is always wired so the /v1/audit/events
-	// endpoint is available regardless of auth-enabled state.
-	serverOpts = append(serverOpts, server.WithAuditLogger(complianceAudit))
-
-	// Auth factor service is always constructed (factor implementations
-	// return ErrFactorDisabled for absent hardware, which handlers map to
-	// HTTP 501 -- the correct response for "feature not available in this
-	// deployment"). Exposed via /v1/authfactors/* for consumers like xkms.
-	if svc, err := service.NewAuthFactorService(service.AuthFactorServiceConfig{
-		Factors: defaultAuthFactors(),
-		KV:      authKVSvc,
-	}); err == nil {
-		serverOpts = append(serverOpts, server.WithAuthFactorService(svc))
-	}
-
-	if authResult != nil {
-		serverOpts = append(serverOpts,
-			server.WithAuthMiddleware(authResult.authMW),
-		)
-		if authResult.custodianSvc != nil {
-			serverOpts = append(serverOpts, server.WithCustodianService(authResult.custodianSvc))
-		}
-		if authResult.soAuthenticator != nil {
-			serverOpts = append(serverOpts, server.WithSOAuthenticator(authResult.soAuthenticator))
-		}
-	}
-	if barrierSvc != nil {
-		serverOpts = append(serverOpts, server.WithBarrierService(barrierSvc))
-	}
-	if ceremonySvc != nil {
-		serverOpts = append(serverOpts, server.WithCeremonyService(ceremonySvc))
-	}
-	if ceremonyCA != nil {
-		serverOpts = append(serverOpts, server.WithCeremonyCA(ceremonyCA))
-	}
-	if svcNode.CertProv != nil {
-		serverOpts = append(serverOpts, server.WithCertProvider(svcNode.CertProv))
-	}
-	if svcNode.Credential != nil {
-		serverOpts = append(serverOpts, server.WithCredentialService(svcNode.Credential))
-	}
-	if barrierRegistry != nil {
-		serverOpts = append(serverOpts, server.WithBarrierRegistry(barrierRegistry))
-	}
-	// When the storage barrier is enabled, install the sealed-window
-	// middleware on REST and the equivalent interceptors on gRPC.
-	// While the barrier is sealed every endpoint not on the allowlist
-	// returns 503 / Unavailable; once unsealed both wrappers become
-	// passthrough. See pkg/api/rest/middleware_sealed.go and
-	// pkg/api/grpc/sealed_window_interceptor.go for the canonical
-	// allowlists.
-	if sealBarrier != nil {
-		serverOpts = append(serverOpts, server.WithSealedWindowProbe(sealBarrier))
-	}
-	if tenantDEKMgr != nil {
-		serverOpts = append(serverOpts, server.WithTenantDEKManager(tenantDEKMgr))
-	}
-	if tenantHostReg != nil {
-		serverOpts = append(serverOpts, server.WithTenantHostRegistry(tenantHostReg))
-	}
-	if raftBackendReg != nil {
-		serverOpts = append(serverOpts, server.WithRaftBackendFactory(raftBackendReg))
-	}
-	if quotaAccountant != nil {
-		serverOpts = append(serverOpts, server.WithQuotaAccountant(quotaAccountant))
-	}
-	if ckReceiver != nil {
-		serverOpts = append(serverOpts, server.WithClusterKeyReceiver(ckReceiver))
-	}
-	if tenantSvcInst != nil {
-		serverOpts = append(serverOpts, server.WithTenantService(tenantSvcInst))
-		// The structurally-privileged system tenant is created earlier in
-		// startup by pkg/firstboot.Initialize (called from
-		// bootstrapUserRoleStores). No additional CreateTenant call is
-		// needed here; first-boot is idempotent across daemon restarts.
-	}
-	if svcNode.Backup != nil {
-		serverOpts = append(serverOpts, server.WithBackupService(svcNode.Backup))
-	}
-	if svcNode.Rebalance != nil {
-		serverOpts = append(serverOpts, server.WithRebalanceService(svcNode.Rebalance))
-	}
-	if bootServers != nil {
-		serverOpts = append(serverOpts, server.WithCABootstrap(bundle.CACertPEM, bundle.CAKeyPEM))
-	}
-	if svcNode.Embedding != nil {
-		serverOpts = append(serverOpts, server.WithEmbedding(svcNode.Embedding))
-	}
-	if svcNode.RAG != nil {
-		serverOpts = append(serverOpts, server.WithRAG(svcNode.RAG))
-	}
-	if h := webUIHandler(); h != nil {
-		serverOpts = append(serverOpts, server.WithWebUI(h))
-	}
-
-	// Build per-database service registry for multi-database routing.
-	// Currently all databases share the system shard services. As per-database
-	// shard allocation (Phase 1.2) is enabled, each database will get its
-	// own service set backed by a dedicated shard.
-	dbRegistry := server.NewDatabaseServiceRegistry("system")
-	dbRegistry.Register("system", &server.DatabaseServices{
-		Name:        "system",
-		ShardID:     shard.ShardKV,
-		KV:          kvSvc,
-		MVCC:        mvccSvc,
-		Batch:       batchSvc,
-		Transaction: txSvc,
-		Lease:       leaseSvc,
-		TimeSeries:  tsSvc,
-		Index:       indexSvc,
-		Watch:       watchSvc,
-		Collection:  collectionSvc,
-		Vector:      vectorSvc,
-	})
-	serverOpts = append(serverOpts, server.WithDatabaseServiceRegistry(dbRegistry))
-
-	srv := server.New(serverCfg, kvSvc, adminSvc, serverOpts...)
-	if err := srv.Start(); err != nil {
-		_ = shutdownNode(host)
-		return err
-	}
-
-	// Leader-side lease-expiry sweeper. Leases granted with a TTL must be
-	// auto-revoked when they elapse so their attached keys are deleted and
-	// watchers receive the DELETE notification. Only the Raft leader proposes
-	// the revoke (routed through consensus via leaseSvc.Revoke); every replica
-	// applies it. The leadership gate is re-evaluated each tick, so the loop is
-	// correct across elections and a no-op on followers. Skipped when the lease
-	// service is absent (embeddable deployments without lease support).
-	if leaseSvc != nil {
-		go lr.RunExpiry(sigCtx, lease.DefaultExpiryInterval,
-			func() bool {
-				leaderID, ok, lerr := host.GetLeaderID(shard.ShardKV)
-				return lerr == nil && ok && leaderID == f.replicaID
-			},
-			leaseSvc.Revoke,
-			slog.Default(),
-		)
-	}
-
-	// Storage-quota reconciler (Phase 3). Periodically flushes the in-memory
-	// byte accumulator to the persisted CurrentStorageBytes counters and, for
-	// each dedicated-volume tenant, recomputes the true on-disk size of its
-	// DataRoot to correct drift. Stops cleanly on signal (sigCtx cancellation),
-	// performing a final flush. Shared/prefix tenants rely on the flushed
-	// accumulator value (documented approximation). Skipped when the accountant
-	// or tenant service is absent.
-	if quotaAccountant != nil && tenantSvcInst != nil {
-		if rec := buildQuotaReconciler(quotaAccountant, tenantSvcInst, f.tenantConfig); rec != nil {
-			go rec.Run(sigCtx)
-			slog.Info("storage-quota reconciler started")
-		}
-	}
-
-	// Opt-in dynamic Raft membership: register self under a lease and, on the
-	// leader, reconcile the Raft group as nodes join and leave. OFF by default.
-	var membershipMgr *cluster.MembershipManager
-	if f.dynamicMembership {
-		membershipMgr, err = startDynamicMembership(sigCtx, f, kvSvc, adminSvc, mvccSvc, leaseSvc, watchSvc)
-		if err != nil {
-			srv.Stop()
-			_ = shutdownNode(host)
-			return err
-		}
-		slog.Info("dynamic membership manager started",
-			"shard_id", f.shardID, "node_id", f.replicaID)
-	}
-
-	slog.Info("qrdbd node started, waiting for signals")
-
-	// Block until SIGINT or SIGTERM (already captured by sigCtx).
-	<-sigCtx.Done()
-	slog.Info("received signal, shutting down")
-
-	if membershipMgr != nil {
-		if err := membershipMgr.Close(); err != nil {
-			slog.Error("membership manager close failed", slog.Any("error", err))
-		}
-	}
-
-	// Clean up bootstrap servers and cert reloader.
-	if bootServers != nil {
-		bootServers.Stop()
-	}
-	if bundle.Reloader != nil {
-		_ = bundle.Reloader.Stop()
-	}
-
-	// Stop all dedicated per-database raft shards first so their Pebble locks on
-	// {DataRoot}/databases/{db} are released (the shared host itself is closed
-	// later, below) before the barrier per-tenant Pebbles are closed.
-	if raftBackendReg != nil {
-		if err := raftBackendReg.CloseAll(); err != nil {
-			slog.Error("dedicated raft shard close-all failed", slog.Any("error", err))
-		}
-	}
-
-	// Close all per-tenant volume Hosts first so their Raft shards stop and
-	// their Pebble locks on {DataRoot}/databases are released before the
-	// barrier per-tenant Pebbles (which live under {DataRoot}/barrier) are
-	// closed below.
-	if tenantHostReg != nil {
-		if err := tenantHostReg.CloseAll(); err != nil {
-			slog.Error("per-tenant volume host close-all failed", slog.Any("error", err))
-		}
-	}
-
-	// Close all per-tenant Pebbles allocated through the volume pool.
-	// We use a short-lived background context here because sigCtx is
-	// already cancelled by the time we reach this point.
-	if volumePool != nil && volumePool.PerTenantRegistry != nil {
-		closed := volumePool.PerTenantRegistry.List()
-		if err := volumePool.PerTenantRegistry.CloseAll(context.Background()); err != nil {
-			slog.Error("per-tenant pebble close-all failed",
-				slog.Any("error", err),
-				slog.Int("count", len(closed)))
-		} else {
-			slog.Info("closed per-tenant pebbles on shutdown",
-				slog.Int("count", len(closed)))
-		}
-	}
-
-	srv.Stop()
-	return shutdownNode(host)
 }
 
 // buildQuotaAccountant constructs the storage-byte quota accountant from the
@@ -2252,158 +2298,6 @@ func waitForSignal() {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-sigCh
 	slog.Info("received signal, shutting down", "signal", sig.String())
-}
-
-// reattachVolumeTenants eagerly rebuilds the per-tenant Raft Host of every
-// IsolationVolume tenant whose per-tenant barrier is already available on THIS
-// node after a restart. The barrier itself is restored beforehand by
-// BarrierRegistry.RestoreVolumeTenants, which re-registers and (for auto-unseal
-// tenants) unseals each barrier from the node-local persisted tenant-root
-// record.
-//
-// TenantInfo is replicated cluster metadata, so this node sees every volume
-// tenant — including those it holds no local key material for. The DataRoot in
-// TenantInfo is the CREATING node's path and is NOT valid elsewhere, so it is
-// deliberately never used here to (re-)register a barrier. A tenant whose
-// barrier is absent from the local registry is skipped; its Host attaches
-// lazily on first access. A self-managed tenant whose barrier is
-// registered-but-sealed is left sealed for the tenant admin to unseal. For an
-// auto-unseal tenant whose barrier is ready, the per-tenant Host is eagerly
-// re-attached; a re-attach failure aborts boot.
-func reattachVolumeTenants(
-	ctx context.Context,
-	tenantSvc tenant.TenantServicer,
-	barrierReg *seal.BarrierRegistry,
-	hostReg *server.TenantHostRegistry,
-	logger *slog.Logger,
-) error {
-	tenants, err := tenantSvc.ListTenants(ctx)
-	if err != nil {
-		return err
-	}
-	for i := range tenants {
-		t := tenants[i]
-		if t.EffectiveIsolationType() != tenant.IsolationVolume {
-			continue
-		}
-		// The barrier is restored from this node's own tenant-root record by
-		// RestoreVolumeTenants. When it is absent, this node holds no key
-		// material for the tenant; defer to lazy attach rather than registering
-		// with the (foreign) replicated DataRoot.
-		tb, gerr := barrierReg.GetTenant(t.ID)
-		if gerr != nil {
-			logger.Info("volume tenant not provisioned on this node; deferring Host attach",
-				slog.String("tenant", t.ID))
-			continue
-		}
-		// A self-managed tenant comes up SEALED: the tenant admin must re-unseal
-		// before the data plane is reachable, and the per-tenant Host builds
-		// lazily on first access after unseal. Do NOT unseal or build its Host
-		// here. Only a system-managed (auto-unseal) tenant is unsealed
-		// credential-free (the system barrier is the unseal authority) and its
-		// Host eagerly re-attached.
-		if !t.BarrierAutoUnseal {
-			logger.Info("volume tenant left sealed for tenant-managed unseal",
-				slog.String("tenant", t.ID))
-			continue
-		}
-		// Auto-unseal tenants are unsealed by RestoreVolumeTenants. Tolerate a
-		// still-sealed barrier here as a best-effort fallback before attaching.
-		if tb.IsSealed() {
-			if uerr := barrierReg.UnsealTenant(ctx, t.ID, seal.Credentials{}); uerr != nil && !errors.Is(uerr, seal.ErrAlreadyUnsealed) {
-				return &VolumeReattachError{TenantID: t.ID, Err: uerr}
-			}
-		}
-		if aerr := hostReg.Attach(ctx, t.ID); aerr != nil {
-			return &VolumeReattachError{TenantID: t.ID, Err: aerr}
-		}
-		logger.Info("re-attached volume tenant",
-			slog.String("tenant", t.ID),
-			slog.String("data_root", t.DataRoot))
-	}
-	return nil
-}
-
-// reattachRaftTenants eagerly re-starts the dedicated raft database shards of
-// every IsolationRaft tenant whose per-tenant barrier is already available on
-// THIS node after a restart. The barrier itself is restored beforehand by
-// BarrierRegistry.RestoreVolumeTenants, which re-registers and (for auto-unseal
-// tenants) unseals each barrier from the node-local persisted tenant-root record.
-//
-// TenantInfo is replicated cluster metadata, so this node sees every raft
-// tenant — including those it holds no local key material for (e.g. it never
-// received key delivery). The DataRoot carried in TenantInfo is the CREATING
-// node's path and is NOT valid on other nodes, so it is deliberately never used
-// here to (re-)register a barrier. Instead, a tenant whose barrier is absent
-// from the local registry is skipped and deferred to the TenantShardReconciler,
-// which attaches it once key delivery completes.
-//
-// A self-managed tenant whose barrier is registered-but-sealed is left sealed —
-// the tenant admin re-unseals and the shards attach lazily on first access. For
-// an auto-unseal tenant whose barrier is ready, every dedicated database shard
-// known to the local manager is eagerly re-attached on the shared host before
-// serving so its data is reachable immediately. A shard whose re-attach fails
-// aborts boot.
-func reattachRaftTenants(
-	ctx context.Context,
-	tenantSvc tenant.TenantServicer,
-	barrierReg *seal.BarrierRegistry,
-	raftReg *server.RaftBackendFactory,
-	manager *database.Manager,
-	logger *slog.Logger,
-) error {
-	tenants, err := tenantSvc.ListTenants(ctx)
-	if err != nil {
-		return err
-	}
-	for i := range tenants {
-		t := tenants[i]
-		if t.EffectiveIsolationType() != tenant.IsolationRaft {
-			continue
-		}
-		// The barrier is restored from this node's own tenant-root record by
-		// RestoreVolumeTenants. When it is absent, this node holds no key
-		// material for the tenant yet; defer to the reconciler rather than
-		// registering with the (foreign) replicated DataRoot.
-		tb, gerr := barrierReg.GetTenant(t.ID)
-		if gerr != nil {
-			logger.Info("raft tenant not yet provisioned on this node; deferring shard attach to reconciler",
-				slog.String("tenant", t.ID))
-			continue
-		}
-		// Self-managed tenants stay sealed: the admin re-unseals and the shards
-		// attach lazily on first access. Do not unseal or start shards here.
-		if !t.BarrierAutoUnseal {
-			logger.Info("raft tenant left sealed for tenant-managed unseal",
-				slog.String("tenant", t.ID))
-			continue
-		}
-		// Auto-unseal tenants are unsealed by RestoreVolumeTenants. Tolerate a
-		// still-sealed barrier here as a best-effort fallback before attaching.
-		if tb.IsSealed() {
-			if uerr := barrierReg.UnsealTenant(ctx, t.ID, seal.Credentials{}); uerr != nil && !errors.Is(uerr, seal.ErrAlreadyUnsealed) {
-				return &RaftReattachError{TenantID: t.ID, Err: uerr}
-			}
-		}
-		// Eagerly re-start every dedicated raft database shard owned by this
-		// tenant that the local manager knows about. The databases were re-opened
-		// by dbManager.OpenAll (placeholder backend + meta.json carrying the
-		// persisted shard ID); here we re-bind the live shard on the shared host.
-		// Databases not present locally are attached by the reconciler instead.
-		for _, info := range manager.List() {
-			if info.TenantID != t.ID || info.Backend != database.BackendRaft {
-				continue
-			}
-			if aerr := raftReg.Attach(ctx, t.ID, info.Name); aerr != nil {
-				return &RaftReattachError{TenantID: t.ID, Database: info.Name, Err: aerr}
-			}
-			logger.Info("re-attached raft database shard",
-				slog.String("tenant", t.ID),
-				slog.String("database", info.Name),
-				slog.Uint64("shard_id", info.ShardID))
-		}
-	}
-	return nil
 }
 
 // shutdownNode gracefully closes the node and logs the result.

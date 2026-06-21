@@ -69,10 +69,13 @@ var (
 	ErrMigrationInvalidTarget = errors.New("qrdb/seal: invalid migration target strategy")
 
 	// ErrMigrationSourceNotNone is returned when an enable-encryption migration
-	// is attempted on a barrier whose active strategy is not "none". Enabling
-	// encryption is only defined for a currently-unencrypted barrier; changing
-	// between encrypted strategies is a rekey/re-provision, not this migration.
-	ErrMigrationSourceNotNone = errors.New("qrdb/seal: encryption migration requires a none-strategy source barrier")
+	// is attempted on a barrier whose active strategy is not a credential-free
+	// source. Valid sources are StrategyNone (plaintext) and StrategySystemBarrier
+	// (auto-unseal; the tenant root key is wrapped by the system barrier).
+	// User-credential-bound strategies (passphrase, Shamir) are not a valid
+	// migration source; changing between keyed strategies is a rekey/re-provision,
+	// not this migration path.
+	ErrMigrationSourceNotNone = errors.New("qrdb/seal: encryption migration requires a credential-free source barrier (none or system-barrier)")
 
 	// ErrMigrationInvalidMechanism is returned when an unknown re-encryption
 	// mechanism is requested.

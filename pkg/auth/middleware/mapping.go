@@ -573,16 +573,33 @@ var restPathParamPermissions = map[string]permission.Permission{
 	"POST /v1/barrier/recovery/officers/{username}/claim/complete": permission.IdentityGated,
 
 	// Tenant management (per-tenant routes dispatched via /v1/tenants/).
-	// The per-tenant barrier sub-routes (/v1/tenants/{id}/barrier/*) are NOT
-	// listed here: they are tenant-scoped (ScopeTenantOnly) and enforced
-	// in-handler via authorizeTenantBarrierOp, which validates the request's
-	// {id} against the caller's own tenant — a check the path-agnostic
-	// middleware cannot perform.
 	"GET /v1/tenants/{id}":                permission.TenantsRead,
 	"PUT /v1/tenants/{id}":                permission.TenantsUpdate,
 	"DELETE /v1/tenants/{id}":             permission.TenantsDelete,
 	"POST /v1/tenants/{id}/quotas":        permission.TenantsUpdate,
 	"PATCH /v1/tenants/{id}/entitlements": permission.TenantsSetEntitlements,
+
+	// Per-tenant barrier sub-routes (/v1/tenants/{id}/barrier/*). These carry
+	// tenant-scoped (ScopeTenantOnly) permissions: the middleware authorizes the
+	// BASE permission against the caller's own (ambient) tenant — which correctly
+	// denies a system-tenant caller — and the handler ADDITIONALLY validates the
+	// request's {id} against the caller's tenant via authorizeTenantBarrierOp
+	// (defense in depth for cross-tenant {id} mismatch). Without these entries the
+	// routes are default-denied and the per-tenant barrier API is unreachable
+	// whenever auth is enabled.
+	"GET /v1/tenants/{id}/barrier/status":                 permission.TenantBarrierStatus,
+	"GET /v1/tenants/{id}/barrier/officers":               permission.TenantBarrierOfficerList,
+	"GET /v1/tenants/{id}/barrier/officers/claim-status":  permission.TenantBarrierOfficerList,
+	"POST /v1/tenants/{id}/barrier/init":                  permission.TenantBarrierInit,
+	"POST /v1/tenants/{id}/barrier/unseal":                permission.TenantBarrierUnseal,
+	"POST /v1/tenants/{id}/barrier/unseal-share":          permission.TenantBarrierUnseal,
+	"POST /v1/tenants/{id}/barrier/seal":                  permission.TenantBarrierSeal,
+	"POST /v1/tenants/{id}/barrier/seal-vote":             permission.TenantBarrierSealVote,
+	"POST /v1/tenants/{id}/barrier/officers":              permission.TenantBarrierOfficerRegister,
+	// Officer share-claim routes are identity-gated: the registered officer's
+	// mTLS cert is the credential (handler enforces thumbprint + nonce signature).
+	"POST /v1/tenants/{id}/barrier/officers/{username}/claim/begin":    permission.IdentityGated,
+	"POST /v1/tenants/{id}/barrier/officers/{username}/claim/complete": permission.IdentityGated,
 
 	// Backup management (per-backup routes dispatched via /v1/backups/).
 	"GET /v1/backups/{id}":         permission.BackupRead,

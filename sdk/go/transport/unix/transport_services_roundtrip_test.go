@@ -469,3 +469,7 @@ func TestUnixRT_CeremonyOps_WithoutService(t *testing.T) {
 		t.Error("expected error when ceremony service is not configured")
 	}
 }
+
+func (m *mockTenantSvc) CheckBarrierMode(_ context.Context, _ string, _ seal.StrategyID) error {
+	return nil
+}

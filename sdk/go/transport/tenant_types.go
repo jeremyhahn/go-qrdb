@@ -33,6 +33,9 @@ type TenantQuotas struct {
 	MaxBackups           int64 `json:"max_backups"`
 	MaxVectorDims        int64 `json:"max_vector_dims"`
 	MaxTSMetrics         int64 `json:"max_ts_metrics"`
+	// SystemBarrierQuota governs an isolated tenant's use of the shared system
+	// barrier (bytes): 0 makes the option unavailable, -1 unlimited, >0 a cap.
+	SystemBarrierQuota int64 `json:"system_barrier_quota"`
 }
 
 // TenantEntitlements describes which isolation tiers and dedicated-storage
@@ -45,6 +48,9 @@ type TenantEntitlements struct {
 	// the system-managed auto-unseal key-management mode for its barrier. When
 	// false (the secure default) the tenant must self-manage its barrier keys.
 	AllowSystemManagedBarrier bool `json:"allow_system_managed_barrier,omitempty"`
+	// AllowedBarrierModes lists the dedicated-barrier sealing strategies the
+	// isolated tenant may select (none/passphrase/shamir or an xkms hardware id).
+	AllowedBarrierModes []string `json:"allowed_barrier_modes,omitempty"`
 }
 
 // TenantIsolationType controls the data isolation strategy for a tenant.
