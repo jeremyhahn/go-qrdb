@@ -77,6 +77,18 @@ func (e *InvalidArgError) Error() string {
 	return "qrdb: invalid argument " + e.Arg + ": " + e.Reason
 }
 
+// DatabaseScopeError is returned when --database is set but the
+// active transport does not support per-database scoping.
+type DatabaseScopeError struct {
+	Database  string
+	Transport string
+}
+
+// Error returns a human-readable description.
+func (e *DatabaseScopeError) Error() string {
+	return "qrdb: transport " + e.Transport + " does not support scoping to database " + e.Database
+}
+
 // InvalidLeaseIDError is returned when a lease ID argument cannot
 // be parsed as an int64.
 type InvalidLeaseIDError struct {

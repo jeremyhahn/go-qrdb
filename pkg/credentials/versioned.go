@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -449,7 +450,7 @@ func (s *CredentialService) gcManual(name string) int {
 func (s *CredentialService) listBarrier(ctx context.Context) ([]string, error) {
 	keys, err := s.barrier.List(ctx, credentialPrefix)
 	if err != nil {
-		return nil, fmt.Errorf("credentials: list barrier: %w", err)
+		return nil, &OperationError{Op: "list barrier", Cause: err}
 	}
 	names := make([]string, 0, len(keys))
 	for _, k := range keys {
@@ -491,7 +492,7 @@ func (s *CredentialService) rotateBarrier(ctx context.Context, name string, opts
 	if prevExists && opts.GracePeriod > 0 {
 		graceUntil = now.Add(opts.GracePeriod)
 		if err := s.barrier.Put(ctx, versionKey(name, prevVersion), prevValue); err != nil {
-			return nil, fmt.Errorf("credentials: write grace version: %w", err)
+			return nil, &OperationError{Op: "write grace version", Cause: err}
 		}
 		meta.History = append(meta.History, credentialMetaEntry{
 			Version:    prevVersion,
@@ -501,7 +502,7 @@ func (s *CredentialService) rotateBarrier(ctx context.Context, name string, opts
 	}
 
 	if err := s.barrier.Put(ctx, credentialPrefix+name, opts.NewValue); err != nil {
-		return nil, fmt.Errorf("credentials: write current: %w", err)
+		return nil, &OperationError{Op: "write current", Cause: err}
 	}
 	meta.CurrentVersion = newVersion
 	if err := s.writeBarrierMeta(ctx, name, meta); err != nil {
@@ -622,7 +623,7 @@ func (s *CredentialService) gcBarrier(ctx context.Context, name string) (int, er
 	for _, h := range meta.History {
 		if !h.GraceUntil.IsZero() && now.After(h.GraceUntil) {
 			if delErr := s.barrier.Delete(ctx, versionKey(name, h.Version)); delErr != nil {
-				return reaped, fmt.Errorf("credentials: gc delete v%d: %w", h.Version, delErr)
+				return reaped, &OperationError{Op: fmt.Sprintf("gc delete v%d", h.Version), Cause: delErr}
 			}
 			reaped++
 			continue
@@ -641,7 +642,7 @@ func (s *CredentialService) gcBarrier(ctx context.Context, name string) (int, er
 // =============================================================================
 
 func versionKey(name string, version uint64) string {
-	return credentialPrefix + name + versionPrefix + strings.ToUpper(fmt.Sprintf("%d", version))
+	return credentialPrefix + name + versionPrefix + strconv.FormatUint(version, 10)
 }
 
 func metaKey(name string) string {
@@ -658,7 +659,7 @@ func (s *CredentialService) loadBarrierMeta(ctx context.Context, name string) (*
 	}
 	var meta credentialMeta
 	if err := json.Unmarshal(raw, &meta); err != nil {
-		return nil, fmt.Errorf("credentials: decode meta: %w", err)
+		return nil, &OperationError{Op: "decode meta", Cause: err}
 	}
 	return &meta, nil
 }
@@ -666,10 +667,10 @@ func (s *CredentialService) loadBarrierMeta(ctx context.Context, name string) (*
 func (s *CredentialService) writeBarrierMeta(ctx context.Context, name string, meta *credentialMeta) error {
 	raw, err := json.Marshal(meta)
 	if err != nil {
-		return fmt.Errorf("credentials: encode meta: %w", err)
+		return &OperationError{Op: "encode meta", Cause: err}
 	}
 	if err := s.barrier.Put(ctx, metaKey(name), raw); err != nil {
-		return fmt.Errorf("credentials: write meta: %w", err)
+		return &OperationError{Op: "write meta", Cause: err}
 	}
 	return nil
 }

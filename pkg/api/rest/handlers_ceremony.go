@@ -109,8 +109,13 @@ func (s *Server) handleCeremonyInitialize(w http.ResponseWriter, r *http.Request
 	}
 
 	result, err := s.ceremonySvc.CeremonyInitialize(r.Context(), s.ceremonyCA, &service.CeremonyInitializeOptions{
-		SOPin:   req.SOPin,
-		UserPin: req.UserPin,
+		SOPin:                  req.SOPin,
+		UserPin:                req.UserPin,
+		CredentialSealStrategy: req.CredentialSealStrategy,
+		Threshold:              req.Threshold,
+		Officers:               ceremonyOfficerConfigsFromRequest(req.Officers),
+		Hostname:               req.Hostname,
+		SANs:                   req.SANs,
 	})
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
@@ -118,6 +123,21 @@ func (s *Server) handleCeremonyInitialize(w http.ResponseWriter, r *http.Request
 	}
 
 	writeJSON(w, ceremonyInitToResponse(result))
+}
+
+// ceremonyOfficerConfigsFromRequest converts the REST-local officer
+// configuration wire shape to the service-layer type. Returns nil when
+// officers is empty so the service layer's "non-empty overrides the
+// configured value" precedence rule works unchanged.
+func ceremonyOfficerConfigsFromRequest(officers []ceremonyOfficerConfig) []service.CeremonyOfficerConfig {
+	if len(officers) == 0 {
+		return nil
+	}
+	out := make([]service.CeremonyOfficerConfig, len(officers))
+	for i, o := range officers {
+		out[i] = service.CeremonyOfficerConfig{Username: o.Username, CSRPEM: o.CSRPEM}
+	}
+	return out
 }
 
 // handleCeremonyStatus handles GET /v1/ceremony/status -- returns the
@@ -215,8 +235,17 @@ func (s *Server) handleCeremonyClaimShare(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// share is already JSON text (a marshaled shamir.Share envelope, per
+	// pkg/ceremony's sealedShareStore) -- not raw secret bytes needing
+	// base64. The response key and encoding must match
+	// transport.ClaimShareResponse{ShareJSON string `json:"share_json"`},
+	// the shared SDK type, and the gRPC/QUIC/embedded transports, which all
+	// emit the share bytes verbatim as a string. A prior {"share":
+	// base64(...)} shape here left every REST-transport caller's ShareJSON
+	// field empty (wrong key) even when the CSR-derived guess landed on the
+	// right shape.
 	writeJSON(w, map[string]interface{}{
-		"share": base64.StdEncoding.EncodeToString(share),
+		"share_json": string(share),
 	})
 }
 

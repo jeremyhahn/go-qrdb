@@ -127,11 +127,13 @@ type CeremonyConfig struct {
 
 // InitializeOptions carries per-request parameters for an initialization
 // ceremony. It exists so callers can supply the Security Officer and user
-// PINs on the Initialize call itself rather than mutating the shared
-// CeremonyConfig — mutating shared config is not concurrency-safe.
+// PINs — and the remaining ceremony configuration — on the Initialize call
+// itself rather than mutating the shared CeremonyConfig — mutating shared
+// config is not concurrency-safe.
 //
 // Per-request values take precedence over the corresponding CeremonyConfig
-// fields when non-empty; empty fields fall back to the configured value.
+// fields when non-empty (non-zero for Threshold, non-empty for the slice
+// fields); empty/zero fields fall back to the configured value.
 type InitializeOptions struct {
 	// SOPin is the Security Officer PIN supplied for this ceremony. When
 	// empty the configured CeremonyConfig.SOPin is used.
@@ -140,6 +142,27 @@ type InitializeOptions struct {
 	// UserPin is the user-level PIN supplied for this ceremony. When empty
 	// the configured CeremonyConfig.UserPin is used.
 	UserPin string
+
+	// CredentialSealStrategy identifies how credentials are sealed at rest.
+	// When empty the configured CeremonyConfig.CredentialSealStrategy is used.
+	CredentialSealStrategy string
+
+	// Threshold is the minimum number of officers (M) required to
+	// reconstruct the secret in M-of-N Shamir splitting. When zero the
+	// configured CeremonyConfig.Threshold is used.
+	Threshold int
+
+	// Officers is the list of officer configurations for M-of-N enrollment.
+	// When empty the configured CeremonyConfig.Officers is used.
+	Officers []OfficerConfig
+
+	// Hostname is the primary hostname for TLS certificate generation.
+	// When empty the configured CeremonyConfig.Hostname is used.
+	Hostname string
+
+	// SANs is the list of Subject Alternative Names for TLS certificates.
+	// When empty the configured CeremonyConfig.SANs is used.
+	SANs []string
 }
 
 // PendingCert holds a certificate that has been issued but not yet

@@ -361,7 +361,7 @@ func TestQUICRequest_AfterClose(t *testing.T) {
 }
 
 // ===========================================================================
-// transport.go — stripScheme / appendALPN private helpers
+// transport.go — stripScheme private helper
 // ===========================================================================
 
 func TestQUICStripScheme(t *testing.T) {
@@ -377,29 +377,6 @@ func TestQUICStripScheme(t *testing.T) {
 		if got := stripScheme(tc.in); got != tc.want {
 			t.Errorf("stripScheme(%q) = %q, want %q", tc.in, got, tc.want)
 		}
-	}
-}
-
-func TestQUICAppendALPN_AlreadyPresent(t *testing.T) {
-	in := []string{"qrdb-quic", "other"}
-	out := appendALPN(in)
-	if len(out) != 2 {
-		t.Errorf("expected unchanged len=2, got %v", out)
-	}
-}
-
-func TestQUICAppendALPN_NotPresent(t *testing.T) {
-	in := []string{"other"}
-	out := appendALPN(in)
-	if len(out) != 2 || out[1] != "qrdb-quic" {
-		t.Errorf("expected qrdb-quic appended, got %v", out)
-	}
-}
-
-func TestQUICAppendALPN_Empty(t *testing.T) {
-	out := appendALPN(nil)
-	if len(out) != 1 || out[0] != "qrdb-quic" {
-		t.Errorf("expected [qrdb-quic], got %v", out)
 	}
 }
 

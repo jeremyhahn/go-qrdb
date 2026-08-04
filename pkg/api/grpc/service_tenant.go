@@ -124,21 +124,22 @@ func (s *qrdbServiceServer) TenantUpdateQuotas(ctx context.Context, req *pb.Tena
 	}
 
 	q := &quota.Quotas{
-		MaxDatabases:         pbQ.GetMaxDatabases(),
-		MaxRaftGroups:        pbQ.GetMaxRaftGroups(),
-		MaxReplicasPerGroup:  pbQ.GetMaxReplicasPerGroup(),
-		MaxTotalReplicas:     pbQ.GetMaxTotalReplicas(),
-		MaxCollections:       pbQ.GetMaxCollections(),
-		MaxKeys:              pbQ.GetMaxKeys(),
-		MaxStorageBytes:      pbQ.GetMaxStorageBytes(),
-		MaxDatabaseSizeBytes: pbQ.GetMaxDatabaseSizeBytes(),
-		MaxUsers:             pbQ.GetMaxUsers(),
-		MaxRoles:             pbQ.GetMaxRoles(),
-		MaxCertificates:      pbQ.GetMaxCertificates(),
-		MaxBackups:           pbQ.GetMaxBackups(),
-		MaxVectorDims:        pbQ.GetMaxVectorDims(),
-		MaxTSMetrics:         pbQ.GetMaxTsMetrics(),
-		SystemBarrierQuota:   pbQ.GetSystemBarrierQuota(),
+		MaxDatabases:          pbQ.GetMaxDatabases(),
+		MaxRaftGroups:         pbQ.GetMaxRaftGroups(),
+		MaxReplicasPerGroup:   pbQ.GetMaxReplicasPerGroup(),
+		MaxTotalReplicas:      pbQ.GetMaxTotalReplicas(),
+		MaxCollections:        pbQ.GetMaxCollections(),
+		MaxKeys:               pbQ.GetMaxKeys(),
+		MaxStorageBytes:       pbQ.GetMaxStorageBytes(),
+		MaxDatabaseSizeBytes:  pbQ.GetMaxDatabaseSizeBytes(),
+		MaxUsers:              pbQ.GetMaxUsers(),
+		MaxRoles:              pbQ.GetMaxRoles(),
+		MaxCertificates:       pbQ.GetMaxCertificates(),
+		MaxBackups:            pbQ.GetMaxBackups(),
+		MaxVectorDims:         pbQ.GetMaxVectorDims(),
+		MaxTSMetrics:          pbQ.GetMaxTsMetrics(),
+		SystemBarrierQuota:    pbQ.GetSystemBarrierQuota(),
+		MaxDedicatedWALGroups: pbQ.GetMaxDedicatedWalGroups(),
 	}
 
 	info, err := s.tenantSvc.UpdateQuotas(ctx, req.GetId(), q)
@@ -166,6 +167,7 @@ func (s *qrdbServiceServer) TenantUpdateEntitlements(ctx context.Context, req *p
 		AllowVolumeStorage:        pbE.GetAllowVolumeStorage(),
 		AllowSystemManagedBarrier: pbE.GetAllowSystemManagedBarrier(),
 		AllowedBarrierModes:       pbE.GetAllowedBarrierModes(),
+		AllowDedicatedWAL:         pbE.GetAllowDedicatedWal(),
 	}
 
 	info, err := s.tenantSvc.UpdateEntitlements(ctx, req.GetId(), e)
@@ -212,6 +214,7 @@ func entitlementsToProto(e *quota.Entitlements) *pb.TenantEntitlements {
 		AllowVolumeStorage:        e.AllowVolumeStorage,
 		AllowSystemManagedBarrier: e.AllowSystemManagedBarrier,
 		AllowedBarrierModes:       e.AllowedBarrierModes,
+		AllowDedicatedWal:         e.AllowDedicatedWAL,
 	}
 }
 
@@ -221,21 +224,22 @@ func quotaToProto(q *quota.Quotas) *pb.TenantQuotas {
 		return nil
 	}
 	return &pb.TenantQuotas{
-		MaxDatabases:         q.MaxDatabases,
-		MaxRaftGroups:        q.MaxRaftGroups,
-		MaxReplicasPerGroup:  q.MaxReplicasPerGroup,
-		MaxTotalReplicas:     q.MaxTotalReplicas,
-		MaxCollections:       q.MaxCollections,
-		MaxKeys:              q.MaxKeys,
-		MaxStorageBytes:      q.MaxStorageBytes,
-		MaxDatabaseSizeBytes: q.MaxDatabaseSizeBytes,
-		MaxUsers:             q.MaxUsers,
-		MaxRoles:             q.MaxRoles,
-		MaxCertificates:      q.MaxCertificates,
-		MaxBackups:           q.MaxBackups,
-		MaxVectorDims:        q.MaxVectorDims,
-		MaxTsMetrics:         q.MaxTSMetrics,
-		SystemBarrierQuota:   q.SystemBarrierQuota,
+		MaxDatabases:          q.MaxDatabases,
+		MaxRaftGroups:         q.MaxRaftGroups,
+		MaxReplicasPerGroup:   q.MaxReplicasPerGroup,
+		MaxTotalReplicas:      q.MaxTotalReplicas,
+		MaxCollections:        q.MaxCollections,
+		MaxKeys:               q.MaxKeys,
+		MaxStorageBytes:       q.MaxStorageBytes,
+		MaxDatabaseSizeBytes:  q.MaxDatabaseSizeBytes,
+		MaxUsers:              q.MaxUsers,
+		MaxRoles:              q.MaxRoles,
+		MaxCertificates:       q.MaxCertificates,
+		MaxBackups:            q.MaxBackups,
+		MaxVectorDims:         q.MaxVectorDims,
+		MaxTsMetrics:          q.MaxTSMetrics,
+		SystemBarrierQuota:    q.SystemBarrierQuota,
+		MaxDedicatedWalGroups: q.MaxDedicatedWALGroups,
 	}
 }
 

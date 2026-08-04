@@ -37,8 +37,11 @@ type ShamirCombineError = shamir.CombineError
 // ShamirValidationError is returned when share validation fails.
 type ShamirValidationError = shamir.ValidationError
 
-// ShamirIntegrityError is returned when the reconstructed secret's digest
-// does not match the digest stored in the shares.
+// ShamirIntegrityError is an alias of shamir.IntegrityError.
+//
+// Deprecated: shares no longer carry a secret digest (it was an offline
+// brute-force oracle), so combining performs no self-verification and never
+// returns this error. Authenticate the reconstructed secret out-of-band.
 type ShamirIntegrityError = shamir.IntegrityError
 
 // ---------------------------------------------------------------------------

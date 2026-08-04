@@ -152,7 +152,7 @@ func (a *SOAuthenticator) SetSOPIN(ctx context.Context, tenantID string, newPIN 
 	key := soPINCommitPrefix + tenantID
 	existing, err := a.store.Get(ctx, key)
 	if err != nil {
-		return fmt.Errorf("auth: store get: %w", err)
+		return &OperationError{Op: "store get", Cause: err}
 	}
 	if existing != nil {
 		return ErrSOPINAlreadySet
@@ -176,7 +176,7 @@ func (a *SOAuthenticator) SetSOPIN(ctx context.Context, tenantID string, newPIN 
 			Action:   "set",
 			Outcome:  audit.OutcomeFailure + ":store",
 		})
-		return fmt.Errorf("auth: store put: %w", err)
+		return &OperationError{Op: "store put", Cause: err}
 	}
 
 	a.logger.Info("SO PIN committed", slog.String("tenantID", tenantID))
@@ -209,7 +209,7 @@ func (a *SOAuthenticator) VerifySOPIN(ctx context.Context, tenantID string, pres
 	key := soPINCommitPrefix + tenantID
 	record, err := a.store.Get(ctx, key)
 	if err != nil {
-		return fmt.Errorf("auth: store get: %w", err)
+		return &OperationError{Op: "store get", Cause: err}
 	}
 	if record == nil {
 		a.audit.Emit(ctx, audit.AuditEvent{
@@ -250,7 +250,7 @@ func (a *SOAuthenticator) RotateSOPIN(ctx context.Context, tenantID string, oldP
 		return ErrSOPINEmptyPIN
 	}
 
-	// Verify the old PIN first.
+	// Verify the old PIN first. VerifySOPIN emits its own failure audit events.
 	if err := a.VerifySOPIN(ctx, tenantID, oldPIN); err != nil {
 		return err
 	}
@@ -263,12 +263,24 @@ func (a *SOAuthenticator) RotateSOPIN(ctx context.Context, tenantID string, oldP
 
 	record, err := hashPIN(newBuf.Bytes())
 	if err != nil {
+		a.audit.Emit(ctx, audit.AuditEvent{
+			TenantID: tenantID,
+			Resource: "so-pin",
+			Action:   "rotate",
+			Outcome:  audit.OutcomeFailure + ":hash",
+		})
 		return err
 	}
 
 	key := soPINCommitPrefix + tenantID
 	if err := a.store.Put(ctx, key, []byte(record)); err != nil {
-		return fmt.Errorf("auth: store put: %w", err)
+		a.audit.Emit(ctx, audit.AuditEvent{
+			TenantID: tenantID,
+			Resource: "so-pin",
+			Action:   "rotate",
+			Outcome:  audit.OutcomeFailure + ":store",
+		})
+		return &OperationError{Op: "store put", Cause: err}
 	}
 
 	a.logger.Info("SO PIN rotated", slog.String("tenantID", tenantID))
@@ -295,7 +307,7 @@ func fipsEnabled() bool {
 func hashPIN(pin []byte) (string, error) {
 	salt := make([]byte, 32)
 	if _, err := cryptoRandRead(salt); err != nil {
-		return "", fmt.Errorf("auth: generate salt: %w", err)
+		return "", &OperationError{Op: "generate salt", Cause: err}
 	}
 
 	var (

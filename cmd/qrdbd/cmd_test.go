@@ -39,6 +39,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
@@ -753,7 +754,7 @@ func TestConfigApplyError(t *testing.T) {
 func TestTLSGenerateError_ErrorAndUnwrap(t *testing.T) {
 	inner := errors.New("random source failed")
 	err := &TLSGenerateError{Err: inner}
-	want := "cli: TLS certificate generation failed: random source failed"
+	want := "clustertls: TLS certificate generation failed: random source failed"
 	if err.Error() != want {
 		t.Fatalf("TLSGenerateError.Error() = %q, want %q", err.Error(), want)
 	}
@@ -765,7 +766,7 @@ func TestTLSGenerateError_ErrorAndUnwrap(t *testing.T) {
 func TestTLSLoadError_ErrorAndUnwrap(t *testing.T) {
 	inner := errors.New("permission denied")
 	err := &TLSLoadError{Path: "/etc/certs/ca.pem", Err: inner}
-	want := `cli: failed to load TLS file "/etc/certs/ca.pem": permission denied`
+	want := `clustertls: failed to load TLS file "/etc/certs/ca.pem": permission denied`
 	if err.Error() != want {
 		t.Fatalf("TLSLoadError.Error() = %q, want %q", err.Error(), want)
 	}
@@ -2873,7 +2874,7 @@ func TestLoadCACertPool_InvalidPEM(t *testing.T) {
 func TestBootstrapFetchError_ErrorAndUnwrap(t *testing.T) {
 	inner := errors.New("connection reset")
 	err := &BootstrapFetchError{Method: "HTTPS", Err: inner}
-	want := "cli: bootstrap fetch failed via HTTPS: connection reset"
+	want := "clusterenroll: bootstrap fetch failed via HTTPS: connection reset"
 	if err.Error() != want {
 		t.Fatalf("BootstrapFetchError.Error() = %q, want %q", err.Error(), want)
 	}
@@ -2893,7 +2894,7 @@ func TestBootstrapFetchError_ErrorsIs(t *testing.T) {
 func TestBootstrapError_ErrorAndUnwrap(t *testing.T) {
 	inner := errors.New("no CA available")
 	err := &BootstrapError{Err: inner}
-	want := "cli: TLS bootstrap failed: no CA available"
+	want := "clusterenroll: TLS bootstrap failed: no CA available"
 	if err.Error() != want {
 		t.Fatalf("BootstrapError.Error() = %q, want %q", err.Error(), want)
 	}
@@ -2913,7 +2914,7 @@ func TestBootstrapError_ErrorsIs(t *testing.T) {
 func TestBootstrapServerError_ErrorAndUnwrap(t *testing.T) {
 	inner := errors.New("address in use")
 	err := &BootstrapServerError{Protocol: "QUIC", Err: inner}
-	want := "cli: bootstrap server (QUIC) failed to start: address in use"
+	want := "clusterenroll: bootstrap server (QUIC) failed to start: address in use"
 	if err.Error() != want {
 		t.Fatalf("BootstrapServerError.Error() = %q, want %q", err.Error(), want)
 	}
@@ -2933,7 +2934,7 @@ func TestBootstrapServerError_ErrorsIs(t *testing.T) {
 func TestBootstrapWriteError_ErrorAndUnwrap(t *testing.T) {
 	inner := errors.New("disk full")
 	err := &BootstrapWriteError{Path: "/var/qrdb/bootstrap.pem", Err: inner}
-	want := `cli: failed to write bootstrap file "/var/qrdb/bootstrap.pem": disk full`
+	want := `clustertls: failed to write file "/var/qrdb/bootstrap.pem": disk full`
 	if err.Error() != want {
 		t.Fatalf("BootstrapWriteError.Error() = %q, want %q", err.Error(), want)
 	}
@@ -2953,7 +2954,7 @@ func TestBootstrapWriteError_ErrorsIs(t *testing.T) {
 func TestBootstrapKeyError_ErrorAndUnwrap(t *testing.T) {
 	inner := errors.New("invalid PEM block")
 	err := &BootstrapKeyError{Kind: "ED25519", Err: inner}
-	want := "cli: bootstrap key parse failed (ED25519): invalid PEM block"
+	want := "clustertls: key parse failed (ED25519): invalid PEM block"
 	if err.Error() != want {
 		t.Fatalf("BootstrapKeyError.Error() = %q, want %q", err.Error(), want)
 	}
@@ -3188,15 +3189,18 @@ func TestLoadTLSFromDir_Absent(t *testing.T) {
 }
 
 func TestLoadTLSFromDir_Partial(t *testing.T) {
-	// Only ca.pem exists; node-cert.pem and node-key.pem are missing.
+	// Only ca.pem exists; node-cert.pem and node-key.pem are missing. A partial
+	// directory is corruption, so loadTLSFromDir must fail closed rather than
+	// silently regenerating a fresh CA.
 	dir := t.TempDir()
 	bundle, err := generateCATLS()
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "ca.pem"), bundle.CACertPEM, 0o600))
 
 	loaded, err := loadTLSFromDir(dir)
-	assert.NoError(t, err, "partial files should not return an error")
 	assert.Nil(t, loaded, "partial files should return nil bundle")
+	var partErr *clustertls.PartialMaterialError
+	assert.ErrorAs(t, err, &partErr, "partial files should fail closed with PartialMaterialError")
 }
 
 // ---------------------------------------------------------------------------

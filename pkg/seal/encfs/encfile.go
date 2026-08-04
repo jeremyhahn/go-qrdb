@@ -93,7 +93,7 @@ func newReadFile(base vfs.File, h *header, physicalSize int64) (*encryptedFile, 
 // when the payload length is not a valid encfs framing.
 func physicalToLogicalSize(payloadBytes int64) (int64, error) {
 	if payloadBytes < 0 {
-		return 0, fmt.Errorf("encfs: payload length is negative (%d)", payloadBytes)
+		return 0, &NegativePayloadLengthError{Length: payloadBytes}
 	}
 	if payloadBytes == 0 {
 		return 0, nil
@@ -104,7 +104,7 @@ func physicalToLogicalSize(payloadBytes int64) (int64, error) {
 		return fullBlocks * int64(BlockSize), nil
 	}
 	if rem < int64(BlockOverhead) {
-		return 0, fmt.Errorf("encfs: trailing block too short (%d bytes)", rem)
+		return 0, &TrailingBlockTooShortError{Bytes: rem}
 	}
 	return fullBlocks*int64(BlockSize) + (rem - int64(BlockOverhead)), nil
 }
@@ -153,7 +153,7 @@ func (f *encryptedFile) Read(p []byte) (int, error) {
 // cover the requested byte range and returning the requested slice.
 func (f *encryptedFile) ReadAt(p []byte, off int64) (int, error) {
 	if off < 0 {
-		return 0, fmt.Errorf("encfs: negative offset")
+		return 0, ErrNegativeOffset
 	}
 	f.mu.Lock()
 	if f.closed {
@@ -290,7 +290,7 @@ func (f *encryptedFile) appendLocked(p []byte) (int, error) {
 // must hold f.mu.
 func (f *encryptedFile) flushFullBlockLocked() error {
 	if len(f.tail) != BlockSize {
-		return fmt.Errorf("encfs: flushFullBlock expected %d bytes, got %d", BlockSize, len(f.tail))
+		return &FlushBlockSizeError{Expected: BlockSize, Got: len(f.tail)}
 	}
 	ct, err := f.crypto.encrypt(f.tail)
 	if err != nil {
@@ -399,3 +399,37 @@ type encFileInfo struct {
 }
 
 func (i *encFileInfo) Size() int64 { return i.logicalSize }
+
+// ErrNegativeOffset is returned by ReadAt when given a negative offset.
+var ErrNegativeOffset = errors.New("encfs: negative offset")
+
+// NegativePayloadLengthError is returned when an encfs payload length is
+// negative, indicating a corrupt or invalid framing.
+type NegativePayloadLengthError struct {
+	Length int64
+}
+
+func (e *NegativePayloadLengthError) Error() string {
+	return fmt.Sprintf("encfs: payload length is negative (%d)", e.Length)
+}
+
+// TrailingBlockTooShortError is returned when the final encfs block is smaller
+// than the per-block overhead, indicating truncation or corruption.
+type TrailingBlockTooShortError struct {
+	Bytes int64
+}
+
+func (e *TrailingBlockTooShortError) Error() string {
+	return fmt.Sprintf("encfs: trailing block too short (%d bytes)", e.Bytes)
+}
+
+// FlushBlockSizeError is returned when flushFullBlockLocked is invoked with a
+// tail buffer that is not exactly BlockSize bytes long.
+type FlushBlockSizeError struct {
+	Expected int
+	Got      int
+}
+
+func (e *FlushBlockSizeError) Error() string {
+	return fmt.Sprintf("encfs: flushFullBlock expected %d bytes, got %d", e.Expected, e.Got)
+}

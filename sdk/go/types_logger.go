@@ -36,8 +36,22 @@ var NewLogger = logger.New
 // NewLoggerAdapter wraps a concrete *logger.Logger as an interfaces.Logger.
 var NewLoggerAdapter = logger.NewAdapter
 
+// NewLoggerWithHandler creates a Logger that emits through a caller-supplied
+// slog.Handler — the injection seam for custom sinks (test writers,
+// multi-handler fan-outs, JSON-line stores). Output/Format/File in the
+// config are ignored; the handler owns rendering.
+var NewLoggerWithHandler = logger.NewWithHandler
+
+// NilLoggerHandlerError is returned by NewLoggerWithHandler for a nil handler.
+type NilLoggerHandlerError = logger.NilHandlerError
+
 // DefaultLogConfig returns a LogConfig with sensible defaults applied.
 var DefaultLogConfig = logger.Default
+
+// ContextWithLogger returns a context with the given logger attached.
+// Retrieve it with LoggerFromContext. A nil context is treated as
+// context.Background().
+var ContextWithLogger = logger.WithContext
 
 // LoggerFromContext retrieves the logger stored in a context.
 // If no logger is found, a default logger is returned.

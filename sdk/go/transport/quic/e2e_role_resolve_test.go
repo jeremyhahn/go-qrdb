@@ -30,16 +30,13 @@ import (
 func TestE2E_GetRoleByName_HappyPath(t *testing.T) {
 	srv, tr := startE2EServer(t)
 
-	var gotTenantID, gotName string
 	srv.SetResponder("role.GetByName", func(req []byte) (uint16, []byte) {
-		var wire getRoleByNameWireRequest
-		_ = json.Unmarshal(req, &wire)
-		gotTenantID = wire.TenantID
-		gotName = wire.Name
+		var wireReq getRoleByNameWireRequest
+		_ = json.Unmarshal(req, &wireReq)
 		b, _ := json.Marshal(&roleWireResponse{
 			ID:          "r-by-name",
-			Name:        wire.Name,
-			TenantID:    wire.TenantID,
+			Name:        wireReq.Name,
+			TenantID:    wireReq.TenantID,
 			Permissions: []string{"kv:read", "kv:write"},
 		})
 		return 0, b
@@ -58,11 +55,24 @@ func TestE2E_GetRoleByName_HappyPath(t *testing.T) {
 	if rl.Name != "admin" {
 		t.Errorf("Name = %q, want admin", rl.Name)
 	}
-	if gotTenantID != "t1" {
-		t.Errorf("wire tenantID = %q, want t1", gotTenantID)
+
+	// Inspect the marshaled wire request through the harness's mutex-protected
+	// recorder rather than capturing it in the responder closure: the closure
+	// runs in the server goroutine, so a shared capture read here races under
+	// the race detector.
+	rec := srv.LastRequest("role.GetByName")
+	if rec == nil {
+		t.Fatal("no recorded role.GetByName request")
 	}
-	if gotName != "admin" {
-		t.Errorf("wire name = %q, want admin", gotName)
+	var got getRoleByNameWireRequest
+	if err := json.Unmarshal(rec.Payload, &got); err != nil {
+		t.Fatalf("unmarshal recorded request: %v", err)
+	}
+	if got.TenantID != "t1" {
+		t.Errorf("wire tenantID = %q, want t1", got.TenantID)
+	}
+	if got.Name != "admin" {
+		t.Errorf("wire name = %q, want admin", got.Name)
 	}
 }
 
@@ -82,11 +92,7 @@ func TestE2E_GetRoleByName_ClosedTransport(t *testing.T) {
 func TestE2E_ResolvePermissions_HappyPath(t *testing.T) {
 	srv, tr := startE2EServer(t)
 
-	var gotRoleIDs []string
-	srv.SetResponder("role.ResolvePermissions", func(req []byte) (uint16, []byte) {
-		var wr resolvePermissionsWireRequest
-		_ = json.Unmarshal(req, &wr)
-		gotRoleIDs = wr.RoleIDs
+	srv.SetResponder("role.ResolvePermissions", func(_ []byte) (uint16, []byte) {
 		b, _ := json.Marshal(&resolvePermissionsWireResponse{
 			Permissions: []string{"kv:read", "kv:write", "kv:delete"},
 		})
@@ -102,8 +108,20 @@ func TestE2E_ResolvePermissions_HappyPath(t *testing.T) {
 	if len(resp.Permissions) != 3 {
 		t.Fatalf("Permissions len = %d, want 3: %v", len(resp.Permissions), resp.Permissions)
 	}
-	if len(gotRoleIDs) != 2 || gotRoleIDs[0] != "r1" || gotRoleIDs[1] != "r2" {
-		t.Errorf("wire roleIDs = %v, want [r1 r2]", gotRoleIDs)
+
+	// Inspect the marshaled wire request through the harness's mutex-protected
+	// recorder rather than capturing it in the responder closure (which races
+	// with this read under -race).
+	rec := srv.LastRequest("role.ResolvePermissions")
+	if rec == nil {
+		t.Fatal("no recorded role.ResolvePermissions request")
+	}
+	var wr resolvePermissionsWireRequest
+	if err := json.Unmarshal(rec.Payload, &wr); err != nil {
+		t.Fatalf("unmarshal recorded request: %v", err)
+	}
+	if len(wr.RoleIDs) != 2 || wr.RoleIDs[0] != "r1" || wr.RoleIDs[1] != "r2" {
+		t.Errorf("wire roleIDs = %v, want [r1 r2]", wr.RoleIDs)
 	}
 }
 

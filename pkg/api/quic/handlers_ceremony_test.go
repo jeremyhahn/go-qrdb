@@ -84,6 +84,59 @@ func TestHandleCeremonyInitialize_Success(t *testing.T) {
 	}
 }
 
+// TestHandleCeremonyInitialize_ForwardsAllFields is the regression guard for
+// the bug where the QUIC handleCeremonyInitialize handler only forwarded
+// SoPin/UserPin into service.CeremonyInitializeOptions, silently dropping
+// CredentialSealStrategy, Threshold, Officers, Hostname, and Sans from the
+// wire request.
+func TestHandleCeremonyInitialize_ForwardsAllFields(t *testing.T) {
+	ceremonySvc := &mockCeremonyService{}
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithCeremonyService(ceremonySvc))
+
+	payload, err := proto.Marshal(&pb.CeremonyInitializeRequest{
+		SoPin:                  "pin",
+		UserPin:                "upin",
+		CredentialSealStrategy: "shamir",
+		Threshold:              2,
+		Officers: []*pb.CeremonyOfficer{
+			{Username: "officer-1", CsrPem: "csr1"},
+			{Username: "officer-2", CsrPem: "csr2"},
+		},
+		Hostname: "override.example",
+		Sans:     []string{"alt1.example", "alt2.example"},
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	if _, err := srv.handleCeremonyInitialize(context.Background(), payload); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := ceremonySvc.capturedInitOpts
+	if got == nil {
+		t.Fatal("expected CeremonyInitialize to be called with non-nil opts")
+	}
+	if got.SOPin != "pin" || got.UserPin != "upin" {
+		t.Errorf("SOPin/UserPin not forwarded: %+v", got)
+	}
+	if got.CredentialSealStrategy != "shamir" {
+		t.Errorf("CredentialSealStrategy = %q, want %q", got.CredentialSealStrategy, "shamir")
+	}
+	if got.Threshold != 2 {
+		t.Errorf("Threshold = %d, want 2", got.Threshold)
+	}
+	if got.Hostname != "override.example" {
+		t.Errorf("Hostname = %q, want %q", got.Hostname, "override.example")
+	}
+	if len(got.SANs) != 2 || got.SANs[0] != "alt1.example" {
+		t.Errorf("SANs = %v", got.SANs)
+	}
+	if len(got.Officers) != 2 || got.Officers[0].Username != "officer-1" || got.Officers[0].CSRPEM != "csr1" {
+		t.Errorf("Officers = %+v", got.Officers)
+	}
+}
+
 func TestHandleCeremonyInitialize_ServiceError(t *testing.T) {
 	svcErr := &testError{msg: "ceremony init error"}
 	ceremonySvc := &mockCeremonyService{

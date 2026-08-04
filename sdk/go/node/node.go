@@ -99,11 +99,11 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	raftbackend "github.com/jeremyhahn/go-qrdb/pkg/backend/raft"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
-	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
+	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal/encfs"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
@@ -111,7 +111,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/file"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
@@ -119,6 +118,7 @@ import (
 	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	qrdbpool "github.com/jeremyhahn/go-qrdb/pkg/storage/pool"
 	"github.com/jeremyhahn/go-qrdb/pkg/store"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
@@ -224,12 +224,18 @@ func WithLogger(log *slog.Logger) NodeOption {
 	return func(o *nodeOptions) { o.logger = log }
 }
 
+// RaftMTLSConfig is the mTLS material consumed by WithRaftMTLS. It is a
+// re-export of the underlying quicraft transport type so SDK consumers
+// (go-xkms, go-quicbaas, go-trusted-platform) never import
+// go-quicraft/pkg/config directly — the qrdb SDK is the single boundary.
+type RaftMTLSConfig = quicraftconfig.MTLSConfig
+
 // WithRaftMTLS injects PEM-encoded mTLS certificate material into the
 // quicraft Raft transport. It is only consulted for multi-node clustered
 // nodes (len(members) > 1); single-node clusters use WithoutTransport and
 // require no TLS material. Callers are responsible for loading the PEM
 // bytes from the operator-supplied certificate files.
-func WithRaftMTLS(mtls *quicraftconfig.MTLSConfig) NodeOption {
+func WithRaftMTLS(mtls *RaftMTLSConfig) NodeOption {
 	return func(o *nodeOptions) { o.raftMTLS = mtls }
 }
 
@@ -323,8 +329,13 @@ func (s *nodeSealSubsystem) close() error {
 		firstErr = s.sealStore.Close()
 		s.sealStore = nil
 	}
-	if err := s.volumePool.Close(); err != nil && firstErr == nil {
-		firstErr = err
+	// Guard the call site for parity with Node.Close: volumePool is nil when no
+	// volume pools are configured. VolumePoolSubsystem.Close already nil-guards
+	// its receiver, so this is defensive consistency, not a correctness fix.
+	if s.volumePool != nil {
+		if err := s.volumePool.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
 	return firstErr
 }
@@ -470,6 +481,15 @@ type Node struct {
 	// is closed, mirroring the daemon's deferred manager.Close() ordering.
 	dbManager *database.Manager
 
+	// bgCtx is the node-lifetime background context for long-running goroutines
+	// started during completeClusteredBoot (currently the TenantShardReconciler).
+	// It is cancelled by bgCancel in Close() so those goroutines exit promptly
+	// rather than blocking on a placement watch or poll timer. Nil on standalone
+	// nodes and on clustered nodes where no reconciler was started (no
+	// PlacementStore configured).
+	bgCtx    context.Context //nolint:containedctx
+	bgCancel context.CancelFunc
+
 	// encMigrator is the scoped encryption migrator built in wireClientAndServer.
 	// It routes system scope to the nodeSystemMigrator (which holds migrateMu)
 	// and tenant scope to tenantHosts.MigrateEncryption. Both Node.EnableEncryption
@@ -498,6 +518,15 @@ func (n *Node) Client() *sdk.Client { return n.client }
 // this returns a Node that has only the seal-layer services populated (Barrier,
 // Ceremony, Credential); data-plane services are nil.
 func (n *Node) Services() *lifecycle.Node { return n.svcNode }
+
+// BarrierRegistry returns the per-tenant barrier registry built during the
+// seal subsystem phase. Embedders use this to construct tenant-scoped
+// credential resolvers via the sdk/go/secret subpackage's
+// NewTenantScopedCredentialRetrieve so that
+// credential:// lookups route to the correct per-tenant barrier store.
+// Returns nil when cfg.Seal.Enabled is false (no seal subsystem) or when
+// the node is in the sealed state before Unseal has been called.
+func (n *Node) BarrierRegistry() *seal.BarrierRegistry { return n.barrierRegistry }
 
 // IsSealed reports whether the node is in the sealed state, meaning the data
 // plane has not yet been started because the seal barrier requires operator
@@ -662,6 +691,12 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		_ = localHost.Close()
 		_ = n.stg.Close()
 		n.stg = nil
+		// Close any per-tenant IsolationVolume Hosts that were assembled by
+		// BuildTenantInfra before wireClientAndServer was attempted.
+		if n.tenantHosts != nil {
+			_ = n.tenantHosts.CloseAll()
+			n.tenantHosts = nil
+		}
 		return err
 	}
 	return nil
@@ -832,13 +867,48 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		n.tenantHosts = ti.Hosts
 		n.raftBackend = ti.Raft
 		if ti.Reconciler != nil {
-			go ti.Reconciler.Run(ctx)
+			// Use a node-lifetime context so the reconciler keeps running after
+			// the unseal/boot request ctx is cancelled. The background context is
+			// cancelled by bgCancel in Node.Close() (and in the wireClientAndServer
+			// error branch below).
+			n.bgCtx, n.bgCancel = context.WithCancel(context.Background())
+			go ti.Reconciler.Run(n.bgCtx)
 		}
 	}
 
 	if err := n.wireClientAndServer(ctx, svcNode, pending.cfg, pending.serverOpts); err != nil {
-		_ = svcNode.Stop(context.Background())
-		_ = host.Close()
+		// Stop the reconciler goroutine before tearing down the resources it
+		// accesses so it does not race against CloseAll/Close below.
+		if n.bgCancel != nil {
+			n.bgCancel()
+			n.bgCancel = nil
+		}
+		_ = n.svcNode.Stop(context.Background())
+		n.svcNode = nil
+		// Stop IsolationRaft shards BEFORE closing the shared host — mirrors
+		// the ordering in Node.Close (raftBackend.CloseAll before host.Close).
+		// Inverting this order would close the host while Pebble shard locks are
+		// still held, risking data corruption or a deadlock on host shutdown.
+		if n.raftBackend != nil {
+			_ = n.raftBackend.CloseAll()
+			n.raftBackend = nil
+		}
+		if n.host != nil {
+			_ = n.host.Close()
+			n.host = nil
+		}
+		// Close per-tenant IsolationVolume Hosts after the main host — mirrors
+		// Node.Close ordering (tenantHosts.CloseAll after host.Close).
+		if n.tenantHosts != nil {
+			_ = n.tenantHosts.CloseAll()
+			n.tenantHosts = nil
+		}
+		// Close the database manager last — mirrors Node.Close ordering
+		// (dbManager.Close after all raft shards, host, and tenantHosts).
+		if n.dbManager != nil {
+			_ = n.dbManager.Close()
+			n.dbManager = nil
+		}
 		return err
 	}
 	return nil
@@ -880,6 +950,14 @@ func (n *Node) Close() error {
 		if err != nil && firstErr == nil {
 			firstErr = err
 		}
+	}
+
+	// Cancel the node-lifetime background context before stopping any service
+	// so long-running goroutines (TenantShardReconciler) exit promptly rather
+	// than blocking on a placement watch or poll timer during teardown.
+	if n.bgCancel != nil {
+		n.bgCancel()
+		n.bgCancel = nil
 	}
 
 	if n.client != nil {

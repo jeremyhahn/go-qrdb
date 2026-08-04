@@ -159,7 +159,7 @@ func (t *Transport) ListFactors(ctx context.Context, req *transport.ListFactorsR
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return nil, &transport.RequestError{
 			Method: "ListFactors",
-			Err:    fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body)),
+			Err:    &transport.UnexpectedStatusError{StatusCode: resp.StatusCode, Body: string(body)},
 		}
 	}
 

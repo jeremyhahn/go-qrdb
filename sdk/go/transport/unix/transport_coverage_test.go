@@ -422,66 +422,6 @@ func TestUnixProtoToMVCCKeyValue_Valid(t *testing.T) {
 }
 
 // ===========================================================================
-// transport_tenant.go unixProtoToTenantInfo
-// ===========================================================================
-
-func TestUnixUnixProtoToTenantInfo_Nil(t *testing.T) {
-	got := unixProtoToTenantInfo(nil)
-	if got.ID != "" || got.Name != "" {
-		t.Errorf("expected zero TenantInfo, got %+v", got)
-	}
-}
-
-func TestUnixUnixProtoToTenantInfo_FullPayload(t *testing.T) {
-	in := &pb.TenantResponse{
-		Id:            "t1",
-		Name:          "acme",
-		IsolationType: "strict",
-		Quotas: &pb.TenantQuotas{
-			MaxDatabases:    10,
-			MaxRaftGroups:   5,
-			MaxCollections:  20,
-			MaxKeys:         1000,
-			MaxStorageBytes: 1 << 30,
-			MaxUsers:        50,
-			MaxRoles:        10,
-			MaxCertificates: 100,
-			MaxBackups:      30,
-			MaxVectorDims:   1024,
-			MaxTsMetrics:    500,
-		},
-		CreatedAt: "2026-01-01T00:00:00Z",
-		UpdatedAt: "2026-01-02T00:00:00Z",
-	}
-	out := unixProtoToTenantInfo(in)
-	if out.ID != "t1" || out.Name != "acme" {
-		t.Errorf("identity mismatch: %+v", out)
-	}
-	if out.IsolationType != transport.TenantIsolationType("strict") {
-		t.Errorf("isolation = %q, want strict", out.IsolationType)
-	}
-	if out.Quotas == nil || out.Quotas.MaxDatabases != 10 || out.Quotas.MaxStorageBytes != 1<<30 {
-		t.Errorf("quotas mismatch: %+v", out.Quotas)
-	}
-	if out.CreatedAt.IsZero() || out.UpdatedAt.IsZero() {
-		t.Errorf("expected parsed timestamps, got %+v / %+v", out.CreatedAt, out.UpdatedAt)
-	}
-}
-
-func TestUnixUnixProtoToTenantInfo_BadTimestamps(t *testing.T) {
-	in := &pb.TenantResponse{
-		Id:        "t1",
-		Name:      "acme",
-		CreatedAt: "not-a-timestamp",
-		UpdatedAt: "also-bad",
-	}
-	out := unixProtoToTenantInfo(in)
-	if !out.CreatedAt.IsZero() || !out.UpdatedAt.IsZero() {
-		t.Errorf("expected zero times for bad input, got %+v / %+v", out.CreatedAt, out.UpdatedAt)
-	}
-}
-
-// ===========================================================================
 // transport_transaction.go conversion helpers
 // ===========================================================================
 

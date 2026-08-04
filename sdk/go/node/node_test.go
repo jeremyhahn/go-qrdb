@@ -519,6 +519,57 @@ func TestIsSealed_NilBarrier(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// BarrierRegistry
+// ---------------------------------------------------------------------------
+
+// TestBarrierRegistry_NilWhenSealDisabled verifies that a node built without
+// cfg.Seal.Enabled exposes a nil BarrierRegistry (no seal subsystem was built).
+func TestBarrierRegistry_NilWhenSealDisabled(t *testing.T) {
+	cfg := qrdbconfig.DefaultConfig()
+	cfg.Raft.DataDir = t.TempDir()
+	cfg.Databases = []qrdbconfig.DatabaseConfig{
+		{Name: "default", Backend: string(database.BackendMemory)},
+	}
+	cfg.Protocols.REST = false
+	cfg.Protocols.GRPC = false
+	cfg.Protocols.QUIC = false
+	cfg.Protocols.Unix = false
+	cfg.Protocols.MCP = false
+
+	n, err := NewStandaloneNode(context.Background(), cfg, nil)
+	require.NoError(t, err)
+	require.NotNil(t, n)
+
+	assert.Nil(t, n.BarrierRegistry(),
+		"BarrierRegistry must be nil when seal is disabled")
+
+	require.NoError(t, n.Close())
+}
+
+// TestBarrierRegistry_NonNilAfterSealEnabled verifies that a seal-enabled node
+// exposes a non-nil BarrierRegistry once fully booted. The registry is built
+// during the seal subsystem phase (before BuildServices) and is the object
+// embedders use to construct tenant-scoped credential resolvers via the
+// sdk/go/secret subpackage's NewTenantScopedCredentialRetrieve.
+func TestBarrierRegistry_NonNilAfterSealEnabled(t *testing.T) {
+	dataDir := t.TempDir()
+	cfg := sealedStandaloneConfig(t, dataDir)
+
+	n, err := NewStandaloneNode(
+		context.Background(), cfg, nil,
+		WithSealPassphrase([]byte("registry-test-secret")),
+	)
+	require.NoError(t, err)
+	require.NotNil(t, n)
+	require.False(t, n.IsSealed(), "node must be unsealed after WithSealPassphrase")
+
+	assert.NotNil(t, n.BarrierRegistry(),
+		"BarrierRegistry must be non-nil for a seal-enabled, unsealed node")
+
+	require.NoError(t, n.Close())
+}
+
+// ---------------------------------------------------------------------------
 // attemptAutoUnseal
 // ---------------------------------------------------------------------------
 

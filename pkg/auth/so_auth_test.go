@@ -112,6 +112,108 @@ func (n *soNoopAudit) Query(_ context.Context, _ audit.Filter) (*audit.Page, err
 }
 func (n *soNoopAudit) Close() error { return nil }
 
+// recordingAudit captures emitted audit events for assertions.
+type recordingAudit struct {
+	mu     sync.Mutex
+	events []audit.AuditEvent
+}
+
+func (r *recordingAudit) Emit(_ context.Context, e audit.AuditEvent) {
+	r.mu.Lock()
+	r.events = append(r.events, e)
+	r.mu.Unlock()
+}
+func (r *recordingAudit) Query(_ context.Context, _ audit.Filter) (*audit.Page, error) {
+	return &audit.Page{}, nil
+}
+func (r *recordingAudit) Close() error { return nil }
+
+// outcomes returns the recorded outcomes for events with the given action.
+func (r *recordingAudit) outcomes(action string) []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []string
+	for _, e := range r.events {
+		if e.Action == action {
+			out = append(out, e.Outcome)
+		}
+	}
+	return out
+}
+
+// failingPutKV wraps soMemKV and fails Put once armed, to exercise store-failure
+// paths. All other operations delegate to the embedded in-memory store.
+type failingPutKV struct {
+	*soMemKV
+	failPut bool
+}
+
+func (f *failingPutKV) Put(ctx context.Context, k string, v []byte) error {
+	if f.failPut {
+		return errors.New("simulated store put failure")
+	}
+	return f.soMemKV.Put(ctx, k, v)
+}
+
+func hasOutcome(outcomes []string, want string) bool {
+	for _, o := range outcomes {
+		if o == want {
+			return true
+		}
+	}
+	return false
+}
+
+// TestRotateSOPIN_StoreFailureEmitsAudit proves a failed commit during rotation
+// emits a :store failure audit event (regression: the rotate failure paths
+// previously emitted nothing, unlike SetSOPIN).
+func TestRotateSOPIN_StoreFailureEmitsAudit(t *testing.T) {
+	ctx := context.Background()
+	store := &failingPutKV{soMemKV: newSOMemKV()}
+	rec := &recordingAudit{}
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
+	a, err := auth.NewSOAuthenticator(store, rec, logger)
+	if err != nil {
+		t.Fatalf("NewSOAuthenticator: %v", err)
+	}
+
+	if err := a.SetSOPIN(ctx, "tenant-1", []byte("correct-horse-battery-staple")); err != nil {
+		t.Fatalf("SetSOPIN: %v", err)
+	}
+
+	store.failPut = true
+	if err := a.RotateSOPIN(ctx, "tenant-1", []byte("correct-horse-battery-staple"), []byte("new-pin-value-abcdef")); err == nil {
+		t.Fatal("RotateSOPIN should fail when the store Put fails")
+	}
+
+	if !hasOutcome(rec.outcomes("rotate"), audit.OutcomeFailure+":store") {
+		t.Fatalf("expected a rotate :store failure audit event, got outcomes %v", rec.outcomes("rotate"))
+	}
+}
+
+// TestRotateSOPIN_SuccessEmitsAudit proves the success path still emits a
+// success audit event after the failure-path additions.
+func TestRotateSOPIN_SuccessEmitsAudit(t *testing.T) {
+	ctx := context.Background()
+	store := newSOMemKV()
+	rec := &recordingAudit{}
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
+	a, err := auth.NewSOAuthenticator(store, rec, logger)
+	if err != nil {
+		t.Fatalf("NewSOAuthenticator: %v", err)
+	}
+
+	if err := a.SetSOPIN(ctx, "tenant-1", []byte("correct-horse-battery-staple")); err != nil {
+		t.Fatalf("SetSOPIN: %v", err)
+	}
+	if err := a.RotateSOPIN(ctx, "tenant-1", []byte("correct-horse-battery-staple"), []byte("new-pin-value-abcdef")); err != nil {
+		t.Fatalf("RotateSOPIN: %v", err)
+	}
+	if !hasOutcome(rec.outcomes("rotate"), audit.OutcomeSuccess) {
+		t.Fatalf("expected a rotate success audit event, got outcomes %v", rec.outcomes("rotate"))
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Helper
 // ---------------------------------------------------------------------------

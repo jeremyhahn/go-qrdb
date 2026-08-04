@@ -513,7 +513,10 @@ var restPermissions = map[string]permission.Permission{
 	// Batch import.
 	"POST /batch/import": permission.BatchExecute,
 
-	// SQL query (read-through over the KV range surface).
+	// SQL query (read-through over the KV range surface). /sql/query is
+	// the canonical data-plane mount (TypeScript SDK); /v1/sql/query is
+	// the mount used by the Go database/sql driver.
+	"POST /sql/query":    permission.KVRange,
 	"POST /v1/sql/query": permission.KVRange,
 
 	// Embedding.
@@ -587,15 +590,15 @@ var restPathParamPermissions = map[string]permission.Permission{
 	// (defense in depth for cross-tenant {id} mismatch). Without these entries the
 	// routes are default-denied and the per-tenant barrier API is unreachable
 	// whenever auth is enabled.
-	"GET /v1/tenants/{id}/barrier/status":                 permission.TenantBarrierStatus,
-	"GET /v1/tenants/{id}/barrier/officers":               permission.TenantBarrierOfficerList,
-	"GET /v1/tenants/{id}/barrier/officers/claim-status":  permission.TenantBarrierOfficerList,
-	"POST /v1/tenants/{id}/barrier/init":                  permission.TenantBarrierInit,
-	"POST /v1/tenants/{id}/barrier/unseal":                permission.TenantBarrierUnseal,
-	"POST /v1/tenants/{id}/barrier/unseal-share":          permission.TenantBarrierUnseal,
-	"POST /v1/tenants/{id}/barrier/seal":                  permission.TenantBarrierSeal,
-	"POST /v1/tenants/{id}/barrier/seal-vote":             permission.TenantBarrierSealVote,
-	"POST /v1/tenants/{id}/barrier/officers":              permission.TenantBarrierOfficerRegister,
+	"GET /v1/tenants/{id}/barrier/status":                permission.TenantBarrierStatus,
+	"GET /v1/tenants/{id}/barrier/officers":              permission.TenantBarrierOfficerList,
+	"GET /v1/tenants/{id}/barrier/officers/claim-status": permission.TenantBarrierOfficerList,
+	"POST /v1/tenants/{id}/barrier/init":                 permission.TenantBarrierInit,
+	"POST /v1/tenants/{id}/barrier/unseal":               permission.TenantBarrierUnseal,
+	"POST /v1/tenants/{id}/barrier/unseal-share":         permission.TenantBarrierUnseal,
+	"POST /v1/tenants/{id}/barrier/seal":                 permission.TenantBarrierSeal,
+	"POST /v1/tenants/{id}/barrier/seal-vote":            permission.TenantBarrierSealVote,
+	"POST /v1/tenants/{id}/barrier/officers":             permission.TenantBarrierOfficerRegister,
 	// Officer share-claim routes are identity-gated: the registered officer's
 	// mTLS cert is the credential (handler enforces thumbprint + nonce signature).
 	"POST /v1/tenants/{id}/barrier/officers/{username}/claim/begin":    permission.IdentityGated,

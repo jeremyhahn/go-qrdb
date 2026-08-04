@@ -17,13 +17,20 @@ package database
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
+	"time"
 
 	"github.com/cockroachdb/pebble/v2"
 	"github.com/cockroachdb/pebble/v2/vfs"
 
+	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
+	"github.com/jeremyhahn/go-quicraft/pkg/logdb"
 	"github.com/jeremyhahn/go-quicraft/pkg/logdb/waldb"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
@@ -288,21 +295,237 @@ func copyFileRaw(srcPath, dstPath string) error {
 	return out.Close()
 }
 
+// SnapshotDataFile is the fixed name of a snapshot's data file inside the
+// snapshot directory recorded in go-quicraft LogDB metadata. Callers building a
+// snapDataDest path join it onto the destination snapshot directory.
+const SnapshotDataFile = "snapshot.dat"
+
+// snapshotKeyedSuffix is appended to a snapshot data file's path to stage its
+// re-encrypted (destination-barrier) copy beside the original until the
+// migration commits. It never collides with go-quicraft's own snapshot files.
+const snapshotKeyedSuffix = ".migrate-keyed"
+
+// StagedSnapshot is a snapshot data file that ReencryptWALStore re-encrypted
+// under the destination barrier into a sibling staging file, awaiting the
+// migration commit. CommitStagedSnapshots renames KeyedPath over FinalPath once
+// the WAL/SM swaps are durable; RollbackStagedSnapshots discards KeyedPath on
+// failure, leaving the live snapshot untouched. It aliases the seal journal's
+// record type so a migrator can checkpoint the staged set directly into its
+// MigrationJournal for crash recovery.
+type StagedSnapshot = seal.StagedSnapshot
+
+// SnapshotStageError is returned when committing a re-encrypted snapshot data
+// file into place fails.
+type SnapshotStageError struct {
+	Op   string
+	Path string
+	Err  error
+}
+
+// Error implements the error interface.
+func (e *SnapshotStageError) Error() string {
+	return "database: snapshot stage " + e.Op + " for " + e.Path + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *SnapshotStageError) Unwrap() error { return e.Err }
+
+// SnapshotKeyedSuffix is the suffix a caller appends to stage a re-encrypted
+// snapshot data file beside the original when the snapshot directory is NOT part
+// of a directory that the migration swaps (the IsolationRaft case, whose
+// snapshots live in the shared host tree). It is committed by
+// CommitStagedSnapshots. Callers whose snapshot directory rides a directory swap
+// (IsolationVolume) instead map the destination into the keyed staging dir.
+const SnapshotKeyedSuffix = snapshotKeyedSuffix
+
 // ReencryptWALStore re-encrypts a Raft WAL/LogDB at srcDir — read under the
 // source barrier — into a freshly-opened LogDB at dstDir written under the
 // destination barrier, returning the number of Raft nodes copied. It is the
 // WAL counterpart to ReencryptPebbleStore, used for barriers that back a Raft
 // host (per-tenant IsolationVolume/IsolationRaft) whose replication log is
 // encrypted by go-quicraft (not encfs). A nil barrier denotes a plaintext side.
-func ReencryptWALStore(srcDir string, src *seal.StorageBarrier, dstDir string, dst *seal.StorageBarrier) (int, error) {
+//
+// Each node's snapshot DATA FILE lives outside the WAL — in the host snapshot
+// directory recorded in the LogDB metadata, framed under the host barrier — so
+// it must be re-keyed alongside the WAL. For every snapshot that has a data
+// file, ReencryptWALStore re-encrypts it from src to dst via
+// quicraft.ReencryptSnapshotFile, writing the keyed copy to the path returned by
+// snapDataDest(snapDir), and records it in the returned []StagedSnapshot. The
+// caller chooses snapDataDest by how its migration commits:
+//
+//   - IsolationVolume: the snapshot directory sits under the SM dir that the
+//     migration swaps, so snapDataDest maps it into the keyed staging dir
+//     (smDir.keyed). The directory swap then makes the keyed snapshot live and a
+//     rolled-back migration discards it with the staging dir; no per-snapshot
+//     commit is needed and the returned slice can be ignored.
+//   - IsolationRaft: the snapshot lives in the shared host tree the migration
+//     does not swap, so snapDataDest returns a sibling staging file
+//     (snapDir/snapshot.dat + SnapshotKeyedSuffix). The caller renames it into
+//     place with CommitStagedSnapshots once the WAL/SM swaps are durable, or
+//     discards it with RollbackStagedSnapshots on failure.
+//
+// A metadata-only snapshot (e.g. an on-disk state machine whose state is the
+// separately-recoded store, fileSize 0) has no data file and is recorded with
+// the destination barrier's current epoch only.
+// ErrEmptySnapshotData is returned when a snapshot's metadata points at a data
+// file that exists but is unexpectedly zero-length. A genuine metadata-only
+// snapshot has NO data file at all; a present-but-empty file indicates a
+// corrupt or interrupted snapshot write, so re-encryption fails closed rather
+// than silently recording the destination epoch over un-recoded data.
+var ErrEmptySnapshotData = errors.New("database: snapshot data file is empty")
+
+// ErrSnapshotDataNotRegular is returned when a snapshot's data-file path exists
+// but is not a regular file (e.g. a directory). A framed snapshot.dat is always
+// a regular file, so anything else is treated as a malformed snapshot.
+var ErrSnapshotDataNotRegular = errors.New("database: snapshot data path is not a regular file")
+
+// snapshotDataAction classifies a snapshot's data-file path for re-encryption.
+// It distinguishes a genuine metadata-only snapshot (an on-disk state machine
+// whose state is the separately-recoded store, with NO data file) — which is
+// correctly skipped — from an unreadable or malformed data file, which must
+// abort the migration fail-closed. Returning (false, nil) skips re-encryption;
+// (true, nil) requests it; a non-nil error fails the migration.
+//
+// The old behavior treated ANY stat error or a zero-length file as
+// "metadata-only" and skipped re-encryption, which silently recorded the
+// destination epoch over a source-encrypted (or missing) snapshot — leaving
+// recovery pointing at data the destination barrier cannot decrypt.
+func snapshotDataAction(srcDat string) (reencrypt bool, err error) {
+	fi, statErr := os.Stat(srcDat)
+	if statErr != nil {
+		if os.IsNotExist(statErr) {
+			// Genuine metadata-only snapshot: no separate framed data file.
+			return false, nil
+		}
+		// Any other stat failure (permission, I/O) is indeterminate; do not
+		// silently skip re-encryption.
+		return false, &SnapshotStageError{Op: "stat", Path: srcDat, Err: statErr}
+	}
+	if fi.IsDir() {
+		return false, &SnapshotStageError{Op: "stat", Path: srcDat, Err: ErrSnapshotDataNotRegular}
+	}
+	if fi.Size() == 0 {
+		return false, &SnapshotStageError{Op: "stat", Path: srcDat, Err: ErrEmptySnapshotData}
+	}
+	return true, nil
+}
+
+// keyLocator returns a non-reversible locator for a KV key suitable for logs
+// and error messages: a short SHA-256 prefix plus the key length. Raw KV keys
+// can be tenant-sensitive, so they are never embedded verbatim in errors that
+// may be persisted or logged.
+func keyLocator(k []byte) string {
+	sum := sha256.Sum256(k)
+	return hex.EncodeToString(sum[:8]) + " (len " + strconv.Itoa(len(k)) + ")"
+}
+
+func ReencryptWALStore(srcDir string, src *seal.StorageBarrier, dstDir string, dst *seal.StorageBarrier, snapDataDest func(snapDir string) string) (int, []StagedSnapshot, error) {
 	var srcWAL, dstWAL waldb.WALBarrier
+	var srcQ, dstQ quicraft.Barrier
 	if src != nil {
-		srcWAL = src.EpochBarrier()
+		eb := src.EpochBarrier()
+		srcWAL, srcQ = eb, eb
 	}
 	if dst != nil {
-		dstWAL = dst.EpochBarrier()
+		eb := dst.EpochBarrier()
+		dstWAL, dstQ = eb, eb
 	}
-	return waldb.Reencrypt(srcDir, srcWAL, dstDir, dstWAL)
+
+	var staged []StagedSnapshot
+	snapFn := func(_, _ uint64, snap logdb.Snapshot) (uint64, error) {
+		// The migrated metadata records the destination barrier's current epoch
+		// (0 for a plaintext destination); for a data snapshot this is replaced
+		// by the actual re-encryption epoch below.
+		var dstEpoch uint64
+		if dstQ != nil {
+			dstEpoch = dstQ.CurrentEpoch()
+		}
+		if snap.Filepath == "" {
+			return dstEpoch, nil
+		}
+		srcDat := filepath.Join(snap.Filepath, SnapshotDataFile)
+		reenc, aerr := snapshotDataAction(srcDat)
+		if aerr != nil {
+			return 0, aerr
+		}
+		if !reenc {
+			// Genuine metadata-only snapshot: no separate framed data file to re-key.
+			return dstEpoch, nil
+		}
+		dstDat := snapDataDest(snap.Filepath)
+		_ = os.Remove(dstDat) // clear stale staging from an interrupted run
+		epoch, rerr := quicraft.ReencryptSnapshotFile(srcDat, dstDat, srcQ, dstQ)
+		if rerr != nil {
+			return 0, rerr
+		}
+		staged = append(staged, StagedSnapshot{FinalPath: srcDat, KeyedPath: dstDat})
+		return epoch, nil
+	}
+
+	n, err := waldb.Reencrypt(srcDir, srcWAL, dstDir, dstWAL, snapFn)
+	if err != nil {
+		RollbackStagedSnapshots(staged)
+		return n, nil, err
+	}
+	return n, staged, nil
+}
+
+// CommitStagedSnapshots atomically renames each staged keyed snapshot over its
+// live counterpart so the post-migration host reads the destination-barrier
+// copy. It is idempotent for crash recovery: a missing keyed file (already
+// committed) is skipped.
+func CommitStagedSnapshots(staged []StagedSnapshot) error {
+	for _, s := range staged {
+		if _, err := os.Stat(s.KeyedPath); err != nil {
+			if os.IsNotExist(err) {
+				continue // already committed
+			}
+			return &SnapshotStageError{Op: "stat", Path: s.KeyedPath, Err: err}
+		}
+		if err := os.Rename(s.KeyedPath, s.FinalPath); err != nil {
+			return &SnapshotStageError{Op: "commit", Path: s.FinalPath, Err: err}
+		}
+	}
+	return nil
+}
+
+// CommitStagedSnapshotsWithRetry commits staged snapshots past the migration
+// point of no return, retrying transient filesystem errors with bounded,
+// context-aware backoff. After the SM/WAL directory swaps are durable the live
+// snapshots MUST be advanced to their keyed copies — otherwise the
+// post-migration host reads source-encrypted snapshot data under the
+// destination barrier. Aborting on a transient stat/rename error would leave
+// exactly that inconsistency, so this rolls forward instead of failing.
+// CommitStagedSnapshots is idempotent (an already-committed sibling is
+// skipped), so every retry is safe. The final attempt's error is returned if
+// all attempts fail, leaving the staged siblings on disk for recovery.
+func CommitStagedSnapshotsWithRetry(ctx context.Context, staged []StagedSnapshot, attempts int, backoff time.Duration) error {
+	if attempts < 1 {
+		attempts = 1
+	}
+	var err error
+	for attempt := 0; attempt < attempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return &SnapshotStageError{Op: "commit-retry", Path: "", Err: ctx.Err()}
+			case <-time.After(backoff):
+			}
+			backoff *= 2
+		}
+		if err = CommitStagedSnapshots(staged); err == nil {
+			return nil
+		}
+	}
+	return err
+}
+
+// RollbackStagedSnapshots removes staged keyed snapshots, leaving the live
+// snapshot data files untouched. Safe to call multiple times and on nil.
+func RollbackStagedSnapshots(staged []StagedSnapshot) {
+	for _, s := range staged {
+		_ = os.Remove(s.KeyedPath)
+	}
 }
 
 // SwapStoreDir atomically replaces dir with dir+keyedSuffix, moving the
@@ -366,10 +589,10 @@ func VerifyReencryptedStore(ctx context.Context, srcDir string, srcEnc *atrest.E
 		default:
 		}
 		if !bytes.Equal(sIt.Key(), dIt.Key()) {
-			return &ReencryptVerifyMismatchError{Reason: "key mismatch at " + string(sIt.Key()) + " vs " + string(dIt.Key())}
+			return &ReencryptVerifyMismatchError{Reason: "key mismatch at " + keyLocator(sIt.Key()) + " vs " + keyLocator(dIt.Key())}
 		}
 		if !bytes.Equal(sIt.Value(), dIt.Value()) {
-			return &ReencryptVerifyMismatchError{Reason: "value mismatch for key " + string(sIt.Key())}
+			return &ReencryptVerifyMismatchError{Reason: "value mismatch for key " + keyLocator(sIt.Key())}
 		}
 		sValid = sIt.Next()
 		dValid = dIt.Next()

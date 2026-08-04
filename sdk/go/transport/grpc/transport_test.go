@@ -1260,7 +1260,7 @@ func TestBuildTLSConfig_WithCertAndKey(t *testing.T) {
 }
 
 // TestBuildTLSConfig_NonexistentCAFile verifies that a missing CA file
-// produces a TLSError wrapping a caFileReadError.
+// produces a TLSError wrapping a transport.CAFileReadError.
 func TestBuildTLSConfig_NonexistentCAFile(t *testing.T) {
 	tr := &Transport{
 		config: &transport.Config{
@@ -1280,7 +1280,7 @@ func TestBuildTLSConfig_NonexistentCAFile(t *testing.T) {
 }
 
 // TestBuildTLSConfig_InvalidCAPEM verifies that a CA file containing invalid
-// PEM data produces a TLSError wrapping a caParseError.
+// PEM data produces a TLSError wrapping a transport.CAParseError.
 func TestBuildTLSConfig_InvalidCAPEM(t *testing.T) {
 	path := writeTempFile(t, "bad-ca-*.pem", []byte("this is not valid PEM data"))
 	defer os.Remove(path)
@@ -1303,7 +1303,7 @@ func TestBuildTLSConfig_InvalidCAPEM(t *testing.T) {
 }
 
 // TestBuildTLSConfig_InvalidCertKeyPair verifies that mismatched cert/key files
-// produce a TLSError wrapping a certLoadError.
+// produce a TLSError wrapping a transport.CertificateLoadError.
 func TestBuildTLSConfig_InvalidCertKeyPair(t *testing.T) {
 	bundle := generateTestCerts(t)
 	defer bundle.cleanup()
@@ -1467,35 +1467,6 @@ func TestDialError_Format(t *testing.T) {
 	err := &dialError{Err: inner}
 	if !strings.Contains(err.Error(), "dial failed") {
 		t.Fatalf("expected 'dial failed' in message, got %q", err.Error())
-	}
-	if err.Unwrap() != inner {
-		t.Fatal("Unwrap did not return inner error")
-	}
-}
-
-func TestCaFileReadError_Format(t *testing.T) {
-	inner := errors.New("no such file")
-	err := &caFileReadError{Path: "/tmp/ca.pem", Err: inner}
-	if !strings.Contains(err.Error(), "/tmp/ca.pem") {
-		t.Fatalf("expected path in message, got %q", err.Error())
-	}
-	if err.Unwrap() != inner {
-		t.Fatal("Unwrap did not return inner error")
-	}
-}
-
-func TestCaParseError_Format(t *testing.T) {
-	err := &caParseError{Path: "/tmp/ca.pem"}
-	if !strings.Contains(err.Error(), "/tmp/ca.pem") {
-		t.Fatalf("expected path in message, got %q", err.Error())
-	}
-}
-
-func TestCertLoadError_Format(t *testing.T) {
-	inner := errors.New("bad cert")
-	err := &certLoadError{Err: inner}
-	if !strings.Contains(err.Error(), "bad cert") {
-		t.Fatalf("expected 'bad cert' in message, got %q", err.Error())
 	}
 	if err.Unwrap() != inner {
 		t.Fatal("Unwrap did not return inner error")

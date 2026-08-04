@@ -72,7 +72,7 @@ func (r *Retriever) Retrieve(ctx context.Context, req *RetrieveRequest) (*Retrie
 		return nil, &EmbeddingError{Cause: err}
 	}
 	if len(embedResp.Embeddings) == 0 {
-		return nil, &EmbeddingError{Cause: fmt.Errorf("empty embeddings returned")}
+		return nil, &EmbeddingError{Cause: &EmptyEmbeddingsError{}}
 	}
 
 	// Build optional metadata filter.

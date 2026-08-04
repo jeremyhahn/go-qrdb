@@ -19,7 +19,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"io"
 	"math"
 	"net/http"
@@ -195,8 +195,10 @@ func (v *VoyageProvider) Embed(ctx context.Context, texts []string, model string
 		}
 		lastErr = err
 
-		// Do not retry on permanent client errors.
-		if httpErr, ok := err.(*HTTPError); ok {
+		// Do not retry on permanent client errors. errors.As (not a bare type
+		// assertion) so the classification still holds if the error is wrapped.
+		var httpErr *HTTPError
+		if errors.As(err, &httpErr) {
 			code := httpErr.StatusCode
 			if code >= 400 && code < 500 && code != http.StatusTooManyRequests {
 				return nil, err
@@ -248,14 +250,14 @@ func (v *VoyageProvider) doOnce(ctx context.Context, body []byte, texts []string
 	embeddings := make([][]float32, len(texts))
 	for _, d := range voyageResp.Data {
 		if d.Index < 0 || d.Index >= len(texts) {
-			return nil, fmt.Errorf("embedding: voyage returned invalid index %d for %d texts", d.Index, len(texts))
+			return nil, &VoyageInvalidIndexError{Index: d.Index, TextCount: len(texts)}
 		}
 		embeddings[d.Index] = d.Embedding
 	}
 
 	for i, emb := range embeddings {
 		if emb == nil {
-			return nil, fmt.Errorf("embedding: voyage did not return embedding at index %d", i)
+			return nil, &VoyageMissingEmbeddingError{Index: i}
 		}
 	}
 

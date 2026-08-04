@@ -49,3 +49,22 @@ var (
 	// with a negative grace period.
 	ErrInvalidGracePeriod = errors.New("credentials: grace period must not be negative")
 )
+
+// OperationError wraps a credential store or codec operation failure together
+// with its underlying cause. It preserves errors.Is/errors.As against the
+// cause, replacing the inline "credentials: <op>: %w" error-wrapping idiom.
+type OperationError struct {
+	// Op names the operation that failed (e.g. "list barrier",
+	// "write current", "decode meta").
+	Op string
+	// Cause is the underlying error.
+	Cause error
+}
+
+// Error returns "credentials: <op>: <cause>".
+func (e *OperationError) Error() string {
+	return "credentials: " + e.Op + ": " + e.Cause.Error()
+}
+
+// Unwrap returns the underlying cause for errors.Is and errors.As support.
+func (e *OperationError) Unwrap() error { return e.Cause }

@@ -275,20 +275,18 @@ func (e *EmbeddingEmptyTextsError) Error() string {
 	return "rest: embedding request must contain at least one text"
 }
 
-// SQLQueryError is returned when a SQL query execution fails.
-type SQLQueryError struct {
-	Query string
-	Err   error
+// DatabaseScopeConflictError is returned when a request names one database
+// in its body and a different one in the X-QRDB-Database scope header.
+// Maps to HTTP 400.
+type DatabaseScopeConflictError struct {
+	Body   string
+	Header string
 }
 
 // Error returns a human-readable description.
-func (e *SQLQueryError) Error() string {
-	return "rest: sql query failed: " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *SQLQueryError) Unwrap() error {
-	return e.Err
+func (e *DatabaseScopeConflictError) Error() string {
+	return "rest: database scope conflict: body names " + e.Body +
+		" but " + HeaderDatabase + " header names " + e.Header
 }
 
 // TenantNotFoundError is returned when the tenant ID from the authenticated

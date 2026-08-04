@@ -393,6 +393,117 @@ func TestInitialize_MofNSuccess(t *testing.T) {
 	assert.Equal(t, StateEnrolling, svc.State())
 }
 
+// TestInitialize_OptsOverridesPersistIntoConfig proves that non-empty
+// InitializeOptions fields (beyond SOPin/UserPin) override the corresponding
+// CeremonyConfig fields and that the effective values are persisted back
+// into s.config, exactly like the existing SOPin/UserPin precedence. This is
+// the regression guard for the bug where CredentialSealStrategy, Threshold,
+// Officers, Hostname, and SANs supplied on the Initialize call were silently
+// dropped and only the construction-time config was ever honored.
+func TestInitialize_OptsOverridesPersistIntoConfig(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.CredentialSealStrategy = "config-strategy"
+	svc, err := NewCeremonyService(cfg, testBarrier(t), newTestCredentialService(), testLogger())
+	require.NoError(t, err)
+
+	ca := newMockCA(t)
+	_, err = svc.Initialize(context.Background(), ca, &InitializeOptions{
+		Hostname:               "override.example",
+		SANs:                   []string{"alt1", "alt2"},
+		CredentialSealStrategy: "override-strategy",
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "override.example", svc.config.Hostname)
+	assert.Equal(t, []string{"alt1", "alt2"}, svc.config.SANs)
+	assert.Equal(t, "override-strategy", svc.config.CredentialSealStrategy)
+}
+
+// TestInitialize_OptsEmptyFieldsFallBackToConfig proves that empty/zero
+// InitializeOptions fields leave the construction-time CeremonyConfig values
+// unchanged (the fallback half of the precedence rule).
+func TestInitialize_OptsEmptyFieldsFallBackToConfig(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.CredentialSealStrategy = "config-strategy"
+	svc, err := NewCeremonyService(cfg, testBarrier(t), newTestCredentialService(), testLogger())
+	require.NoError(t, err)
+
+	ca := newMockCA(t)
+	_, err = svc.Initialize(context.Background(), ca, &InitializeOptions{})
+	require.NoError(t, err)
+
+	assert.Equal(t, "localhost", svc.config.Hostname)
+	assert.Equal(t, "config-strategy", svc.config.CredentialSealStrategy)
+}
+
+// TestInitialize_OptsThresholdAndOfficersOverrideConfig proves that a
+// per-request Threshold/Officers pair drives the M-of-N enrollment path even
+// when the construction-time config is single-admin.
+func TestInitialize_OptsThresholdAndOfficersOverrideConfig(t *testing.T) {
+	cfg := defaultConfig() // single-admin: no Threshold/Officers configured
+	svc, err := NewCeremonyService(cfg, testBarrier(t), newTestCredentialService(), testLogger())
+	require.NoError(t, err)
+
+	officers := make([]OfficerConfig, 3)
+	for i := 0; i < 3; i++ {
+		username := fmt.Sprintf("opt-officer-%d", i)
+		csrPEM, _ := generateCSRPEM(t, username)
+		officers[i] = OfficerConfig{Username: username, CSRPEM: csrPEM}
+	}
+
+	ca := newMockCA(t)
+	result, err := svc.Initialize(context.Background(), ca, &InitializeOptions{
+		Threshold: 2,
+		Officers:  officers,
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, StateEnrolling, result.State)
+	assert.Equal(t, 3, result.ShareCount)
+	assert.Equal(t, StateEnrolling, svc.State())
+}
+
+// TestInitialize_OptsThresholdWithoutOfficers_FailsClosed proves that a
+// per-request Threshold >= 2 with no resolved Officers (neither supplied on
+// the request nor configured) fails closed with the typed ErrNoOfficers
+// rather than silently falling back to the single-admin path — the fix for
+// the bug where `qrdb init --barrier-strategy shamir --shares N --threshold
+// M` used to silently ignore the request and report ShareCount: 0.
+func TestInitialize_OptsThresholdWithoutOfficers_FailsClosed(t *testing.T) {
+	svc, err := NewCeremonyService(defaultConfig(), testBarrier(t), newTestCredentialService(), testLogger())
+	require.NoError(t, err)
+
+	_, err = svc.Initialize(context.Background(), newMockCA(t), &InitializeOptions{Threshold: 2})
+	assert.ErrorIs(t, err, ErrNoOfficers)
+}
+
+// TestInitialize_OptsFailedValidation_RollsBackConfig proves that a failed
+// opts-driven Initialize call (validateConfig error) does not leave the
+// per-request overrides mutated into s.config. Without the rollback a
+// failed Threshold-only attempt would otherwise "poison" the next,
+// otherwise-valid Initialize call on the same service instance — the
+// service remains at StateAwaitingInit after a failure, so a caller can
+// legitimately retry.
+func TestInitialize_OptsFailedValidation_RollsBackConfig(t *testing.T) {
+	svc, err := NewCeremonyService(defaultConfig(), testBarrier(t), newTestCredentialService(), testLogger())
+	require.NoError(t, err)
+
+	ca := newMockCA(t)
+
+	// First attempt: Threshold with no Officers fails closed.
+	_, err = svc.Initialize(context.Background(), ca, &InitializeOptions{Threshold: 2})
+	require.ErrorIs(t, err, ErrNoOfficers)
+	assert.Equal(t, StateAwaitingInit, svc.State())
+
+	// Second attempt: no opts at all (single-admin). If the first attempt's
+	// Threshold=2 had leaked into s.config, this would now also fail with
+	// ErrNoOfficers even though nothing in this call requested M-of-N.
+	result, err := svc.Initialize(context.Background(), ca, nil)
+	require.NoError(t, err, "a failed opts-driven attempt must not poison a subsequent call")
+	assert.Equal(t, StateOperational, result.State)
+	assert.Equal(t, 0, result.ShareCount)
+}
+
 func TestInitialize_AlreadyInitialized(t *testing.T) {
 	svc, err := NewCeremonyService(defaultConfig(), testBarrier(t), newTestCredentialService(), testLogger())
 	require.NoError(t, err)

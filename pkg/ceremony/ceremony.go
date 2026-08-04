@@ -190,13 +190,18 @@ func (s *CeremonyService) SPKIPin() (string, error) {
 // stores credentials, and either starts M-of-N enrollment or transitions
 // directly to operational state for single-admin mode.
 //
-// opts carries per-request parameters (notably the Security Officer and
-// user PINs). When a per-request PIN is non-empty it takes precedence over
-// the corresponding CeremonyConfig field; empty per-request fields fall
+// opts carries per-request parameters (the Security Officer and user PINs,
+// plus the credential seal strategy, M-of-N threshold/officers, and TLS
+// hostname/SANs). When a per-request field is non-empty (non-zero for
+// Threshold, non-empty for the slice fields) it takes precedence over the
+// corresponding CeremonyConfig field; empty/zero per-request fields fall
 // back to the configured value. opts may be nil, in which case the
-// configured PINs are used unchanged. If, after this resolution, a required
-// PIN is still empty, validateConfig fails closed with ErrInvalidSOPIN /
-// ErrInvalidUserPIN and no cryptographic work is performed.
+// configured values are used unchanged. If, after this resolution, a
+// required PIN is still empty, validateConfig fails closed with
+// ErrInvalidSOPIN / ErrInvalidUserPIN and no cryptographic work is
+// performed; likewise a Threshold >= 2 with no resolved Officers fails
+// closed with ErrNoOfficers rather than silently falling back to the
+// single-admin path.
 func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *InitializeOptions) (*InitResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -205,21 +210,45 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 		return nil, ErrAlreadyInitialized
 	}
 
-	// Per-request PINs take precedence over the configured PINs. We hold the
-	// write lock and Initialize runs exactly once, so persisting the
-	// effective PINs back into s.config is safe and keeps later operations
-	// that validate against the configured SO PIN (e.g. SignCSRInit)
-	// consistent with the PIN actually used at initialization.
+	// Per-request values take precedence over the configured ones. We hold
+	// the write lock and Initialize runs exactly once (state stays
+	// StateAwaitingInit until the M-of-N/single-admin branch below
+	// commits it), so persisting the effective values back into s.config
+	// on SUCCESS is safe and keeps later operations that validate against
+	// the configured SO PIN (e.g. SignCSRInit) consistent with the values
+	// actually used at initialization. On a validateConfig failure the
+	// mutation is rolled back so a subsequent Initialize call (e.g. a
+	// retry with a different, valid request) is not left with orphaned
+	// state from the failed attempt.
 	if opts != nil {
+		orig := *s.config
 		if opts.SOPin != "" {
 			s.config.SOPin = opts.SOPin
 		}
 		if opts.UserPin != "" {
 			s.config.UserPin = opts.UserPin
 		}
-	}
+		if opts.CredentialSealStrategy != "" {
+			s.config.CredentialSealStrategy = opts.CredentialSealStrategy
+		}
+		if opts.Threshold != 0 {
+			s.config.Threshold = opts.Threshold
+		}
+		if len(opts.Officers) > 0 {
+			s.config.Officers = opts.Officers
+		}
+		if opts.Hostname != "" {
+			s.config.Hostname = opts.Hostname
+		}
+		if len(opts.SANs) > 0 {
+			s.config.SANs = opts.SANs
+		}
 
-	if err := s.validateConfig(); err != nil {
+		if err := s.validateConfig(); err != nil {
+			*s.config = orig
+			return nil, err
+		}
+	} else if err := s.validateConfig(); err != nil {
 		return nil, err
 	}
 

@@ -690,3 +690,69 @@ func TestLocalTenantDataRoot_NotInPersistentStoreEither(t *testing.T) {
 		t.Errorf("error = %v, want wrapping ErrTenantNotFound", terr)
 	}
 }
+
+// TestRegisterVolumeTenant_MigrationRecoverer_RunsBeforeBarrierBuild verifies
+// the crash-recovery hook attached via WithMigrationRecoverer is invoked over
+// the tenant's freshly-opened backend, with the tenant's canonical root-key
+// path, BEFORE the barrier is registered — the seam that closes the
+// tenant-scope enable-encryption crash window.
+func TestRegisterVolumeTenant_MigrationRecoverer_RunsBeforeBarrierBuild(t *testing.T) {
+	reg, _, _ := newPooledRegistry(t)
+	ctx := context.Background()
+
+	var gotRootKeyPath string
+	var gotBackend seal.StorageBackend
+	calls := 0
+	reg.Attach(seal.WithMigrationRecoverer(
+		func(_ context.Context, backend seal.StorageBackend, rootKeyPath string) error {
+			calls++
+			gotBackend = backend
+			gotRootKeyPath = rootKeyPath
+			// The barrier must not exist yet when recovery runs.
+			if _, err := reg.GetTenant("vol-recover"); err == nil {
+				t.Error("recoverer ran AFTER the tenant barrier was registered")
+			}
+			return nil
+		}))
+
+	if _, _, err := reg.RegisterVolumeTenant(ctx, "vol-recover", "", true); err != nil {
+		t.Fatalf("RegisterVolumeTenant: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("recoverer calls = %d, want 1", calls)
+	}
+	if gotRootKeyPath != "tenant/vol-recover/root-key" {
+		t.Fatalf("recoverer rootKeyPath = %q, want tenant/vol-recover/root-key", gotRootKeyPath)
+	}
+	if gotBackend == nil {
+		t.Fatal("recoverer must receive the tenant's opened storage backend")
+	}
+}
+
+// TestRegisterVolumeTenant_MigrationRecoverer_FailsClosed verifies a recovery
+// failure aborts the registration with a typed MigrationRecoveryError: the
+// barrier must never be built over unreconciled (half-swapped) state.
+func TestRegisterVolumeTenant_MigrationRecoverer_FailsClosed(t *testing.T) {
+	reg, _, _ := newPooledRegistry(t)
+	ctx := context.Background()
+
+	sentinel := errors.New("recovery exploded")
+	reg.Attach(seal.WithMigrationRecoverer(
+		func(context.Context, seal.StorageBackend, string) error { return sentinel }))
+
+	_, _, err := reg.RegisterVolumeTenant(ctx, "vol-recover-fail", "", true)
+	var mre *seal.MigrationRecoveryError
+	if !errors.As(err, &mre) {
+		t.Fatalf("err = %v, want *seal.MigrationRecoveryError", err)
+	}
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("err must wrap the recoverer's cause; got %v", err)
+	}
+	if mre.TenantID != "vol-recover-fail" {
+		t.Fatalf("TenantID = %q", mre.TenantID)
+	}
+	// Fail-closed: no barrier registered.
+	if _, gerr := reg.GetTenant("vol-recover-fail"); gerr == nil {
+		t.Fatal("tenant barrier must NOT be registered after a recovery failure")
+	}
+}

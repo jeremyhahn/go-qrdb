@@ -40,7 +40,7 @@ func substituteArgs(query string, args []driver.NamedValue) (string, error) {
 			if argIdx >= len(args) {
 				return "", &ArgumentSubstitutionError{
 					Index: argIdx,
-					Err:   fmt.Errorf("not enough arguments: expected at least %d, got %d", argIdx+1, len(args)),
+					Err:   &NotEnoughArgumentsError{Expected: argIdx + 1, Got: len(args)},
 				}
 			}
 			literal, err := formatArg(args[argIdx].Value)
@@ -96,5 +96,10 @@ func formatArg(v interface{}) (string, error) {
 
 // escapeSQL escapes single quotes for use in SQL string literals.
 func escapeSQL(s string) string {
+	// Escape backslashes BEFORE quotes: go-mysql-server honors backslash escapes
+	// by default, so an embedded or trailing backslash could otherwise terminate
+	// the surrounding single-quoted literal early and allow injection. Doubling
+	// backslashes first keeps the subsequent quote-doubling unambiguous.
+	s = strings.ReplaceAll(s, "\\", "\\\\")
 	return strings.ReplaceAll(s, "'", "''")
 }

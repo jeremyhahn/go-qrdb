@@ -42,13 +42,15 @@ type mockCeremonyService struct {
 	claimShareFn        func(ctx context.Context, username string) ([]byte, error)
 	signCSRFn           func(ctx context.Context, username, soPin, csrPEM, role string) (*service.CeremonySignCSRResult, error)
 	statusFn            func(ctx context.Context) (*service.CeremonyStatusInfo, error)
+	capturedInitOpts    *service.CeremonyInitializeOptions
 }
 
 func newMockCeremonyService() *mockCeremonyService {
 	return &mockCeremonyService{}
 }
 
-func (m *mockCeremonyService) CeremonyInitialize(ctx context.Context, ca ceremony.CeremonyCA, _ *service.CeremonyInitializeOptions) (*service.CeremonyInitResult, error) {
+func (m *mockCeremonyService) CeremonyInitialize(ctx context.Context, ca ceremony.CeremonyCA, opts *service.CeremonyInitializeOptions) (*service.CeremonyInitResult, error) {
+	m.capturedInitOpts = opts
 	if m.initializeFn != nil {
 		return m.initializeFn(ctx, ca)
 	}
@@ -363,6 +365,57 @@ func TestHandleCeremonyInitialize_Success(t *testing.T) {
 	}
 	if info.State != "initialized" {
 		t.Errorf("state: got %q, want %q", info.State, "initialized")
+	}
+}
+
+// TestHandleCeremonyInitialize_ForwardsAllFields is the regression guard for
+// the bug where the MCP qrdb_ceremony_initialize tool handler only forwarded
+// so_pin/user_pin into service.CeremonyInitializeOptions, silently dropping
+// credential_seal_strategy, threshold, officers, hostname, and sans from the
+// tool arguments.
+func TestHandleCeremonyInitialize_ForwardsAllFields(t *testing.T) {
+	svc := newMockCeremonyService()
+	ca := &mockCeremonyCA{}
+	handler := handleCeremonyInitialize(svc, ca)
+
+	req := buildCallToolRequest(t, "qrdb_ceremony_initialize", map[string]any{
+		"so_pin":                   "pin",
+		"user_pin":                 "upin",
+		"credential_seal_strategy": "shamir",
+		"threshold":                2,
+		"officers": []any{
+			map[string]any{"username": "officer-1", "csr_pem": "csr1"},
+			map[string]any{"username": "officer-2", "csr_pem": "csr2"},
+		},
+		"hostname": "override.example",
+		"sans":     []any{"alt1.example", "alt2.example"},
+	})
+
+	if _, err := handler(context.Background(), req); err != nil {
+		t.Fatalf("handleCeremonyInitialize: %v", err)
+	}
+
+	got := svc.capturedInitOpts
+	if got == nil {
+		t.Fatal("expected CeremonyInitialize to be called with non-nil opts")
+	}
+	if got.SOPin != "pin" || got.UserPin != "upin" {
+		t.Errorf("SOPin/UserPin not forwarded: %+v", got)
+	}
+	if got.CredentialSealStrategy != "shamir" {
+		t.Errorf("CredentialSealStrategy = %q, want %q", got.CredentialSealStrategy, "shamir")
+	}
+	if got.Threshold != 2 {
+		t.Errorf("Threshold = %d, want 2", got.Threshold)
+	}
+	if got.Hostname != "override.example" {
+		t.Errorf("Hostname = %q, want %q", got.Hostname, "override.example")
+	}
+	if len(got.SANs) != 2 || got.SANs[0] != "alt1.example" {
+		t.Errorf("SANs = %v", got.SANs)
+	}
+	if len(got.Officers) != 2 || got.Officers[0].Username != "officer-1" || got.Officers[0].CSRPEM != "csr1" {
+		t.Errorf("Officers = %+v", got.Officers)
 	}
 }
 

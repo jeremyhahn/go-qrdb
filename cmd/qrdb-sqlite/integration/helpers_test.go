@@ -260,10 +260,12 @@ func (ca *testCA) generateNodeCert(dir string) (certPath, keyPath string, err er
 }
 
 // generateClientCert creates a client mTLS certificate signed by this CA with
-// CN=admin and OU=default. This matches the admin user bootstrapped by qrdbd
-// so the mTLS authenticator grants Admin@system access (the system-tenant
-// rule lifts that to platform-wide authority). The cert and key are
-// written to dir/client-cert.pem and dir/client-key.pem.
+// CN=admin and OU=system. The mTLS authenticator derives the tenant from
+// OU[0] (auth.MTLSAuthenticator.TenantFromCert), and the admin user is
+// bootstrapped in the reserved system tenant (tenant.SystemTenantID), so the
+// OU must be "system" for the identity to resolve to Admin@system (the
+// system-tenant rule lifts that to platform-wide authority). The cert and
+// key are written to dir/client-cert.pem and dir/client-key.pem.
 func (ca *testCA) generateClientCert(dir string) (certPath, keyPath string, err error) {
 	clientKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -280,7 +282,7 @@ func (ca *testCA) generateClientCert(dir string) (certPath, keyPath string, err 
 		Subject: pkix.Name{
 			Organization:       []string{"qrdb-sqlite-test"},
 			CommonName:         "admin",
-			OrganizationalUnit: []string{"default"},
+			OrganizationalUnit: []string{"system"},
 		},
 		NotBefore: time.Now().Add(-1 * time.Minute),
 		NotAfter:  time.Now().Add(2 * time.Hour),

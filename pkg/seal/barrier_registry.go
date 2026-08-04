@@ -64,7 +64,26 @@ type BarrierRegistry struct {
 	// replicated decision; the round-robin cursor that chooses the slot for a
 	// new tenant is likewise replicated (see pool.ReplicatedStateStore).
 	slotStore StorageBackend
+
+	// migrationRecoverer, when non-nil, reconciles an interrupted encryption
+	// migration recorded in a tenant's journal BEFORE the tenant barrier is
+	// built (see MigrationRecoverer). Guarded by poolMu like the other
+	// boot-wired composition fields.
+	migrationRecoverer MigrationRecoverer
 }
+
+// MigrationRecoverer reconciles an interrupted encryption migration whose
+// journal is persisted at rootKeyPath+".migration" in backend, BEFORE the
+// barrier over that root key is constructed. It must be idempotent and
+// credential-free: it brings the on-disk state (store directories, staged
+// snapshot files, and the sealed root-key blob) to the journal's committed
+// state and removes the journal, so the normal barrier build then proceeds on
+// reconciled state. A nil journal (no interrupted migration) must be a no-op.
+//
+// The concrete implementation lives at the data-plane layer (pkg/database
+// owns the directory-swap and snapshot-staging mechanics) and is injected
+// here via WithMigrationRecoverer because pkg/seal cannot import pkg/database.
+type MigrationRecoverer func(ctx context.Context, backend StorageBackend, rootKeyPath string) error
 
 // Option configures a BarrierRegistry at construction time.
 //
@@ -128,6 +147,25 @@ func WithReplicatedSlotStore(store StorageBackend) Option {
 		defer r.poolMu.Unlock()
 		if store != nil {
 			r.slotStore = store
+		}
+	}
+}
+
+// WithMigrationRecoverer attaches the crash-recovery hook RegisterVolumeTenant
+// runs over a tenant's freshly-opened barrier backend before building the
+// barrier. It closes the tenant-scope enable-encryption crash window: a node
+// that died between the store-directory swaps and the root-key adoption is
+// rolled forward (or an uncommitted migration rolled back) from the journal
+// before the barrier — and then the tenant's data stores — come up.
+//
+// Passing nil is a no-op. When never configured, tenant registration proceeds
+// without a recovery pass (the pre-recovery behavior).
+func WithMigrationRecoverer(rec MigrationRecoverer) Option {
+	return func(r *BarrierRegistry) {
+		r.poolMu.Lock()
+		defer r.poolMu.Unlock()
+		if rec != nil {
+			r.migrationRecoverer = rec
 		}
 	}
 }
@@ -551,6 +589,14 @@ func (r *BarrierRegistry) poolResources() (objpool.Manager, string, pebblestore.
 	return r.pool, r.defaultPoolName, r.perTenantReg
 }
 
+// migrationRecovererHook returns the configured MigrationRecoverer (nil when
+// none) under the same read lock that guards the other boot-wired fields.
+func (r *BarrierRegistry) migrationRecovererHook() MigrationRecoverer {
+	r.poolMu.RLock()
+	defer r.poolMu.RUnlock()
+	return r.migrationRecoverer
+}
+
 // LocalTenantDataRoot returns the local volume-pool DataRoot for tenantID as
 // recorded when RegisterVolumeTenant was called for that tenant. It is used
 // by follower replicas whose placement Replica.DataRoot is empty (BUG 1) to
@@ -788,11 +834,25 @@ func (r *BarrierRegistry) RegisterVolumeTenant(ctx context.Context, tenantID, da
 	}
 	backend := NewStorageAdapter(storage)
 
+	cfg := tenantBarrierConfig(tenantID)
+	// Reconcile any interrupted encryption migration recorded in the tenant's
+	// journal BEFORE the barrier is built: a crash in the swap→adopt commit
+	// window leaves half-swapped store dirs, staged snapshot siblings, and a
+	// root key the journal has superseded. The barrier (and then the tenant's
+	// data stores) must come up over the reconciled state, so a recovery
+	// failure fails the registration closed. The tenant's stores are not yet
+	// open here — registration precedes every host/shard attach.
+	if rec := r.migrationRecovererHook(); rec != nil {
+		if rerr := rec(ctx, backend, cfg.RootKeyPath); rerr != nil {
+			return "", nil, &MigrationRecoveryError{TenantID: tenantID, Err: rerr}
+		}
+	}
+
 	strategies := r.systemStrategies()
 	if autoUnseal {
 		strategies = []SealingStrategy{r.systemBarrierStrategy()}
 	}
-	tb, err := r.RegisterTenant(ctx, tenantID, backend, tenantBarrierConfig(tenantID), strategies...)
+	tb, err := r.RegisterTenant(ctx, tenantID, backend, cfg, strategies...)
 	if err != nil {
 		return "", nil, err
 	}

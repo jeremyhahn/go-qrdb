@@ -20,11 +20,9 @@ package mcp
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -219,39 +217,13 @@ func (t *Transport) Connect(ctx context.Context) error {
 
 // buildTLSConfig constructs the TLS configuration from the transport config.
 func (t *Transport) buildTLSConfig() (*tls.Config, error) {
-	if t.config.TLSConfig != nil {
-		return t.config.TLSConfig, nil
-	}
-
-	if !t.config.TLSEnabled {
-		return nil, nil
-	}
-
-	tlsCfg := &tls.Config{
-		MinVersion: tls.VersionTLS13,
-	}
-
-	if t.config.TLSCAFile != "" {
-		caCert, err := os.ReadFile(t.config.TLSCAFile)
-		if err != nil {
-			return nil, &transport.TLSError{Err: err}
-		}
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(caCert) {
-			return nil, &transport.TLSError{Err: errors.New("failed to parse CA certificate")}
-		}
-		tlsCfg.RootCAs = pool
-	}
-
-	if t.config.TLSCertFile != "" && t.config.TLSKeyFile != "" {
-		cert, err := tls.LoadX509KeyPair(t.config.TLSCertFile, t.config.TLSKeyFile)
-		if err != nil {
-			return nil, &transport.TLSError{Err: err}
-		}
-		tlsCfg.Certificates = []tls.Certificate{cert}
-	}
-
-	return tlsCfg, nil
+	return transport.BuildTLSConfig(transport.TLSBuildOptions{
+		Custom:   t.config.TLSConfig,
+		Enabled:  t.config.TLSEnabled,
+		CAFile:   t.config.TLSCAFile,
+		CertFile: t.config.TLSCertFile,
+		KeyFile:  t.config.TLSKeyFile,
+	})
 }
 
 // Close shuts down the MCP client and releases all resources.

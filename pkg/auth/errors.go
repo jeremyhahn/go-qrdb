@@ -38,3 +38,22 @@ var (
 	// ErrInvalidCertificate is returned when the client certificate is malformed or unverified.
 	ErrInvalidCertificate = &AuthError{Code: "invalid_cert", Message: "client certificate is invalid or unverified"}
 )
+
+// OperationError wraps an auth store or key-derivation operation failure
+// together with its underlying cause. It preserves errors.Is/errors.As
+// against the cause, replacing the inline "auth: <op>: %w" error-wrapping idiom.
+type OperationError struct {
+	// Op names the operation that failed (e.g. "store get", "store put",
+	// "generate salt").
+	Op string
+	// Cause is the underlying error.
+	Cause error
+}
+
+// Error returns "auth: <op>: <cause>".
+func (e *OperationError) Error() string {
+	return "auth: " + e.Op + ": " + e.Cause.Error()
+}
+
+// Unwrap returns the underlying cause for errors.Is and errors.As support.
+func (e *OperationError) Unwrap() error { return e.Cause }

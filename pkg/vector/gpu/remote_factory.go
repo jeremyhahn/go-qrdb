@@ -16,8 +16,6 @@
 package gpu
 
 import (
-	"fmt"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/interfaces"
 	"github.com/jeremyhahn/go-qrdb/pkg/vector/gpu/remote"
 )
@@ -48,7 +46,7 @@ func (f *RemoteGPUIndexFactory) CreateIndex(config *interfaces.HNSWConfig) (inte
 	if f.config != nil && f.config.Enabled {
 		idx, err := remote.NewRemoteGPUIndex(remoteConfigToConnConfig(f.config))
 		if err != nil {
-			return nil, fmt.Errorf("remote gpu factory: %w", err)
+			return nil, &FactoryError{Op: "remote gpu factory", Cause: err}
 		}
 		return idx, nil
 	}
@@ -59,7 +57,7 @@ func (f *RemoteGPUIndexFactory) CreateIndex(config *interfaces.HNSWConfig) (inte
 // ErrNoFallbackFactory when none was provided.
 func (f *RemoteGPUIndexFactory) createFallbackIndex(config *interfaces.HNSWConfig) (interfaces.HNSWIndex, error) {
 	if f.fallback == nil {
-		return nil, fmt.Errorf("remote gpu factory: %w", ErrNoFallbackFactory)
+		return nil, &FactoryError{Op: "remote gpu factory", Cause: ErrNoFallbackFactory}
 	}
 	return f.fallback.CreateIndex(config)
 }

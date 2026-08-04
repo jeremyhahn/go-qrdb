@@ -17,8 +17,8 @@ package rest
 // Package-level embeddability integration tests.
 //
 // These tests verify that the REST server can be started with only a subset
-// of services populated. This architectural property lets go-xkms and
-// go-trusted-ca embed the QRDB REST server with only the services they need
+// of services populated. This architectural property lets go-xkms (which
+// absorbed go-trusted-ca) embed the QRDB REST server with only the services it needs
 // (e.g., barrier + cert) without being forced to provide KV or admin services.
 //
 // All tests use httptest.NewRecorder for in-process dispatch; no network I/O

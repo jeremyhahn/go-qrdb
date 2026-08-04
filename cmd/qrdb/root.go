@@ -92,6 +92,7 @@ func newRootCmd() *cobra.Command {
 		certFile      string
 		keyFile       string
 		timeout       time.Duration
+		databaseFlag  string
 	)
 
 	rootCmd := &cobra.Command{
@@ -147,6 +148,15 @@ Supported transports:
 			if err != nil {
 				return err
 			}
+
+			// Scope data-plane operations to a named database when
+			// requested, mirroring the GUI's per-database workspace.
+			if databaseFlag != "" {
+				c, err = scopeClientToDatabase(c, databaseFlag, transportType)
+				if err != nil {
+					return err
+				}
+			}
 			client = c
 
 			return nil
@@ -168,6 +178,8 @@ Supported transports:
 	pflags.DurationVar(&timeout, "timeout", 10*time.Second, "Request timeout")
 	pflags.StringVar(&logLevel, "log-level", "info", "Log level: trace | debug | info | warn | error")
 	pflags.StringVar(&logFile, "log-file", "", "Log file path (default: stdout)")
+	pflags.StringVar(&databaseFlag, "database", "",
+		"Database to scope data-plane commands to (default: the server's default database)")
 
 	// Subcommand groups.
 	kvCmd := newKVCmd()
@@ -186,6 +198,8 @@ Supported transports:
 	}
 	rootCmd.AddCommand(newIndexCmd())
 	rootCmd.AddCommand(newDatabaseCmd())
+	rootCmd.AddCommand(newCollectionCmd())
+	rootCmd.AddCommand(newAuditCmd())
 	rootCmd.AddCommand(newUsersCmd())
 	rootCmd.AddCommand(newRolesCmd())
 	rootCmd.AddCommand(newTenantCmd())

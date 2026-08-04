@@ -78,47 +78,6 @@ func (e *readBodyError) Unwrap() error {
 	return e.Err
 }
 
-// caFileReadError is returned when reading a CA certificate file fails.
-type caFileReadError struct {
-	Path string
-	Err  error
-}
-
-// Error returns a human-readable description.
-func (e *caFileReadError) Error() string {
-	return "failed to read CA file " + e.Path + ": " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *caFileReadError) Unwrap() error {
-	return e.Err
-}
-
-// caParseError is returned when parsing a CA certificate fails.
-type caParseError struct {
-	Path string
-}
-
-// Error returns a human-readable description.
-func (e *caParseError) Error() string {
-	return "failed to parse CA certificate from " + e.Path
-}
-
-// certLoadError is returned when loading a client TLS certificate fails.
-type certLoadError struct {
-	Err error
-}
-
-// Error returns a human-readable description.
-func (e *certLoadError) Error() string {
-	return "failed to load client certificate: " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *certLoadError) Unwrap() error {
-	return e.Err
-}
-
 // drainFailedError is returned when the drain endpoint responds with
 // a non-success status.
 type drainFailedError struct {

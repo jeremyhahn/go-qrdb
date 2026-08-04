@@ -62,6 +62,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	grpcsrv "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
+	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -418,15 +419,15 @@ func httpLogin(t *testing.T, base, ftype string, key []byte) (uint64, int) {
 }
 
 // ---------------------------------------------------------------------------
-// gRPC client helpers — exercised via the *Unary helpers exported by the
-// server package. This mirrors how SDK callers would connect.
+// gRPC client helpers — exercised via the generated UserAuthFactorService
+// protobuf client. This mirrors how SDK callers connect over the wire.
 // ---------------------------------------------------------------------------
 
 func grpcAdd(t *testing.T, conn *grpc.ClientConn, userID uint64, ftype string, cred []byte) string {
 	t.Helper()
-	resp, err := grpcsrv.UserAuthFactorAddUnary(context.Background(), conn,
-		&grpcsrv.GRPCUserAuthFactorAddRequest{
-			UserID:     userID,
+	resp, err := pb.NewUserAuthFactorServiceClient(conn).Add(context.Background(),
+		&pb.UserAuthFactorAddRequest{
+			UserId:     userID,
 			Type:       ftype,
 			Credential: cred,
 			Label:      ftype + "-vendor",
@@ -434,23 +435,23 @@ func grpcAdd(t *testing.T, conn *grpc.ClientConn, userID uint64, ftype string, c
 	if err != nil {
 		t.Fatalf("gRPC Add: %v", err)
 	}
-	return resp.Factor.ID
+	return resp.Factor.Id
 }
 
 func grpcLogin(t *testing.T, conn *grpc.ClientConn, ftype string, key []byte) (uint64, error) {
 	t.Helper()
-	resp, err := grpcsrv.UserAuthFactorLoginUnary(context.Background(), conn,
-		&grpcsrv.GRPCUserAuthFactorLoginRequest{Type: ftype, LookupKey: key})
+	resp, err := pb.NewUserAuthFactorServiceClient(conn).Login(context.Background(),
+		&pb.UserAuthFactorLoginRequest{Type: ftype, LookupKey: key})
 	if err != nil {
 		return 0, err
 	}
-	return resp.UserID, nil
+	return resp.UserId, nil
 }
 
 func grpcDelete(t *testing.T, conn *grpc.ClientConn, factorID string, force bool) error {
 	t.Helper()
-	_, err := grpcsrv.UserAuthFactorRemoveUnary(context.Background(), conn,
-		&grpcsrv.GRPCUserAuthFactorRemoveRequest{FactorID: factorID, Force: force})
+	_, err := pb.NewUserAuthFactorServiceClient(conn).Remove(context.Background(),
+		&pb.UserAuthFactorRemoveRequest{FactorId: factorID, Force: force})
 	return err
 }
 

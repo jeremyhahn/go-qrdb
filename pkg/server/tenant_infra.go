@@ -76,6 +76,9 @@ type TenantInfraConfig struct {
 	Host *quicraft.Host
 
 	// Manager is the database manager that records persisted shard metadata.
+	// Required when Host is set: IsolationRaft needs a database.Manager to
+	// track per-tenant shard IDs and to walk existing shards on reattach.
+	// Passing a non-nil Host with a nil Manager returns TenantInfraConfigError.
 	Manager *database.Manager
 
 	// ReplicaID is this node's Raft replica ID.
@@ -102,6 +105,10 @@ type TenantInfraConfig struct {
 // that could be built given the available configuration. On error, any
 // partially built registries are closed before returning.
 //
+// Configuration contract: Manager is required when Host is set. Violating
+// this contract returns TenantInfraConfigError; IsolationRaft cannot operate
+// without a database.Manager to track per-tenant shard metadata.
+//
 // The returned Reconciler (when non-nil) is NOT started; the caller starts
 // it with its own long-lived context so lifecycle ownership stays with the
 // caller:
@@ -114,6 +121,22 @@ func BuildTenantInfra(cfg TenantInfraConfig) (*TenantInfra, error) {
 	logger := cfg.Logger
 	if logger == nil {
 		logger = slog.Default()
+	}
+
+	// Wire the tenant-barrier crash recoverer BEFORE any barrier is restored:
+	// RegisterVolumeTenant runs it over the tenant's freshly-opened backend so
+	// a migration interrupted in the swap→adopt commit window is rolled
+	// forward (or an uncommitted one rolled back) from its journal — with the
+	// store-directory set and staged snapshots read from the journal itself —
+	// before the barrier and then the tenant's data stores come up. This is
+	// the tenant-scope analogue of the system barrier's boot-time
+	// RecoverInterruptedMigration call, shared by the daemon and the embedded
+	// node through this builder.
+	if cfg.BarrierReg != nil {
+		cfg.BarrierReg.Attach(seal.WithMigrationRecoverer(
+			func(ctx context.Context, backend seal.StorageBackend, rootKeyPath string) error {
+				return database.RecoverInterruptedMigration(ctx, backend, rootKeyPath, nil)
+			}))
 	}
 
 	// Restore every per-tenant barrier (IsolationVolume + IsolationRaft) from
@@ -146,6 +169,20 @@ func BuildTenantInfra(cfg TenantInfraConfig) (*TenantInfra, error) {
 	// per database on the SHARED system Host. Boot re-attach re-registers and
 	// (for system-managed tenants) unseals each raft tenant's barrier and
 	// re-starts its database shards before serving.
+	//
+	// Validate the Host+Manager contract before entering the block: Manager is
+	// required when Host is set (reattachRaftTenants calls manager.List() and
+	// NewRaftBackendFactoryFromManager dereferences the manager unconditionally).
+	// Return an explicit typed error rather than panicking on nil dereference.
+	if cfg.Host != nil && cfg.Manager == nil {
+		if ti.Hosts != nil {
+			_ = ti.Hosts.CloseAll()
+		}
+		return nil, &TenantInfraConfigError{
+			Field:   "Manager",
+			Message: "required when Host is set; IsolationRaft needs a database manager to track shard metadata",
+		}
+	}
 	if cfg.BarrierReg != nil && cfg.TenantSvc != nil && cfg.VolumePool != nil && cfg.Host != nil {
 		var raftOpts []RaftBackendOption
 		if cfg.PlacementStore != nil {
@@ -301,6 +338,14 @@ func reattachRaftTenants(
 	if err != nil {
 		return err
 	}
+	// Snapshot the manager's database list once: it is invariant across the
+	// loop, so re-listing per tenant would be O(tenants x databases). A nil
+	// manager only reaches here in tests that exercise the skip-everything
+	// path; production always supplies one (BuildTenantInfra enforces it).
+	var allDatabases []database.DatabaseInfo
+	if manager != nil {
+		allDatabases = manager.List()
+	}
 	for i := range tenants {
 		t := tenants[i]
 		if t.EffectiveIsolationType() != tenant.IsolationRaft {
@@ -336,7 +381,7 @@ func reattachRaftTenants(
 		// carrying the persisted shard ID); here we re-bind the live shard on
 		// the shared host. Databases not present locally are attached by the
 		// reconciler instead.
-		for _, info := range manager.List() {
+		for _, info := range allDatabases {
 			if info.TenantID != t.ID || info.Backend != database.BackendRaft {
 				continue
 			}

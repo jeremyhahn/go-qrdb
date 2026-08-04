@@ -144,6 +144,20 @@ func resolveSchemeTransport(serverFlag string) (transportType string, address st
 	return transportGRPC, serverFlag
 }
 
+// scopeClientToDatabase returns a client whose data-plane operations are
+// scoped to the named database, mirroring the GUI's per-database
+// workspace. Client.DatabaseScoped returns the receiver unchanged when
+// the underlying transport does not implement transport.DatabaseScoper,
+// so a same-pointer result means scoping is unsupported and the CLI
+// fails loudly instead of silently operating on the default database.
+func scopeClientToDatabase(c *sdk.Client, database, transportType string) (*sdk.Client, error) {
+	scoped := c.DatabaseScoped(database)
+	if scoped == c {
+		return nil, &DatabaseScopeError{Database: database, Transport: transportType}
+	}
+	return scoped, nil
+}
+
 // buildClient constructs an SDK client using the resolved transport type
 // and address. TLS options are applied when the corresponding flags are
 // provided.

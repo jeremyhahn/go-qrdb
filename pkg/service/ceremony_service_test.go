@@ -836,3 +836,63 @@ func TestCeremonyService_CeremonyInitialize_PerRequestPINsTakePrecedence(t *test
 	require.NoError(t, err, "override SO PIN must be accepted")
 	assert.NotEmpty(t, res.CertPEM)
 }
+
+// TestCeremonyService_CeremonyInitialize_ForwardsAllOptionFields is the
+// regression guard for the bug where CeremonyInitializeOptions only carried
+// SOPin/UserPin: CredentialSealStrategy, Threshold, Officers, Hostname, and
+// SANs are now threaded through to the underlying ceremony.CeremonyService,
+// proven here by driving the M-of-N enrollment path (which only activates
+// when Threshold>=2 AND at least one Officer reaches the underlying
+// service) purely through per-request options against a single-admin
+// construction-time config.
+func TestCeremonyService_CeremonyInitialize_ForwardsAllOptionFields(t *testing.T) {
+	svc, ca := newTestCeremonyServiceWithConfig(t, &ceremony.CeremonyConfig{
+		SOPin:   "so-pin",
+		UserPin: "user-pin",
+		// Hostname/Threshold/Officers/CredentialSealStrategy intentionally
+		// left at single-admin zero values; they must come from opts.
+	})
+
+	csr1 := newTestOfficerCSR(t, "officer-1")
+	csr2 := newTestOfficerCSR(t, "officer-2")
+
+	result, err := svc.CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{
+		SOPin:                  "so-pin",
+		UserPin:                "user-pin",
+		CredentialSealStrategy: "shamir",
+		Threshold:              2,
+		Officers: []CeremonyOfficerConfig{
+			{Username: "officer-1", CSRPEM: string(csr1)},
+			{Username: "officer-2", CSRPEM: string(csr2)},
+		},
+		Hostname: "override.example",
+		SANs:     []string{"alt.example"},
+	})
+	require.NoError(t, err, "opts.Threshold/Officers must drive the M-of-N enrollment path")
+	require.NotNil(t, result)
+
+	assert.Equal(t, "enrolling", result.State,
+		"Threshold+Officers forwarded from opts must activate M-of-N enrollment, not single-admin")
+	assert.Equal(t, 2, result.ShareCount)
+}
+
+// TestCeremonyService_CeremonyInitialize_ThresholdWithoutOfficers_FailsClosed
+// proves that a per-request Threshold with no Officers (the shape
+// `qrdb init --barrier-strategy shamir --shares N --threshold M` produces,
+// since the CLI has no way to supply officer CSRs on that one-shot call)
+// fails closed with the ceremony package's typed ErrNoOfficers instead of
+// silently succeeding via the single-admin path with ShareCount 0.
+func TestCeremonyService_CeremonyInitialize_ThresholdWithoutOfficers_FailsClosed(t *testing.T) {
+	svc, ca := newTestCeremonyServiceWithConfig(t, &ceremony.CeremonyConfig{
+		SOPin:   "so-pin",
+		UserPin: "user-pin",
+	})
+
+	_, err := svc.CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{
+		SOPin:     "so-pin",
+		UserPin:   "user-pin",
+		Threshold: 3,
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ceremony.ErrNoOfficers)
+}

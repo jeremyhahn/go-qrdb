@@ -490,6 +490,12 @@ func (t *Transport) TenantBarrierStatus(ctx context.Context, req *transport.Tena
 
 // TenantBarrierOfficerRegister registers a Security Officer for the named
 // tenant's barrier. Maps to POST /v1/tenants/{id}/barrier/officers.
+//
+// csr_pem/cert_pem travel over the wire as plain PEM strings (see
+// officerRegisterWireRequest/officerRegisterWireResponse in
+// transport_barrier.go); transport.TenantOfficerRegisterRequest.CSRPEM and
+// transport.OfficerRegisterResponse.CertPEM are typed []byte for the other
+// transports, so they are converted here rather than marshaled directly.
 func (t *Transport) TenantBarrierOfficerRegister(ctx context.Context, req *transport.TenantOfficerRegisterRequest) (*transport.OfficerRegisterResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
@@ -498,11 +504,20 @@ func (t *Transport) TenantBarrierOfficerRegister(ctx context.Context, req *trans
 		return nil, &transport.RequestError{Method: "TenantBarrierOfficerRegister", Err: &emptyTenantIDError{}}
 	}
 	path := "/v1/tenants/" + url.PathEscape(req.TenantID) + "/barrier/officers"
-	var resp transport.OfficerRegisterResponse
-	if err := t.postJSONDecode(ctx, "TenantBarrierOfficerRegister", path, req, &resp); err != nil {
+	wireReq := &officerRegisterWireRequest{
+		Username:          req.Username,
+		CSRPEM:            string(req.CSRPEM),
+		AuthenticatorType: req.AuthenticatorType,
+		AuthenticatorRef:  req.AuthenticatorRef,
+	}
+	var wireResp officerRegisterWireResponse
+	if err := t.postJSONDecode(ctx, "TenantBarrierOfficerRegister", path, wireReq, &wireResp); err != nil {
 		return nil, err
 	}
-	return &resp, nil
+	return &transport.OfficerRegisterResponse{
+		CertPEM:    []byte(wireResp.CertPEM),
+		ShareIndex: wireResp.ShareIndex,
+	}, nil
 }
 
 // TenantBarrierOfficerList returns all enrolled Security Officers for the

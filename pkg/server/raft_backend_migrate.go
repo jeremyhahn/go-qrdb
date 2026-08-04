@@ -21,10 +21,21 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+)
+
+// snapshotCommitAttempts / snapshotCommitBackoff bound the retry of the staged
+// snapshot commit performed past the migration point of no return. Transient
+// filesystem errors there must not abort the migration (the directory swaps are
+// already durable), so the idempotent commit is retried with exponential
+// backoff before giving up and leaving the staged siblings on disk for recovery.
+const (
+	snapshotCommitAttempts = 5
+	snapshotCommitBackoff  = 50 * time.Millisecond
 )
 
 // recodeFunc re-encrypts a store directory from srcEnc into dstDir under dstEnc,
@@ -141,14 +152,30 @@ func (f *RaftBackendFactory) MigrateTenantEncryption(ctx context.Context, tenant
 		return err
 	}
 	j.StagingRootKeyPath = target.RootKeyPath()
+	// Record every directory the commit swaps so a crash-recovery pass can roll
+	// the swaps forward (or back) from the journal alone, without re-deriving
+	// the tenant's shard layout.
+	for _, s := range shards {
+		j.StoreDirs = append(j.StoreDirs, s.smDir)
+		if s.walDir != "" {
+			j.StoreDirs = append(j.StoreDirs, s.walDir)
+		}
+	}
 
 	quiesced := false
+	// stagedSnaps accumulates re-encrypted snapshot data files staged beside their
+	// originals in the shared host snapshot tree, which the per-shard dir swaps
+	// below do NOT move (unlike IsolationVolume, whose snapshots ride the smDir
+	// swap). They are renamed into place after the swaps commit, or discarded on
+	// any pre-commit failure.
+	var stagedSnaps []database.StagedSnapshot
 	// Finalize defer — registered immediately after BeginMigration, BEFORE the
 	// first CheckpointMigration, so ANY post-begin failure rolls the journal to a
 	// terminal PhaseFailed. Otherwise a leftover non-terminal journal makes the
 	// next BeginMigration return ErrMigrationInProgress and wedge every retry.
 	defer func() {
 		if err != nil && !j.Committed() {
+			database.RollbackStagedSnapshots(stagedSnaps)
 			for _, s := range shards {
 				_ = os.RemoveAll(s.smDir + database.KeyedDirSuffix)
 				if s.walDir != "" {
@@ -213,8 +240,25 @@ func (f *RaftBackendFactory) MigrateTenantEncryption(ctx context.Context, tenant
 		if s.walDir != "" {
 			walKeyed := s.walDir + database.KeyedDirSuffix
 			_ = os.RemoveAll(walKeyed)
-			if _, cerr := database.ReencryptWALStore(s.walDir, source, walKeyed, target); cerr != nil {
+			// The dedicated-raft shard's snapshots live in the shared host tree,
+			// not under s.smDir/s.walDir, so re-encrypt each snapshot's data file
+			// into a staging sibling (committed by rename after the swaps).
+			snapDest := func(snapDir string) string {
+				return filepath.Join(snapDir, database.SnapshotDataFile) + database.SnapshotKeyedSuffix
+			}
+			_, staged, cerr := database.ReencryptWALStore(s.walDir, source, walKeyed, target, snapDest)
+			if cerr != nil {
 				err = &RaftBackendError{TenantID: tenantID, Database: s.key.database, Op: "migrate-recode-wal", Err: cerr}
+				return err
+			}
+			stagedSnaps = append(stagedSnaps, staged...)
+			// Checkpoint the staged snapshot set as it grows so a crash at any
+			// point leaves the journal aware of every sibling written so far —
+			// recovery commits them on roll-forward and discards them on
+			// roll-back.
+			j.StagedSnapshots = stagedSnaps
+			if cerr := source.CheckpointMigration(ctx, j); cerr != nil {
+				err = cerr
 				return err
 			}
 		}
@@ -252,6 +296,17 @@ func (f *RaftBackendFactory) MigrateTenantEncryption(ctx context.Context, tenant
 				return err
 			}
 		}
+	}
+	// Commit the staged snapshot data files now the WALs (which carry the keyed
+	// snapshot epochs) are live: rename each keyed sibling over its original so
+	// the shard recovers its snapshot under the new barrier. Idempotent for crash
+	// recovery — a missing sibling is already committed.
+	// Past the point of no return: roll forward, retrying transient FS errors,
+	// rather than aborting — an abort here would leave the live snapshots
+	// source-encrypted while the swapped WAL metadata expects the keyed copies.
+	if cerr := database.CommitStagedSnapshotsWithRetry(ctx, stagedSnaps, snapshotCommitAttempts, snapshotCommitBackoff); cerr != nil {
+		err = &RaftBackendError{TenantID: tenantID, Op: "migrate-commit-snapshots", Err: cerr}
+		return err
 	}
 	if aerr := source.AdoptMigratedRootKey(ctx, target); aerr != nil {
 		err = aerr

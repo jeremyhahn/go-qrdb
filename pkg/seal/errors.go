@@ -377,3 +377,53 @@ func (e *SealStoreError) Error() string {
 
 // Unwrap returns the underlying error.
 func (e *SealStoreError) Unwrap() error { return e.Err }
+
+// ShamirError wraps a Shamir sentinel (such as ErrShamirSplitFailed or
+// ErrShamirCombineFailed) or ErrCorruptRootKey together with the low-level
+// cause returned by the secret-sharing library. It preserves errors.Is
+// against the sentinel while surfacing the underlying detail, replacing the
+// inline "%w: %v" sentinel-wrapping idiom.
+type ShamirError struct {
+	// Sentinel is the wrapped seal sentinel; errors.Is matches against it.
+	Sentinel error
+	// Op is an optional sub-operation that failed (e.g. "seal share",
+	// "open share"). It may be empty.
+	Op string
+	// Cause is the underlying error from the secret-sharing library.
+	Cause error
+}
+
+// Error returns the sentinel message followed by the optional sub-operation
+// and the underlying cause.
+func (e *ShamirError) Error() string {
+	msg := e.Sentinel.Error()
+	if e.Op != "" {
+		msg += ": " + e.Op
+	}
+	if e.Cause != nil {
+		msg += ": " + e.Cause.Error()
+	}
+	return msg
+}
+
+// Unwrap returns the wrapped sentinel so errors.Is(err, sentinel) succeeds,
+// matching the original inline "%w" sentinel wrapping.
+func (e *ShamirError) Unwrap() error { return e.Sentinel }
+
+// MigrationRecoveryError is returned by RegisterVolumeTenant when the
+// configured MigrationRecoverer fails to reconcile an interrupted encryption
+// migration recorded in the tenant's journal. Registration fails closed: the
+// barrier must not be built over half-swapped stores or an unreconciled root
+// key.
+type MigrationRecoveryError struct {
+	TenantID string
+	Err      error
+}
+
+// Error returns a human-readable description of the recovery failure.
+func (e *MigrationRecoveryError) Error() string {
+	return "qrdb/seal: migration recovery for tenant " + e.TenantID + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *MigrationRecoveryError) Unwrap() error { return e.Err }

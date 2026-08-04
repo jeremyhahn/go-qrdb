@@ -40,7 +40,7 @@ func TestTenantHostError_ErrorAndUnwrap(t *testing.T) {
 func TestVolumeReattachError_ErrorAndUnwrap(t *testing.T) {
 	inner := errors.New("boom")
 	e := &VolumeReattachError{TenantID: "acme", Err: inner}
-	const want = "qrdbd: re-attach volume tenant acme: boom"
+	const want = "server: re-attach volume tenant acme: boom"
 	if got := e.Error(); got != want {
 		t.Errorf("Error() = %q, want %q", got, want)
 	}
@@ -52,7 +52,7 @@ func TestVolumeReattachError_ErrorAndUnwrap(t *testing.T) {
 func TestRaftReattachError_WithDatabase(t *testing.T) {
 	inner := errors.New("boom")
 	e := &RaftReattachError{TenantID: "acme", Database: "app", Err: inner}
-	const want = "qrdbd: re-attach raft tenant acme/app: boom"
+	const want = "server: re-attach raft tenant acme/app: boom"
 	if got := e.Error(); got != want {
 		t.Errorf("Error() = %q, want %q", got, want)
 	}
@@ -64,7 +64,7 @@ func TestRaftReattachError_WithDatabase(t *testing.T) {
 func TestRaftReattachError_WithoutDatabase(t *testing.T) {
 	inner := errors.New("boom")
 	e := &RaftReattachError{TenantID: "acme", Err: inner}
-	const want = "qrdbd: re-attach raft tenant acme: boom"
+	const want = "server: re-attach raft tenant acme: boom"
 	if got := e.Error(); got != want {
 		t.Errorf("Error() = %q, want %q", got, want)
 	}

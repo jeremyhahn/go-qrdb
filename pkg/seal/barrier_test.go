@@ -480,6 +480,117 @@ func TestBarrier_Status_InitializedAtZeroWhenNeverInitialized(t *testing.T) {
 	}
 }
 
+// TestBarrier_Status_StrategyPersistsAcrossWarmBoot proves that the sealing
+// strategy is self-describing across a warm boot. A fresh StorageBarrier
+// constructed over the SAME backend (daemon restart, or the in-process
+// data-plane re-init after an enable-encryption migration) reports the keyed
+// strategy recorded in the persisted sealed root-key blob while still sealed —
+// without an unseal. This is the regression guard for the enable-encryption
+// bug where GET /v1/barrier/status returned {"sealed":true,"strategy":""}
+// during the post-migration sealed window.
+func TestBarrier_Status_StrategyPersistsAcrossWarmBoot(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryBackend()
+	cfg := BarrierConfig{
+		RootKeyPath:     "test/root-key",
+		PreferenceOrder: []StrategyID{StrategyPassphrase},
+	}
+	creds := Credentials{Secret: []byte("warm-boot-password")}
+
+	// First boot: initialize with the keyed passphrase strategy.
+	first, err := NewStorageBarrier(testLogger(), store, cfg, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatalf("NewStorageBarrier(first): %v", err)
+	}
+	if err := first.Initialize(ctx, creds); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if got := first.Status().Strategy; got != StrategyPassphrase {
+		t.Fatalf("first boot Status(): Strategy = %q, want %q", got, StrategyPassphrase)
+	}
+
+	// Warm boot: a brand-new barrier over the same store, still sealed and
+	// never unsealed. Status must self-describe the persisted strategy.
+	second, err := NewStorageBarrier(testLogger(), store, cfg, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatalf("NewStorageBarrier(second): %v", err)
+	}
+	warm := second.Status()
+	if !warm.Sealed {
+		t.Fatal("warm-boot barrier should start sealed")
+	}
+	if warm.Strategy != StrategyPassphrase {
+		t.Fatalf("warm-boot Status(): Strategy = %q, want persisted %q",
+			warm.Strategy, StrategyPassphrase)
+	}
+	// ActiveStrategy keeps its documented semantics: empty until the barrier
+	// is initialized or unsealed in this process.
+	if got := second.ActiveStrategy(); got != "" {
+		t.Fatalf("warm-boot ActiveStrategy() = %q, want empty before unseal", got)
+	}
+	// A second Status call is served from the cache and must agree.
+	if got := second.Status().Strategy; got != StrategyPassphrase {
+		t.Fatalf("cached warm-boot Status(): Strategy = %q, want %q", got, StrategyPassphrase)
+	}
+
+	// After unseal the in-memory active strategy takes over and must match.
+	if err := second.Unseal(ctx, creds); err != nil {
+		t.Fatalf("Unseal: %v", err)
+	}
+	if got := second.Status().Strategy; got != StrategyPassphrase {
+		t.Fatalf("post-unseal Status(): Strategy = %q, want %q", got, StrategyPassphrase)
+	}
+}
+
+// TestBarrier_Status_StrategyEmptyWhenNeverInitialized ensures a fresh,
+// never-initialized barrier reports an empty strategy: with no persisted
+// root-key blob there is nothing to self-describe from.
+func TestBarrier_Status_StrategyEmptyWhenNeverInitialized(t *testing.T) {
+	cfg := BarrierConfig{
+		RootKeyPath:     "test/root-key",
+		PreferenceOrder: []StrategyID{StrategyPassphrase},
+	}
+	b, err := NewStorageBarrier(testLogger(), NewMemoryBackend(), cfg, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatalf("NewStorageBarrier: %v", err)
+	}
+	status := b.Status()
+	if !status.Sealed {
+		t.Fatal("never-initialized barrier should report sealed")
+	}
+	if status.Strategy != "" {
+		t.Fatalf("never-initialized Status(): Strategy = %q, want empty", status.Strategy)
+	}
+}
+
+// TestBarrier_Status_StrategyNoneSelfDescribesAcrossWarmBoot ensures a
+// committed "none" barrier warm-boots reporting "none" (accurate
+// self-description), never a spurious keyed strategy.
+func TestBarrier_Status_StrategyNoneSelfDescribesAcrossWarmBoot(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryBackend()
+	cfg := BarrierConfig{
+		RootKeyPath:     "test/root-key",
+		PreferenceOrder: []StrategyID{StrategyNone},
+	}
+
+	first, err := NewStorageBarrier(testLogger(), store, cfg, NewNoneStrategy())
+	if err != nil {
+		t.Fatalf("NewStorageBarrier(first): %v", err)
+	}
+	if err := first.Initialize(ctx, Credentials{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	second, err := NewStorageBarrier(testLogger(), store, cfg, NewNoneStrategy())
+	if err != nil {
+		t.Fatalf("NewStorageBarrier(second): %v", err)
+	}
+	if got := second.Status().Strategy; got != StrategyNone {
+		t.Fatalf("warm-boot none Status(): Strategy = %q, want %q", got, StrategyNone)
+	}
+}
+
 func TestBarrier_Initialize_AlreadyInitialized(t *testing.T) {
 	b, _ := newBarrierWithAudit(t)
 	ctx := context.Background()

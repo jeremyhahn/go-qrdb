@@ -377,9 +377,9 @@ func TestImportRootKey_ValidationErrors(t *testing.T) {
 	ctx := context.Background()
 
 	cases := []struct {
-		name     string
-		key      *ImportedKey
-		wantErr  error
+		name    string
+		key     *ImportedKey
+		wantErr error
 	}{
 		{
 			name:    "empty root key",

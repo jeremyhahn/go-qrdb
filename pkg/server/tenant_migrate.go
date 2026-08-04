@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -101,6 +102,10 @@ func (r *TenantHostRegistry) MigrateEncryption(ctx context.Context, tenantID str
 		return err
 	}
 	j.StagingRootKeyPath = target.RootKeyPath()
+	// Record the directories the commit swaps so a crash-recovery pass can roll
+	// the swaps forward (or back) from the journal alone. The volume tenant's
+	// snapshots ride the smDir swap, so no staged-snapshot record is needed.
+	j.StoreDirs = []string{smDir, walDir}
 	// Registered BEFORE the first CheckpointMigration so any post-begin failure
 	// rolls the journal to terminal PhaseFailed — else a leftover non-terminal
 	// journal wedges the next BeginMigration with ErrMigrationInProgress.
@@ -160,7 +165,16 @@ func (r *TenantHostRegistry) MigrateEncryption(ctx context.Context, tenantID str
 	}
 	walKeyed := walDir + database.KeyedDirSuffix
 	_ = os.RemoveAll(walKeyed)
-	if _, cerr := database.ReencryptWALStore(walDir, source, walKeyed, target); cerr != nil {
+	// The volume tenant's snapshot directories sit UNDER smDir (the host's
+	// nodehost/snapshots/shard tree), so re-encrypt each snapshot's data file
+	// into the matching path inside smKeyed. The SwapStoreDir(smDir) below then
+	// makes the keyed snapshot live, and a rolled-back migration discards it with
+	// smKeyed — no separate snapshot commit is required, so the staged slice is
+	// intentionally ignored here.
+	snapDest := func(snapDir string) string {
+		return filepath.Join(strings.Replace(snapDir, smDir, smKeyed, 1), database.SnapshotDataFile)
+	}
+	if _, _, cerr := database.ReencryptWALStore(walDir, source, walKeyed, target, snapDest); cerr != nil {
 		err = &TenantHostError{TenantID: tenantID, Op: "migrate-recode-wal", Err: cerr}
 		return err
 	}

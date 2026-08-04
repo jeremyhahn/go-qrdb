@@ -53,6 +53,21 @@ func toolCeremonyInitialize() mcp.Tool {
 		mcp.WithString("user_pin",
 			mcp.Description("The user-level PIN to seal at initialization. Takes precedence over server configuration when provided."),
 		),
+		mcp.WithString("credential_seal_strategy",
+			mcp.Description("How credentials are sealed at rest. Takes precedence over server configuration when provided."),
+		),
+		mcp.WithNumber("threshold",
+			mcp.Description("The M-of-N Shamir threshold. Requires officers to be non-empty; takes precedence over server configuration when non-zero."),
+		),
+		mcp.WithArray("officers",
+			mcp.Description("Officer configurations for M-of-N enrollment: array of {\"username\":..., \"csr_pem\":...} objects. Takes precedence over server configuration when non-empty."),
+		),
+		mcp.WithString("hostname",
+			mcp.Description("The primary hostname for TLS certificate generation. Takes precedence over server configuration when provided."),
+		),
+		mcp.WithArray("sans",
+			mcp.Description("Additional Subject Alternative Names for TLS certificates. Takes precedence over server configuration when non-empty."),
+		),
 	)
 }
 
@@ -64,8 +79,13 @@ func handleCeremonyInitialize(svc service.CeremonyServicer, ca ceremony.Ceremony
 			return nil, &ToolError{Tool: "qrdb_ceremony_initialize", Err: ErrCeremonyCANotConfigured}
 		}
 		opts := &service.CeremonyInitializeOptions{
-			SOPin:   mcp.ParseString(req, "so_pin", ""),
-			UserPin: mcp.ParseString(req, "user_pin", ""),
+			SOPin:                  mcp.ParseString(req, "so_pin", ""),
+			UserPin:                mcp.ParseString(req, "user_pin", ""),
+			CredentialSealStrategy: mcp.ParseString(req, "credential_seal_strategy", ""),
+			Threshold:              mcp.ParseInt(req, "threshold", 0),
+			Officers:               parseCeremonyOfficers(req, "officers"),
+			Hostname:               mcp.ParseString(req, "hostname", ""),
+			SANs:                   parseStringArray(req, "sans"),
 		}
 		result, err := svc.CeremonyInitialize(ctx, ca, opts)
 		if err != nil {
@@ -79,6 +99,47 @@ func handleCeremonyInitialize(svc service.CeremonyServicer, ca ceremony.Ceremony
 
 		return mcp.NewToolResultText(string(data)), nil
 	}
+}
+
+// parseStringArray reads an optional string array argument into a []string.
+func parseStringArray(req mcp.CallToolRequest, key string) []string {
+	raw := mcp.ParseArgument(req, key, nil)
+	slice, ok := raw.([]interface{})
+	if !ok || len(slice) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(slice))
+	for _, v := range slice {
+		if s, ok := v.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// parseCeremonyOfficers reads an optional array-of-object argument (each
+// element shaped {"username":..., "csr_pem":...}) into a
+// []service.CeremonyOfficerConfig.
+func parseCeremonyOfficers(req mcp.CallToolRequest, key string) []service.CeremonyOfficerConfig {
+	raw := mcp.ParseArgument(req, key, nil)
+	slice, ok := raw.([]interface{})
+	if !ok || len(slice) == 0 {
+		return nil
+	}
+	out := make([]service.CeremonyOfficerConfig, 0, len(slice))
+	for _, v := range slice {
+		m, ok := v.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		username, _ := m["username"].(string)
+		csrPEM, _ := m["csr_pem"].(string)
+		out = append(out, service.CeremonyOfficerConfig{Username: username, CSRPEM: csrPEM})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // toolCeremonyStatus defines the qrdb_ceremony_status tool schema.

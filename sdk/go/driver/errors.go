@@ -192,3 +192,15 @@ type RowsClosedError struct{}
 func (e *RowsClosedError) Error() string {
 	return "driver: rows are closed"
 }
+
+// NotEnoughArgumentsError is returned during positional argument substitution
+// when the query references more placeholders than the arguments supplied.
+type NotEnoughArgumentsError struct {
+	Expected int
+	Got      int
+}
+
+// Error returns a human-readable description of the argument-count shortfall.
+func (e *NotEnoughArgumentsError) Error() string {
+	return "not enough arguments: expected at least " + strconv.Itoa(e.Expected) + ", got " + strconv.Itoa(e.Got)
+}

@@ -12,13 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:build !qrdb_ts
+//go:build !(codec_json && raft && qrdb_ts && qrdb_vector && qrdb_mysql && qrdb_pgsql && qrdb_etcd)
 
-// audit_logger_mock_nonfull_test.go provides mockAuditLogger for the
-// non-full-tag builds (no-tags `go vet ./...` and codec_json+raft). Under the
-// full tag set, audit_frame_test.go (gated on the full set) provides the same
-// type; the `!qrdb_ts` constraint here makes the two definitions mutually
-// exclusive so there is no duplicate-symbol error in any tag context.
+// audit_logger_mock_nonfull_test.go provides mockAuditLogger for every
+// build that is NOT the full tag set. Under the full tag set,
+// audit_frame_test.go (gated on the full set) provides the same type; the
+// exact complement constraint here makes the two definitions mutually
+// exclusive in every tag context, including partial combinations such as
+// `qrdb_ts qrdb_vector` (the integration lane's CLI tag set), which the
+// previous `!qrdb_ts` constraint left with no definition at all.
 
 package quic
 

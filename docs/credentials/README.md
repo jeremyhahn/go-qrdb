@@ -315,6 +315,7 @@ client: `submit`, `store`, `retrieve`, `list`, `strategy`, `delete`, `rotate`,
 
 ## See Also
 
+- [secret-resolution.md](secret-resolution.md) — the `pkg/secret` layer that resolves `credential://` references in config to their stored values at boot.
 - [../pin/README.md](../pin/README.md) — PIN management (separate from credentials; native lockout, FIPS-aware hashing).
 - [../seal/README.md](../seal/README.md) — The barrier that backs `StrategyBarrier`.
 - [../ceremony/README.md](../ceremony/README.md) — How ceremony consumes the manual strategy.

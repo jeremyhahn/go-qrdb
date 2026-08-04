@@ -38,7 +38,7 @@ func parseExactInt64(req mcp.CallToolRequest, key string) (int64, error) {
 	args := req.GetArguments()
 	v, ok := args[key]
 	if !ok {
-		return 0, fmt.Errorf("%s is required", key)
+		return 0, &RequiredParameterError{Parameter: key}
 	}
 	switch n := v.(type) {
 	case json.Number:

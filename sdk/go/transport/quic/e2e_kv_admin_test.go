@@ -204,23 +204,25 @@ func TestE2E_Peers_HappyPath(t *testing.T) {
 
 func TestE2E_AddMember_HappyPath(t *testing.T) {
 	srv, tr := startE2EServer(t)
-	captured := struct {
-		shard, rep uint64
-		addr       string
-	}{}
-	srv.SetResponder("admin.AddMember", func(req []byte) (uint16, []byte) {
-		var r pb.AddMemberRequest
-		_ = proto.Unmarshal(req, &r)
-		captured.shard = r.GetShardId()
-		captured.rep = r.GetReplicaId()
-		captured.addr = r.GetRaftAddress()
+	srv.SetResponder("admin.AddMember", func(_ []byte) (uint16, []byte) {
 		return wire.StatusOK, nil
 	})
 	if err := tr.AddMember(context.Background(), 7, 8, "host:9"); err != nil {
 		t.Fatalf("AddMember: %v", err)
 	}
-	if captured.shard != 7 || captured.rep != 8 || captured.addr != "host:9" {
-		t.Fatalf("captured = %+v", captured)
+	// Read the marshaled request through the harness's mutex-protected recorder
+	// rather than capturing it in the responder closure (which runs in the
+	// server goroutine and would race with this read under -race).
+	rec := srv.LastRequest("admin.AddMember")
+	if rec == nil {
+		t.Fatal("no recorded admin.AddMember request")
+	}
+	var r pb.AddMemberRequest
+	if err := proto.Unmarshal(rec.Payload, &r); err != nil {
+		t.Fatalf("unmarshal recorded request: %v", err)
+	}
+	if r.GetShardId() != 7 || r.GetReplicaId() != 8 || r.GetRaftAddress() != "host:9" {
+		t.Fatalf("captured = shard:%d rep:%d addr:%q", r.GetShardId(), r.GetReplicaId(), r.GetRaftAddress())
 	}
 }
 

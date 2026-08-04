@@ -180,6 +180,7 @@ func (m *mockBarrierService) BarrierRecoveryShareClaimComplete(_ context.Context
 type mockCeremonyService struct {
 	initResult       *service.CeremonyInitResult
 	initErr          error
+	capturedInitOpts *service.CeremonyInitializeOptions
 	statusResult     *service.CeremonyStatusInfo
 	statusErr        error
 	beginResult      *service.CeremonyChallenge
@@ -214,7 +215,8 @@ func newMockCeremonyService() *mockCeremonyService {
 	}
 }
 
-func (m *mockCeremonyService) CeremonyInitialize(_ context.Context, _ ceremony.CeremonyCA, _ *service.CeremonyInitializeOptions) (*service.CeremonyInitResult, error) {
+func (m *mockCeremonyService) CeremonyInitialize(_ context.Context, _ ceremony.CeremonyCA, opts *service.CeremonyInitializeOptions) (*service.CeremonyInitResult, error) {
+	m.capturedInitOpts = opts
 	if m.initErr != nil {
 		return nil, m.initErr
 	}
@@ -1494,6 +1496,56 @@ func TestGRPC_CeremonyInitialize_Success(t *testing.T) {
 	}
 	if resp.GetShareCount() != 3 {
 		t.Fatalf("expected share_count=3, got %d", resp.GetShareCount())
+	}
+}
+
+// TestGRPC_CeremonyInitialize_ForwardsAllFields is the regression guard for
+// the bug where the gRPC CeremonyInitialize handler only forwarded
+// SoPin/UserPin into service.CeremonyInitializeOptions, silently dropping
+// CredentialSealStrategy, Threshold, Officers, Hostname, and Sans from the
+// wire request.
+func TestGRPC_CeremonyInitialize_ForwardsAllFields(t *testing.T) {
+	ceremonySvc := newMockCeremonyService()
+	client, cleanup := startTestServerFull(t, WithCeremonyService(ceremonySvc))
+	defer cleanup()
+
+	_, err := client.CeremonyInitialize(context.Background(), &pb.CeremonyInitializeRequest{
+		SoPin:                  "pin",
+		UserPin:                "upin",
+		CredentialSealStrategy: "shamir",
+		Threshold:              2,
+		Officers: []*pb.CeremonyOfficer{
+			{Username: "officer-1", CsrPem: "csr1"},
+			{Username: "officer-2", CsrPem: "csr2"},
+		},
+		Hostname: "override.example",
+		Sans:     []string{"alt1.example", "alt2.example"},
+	})
+	if err != nil {
+		t.Fatalf("CeremonyInitialize failed: %v", err)
+	}
+
+	got := ceremonySvc.capturedInitOpts
+	if got == nil {
+		t.Fatal("expected CeremonyInitialize to be called with non-nil opts")
+	}
+	if got.SOPin != "pin" || got.UserPin != "upin" {
+		t.Errorf("SOPin/UserPin not forwarded: %+v", got)
+	}
+	if got.CredentialSealStrategy != "shamir" {
+		t.Errorf("CredentialSealStrategy = %q, want %q", got.CredentialSealStrategy, "shamir")
+	}
+	if got.Threshold != 2 {
+		t.Errorf("Threshold = %d, want 2", got.Threshold)
+	}
+	if got.Hostname != "override.example" {
+		t.Errorf("Hostname = %q, want %q", got.Hostname, "override.example")
+	}
+	if len(got.SANs) != 2 || got.SANs[0] != "alt1.example" {
+		t.Errorf("SANs = %v", got.SANs)
+	}
+	if len(got.Officers) != 2 || got.Officers[0].Username != "officer-1" || got.Officers[0].CSRPEM != "csr1" {
+		t.Errorf("Officers = %+v", got.Officers)
 	}
 }
 

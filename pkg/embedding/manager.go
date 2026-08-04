@@ -245,7 +245,7 @@ func (m *Manager) Close() error {
 	var errs []error
 	for name, provider := range m.providers {
 		if err := provider.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("provider %s: %w", name, err))
+			errs = append(errs, &ProviderCloseError{Name: name, Cause: err})
 		}
 	}
 

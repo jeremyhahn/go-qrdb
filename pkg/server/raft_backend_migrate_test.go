@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -31,6 +32,22 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
+
+// getWhenReadable performs a linearizable KV read, retrying while the shard's
+// ReadIndex is still warming up after a restart ("read index not ready" is a
+// designed-for transient right after leader election, not a data-loss signal).
+// Bounded at 15s so a genuinely wedged shard still fails the test.
+func getWhenReadable(ctx context.Context, t *testing.T, get func(context.Context, string) ([]byte, error), key string) ([]byte, error) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		got, err := get(ctx, key)
+		if err == nil || !strings.Contains(err.Error(), "read index not ready") || time.Now().After(deadline) {
+			return got, err
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
 
 // raftMigrateStack is a single-node IsolationRaft stack whose tenant barriers are
 // DEDICATED and UNENCRYPTED (none) — the migratable source state.
@@ -146,7 +163,7 @@ func TestRaftBackendFactory_MigrateTenantEncryption_NoneToPassphrase(t *testing.
 	if err != nil {
 		t.Fatalf("Services(post-migrate): %v", err)
 	}
-	if got, err := svcs.KV.Get(ctx, "kv-key"); err != nil || string(got) != "kv-value" {
+	if got, err := getWhenReadable(ctx, t, svcs.KV.Get, "kv-key"); err != nil || string(got) != "kv-value" {
 		t.Fatalf("KV.Get(post-migrate) = %q, %v; want kv-value", got, err)
 	}
 	if got, err := svcs.MVCC.Get(ctx, "mv-key"); err != nil || string(got) != "mv-value" {
@@ -256,7 +273,7 @@ func TestRaftBackendFactory_MigrateTenantEncryption_RecodeFailureRollsBack(t *te
 	if err != nil {
 		t.Fatalf("Services after rollback: %v", err)
 	}
-	if got, gerr := svcs.KV.Get(ctx, "k"); gerr != nil || string(got) != "v" {
+	if got, gerr := getWhenReadable(ctx, t, svcs.KV.Get, "k"); gerr != nil || string(got) != "v" {
 		t.Fatalf("post-rollback data = %q, %v; want v (no data loss)", got, gerr)
 	}
 	if err := svcs.KV.Put(ctx, "k2", []byte("v2")); err != nil {
@@ -342,7 +359,7 @@ func TestRaftBackendFactory_MigrateTenantEncryption_RetryAfterRollback(t *testin
 	if err != nil {
 		t.Fatalf("Services after retry: %v", err)
 	}
-	if got, gerr := svcs.KV.Get(ctx, "k"); gerr != nil || string(got) != "v" {
+	if got, gerr := getWhenReadable(ctx, t, svcs.KV.Get, "k"); gerr != nil || string(got) != "v" {
 		t.Fatalf("post-retry data = %q, %v; want v", got, gerr)
 	}
 }

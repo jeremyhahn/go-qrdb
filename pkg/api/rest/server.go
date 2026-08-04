@@ -102,6 +102,7 @@ type Server struct {
 	embeddingSvc      service.EmbeddingServicer
 	ragSvc            service.RAGServicer
 	databaseSvc       service.DatabaseServicer
+	sqlSvc            service.SQLServicer
 	collectionSvc     service.CollectionServicer
 	lockSvc           service.LockServicer
 	barrierSvc        service.BarrierServicer
@@ -295,6 +296,13 @@ func WithRAG(svc service.RAGServicer) ServerOption {
 // operations including create, get, list, and drop.
 func WithDatabaseService(svc service.DatabaseServicer) ServerOption {
 	return func(s *Server) { s.databaseSvc = svc }
+}
+
+// WithSQLService attaches a SQLServicer for ad-hoc SQL query execution.
+// When set, the POST /sql/query route (and its /v1/sql/query mount) is
+// registered.
+func WithSQLService(svc service.SQLServicer) ServerOption {
+	return func(s *Server) { s.sqlSvc = svc }
 }
 
 // WithOnEtcdUpdated registers a callback invoked after the etcd
@@ -663,8 +671,11 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 		s.routes["/v1/collections/list"] = route{method: http.MethodGet, handler: s.handleListCollections}
 	}
 
-	// SQL query route (requires both KV and database services).
-	if s.kvSvc != nil && s.databaseSvc != nil {
+	// SQL query routes. /sql/query is the canonical data-plane mount used
+	// by the TypeScript SDK; /v1/sql/query is the mount used by the Go
+	// database/sql driver. Both dispatch to the same handler.
+	if s.sqlSvc != nil {
+		s.routes["/sql/query"] = route{method: http.MethodPost, handler: s.handleSQLQuery}
 		s.routes["/v1/sql/query"] = route{method: http.MethodPost, handler: s.handleSQLQuery}
 	}
 

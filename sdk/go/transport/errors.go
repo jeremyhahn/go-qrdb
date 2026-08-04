@@ -623,3 +623,16 @@ type NilRequestError struct{}
 func (e *NilRequestError) Error() string {
 	return "transport: nil request"
 }
+
+// UnexpectedStatusError is returned when an HTTP response carries a status
+// code other than the one expected (typically 200 OK). Body holds the
+// truncated response body for diagnostics.
+type UnexpectedStatusError struct {
+	StatusCode int
+	Body       string
+}
+
+// Error returns "unexpected status <code>: <body>".
+func (e *UnexpectedStatusError) Error() string {
+	return "transport: unexpected status " + strconv.Itoa(e.StatusCode) + ": " + e.Body
+}

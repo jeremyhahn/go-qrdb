@@ -135,13 +135,16 @@ func (m *NodeStoreMigration) Run(ctx context.Context, opts seal.MigrationOptions
 	}()
 	// Record the keyed target's root-key path so crash recovery can adopt its
 	// sealed blob if the process dies mid-commit (after the data dirs are
-	// swapped but before the canonical root key is updated).
+	// swapped but before the canonical root key is updated), and the store
+	// directories so recovery can roll their swaps forward or back from the
+	// journal alone.
+	j.StoreDirs = append([]string(nil), m.StoreDirs...)
 	if m.Target != nil {
 		j.StagingRootKeyPath = m.Target.RootKeyPath()
-		if cerr := m.journalStore().CheckpointMigration(ctx, j); cerr != nil {
-			err = cerr
-			return err
-		}
+	}
+	if cerr := m.journalStore().CheckpointMigration(ctx, j); cerr != nil {
+		err = cerr
+		return err
 	}
 
 	// --- Copy phase: re-encrypt each store into a keyed sibling. ----------
@@ -265,18 +268,25 @@ type MigrationJournalRef = seal.MigrationJournal
 
 // RecoverInterruptedMigration reconciles a migration that was interrupted by a
 // crash, using the persisted journal, BEFORE the data stores are opened. It is
-// idempotent and credential-free (it only moves directories and the sealed
-// root-key blob, never deriving keys), so it is safe to run on every boot.
+// idempotent and credential-free (it only moves directories, staged snapshot
+// files, and the sealed root-key blob, never deriving keys), so it is safe to
+// run on every boot.
+//
+// The directory set it reconciles is the union of storeDirs and the journal's
+// own StoreDirs record. Callers that know the layout (the system barrier boot
+// path) pass their dirs explicitly; callers that do not (the scope-agnostic
+// tenant-barrier hook) pass nil and rely entirely on the journal.
 //
 //   - No journal: nothing to do.
 //   - Committed (PhaseCommitting/Complete): ROLL FORWARD — finish any pending
-//     directory swaps and ensure the canonical root key is the keyed one
-//     (adopting the staging blob if the crash struck between the swaps and the
-//     root-key update). This rescues the dangerous mid-commit window where the
-//     data dirs are keyed but the root key is still "none" (which would
-//     otherwise wedge the node).
+//     directory swaps, commit any staged snapshot data files, and ensure the
+//     canonical root key is the keyed one (adopting the staging blob if the
+//     crash struck between the swaps and the root-key update). This rescues
+//     the dangerous mid-commit window where the data dirs are keyed but the
+//     root key is still "none" (which would otherwise wedge the node).
 //   - Not committed (pending/copying/verifying/failed): ROLL BACK — discard the
-//     keyed staging copies and restore any pre-migration backups.
+//     keyed staging copies and staged snapshots, and restore any pre-migration
+//     backups.
 //
 // In both terminal cases the journal and transient artifacts are removed.
 func RecoverInterruptedMigration(ctx context.Context, backend seal.StorageBackend, canonicalRootKeyPath string, storeDirs []string) error {
@@ -287,13 +297,19 @@ func RecoverInterruptedMigration(ctx context.Context, backend seal.StorageBacken
 	if j == nil {
 		return nil
 	}
+	dirs := unionDirs(storeDirs, j.StoreDirs)
 
 	if j.Committed() {
 		// Roll forward: ensure every store dir holds its keyed copy.
-		for _, dir := range storeDirs {
+		for _, dir := range dirs {
 			if serr := swapDir(dir); serr != nil {
 				return &MigrateStoreDirError{Dir: dir, Err: serr}
 			}
+		}
+		// Commit any staged snapshot data files the crash left beside their
+		// originals (idempotent: an already-committed sibling is skipped).
+		if cerr := CommitStagedSnapshots(j.StagedSnapshots); cerr != nil {
+			return cerr
 		}
 		// Ensure the canonical root key is the keyed one. If the crash struck
 		// before the root-key update, the staging blob still holds it.
@@ -307,7 +323,7 @@ func RecoverInterruptedMigration(ctx context.Context, backend seal.StorageBacken
 			}
 		}
 		// Cleanup: drop backups + staging blob + journal.
-		for _, dir := range storeDirs {
+		for _, dir := range dirs {
 			_ = os.RemoveAll(dir + backupSuffix)
 		}
 		if j.StagingRootKeyPath != "" {
@@ -316,8 +332,10 @@ func RecoverInterruptedMigration(ctx context.Context, backend seal.StorageBacken
 		return seal.ClearMigrationJournalFrom(ctx, backend, canonicalRootKeyPath)
 	}
 
-	// Roll back: discard keyed staging copies, restore any swapped originals.
-	for _, dir := range storeDirs {
+	// Roll back: discard keyed staging copies + staged snapshots, restore any
+	// swapped originals.
+	RollbackStagedSnapshots(j.StagedSnapshots)
+	for _, dir := range dirs {
 		_ = os.RemoveAll(dir + keyedSuffix)
 		if _, berr := os.Stat(dir + backupSuffix); berr == nil {
 			// A backup exists (a swap began): restore it over any partial dir.
@@ -329,6 +347,24 @@ func RecoverInterruptedMigration(ctx context.Context, backend seal.StorageBacken
 		_ = backend.Delete(ctx, j.StagingRootKeyPath)
 	}
 	return seal.ClearMigrationJournalFrom(ctx, backend, canonicalRootKeyPath)
+}
+
+// unionDirs merges the caller-supplied and journal-recorded store directory
+// sets, preserving order and dropping duplicates and empty entries.
+func unionDirs(a, b []string) []string {
+	out := make([]string, 0, len(a)+len(b))
+	seen := make(map[string]struct{}, len(a)+len(b))
+	for _, dir := range append(append([]string(nil), a...), b...) {
+		if dir == "" {
+			continue
+		}
+		if _, dup := seen[dir]; dup {
+			continue
+		}
+		seen[dir] = struct{}{}
+		out = append(out, dir)
+	}
+	return out
 }
 
 // persistedStrategy reads the sealing strategy from a persisted sealed root-key

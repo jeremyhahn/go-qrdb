@@ -250,6 +250,45 @@ func TestEscapeSQL_WithQuotes(t *testing.T) {
 	}
 }
 
+// TestEscapeSQL_WithBackslash verifies backslashes are doubled so they cannot
+// escape the surrounding single-quoted literal (SQL-injection guard).
+func TestEscapeSQL_WithBackslash(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{input: `a\b`, want: `a\\b`},
+		{input: `trailing\`, want: `trailing\\`},
+		{input: `\'`, want: `\\''`},
+		{input: `c:\path\to`, want: `c:\\path\\to`},
+		{input: "no escapes", want: "no escapes"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := escapeSQL(tt.input)
+			if got != tt.want {
+				t.Errorf("escapeSQL(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestSubstituteArgs_StringWithBackslash proves a trailing backslash in an
+// argument cannot terminate the quoted literal early and break out of it.
+func TestSubstituteArgs_StringWithBackslash(t *testing.T) {
+	query := "INSERT INTO t (name) VALUES (?)"
+	args := []driver.NamedValue{{Ordinal: 1, Value: `evil\`}}
+	got, err := substituteArgs(query, args)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := `INSERT INTO t (name) VALUES ('evil\\')`
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
 // TestCountPlaceholders verifies placeholder counting.
 func TestCountPlaceholders(t *testing.T) {
 	tests := []struct {

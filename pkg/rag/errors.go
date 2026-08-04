@@ -106,3 +106,13 @@ type InvalidNamespaceError struct {
 func (e *InvalidNamespaceError) Error() string {
 	return "rag: invalid namespace: " + e.Namespace
 }
+
+// EmptyEmbeddingsError is returned when the embedding provider yields no
+// embeddings for a query, leaving nothing to search with. It is typically
+// wrapped in an EmbeddingError.
+type EmptyEmbeddingsError struct{}
+
+// Error implements the error interface.
+func (e *EmptyEmbeddingsError) Error() string {
+	return "empty embeddings returned"
+}

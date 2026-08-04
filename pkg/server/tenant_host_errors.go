@@ -62,7 +62,7 @@ type VolumeReattachError struct {
 
 // Error implements the error interface.
 func (e *VolumeReattachError) Error() string {
-	return "qrdbd: re-attach volume tenant " + e.TenantID + ": " + e.Err.Error()
+	return "server: re-attach volume tenant " + e.TenantID + ": " + e.Err.Error()
 }
 
 // Unwrap returns the underlying error for errors.Is/As.
@@ -80,10 +80,30 @@ type RaftReattachError struct {
 // Error implements the error interface.
 func (e *RaftReattachError) Error() string {
 	if e.Database != "" {
-		return "qrdbd: re-attach raft tenant " + e.TenantID + "/" + e.Database + ": " + e.Err.Error()
+		return "server: re-attach raft tenant " + e.TenantID + "/" + e.Database + ": " + e.Err.Error()
 	}
-	return "qrdbd: re-attach raft tenant " + e.TenantID + ": " + e.Err.Error()
+	return "server: re-attach raft tenant " + e.TenantID + ": " + e.Err.Error()
 }
 
 // Unwrap returns the underlying error for errors.Is/As.
 func (e *RaftReattachError) Unwrap() error { return e.Err }
+
+// TenantInfraConfigError is returned by BuildTenantInfra when the caller
+// supplies an incompatible combination of TenantInfraConfig fields. It is a
+// programmer / configuration error — the node must not proceed.
+//
+// The canonical case is Host != nil && Manager == nil: IsolationRaft requires
+// a database.Manager to track per-tenant shard metadata and to walk existing
+// shards during reattach. Without one the factory would panic inside
+// NewRaftBackendFactoryFromManager or reattachRaftTenants.
+type TenantInfraConfigError struct {
+	// Field is the name of the misconfigured TenantInfraConfig field.
+	Field string
+	// Message describes the constraint that was violated.
+	Message string
+}
+
+// Error implements the error interface.
+func (e *TenantInfraConfigError) Error() string {
+	return "server: tenant infra config: " + e.Field + ": " + e.Message
+}

@@ -832,7 +832,7 @@ func applyTLSClientAuth(f *startFlags, bundle *TLSBundle) {
 	mode := cfg.CryptoTLSClientAuth()
 	bundle.TLSConfig.ClientAuth = mode
 	if mode != tls.NoClientCert {
-		bundle.TLSConfig.ClientCAs = bundle.CACertPool
+		bundle.TLSConfig.ClientCAs = bundle.ClientCACertPool
 	}
 }
 
@@ -1658,7 +1658,7 @@ func runStart(f *startFlags) error {
 			if !f.tlsClientAuthSet {
 				if f.authEnabled {
 					bundle.TLSConfig.ClientAuth = tls.VerifyClientCertIfGiven
-					bundle.TLSConfig.ClientCAs = bundle.CACertPool
+					bundle.TLSConfig.ClientCAs = bundle.ClientCACertPool
 				} else {
 					bundle.TLSConfig.ClientAuth = tls.NoClientCert
 				}
@@ -1702,6 +1702,16 @@ func runStart(f *startFlags) error {
 				KV:      authKVSvc,
 			}); err == nil {
 				serverOpts = append(serverOpts, server.WithAuthFactorService(svc))
+			}
+
+			// User-side N-factor service (M14) is always constructed, giving
+			// the standalone daemon the same "qrdb auth login" / "qrdb auth
+			// factor" surface the SDK's embedded transport already exposes
+			// (sdk/go/node.go buildLoginOpts). See buildUserAuthFactorServiceOption.
+			if opt, err := buildUserAuthFactorServiceOption(authKVSvc); err == nil {
+				serverOpts = append(serverOpts, opt)
+			} else {
+				slog.Warn("user auth-factor service (M14) disabled", slog.Any("error", err))
 			}
 
 			if authResult != nil {
@@ -2732,7 +2742,7 @@ func waitForLeaderElection(ctx context.Context, node raftNode, shardID uint64) e
 		if attempt == maxAttempts-1 {
 			return &AuthBootstrapError{
 				Step: "wait for leader",
-				Err:  fmt.Errorf("no leader after %d attempts", maxAttempts),
+				Err:  &LeaderElectionTimeoutError{Attempts: maxAttempts},
 			}
 		}
 		slog.Debug("auth bootstrap: waiting for leader election",
@@ -2821,7 +2831,7 @@ func waitForAdminReplication(ctx context.Context, userSvc user.UserServicer, ten
 	}
 	return &AuthBootstrapError{
 		Step: "wait for admin replication",
-		Err:  fmt.Errorf("admin user not replicated within %v", timeout),
+		Err:  &AdminReplicationTimeoutError{Timeout: timeout},
 	}
 }
 

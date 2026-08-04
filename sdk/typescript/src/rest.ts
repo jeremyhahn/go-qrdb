@@ -12,7 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { deepSnakeToCamel, deepCamelToSnake } from './transform.js';
+import {
+    deepSnakeToCamel,
+    deepCamelToSnake,
+    distanceMetricToRestWire,
+    indexTypeToRestWire,
+    normalizeVectorEnumFields,
+    normalizeVectorIDField,
+    vectorIDToWire,
+} from './transform.js';
 import type {
     AdminClient,
     BackupClient,
@@ -1186,8 +1194,22 @@ export class RestClient implements Client {
                 req: CreateNamespaceRequest,
             ): Promise<CreateNamespaceResponse> => {
                 this.ensureConnected();
+                // The Go REST handler (vectorCreateNamespaceRequest) expects
+                // distance_metric / index_type as canonical service strings,
+                // not the SDK's numeric proto enums, and the index parameters
+                // under index_config.
                 return this.fetchJSON<CreateNamespaceResponse>('/vector/namespace',
-                    { method: 'POST', ...jsonBody(req) },
+                    {
+                        method: 'POST',
+                        ...jsonBody({
+                            namespace: req.namespace,
+                            dimension: req.dimension,
+                            distance_metric: distanceMetricToRestWire(req.distanceMetric),
+                            index_type: indexTypeToRestWire(req.indexType),
+                            index_config: req.indexParams,
+                            shard_id: req.shardId,
+                        }),
+                    },
                 );
             },
             deleteNamespace: async (req: DeleteNamespaceRequest): Promise<void> => {
@@ -1200,45 +1222,61 @@ export class RestClient implements Client {
                 req: ListNamespacesRequest,
             ): Promise<ListNamespacesResponse> => {
                 this.ensureConnected();
-                return this.fetchJSON<ListNamespacesResponse>(`/vector/namespaces${buildQuery({ shard_id: req.shardId })}`,
+                const resp = await this.fetchJSON<ListNamespacesResponse>(`/vector/namespaces${buildQuery({ shard_id: req.shardId })}`,
                 );
+                // Namespace entries that arrive as info objects carry wire
+                // enum strings; convert them to the SDK's numeric enums.
+                return {
+                    ...resp,
+                    namespaces: (resp.namespaces ?? []).map(normalizeVectorEnumFields),
+                };
             },
             getNamespaceInfo: async (req: GetNamespaceInfoRequest): Promise<NamespaceInfo> => {
                 this.ensureConnected();
-                return this.fetchJSON<NamespaceInfo>(`/vector/namespace/info${buildQuery({
+                const info = await this.fetchJSON<NamespaceInfo>(`/vector/namespace/info${buildQuery({
                         namespace: req.namespace,
                         shard_id: req.shardId,
                     })}`,
                 );
+                return normalizeVectorEnumFields(info);
             },
             upsertVector: async (req: UpsertVectorRequest): Promise<UpsertVectorResponse> => {
                 this.ensureConnected();
+                // The Go REST handler carries vector IDs as uint64 JSON
+                // numbers; the SDK's string IDs are converted on the wire.
                 return this.fetchJSON<UpsertVectorResponse>('/vector/upsert', {
                     method: 'POST',
-                    ...jsonBody(req),
+                    ...jsonBody({ ...req, id: vectorIDToWire(req.id) }),
                 });
             },
             getVector: async (req: GetVectorRequest): Promise<VectorData> => {
                 this.ensureConnected();
-                return this.fetchJSON<VectorData>(`/vector/get${buildQuery({
+                const vec = await this.fetchJSON<VectorData>(`/vector/get${buildQuery({
                         namespace: req.namespace,
                         id: req.id,
                         consistency: req.consistency,
                         shard_id: req.shardId,
                     })}`,
                 );
+                return normalizeVectorIDField(vec);
             },
             deleteVector: async (req: DeleteVectorRequest): Promise<void> => {
                 this.ensureConnected();
                 await this.fetchVoid('/vector/delete', {
                     method: 'POST',
-                    ...jsonBody(req),
+                    ...jsonBody({ ...req, id: vectorIDToWire(req.id) }),
                 });
             },
             batchUpsert: async (req: BatchUpsertRequest): Promise<BatchUpsertResponse> => {
                 this.ensureConnected();
                 return this.fetchJSON<BatchUpsertResponse>('/vector/batch/upsert',
-                    { method: 'POST', ...jsonBody(req) },
+                    {
+                        method: 'POST',
+                        ...jsonBody({
+                            ...req,
+                            vectors: req.vectors.map((v) => ({ ...v, id: vectorIDToWire(v.id) })),
+                        }),
+                    },
                 );
             },
             batchDeleteVectors: async (
@@ -1246,12 +1284,15 @@ export class RestClient implements Client {
             ): Promise<BatchDeleteVectorsResponse> => {
                 this.ensureConnected();
                 return this.fetchJSON<BatchDeleteVectorsResponse>('/vector/batch/delete',
-                    { method: 'POST', ...jsonBody(req) },
+                    {
+                        method: 'POST',
+                        ...jsonBody({ ...req, ids: req.ids.map(vectorIDToWire) }),
+                    },
                 );
             },
             listVectors: async (req: ListVectorsRequest): Promise<ListVectorsResponse> => {
                 this.ensureConnected();
-                return this.fetchJSON<ListVectorsResponse>(`/vector/list${buildQuery({
+                const resp = await this.fetchJSON<ListVectorsResponse>(`/vector/list${buildQuery({
                         namespace: req.namespace,
                         limit: req.limit,
                         offset: req.offset,
@@ -1259,43 +1300,54 @@ export class RestClient implements Client {
                         shard_id: req.shardId,
                     })}`,
                 );
+                return {
+                    ...resp,
+                    vectors: (resp.vectors ?? []).map(normalizeVectorIDField),
+                };
             },
             updateMetadata: async (req: UpdateMetadataRequest): Promise<void> => {
                 this.ensureConnected();
                 await this.fetchVoid('/vector/metadata', {
                     method: 'POST',
-                    ...jsonBody(req),
+                    ...jsonBody({ ...req, id: vectorIDToWire(req.id) }),
                 });
             },
             searchSimilar: async (
                 req: SearchSimilarRequest,
             ): Promise<SearchSimilarResponse> => {
                 this.ensureConnected();
-                return this.fetchJSON<SearchSimilarResponse>('/vector/search/similar',
+                const resp = await this.fetchJSON<SearchSimilarResponse>('/vector/search/similar',
                     { method: 'POST', ...jsonBody(req) },
                 );
+                return { ...resp, results: (resp.results ?? []).map(normalizeVectorIDField) };
             },
             searchByMetadata: async (
                 req: SearchByMetadataRequest,
             ): Promise<SearchByMetadataResponse> => {
                 this.ensureConnected();
-                return this.fetchJSON<SearchByMetadataResponse>('/vector/search/metadata',
+                const resp = await this.fetchJSON<SearchByMetadataResponse>('/vector/search/metadata',
                     { method: 'POST', ...jsonBody(req) },
                 );
+                return { ...resp, results: (resp.results ?? []).map(normalizeVectorIDField) };
             },
             hybridSearch: async (
                 req: HybridSearchRequest,
             ): Promise<HybridSearchResponse> => {
                 this.ensureConnected();
-                return this.fetchJSON<HybridSearchResponse>('/vector/search/hybrid',
+                const resp = await this.fetchJSON<HybridSearchResponse>('/vector/search/hybrid',
                     { method: 'POST', ...jsonBody(req) },
                 );
+                return { ...resp, results: (resp.results ?? []).map(normalizeVectorIDField) };
             },
             searchByID: async (req: SearchByIDRequest): Promise<SearchSimilarResponse> => {
                 this.ensureConnected();
-                return this.fetchJSON<SearchSimilarResponse>('/vector/search/by-id',
-                    { method: 'POST', ...jsonBody(req) },
+                const resp = await this.fetchJSON<SearchSimilarResponse>('/vector/search/by-id',
+                    {
+                        method: 'POST',
+                        ...jsonBody({ ...req, id: vectorIDToWire(req.id) }),
+                    },
                 );
+                return { ...resp, results: (resp.results ?? []).map(normalizeVectorIDField) };
             },
             rebuildIndex: async (
                 req: RebuildIndexRequest,
@@ -1318,11 +1370,12 @@ export class RestClient implements Client {
             },
             getIndexStats: async (req: GetIndexStatsRequest): Promise<IndexStats> => {
                 this.ensureConnected();
-                return this.fetchJSON<IndexStats>(`/vector/index/stats${buildQuery({
+                const stats = await this.fetchJSON<IndexStats>(`/vector/index/stats${buildQuery({
                         namespace: req.namespace,
                         shard_id: req.shardId,
                     })}`,
                 );
+                return normalizeVectorEnumFields(stats);
             },
             compactNamespace: async (
                 req: CompactNamespaceRequest,

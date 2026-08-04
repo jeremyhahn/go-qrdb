@@ -64,15 +64,18 @@ func (b *StorageBarrier) ChangePassword(ctx context.Context, newCreds Credential
 		return err
 	}
 
-	// Carry forward the epoch, salt, and known epochs from the
-	// existing sealed root key. SealRootKey only produces the
-	// ciphertext and strategy fields; the epoch state is managed
-	// by the EpochBarrier and must be preserved across re-wraps.
+	// Carry forward the epoch, salt, known epochs, and HKDF version
+	// from the existing sealed root key. SealRootKey only produces the
+	// ciphertext and strategy fields; the epoch state is managed by the
+	// EpochBarrier and must be preserved across re-wraps — dropping the
+	// HKDF version would re-derive DEKs under the legacy v1 layout and
+	// render existing data undecryptable.
 	if existing != nil {
 		sealed.Epoch = existing.Epoch
 		sealed.Salt = existing.Salt
 		sealed.KnownEpochs = existing.KnownEpochs
 		sealed.Version = existing.Version
+		sealed.HKDFVersion = existing.HKDFVersion
 	}
 
 	// Persist the new sealed root key blob.

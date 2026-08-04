@@ -476,39 +476,6 @@ func TestStripScheme_EmptyString(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// appendALPN tests
-// ---------------------------------------------------------------------------
-
-func TestAppendALPN_Empty(t *testing.T) {
-	result := appendALPN(nil)
-	if len(result) != 1 {
-		t.Fatalf("appendALPN(nil) returned %d elements, want 1", len(result))
-	}
-	if result[0] != "qrdb-quic" {
-		t.Errorf("appendALPN(nil)[0] = %q, want %q", result[0], "qrdb-quic")
-	}
-}
-
-func TestAppendALPN_AlreadyPresent(t *testing.T) {
-	protos := []string{"h3", "qrdb-quic"}
-	result := appendALPN(protos)
-	if len(result) != 2 {
-		t.Fatalf("appendALPN() returned %d elements, want 2", len(result))
-	}
-}
-
-func TestAppendALPN_NotPresent(t *testing.T) {
-	protos := []string{"h3", "h2"}
-	result := appendALPN(protos)
-	if len(result) != 3 {
-		t.Fatalf("appendALPN() returned %d elements, want 3", len(result))
-	}
-	if result[2] != "qrdb-quic" {
-		t.Errorf("appendALPN()[2] = %q, want %q", result[2], "qrdb-quic")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // mapWireError tests
 // ---------------------------------------------------------------------------
 

@@ -21,6 +21,40 @@ import (
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
+// NilKVClientError is returned by NewKVStoreAdapter when the KV client is nil.
+type NilKVClientError struct{}
+
+// Error returns a human-readable description.
+func (e *NilKVClientError) Error() string {
+	return "sdk: kvstore adapter requires a non-nil transport.KVClient"
+}
+
+// NilIndexClientError is returned by NewKVStoreAdapter when the index client
+// is nil.
+type NilIndexClientError struct{}
+
+// Error returns a human-readable description.
+func (e *NilIndexClientError) Error() string {
+	return "sdk: kvstore adapter requires a non-nil transport.IndexClient"
+}
+
+// NewKVStoreAdapter returns a kvstore.KVStore backed by the given transport
+// clients, enabling DAOs to operate transparently over any transport
+// (REST, gRPC, QUIC, MCP, Unix, embedded). KV operations delegate to kv and
+// secondary-index operations delegate to index. Use Client.KVStore() when
+// both clients come from the same connected Client; this constructor serves
+// callers that compose the clients themselves. It returns a typed error
+// (NilKVClientError or NilIndexClientError) when either dependency is nil.
+func NewKVStoreAdapter(kv transport.KVClient, index transport.IndexClient) (KVStore, error) {
+	if kv == nil {
+		return nil, &NilKVClientError{}
+	}
+	if index == nil {
+		return nil, &NilIndexClientError{}
+	}
+	return &kvStoreAdapter{kv: kv, index: index}, nil
+}
+
 // kvStoreAdapter bridges the SDK transport layer to the kvstore.KVStore
 // interface, enabling DAOs to operate transparently over any transport
 // (REST, gRPC, MCP, Unix, embedded).

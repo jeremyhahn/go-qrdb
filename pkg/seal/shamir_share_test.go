@@ -9,6 +9,7 @@
 package seal
 
 import (
+	"bytes"
 	"context"
 	"testing"
 	"time"
@@ -387,6 +388,40 @@ func TestShareSplitter_RoundTrip_DifferentShareSubset(t *testing.T) {
 
 	if string(reconstructed) != string(secret) {
 		t.Errorf("expected %q, got %q", secret, reconstructed)
+	}
+}
+
+func TestShareSplitter_RoundTrip_BinarySecret(t *testing.T) {
+	// Regression guard for the wipeable-[]byte reconstruction path
+	// (shamir.CombineBytes): a binary secret containing embedded NUL
+	// bytes and every byte value must survive Split -> AddShare ->
+	// Reconstruct unchanged. A string-based path that truncates on NUL
+	// or mangles non-UTF-8 bytes would corrupt this secret.
+	secret := make([]byte, 256)
+	for i := range secret {
+		secret[i] = byte(i)
+	}
+
+	splitter := NewShamirShareSplitter()
+	shares, err := splitter.Split(secret, 3, 5)
+	if err != nil {
+		t.Fatalf("Split: %v", err)
+	}
+
+	acc := NewShamirShareAccumulator(3, 5, 5*time.Minute)
+	ctx := context.Background()
+	for i := 0; i < 3; i++ {
+		if _, err := acc.AddShare(ctx, shares[i]); err != nil {
+			t.Fatalf("AddShare(%d): %v", i, err)
+		}
+	}
+
+	reconstructed, err := acc.Reconstruct(ctx)
+	if err != nil {
+		t.Fatalf("Reconstruct: %v", err)
+	}
+	if !bytes.Equal(reconstructed, secret) {
+		t.Errorf("binary secret corrupted: got %d bytes %x, want %d bytes", len(reconstructed), reconstructed, len(secret))
 	}
 }
 

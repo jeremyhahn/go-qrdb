@@ -16,7 +16,9 @@ package main
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -37,6 +39,8 @@ func newAdminCmd() *cobra.Command {
 		newAdminMemberCmd(),
 		newAdminSnapshotCmd(),
 		newAdminDrainCmd(),
+		newAdminTopologyCmd(),
+		newAdminCapabilitiesCmd(),
 	)
 
 	return cmd
@@ -247,6 +251,102 @@ func newAdminDrainCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// newAdminTopologyCmd returns the admin topology subcommand.
+func newAdminTopologyCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "topology",
+		Short: "Show the full cluster topology as seen from this node",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			resp, err := client.Admin().GetTopology(cmd.Context())
+			if err != nil {
+				return err
+			}
+
+			switch outputFormat {
+			case "json":
+				return printJSON(resp)
+			case "yaml":
+				return printYAML(resp)
+			default:
+				_, _ = fmt.Fprintf(outputWriter, "NodeID:      %s\n", resp.NodeID)
+				_, _ = fmt.Fprintf(outputWriter, "RaftAddress: %s\n", resp.RaftAddress)
+				_, _ = fmt.Fprintf(outputWriter, "ShardCount:  %d\n\n", resp.ShardCount)
+
+				headers := []string{"SHARD_ID", "REPLICA_ID", "IS_LEADER", "LEADER_ID", "NODES"}
+				rows := make([][]string, len(resp.Shards))
+				for i, shard := range resp.Shards {
+					rows[i] = []string{
+						strconv.FormatUint(shard.ShardID, 10),
+						strconv.FormatUint(shard.ReplicaID, 10),
+						strconv.FormatBool(shard.IsLeader),
+						strconv.FormatUint(shard.LeaderID, 10),
+						formatTopologyNodes(shard.Nodes),
+					}
+				}
+				printTable(headers, rows)
+				return nil
+			}
+		},
+	}
+}
+
+// newAdminCapabilitiesCmd returns the admin capabilities subcommand.
+func newAdminCapabilitiesCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "capabilities",
+		Short: "Show the compile-time feature set of the connected node",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			resp, err := client.Admin().Capabilities(cmd.Context())
+			if err != nil {
+				return err
+			}
+
+			switch outputFormat {
+			case "json":
+				return printJSON(resp)
+			case "yaml":
+				return printYAML(resp)
+			default:
+				headers := []string{"FEATURE", "ENABLED"}
+				rows := [][]string{
+					{"kv", strconv.FormatBool(resp.KV)},
+					{"mvcc", strconv.FormatBool(resp.MVCC)},
+					{"transaction", strconv.FormatBool(resp.Transaction)},
+					{"batch", strconv.FormatBool(resp.Batch)},
+					{"watch", strconv.FormatBool(resp.Watch)},
+					{"lease", strconv.FormatBool(resp.Lease)},
+					{"index", strconv.FormatBool(resp.Index)},
+					{"timeSeries", strconv.FormatBool(resp.TimeSeries)},
+					{"vector", strconv.FormatBool(resp.Vector)},
+				}
+				printTable(headers, rows)
+				return nil
+			}
+		},
+	}
+}
+
+// formatTopologyNodes renders a shard's replicaID->address membership map
+// as a comma-separated "replicaID=address" list for table output, sorted
+// by replica ID for deterministic display.
+func formatTopologyNodes(nodes map[uint64]string) string {
+	if len(nodes) == 0 {
+		return "-"
+	}
+	ids := make([]uint64, 0, len(nodes))
+	for id := range nodes {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	parts := make([]string, len(ids))
+	for i, id := range ids {
+		parts[i] = strconv.FormatUint(id, 10) + "=" + nodes[id]
+	}
+	return strings.Join(parts, ",")
 }
 
 // InvalidReplicaIDError is returned when a replica ID argument cannot

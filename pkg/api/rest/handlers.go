@@ -873,6 +873,9 @@ func mapHTTPError(err error) int {
 	var smnc *service.SMNotConfiguredError
 	var qee *quota.ExceededError
 	var qent *quota.EntitlementError
+	var sqleq *service.SQLEmptyQueryError
+	var sqled *service.SQLEmptyDatabaseError
+	var sqlex *service.SQLExecutionError
 
 	switch {
 	case errors.As(err, &knf):
@@ -987,6 +990,10 @@ func mapHTTPError(err error) int {
 		// SM subsystem not configured — surface as 501 Not Implemented so
 		// clients know the operation is not supported by this server instance.
 		return http.StatusNotImplemented
+	case errors.As(err, &sqleq), errors.As(err, &sqled), errors.As(err, &sqlex):
+		// SQL validation and engine failures are client errors — the
+		// query (or its target database selector) is malformed.
+		return http.StatusBadRequest
 	default:
 		// Allow build-tagged packages to extend the error mapping.
 		if ragErrorMapperFn != nil {

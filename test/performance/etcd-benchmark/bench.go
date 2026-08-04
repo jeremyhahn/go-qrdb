@@ -176,21 +176,55 @@ func hasScheme(s string) bool {
 	return false
 }
 
+// ErrReadCA indicates the CA certificate file could not be read from disk.
+type ErrReadCA struct {
+	Path string
+	Err  error
+}
+
+func (e *ErrReadCA) Error() string {
+	return "read CA " + e.Path + ": " + e.Err.Error()
+}
+
+func (e *ErrReadCA) Unwrap() error { return e.Err }
+
+// ErrParseCA indicates the CA certificate file contained no parseable PEM certificates.
+type ErrParseCA struct {
+	Path string
+}
+
+func (e *ErrParseCA) Error() string {
+	return "parse CA certificate from " + e.Path
+}
+
+// ErrLoadKeyPair indicates the client certificate/key pair could not be loaded.
+type ErrLoadKeyPair struct {
+	CertPath string
+	KeyPath  string
+	Err      error
+}
+
+func (e *ErrLoadKeyPair) Error() string {
+	return "load client cert/key from " + e.CertPath + ", " + e.KeyPath + ": " + e.Err.Error()
+}
+
+func (e *ErrLoadKeyPair) Unwrap() error { return e.Err }
+
 // buildTLSConfig loads the CA, client cert, and client key from disk and
 // returns a *tls.Config for mTLS connections.
 func buildTLSConfig(caPath, certPath, keyPath string) (*tls.Config, error) {
 	caCert, err := os.ReadFile(caPath)
 	if err != nil {
-		return nil, fmt.Errorf("read CA: %w", err)
+		return nil, &ErrReadCA{Path: caPath, Err: err}
 	}
 	pool := x509.NewCertPool()
 	if !pool.AppendCertsFromPEM(caCert) {
-		return nil, fmt.Errorf("parse CA certificate from %s", caPath)
+		return nil, &ErrParseCA{Path: caPath}
 	}
 
 	clientCert, err := tls.LoadX509KeyPair(certPath, keyPath)
 	if err != nil {
-		return nil, fmt.Errorf("load client cert/key: %w", err)
+		return nil, &ErrLoadKeyPair{CertPath: certPath, KeyPath: keyPath, Err: err}
 	}
 
 	return &tls.Config{

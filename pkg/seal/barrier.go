@@ -124,6 +124,12 @@ type StorageBarrier struct {
 	// activeStrategy is the strategy ID that sealed the root key.
 	activeStrategy atomic.Value
 
+	// persistedStrategyCache caches the strategy ID recovered from the
+	// persisted sealed root-key blob for sealed-but-initialized barriers
+	// that have not yet unsealed (see strategyOrPersisted). atomic.Value
+	// stores StrategyID.
+	persistedStrategyCache atomic.Value
+
 	// accumulator holds the Shamir share accumulator for quorum-based unsealing.
 	accumulator atomic.Value
 
@@ -510,6 +516,13 @@ func (b *StorageBarrier) IsSealed() bool {
 // store) reports the original initialization timestamp even while still
 // sealed, without requiring an unseal first.
 //
+// Strategy is likewise self-describing while sealed: a fresh StorageBarrier
+// constructed over an already-initialized store (daemon restart, or the
+// in-process data-plane re-init after enable-encryption) reports the strategy
+// recorded in the persisted sealed root-key blob, so status consumers can
+// render mode-aware unseal flows before the first unseal. An uninitialized
+// barrier still reports an empty strategy.
+//
 // When the active strategy is Shamir, ShamirThreshold and ShamirTotal reflect
 // the scheme that is actually in effect. The in-memory ShamirStrategy is
 // preferred (updated by initializeShamirDirect and Rekey); the config values
@@ -518,12 +531,10 @@ func (b *StorageBarrier) Status() *BarrierStatus {
 	status := &BarrierStatus{
 		Sealed: b.IsSealed(),
 	}
-	if raw := b.activeStrategy.Load(); raw != nil {
-		if id, ok := raw.(StrategyID); ok {
-			status.Strategy = id
-			if s, exists := b.strategies[id]; exists {
-				status.HardwareBacked = s.HardwareBacked()
-			}
+	if id := b.strategyOrPersisted(); id != "" {
+		status.Strategy = id
+		if s, exists := b.strategies[id]; exists {
+			status.HardwareBacked = s.HardwareBacked()
 		}
 	}
 	if t := b.initializedAtOrPersisted(); !t.IsZero() {
@@ -561,6 +572,33 @@ func (b *StorageBarrier) initializedAtOrPersisted() time.Time {
 	}
 	if !persisted.IsZero() {
 		b.initializedAt.Store(persisted)
+	}
+	return persisted
+}
+
+// strategyOrPersisted returns the in-memory active strategy when set, falling
+// back to the strategy recorded in the persisted sealed root-key blob. The
+// fallback makes a sealed-but-initialized barrier self-describing before its
+// first unseal (daemon restart, or the in-process data-plane re-init after an
+// enable-encryption migration), so every status transport reports the real
+// keyed strategy instead of an empty string. On the fallback path the
+// recovered value is cached so subsequent calls avoid the backend read; once
+// the barrier unseals, activeStrategy takes precedence over the cache. An
+// uninitialized barrier (no persisted root-key blob) yields "".
+func (b *StorageBarrier) strategyOrPersisted() StrategyID {
+	if raw := b.activeStrategy.Load(); raw != nil {
+		if id, ok := raw.(StrategyID); ok && id != "" {
+			return id
+		}
+	}
+	if raw := b.persistedStrategyCache.Load(); raw != nil {
+		if id, ok := raw.(StrategyID); ok && id != "" {
+			return id
+		}
+	}
+	persisted := b.PersistedStrategy(context.Background())
+	if persisted != "" {
+		b.persistedStrategyCache.Store(persisted)
 	}
 	return persisted
 }

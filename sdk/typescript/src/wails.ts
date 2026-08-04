@@ -204,7 +204,15 @@ import type {
     TenantShamirSealVoteRequest,
 } from './types.js';
 
-import { deepSnakeToCamel, deepCamelToSnake } from './transform.js';
+import {
+    deepSnakeToCamel,
+    deepCamelToSnake,
+    distanceMetricToIpcWire,
+    indexTypeToIpcWire,
+    normalizeVectorEnumFields,
+    normalizeVectorIDField,
+    vectorIDToWire,
+} from './transform.js';
 
 // ---------------------------------------------------------------------------
 // SDK version constant
@@ -753,7 +761,18 @@ export class WailsClient implements Client {
             createNamespace: async (
                 req: CreateNamespaceRequest,
             ): Promise<CreateNamespaceResponse> => {
-                return b.CreateNamespace(toSnake(req)) as Promise<CreateNamespaceResponse>;
+                // The Go SDK transport (sdk/go/transport/vector_types.go)
+                // expects distance_metric / index_type as its canonical
+                // lowercase strings, not the SDK's numeric proto enums, and
+                // the index parameters under index_config.
+                return b.CreateNamespace(toSnake({
+                    namespace: req.namespace,
+                    dimension: req.dimension,
+                    distanceMetric: distanceMetricToIpcWire(req.distanceMetric),
+                    indexType: indexTypeToIpcWire(req.indexType),
+                    indexConfig: req.indexParams,
+                    shardId: req.shardId,
+                })) as Promise<CreateNamespaceResponse>;
             },
             deleteNamespace: async (req: DeleteNamespaceRequest): Promise<void> => {
                 await b.DeleteNamespace(toSnake(req));
@@ -761,51 +780,78 @@ export class WailsClient implements Client {
             listNamespaces: async (
                 req: ListNamespacesRequest,
             ): Promise<ListNamespacesResponse> => {
-                return b.ListNamespaces(toSnake(req)) as Promise<ListNamespacesResponse>;
+                const resp = await b.ListNamespaces(toSnake(req)) as ListNamespacesResponse;
+                // Namespace entries that arrive as info objects carry wire
+                // enum strings; convert them to the SDK's numeric enums.
+                return {
+                    ...resp,
+                    namespaces: (resp.namespaces ?? []).map(normalizeVectorEnumFields),
+                };
             },
             getNamespaceInfo: async (req: GetNamespaceInfoRequest): Promise<NamespaceInfo> => {
-                return b.GetNamespaceInfo(toSnake(req)) as Promise<NamespaceInfo>;
+                const info = await b.GetNamespaceInfo(toSnake(req)) as NamespaceInfo;
+                return normalizeVectorEnumFields(info);
             },
             upsertVector: async (req: UpsertVectorRequest): Promise<UpsertVectorResponse> => {
-                return b.UpsertVector(toSnake(req)) as Promise<UpsertVectorResponse>;
+                // The Go SDK transport carries vector IDs as uint64 values;
+                // the SDK's string IDs are converted at the IPC boundary.
+                return b.UpsertVector(toSnake({ ...req, id: vectorIDToWire(req.id) })) as Promise<UpsertVectorResponse>;
             },
             getVector: async (req: GetVectorRequest): Promise<VectorData> => {
-                return b.GetVector(toSnake(req)) as Promise<VectorData>;
+                const vec = await b.GetVector(toSnake({ ...req, id: vectorIDToWire(req.id) })) as VectorData;
+                return normalizeVectorIDField(vec);
             },
             deleteVector: async (req: DeleteVectorRequest): Promise<void> => {
-                await b.DeleteVector(toSnake(req));
+                await b.DeleteVector(toSnake({ ...req, id: vectorIDToWire(req.id) }));
             },
             batchUpsert: async (req: BatchUpsertRequest): Promise<BatchUpsertResponse> => {
-                return b.BatchUpsert(toSnake(req)) as Promise<BatchUpsertResponse>;
+                return b.BatchUpsert(toSnake({
+                    ...req,
+                    vectors: req.vectors.map((v) => ({ ...v, id: vectorIDToWire(v.id) })),
+                })) as Promise<BatchUpsertResponse>;
             },
             batchDeleteVectors: async (
                 req: BatchDeleteVectorsRequest,
             ): Promise<BatchDeleteVectorsResponse> => {
-                return b.BatchDeleteVectors(toSnake(req)) as Promise<BatchDeleteVectorsResponse>;
+                return b.BatchDeleteVectors(toSnake({
+                    ...req,
+                    ids: req.ids.map(vectorIDToWire),
+                })) as Promise<BatchDeleteVectorsResponse>;
             },
             listVectors: async (req: ListVectorsRequest): Promise<ListVectorsResponse> => {
-                return b.ListVectors(toSnake(req)) as Promise<ListVectorsResponse>;
+                const resp = await b.ListVectors(toSnake(req)) as ListVectorsResponse;
+                return {
+                    ...resp,
+                    vectors: (resp.vectors ?? []).map(normalizeVectorIDField),
+                };
             },
             updateMetadata: async (req: UpdateMetadataRequest): Promise<void> => {
-                await b.UpdateMetadata(toSnake(req));
+                await b.UpdateMetadata(toSnake({ ...req, id: vectorIDToWire(req.id) }));
             },
             searchSimilar: async (
                 req: SearchSimilarRequest,
             ): Promise<SearchSimilarResponse> => {
-                return b.SearchSimilar(toSnake(req)) as Promise<SearchSimilarResponse>;
+                const resp = await b.SearchSimilar(toSnake(req)) as SearchSimilarResponse;
+                return { ...resp, results: (resp.results ?? []).map(normalizeVectorIDField) };
             },
             searchByMetadata: async (
                 req: SearchByMetadataRequest,
             ): Promise<SearchByMetadataResponse> => {
-                return b.SearchByMetadata(toSnake(req)) as Promise<SearchByMetadataResponse>;
+                const resp = await b.SearchByMetadata(toSnake(req)) as SearchByMetadataResponse;
+                return { ...resp, results: (resp.results ?? []).map(normalizeVectorIDField) };
             },
             hybridSearch: async (
                 req: HybridSearchRequest,
             ): Promise<HybridSearchResponse> => {
-                return b.HybridSearch(toSnake(req)) as Promise<HybridSearchResponse>;
+                const resp = await b.HybridSearch(toSnake(req)) as HybridSearchResponse;
+                return { ...resp, results: (resp.results ?? []).map(normalizeVectorIDField) };
             },
             searchByID: async (req: SearchByIDRequest): Promise<SearchSimilarResponse> => {
-                return b.SearchByID(toSnake(req)) as Promise<SearchSimilarResponse>;
+                const resp = await b.SearchByID(toSnake({
+                    ...req,
+                    id: vectorIDToWire(req.id),
+                })) as SearchSimilarResponse;
+                return { ...resp, results: (resp.results ?? []).map(normalizeVectorIDField) };
             },
             rebuildIndex: async (
                 req: RebuildIndexRequest,
@@ -818,7 +864,8 @@ export class WailsClient implements Client {
                 return b.GetRebuildProgress(toSnake(req)) as Promise<RebuildProgress>;
             },
             getIndexStats: async (req: GetIndexStatsRequest): Promise<IndexStats> => {
-                return b.GetIndexStats(toSnake(req)) as Promise<IndexStats>;
+                const stats = await b.GetIndexStats(toSnake(req)) as IndexStats;
+                return normalizeVectorEnumFields(stats);
             },
             compactNamespace: async (
                 req: CompactNamespaceRequest,

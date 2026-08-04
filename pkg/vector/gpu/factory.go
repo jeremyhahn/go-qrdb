@@ -16,16 +16,9 @@
 package gpu
 
 import (
-	"errors"
-	"fmt"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/interfaces"
 	"github.com/jeremyhahn/go-qrdb/pkg/vector/gpu/remote"
 )
-
-// ErrNoFallbackFactory is returned when a GPU index cannot be created and no
-// CPU fallback factory was provided.
-var ErrNoFallbackFactory = errors.New("no CPU fallback factory provided")
 
 // GPUIndexFactory creates GPU-accelerated HNSW-compatible indexes. The
 // priority order is:
@@ -75,7 +68,7 @@ func (f *GPUIndexFactory) CreateIndex(config *interfaces.HNSWConfig) (interfaces
 func (f *GPUIndexFactory) createRemoteIndex() (interfaces.HNSWIndex, error) {
 	idx, err := remote.NewRemoteGPUIndex(remoteConfigToConnConfig(f.remoteConfig))
 	if err != nil {
-		return nil, fmt.Errorf("gpu factory: create remote index: %w", err)
+		return nil, &FactoryError{Op: "gpu factory: create remote index", Cause: err}
 	}
 	return idx, nil
 }
@@ -99,7 +92,7 @@ func (f *GPUIndexFactory) createGPUIndex(config *interfaces.HNSWConfig) (interfa
 // createFallbackIndex delegates index creation to the CPU fallback factory.
 func (f *GPUIndexFactory) createFallbackIndex(config *interfaces.HNSWConfig) (interfaces.HNSWIndex, error) {
 	if f.fallback == nil {
-		return nil, ErrNoFallbackFactory
+		return nil, &FactoryError{Op: "gpu factory", Cause: ErrNoFallbackFactory}
 	}
 	return f.fallback.CreateIndex(config)
 }

@@ -29,7 +29,6 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
-	"fmt"
 	"math"
 	"strconv"
 
@@ -604,7 +603,7 @@ func float32sToBytes(floats []float32) []byte {
 // bytesToFloat32s decodes a little-endian byte slice into a []float32.
 func bytesToFloat32s(b []byte) ([]float32, error) {
 	if len(b)%4 != 0 {
-		return nil, &AdapterDecodeError{Key: "vector", Err: fmt.Errorf("byte length %d is not a multiple of 4", len(b))}
+		return nil, &AdapterDecodeError{Key: "vector", Err: &VectorByteLengthError{Length: len(b)}}
 	}
 	floats := make([]float32, len(b)/4)
 	for i := range floats {
@@ -804,3 +803,15 @@ func (e *AdapterEncodeError) Error() string {
 
 // Unwrap returns the underlying encode error.
 func (e *AdapterEncodeError) Unwrap() error { return e.Err }
+
+// VectorByteLengthError is returned when a stored vector blob has a byte
+// length that is not a multiple of 4 (the size of a float32), indicating a
+// corrupt or non-vector value.
+type VectorByteLengthError struct {
+	Length int
+}
+
+// Error returns a human-readable description of the length violation.
+func (e *VectorByteLengthError) Error() string {
+	return "byte length " + strconv.Itoa(e.Length) + " is not a multiple of 4"
+}

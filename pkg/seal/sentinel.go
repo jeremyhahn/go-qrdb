@@ -97,7 +97,7 @@ func ReadFormatSentinel(ctx context.Context, store StorageBackend) error {
 		return ErrLegacyDataDir
 	}
 	if len(value) != 4 {
-		return fmt.Errorf("qrdb/seal: sentinel has unexpected length %d, want 4", len(value))
+		return &SentinelLengthError{Length: len(value)}
 	}
 	onDisk := binary.LittleEndian.Uint32(value)
 	if onDisk > CurrentFormatVersion {
@@ -123,4 +123,14 @@ func EnsureFormatSentinel(ctx context.Context, store StorageBackend, sealStoreEm
 		return ErrLegacyDataDir
 	}
 	return WriteFormatSentinel(ctx, store)
+}
+
+// SentinelLengthError is returned when the format-version sentinel value has
+// an unexpected byte length (it must be exactly 4 bytes).
+type SentinelLengthError struct {
+	Length int
+}
+
+func (e *SentinelLengthError) Error() string {
+	return fmt.Sprintf("qrdb/seal: sentinel has unexpected length %d, want 4", e.Length)
 }

@@ -21,8 +21,8 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"fmt"
 	"os"
+	"strconv"
 	"time"
 
 	"google.golang.org/grpc"
@@ -69,20 +69,20 @@ type RemoteGPUIndex struct {
 // Close when the index is no longer needed.
 func NewRemoteGPUIndex(config *Config) (*RemoteGPUIndex, error) {
 	if config == nil {
-		return nil, fmt.Errorf("remote gpu index: config must not be nil")
+		return nil, ErrNilConfig
 	}
 	if config.Endpoint == "" {
-		return nil, fmt.Errorf("remote gpu index: endpoint must not be empty")
+		return nil, ErrEmptyEndpoint
 	}
 
 	dialOpts, err := buildDialOptions(config)
 	if err != nil {
-		return nil, fmt.Errorf("remote gpu index: build dial options: %w", err)
+		return nil, &IndexError{Op: "build dial options", Cause: err}
 	}
 
 	conn, err := grpc.NewClient(config.Endpoint, dialOpts...)
 	if err != nil {
-		return nil, fmt.Errorf("remote gpu index: dial %s: %w", config.Endpoint, err)
+		return nil, &IndexError{Op: "dial " + config.Endpoint, Cause: err}
 	}
 
 	return &RemoteGPUIndex{
@@ -102,7 +102,7 @@ func (r *RemoteGPUIndex) Insert(id uint64, vector []float32) error {
 		Vector: vector,
 	})
 	if err != nil {
-		return fmt.Errorf("remote gpu index: insert id=%d: %w", id, err)
+		return &IndexError{Op: "insert id=" + strconv.FormatUint(id, 10), Cause: err}
 	}
 	return nil
 }
@@ -114,7 +114,7 @@ func (r *RemoteGPUIndex) Delete(id uint64) error {
 
 	_, err := r.client.Delete(ctx, &proto.DeleteRequest{ID: id})
 	if err != nil {
-		return fmt.Errorf("remote gpu index: delete id=%d: %w", id, err)
+		return &IndexError{Op: "delete id=" + strconv.FormatUint(id, 10), Cause: err}
 	}
 	return nil
 }
@@ -130,7 +130,7 @@ func (r *RemoteGPUIndex) Search(query []float32, k int) ([]*interfaces.HNSWSearc
 		K:     int32(k),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("remote gpu index: search k=%d: %w", k, err)
+		return nil, &IndexError{Op: "search k=" + strconv.Itoa(k), Cause: err}
 	}
 
 	results := make([]*interfaces.HNSWSearchResult, len(resp.Results))
@@ -213,7 +213,7 @@ func buildDialOptions(config *Config) ([]grpc.DialOption, error) {
 	if hasCert {
 		cert, err := tls.LoadX509KeyPair(config.TLSCert, config.TLSKey)
 		if err != nil {
-			return nil, fmt.Errorf("load client key pair: %w", err)
+			return nil, &TLSConfigError{Op: "load client key pair", Cause: err}
 		}
 		tlsCfg.Certificates = []tls.Certificate{cert}
 	}
@@ -221,11 +221,11 @@ func buildDialOptions(config *Config) ([]grpc.DialOption, error) {
 	if hasCA {
 		caPEM, err := os.ReadFile(config.TLSCA)
 		if err != nil {
-			return nil, fmt.Errorf("read CA cert %s: %w", config.TLSCA, err)
+			return nil, &TLSConfigError{Op: "read CA cert " + config.TLSCA, Cause: err}
 		}
 		pool := x509.NewCertPool()
 		if !pool.AppendCertsFromPEM(caPEM) {
-			return nil, fmt.Errorf("parse CA cert %s: no valid certificates found", config.TLSCA)
+			return nil, &CACertParseError{Path: config.TLSCA}
 		}
 		tlsCfg.RootCAs = pool
 	}

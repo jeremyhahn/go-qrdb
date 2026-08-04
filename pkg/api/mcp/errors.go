@@ -58,3 +58,15 @@ func (e *ToolError) Error() string {
 func (e *ToolError) Unwrap() error {
 	return e.Err
 }
+
+// RequiredParameterError is returned by tool argument parsing when a required
+// parameter is absent from the request.
+type RequiredParameterError struct {
+	// Parameter is the name of the missing required parameter.
+	Parameter string
+}
+
+// Error returns "<parameter> is required".
+func (e *RequiredParameterError) Error() string {
+	return "mcp: " + e.Parameter + " is required"
+}

@@ -57,6 +57,19 @@ func FromContext(ctx context.Context) string {
 	return SystemTenantID
 }
 
+// IDFromContext extracts the tenant ID from the context with comma-ok
+// semantics. Unlike FromContext, it does not fall back to SystemTenantID:
+// ok is false when no tenant is bound to the context or the bound value is
+// empty, letting callers distinguish an explicit binding from the implicit
+// system-tenant default.
+func IDFromContext(ctx context.Context) (string, bool) {
+	v, ok := ctx.Value(contextKey{}).(string)
+	if !ok || v == "" {
+		return "", false
+	}
+	return v, true
+}
+
 // WithInternalCall returns a context marked as originating from a trusted
 // internal caller. TenantServicer.CreateTenant honours this marker to
 // bypass reserved-id rejection for first-boot bootstrap of the system

@@ -48,6 +48,12 @@ type ImportedKey struct {
 	// KnownEpochs lists every epoch whose DEK must be re-derived on unseal.
 	// Replicas need the full set so they can decrypt data written at any epoch.
 	KnownEpochs []uint64
+
+	// HKDFVersion is the HKDF info-string layout the leader derives DEKs
+	// with. Replicas must persist and derive with the same version or the
+	// derived DEKs diverge (the zero value is interpreted downstream as
+	// the legacy v1 layout, matching exports from older leaders).
+	HKDFVersion HKDFVersion
 }
 
 // Validate reports the first structural error found in the ImportedKey.
@@ -101,6 +107,7 @@ func (b *StorageBarrier) ExportRootKeyContext() (*ImportedKey, error) {
 		Salt:        sealed.Salt,
 		Epoch:       sealed.Epoch,
 		KnownEpochs: sealed.KnownEpochs,
+		HKDFVersion: sealed.HKDFVersion,
 	}, nil
 }
 
@@ -156,7 +163,9 @@ func (b *StorageBarrier) ImportRootKey(ctx context.Context, imported *ImportedKe
 	}
 
 	// Populate the shared derivation parameters from the leader context.
-	// Salt/Epoch/KnownEpochs are what guarantee identical DEK derivation.
+	// Salt/Epoch/KnownEpochs/HKDFVersion are what guarantee identical DEK
+	// derivation (a zero HKDFVersion is interpreted as the legacy v1
+	// layout on unseal, matching exports from older leaders).
 	sealed.Version = 1
 	sealed.Epoch = imported.Epoch
 	saltCopy := make([]byte, len(imported.Salt))
@@ -165,6 +174,7 @@ func (b *StorageBarrier) ImportRootKey(ctx context.Context, imported *ImportedKe
 	epochs := make([]uint64, len(imported.KnownEpochs))
 	copy(epochs, imported.KnownEpochs)
 	sealed.KnownEpochs = epochs
+	sealed.HKDFVersion = imported.HKDFVersion
 
 	blob, err := json.Marshal(sealed)
 	if err != nil {

@@ -558,3 +558,230 @@ func TestNodeStoreMigration_RecodeFailureRollsBack(t *testing.T) {
 		t.Fatalf("source strategy = %q, want none after rollback", got)
 	}
 }
+
+// ---------- Journal-driven crash recovery (tenant-barrier hook path) ----------
+
+// TestRecoverInterruptedMigration_JournalStoreDirs_RollForward simulates the
+// tenant-scope crash window: the process died mid-commit BEFORE the directory
+// swap, with the store-directory set recorded only in the journal. Recovery is
+// invoked with nil storeDirs — exactly how the scope-agnostic tenant-barrier
+// hook calls it — and must complete the swap and adopt the keyed root key from
+// the journal alone.
+func TestRecoverInterruptedMigration_JournalStoreDirs_RollForward(t *testing.T) {
+	ctx := context.Background()
+	const pw = "journal-dirs-pass"
+	backend := seal.NewMemoryBackend()
+	dir := t.TempDir() + "/pebble"
+	data := map[string]string{"k1": "v1", "k2": "v2"}
+
+	// Keyed barrier at the staging path holds the keyed root key; the keyed
+	// data copy is still at the staging sibling (the swap never ran).
+	keyed := initKeyedBarrier(t, backend, "root-key.migrating", pw)
+	writeStore(t, dir+keyedSuffix, atrest.New(keyed), data)
+
+	// Original none store is still live at dir; canonical root key still none.
+	none := initNoneBarrierBackend(t, backend, "root-key")
+	writeStore(t, dir, atrest.New(none), data)
+
+	j := &seal.MigrationJournal{
+		SourceStrategy: seal.StrategyNone, TargetStrategy: seal.StrategyPassphrase,
+		Mechanism: seal.MechanismSwap, Phase: seal.PhaseCommitting,
+		StagingRootKeyPath: "root-key.migrating",
+		StoreDirs:          []string{dir},
+	}
+	jblob, _ := json.Marshal(j)
+	if err := backend.Put(ctx, "root-key.migration", jblob); err != nil {
+		t.Fatalf("write journal: %v", err)
+	}
+
+	// nil storeDirs: the recovery must find the dirs in the journal.
+	if err := RecoverInterruptedMigration(ctx, backend, "root-key", nil); err != nil {
+		t.Fatalf("RecoverInterruptedMigration: %v", err)
+	}
+
+	if got := persistedStrategy(ctx, backend, "root-key"); got != seal.StrategyPassphrase {
+		t.Fatalf("canonical strategy after recovery = %q, want passphrase", got)
+	}
+	if jj, _ := seal.LoadMigrationJournalFrom(ctx, backend, "root-key"); jj != nil {
+		t.Fatal("journal must be cleared after recovery")
+	}
+	if _, err := os.Stat(dir + keyedSuffix); !os.IsNotExist(err) {
+		t.Fatal("keyed staging dir must be swapped into place")
+	}
+	if _, err := os.Stat(dir + backupSuffix); !os.IsNotExist(err) {
+		t.Fatal("pre-migration backup must be removed after roll-forward")
+	}
+
+	// Data is readable through a keyed barrier unsealed from the adopted key.
+	// DeploymentID matches the fixtures' (it participates in DEK derivation).
+	reopened, err := seal.NewStorageBarrier(reencTestLogger(), backend,
+		seal.BarrierConfig{RootKeyPath: "root-key", DeploymentID: 1}, seal.NewDeferredSoftwareStrategy())
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	if err := reopened.Unseal(ctx, seal.Credentials{Secret: []byte(pw)}); err != nil {
+		t.Fatalf("unseal recovered: %v", err)
+	}
+	got := readAll(t, dir, atrest.New(reopened))
+	for k, v := range data {
+		if got[k] != v {
+			t.Fatalf("key %q = %q, want %q", k, got[k], v)
+		}
+	}
+}
+
+// TestRecoverInterruptedMigration_StagedSnapshots_RollForward verifies a
+// committed journal's staged snapshot data files (the IsolationRaft case,
+// whose snapshots live outside every swapped directory) are renamed into
+// place on roll-forward.
+func TestRecoverInterruptedMigration_StagedSnapshots_RollForward(t *testing.T) {
+	ctx := context.Background()
+	backend := seal.NewMemoryBackend()
+	initNoneBarrierBackend(t, backend, "root-key")
+
+	snapDir := t.TempDir()
+	final := filepath.Join(snapDir, SnapshotDataFile)
+	staged := final + SnapshotKeyedSuffix
+	if err := os.WriteFile(final, []byte("source-encrypted"), 0o600); err != nil {
+		t.Fatalf("seed final: %v", err)
+	}
+	if err := os.WriteFile(staged, []byte("keyed"), 0o600); err != nil {
+		t.Fatalf("seed staged: %v", err)
+	}
+
+	j := &seal.MigrationJournal{
+		Phase:           seal.PhaseCommitting,
+		TargetStrategy:  seal.StrategyPassphrase,
+		StagedSnapshots: []seal.StagedSnapshot{{FinalPath: final, KeyedPath: staged}},
+	}
+	jblob, _ := json.Marshal(j)
+	if err := backend.Put(ctx, "root-key.migration", jblob); err != nil {
+		t.Fatalf("write journal: %v", err)
+	}
+
+	if err := RecoverInterruptedMigration(ctx, backend, "root-key", nil); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+
+	got, err := os.ReadFile(final)
+	if err != nil {
+		t.Fatalf("read final: %v", err)
+	}
+	if string(got) != "keyed" {
+		t.Fatalf("final snapshot = %q, want the keyed staged copy", got)
+	}
+	if _, serr := os.Stat(staged); !os.IsNotExist(serr) {
+		t.Fatal("staged sibling must be renamed away on roll-forward")
+	}
+	if jj, _ := seal.LoadMigrationJournalFrom(ctx, backend, "root-key"); jj != nil {
+		t.Fatal("journal must be cleared after recovery")
+	}
+}
+
+// TestRecoverInterruptedMigration_StagedSnapshots_RollBack verifies an
+// uncommitted journal's staged snapshot siblings are discarded on roll-back,
+// leaving the live snapshot data untouched.
+func TestRecoverInterruptedMigration_StagedSnapshots_RollBack(t *testing.T) {
+	ctx := context.Background()
+	backend := seal.NewMemoryBackend()
+	initNoneBarrierBackend(t, backend, "root-key")
+
+	snapDir := t.TempDir()
+	final := filepath.Join(snapDir, SnapshotDataFile)
+	staged := final + SnapshotKeyedSuffix
+	if err := os.WriteFile(final, []byte("live"), 0o600); err != nil {
+		t.Fatalf("seed final: %v", err)
+	}
+	if err := os.WriteFile(staged, []byte("partial-keyed"), 0o600); err != nil {
+		t.Fatalf("seed staged: %v", err)
+	}
+
+	j := &seal.MigrationJournal{
+		Phase:           seal.PhaseCopying,
+		TargetStrategy:  seal.StrategyPassphrase,
+		StagedSnapshots: []seal.StagedSnapshot{{FinalPath: final, KeyedPath: staged}},
+	}
+	jblob, _ := json.Marshal(j)
+	if err := backend.Put(ctx, "root-key.migration", jblob); err != nil {
+		t.Fatalf("write journal: %v", err)
+	}
+
+	if err := RecoverInterruptedMigration(ctx, backend, "root-key", nil); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+
+	got, err := os.ReadFile(final)
+	if err != nil {
+		t.Fatalf("read final: %v", err)
+	}
+	if string(got) != "live" {
+		t.Fatalf("final snapshot = %q, want untouched live copy", got)
+	}
+	if _, serr := os.Stat(staged); !os.IsNotExist(serr) {
+		t.Fatal("staged sibling must be removed on roll-back")
+	}
+	if jj, _ := seal.LoadMigrationJournalFrom(ctx, backend, "root-key"); jj != nil {
+		t.Fatal("journal must be cleared after rollback")
+	}
+}
+
+// capturingJournal records a deep copy of the journal at every checkpoint so a
+// test can assert what crash-recovery state Run persisted mid-flight.
+type capturingJournal struct {
+	*seal.StorageBarrier
+	checkpoints []seal.MigrationJournal
+}
+
+func (c *capturingJournal) CheckpointMigration(ctx context.Context, j *seal.MigrationJournal) error {
+	cp := *j
+	cp.StoreDirs = append([]string(nil), j.StoreDirs...)
+	cp.StagedSnapshots = append([]seal.StagedSnapshot(nil), j.StagedSnapshots...)
+	c.checkpoints = append(c.checkpoints, cp)
+	return c.StorageBarrier.CheckpointMigration(ctx, j)
+}
+
+// TestNodeStoreMigration_JournalRecordsStoreDirs asserts Run checkpoints the
+// store-directory set into the journal before any phase work, so a crash at
+// ANY later point leaves a journal a scope-agnostic recoverer can act on.
+func TestNodeStoreMigration_JournalRecordsStoreDirs(t *testing.T) {
+	ctx := context.Background()
+	backend := seal.NewMemoryBackend()
+	source := initNoneBarrier(t, backend, "root-key")
+	target := initKeyedBarrier(t, backend, "root-key.migrating", "pw")
+
+	dirA := t.TempDir() + "/pebble"
+	dirB := t.TempDir() + "/vector"
+	noneEnc := atrest.New(source)
+	writeStore(t, dirA, noneEnc, map[string]string{"a": "1"})
+	writeStore(t, dirB, noneEnc, map[string]string{"b": "2"})
+
+	cap := &capturingJournal{StorageBarrier: source}
+	mig := &NodeStoreMigration{
+		Source:    source,
+		Target:    target,
+		StoreDirs: []string{dirA, dirB},
+		Logger:    reencTestLogger(),
+		journal:   cap,
+	}
+	opts := seal.MigrationOptions{
+		TargetStrategy: seal.StrategyPassphrase,
+		Mechanism:      seal.MechanismSwap,
+		Availability:   seal.AvailabilityQuiesced,
+		Credentials:    seal.Credentials{Secret: []byte("pw")},
+	}
+	if err := mig.Run(ctx, opts); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(cap.checkpoints) == 0 {
+		t.Fatal("no checkpoints captured")
+	}
+	// The VERY FIRST checkpoint (before any phase work) must already carry the
+	// full directory set and the staging root-key path.
+	first := cap.checkpoints[0]
+	if len(first.StoreDirs) != 2 || first.StoreDirs[0] != dirA || first.StoreDirs[1] != dirB {
+		t.Fatalf("first checkpoint StoreDirs = %v, want [%s %s]", first.StoreDirs, dirA, dirB)
+	}
+	if first.StagingRootKeyPath != "root-key.migrating" {
+		t.Fatalf("first checkpoint StagingRootKeyPath = %q", first.StagingRootKeyPath)
+	}
+}

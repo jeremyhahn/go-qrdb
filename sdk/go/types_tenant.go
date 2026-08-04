@@ -37,6 +37,15 @@ func ContextWithTenant(ctx context.Context, tenantID string) context.Context {
 	return tenant.WithTenantID(ctx, tenantID)
 }
 
+// TenantFromContext returns the tenant ID bound to the context by
+// ContextWithTenant with comma-ok semantics. ok is false when no tenant is
+// bound or the bound value is empty — such contexts resolve to the implicit
+// system tenant, but no SystemTenantID fallback is applied here so callers
+// can distinguish an explicit binding from the default.
+func TenantFromContext(ctx context.Context) (string, bool) {
+	return tenant.IDFromContext(ctx)
+}
+
 // ---------------------------------------------------------------------------
 // Tenant metadata types
 //
@@ -71,3 +80,10 @@ const SystemTenantID = tenant.SystemTenantID
 // ErrTenantExists to avoid colliding with the seal package's
 // ErrTenantAlreadyExists, which is a distinct sentinel.)
 var ErrTenantExists = tenant.ErrTenantAlreadyExists
+
+// ErrTenantMissing is returned by the tenant service when an operation names a
+// tenant that does not exist (e.g. GetTenant / UpdateQuotas / UpdateEntitlements
+// on an unknown tenant). (Aliases pkg/tenant.ErrTenantNotFound; named
+// ErrTenantMissing to avoid colliding with the seal package's ErrTenantNotFound,
+// which is a distinct sentinel. A composing service should map it to 404.)
+var ErrTenantMissing = tenant.ErrTenantNotFound

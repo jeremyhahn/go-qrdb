@@ -44,6 +44,11 @@ type Credentials = quicraftseal.Credentials
 // SealedRootKey is the persisted form of an encrypted root key.
 type SealedRootKey = quicraftseal.SealedRootKey
 
+// HKDFVersion identifies the HKDF info-string layout used to derive
+// epoch DEKs from the root key. Replicas must derive with the same
+// layout as the leader or DEKs diverge.
+type HKDFVersion = quicraftseal.HKDFVersion
+
 // ShareAccumulator collects shares until the quorum threshold is met.
 type ShareAccumulator = quicraftseal.ShareAccumulator
 

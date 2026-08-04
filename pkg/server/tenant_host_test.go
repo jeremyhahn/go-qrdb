@@ -174,7 +174,7 @@ func TestTenantHost_LifecycleAndDurability(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = th2.Close() })
 
-	got, err = th2.services.KV.Get(ctx, "alpha")
+	got, err = getWhenReadable(ctx, t, th2.services.KV.Get, "alpha")
 	if err != nil {
 		t.Fatalf("KV.Get after re-open: %v", err)
 	}

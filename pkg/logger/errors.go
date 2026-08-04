@@ -14,6 +14,15 @@
 package logger
 
 // InvalidLogLevelError is returned when an unsupported log level is specified.
+// NilHandlerError is returned by NewWithHandler when the supplied
+// slog.Handler is nil.
+type NilHandlerError struct{}
+
+// Error implements the error interface.
+func (e *NilHandlerError) Error() string {
+	return "logger: handler must not be nil"
+}
+
 type InvalidLogLevelError struct {
 	Level string
 }

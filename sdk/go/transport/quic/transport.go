@@ -21,9 +21,7 @@ package quic
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"errors"
-	"os"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -700,40 +698,14 @@ func (t *Transport) call(ctx context.Context, method string, payload []byte) ([]
 // config. QUIC always requires TLS; the ALPN protocol is set to
 // "qrdb-quic" to match the server-side configuration.
 func (t *Transport) buildTLSConfig() (*tls.Config, error) {
-	if t.config.TLSConfig != nil {
-		cfg := t.config.TLSConfig.Clone()
-		cfg.NextProtos = appendALPN(cfg.NextProtos)
-		return cfg, nil
-	}
-
-	tlsCfg := &tls.Config{
-		MinVersion: tls.VersionTLS13,
+	return transport.BuildTLSConfig(transport.TLSBuildOptions{
+		Custom:     t.config.TLSConfig,
+		Enabled:    true,
+		CAFile:     t.config.TLSCAFile,
+		CertFile:   t.config.TLSCertFile,
+		KeyFile:    t.config.TLSKeyFile,
 		NextProtos: []string{"qrdb-quic"},
-	}
-
-	// Load CA certificate pool.
-	if t.config.TLSCAFile != "" {
-		caCert, err := os.ReadFile(t.config.TLSCAFile)
-		if err != nil {
-			return nil, &transport.TLSError{Err: &caFileReadError{Path: t.config.TLSCAFile, Err: err}}
-		}
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(caCert) {
-			return nil, &transport.TLSError{Err: &caParseError{Path: t.config.TLSCAFile}}
-		}
-		tlsCfg.RootCAs = pool
-	}
-
-	// Load client certificate for mTLS.
-	if t.config.TLSCertFile != "" && t.config.TLSKeyFile != "" {
-		cert, err := tls.LoadX509KeyPair(t.config.TLSCertFile, t.config.TLSKeyFile)
-		if err != nil {
-			return nil, &transport.TLSError{Err: &certLoadError{Err: err}}
-		}
-		tlsCfg.Certificates = []tls.Certificate{cert}
-	}
-
-	return tlsCfg, nil
+	})
 }
 
 // mapWireError translates a QUIC wire status code and payload into the
@@ -784,14 +756,4 @@ func stripScheme(addr string) string {
 	addr = strings.TrimPrefix(addr, "https://")
 	addr = strings.TrimPrefix(addr, "http://")
 	return addr
-}
-
-// appendALPN ensures "qrdb-quic" is present in the ALPN protocol list.
-func appendALPN(protos []string) []string {
-	for _, p := range protos {
-		if p == "qrdb-quic" {
-			return protos
-		}
-	}
-	return append(protos, "qrdb-quic")
 }

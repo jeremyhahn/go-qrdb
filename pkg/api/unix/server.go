@@ -49,39 +49,40 @@ import (
 // by the TCP gRPC server, but communicates over a local socket path
 // without TLS.
 type Server struct {
-	kvSvc            service.KVServicer
-	adminSvc         service.AdminServicer
-	socketPath       string
-	userSvc          user.UserServicer
-	roleSvc          role.RoleServicer
-	certProv         cert.CertProvider
-	barrierSvc       service.BarrierServicer
-	pinBackend       pin.PINBackend
-	ceremonySvc      service.CeremonyServicer
-	credentialSvc    service.CredentialServicer
-	collectionSvc    service.CollectionServicer
-	mvccSvc          service.MVCCKVServicer
-	txSvc            service.TransactionServicer
-	batchSvc         service.BatchServicer
-	watchSvc         service.WatchServicer
-	leaseSvc         lease.LeaseServicer
-	lockSvc          service.LockServicer
-	indexSvc         index.IndexServicer
-	tsSvc            timeseries.TimeSeriesServicer
-	vectorSvc        service.VectorServicer
-	embeddingSvc     service.EmbeddingServicer
-	ragSvc           service.RAGServicer
-	databaseSvc      service.DatabaseServicer
-	tenantSvc        tenant.TenantServicer
-	backupSvc        service.BackupServicer
-	rebalanceSvc     service.RebalanceServicer
-	authFactorSvc    service.AuthFactorServicer
-	tenantBarrierSvc tenant.TenantServicer
-	auditLogger      audit.AuditLogger
-	registry         service.Registry
-	server           *grpc.Server
-	listener         net.Listener
-	serveWg          sync.WaitGroup
+	kvSvc             service.KVServicer
+	adminSvc          service.AdminServicer
+	socketPath        string
+	userSvc           user.UserServicer
+	roleSvc           role.RoleServicer
+	certProv          cert.CertProvider
+	barrierSvc        service.BarrierServicer
+	pinBackend        pin.PINBackend
+	ceremonySvc       service.CeremonyServicer
+	credentialSvc     service.CredentialServicer
+	collectionSvc     service.CollectionServicer
+	mvccSvc           service.MVCCKVServicer
+	txSvc             service.TransactionServicer
+	batchSvc          service.BatchServicer
+	watchSvc          service.WatchServicer
+	leaseSvc          lease.LeaseServicer
+	lockSvc           service.LockServicer
+	indexSvc          index.IndexServicer
+	tsSvc             timeseries.TimeSeriesServicer
+	vectorSvc         service.VectorServicer
+	embeddingSvc      service.EmbeddingServicer
+	ragSvc            service.RAGServicer
+	databaseSvc       service.DatabaseServicer
+	tenantSvc         tenant.TenantServicer
+	backupSvc         service.BackupServicer
+	rebalanceSvc      service.RebalanceServicer
+	authFactorSvc     service.AuthFactorServicer
+	userAuthFactorSvc service.UserAuthFactorServicer
+	tenantBarrierSvc  tenant.TenantServicer
+	auditLogger       audit.AuditLogger
+	registry          service.Registry
+	server            *grpc.Server
+	listener          net.Listener
+	serveWg           sync.WaitGroup
 }
 
 // ServerOption configures optional Server dependencies.
@@ -208,6 +209,15 @@ func WithRebalanceService(svc service.RebalanceServicer) ServerOption {
 // service for custodian enrollment, challenge, and verification.
 func WithAuthFactorService(svc service.AuthFactorServicer) ServerOption {
 	return func(s *Server) { s.authFactorSvc = svc }
+}
+
+// WithUserAuthFactorService configures the Unix socket server with the
+// user-side N-factor service (M14) backing the SDK client's
+// UserAuthFactors() surface (Add / List / Get / Remove / Rotate / Relabel /
+// Login). Distinct from WithAuthFactorService (the ceremony-time enrollment
+// surface). The service is not registered on the gRPC server when nil.
+func WithUserAuthFactorService(svc service.UserAuthFactorServicer) ServerOption {
+	return func(s *Server) { s.userAuthFactorSvc = svc }
 }
 
 // WithTenantBarrierService configures the Unix socket server with a tenant
@@ -382,6 +392,14 @@ func (s *Server) Start() error {
 	// Register AuthFactorService alongside QRDBService when configured.
 	if s.authFactorSvc != nil {
 		grpcpkg.RegisterAuthFactorService(s.server, s.authFactorSvc)
+	}
+
+	// Register UserAuthFactorService (M14) alongside QRDBService when
+	// configured. RegisterUserAuthFactorService itself no-ops on a nil
+	// service, but the guard here keeps this call site consistent with the
+	// AuthFactorService one above.
+	if s.userAuthFactorSvc != nil {
+		grpcpkg.RegisterUserAuthFactorService(s.server, s.userAuthFactorSvc)
 	}
 
 	// Register TenantBarrierService alongside QRDBService when configured.

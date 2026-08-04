@@ -166,6 +166,167 @@ func (m *mockTenantService) TenantBarrierShamirSealVote(_ context.Context, _, _ 
 var _ tenant.TenantServicer = (*mockTenantService)(nil)
 
 // ---------------------------------------------------------------------------
+// Mock: service.Registry (for the UpdateTenant isolation-change data probe)
+// ---------------------------------------------------------------------------
+
+// mockServiceRegistry is a service.Registry whose KVService result is
+// controllable; every other resolver returns (nil, nil). It drives the
+// fail-closed isolation-type precondition in handleUpdateTenant.
+type mockServiceRegistry struct {
+	kvSvc service.KVServicer
+	kvErr error
+}
+
+func (m *mockServiceRegistry) KVService(_, _ string) (service.KVServicer, error) {
+	return m.kvSvc, m.kvErr
+}
+func (m *mockServiceRegistry) MVCCService(_, _ string) (service.MVCCKVServicer, error) {
+	return nil, nil
+}
+func (m *mockServiceRegistry) WatchService(_, _ string) (service.WatchServicer, error) {
+	return nil, nil
+}
+func (m *mockServiceRegistry) LeaseService(_, _ string) (service.LeaseServicer, error) {
+	return nil, nil
+}
+func (m *mockServiceRegistry) IndexService(_, _ string) (service.IndexServicer, error) {
+	return nil, nil
+}
+func (m *mockServiceRegistry) TimeSeriesService(_, _ string) (service.TimeSeriesServicer, error) {
+	return nil, nil
+}
+func (m *mockServiceRegistry) VectorService(_, _ string) (service.VectorServicer, error) {
+	return nil, nil
+}
+func (m *mockServiceRegistry) TransactionService(_, _ string) (service.TransactionServicer, error) {
+	return nil, nil
+}
+func (m *mockServiceRegistry) BatchService(_, _ string) (service.BatchServicer, error) {
+	return nil, nil
+}
+
+var _ service.Registry = (*mockServiceRegistry)(nil)
+
+// newTenantServerWithRegistry builds a tenant REST server wired with a service
+// registry so the isolation-change data probe can be exercised.
+func newTenantServerWithRegistry(svc tenant.TenantServicer, reg ServiceRegistry) *Server {
+	return NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
+		WithTenantService(svc), WithServiceRegistry(reg))
+}
+
+// raftTenantSvc returns a mockTenantService whose stored tenant uses raft
+// isolation; updateTenantFn fails the test if invoked, so the data-probe
+// precondition is proven to block the update.
+func raftTenantSvc(t *testing.T) *mockTenantService {
+	t.Helper()
+	return &mockTenantService{
+		getTenantFn: func(_ context.Context, id string) (*tenant.TenantInfo, error) {
+			return &tenant.TenantInfo{ID: id, IsolationType: tenant.IsolationRaft}, nil
+		},
+		updateTenantFn: func(_ context.Context, _ string, _ tenant.TenantPatch) (*tenant.TenantInfo, error) {
+			t.Error("UpdateTenant must not run: the no-data precondition was not satisfied")
+			return nil, nil
+		},
+	}
+}
+
+// TestHandleUpdateTenant_IsolationChange_FailsClosedOnResolveError proves the
+// isolation-type change is REJECTED (503) when the tenant's KV service cannot be
+// resolved — the data precondition fails closed rather than silently allowing
+// the change on an unverified tenant.
+func TestHandleUpdateTenant_IsolationChange_FailsClosedOnResolveError(t *testing.T) {
+	reg := &mockServiceRegistry{kvErr: errors.New("leader unavailable")}
+	srv := newTenantServerWithRegistry(raftTenantSvc(t), reg)
+
+	req := httptest.NewRequest(http.MethodPut, "/v1/tenants/acme", strings.NewReader(`{"isolation_type":"volume"}`))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusServiceUnavailable)
+}
+
+// TestHandleUpdateTenant_IsolationChange_FailsClosedOnListError proves the change
+// is rejected (503) when the data probe (List) errors.
+func TestHandleUpdateTenant_IsolationChange_FailsClosedOnListError(t *testing.T) {
+	reg := &mockServiceRegistry{kvSvc: &mockKVService{
+		listFn: func(_ context.Context, _ string) ([]string, error) { return nil, errors.New("list timeout") },
+	}}
+	srv := newTenantServerWithRegistry(raftTenantSvc(t), reg)
+
+	req := httptest.NewRequest(http.MethodPut, "/v1/tenants/acme", strings.NewReader(`{"isolation_type":"volume"}`))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusServiceUnavailable)
+}
+
+// TestHandleUpdateTenant_IsolationChange_ConflictWhenTenantHasData proves the
+// change is rejected (409) when the tenant still holds data.
+func TestHandleUpdateTenant_IsolationChange_ConflictWhenTenantHasData(t *testing.T) {
+	reg := &mockServiceRegistry{kvSvc: &mockKVService{
+		listFn: func(_ context.Context, _ string) ([]string, error) { return []string{"existing-key"}, nil },
+	}}
+	srv := newTenantServerWithRegistry(raftTenantSvc(t), reg)
+
+	req := httptest.NewRequest(http.MethodPut, "/v1/tenants/acme", strings.NewReader(`{"isolation_type":"volume"}`))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusConflict)
+}
+
+// TestHandleUpdateTenant_IsolationChange_AllowedWhenNoData proves the change
+// proceeds (200, UpdateTenant invoked) once the tenant is verified data-free.
+func TestHandleUpdateTenant_IsolationChange_AllowedWhenNoData(t *testing.T) {
+	var updated bool
+	svc := &mockTenantService{
+		getTenantFn: func(_ context.Context, id string) (*tenant.TenantInfo, error) {
+			return &tenant.TenantInfo{ID: id, IsolationType: tenant.IsolationRaft}, nil
+		},
+		updateTenantFn: func(_ context.Context, id string, patch tenant.TenantPatch) (*tenant.TenantInfo, error) {
+			updated = true
+			return &tenant.TenantInfo{ID: id, IsolationType: patch.IsolationType}, nil
+		},
+	}
+	reg := &mockServiceRegistry{kvSvc: &mockKVService{
+		listFn: func(_ context.Context, _ string) ([]string, error) { return nil, nil },
+	}}
+	srv := newTenantServerWithRegistry(svc, reg)
+
+	req := httptest.NewRequest(http.MethodPut, "/v1/tenants/acme", strings.NewReader(`{"isolation_type":"volume"}`))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusOK)
+	if !updated {
+		t.Fatal("UpdateTenant should run once the no-data precondition is verified")
+	}
+}
+
+// TestHandleSetTenantQuotas_BoundsRequestContext proves the quotas handler
+// passes a deadline-bounded context to the service (regression for the handlers
+// that previously forwarded the unbounded r.Context()).
+func TestHandleSetTenantQuotas_BoundsRequestContext(t *testing.T) {
+	var hadDeadline bool
+	svc := &mockTenantService{
+		updateQuotasFn: func(ctx context.Context, _ string, _ *quota.Quotas) (*tenant.TenantInfo, error) {
+			_, hadDeadline = ctx.Deadline()
+			return testTenantInfo(), nil
+		},
+	}
+	srv := newTenantServer(svc)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/quotas", strings.NewReader(`{}`))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusOK)
+	if !hadDeadline {
+		t.Fatal("UpdateQuotas received an unbounded context — request not time-limited")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
 
@@ -1383,6 +1544,37 @@ func TestHandleTenantBarrierOfficerRegister_Success(t *testing.T) {
 	}
 }
 
+// TestHandleTenantBarrierOfficerRegister_ForwardsAuthenticatorRef is the
+// regression guard for the bug where the tenant officer registration
+// handler's local wire struct omitted authenticator_ref, silently dropping
+// it even though ceremony.RegisterOfficerRequest and the system-barrier
+// variant both carry it.
+func TestHandleTenantBarrierOfficerRegister_ForwardsAuthenticatorRef(t *testing.T) {
+	svc := newExtTenantSvc()
+	var captured *ceremony.RegisterOfficerRequest
+	svc.officerRegisterFn = func(_ context.Context, _ string, req *ceremony.RegisterOfficerRequest) (*ceremony.RegisterOfficerResult, error) {
+		captured = req
+		return &ceremony.RegisterOfficerResult{CertPEM: []byte("tenant-cert"), ShareIndex: 1}, nil
+	}
+	srv := newTenantServer(svc)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/barrier/officers",
+		strings.NewReader(`{"username":"officer1","csr_pem":"csr-data","authenticator_type":"piv","authenticator_ref":"slot-9a"}`))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusOK)
+	if captured == nil {
+		t.Fatal("expected TenantBarrierOfficerRegister to be called")
+	}
+	if captured.AuthenticatorRef != "slot-9a" {
+		t.Errorf("AuthenticatorRef = %q, want %q", captured.AuthenticatorRef, "slot-9a")
+	}
+	if string(captured.CSRPEM) != "csr-data" {
+		t.Errorf("CSRPEM = %q, want plain text %q (not base64-decoded)", captured.CSRPEM, "csr-data")
+	}
+}
+
 func TestHandleTenantBarrierOfficerRegister_MissingUsername(t *testing.T) {
 	srv := newTenantServer(newExtTenantSvc())
 
@@ -1608,7 +1800,7 @@ func TestHandleTenantBarrierShareClaimComplete_Success(t *testing.T) {
 	shareBytes := []byte("tenant-share-bytes")
 	svc := newExtTenantSvc()
 	svc.claimCompleteFn = func(_ context.Context, _, _, _ string, _ []byte, _ string) (*ceremony.ShareClaimResult, error) {
-		return &ceremony.ShareClaimResult{ShareBytes: shareBytes}, nil
+		return &ceremony.ShareClaimResult{ShareIndex: 2, ShareBytes: shareBytes}, nil
 	}
 	srv := &Server{tenantSvc: svc}
 
@@ -1625,6 +1817,16 @@ func TestHandleTenantBarrierShareClaimComplete_Success(t *testing.T) {
 	decodeJSON(t, rec, &resp)
 	if _, ok := resp["share_bytes"]; !ok {
 		t.Fatal("share_bytes missing from tenant claim-complete response")
+	}
+	// Regression guard: share_index was previously dropped entirely, unlike
+	// the system-barrier handleBarrierShareClaimComplete, silently zeroing
+	// every REST-transport caller's ShareClaimCompleteResponse.ShareIndex.
+	shareIndex, ok := resp["share_index"].(float64)
+	if !ok {
+		t.Fatalf("share_index missing or wrong type in tenant claim-complete response: %#v", resp["share_index"])
+	}
+	if shareIndex != 2 {
+		t.Errorf("share_index = %v, want 2", shareIndex)
 	}
 }
 

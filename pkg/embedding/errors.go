@@ -243,3 +243,47 @@ func (e *CloseError) Error() string {
 func (e *CloseError) Unwrap() []error {
 	return e.Errors
 }
+
+// ProviderCloseError wraps a failure returned by an individual provider's
+// Close during Manager shutdown. The Manager aggregates these into a single
+// CloseError. It preserves errors.Is/errors.As against the cause.
+type ProviderCloseError struct {
+	// Name is the registered provider name that failed to close.
+	Name string
+	// Cause is the underlying error returned by the provider's Close.
+	Cause error
+}
+
+// Error returns "provider <name>: <cause>".
+func (e *ProviderCloseError) Error() string {
+	return "provider " + e.Name + ": " + e.Cause.Error()
+}
+
+// Unwrap returns the underlying cause for errors.Is and errors.As support.
+func (e *ProviderCloseError) Unwrap() error { return e.Cause }
+
+// VoyageInvalidIndexError is returned when the Voyage API responds with a data
+// index that falls outside the range of the submitted texts.
+type VoyageInvalidIndexError struct {
+	// Index is the out-of-range index returned by the provider.
+	Index int
+	// TextCount is the number of texts that were submitted.
+	TextCount int
+}
+
+// Error implements the error interface.
+func (e *VoyageInvalidIndexError) Error() string {
+	return fmt.Sprintf("embedding: voyage returned invalid index %d for %d texts", e.Index, e.TextCount)
+}
+
+// VoyageMissingEmbeddingError is returned when the Voyage API response omits an
+// embedding for one of the submitted texts.
+type VoyageMissingEmbeddingError struct {
+	// Index is the position whose embedding was missing.
+	Index int
+}
+
+// Error implements the error interface.
+func (e *VoyageMissingEmbeddingError) Error() string {
+	return fmt.Sprintf("embedding: voyage did not return embedding at index %d", e.Index)
+}

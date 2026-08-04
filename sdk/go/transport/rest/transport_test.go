@@ -1730,9 +1730,6 @@ func TestErrors_Messages(t *testing.T) {
 		{"jsonEncode", &jsonEncodeError{Err: errors.New("bad")}, "json encode failed: bad"},
 		{"jsonDecode", &jsonDecodeError{Err: errors.New("bad")}, "json decode failed: bad"},
 		{"readBody", &readBodyError{Err: errors.New("eof")}, "read body failed: eof"},
-		{"caFileRead", &caFileReadError{Path: "/ca.pem", Err: errors.New("no such file")}, "/ca.pem"},
-		{"caParse", &caParseError{Path: "/ca.pem"}, "failed to parse CA certificate"},
-		{"certLoad", &certLoadError{Err: errors.New("bad cert")}, "failed to load client certificate"},
 		{"drainFailed", &drainFailedError{Status: "timeout", Detail: "5s"}, "drain failed with status timeout: 5s"},
 		{"drainFailedNoDetail", &drainFailedError{Status: "timeout"}, "drain failed with status timeout"},
 	}
@@ -1756,8 +1753,6 @@ func TestErrors_Unwrap(t *testing.T) {
 		{"jsonEncode", &jsonEncodeError{Err: inner}},
 		{"jsonDecode", &jsonDecodeError{Err: inner}},
 		{"readBody", &readBodyError{Err: inner}},
-		{"caFileRead", &caFileReadError{Path: "/ca.pem", Err: inner}},
-		{"certLoad", &certLoadError{Err: inner}},
 	}
 
 	for _, tt := range tests {

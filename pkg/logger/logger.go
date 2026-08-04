@@ -127,6 +127,48 @@ func New(config LogConfig) (*Logger, error) {
 	}, nil
 }
 
+// NewWithHandler creates a Logger that emits through the caller-supplied
+// slog.Handler instead of the internally-constructed stdout/stderr/file
+// handler. This is the injection seam downstream consumers (e.g.
+// go-trusted-platform's logging facade) use to route log records into
+// custom sinks — test writers, multi-handler fan-outs, JSON-line stores —
+// while keeping the shared Logger surface. The config contributes Level
+// (tracked in the returned Logger's LevelVar for SetLevel support) and
+// Component; Output/Format/File are ignored since the handler owns
+// rendering.
+func NewWithHandler(h slog.Handler, config LogConfig) (*Logger, error) {
+	if h == nil {
+		return nil, &NilHandlerError{}
+	}
+	if err := config.Validate(); err != nil {
+		return nil, err
+	}
+	config = config.WithDefaults()
+
+	levelVar := new(slog.LevelVar)
+	levelVar.Set(parseLevel(config.Level))
+
+	slogger := slog.New(h)
+	if config.Component != "" {
+		slogger = slogger.With("component", config.Component)
+	}
+
+	return &Logger{
+		slog:   slogger,
+		level:  levelVar,
+		fields: make(map[string]interface{}),
+		config: config,
+	}, nil
+}
+
+// Slog returns the underlying *slog.Logger for interoperation with code
+// that consumes the standard library logger directly (third-party
+// libraries, slog-native services). Mutating the returned logger does not
+// affect this Logger.
+func (l *Logger) Slog() *slog.Logger {
+	return l.slog
+}
+
 // parseLevel converts a string level to slog.Level.
 func parseLevel(level string) slog.Level {
 	switch strings.ToLower(level) {

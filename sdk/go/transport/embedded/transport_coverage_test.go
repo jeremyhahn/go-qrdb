@@ -908,6 +908,55 @@ func TestEmbeddedCeremony_Initialize_ForwardsPins(t *testing.T) {
 	}
 }
 
+// TestEmbeddedCeremony_Initialize_ForwardsAllFields is the regression guard
+// for the bug where the embedded transport only forwarded SOPin/UserPin into
+// service.CeremonyInitializeOptions, silently dropping
+// CredentialSealStrategy, Threshold, Officers, Hostname, and SANs from the
+// CeremonyInitializeRequest.
+func TestEmbeddedCeremony_Initialize_ForwardsAllFields(t *testing.T) {
+	mock := &mockCeremonyService{}
+	tr := newExtTransport(t,
+		WithCeremonyService(mock),
+		WithCeremonyCA(&mockCeremonyCA{}),
+	)
+
+	_, err := tr.CeremonyInitialize(context.Background(), &transport.CeremonyInitializeRequest{
+		SOPin:                  "so-pin",
+		UserPin:                "user-pin",
+		CredentialSealStrategy: "shamir",
+		Threshold:              2,
+		Officers: []transport.CeremonyOfficerRequest{
+			{Username: "officer-1", CSRPEM: "csr1"},
+			{Username: "officer-2", CSRPEM: "csr2"},
+		},
+		Hostname: "override.example",
+		SANs:     []string{"alt1.example", "alt2.example"},
+	})
+	if err != nil {
+		t.Fatalf("CeremonyInitialize: %v", err)
+	}
+
+	got := mock.lastInitOpts
+	if got == nil {
+		t.Fatal("expected non-nil CeremonyInitializeOptions to reach the service")
+	}
+	if got.CredentialSealStrategy != "shamir" {
+		t.Errorf("CredentialSealStrategy = %q, want %q", got.CredentialSealStrategy, "shamir")
+	}
+	if got.Threshold != 2 {
+		t.Errorf("Threshold = %d, want 2", got.Threshold)
+	}
+	if got.Hostname != "override.example" {
+		t.Errorf("Hostname = %q, want %q", got.Hostname, "override.example")
+	}
+	if len(got.SANs) != 2 || got.SANs[0] != "alt1.example" {
+		t.Errorf("SANs = %v", got.SANs)
+	}
+	if len(got.Officers) != 2 || got.Officers[0].Username != "officer-1" || got.Officers[0].CSRPEM != "csr1" {
+		t.Errorf("Officers = %+v", got.Officers)
+	}
+}
+
 // TestEmbeddedCeremony_Initialize_NilRequest ensures the embedded transport
 // rejects a nil request rather than dereferencing it.
 func TestEmbeddedCeremony_Initialize_NilRequest(t *testing.T) {

@@ -270,6 +270,12 @@ func toolTenantUpdateQuotas() mcp.Tool {
 		mcp.WithNumber("max_ts_metrics",
 			mcp.Description("Maximum number of time-series metrics. -1 = unlimited."),
 		),
+		mcp.WithNumber("system_barrier_quota",
+			mcp.Description("Bytes an isolated tenant may use of the shared system barrier. 0 = unavailable, -1 = unlimited."),
+		),
+		mcp.WithNumber("max_dedicated_wal_groups",
+			mcp.Description("Maximum dedicated-raft groups the tenant may opt into a per-tenant-key WAL. -1 = unlimited."),
+		),
 	)
 }
 
@@ -282,20 +288,22 @@ func handleTenantUpdateQuotas(svc tenant.TenantServicer) mcpserver.ToolHandlerFu
 		}
 
 		q := &quota.Quotas{
-			MaxDatabases:         int64(mcp.ParseInt(req, "max_databases", 0)),
-			MaxRaftGroups:        int64(mcp.ParseInt(req, "max_raft_groups", 0)),
-			MaxReplicasPerGroup:  int64(mcp.ParseInt(req, "max_replicas_per_group", 0)),
-			MaxTotalReplicas:     int64(mcp.ParseInt(req, "max_total_replicas", 0)),
-			MaxCollections:       int64(mcp.ParseInt(req, "max_collections", 0)),
-			MaxKeys:              int64(mcp.ParseInt(req, "max_keys", 0)),
-			MaxStorageBytes:      int64(mcp.ParseInt(req, "max_storage_bytes", 0)),
-			MaxDatabaseSizeBytes: int64(mcp.ParseInt(req, "max_database_size_bytes", 0)),
-			MaxUsers:             int64(mcp.ParseInt(req, "max_users", 0)),
-			MaxRoles:             int64(mcp.ParseInt(req, "max_roles", 0)),
-			MaxCertificates:      int64(mcp.ParseInt(req, "max_certificates", 0)),
-			MaxBackups:           int64(mcp.ParseInt(req, "max_backups", 0)),
-			MaxVectorDims:        int64(mcp.ParseInt(req, "max_vector_dims", 0)),
-			MaxTSMetrics:         int64(mcp.ParseInt(req, "max_ts_metrics", 0)),
+			MaxDatabases:          int64(mcp.ParseInt(req, "max_databases", 0)),
+			MaxRaftGroups:         int64(mcp.ParseInt(req, "max_raft_groups", 0)),
+			MaxReplicasPerGroup:   int64(mcp.ParseInt(req, "max_replicas_per_group", 0)),
+			MaxTotalReplicas:      int64(mcp.ParseInt(req, "max_total_replicas", 0)),
+			MaxCollections:        int64(mcp.ParseInt(req, "max_collections", 0)),
+			MaxKeys:               int64(mcp.ParseInt(req, "max_keys", 0)),
+			MaxStorageBytes:       int64(mcp.ParseInt(req, "max_storage_bytes", 0)),
+			MaxDatabaseSizeBytes:  int64(mcp.ParseInt(req, "max_database_size_bytes", 0)),
+			MaxUsers:              int64(mcp.ParseInt(req, "max_users", 0)),
+			MaxRoles:              int64(mcp.ParseInt(req, "max_roles", 0)),
+			MaxCertificates:       int64(mcp.ParseInt(req, "max_certificates", 0)),
+			MaxBackups:            int64(mcp.ParseInt(req, "max_backups", 0)),
+			MaxVectorDims:         int64(mcp.ParseInt(req, "max_vector_dims", 0)),
+			MaxTSMetrics:          int64(mcp.ParseInt(req, "max_ts_metrics", 0)),
+			SystemBarrierQuota:    int64(mcp.ParseInt(req, "system_barrier_quota", 0)),
+			MaxDedicatedWALGroups: int64(mcp.ParseInt(req, "max_dedicated_wal_groups", 0)),
 		}
 
 		info, err := svc.UpdateQuotas(ctx, id, q)
@@ -332,6 +340,12 @@ func toolTenantUpdateEntitlements() mcp.Tool {
 		mcp.WithBoolean("allow_system_managed_barrier",
 			mcp.Description("Whether the tenant may opt into the system-managed auto-unseal key-management mode for its dedicated barrier."),
 		),
+		mcp.WithBoolean("allow_dedicated_wal",
+			mcp.Description("Whether the tenant may opt a dedicated-raft database into a per-tenant-key WAL."),
+		),
+		mcp.WithString("allowed_barrier_modes",
+			mcp.Description("Comma-separated dedicated-barrier sealing strategies the tenant may select (e.g. \"none,passphrase,shamir\")."),
+		),
 	)
 }
 
@@ -353,11 +367,22 @@ func handleTenantUpdateEntitlements(svc tenant.TenantServicer) mcpserver.ToolHan
 			}
 		}
 
+		var barrierModes []string
+		if raw := mcp.ParseString(req, "allowed_barrier_modes", ""); raw != "" {
+			for _, m := range strings.Split(raw, ",") {
+				if trimmed := strings.TrimSpace(m); trimmed != "" {
+					barrierModes = append(barrierModes, trimmed)
+				}
+			}
+		}
+
 		e := &quota.Entitlements{
 			AllowedIsolationModes:     modes,
 			AllowDedicatedRaft:        mcp.ParseBoolean(req, "allow_dedicated_raft", false),
 			AllowVolumeStorage:        mcp.ParseBoolean(req, "allow_volume_storage", false),
 			AllowSystemManagedBarrier: mcp.ParseBoolean(req, "allow_system_managed_barrier", false),
+			AllowDedicatedWAL:         mcp.ParseBoolean(req, "allow_dedicated_wal", false),
+			AllowedBarrierModes:       barrierModes,
 		}
 
 		info, err := svc.UpdateEntitlements(ctx, id, e)

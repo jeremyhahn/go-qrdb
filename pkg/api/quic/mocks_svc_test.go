@@ -182,9 +182,11 @@ type mockCeremonyService struct {
 	ceremonyClaimShareFn        func(ctx context.Context, username string) ([]byte, error)
 	ceremonySignCSRFn           func(ctx context.Context, username, soPin, csrPEM, role string) (*service.CeremonySignCSRResult, error)
 	ceremonyStatusFn            func(ctx context.Context) (*service.CeremonyStatusInfo, error)
+	capturedInitOpts            *service.CeremonyInitializeOptions
 }
 
-func (m *mockCeremonyService) CeremonyInitialize(ctx context.Context, ca ceremony.CeremonyCA, _ *service.CeremonyInitializeOptions) (*service.CeremonyInitResult, error) {
+func (m *mockCeremonyService) CeremonyInitialize(ctx context.Context, ca ceremony.CeremonyCA, opts *service.CeremonyInitializeOptions) (*service.CeremonyInitResult, error) {
+	m.capturedInitOpts = opts
 	if m.ceremonyInitializeFn != nil {
 		return m.ceremonyInitializeFn(ctx, ca)
 	}

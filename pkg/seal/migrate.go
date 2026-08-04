@@ -165,6 +165,19 @@ func (o MigrationOptions) Validate() error {
 	return nil
 }
 
+// StagedSnapshot records one Raft snapshot data file that a migration
+// re-encrypted under the destination barrier into a staging sibling OUTSIDE
+// the directories the migration swaps (the IsolationRaft case, whose
+// snapshots live in the shared host tree). At commit the staged copy is
+// renamed over the live file; on rollback it is discarded. It is journalled
+// so crash recovery can finish either action without the orchestrator.
+type StagedSnapshot struct {
+	// FinalPath is the live snapshot data file the post-migration host reads.
+	FinalPath string `json:"final_path"`
+	// KeyedPath is the staged, destination-barrier copy awaiting commit.
+	KeyedPath string `json:"keyed_path"`
+}
+
 // MigrationJournal is the crash-safe, plaintext record of an in-progress (or
 // recently completed) encryption migration. It is persisted to the barrier's
 // storage backend at migrationJournalPath so that a process restart can detect
@@ -186,6 +199,17 @@ type MigrationJournal struct {
 	// whether its re-encryption has completed. Used to resume multi-store
 	// migrations from where they left off.
 	Stores map[string]bool `json:"stores,omitempty"`
+	// StoreDirs lists the absolute store directories this migration stages
+	// with keyed siblings and swaps at commit. Recording them makes crash
+	// recovery scope-agnostic — a recoverer can roll the directory swaps
+	// forward or back from the journal alone, without re-deriving the
+	// directory set for the system, volume-tenant, or raft-tenant layout.
+	StoreDirs []string `json:"store_dirs,omitempty"`
+	// StagedSnapshots lists snapshot data files re-encrypted into staging
+	// siblings outside the swapped directories (see StagedSnapshot). Crash
+	// recovery renames them into place on roll-forward and discards them on
+	// roll-back.
+	StagedSnapshots []StagedSnapshot `json:"staged_snapshots,omitempty"`
 	// StartedAt / UpdatedAt are UTC timestamps for observability and audit.
 	StartedAt time.Time `json:"started_at"`
 	UpdatedAt time.Time `json:"updated_at"`

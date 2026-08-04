@@ -16,35 +16,31 @@ package main
 
 import (
 	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
 	"log/slog"
-	"math/big"
 	"net"
-	"net/url"
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
 )
 
 const (
 	// caValidity is the default validity duration for auto-generated CA
-	// certificates. 10 years provides a long-lived root of trust that
-	// does not require frequent rotation.
-	caValidity = 10 * 365 * 24 * time.Hour
+	// certificates.
+	caValidity = clustertls.CAValidity
 
 	// nodeValidity is the default validity duration for auto-generated
 	// node (leaf) certificates.
-	nodeValidity = 365 * 24 * time.Hour
+	nodeValidity = clustertls.NodeValidity
 
 	// adminValidity is the default validity duration for auto-generated
 	// admin client certificates.
-	adminValidity = 365 * 24 * time.Hour
+	adminValidity = clustertls.ClientValidity
 )
 
 // TLSBundle holds the CA and leaf certificate material generated for a
@@ -70,245 +66,138 @@ type TLSBundle struct {
 	// server, using the leaf certificate and TLS 1.3.
 	TLSConfig *tls.Config
 
-	// CACertPool contains the CA certificate for verifying peer
-	// certificates in HTTP clients and mTLS handshakes.
+	// CACertPool is the server-trust pool: it verifies the certificates that
+	// peer servers present (used as RootCAs by leader-forwarding and cluster
+	// key-transport clients). It is the primary CA plus any operator-supplied
+	// additional peer CAs.
 	CACertPool *x509.CertPool
+
+	// ClientCACertPool is the client-auth trust pool: it verifies the
+	// certificates that clients present (used as ClientCAs on the listener). It
+	// is the primary CA plus any operator-supplied client CAs, kept separate
+	// from CACertPool so a CA trusted only to verify server peers cannot also
+	// mint accepted client identities (and vice versa). For self-signed cluster
+	// material both pools hold the same single CA.
+	ClientCACertPool *x509.CertPool
 
 	// Reloader provides atomic TLS certificate hot-reload. When non-nil,
 	// the TLSConfig.GetCertificate callback is wired to use this reloader.
 	Reloader *CertReloader
 }
 
-// generateCATLS creates an ephemeral ECDSA P-256 CA and a leaf
-// certificate signed by that CA. The leaf is valid for 24 hours with
-// SANs for all local hostnames and interface IPs. ExtKeyUsage
-// includes both ServerAuth and ClientAuth for mTLS.
 // localSANs discovers all local DNS names and IP addresses suitable for
 // TLS certificate Subject Alternative Names. It always includes localhost,
-// 127.0.0.1, ::1, and 0.0.0.0, and additionally adds the machine hostname
-// and all unicast interface IPs. This ensures certificates are valid when
-// connections resolve to any local address (e.g. inside Docker containers).
+// 127.0.0.1, and ::1, and additionally adds the machine hostname and all
+// non-loopback unicast interface IPs.
 func localSANs() (dnsNames []string, ips []net.IP) {
-	dnsNames = []string{"localhost"}
-	ips = []net.IP{
-		net.IPv4(127, 0, 0, 1),
-		net.IPv6loopback,
-		net.IPv4zero,
-		net.IPv6zero,
-	}
-
-	if hostname, err := os.Hostname(); err == nil && hostname != "" {
-		dnsNames = append(dnsNames, hostname)
-	}
-
-	if addrs, err := net.InterfaceAddrs(); err == nil {
-		for _, addr := range addrs {
-			if ipNet, ok := addr.(*net.IPNet); ok && !ipNet.IP.IsLoopback() {
-				ips = append(ips, ipNet.IP)
-			}
-		}
-	}
-
-	return dnsNames, ips
+	return clustertls.LocalSANs()
 }
 
 // generateCA creates a self-signed ECDSA P-256 CA certificate with the
-// given validity duration. It returns the PEM-encoded certificate and key,
-// the parsed certificate, and the private key so callers can sign leaf
-// certificates.
+// given validity duration.
 func generateCA(validity time.Duration) (caCertPEM, caKeyPEM []byte, caCert *x509.Certificate, caKey *ecdsa.PrivateKey, err error) {
-	caKey, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return nil, nil, nil, nil, &TLSGenerateError{Err: err}
-	}
-
-	caSerial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	if err != nil {
-		return nil, nil, nil, nil, &TLSGenerateError{Err: err}
-	}
-
-	caTemplate := &x509.Certificate{
-		SerialNumber: caSerial,
-		Subject: pkix.Name{
-			Organization: []string{"go-quicraft"},
-			CommonName:   "qrdb-ca",
-		},
-		NotBefore:             time.Now().Add(-1 * time.Minute),
-		NotAfter:              time.Now().Add(validity),
-		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
-		BasicConstraintsValid: true,
-		IsCA:                  true,
-		MaxPathLen:            0,
-		MaxPathLenZero:        true,
-	}
-
-	caCertDER, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, &caKey.PublicKey, caKey)
-	if err != nil {
-		return nil, nil, nil, nil, &TLSGenerateError{Err: err}
-	}
-
-	caCertPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caCertDER})
-
-	caKeyDER, err := x509.MarshalECPrivateKey(caKey)
-	if err != nil {
-		return nil, nil, nil, nil, &TLSGenerateError{Err: err}
-	}
-	caKeyPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: caKeyDER})
-
-	caCert, err = x509.ParseCertificate(caCertDER)
-	if err != nil {
-		return nil, nil, nil, nil, &TLSGenerateError{Err: err}
-	}
-
-	return caCertPEM, caKeyPEM, caCert, caKey, nil
+	return clustertls.GenerateCA(validity)
 }
 
 // generateNodeCert creates an ECDSA P-256 leaf certificate signed by the
-// given CA. The leaf includes SANs for all local hostnames and interface
-// IPs. ExtKeyUsage includes both ServerAuth and ClientAuth for mTLS.
-// When nodeURI is provided and non-empty, it is parsed as a URI and
-// appended to the leaf's URI SANs so the node carries its SPIFFE node
-// identity (spiffe://<trust-domain>/node/<raftAddr>). DNS and IP SANs
-// are always included regardless of nodeURI.
+// given CA with SANs for all local hostnames and interface IPs. When nodeURI
+// is provided and non-empty it is embedded as a URI SAN.
 func generateNodeCert(caCert *x509.Certificate, caKey *ecdsa.PrivateKey, validity time.Duration, nodeURI ...string) (certPEM, keyPEM []byte, err error) {
-	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return nil, nil, &TLSGenerateError{Err: err}
-	}
-
-	leafSerial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	if err != nil {
-		return nil, nil, &TLSGenerateError{Err: err}
-	}
-
-	dnsNames, ipAddrs := localSANs()
-
-	leafTemplate := &x509.Certificate{
-		SerialNumber: leafSerial,
-		Subject: pkix.Name{
-			Organization: []string{"go-quicraft"},
-			CommonName:   "qrdb-node",
-		},
-		DNSNames:    dnsNames,
-		IPAddresses: ipAddrs,
-		NotBefore:   time.Now().Add(-1 * time.Minute),
-		NotAfter:    time.Now().Add(validity),
-		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage: []x509.ExtKeyUsage{
-			x509.ExtKeyUsageServerAuth,
-			x509.ExtKeyUsageClientAuth,
-		},
-		BasicConstraintsValid: true,
-		IsCA:                  false,
-	}
-
-	// Append the node SPIFFE URI SAN when provided. url.Parse yields a *url.URL
-	// that x509 serialises into the SubjectAltName extension. An OMITTED URI is
-	// fine (callers that don't need the cluster key-transport SAN). But a
-	// NON-EMPTY URI that fails to parse is a misconfiguration: silently shipping
-	// a cert without the SAN makes "clustered key delivery never works" hard to
-	// diagnose (the sender fails closed on a SAN-less recipient), so fail closed
-	// here instead.
-	if len(nodeURI) > 0 && nodeURI[0] != "" {
-		u, parseErr := url.Parse(nodeURI[0])
-		if parseErr != nil {
-			return nil, nil, &TLSGenerateError{Err: parseErr}
-		}
-		leafTemplate.URIs = append(leafTemplate.URIs, u)
-	}
-
-	leafCertDER, err := x509.CreateCertificate(rand.Reader, leafTemplate, caCert, &leafKey.PublicKey, caKey)
-	if err != nil {
-		return nil, nil, &TLSGenerateError{Err: err}
-	}
-
-	leafKeyDER, err := x509.MarshalECPrivateKey(leafKey)
-	if err != nil {
-		return nil, nil, &TLSGenerateError{Err: err}
-	}
-
-	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafCertDER})
-	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: leafKeyDER})
-
-	return certPEM, keyPEM, nil
+	return clustertls.GenerateNodeCert(caCert, caKey, validity, nodeURI...)
 }
 
-// generateClientCert creates an ECDSA P-256 client certificate signed
-// by the given CA. CN is set to cn and OU to ou. The certificate has
-// only ExtKeyUsageClientAuth so it cannot be used for server
-// authentication.
+// generateClientCert creates an ECDSA P-256 client certificate signed by the
+// given CA. CN is set to cn and OU to ou.
 func generateClientCert(caCert *x509.Certificate, caKey *ecdsa.PrivateKey, cn, ou string, validity time.Duration) (certPEM, keyPEM []byte, err error) {
-	clientKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return nil, nil, &TLSGenerateError{Err: err}
-	}
-
-	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	if err != nil {
-		return nil, nil, &TLSGenerateError{Err: err}
-	}
-
-	template := &x509.Certificate{
-		SerialNumber: serial,
-		Subject: pkix.Name{
-			Organization:       []string{"go-quicraft"},
-			CommonName:         cn,
-			OrganizationalUnit: []string{ou},
-		},
-		NotBefore: time.Now().Add(-1 * time.Minute),
-		NotAfter:  time.Now().Add(validity),
-		KeyUsage:  x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage: []x509.ExtKeyUsage{
-			x509.ExtKeyUsageClientAuth,
-		},
-		BasicConstraintsValid: true,
-		IsCA:                  false,
-	}
-
-	clientCertDER, err := x509.CreateCertificate(rand.Reader, template, caCert, &clientKey.PublicKey, caKey)
-	if err != nil {
-		return nil, nil, &TLSGenerateError{Err: err}
-	}
-
-	clientKeyDER, err := x509.MarshalECPrivateKey(clientKey)
-	if err != nil {
-		return nil, nil, &TLSGenerateError{Err: err}
-	}
-
-	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: clientCertDER})
-	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: clientKeyDER})
-
-	return certPEM, keyPEM, nil
+	return clustertls.GenerateClientCert(caCert, caKey, cn, ou, validity)
 }
 
 // generateCATLS creates an ephemeral ECDSA P-256 CA and a leaf certificate
 // signed by that CA. nodeURI is an optional SPIFFE node URI SAN (see
 // generateNodeCert); callers that do not need the SAN omit the argument.
 func generateCATLS(nodeURI ...string) (*TLSBundle, error) {
-	caCertPEM, caKeyPEM, caCert, caKey, err := generateCA(caValidity)
+	m, err := clustertls.GenerateCABundle(nodeURI...)
 	if err != nil {
 		return nil, err
 	}
+	return tlsBundleFromMaterial(m)
+}
 
-	certPEM, keyPEM, err := generateNodeCert(caCert, caKey, nodeValidity, nodeURI...)
+// generateLeafFromCA parses concatenated CA certificate + CA private key
+// PEM bytes (e.g., from a bootstrap endpoint) and generates a node leaf
+// certificate signed by the CA. The returned TLSBundle is fully populated
+// including TLSConfig and CACertPool. nodeURI is an optional SPIFFE node URI
+// SAN (see generateNodeCert); callers that do not need the SAN omit the
+// argument.
+func generateLeafFromCA(bundlePEM []byte, nodeURI ...string) (*TLSBundle, error) {
+	m, err := clustertls.GenerateLeafFromCA(bundlePEM, nodeURI...)
 	if err != nil {
 		return nil, err
 	}
+	return tlsBundleFromMaterial(m)
+}
 
-	cert, err := tls.X509KeyPair(certPEM, keyPEM)
+// loadTLSFromDir attempts to load TLS certificate material from the
+// standard file names in dataDir: ca.pem, node-cert.pem, node-key.pem.
+// If all three files exist they are loaded via loadTLSFromFiles. If the
+// optional ca-key.pem is present it populates CAKeyPEM. When the
+// required files do not exist, nil is returned without an error
+// (indicating no cached certificates are available).
+func loadTLSFromDir(dataDir string) (*TLSBundle, error) {
+	m, err := clustertls.LoadFromDir(dataDir)
+	if err != nil {
+		return nil, err
+	}
+	if m == nil {
+		return nil, nil
+	}
+	// Re-use the admin-specific file loader to build the parsed tls.Config and
+	// the deduplicated CA cert pool that qrdbd's admin HTTP server requires.
+	caPath := filepath.Join(dataDir, "ca.pem")
+	certPath := filepath.Join(dataDir, "node-cert.pem")
+	keyPath := filepath.Join(dataDir, "node-key.pem")
+	bundle, err := loadTLSFromFiles(caPath, certPath, keyPath)
+	if err != nil {
+		return nil, err
+	}
+	bundle.CAKeyPEM = m.CAKeyPEM
+	return bundle, nil
+}
+
+// persistFullBundle writes the TLS bundle to standard file names in
+// dataDir: ca.pem, node-cert.pem, node-key.pem, and optionally
+// ca-key.pem if CAKeyPEM is populated. The directory is created with
+// 0o700 permissions and files with 0o600.
+func persistFullBundle(bundle *TLSBundle, dataDir string) error {
+	return clustertls.PersistMaterial(&clustertls.Material{
+		CACertPEM: bundle.CACertPEM,
+		CAKeyPEM:  bundle.CAKeyPEM,
+		CertPEM:   bundle.CertPEM,
+		KeyPEM:    bundle.KeyPEM,
+	}, dataDir)
+}
+
+// tlsBundleFromMaterial assembles a qrdbd TLSBundle from raw clustertls
+// Material by parsing the key pair and building the CA cert pool for the
+// admin HTTP server.
+func tlsBundleFromMaterial(m *clustertls.Material) (*TLSBundle, error) {
+	cert, err := tls.X509KeyPair(m.CertPEM, m.KeyPEM)
 	if err != nil {
 		return nil, &TLSGenerateError{Err: err}
 	}
 
 	pool := x509.NewCertPool()
-	pool.AddCert(caCert)
+	if !pool.AppendCertsFromPEM(m.CACertPEM) {
+		return nil, &TLSGenerateError{Err: errors.New("no certificates in CA PEM material")}
+	}
 
 	return &TLSBundle{
-		CACertPEM:  caCertPEM,
-		CAKeyPEM:   caKeyPEM,
-		CertPEM:    certPEM,
-		KeyPEM:     keyPEM,
-		CACertPool: pool,
+		CACertPEM:        m.CACertPEM,
+		CAKeyPEM:         m.CAKeyPEM,
+		CertPEM:          m.CertPEM,
+		KeyPEM:           m.KeyPEM,
+		CACertPool:       pool,
+		ClientCACertPool: pool, // self-signed cluster CA verifies both roles
 		TLSConfig: &tls.Config{
 			Certificates: []tls.Certificate{cert},
 			MinVersion:   tls.VersionTLS13,
@@ -326,15 +215,14 @@ func loadTLSFromFiles(caFile, certFile, keyFile string) (*TLSBundle, error) {
 }
 
 // loadTLSFromFilesWithExtra loads TLS certificate material from the
-// supplied file paths and merges any additional CA pools into the
-// returned bundle's CACertPool. additionalCAs is layered onto the
-// server CA pool used for peer verification (e.g.,
-// cfg.TLS.AdditionalCAs); clientCAFiles is reserved for client
-// certificate verification (e.g., cfg.MTLS.ClientCAFiles) and is
-// merged into the same pool because the bundle currently exposes a
-// single CertPool consumed by both peer and client verification paths.
-// All paths flow through loadCAFilesUnion which deduplicates by
-// canonical filename.
+// supplied file paths and returns a bundle with two distinct trust pools.
+// additionalCAs is layered onto CACertPool, the server-trust pool used as
+// RootCAs for peer verification (e.g. cfg.TLS.AdditionalCAs); clientCAFiles
+// is layered onto ClientCACertPool, the client-auth pool used as ClientCAs
+// (e.g. cfg.MTLS.ClientCAFiles). The two pools are kept separate so a CA
+// trusted for one role is not silently trusted for the other; the primary
+// caFile seeds both. All paths flow through loadCAFilesUnion which
+// deduplicates by canonical filename.
 func loadTLSFromFilesWithExtra(caFile, certFile, keyFile string, additionalCAs, clientCAFiles []string) (*TLSBundle, error) {
 	caCertPEM, err := os.ReadFile(caFile)
 	if err != nil {
@@ -356,32 +244,39 @@ func loadTLSFromFilesWithExtra(caFile, certFile, keyFile string, additionalCAs, 
 		return nil, &TLSLoadError{Path: certFile, Err: err}
 	}
 
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(caCertPEM) {
+	// Server-trust pool: the primary CA plus any additional peer-trust CAs
+	// (cfg.TLS.AdditionalCAs). Used as RootCAs when this node verifies the
+	// certificate a peer server presents.
+	serverPool := x509.NewCertPool()
+	if !serverPool.AppendCertsFromPEM(caCertPEM) {
 		return nil, &TLSLoadError{Path: caFile, Err: errNoCertsInPEM}
 	}
-
-	// Layer in the union of additional and mTLS client CAs. The helper
-	// canonicalizes each path so the primary CA (already loaded above)
-	// and any duplicates across the two slices are de-duped.
-	union := append([]string{caFile}, additionalCAs...)
-	union = append(union, clientCAFiles...)
-	extra, err := loadCAFilesUnion(union)
-	if err != nil {
+	if extra, err := loadCAFilesUnion(append([]string{caFile}, additionalCAs...)); err != nil {
 		return nil, err
+	} else if extra != nil {
+		serverPool = extra
 	}
-	if extra != nil {
-		// Re-build the pool from the union so that all certs are
-		// present in a single deduplicated pool. The primary CA is
-		// included in the union list so its trust survives.
-		pool = extra
+
+	// Client-auth pool: the primary CA plus any dedicated client-auth CAs
+	// (cfg.MTLS.ClientCAFiles). Used as ClientCAs when this node verifies the
+	// certificate a client presents. Kept separate from serverPool so a CA
+	// trusted only for one role cannot be used for the other.
+	clientPool := x509.NewCertPool()
+	if !clientPool.AppendCertsFromPEM(caCertPEM) {
+		return nil, &TLSLoadError{Path: caFile, Err: errNoCertsInPEM}
+	}
+	if extra, err := loadCAFilesUnion(append([]string{caFile}, clientCAFiles...)); err != nil {
+		return nil, err
+	} else if extra != nil {
+		clientPool = extra
 	}
 
 	return &TLSBundle{
-		CACertPEM:  caCertPEM,
-		CertPEM:    certPEM,
-		KeyPEM:     keyPEM,
-		CACertPool: pool,
+		CACertPEM:        caCertPEM,
+		CertPEM:          certPEM,
+		KeyPEM:           keyPEM,
+		CACertPool:       serverPool,
+		ClientCACertPool: clientPool,
 		TLSConfig: &tls.Config{
 			Certificates: []tls.Certificate{cert},
 			MinVersion:   tls.VersionTLS13,
@@ -550,131 +445,6 @@ func generateAdminClientCert(bundle *TLSBundle, dataDir, username, tenantID stri
 func fileExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
-}
-
-// loadTLSFromDir attempts to load TLS certificate material from the
-// standard file names in dataDir: ca.pem, node-cert.pem, node-key.pem.
-// If all three files exist they are loaded via loadTLSFromFiles. If the
-// optional ca-key.pem is present it populates CAKeyPEM. When the
-// required files do not exist, nil is returned without an error
-// (indicating no cached certificates are available).
-func loadTLSFromDir(dataDir string) (*TLSBundle, error) {
-	caPath := filepath.Join(dataDir, "ca.pem")
-	certPath := filepath.Join(dataDir, "node-cert.pem")
-	keyPath := filepath.Join(dataDir, "node-key.pem")
-
-	// All three files must be present; missing files mean no cached certs.
-	if !fileExists(caPath) || !fileExists(certPath) || !fileExists(keyPath) {
-		return nil, nil
-	}
-
-	bundle, err := loadTLSFromFiles(caPath, certPath, keyPath)
-	if err != nil {
-		return nil, err
-	}
-
-	// Optionally load the CA private key if available.
-	caKeyPath := filepath.Join(dataDir, "ca-key.pem")
-	if fileExists(caKeyPath) {
-		caKeyPEM, err := os.ReadFile(caKeyPath)
-		if err != nil {
-			return nil, &TLSLoadError{Path: caKeyPath, Err: err}
-		}
-		bundle.CAKeyPEM = caKeyPEM
-	}
-
-	return bundle, nil
-}
-
-// persistFullBundle writes the TLS bundle to standard file names in
-// dataDir: ca.pem, node-cert.pem, node-key.pem, and optionally
-// ca-key.pem if CAKeyPEM is populated. The directory is created with
-// 0o700 permissions and files with 0o600.
-func persistFullBundle(bundle *TLSBundle, dataDir string) error {
-	if err := os.MkdirAll(dataDir, 0o700); err != nil {
-		return &BootstrapWriteError{Path: dataDir, Err: err}
-	}
-
-	caPath := filepath.Join(dataDir, "ca.pem")
-	if err := os.WriteFile(caPath, bundle.CACertPEM, 0o600); err != nil {
-		return &BootstrapWriteError{Path: caPath, Err: err}
-	}
-
-	certPath := filepath.Join(dataDir, "node-cert.pem")
-	if err := os.WriteFile(certPath, bundle.CertPEM, 0o600); err != nil {
-		return &BootstrapWriteError{Path: certPath, Err: err}
-	}
-
-	keyPath := filepath.Join(dataDir, "node-key.pem")
-	if err := os.WriteFile(keyPath, bundle.KeyPEM, 0o600); err != nil {
-		return &BootstrapWriteError{Path: keyPath, Err: err}
-	}
-
-	if len(bundle.CAKeyPEM) > 0 {
-		caKeyPath := filepath.Join(dataDir, "ca-key.pem")
-		if err := os.WriteFile(caKeyPath, bundle.CAKeyPEM, 0o600); err != nil {
-			return &BootstrapWriteError{Path: caKeyPath, Err: err}
-		}
-	}
-
-	return nil
-}
-
-// generateLeafFromCA parses concatenated CA certificate + CA private key
-// PEM bytes (e.g., from a bootstrap endpoint) and generates a node leaf
-// certificate signed by the CA. The returned TLSBundle is fully
-// populated including TLSConfig and CACertPool. nodeURI is an optional
-// SPIFFE node URI SAN (see generateNodeCert); callers that do not need
-// the SAN omit the argument.
-func generateLeafFromCA(bundlePEM []byte, nodeURI ...string) (*TLSBundle, error) {
-	// Parse CA certificate.
-	caBlock, rest := pem.Decode(bundlePEM)
-	if caBlock == nil || caBlock.Type != "CERTIFICATE" {
-		return nil, &BootstrapKeyError{Kind: "CA certificate", Err: errors.New("no CERTIFICATE block found in PEM data")}
-	}
-	caCert, err := x509.ParseCertificate(caBlock.Bytes)
-	if err != nil {
-		return nil, &BootstrapKeyError{Kind: "CA certificate", Err: err}
-	}
-	caCertPEM := pem.EncodeToMemory(caBlock)
-
-	// Parse CA private key.
-	keyBlock, _ := pem.Decode(rest)
-	if keyBlock == nil || keyBlock.Type != "EC PRIVATE KEY" {
-		return nil, &BootstrapKeyError{Kind: "CA private key", Err: errors.New("no EC PRIVATE KEY block found in PEM data")}
-	}
-	caKey, err := x509.ParseECPrivateKey(keyBlock.Bytes)
-	if err != nil {
-		return nil, &BootstrapKeyError{Kind: "CA private key", Err: err}
-	}
-	caKeyPEM := pem.EncodeToMemory(keyBlock)
-
-	// Generate the node leaf certificate.
-	certPEM, keyPEM, err := generateNodeCert(caCert, caKey, nodeValidity, nodeURI...)
-	if err != nil {
-		return nil, err
-	}
-
-	cert, err := tls.X509KeyPair(certPEM, keyPEM)
-	if err != nil {
-		return nil, &TLSGenerateError{Err: err}
-	}
-
-	pool := x509.NewCertPool()
-	pool.AddCert(caCert)
-
-	return &TLSBundle{
-		CACertPEM:  caCertPEM,
-		CAKeyPEM:   caKeyPEM,
-		CertPEM:    certPEM,
-		KeyPEM:     keyPEM,
-		CACertPool: pool,
-		TLSConfig: &tls.Config{
-			Certificates: []tls.Certificate{cert},
-			MinVersion:   tls.VersionTLS13,
-			NextProtos:   []string{"h3", "h2", "http/1.1"},
-		},
-	}, nil
 }
 
 // wireCertReloader creates a CertReloader for the given certificate and

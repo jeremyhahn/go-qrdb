@@ -1,0 +1,343 @@
+# golangci-lint v2 configuration for go-qrdb
+# Derived from the shared stack baseline (conventions/project-scaffold.md).
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/jeremyhahn/go-qrdb
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - misspell
+    - bodyclose
+    - whitespace
+    - copyloopvar
+    - errname
+    - errorlint
+    - forbidigo
+    - godot
+    - gosec
+    - staticcheck
+    - unused
+    - ineffassign
+  disable:
+    - unconvert   # Style preference
+    - unparam     # Too noisy for production code
+    - goconst     # Too aggressive, better handled in code review
+    - gocritic    # Style preferences, not bugs
+    - gocyclo     # Complexity handled in code review
+    - goprintffuncname # Style preference
+    - revive      # Too aggressive, covered by other linters
+    - nilerr      # Many false positives
+    - noctx       # Context handled explicitly
+    - predeclared # Style preference
+    - thelper     # Test helper hints, not critical
+  settings:
+    errcheck:
+      check-type-assertions: true
+      check-blank: false
+      exclude-functions:
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - fmt.Fprint
+        - fmt.Printf
+        - fmt.Println
+        - fmt.Print
+        - fmt.Scanln
+        - (io.Closer).Close
+        - (*os.File).Close
+        - io.Copy
+        - io.WriteString
+        - os.Setenv
+        - os.Unsetenv
+        - os.Remove
+        - os.RemoveAll
+        - os.Mkdir
+        - os.MkdirAll
+        - (*bytes.Buffer).WriteString
+        - (*bytes.Buffer).Write
+        - (*strings.Builder).WriteString
+        - (*strings.Builder).Write
+        - encoding/binary.Write
+        - encoding/binary.Read
+    goconst:
+      min-len: 3
+      min-occurrences: 5
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - experimental
+        - opinionated
+        - performance
+        - style
+    gocyclo:
+      min-complexity: 30
+    revive:
+      rules:
+        - name: exported
+          severity: warning
+        - name: var-naming
+          severity: warning
+        - name: package-comments
+          severity: warning
+        - name: error-return
+          severity: warning
+        - name: error-strings
+          severity: warning
+        - name: error-naming
+          severity: warning
+        - name: increment-decrement
+          severity: warning
+    gosec:
+      excludes:
+        - G115  # Integer overflow in byte conversions (intentional low-level bit manipulation)
+        - G117  # Exported struct fields matching secret patterns (legitimate auth/credential types)
+        - G204
+        - G304
+        - G602  # Slice bounds check (false positive on validated indices)
+        - G703  # Path traversal (paths constructed from validated config)
+        - G704  # SSRF via taint analysis (intentional HTTP requests)
+        - G122  # Filesystem TOCTOU in WalkDir callbacks (internal storage paths, not user-supplied)
+    forbidigo:
+      forbid:
+        - pattern: ^print.*$
+        - pattern: fmt\.Print.*
+      exclude-godoc-examples: true
+    godot:
+      scope: declarations
+      capital: false
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - std-error-handling
+    rules:
+      # Exclude deprecated grpc.DialContext warnings (still supported in 1.x)
+      - text: "SA1019.*grpc\\.DialContext.*deprecated"
+        linters:
+          - staticcheck
+      # Exclude S1017 should replace if with TrimPrefix (style preference)
+      - text: "S1017.*TrimPrefix"
+        linters:
+          - staticcheck
+      # Exclude QF1012 quickfix suggestions (style preference, not a bug)
+      - text: "QF1012"
+        linters:
+          - staticcheck
+      # Exclude govet structtag warnings in test files with nolint
+      - text: "structtag.*has json tag but is not exported"
+        linters:
+          - govet
+      # Test files - exclude common linters that have many false positives
+      - path: _test\.go
+        linters:
+          - gocyclo
+          - errcheck
+          - dupl
+          - gosec
+          - funlen
+          - goconst
+          - unused
+          - unparam
+          - staticcheck
+          - gocritic
+          - ineffassign
+          - nilerr
+          - noctx
+          - thelper
+          - unconvert
+          - revive
+          - errorlint
+          - godot
+      # Test helper files - exclude linters similar to test files
+      - path: test_helpers\.go
+        linters:
+          - gocyclo
+          - errcheck
+          - gosec
+          - goconst
+          - unused
+          - unparam
+          - staticcheck
+          - gocritic
+          - ineffassign
+          - nilerr
+          - revive
+      # Testable implementations for testing
+      - path: testable\.go
+        linters:
+          - gocyclo
+          - errcheck
+          - gosec
+          - goconst
+          - unused
+          - unparam
+          - staticcheck
+          - gocritic
+          - ineffassign
+          - nilerr
+          - revive
+      # Specific errcheck exclusions for common acceptable patterns
+      - text: "Close` is not checked"
+        linters:
+          - errcheck
+      - text: "\\.Set` is not checked"
+        linters:
+          - errcheck
+      - text: "\\.Put` is not checked"
+        linters:
+          - errcheck
+      - text: "\\.Update` is not checked"
+        linters:
+          - errcheck
+      - text: "Shutdown` is not checked"
+        linters:
+          - errcheck
+      - text: "viper\\.BindEnv` is not checked"
+        linters:
+          - errcheck
+      - text: "MarkFlagRequired` is not checked"
+        linters:
+          - errcheck
+      - text: "\\.ReadFrom` is not checked"
+        linters:
+          - errcheck
+      - text: "\\.Rollback` is not checked"
+        linters:
+          - errcheck
+      - text: "\\.Delete` is not checked"
+        linters:
+          - errcheck
+      - text: "\\.Store` is not checked"
+        linters:
+          - errcheck
+      - text: "\\.Load` is not checked"
+        linters:
+          - errcheck
+      - text: "\\.Write` is not checked"
+        linters:
+          - errcheck
+      - text: "\\.Sync` is not checked"
+        linters:
+          - errcheck
+      - text: "viper\\.BindPFlag` is not checked"
+        linters:
+          - errcheck
+      - text: "\\.Encode` is not checked"
+        linters:
+          - errcheck
+      - text: "rand\\.Read` is not checked"
+        linters:
+          - errcheck
+      - text: "SetReadDeadline` is not checked"
+        linters:
+          - errcheck
+      - text: "Sscanf` is not checked"
+        linters:
+          - errcheck
+      - text: "IndexEntityWithType` is not checked"
+        linters:
+          - errcheck
+      - text: "DeleteEntity` is not checked"
+        linters:
+          - errcheck
+      - text: "FormatError` is not checked"
+        linters:
+          - errcheck
+      - text: "UpdateUser` is not checked"
+        linters:
+          - errcheck
+      # Exclude examples from most linters
+      - path: examples/
+        linters:
+          - errcheck
+          - forbidigo
+          - goconst
+          - gosec
+          - revive
+          - goprintffuncname
+          - unused
+          - unparam
+          - gocritic
+      # Exclude CLI commands from linters with acceptable patterns in CLI code
+      - path: cmd/
+        linters:
+          - forbidigo
+          - goconst
+          - gosec
+          - revive
+          - goprintffuncname
+      # Exclude REST API handlers from goconst (format strings and status values)
+      - path: pkg/api/rest/
+        linters:
+          - goconst
+      # Exclude auth bootstrap from goconst (default role names)
+      - path: pkg/auth/bootstrap\.go
+        linters:
+          - goconst
+      # Exclude KMS xkms backend from goconst (algorithm names)
+      - path: pkg/kms/xkms_
+        linters:
+          - goconst
+      # Exclude security package from goconst (algorithm names)
+      - path: pkg/security/
+        linters:
+          - goconst
+      # Exclude server health from goconst (health messages)
+      - path: pkg/server/
+        linters:
+          - goconst
+      # Exclude codec from goconst (format type names)
+      - path: pkg/codec/
+        linters:
+          - goconst
+      # Exclude operations from goconst (status strings)
+      - path: pkg/operations/
+        linters:
+          - goconst
+      # Exclude statemachine from goconst (operation names)
+      - path: pkg/raft/statemachine/
+        linters:
+          - goconst
+      # Exclude discovery from goconst (namespace strings)
+      - path: pkg/discovery/
+        linters:
+          - goconst
+      # Exclude service from goconst (default values)
+      - path: pkg/service/
+        linters:
+          - goconst
+      # Exclude logger from goconst (output type names)
+      - path: pkg/logger/
+        linters:
+          - goconst
+      # Exclude storage from goconst (status strings)
+      - path: pkg/storage/
+        linters:
+          - goconst
+      # Exclude test performance from forbidigo
+      - path: test/performance/
+        linters:
+          - forbidigo
+      # Exclude testutil from errcheck (type assertions on mock return values)
+      - path: pkg/testutil/
+        linters:
+          - errcheck
+      # Exclude FIPS informational output from forbidigo
+      - path: pkg/fips/
+        linters:
+          - forbidigo
+
+severity:
+  default: warning

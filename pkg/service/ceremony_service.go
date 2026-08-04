@@ -79,16 +79,48 @@ type CeremonyServicer interface {
 }
 
 // CeremonyInitializeOptions carries per-request parameters for the
-// initialization ceremony. Per-request PINs take precedence over the
-// construction-time CeremonyConfig PINs when non-empty; empty fields fall
-// back to the configured values. When a required PIN is absent from both
-// the request and the configuration, the ceremony fails closed.
+// initialization ceremony. Per-request fields take precedence over the
+// construction-time CeremonyConfig fields when non-empty (non-zero for
+// Threshold, non-empty for the slice fields); empty/zero fields fall back
+// to the configured values. When a required PIN is absent from both the
+// request and the configuration, the ceremony fails closed; likewise a
+// Threshold >= 2 with no resolved Officers fails closed with the ceremony
+// package's typed ErrNoOfficers rather than silently running the
+// single-admin path.
 type CeremonyInitializeOptions struct {
 	// SOPin is the Security Officer PIN supplied for this ceremony.
 	SOPin string
 
 	// UserPin is the user-level PIN supplied for this ceremony.
 	UserPin string
+
+	// CredentialSealStrategy identifies how credentials are sealed at rest.
+	CredentialSealStrategy string
+
+	// Threshold is the minimum number of officers (M) required to
+	// reconstruct the secret in M-of-N Shamir splitting.
+	Threshold int
+
+	// Officers is the list of officer configurations for M-of-N enrollment.
+	Officers []CeremonyOfficerConfig
+
+	// Hostname is the primary hostname for TLS certificate generation.
+	Hostname string
+
+	// SANs is the list of Subject Alternative Names for TLS certificates.
+	SANs []string
+}
+
+// CeremonyOfficerConfig describes a single officer participating in M-of-N
+// ceremony initialization. CSRPEM is a plain PEM string (not raw bytes) to
+// match the canonical wire contract used everywhere else officer CSRs cross
+// a transport boundary.
+type CeremonyOfficerConfig struct {
+	// Username is the unique identifier for the officer.
+	Username string
+
+	// CSRPEM is the PEM-encoded certificate signing request from the officer.
+	CSRPEM string
 }
 
 // CeremonyEnrollExternalOfficerRequest is the service-layer request for
@@ -243,9 +275,24 @@ func CeremonyServiceCore(svc CeremonyServicer) (*ceremony.CeremonyService, bool)
 func (s *CeremonyService) CeremonyInitialize(ctx context.Context, ca ceremony.CeremonyCA, opts *CeremonyInitializeOptions) (*CeremonyInitResult, error) {
 	var ceremonyOpts *ceremony.InitializeOptions
 	if opts != nil {
+		var officers []ceremony.OfficerConfig
+		if len(opts.Officers) > 0 {
+			officers = make([]ceremony.OfficerConfig, len(opts.Officers))
+			for i, o := range opts.Officers {
+				officers[i] = ceremony.OfficerConfig{
+					Username: o.Username,
+					CSRPEM:   []byte(o.CSRPEM),
+				}
+			}
+		}
 		ceremonyOpts = &ceremony.InitializeOptions{
-			SOPin:   opts.SOPin,
-			UserPin: opts.UserPin,
+			SOPin:                  opts.SOPin,
+			UserPin:                opts.UserPin,
+			CredentialSealStrategy: opts.CredentialSealStrategy,
+			Threshold:              opts.Threshold,
+			Officers:               officers,
+			Hostname:               opts.Hostname,
+			SANs:                   opts.SANs,
 		}
 	}
 	result, err := s.ceremony.Initialize(ctx, ca, ceremonyOpts)

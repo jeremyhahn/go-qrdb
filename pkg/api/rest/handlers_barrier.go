@@ -539,8 +539,12 @@ func (s *Server) handleBarrierRecoveryStatus(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// Field name must be "has_keys" to match transport.BarrierHasRecoveryKeysResponse
+	// (the shared SDK type gRPC/QUIC/unix all decode into); a prior "has_recovery_keys"
+	// key here silently left every REST-transport caller's HasKeys field at its zero
+	// value (false), regardless of the server's actual answer.
 	writeJSON(w, map[string]interface{}{
-		"has_recovery_keys": hasKeys,
+		"has_keys": hasKeys,
 	})
 }
 

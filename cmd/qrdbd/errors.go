@@ -15,17 +15,20 @@
 package main
 
 import (
-	"errors"
 	"strconv"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
+	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	qrdbpool "github.com/jeremyhahn/go-qrdb/pkg/storage/pool"
 )
 
-// errNoCertsInPEM is returned when a PEM file contains no valid
-// certificate blocks.
-var errNoCertsInPEM = errors.New("no certificates found in PEM data")
+// errNoCertsInPEM is returned when a PEM file contains no valid certificate
+// blocks. Aliased from pkg/clustertls so the same sentinel is shared across
+// the clustertls library and the qrdbd daemon.
+var errNoCertsInPEM = clustertls.ErrNoCertsInPEM
 
 // PeerParseError is returned when a peer specification string cannot be
 // parsed. The canonical type lives in pkg/cluster; the daemon aliases it so
@@ -102,36 +105,13 @@ func (e *ConfigApplyError) Unwrap() error {
 }
 
 // TLSGenerateError is returned when TLS certificate generation fails.
-type TLSGenerateError struct {
-	Err error
-}
+// Aliased from pkg/clustertls so that type assertions across qrdbd and its
+// tests share the canonical error type from the clustertls library.
+type TLSGenerateError = clustertls.GenerateError
 
-// Error returns a human-readable description.
-func (e *TLSGenerateError) Error() string {
-	return "cli: TLS certificate generation failed: " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *TLSGenerateError) Unwrap() error {
-	return e.Err
-}
-
-// TLSLoadError is returned when loading TLS certificate material from
-// a file fails.
-type TLSLoadError struct {
-	Path string
-	Err  error
-}
-
-// Error returns a human-readable description.
-func (e *TLSLoadError) Error() string {
-	return "cli: failed to load TLS file " + strconv.Quote(e.Path) + ": " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *TLSLoadError) Unwrap() error {
-	return e.Err
-}
+// TLSLoadError is returned when loading TLS certificate material from a file
+// fails. Aliased from pkg/clustertls.
+type TLSLoadError = clustertls.LoadError
 
 // CACertWriteError is returned when writing the CA certificate to disk
 // fails.
@@ -167,6 +147,28 @@ func (e *AuthBootstrapError) Unwrap() error {
 	return e.Err
 }
 
+// LeaderElectionTimeoutError is the cause recorded in an AuthBootstrapError when
+// no Raft leader is elected within the bounded number of attempts.
+type LeaderElectionTimeoutError struct {
+	Attempts int
+}
+
+// Error returns a human-readable description of the leader-election timeout.
+func (e *LeaderElectionTimeoutError) Error() string {
+	return "no leader after " + strconv.Itoa(e.Attempts) + " attempts"
+}
+
+// AdminReplicationTimeoutError is the cause recorded in an AuthBootstrapError
+// when the admin user is not replicated to a follower within the timeout.
+type AdminReplicationTimeoutError struct {
+	Timeout time.Duration
+}
+
+// Error returns a human-readable description of the admin-replication timeout.
+func (e *AdminReplicationTimeoutError) Error() string {
+	return "admin user not replicated within " + e.Timeout.String()
+}
+
 // AdminCertError is returned when admin client certificate generation fails.
 type AdminCertError struct {
 	Err error
@@ -200,87 +202,26 @@ func (e *AdminCertWriteError) Unwrap() error {
 }
 
 // BootstrapFetchError is returned when fetching the CA bundle from a
-// bootstrap server fails.
-type BootstrapFetchError struct {
-	Method string
-	Err    error
-}
-
-// Error returns a human-readable description.
-func (e *BootstrapFetchError) Error() string {
-	return "cli: bootstrap fetch failed via " + e.Method + ": " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *BootstrapFetchError) Unwrap() error {
-	return e.Err
-}
+// bootstrap server fails. Aliased from pkg/clusterenroll.
+type BootstrapFetchError = clusterenroll.FetchError
 
 // BootstrapError is returned when the overall bootstrap process fails.
-type BootstrapError struct {
-	Err error
-}
-
-// Error returns a human-readable description.
-func (e *BootstrapError) Error() string {
-	return "cli: TLS bootstrap failed: " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *BootstrapError) Unwrap() error {
-	return e.Err
-}
+// Aliased from pkg/clusterenroll.
+type BootstrapError = clusterenroll.JoinError
 
 // BootstrapServerError is returned when starting a bootstrap server
-// fails.
-type BootstrapServerError struct {
-	Protocol string
-	Err      error
-}
+// fails. Aliased from pkg/clusterenroll.
+type BootstrapServerError = clusterenroll.ServerError
 
-// Error returns a human-readable description.
-func (e *BootstrapServerError) Error() string {
-	return "cli: bootstrap server (" + e.Protocol + ") failed to start: " + e.Err.Error()
-}
+// BootstrapWriteError is returned when writing bootstrap material to disk
+// fails. Aliased from pkg/clustertls so that type assertions across qrdbd and
+// its tests share the canonical error type from the clustertls library.
+type BootstrapWriteError = clustertls.WriteError
 
-// Unwrap returns the underlying error.
-func (e *BootstrapServerError) Unwrap() error {
-	return e.Err
-}
-
-// BootstrapWriteError is returned when writing bootstrap material to
-// disk fails.
-type BootstrapWriteError struct {
-	Path string
-	Err  error
-}
-
-// Error returns a human-readable description.
-func (e *BootstrapWriteError) Error() string {
-	return "cli: failed to write bootstrap file " + strconv.Quote(e.Path) + ": " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *BootstrapWriteError) Unwrap() error {
-	return e.Err
-}
-
-// BootstrapKeyError is returned when parsing bootstrap key material
-// fails.
-type BootstrapKeyError struct {
-	Kind string
-	Err  error
-}
-
-// Error returns a human-readable description.
-func (e *BootstrapKeyError) Error() string {
-	return "cli: bootstrap key parse failed (" + e.Kind + "): " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *BootstrapKeyError) Unwrap() error {
-	return e.Err
-}
+// BootstrapKeyError is returned when parsing bootstrap key material fails.
+// Aliased from pkg/clustertls so that type assertions across qrdbd and its
+// tests share the canonical error type from the clustertls library.
+type BootstrapKeyError = clustertls.KeyError
 
 // NoBootstrapAddrError is returned when no bootstrap address can be
 // determined.

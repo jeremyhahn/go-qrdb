@@ -41,6 +41,7 @@ import (
 type coverageCeremonyService struct {
 	initResult       *service.CeremonyInitResult
 	initErr          error
+	capturedInitOpts *service.CeremonyInitializeOptions
 	statusResult     *service.CeremonyStatusInfo
 	statusErr        error
 	beginResult      *service.CeremonyChallenge
@@ -74,7 +75,8 @@ func newCoverageCeremonyService() *coverageCeremonyService {
 	}
 }
 
-func (m *coverageCeremonyService) CeremonyInitialize(_ context.Context, _ ceremony.CeremonyCA, _ *service.CeremonyInitializeOptions) (*service.CeremonyInitResult, error) {
+func (m *coverageCeremonyService) CeremonyInitialize(_ context.Context, _ ceremony.CeremonyCA, opts *service.CeremonyInitializeOptions) (*service.CeremonyInitResult, error) {
+	m.capturedInitOpts = opts
 	return m.initResult, m.initErr
 }
 func (m *coverageCeremonyService) CeremonyStatus(_ context.Context) (*service.CeremonyStatusInfo, error) {
@@ -229,21 +231,18 @@ func (m *mockDatabaseServiceWithEtcd) UpdateEtcdForTenant(_ context.Context, nam
 }
 
 // ---------------------------------------------------------------------------
-// SQLQueryError – Error and Unwrap
+// DatabaseScopeConflictError – Error
 // ---------------------------------------------------------------------------
 
-func TestSQLQueryError_ErrorAndUnwrap(t *testing.T) {
-	inner := &service.KeyNotFoundError{Key: "x"}
-	e := &SQLQueryError{Query: "SELECT 1", Err: inner}
+func TestDatabaseScopeConflictError_Error(t *testing.T) {
+	e := &DatabaseScopeConflictError{Body: "bodydb", Header: "headerdb"}
 
 	msg := e.Error()
-	if !strings.Contains(msg, "sql query failed") {
-		t.Errorf("Error() = %q, want contains 'sql query failed'", msg)
+	if !strings.Contains(msg, "bodydb") || !strings.Contains(msg, "headerdb") {
+		t.Errorf("Error() = %q, want both database names", msg)
 	}
-
-	unwrapped := e.Unwrap()
-	if unwrapped != inner {
-		t.Errorf("Unwrap() = %v, want %v", unwrapped, inner)
+	if !strings.Contains(msg, "scope conflict") {
+		t.Errorf("Error() = %q, want contains 'scope conflict'", msg)
 	}
 }
 
@@ -349,6 +348,64 @@ func TestHandleCeremonyInitialize_Success(t *testing.T) {
 	rec := httptest.NewRecorder()
 	s.handleCeremonyInitialize(rec, req)
 	assertStatus(t, rec, http.StatusOK)
+}
+
+// TestHandleCeremonyInitialize_ForwardsAllFields is the regression guard for
+// the bug where handleCeremonyInitialize only forwarded SOPin/UserPin into
+// service.CeremonyInitializeOptions, silently dropping
+// CredentialSealStrategy, Threshold, Officers, Hostname, and SANs from the
+// wire request.
+func TestHandleCeremonyInitialize_ForwardsAllFields(t *testing.T) {
+	svc := newCoverageCeremonyService()
+	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
+		WithCeremonyService(svc),
+		WithCeremonyCA(&coverageCeremonyCA{}))
+
+	body := `{
+		"so_pin": "pin",
+		"user_pin": "upin",
+		"credential_seal_strategy": "shamir",
+		"threshold": 2,
+		"officers": [
+			{"username": "officer-1", "csr_pem": "-----BEGIN CERTIFICATE REQUEST-----\ncsr1\n-----END CERTIFICATE REQUEST-----\n"},
+			{"username": "officer-2", "csr_pem": "-----BEGIN CERTIFICATE REQUEST-----\ncsr2\n-----END CERTIFICATE REQUEST-----\n"}
+		],
+		"hostname": "override.example",
+		"sans": ["alt1.example", "alt2.example"]
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/initialize", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	s.handleCeremonyInitialize(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+
+	got := svc.capturedInitOpts
+	if got == nil {
+		t.Fatal("expected CeremonyInitialize to be called with non-nil opts")
+	}
+	if got.SOPin != "pin" || got.UserPin != "upin" {
+		t.Errorf("SOPin/UserPin not forwarded: %+v", got)
+	}
+	if got.CredentialSealStrategy != "shamir" {
+		t.Errorf("CredentialSealStrategy = %q, want %q", got.CredentialSealStrategy, "shamir")
+	}
+	if got.Threshold != 2 {
+		t.Errorf("Threshold = %d, want 2", got.Threshold)
+	}
+	if got.Hostname != "override.example" {
+		t.Errorf("Hostname = %q, want %q", got.Hostname, "override.example")
+	}
+	if len(got.SANs) != 2 || got.SANs[0] != "alt1.example" || got.SANs[1] != "alt2.example" {
+		t.Errorf("SANs = %v, want [alt1.example alt2.example]", got.SANs)
+	}
+	if len(got.Officers) != 2 {
+		t.Fatalf("Officers = %v, want 2 entries", got.Officers)
+	}
+	if got.Officers[0].Username != "officer-1" || got.Officers[0].CSRPEM == "" {
+		t.Errorf("Officers[0] = %+v", got.Officers[0])
+	}
+	if got.Officers[1].Username != "officer-2" || got.Officers[1].CSRPEM == "" {
+		t.Errorf("Officers[1] = %+v", got.Officers[1])
+	}
 }
 
 func TestHandleCeremonyInitialize_ServiceError(t *testing.T) {
@@ -503,6 +560,23 @@ func TestHandleCeremonyClaimShare_Success(t *testing.T) {
 	rec := httptest.NewRecorder()
 	s.handleCeremonyClaimShare(rec, req)
 	assertStatus(t, rec, http.StatusOK)
+
+	// Regression guard: the response key and encoding must match
+	// transport.ClaimShareResponse{ShareJSON string `json:"share_json"`} --
+	// the shared SDK type gRPC/QUIC/embedded all populate with the raw JSON
+	// share text (not base64). A prior {"share": base64(...)} shape here
+	// left every REST-transport caller's ShareJSON field empty.
+	var resp map[string]interface{}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	shareJSON, ok := resp["share_json"].(string)
+	if !ok {
+		t.Fatalf("expected string share_json field, got: %#v", resp)
+	}
+	if shareJSON != "shamir-share-bytes" {
+		t.Errorf("share_json = %q, want the raw share bytes as a string, not base64", shareJSON)
+	}
 }
 
 func TestHandleCeremonyClaimShare_ServiceError(t *testing.T) {

@@ -50,6 +50,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	sqlquery "github.com/jeremyhahn/go-qrdb/pkg/sql/query"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
@@ -169,6 +170,7 @@ type serverOptions struct {
 	webUI              http.Handler
 	auditLogger        audit.AuditLogger
 	authFactorSvc      service.AuthFactorServicer
+	userAuthFactorSvc  service.UserAuthFactorServicer
 	custodianSvc       custodian.Servicer
 	soAuthenticator    *auth.SOAuthenticator
 
@@ -534,6 +536,18 @@ func WithAuthFactorService(svc service.AuthFactorServicer) ServerOption {
 	return func(o *serverOptions) { o.authFactorSvc = svc }
 }
 
+// WithUserAuthFactorService configures the user-side N-factor service (M14,
+// docs/08-bootstrap-auth-architecture.md §5e) across all protocol servers
+// that support it (REST, gRPC, QUIC, MCP, Unix). This is the service the SDK
+// client's UserAuthFactors() accessor talks to (Add / List / Get / Remove /
+// Rotate / Relabel / Login) and is distinct from WithAuthFactorService (the
+// ceremony-time enrollment surface). When not supplied explicitly and a User
+// service is configured, Start() constructs one automatically from the KV
+// servicer via ensureUserAuthFactorService — see that method for details.
+func WithUserAuthFactorService(svc service.UserAuthFactorServicer) ServerOption {
+	return func(o *serverOptions) { o.userAuthFactorSvc = svc }
+}
+
 // WithCustodianService configures the custodian lifecycle service for barrier
 // ceremony enrollment, revocation, and metadata persistence. When set, the
 // custodian management endpoints are registered on the REST server.
@@ -692,12 +706,47 @@ func (s *Server) ensureAuthFactorService() error {
 	return nil
 }
 
+// ensureUserAuthFactorService is the daemon-side analogue of
+// sdk/go/node.go's buildLoginOpts: when a User service is configured
+// (WithUserService) but no explicit UserAuthFactorServicer was supplied via
+// WithUserAuthFactorService, this method constructs the M14 user-side
+// auth-factor service (service.NewUserAuthFactorService) from the same KV
+// servicer passed to New/Start and assigns it so every transport that checks
+// s.opts.userAuthFactorSvc sees a valid instance — the same construction
+// shape the embedded transport uses (KV only; UserStateUpdater is left nil,
+// matching sdk/go/node.go's buildLoginOpts exactly). This gives the CLI's
+// "auth login" / "auth factor" family (cmd/qrdb/auth.go) the same working
+// surface against the standalone daemon that it already has against an
+// embedded node.
+//
+// It is a no-op when userAuthFactorSvc is already set, when no User service
+// is configured (mirrors sdk/go/node.go's buildEmbeddedOpts, which only
+// wires the login ceremony when svcNode.User != nil — no user model means
+// no principal to resolve logins against), or when no KV servicer is
+// available to persist factor records.
+func (s *Server) ensureUserAuthFactorService() error {
+	if s.opts.userAuthFactorSvc != nil || s.opts.userSvc == nil || s.kvSvc == nil {
+		return nil
+	}
+	svc, err := service.NewUserAuthFactorService(service.UserAuthFactorServiceConfig{
+		KV: s.kvSvc,
+	})
+	if err != nil {
+		return err
+	}
+	s.opts.userAuthFactorSvc = svc
+	return nil
+}
+
 // Start launches the configured API servers. Servers are started sequentially
 // in order: REST, gRPC, QUIC, Unix, MCP, MySQL, PostgreSQL. If any server
 // fails to start, all previously started servers are rolled back and the
 // error is returned.
 func (s *Server) Start() error {
 	if err := s.ensureAuthFactorService(); err != nil {
+		return err
+	}
+	if err := s.ensureUserAuthFactorService(); err != nil {
 		return err
 	}
 
@@ -899,6 +948,9 @@ func (s *Server) startREST() error {
 	}
 	if s.opts.databaseSvc != nil {
 		restOpts = append(restOpts, rest.WithDatabaseService(s.opts.databaseSvc))
+		if s.kvSvc != nil {
+			restOpts = append(restOpts, rest.WithSQLService(sqlquery.NewService(s.kvSvc, s.opts.databaseSvc)))
+		}
 	}
 	if s.opts.barrierSvc != nil {
 		restOpts = append(restOpts, rest.WithBarrierService(s.opts.barrierSvc))
@@ -944,6 +996,9 @@ func (s *Server) startREST() error {
 	}
 	if s.opts.authFactorSvc != nil {
 		restOpts = append(restOpts, rest.WithAuthFactorService(s.opts.authFactorSvc))
+	}
+	if s.opts.userAuthFactorSvc != nil {
+		restOpts = append(restOpts, rest.WithUserAuthFactorService(s.opts.userAuthFactorSvc))
 	}
 	if s.opts.custodianSvc != nil {
 		restOpts = append(restOpts, rest.WithCustodianService(s.opts.custodianSvc))
@@ -1088,6 +1143,9 @@ func (s *Server) startGRPC() error {
 	if s.opts.authFactorSvc != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithAuthFactorService(s.opts.authFactorSvc))
 	}
+	if s.opts.userAuthFactorSvc != nil {
+		grpcOpts = append(grpcOpts, grpcapi.WithUserAuthFactorService(s.opts.userAuthFactorSvc))
+	}
 	if reg := s.buildServiceRegistry(); reg != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithServiceRegistry(reg))
 	}
@@ -1186,6 +1244,9 @@ func (s *Server) startQUIC() error {
 	if s.opts.authFactorSvc != nil {
 		quicOpts = append(quicOpts, quicapi.WithAuthFactorService(s.opts.authFactorSvc))
 	}
+	if s.opts.userAuthFactorSvc != nil {
+		quicOpts = append(quicOpts, quicapi.WithUserAuthFactorService(s.opts.userAuthFactorSvc))
+	}
 	if reg := s.buildServiceRegistry(); reg != nil {
 		quicOpts = append(quicOpts, quicapi.WithServiceRegistry(reg))
 	}
@@ -1277,6 +1338,9 @@ func (s *Server) startUnix() error {
 	}
 	if s.opts.authFactorSvc != nil {
 		unixOpts = append(unixOpts, unixapi.WithAuthFactorService(s.opts.authFactorSvc))
+	}
+	if s.opts.userAuthFactorSvc != nil {
+		unixOpts = append(unixOpts, unixapi.WithUserAuthFactorService(s.opts.userAuthFactorSvc))
 	}
 	if reg := s.buildServiceRegistry(); reg != nil {
 		unixOpts = append(unixOpts, unixapi.WithServiceRegistry(reg))
@@ -1383,6 +1447,9 @@ func (s *Server) startMCP() error {
 	}
 	if s.opts.authFactorSvc != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithAuthFactorService(s.opts.authFactorSvc))
+	}
+	if s.opts.userAuthFactorSvc != nil {
+		mcpOpts = append(mcpOpts, mcpapi.WithUserAuthFactorService(s.opts.userAuthFactorSvc))
 	}
 	if reg := s.buildServiceRegistry(); reg != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithServiceRegistry(reg))

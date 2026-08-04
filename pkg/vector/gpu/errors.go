@@ -25,6 +25,10 @@ var (
 	// ErrGPUNotCompiled indicates GPU support was not compiled into the binary.
 	ErrGPUNotCompiled = errors.New("GPU support not compiled (build with -tags gpu)")
 
+	// ErrNoFallbackFactory is returned when a GPU index cannot be created and no
+	// CPU fallback factory was provided.
+	ErrNoFallbackFactory = errors.New("no CPU fallback factory provided")
+
 	// ErrDeviceNotFound indicates the requested GPU device does not exist.
 	ErrDeviceNotFound = errors.New("GPU device not found")
 
@@ -84,3 +88,22 @@ func (e *GPUKernelError) Error() string {
 func (e *GPUKernelError) Unwrap() error {
 	return e.Err
 }
+
+// FactoryError wraps a failure constructing a GPU vector index, preserving the
+// underlying cause for errors.Is/errors.As. It replaces the
+// inline "<factory>: %w" error-wrapping idiom.
+type FactoryError struct {
+	// Op names the factory operation that failed (e.g.
+	// "gpu factory: create remote index", "remote gpu factory").
+	Op string
+	// Cause is the underlying error.
+	Cause error
+}
+
+// Error returns "<op>: <cause>".
+func (e *FactoryError) Error() string {
+	return e.Op + ": " + e.Cause.Error()
+}
+
+// Unwrap returns the underlying cause for errors.Is and errors.As support.
+func (e *FactoryError) Unwrap() error { return e.Cause }

@@ -31,49 +31,6 @@ func (e *dialError) Unwrap() error {
 	return e.Err
 }
 
-// caFileReadError is returned when the CA certificate file cannot be read.
-type caFileReadError struct {
-	Path string
-	Err  error
-}
-
-// Error returns a human-readable description.
-func (e *caFileReadError) Error() string {
-	return "quic transport: failed to read CA file " + e.Path + ": " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *caFileReadError) Unwrap() error {
-	return e.Err
-}
-
-// caParseError is returned when a CA certificate cannot be parsed from
-// the PEM data.
-type caParseError struct {
-	Path string
-}
-
-// Error returns a human-readable description.
-func (e *caParseError) Error() string {
-	return "quic transport: failed to parse CA certificate from " + e.Path
-}
-
-// certLoadError is returned when the client TLS certificate cannot be
-// loaded.
-type certLoadError struct {
-	Err error
-}
-
-// Error returns a human-readable description.
-func (e *certLoadError) Error() string {
-	return "quic transport: failed to load client certificate: " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *certLoadError) Unwrap() error {
-	return e.Err
-}
-
 // streamError is returned when opening a QUIC stream fails.
 type streamError struct {
 	Err error

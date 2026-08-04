@@ -258,6 +258,41 @@ func (t *Transport) BarrierGenerateRootToken(ctx context.Context, req *transport
 	return &tokenResp, nil
 }
 
+// officerRegisterWireRequest is the REST wire shape for officer
+// registration requests. csr_pem travels as a plain PEM string — matching
+// the REST handler's contract (pkg/api/rest handlers_barrier.go /
+// handlers_tenants.go) and the TypeScript SDK, both of which treat csr_pem
+// as raw PEM text, never base64. The transport-level
+// transport.OfficerRegisterRequest.CSRPEM is typed []byte for the other
+// transports (gRPC/unix carry it as protobuf bytes, which round-trip
+// unaffected), so encoding/json would otherwise silently base64-encode it
+// here and corrupt every REST-transport officer registration.
+type officerRegisterWireRequest struct {
+	Username          string `json:"username"`
+	CSRPEM            string `json:"csr_pem"`
+	AuthenticatorType string `json:"authenticator_type,omitempty"`
+	AuthenticatorRef  string `json:"authenticator_ref,omitempty"`
+}
+
+// officerRegisterWireResponse is the REST wire shape for officer
+// registration responses. cert_pem travels as a plain PEM string for the
+// same reason csr_pem does on the request side.
+type officerRegisterWireResponse struct {
+	CertPEM    string `json:"cert_pem"`
+	ShareIndex int    `json:"share_index"`
+}
+
+// officerRegisterRequestToWire converts the transport-level officer
+// registration request to its REST wire shape.
+func officerRegisterRequestToWire(req *transport.OfficerRegisterRequest) *officerRegisterWireRequest {
+	return &officerRegisterWireRequest{
+		Username:          req.Username,
+		CSRPEM:            string(req.CSRPEM),
+		AuthenticatorType: req.AuthenticatorType,
+		AuthenticatorRef:  req.AuthenticatorRef,
+	}
+}
+
 // OfficerRegister registers a Security Officer for the system barrier.
 // Maps to POST /v1/barrier/officers.
 func (t *Transport) OfficerRegister(ctx context.Context, req *transport.OfficerRegisterRequest) (*transport.OfficerRegisterResponse, error) {
@@ -265,12 +300,15 @@ func (t *Transport) OfficerRegister(ctx context.Context, req *transport.OfficerR
 		return nil, &transport.ClosedError{}
 	}
 
-	var resp transport.OfficerRegisterResponse
-	if err := t.postJSONDecode(ctx, "OfficerRegister", "/v1/barrier/officers", req, &resp); err != nil {
+	var wireResp officerRegisterWireResponse
+	if err := t.postJSONDecode(ctx, "OfficerRegister", "/v1/barrier/officers", officerRegisterRequestToWire(req), &wireResp); err != nil {
 		return nil, err
 	}
 
-	return &resp, nil
+	return &transport.OfficerRegisterResponse{
+		CertPEM:    []byte(wireResp.CertPEM),
+		ShareIndex: wireResp.ShareIndex,
+	}, nil
 }
 
 // OfficerList returns all enrolled Security Officers for the system barrier.
@@ -392,12 +430,15 @@ func (t *Transport) RecoveryOfficerRegister(ctx context.Context, req *transport.
 		return nil, &transport.ClosedError{}
 	}
 
-	var resp transport.OfficerRegisterResponse
-	if err := t.postJSONDecode(ctx, "RecoveryOfficerRegister", "/v1/barrier/recovery/officers", req, &resp); err != nil {
+	var wireResp officerRegisterWireResponse
+	if err := t.postJSONDecode(ctx, "RecoveryOfficerRegister", "/v1/barrier/recovery/officers", officerRegisterRequestToWire(req), &wireResp); err != nil {
 		return nil, err
 	}
 
-	return &resp, nil
+	return &transport.OfficerRegisterResponse{
+		CertPEM:    []byte(wireResp.CertPEM),
+		ShareIndex: wireResp.ShareIndex,
+	}, nil
 }
 
 // RecoveryShareClaimBegin issues a challenge nonce to the named recovery

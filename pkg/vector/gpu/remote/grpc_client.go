@@ -16,7 +16,6 @@ package remote
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 
 	"google.golang.org/grpc"
 
@@ -90,7 +89,7 @@ func (c *vectorIndexServiceClient) GetStats(ctx context.Context, in *proto.Stats
 func (c *vectorIndexServiceClient) invoke(ctx context.Context, method string, req, resp any, opts ...grpc.CallOption) error {
 	reqBytes, err := json.Marshal(req)
 	if err != nil {
-		return fmt.Errorf("marshal request for %s: %w", method, err)
+		return &MarshalError{Method: method, Cause: err}
 	}
 
 	var respBytes []byte
@@ -102,7 +101,7 @@ func (c *vectorIndexServiceClient) invoke(ctx context.Context, method string, re
 		return nil
 	}
 	if err := json.Unmarshal(respBytes, resp); err != nil {
-		return fmt.Errorf("unmarshal response for %s: %w", method, err)
+		return &UnmarshalError{Method: method, Cause: err}
 	}
 	return nil
 }

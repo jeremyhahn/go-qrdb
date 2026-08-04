@@ -17,10 +17,15 @@ package database
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
+	"time"
 
+	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	"github.com/jeremyhahn/go-quicraft/pkg/logdb"
 	"github.com/jeremyhahn/go-quicraft/pkg/logdb/waldb"
 
@@ -101,7 +106,7 @@ func TestReencryptWALStore_NoneToKeyed(t *testing.T) {
 
 	writeWALNode(t, srcDir, none, shardID, replicaID, 12)
 
-	count, err := ReencryptWALStore(srcDir, none, dstDir, keyed)
+	count, _, err := ReencryptWALStore(srcDir, none, dstDir, keyed, snapSibling)
 	if err != nil {
 		t.Fatalf("ReencryptWALStore: %v", err)
 	}
@@ -157,12 +162,122 @@ func TestReencryptWALStore_PlaintextSides(t *testing.T) {
 	_ = db.Close()
 
 	// nil source + nil destination barrier = plaintext-to-plaintext copy.
-	count, err := ReencryptWALStore(srcDir, nil, dstDir, nil)
+	count, _, err := ReencryptWALStore(srcDir, nil, dstDir, nil, snapSibling)
 	if err != nil {
 		t.Fatalf("ReencryptWALStore(nil,nil): %v", err)
 	}
 	if count != 1 {
 		t.Fatalf("count = %d, want 1", count)
+	}
+}
+
+// snapSibling stages a re-encrypted snapshot data file beside its original.
+func snapSibling(snapDir string) string {
+	return filepath.Join(snapDir, SnapshotDataFile) + snapshotKeyedSuffix
+}
+
+// TestReencryptWALStore_ReencryptsSnapshotData proves the WAL re-encryption
+// re-keys a node's snapshot DATA FILE: a snapshot.dat framed under barrier A is
+// staged re-encrypted under barrier B, committed into place, and then recovers
+// the original bytes under B (and not under A) — with the source left intact
+// until commit. This is the snapshot half of an enable-encryption migration.
+func TestReencryptWALStore_ReencryptsSnapshotData(t *testing.T) {
+	const shardID, replicaID = uint64(3), uint64(1)
+	barA := newKeyedBarrier(t, "snapA/root-key", "pass-A")
+	barB := newKeyedBarrier(t, "snapB/root-key", "pass-B")
+
+	base := t.TempDir()
+	srcDir := filepath.Join(base, "wal")
+	dstDir := filepath.Join(base, "wal.keyed")
+
+	// A snapshot directory with snapshot.dat framed under barrier A (seeded from
+	// plaintext via the public re-encrypt primitive: plaintext -> A).
+	snapDir := filepath.Join(base, "snapshots", "shard-3", "replica-1", "snapshot-1")
+	if err := os.MkdirAll(snapDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	plain := []byte("the-serialized-state-machine-bytes-0123456789-abcdef")
+	plainPath := filepath.Join(base, "plain.bin")
+	if err := os.WriteFile(plainPath, plain, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snapDat := filepath.Join(snapDir, SnapshotDataFile)
+	if _, err := quicraft.ReencryptSnapshotFile(plainPath, snapDat, nil, barA.EpochBarrier()); err != nil {
+		t.Fatalf("seed snapshot.dat under A: %v", err)
+	}
+	fi, _ := os.Stat(snapDat)
+
+	// A WAL node under A whose snapshot metadata points at snapDir.
+	db, err := waldb.Open(srcDir, waldb.WithBarrier(barA.EpochBarrier()))
+	if err != nil {
+		t.Fatalf("open src wal: %v", err)
+	}
+	if err := db.SaveBootstrap(shardID, replicaID, logdb.Bootstrap{
+		Addresses: map[uint64]string{replicaID: "127.0.0.1:1"}, Type: 7,
+	}); err != nil {
+		t.Fatalf("SaveBootstrap: %v", err)
+	}
+	if err := db.SaveSnapshot(shardID, replicaID, logdb.Snapshot{
+		Index: 5, Term: 1, Filepath: snapDir, FileSize: uint64(fi.Size()),
+	}); err != nil {
+		t.Fatalf("SaveSnapshot: %v", err)
+	}
+	if err := db.SaveState([]logdb.Update{{
+		ShardID: shardID, ReplicaID: replicaID,
+		State:   logdb.State{Term: 1, Vote: replicaID, Commit: 5},
+		Entries: []logdb.Entry{{Index: 6, Term: 1, Cmd: []byte("x")}},
+	}}); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+	_ = db.Close()
+
+	// Re-encrypt the WAL A -> B; the snapshot.dat is staged as a sibling.
+	n, staged, err := ReencryptWALStore(srcDir, barA, dstDir, barB, snapSibling)
+	if err != nil {
+		t.Fatalf("ReencryptWALStore: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("nodes = %d, want 1", n)
+	}
+	if len(staged) != 1 {
+		t.Fatalf("staged snapshots = %d, want 1", len(staged))
+	}
+	if _, serr := os.Stat(staged[0].KeyedPath); serr != nil {
+		t.Fatalf("staged keyed snapshot missing: %v", serr)
+	}
+	// Source untouched before commit.
+	if _, serr := os.Stat(snapDat); serr != nil {
+		t.Fatalf("source snapshot.dat removed before commit: %v", serr)
+	}
+
+	// Commit: the keyed sibling replaces the original snapshot.dat.
+	if cerr := CommitStagedSnapshots(staged); cerr != nil {
+		t.Fatalf("CommitStagedSnapshots: %v", cerr)
+	}
+	if _, serr := os.Stat(staged[0].KeyedPath); !os.IsNotExist(serr) {
+		t.Fatal("staged sibling not consumed by commit")
+	}
+
+	// The committed snapshot.dat recovers the original under B (decrypt B -> plaintext).
+	recovered := filepath.Join(base, "recovered.bin")
+	if _, derr := quicraft.ReencryptSnapshotFile(snapDat, recovered, barB.EpochBarrier(), nil); derr != nil {
+		t.Fatalf("committed snapshot not readable under B: %v", derr)
+	}
+	if got := mustReadFile(t, recovered); got != string(plain) {
+		t.Fatal("recovered snapshot data does not match original (DATA LOSS)")
+	}
+
+	// Barrier A must NOT recover B's committed snapshot.
+	bad := filepath.Join(base, "bad.bin")
+	if _, derr := quicraft.ReencryptSnapshotFile(snapDat, bad, barA.EpochBarrier(), nil); derr == nil {
+		if got, _ := os.ReadFile(bad); string(got) == string(plain) {
+			t.Fatal("barrier A decrypted barrier B's committed snapshot — keys not isolated")
+		}
+	}
+
+	// Commit is idempotent for crash recovery: a second call is a no-op.
+	if cerr := CommitStagedSnapshots(staged); cerr != nil {
+		t.Fatalf("idempotent CommitStagedSnapshots: %v", cerr)
 	}
 }
 
@@ -228,4 +343,249 @@ func mustReadFile(t *testing.T, path string) string {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	return string(b)
+}
+
+// TestSnapshotDataAction covers the classifier that decides whether a
+// snapshot's data file is re-encrypted, skipped (genuine metadata-only), or
+// must abort the migration (unreadable/malformed). It is the unit guard for the
+// fail-closed fix: a missing data file is the ONLY skip condition.
+func TestSnapshotDataAction(t *testing.T) {
+	dir := t.TempDir()
+
+	// Absent file → genuine metadata-only snapshot: skip, no error.
+	absent := filepath.Join(dir, "absent", SnapshotDataFile)
+	if reenc, err := snapshotDataAction(absent); reenc || err != nil {
+		t.Fatalf("absent: got (%v,%v), want (false,nil)", reenc, err)
+	}
+
+	// Present, non-empty → re-encrypt.
+	good := filepath.Join(dir, "good.dat")
+	mustWriteFile(t, good, "framed-snapshot-bytes")
+	if reenc, err := snapshotDataAction(good); !reenc || err != nil {
+		t.Fatalf("regular: got (%v,%v), want (true,nil)", reenc, err)
+	}
+
+	// Present, empty → abort (corrupt/interrupted write), fail-closed.
+	empty := filepath.Join(dir, "empty.dat")
+	mustWriteFile(t, empty, "")
+	reenc, err := snapshotDataAction(empty)
+	if reenc {
+		t.Fatal("empty data file must not be re-encrypted")
+	}
+	if !errors.Is(err, ErrEmptySnapshotData) {
+		t.Fatalf("empty: err = %v, want ErrEmptySnapshotData", err)
+	}
+	var se *SnapshotStageError
+	if !errors.As(err, &se) {
+		t.Fatalf("empty: err = %v, want *SnapshotStageError", err)
+	}
+
+	// Present, but a directory → abort (not a regular framed file).
+	asDir := filepath.Join(dir, "asdir.dat")
+	mustMkdir(t, asDir)
+	if reenc, err := snapshotDataAction(asDir); reenc || !errors.Is(err, ErrSnapshotDataNotRegular) {
+		t.Fatalf("dir: got (%v,%v), want (false, ErrSnapshotDataNotRegular)", reenc, err)
+	}
+}
+
+// TestReencryptWALStore_MetadataOnlySnapshot_Skipped proves a snapshot whose
+// metadata exists but has NO data file (an on-disk state machine) is handled
+// without error and produces no staged snapshot — the legitimate skip path.
+func TestReencryptWALStore_MetadataOnlySnapshot_Skipped(t *testing.T) {
+	const shardID, replicaID = uint64(7), uint64(1)
+	barA := newKeyedBarrier(t, "metaA/root-key", "pass-A")
+	barB := newKeyedBarrier(t, "metaB/root-key", "pass-B")
+
+	base := t.TempDir()
+	srcDir := filepath.Join(base, "wal")
+	dstDir := filepath.Join(base, "wal.keyed")
+
+	// Snapshot directory exists but has NO snapshot.dat (metadata-only).
+	snapDir := filepath.Join(base, "snapshots", "shard-7", "replica-1", "snapshot-1")
+	if err := os.MkdirAll(snapDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := waldb.Open(srcDir, waldb.WithBarrier(barA.EpochBarrier()))
+	if err != nil {
+		t.Fatalf("open src wal: %v", err)
+	}
+	if err := db.SaveBootstrap(shardID, replicaID, logdb.Bootstrap{
+		Addresses: map[uint64]string{replicaID: "127.0.0.1:1"}, Type: 7,
+	}); err != nil {
+		t.Fatalf("SaveBootstrap: %v", err)
+	}
+	if err := db.SaveSnapshot(shardID, replicaID, logdb.Snapshot{
+		Index: 5, Term: 1, Filepath: snapDir, FileSize: 0,
+	}); err != nil {
+		t.Fatalf("SaveSnapshot: %v", err)
+	}
+	if err := db.SaveState([]logdb.Update{{
+		ShardID: shardID, ReplicaID: replicaID,
+		State:   logdb.State{Term: 1, Vote: replicaID, Commit: 5},
+		Entries: []logdb.Entry{{Index: 6, Term: 1, Cmd: []byte("x")}},
+	}}); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+	_ = db.Close()
+
+	n, staged, err := ReencryptWALStore(srcDir, barA, dstDir, barB, snapSibling)
+	if err != nil {
+		t.Fatalf("ReencryptWALStore (metadata-only): %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("nodes = %d, want 1", n)
+	}
+	if len(staged) != 0 {
+		t.Fatalf("staged = %d, want 0 (metadata-only has no data file)", len(staged))
+	}
+}
+
+// TestReencryptWALStore_EmptySnapshotData_Aborts proves the fix: a snapshot
+// whose metadata points at a present-but-empty data file aborts the migration
+// fail-closed (the old code silently skipped it), and leaves the source intact.
+func TestReencryptWALStore_EmptySnapshotData_Aborts(t *testing.T) {
+	const shardID, replicaID = uint64(8), uint64(1)
+	barA := newKeyedBarrier(t, "emptyA/root-key", "pass-A")
+	barB := newKeyedBarrier(t, "emptyB/root-key", "pass-B")
+
+	base := t.TempDir()
+	srcDir := filepath.Join(base, "wal")
+	dstDir := filepath.Join(base, "wal.keyed")
+
+	snapDir := filepath.Join(base, "snapshots", "shard-8", "replica-1", "snapshot-1")
+	if err := os.MkdirAll(snapDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	// A present but zero-length snapshot.dat (corrupt/interrupted write).
+	snapDat := filepath.Join(snapDir, SnapshotDataFile)
+	if err := os.WriteFile(snapDat, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := waldb.Open(srcDir, waldb.WithBarrier(barA.EpochBarrier()))
+	if err != nil {
+		t.Fatalf("open src wal: %v", err)
+	}
+	if err := db.SaveBootstrap(shardID, replicaID, logdb.Bootstrap{
+		Addresses: map[uint64]string{replicaID: "127.0.0.1:1"}, Type: 7,
+	}); err != nil {
+		t.Fatalf("SaveBootstrap: %v", err)
+	}
+	if err := db.SaveSnapshot(shardID, replicaID, logdb.Snapshot{
+		Index: 5, Term: 1, Filepath: snapDir, FileSize: 0,
+	}); err != nil {
+		t.Fatalf("SaveSnapshot: %v", err)
+	}
+	if err := db.SaveState([]logdb.Update{{
+		ShardID: shardID, ReplicaID: replicaID,
+		State:   logdb.State{Term: 1, Vote: replicaID, Commit: 5},
+		Entries: []logdb.Entry{{Index: 6, Term: 1, Cmd: []byte("x")}},
+	}}); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+	_ = db.Close()
+
+	_, staged, err := ReencryptWALStore(srcDir, barA, dstDir, barB, snapSibling)
+	if err == nil {
+		t.Fatal("ReencryptWALStore must abort on a present-but-empty snapshot.dat")
+	}
+	if !errors.Is(err, ErrEmptySnapshotData) {
+		t.Fatalf("err = %v, want ErrEmptySnapshotData", err)
+	}
+	if len(staged) != 0 {
+		t.Fatalf("staged = %d, want 0 on abort", len(staged))
+	}
+	// Source snapshot.dat left intact on abort.
+	if _, serr := os.Stat(snapDat); serr != nil {
+		t.Fatalf("source snapshot.dat disturbed on abort: %v", serr)
+	}
+}
+
+// TestCommitStagedSnapshotsWithRetry covers the past-point-of-no-return commit:
+// it succeeds (and is idempotent), surfaces a persistent failure after the
+// bounded attempts, and honors context cancellation between attempts.
+func TestCommitStagedSnapshotsWithRetry(t *testing.T) {
+	t.Run("commits and is idempotent", func(t *testing.T) {
+		base := t.TempDir()
+		final := filepath.Join(base, SnapshotDataFile)
+		keyed := final + snapshotKeyedSuffix
+		mustWriteFile(t, final, "source-encrypted")
+		mustWriteFile(t, keyed, "dest-encrypted")
+		staged := []StagedSnapshot{{FinalPath: final, KeyedPath: keyed}}
+
+		if err := CommitStagedSnapshotsWithRetry(context.Background(), staged, 3, time.Millisecond); err != nil {
+			t.Fatalf("commit: %v", err)
+		}
+		if got := mustReadFile(t, final); got != "dest-encrypted" {
+			t.Fatalf("final = %q, want dest-encrypted", got)
+		}
+		if _, err := os.Stat(keyed); !os.IsNotExist(err) {
+			t.Fatal("keyed sibling not consumed by commit")
+		}
+		// Idempotent for crash recovery: a second call is a no-op.
+		if err := CommitStagedSnapshotsWithRetry(context.Background(), staged, 3, time.Millisecond); err != nil {
+			t.Fatalf("idempotent commit: %v", err)
+		}
+	})
+
+	t.Run("returns error after exhausting attempts", func(t *testing.T) {
+		base := t.TempDir()
+		// FinalPath is a non-empty directory, so renaming a file onto it always
+		// fails — a deterministic persistent commit failure.
+		final := mustMkdir(t, filepath.Join(base, "final-dir"))
+		mustWriteFile(t, filepath.Join(final, "occupant"), "x")
+		keyed := filepath.Join(base, "keyed.dat")
+		mustWriteFile(t, keyed, "dest-encrypted")
+		staged := []StagedSnapshot{{FinalPath: final, KeyedPath: keyed}}
+
+		err := CommitStagedSnapshotsWithRetry(context.Background(), staged, 3, time.Millisecond)
+		if err == nil {
+			t.Fatal("want error on persistent commit failure")
+		}
+		var se *SnapshotStageError
+		if !errors.As(err, &se) || se.Op != "commit" {
+			t.Fatalf("err = %v, want *SnapshotStageError{Op: commit}", err)
+		}
+		// The staged sibling is preserved for recovery (not consumed).
+		if _, serr := os.Stat(keyed); serr != nil {
+			t.Fatalf("keyed sibling lost on failure: %v", serr)
+		}
+	})
+
+	t.Run("honors context cancellation", func(t *testing.T) {
+		base := t.TempDir()
+		final := mustMkdir(t, filepath.Join(base, "final-dir"))
+		mustWriteFile(t, filepath.Join(final, "occupant"), "x")
+		keyed := filepath.Join(base, "keyed.dat")
+		mustWriteFile(t, keyed, "dest-encrypted")
+		staged := []StagedSnapshot{{FinalPath: final, KeyedPath: keyed}}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		err := CommitStagedSnapshotsWithRetry(ctx, staged, 5, time.Second)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("err = %v, want context.Canceled", err)
+		}
+	})
+}
+
+// TestKeyLocator proves the KV-key locator never embeds the raw key, is stable,
+// and distinguishes distinct keys — so re-encryption mismatch errors stay safe
+// to log in a multi-tenant deployment.
+func TestKeyLocator(t *testing.T) {
+	key := []byte("tenant-42/secret-credential-name")
+	loc := keyLocator(key)
+	if strings.Contains(loc, string(key)) {
+		t.Fatalf("keyLocator leaked the raw key: %q", loc)
+	}
+	if !strings.Contains(loc, "len "+strconv.Itoa(len(key))) {
+		t.Fatalf("keyLocator = %q, want it to include the key length", loc)
+	}
+	if keyLocator(key) != loc {
+		t.Fatal("keyLocator must be deterministic")
+	}
+	if keyLocator([]byte("different")) == loc {
+		t.Fatal("keyLocator collided across distinct keys")
+	}
 }

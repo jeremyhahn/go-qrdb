@@ -52,6 +52,7 @@ type mockKVService struct {
 	getFn    func(ctx context.Context, key string) ([]byte, error)
 	deleteFn func(ctx context.Context, key string) error
 	listFn   func(ctx context.Context, prefix string) ([]string, error)
+	scanFn   func(ctx context.Context, prefix string) (map[string][]byte, error)
 }
 
 func (m *mockKVService) Put(ctx context.Context, key string, value []byte) error {
@@ -82,7 +83,10 @@ func (m *mockKVService) List(ctx context.Context, prefix string) ([]string, erro
 	return nil, nil
 }
 
-func (m *mockKVService) Scan(_ context.Context, _ string) (map[string][]byte, error) {
+func (m *mockKVService) Scan(ctx context.Context, prefix string) (map[string][]byte, error) {
+	if m.scanFn != nil {
+		return m.scanFn(ctx, prefix)
+	}
 	return nil, nil
 }
 

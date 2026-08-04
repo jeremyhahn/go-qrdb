@@ -5,7 +5,7 @@ Licensed under the Apache License, Version 2.0
 
 # FIPS 140-3 Role Model
 
-Role definitions and enforced separation of duties for go-qrdb, aligned with FIPS 140-3 AS10.03 (Module Roles, Services, and Authentication). go-qrdb is the foundation library for compliance-grade downstream systems (go-xkms, go-trusted-ca). Roles apply to barrier operations, ceremony enrollment, KV store access, tenant management, key lifecycle, and audit visibility.
+Role definitions and enforced separation of duties for go-qrdb, aligned with FIPS 140-3 AS10.03 (Module Roles, Services, and Authentication). go-qrdb is the foundation library for compliance-grade downstream systems (go-xkms, which absorbed go-trusted-ca's CA/ACME functionality). Roles apply to barrier operations, ceremony enrollment, KV store access, tenant management, key lifecycle, and audit visibility.
 
 ## Overview
 

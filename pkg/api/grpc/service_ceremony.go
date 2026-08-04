@@ -41,8 +41,13 @@ func (s *qrdbServiceServer) CeremonyInitialize(ctx context.Context, req *pb.Cere
 	}
 
 	result, err := s.ceremonySvc.CeremonyInitialize(ctx, nil, &service.CeremonyInitializeOptions{
-		SOPin:   req.GetSoPin(),
-		UserPin: req.GetUserPin(),
+		SOPin:                  req.GetSoPin(),
+		UserPin:                req.GetUserPin(),
+		CredentialSealStrategy: req.GetCredentialSealStrategy(),
+		Threshold:              int(req.GetThreshold()),
+		Officers:               ceremonyOfficerConfigsFromPB(req.GetOfficers()),
+		Hostname:               req.GetHostname(),
+		SANs:                   req.GetSans(),
 	})
 	if err != nil {
 		return nil, mapServiceError(err)
@@ -173,6 +178,21 @@ func (s *qrdbServiceServer) CeremonySignCSR(ctx context.Context, req *pb.Ceremon
 	return &pb.CeremonySignCSRResponse{
 		CertPem: string(result.CertPEM),
 	}, nil
+}
+
+// ceremonyOfficerConfigsFromPB converts the protobuf officer list to the
+// service-layer type. Returns nil when officers is empty so the service
+// layer's "non-empty overrides the configured value" precedence rule works
+// unchanged.
+func ceremonyOfficerConfigsFromPB(officers []*pb.CeremonyOfficer) []service.CeremonyOfficerConfig {
+	if len(officers) == 0 {
+		return nil
+	}
+	out := make([]service.CeremonyOfficerConfig, len(officers))
+	for i, o := range officers {
+		out[i] = service.CeremonyOfficerConfig{Username: o.GetUsername(), CSRPEM: o.GetCsrPem()}
+	}
+	return out
 }
 
 // ---------------------------------------------------------------------------

@@ -1042,8 +1042,15 @@ func TestBarrierHandlers_RecoveryStatus(t *testing.T) {
 	var resp map[string]interface{}
 	decodeJSON(t, rec, &resp)
 
-	if hasKeys, ok := resp["has_recovery_keys"].(bool); !ok || !hasKeys {
-		t.Fatalf("has_recovery_keys = %v, want true", resp["has_recovery_keys"])
+	// The field name MUST be "has_keys" -- it must match
+	// transport.BarrierHasRecoveryKeysResponse.HasKeys's json tag, the shared
+	// SDK type gRPC/QUIC/unix all decode into. A prior "has_recovery_keys" key
+	// here silently left every REST-transport caller's HasKeys field at its
+	// zero value (false) regardless of the server's actual answer -- see
+	// TestBarrierCLI_ShamirLifecycle in test/integration for the end-to-end
+	// regression this caused.
+	if hasKeys, ok := resp["has_keys"].(bool); !ok || !hasKeys {
+		t.Fatalf("has_keys = %v, want true", resp["has_keys"])
 	}
 }
 
@@ -1064,8 +1071,8 @@ func TestBarrierHandlers_RecoveryStatus_NoKeys(t *testing.T) {
 	var resp map[string]interface{}
 	decodeJSON(t, rec, &resp)
 
-	if hasKeys, ok := resp["has_recovery_keys"].(bool); !ok || hasKeys {
-		t.Fatalf("has_recovery_keys = %v, want false", resp["has_recovery_keys"])
+	if hasKeys, ok := resp["has_keys"].(bool); !ok || hasKeys {
+		t.Fatalf("has_keys = %v, want false", resp["has_keys"])
 	}
 }
 

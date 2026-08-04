@@ -22,6 +22,7 @@ import (
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/tenantconv"
 )
 
 // Compile-time interface assertion.
@@ -43,7 +44,7 @@ func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenan
 		return nil, mapGRPCError("CreateTenant", err)
 	}
 
-	return &transport.CreateTenantResponse{Tenant: unixProtoToTenantInfo(resp)}, nil
+	return &transport.CreateTenantResponse{Tenant: tenantconv.ToTenantInfo(resp)}, nil
 }
 
 // GetTenant retrieves a tenant by ID via the Unix gRPC-over-UDS TenantGet RPC.
@@ -57,7 +58,7 @@ func (t *Transport) GetTenant(ctx context.Context, tenantID string) (*transport.
 		return nil, mapGRPCError("GetTenant", err)
 	}
 
-	return &transport.GetTenantResponse{Tenant: unixProtoToTenantInfo(resp)}, nil
+	return &transport.GetTenantResponse{Tenant: tenantconv.ToTenantInfo(resp)}, nil
 }
 
 // ListTenants returns all tenants via the Unix gRPC-over-UDS TenantList RPC.
@@ -73,7 +74,7 @@ func (t *Transport) ListTenants(ctx context.Context) (*transport.ListTenantsResp
 
 	tenants := make([]transport.TenantInfo, len(resp.GetTenants()))
 	for i, pt := range resp.GetTenants() {
-		tenants[i] = unixProtoToTenantInfo(pt)
+		tenants[i] = tenantconv.ToTenantInfo(pt)
 	}
 
 	return &transport.ListTenantsResponse{Tenants: tenants}, nil
@@ -109,7 +110,7 @@ func (t *Transport) UpdateTenant(ctx context.Context, req *transport.UpdateTenan
 		return nil, mapGRPCError("UpdateTenant", err)
 	}
 
-	return &transport.UpdateTenantResponse{Tenant: unixProtoToTenantInfo(resp)}, nil
+	return &transport.UpdateTenantResponse{Tenant: tenantconv.ToTenantInfo(resp)}, nil
 }
 
 // UpdateTenantQuotas sets the resource quotas for a tenant via the Unix
@@ -122,27 +123,29 @@ func (t *Transport) UpdateTenantQuotas(ctx context.Context, req *transport.Updat
 	resp, err := t.client.TenantUpdateQuotas(ctx, &pb.TenantUpdateQuotasRequest{
 		Id: req.TenantID,
 		Quotas: &pb.TenantQuotas{
-			MaxDatabases:         req.Quotas.MaxDatabases,
-			MaxRaftGroups:        req.Quotas.MaxRaftGroups,
-			MaxReplicasPerGroup:  req.Quotas.MaxReplicasPerGroup,
-			MaxTotalReplicas:     req.Quotas.MaxTotalReplicas,
-			MaxCollections:       req.Quotas.MaxCollections,
-			MaxKeys:              req.Quotas.MaxKeys,
-			MaxStorageBytes:      req.Quotas.MaxStorageBytes,
-			MaxDatabaseSizeBytes: req.Quotas.MaxDatabaseSizeBytes,
-			MaxUsers:             req.Quotas.MaxUsers,
-			MaxRoles:             req.Quotas.MaxRoles,
-			MaxCertificates:      req.Quotas.MaxCertificates,
-			MaxBackups:           req.Quotas.MaxBackups,
-			MaxVectorDims:        req.Quotas.MaxVectorDims,
-			MaxTsMetrics:         req.Quotas.MaxTSMetrics,
+			MaxDatabases:          req.Quotas.MaxDatabases,
+			MaxRaftGroups:         req.Quotas.MaxRaftGroups,
+			MaxReplicasPerGroup:   req.Quotas.MaxReplicasPerGroup,
+			MaxTotalReplicas:      req.Quotas.MaxTotalReplicas,
+			MaxCollections:        req.Quotas.MaxCollections,
+			MaxKeys:               req.Quotas.MaxKeys,
+			MaxStorageBytes:       req.Quotas.MaxStorageBytes,
+			MaxDatabaseSizeBytes:  req.Quotas.MaxDatabaseSizeBytes,
+			MaxUsers:              req.Quotas.MaxUsers,
+			MaxRoles:              req.Quotas.MaxRoles,
+			MaxCertificates:       req.Quotas.MaxCertificates,
+			MaxBackups:            req.Quotas.MaxBackups,
+			MaxVectorDims:         req.Quotas.MaxVectorDims,
+			MaxTsMetrics:          req.Quotas.MaxTSMetrics,
+			SystemBarrierQuota:    req.Quotas.SystemBarrierQuota,
+			MaxDedicatedWalGroups: req.Quotas.MaxDedicatedWALGroups,
 		},
 	})
 	if err != nil {
 		return nil, mapGRPCError("UpdateTenantQuotas", err)
 	}
 
-	return &transport.UpdateTenantQuotasResponse{Tenant: unixProtoToTenantInfo(resp)}, nil
+	return &transport.UpdateTenantQuotasResponse{Tenant: tenantconv.ToTenantInfo(resp)}, nil
 }
 
 // UpdateTenantEntitlements sets the feature entitlements for a tenant via the
@@ -159,13 +162,15 @@ func (t *Transport) UpdateTenantEntitlements(ctx context.Context, req *transport
 			AllowDedicatedRaft:        req.Entitlements.AllowDedicatedRaft,
 			AllowVolumeStorage:        req.Entitlements.AllowVolumeStorage,
 			AllowSystemManagedBarrier: req.Entitlements.AllowSystemManagedBarrier,
+			AllowedBarrierModes:       req.Entitlements.AllowedBarrierModes,
+			AllowDedicatedWal:         req.Entitlements.AllowDedicatedWAL,
 		},
 	})
 	if err != nil {
 		return nil, mapGRPCError("UpdateTenantEntitlements", err)
 	}
 
-	return &transport.UpdateTenantEntitlementsResponse{Tenant: unixProtoToTenantInfo(resp)}, nil
+	return &transport.UpdateTenantEntitlementsResponse{Tenant: tenantconv.ToTenantInfo(resp)}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -429,62 +434,4 @@ func (t *Transport) TenantBarrierShamirSealVote(ctx context.Context, req *transp
 		Submitted: int(resp.GetSubmitted()),
 		Complete:  resp.GetComplete(),
 	}, nil
-}
-
-// ---------------------------------------------------------------------------
-// Proto conversion helpers
-// ---------------------------------------------------------------------------
-
-// unixProtoToTenantInfo converts a protobuf TenantResponse to a transport.TenantInfo.
-func unixProtoToTenantInfo(resp *pb.TenantResponse) transport.TenantInfo {
-	if resp == nil {
-		return transport.TenantInfo{}
-	}
-
-	info := transport.TenantInfo{
-		ID:            resp.GetId(),
-		Name:          resp.GetName(),
-		IsolationType: transport.TenantIsolationType(resp.GetIsolationType()),
-	}
-
-	if pbQ := resp.GetQuotas(); pbQ != nil {
-		info.Quotas = &transport.TenantQuotas{
-			MaxDatabases:         pbQ.GetMaxDatabases(),
-			MaxRaftGroups:        pbQ.GetMaxRaftGroups(),
-			MaxReplicasPerGroup:  pbQ.GetMaxReplicasPerGroup(),
-			MaxTotalReplicas:     pbQ.GetMaxTotalReplicas(),
-			MaxCollections:       pbQ.GetMaxCollections(),
-			MaxKeys:              pbQ.GetMaxKeys(),
-			MaxStorageBytes:      pbQ.GetMaxStorageBytes(),
-			MaxDatabaseSizeBytes: pbQ.GetMaxDatabaseSizeBytes(),
-			MaxUsers:             pbQ.GetMaxUsers(),
-			MaxRoles:             pbQ.GetMaxRoles(),
-			MaxCertificates:      pbQ.GetMaxCertificates(),
-			MaxBackups:           pbQ.GetMaxBackups(),
-			MaxVectorDims:        pbQ.GetMaxVectorDims(),
-			MaxTSMetrics:         pbQ.GetMaxTsMetrics(),
-		}
-	}
-
-	if pbE := resp.GetEntitlements(); pbE != nil {
-		info.Entitlements = &transport.TenantEntitlements{
-			AllowedIsolationModes:     pbE.GetAllowedIsolationModes(),
-			AllowDedicatedRaft:        pbE.GetAllowDedicatedRaft(),
-			AllowVolumeStorage:        pbE.GetAllowVolumeStorage(),
-			AllowSystemManagedBarrier: pbE.GetAllowSystemManagedBarrier(),
-		}
-	}
-
-	if ts := resp.GetCreatedAt(); ts != "" {
-		if parsed, err := time.Parse(time.RFC3339, ts); err == nil {
-			info.CreatedAt = parsed
-		}
-	}
-	if ts := resp.GetUpdatedAt(); ts != "" {
-		if parsed, err := time.Parse(time.RFC3339, ts); err == nil {
-			info.UpdatedAt = parsed
-		}
-	}
-
-	return info
 }

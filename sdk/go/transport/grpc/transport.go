@@ -20,9 +20,7 @@ package grpc
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"errors"
-	"os"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -615,39 +613,17 @@ func timeoutUnaryInterceptor(timeout time.Duration) grpc.UnaryClientInterceptor 
 	}
 }
 
-// buildTLSConfig constructs the TLS configuration from the transport config.
+// buildTLSConfig constructs the TLS configuration from the transport
+// config. The TLSEnabled gate lives at the buildDialOptions call site, so
+// the builder is always invoked with TLS enabled.
 func (t *Transport) buildTLSConfig() (*tls.Config, error) {
-	if t.config.TLSConfig != nil {
-		return t.config.TLSConfig, nil
-	}
-
-	tlsCfg := &tls.Config{
-		MinVersion: tls.VersionTLS13,
-	}
-
-	// Load CA certificate pool.
-	if t.config.TLSCAFile != "" {
-		caCert, err := os.ReadFile(t.config.TLSCAFile)
-		if err != nil {
-			return nil, &transport.TLSError{Err: &caFileReadError{Path: t.config.TLSCAFile, Err: err}}
-		}
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(caCert) {
-			return nil, &transport.TLSError{Err: &caParseError{Path: t.config.TLSCAFile}}
-		}
-		tlsCfg.RootCAs = pool
-	}
-
-	// Load client certificate for mTLS.
-	if t.config.TLSCertFile != "" && t.config.TLSKeyFile != "" {
-		cert, err := tls.LoadX509KeyPair(t.config.TLSCertFile, t.config.TLSKeyFile)
-		if err != nil {
-			return nil, &transport.TLSError{Err: &certLoadError{Err: err}}
-		}
-		tlsCfg.Certificates = []tls.Certificate{cert}
-	}
-
-	return tlsCfg, nil
+	return transport.BuildTLSConfig(transport.TLSBuildOptions{
+		Custom:   t.config.TLSConfig,
+		Enabled:  true,
+		CAFile:   t.config.TLSCAFile,
+		CertFile: t.config.TLSCertFile,
+		KeyFile:  t.config.TLSKeyFile,
+	})
 }
 
 // mapGRPCError translates a gRPC status error into the appropriate SDK

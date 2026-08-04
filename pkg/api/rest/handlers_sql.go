@@ -16,44 +16,30 @@ package rest
 
 import (
 	"encoding/json"
-	"fmt"
-	"io"
 	"net/http"
-	"time"
-
-	sqle "github.com/dolthub/go-mysql-server"
-	"github.com/dolthub/go-mysql-server/sql"
-
-	"github.com/jeremyhahn/go-qrdb/pkg/sql/engine"
-	"github.com/jeremyhahn/go-qrdb/pkg/sql/provider"
 )
 
-// ---------------------------------------------------------------------------
-// SQL query request/response types
-// ---------------------------------------------------------------------------
-
-// sqlQueryRequest is the JSON payload for POST /v1/sql/query.
+// sqlQueryRequest is the JSON payload for POST /sql/query (and its
+// /v1/sql/query mount). The database field is the canonical database
+// selector: it is what the TypeScript SDK's SQLClient and the Go
+// database/sql driver transmit.
 type sqlQueryRequest struct {
 	Query    string `json:"query"`
 	Database string `json:"database"`
 }
 
-// sqlQueryResponse is the JSON payload returned by POST /v1/sql/query.
-type sqlQueryResponse struct {
-	Columns  []string                 `json:"columns"`
-	Rows     []map[string]interface{} `json:"rows"`
-	RowCount int                      `json:"rowCount"`
-	Duration string                   `json:"duration"`
-}
-
-// ---------------------------------------------------------------------------
-// SQL query handler
-// ---------------------------------------------------------------------------
-
-// handleSQLQuery handles POST /v1/sql/query -- executes a SQL query against
-// the named database and returns the results as JSON.
+// handleSQLQuery handles POST /sql/query and POST /v1/sql/query --
+// executes a SQL query against the named database and returns the results
+// as JSON. The response shape (columns/rows/rowCount/duration, produced by
+// service.SQLQueryResult) is the wire contract consumed by the TypeScript
+// SDK and mirrors the Wails desktop binding.
+//
+// Database resolution: the request body's database field is canonical.
+// When the request also carries an X-QRDB-Database scope header the two
+// must agree; a conflict is rejected with 400 rather than silently
+// preferring one. A body without a database falls back to the header.
 func (s *Server) handleSQLQuery(w http.ResponseWriter, r *http.Request) {
-	if s.kvSvc == nil || s.databaseSvc == nil {
+	if s.sqlSvc == nil {
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "sql"})
 		return
 	}
@@ -68,89 +54,28 @@ func (s *Server) handleSQLQuery(w http.ResponseWriter, r *http.Request) {
 		writeErrorJSON(w, http.StatusBadRequest, &MissingParameterError{Param: "query"})
 		return
 	}
-	if req.Database == "" {
+
+	dbName := req.Database
+	if headerDB := r.Header.Get(HeaderDatabase); headerDB != "" {
+		switch {
+		case dbName == "":
+			dbName = headerDB
+		case dbName != headerDB:
+			writeErrorJSON(w, http.StatusBadRequest,
+				&DatabaseScopeConflictError{Body: req.Database, Header: headerDB})
+			return
+		}
+	}
+	if dbName == "" {
 		writeErrorJSON(w, http.StatusBadRequest, &MissingParameterError{Param: "database"})
 		return
 	}
 
-	// Verify the database exists and retrieve its engine type.
-	dbInfo, err := s.databaseSvc.Get(req.Database)
+	result, err := s.sqlSvc.Execute(r.Context(), dbName, req.Query)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
-	// Create provider and engine for query execution.
-	prov := provider.NewProviderWithEngine(req.Database, s.kvSvc, dbInfo.Engine)
-	eng := engine.New(engine.Config{Provider: prov})
-	defer func() { _ = eng.Close() }()
-
-	start := time.Now()
-	result, err := executeSQLQuery(eng, req.Query, req.Database)
-	if err != nil {
-		writeErrorJSON(w, http.StatusBadRequest, &SQLQueryError{Query: req.Query, Err: err})
-		return
-	}
-	result.Duration = time.Since(start).String()
-
 	writeJSON(w, result)
-}
-
-// executeSQLQuery creates a context, runs the query, and iterates the
-// result rows.
-func executeSQLQuery(eng *sqle.Engine, query string, database string) (*sqlQueryResponse, error) {
-	ctx := sql.NewEmptyContext()
-	ctx.SetCurrentDatabase(database)
-
-	schema, iter, _, err := eng.Query(ctx, query)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = iter.Close(ctx) }()
-
-	// Build column names from the schema.
-	columns := make([]string, len(schema))
-	for i, col := range schema {
-		columns[i] = col.Name
-	}
-
-	var rows []map[string]interface{}
-	for {
-		row, err := iter.Next(ctx)
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, err
-		}
-		rowMap := make(map[string]interface{}, len(columns))
-		for i, col := range columns {
-			rowMap[col] = formatSQLValue(row[i])
-		}
-		rows = append(rows, rowMap)
-	}
-
-	if rows == nil {
-		rows = []map[string]interface{}{}
-	}
-
-	return &sqlQueryResponse{
-		Columns:  columns,
-		Rows:     rows,
-		RowCount: len(rows),
-	}, nil
-}
-
-// formatSQLValue converts a SQL row cell value to a string suitable for
-// JSON serialization. Byte slices are decoded as UTF-8 strings; all
-// other types are formatted with fmt.Sprintf.
-func formatSQLValue(v interface{}) string {
-	switch val := v.(type) {
-	case []byte:
-		return string(val)
-	case nil:
-		return ""
-	default:
-		return fmt.Sprintf("%v", val)
-	}
 }

@@ -46,20 +46,22 @@ func mapTenantInfo(info *tenant.TenantInfo) transport.TenantInfo {
 // mapQuotas converts a quota.Quotas to a transport.TenantQuotas pointer.
 func mapQuotas(q *quota.Quotas) *transport.TenantQuotas {
 	return &transport.TenantQuotas{
-		MaxDatabases:         q.MaxDatabases,
-		MaxRaftGroups:        q.MaxRaftGroups,
-		MaxReplicasPerGroup:  q.MaxReplicasPerGroup,
-		MaxTotalReplicas:     q.MaxTotalReplicas,
-		MaxCollections:       q.MaxCollections,
-		MaxKeys:              q.MaxKeys,
-		MaxStorageBytes:      q.MaxStorageBytes,
-		MaxDatabaseSizeBytes: q.MaxDatabaseSizeBytes,
-		MaxUsers:             q.MaxUsers,
-		MaxRoles:             q.MaxRoles,
-		MaxCertificates:      q.MaxCertificates,
-		MaxBackups:           q.MaxBackups,
-		MaxVectorDims:        q.MaxVectorDims,
-		MaxTSMetrics:         q.MaxTSMetrics,
+		MaxDatabases:          q.MaxDatabases,
+		MaxRaftGroups:         q.MaxRaftGroups,
+		MaxReplicasPerGroup:   q.MaxReplicasPerGroup,
+		MaxTotalReplicas:      q.MaxTotalReplicas,
+		MaxCollections:        q.MaxCollections,
+		MaxKeys:               q.MaxKeys,
+		MaxStorageBytes:       q.MaxStorageBytes,
+		MaxDatabaseSizeBytes:  q.MaxDatabaseSizeBytes,
+		MaxUsers:              q.MaxUsers,
+		MaxRoles:              q.MaxRoles,
+		MaxCertificates:       q.MaxCertificates,
+		MaxBackups:            q.MaxBackups,
+		MaxVectorDims:         q.MaxVectorDims,
+		MaxTSMetrics:          q.MaxTSMetrics,
+		SystemBarrierQuota:    q.SystemBarrierQuota,
+		MaxDedicatedWALGroups: q.MaxDedicatedWALGroups,
 	}
 }
 
@@ -70,6 +72,8 @@ func mapEntitlements(e *quota.Entitlements) *transport.TenantEntitlements {
 		AllowDedicatedRaft:        e.AllowDedicatedRaft,
 		AllowVolumeStorage:        e.AllowVolumeStorage,
 		AllowSystemManagedBarrier: e.AllowSystemManagedBarrier,
+		AllowedBarrierModes:       e.AllowedBarrierModes,
+		AllowDedicatedWAL:         e.AllowDedicatedWAL,
 	}
 }
 
@@ -178,20 +182,22 @@ func (t *Transport) UpdateTenantQuotas(ctx context.Context, req *transport.Updat
 	}
 
 	q := &quota.Quotas{
-		MaxDatabases:         req.Quotas.MaxDatabases,
-		MaxRaftGroups:        req.Quotas.MaxRaftGroups,
-		MaxReplicasPerGroup:  req.Quotas.MaxReplicasPerGroup,
-		MaxTotalReplicas:     req.Quotas.MaxTotalReplicas,
-		MaxCollections:       req.Quotas.MaxCollections,
-		MaxKeys:              req.Quotas.MaxKeys,
-		MaxStorageBytes:      req.Quotas.MaxStorageBytes,
-		MaxDatabaseSizeBytes: req.Quotas.MaxDatabaseSizeBytes,
-		MaxUsers:             req.Quotas.MaxUsers,
-		MaxRoles:             req.Quotas.MaxRoles,
-		MaxCertificates:      req.Quotas.MaxCertificates,
-		MaxBackups:           req.Quotas.MaxBackups,
-		MaxVectorDims:        req.Quotas.MaxVectorDims,
-		MaxTSMetrics:         req.Quotas.MaxTSMetrics,
+		MaxDatabases:          req.Quotas.MaxDatabases,
+		MaxRaftGroups:         req.Quotas.MaxRaftGroups,
+		MaxReplicasPerGroup:   req.Quotas.MaxReplicasPerGroup,
+		MaxTotalReplicas:      req.Quotas.MaxTotalReplicas,
+		MaxCollections:        req.Quotas.MaxCollections,
+		MaxKeys:               req.Quotas.MaxKeys,
+		MaxStorageBytes:       req.Quotas.MaxStorageBytes,
+		MaxDatabaseSizeBytes:  req.Quotas.MaxDatabaseSizeBytes,
+		MaxUsers:              req.Quotas.MaxUsers,
+		MaxRoles:              req.Quotas.MaxRoles,
+		MaxCertificates:       req.Quotas.MaxCertificates,
+		MaxBackups:            req.Quotas.MaxBackups,
+		MaxVectorDims:         req.Quotas.MaxVectorDims,
+		MaxTSMetrics:          req.Quotas.MaxTSMetrics,
+		SystemBarrierQuota:    req.Quotas.SystemBarrierQuota,
+		MaxDedicatedWALGroups: req.Quotas.MaxDedicatedWALGroups,
 	}
 
 	info, err := t.tenantSvc.UpdateQuotas(ctx, req.TenantID, q)
@@ -219,6 +225,8 @@ func (t *Transport) UpdateTenantEntitlements(ctx context.Context, req *transport
 		AllowDedicatedRaft:        req.Entitlements.AllowDedicatedRaft,
 		AllowVolumeStorage:        req.Entitlements.AllowVolumeStorage,
 		AllowSystemManagedBarrier: req.Entitlements.AllowSystemManagedBarrier,
+		AllowedBarrierModes:       req.Entitlements.AllowedBarrierModes,
+		AllowDedicatedWAL:         req.Entitlements.AllowDedicatedWAL,
 	}
 
 	info, err := t.tenantSvc.UpdateEntitlements(ctx, req.TenantID, e)

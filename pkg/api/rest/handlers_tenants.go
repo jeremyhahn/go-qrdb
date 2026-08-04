@@ -77,6 +77,9 @@ type setTenantQuotasRequest struct {
 	// SystemBarrierQuota governs an isolated tenant's use of the shared system
 	// barrier (bytes): 0 makes the option unavailable, -1 unlimited, >0 a cap.
 	SystemBarrierQuota int64 `json:"system_barrier_quota"`
+	// MaxDedicatedWALGroups caps the number of dedicated-raft groups a tenant
+	// may opt into a per-tenant-key WAL: -1 = unlimited.
+	MaxDedicatedWALGroups int64 `json:"max_dedicated_wal_groups"`
 }
 
 // setTenantEntitlementsRequest is the JSON payload for
@@ -128,6 +131,7 @@ type tenantBarrierOfficerRegisterRequest struct {
 	Username          string `json:"username"`
 	CSRPEM            string `json:"csr_pem"`
 	AuthenticatorType string `json:"authenticator_type,omitempty"`
+	AuthenticatorRef  string `json:"authenticator_ref,omitempty"`
 }
 
 // tenantBarrierShareClaimCompleteRequest is the JSON payload for
@@ -399,17 +403,25 @@ func (s *Server) handleUpdateTenant(w http.ResponseWriter, r *http.Request, id s
 			return
 		}
 		if req.IsolationType != existing.EffectiveIsolationType() {
-			// Check whether this tenant has any stored data via the service
-			// registry. We resolve against the default database to probe the
-			// tenant's KV service and check for at least one key.
+			// Probe the tenant's KV service for existing data. This precondition
+			// fails CLOSED: if the tenant data plane cannot be reached (degraded
+			// service registry, leader unavailable), the isolation-type change is
+			// rejected rather than allowed to proceed on an unverified — and
+			// possibly data-bearing — tenant, which could orphan its stored data.
 			if s.serviceRegistry != nil {
 				kvSvc, resolveErr := s.serviceRegistry.KVService(id, "")
-				if resolveErr == nil {
-					keys, listErr := kvSvc.List(ctx, "")
-					if listErr == nil && len(keys) > 0 {
-						writeErrorJSON(w, http.StatusConflict, tenant.ErrTenantHasData)
-						return
-					}
+				if resolveErr != nil {
+					writeErrorJSON(w, http.StatusServiceUnavailable, resolveErr)
+					return
+				}
+				keys, listErr := kvSvc.List(ctx, "")
+				if listErr != nil {
+					writeErrorJSON(w, http.StatusServiceUnavailable, listErr)
+					return
+				}
+				if len(keys) > 0 {
+					writeErrorJSON(w, http.StatusConflict, tenant.ErrTenantHasData)
+					return
 				}
 			}
 		}
@@ -439,24 +451,27 @@ func (s *Server) handleSetTenantQuotas(w http.ResponseWriter, r *http.Request, i
 	}
 
 	q := &quota.Quotas{
-		MaxDatabases:         req.MaxDatabases,
-		MaxRaftGroups:        req.MaxRaftGroups,
-		MaxReplicasPerGroup:  req.MaxReplicasPerGroup,
-		MaxTotalReplicas:     req.MaxTotalReplicas,
-		MaxCollections:       req.MaxCollections,
-		MaxKeys:              req.MaxKeys,
-		MaxStorageBytes:      req.MaxStorageBytes,
-		MaxDatabaseSizeBytes: req.MaxDatabaseSizeBytes,
-		MaxUsers:             req.MaxUsers,
-		MaxRoles:             req.MaxRoles,
-		MaxCertificates:      req.MaxCertificates,
-		MaxBackups:           req.MaxBackups,
-		MaxVectorDims:        req.MaxVectorDims,
-		MaxTSMetrics:         req.MaxTSMetrics,
-		SystemBarrierQuota:   req.SystemBarrierQuota,
+		MaxDatabases:          req.MaxDatabases,
+		MaxRaftGroups:         req.MaxRaftGroups,
+		MaxReplicasPerGroup:   req.MaxReplicasPerGroup,
+		MaxTotalReplicas:      req.MaxTotalReplicas,
+		MaxCollections:        req.MaxCollections,
+		MaxKeys:               req.MaxKeys,
+		MaxStorageBytes:       req.MaxStorageBytes,
+		MaxDatabaseSizeBytes:  req.MaxDatabaseSizeBytes,
+		MaxUsers:              req.MaxUsers,
+		MaxRoles:              req.MaxRoles,
+		MaxCertificates:       req.MaxCertificates,
+		MaxBackups:            req.MaxBackups,
+		MaxVectorDims:         req.MaxVectorDims,
+		MaxTSMetrics:          req.MaxTSMetrics,
+		SystemBarrierQuota:    req.SystemBarrierQuota,
+		MaxDedicatedWALGroups: req.MaxDedicatedWALGroups,
 	}
 
-	info, err := s.tenantSvc.UpdateQuotas(r.Context(), id, q)
+	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
+	defer cancel()
+	info, err := s.tenantSvc.UpdateQuotas(ctx, id, q)
 	if err != nil {
 		writeErrorJSON(w, mapTenantError(err), err)
 		return
@@ -483,7 +498,9 @@ func (s *Server) handleSetTenantEntitlements(w http.ResponseWriter, r *http.Requ
 		AllowedBarrierModes:       req.AllowedBarrierModes,
 	}
 
-	info, err := s.tenantSvc.UpdateEntitlements(r.Context(), id, e)
+	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
+	defer cancel()
+	info, err := s.tenantSvc.UpdateEntitlements(ctx, id, e)
 	if err != nil {
 		writeErrorJSON(w, mapTenantError(err), err)
 		return
@@ -680,7 +697,9 @@ func tenantToResponse(info *tenant.TenantInfo) *tenantResponse {
 // the named tenant's barrier.
 // Required permission: tenant_barrier:officer_register (ScopeTenantOnly).
 func (s *Server) handleTenantBarrierOfficerRegister(w http.ResponseWriter, r *http.Request, id string) {
-	if err := s.authorizeTenantBarrierOp(r.Context(), id, permission.TenantBarrierOfficerRegister); err != nil {
+	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
+	defer cancel()
+	if err := s.authorizeTenantBarrierOp(ctx, id, permission.TenantBarrierOfficerRegister); err != nil {
 		writeErrorJSON(w, http.StatusForbidden, err)
 		return
 	}
@@ -699,10 +718,11 @@ func (s *Server) handleTenantBarrierOfficerRegister(w http.ResponseWriter, r *ht
 		return
 	}
 
-	result, err := s.tenantSvc.TenantBarrierOfficerRegister(r.Context(), id, &ceremony.RegisterOfficerRequest{
+	result, err := s.tenantSvc.TenantBarrierOfficerRegister(ctx, id, &ceremony.RegisterOfficerRequest{
 		Username:          req.Username,
 		CSRPEM:            []byte(req.CSRPEM),
 		AuthenticatorType: ceremony.AuthenticatorType(req.AuthenticatorType),
+		AuthenticatorRef:  req.AuthenticatorRef,
 	})
 	if err != nil {
 		writeErrorJSON(w, mapBarrierCeremonyHTTPError(err), err)
@@ -768,7 +788,9 @@ func (s *Server) handleTenantBarrierOfficerClaimStatus(w http.ResponseWriter, r 
 // certificate is the credential; the service enforces the per-tenant registry
 // lookup, thumbprint match, and nonce signature.
 func (s *Server) handleTenantBarrierShareClaimBegin(w http.ResponseWriter, r *http.Request, id, username string) {
-	if err := s.authorizeTenantBarrierOp(r.Context(), id, permission.IdentityGated); err != nil {
+	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
+	defer cancel()
+	if err := s.authorizeTenantBarrierOp(ctx, id, permission.IdentityGated); err != nil {
 		writeErrorJSON(w, http.StatusForbidden, err)
 		return
 	}
@@ -779,7 +801,7 @@ func (s *Server) handleTenantBarrierShareClaimBegin(w http.ResponseWriter, r *ht
 		return
 	}
 
-	challenge, err := s.tenantSvc.TenantBarrierShareClaimBegin(r.Context(), id, username, thumbprint)
+	challenge, err := s.tenantSvc.TenantBarrierShareClaimBegin(ctx, id, username, thumbprint)
 	if err != nil {
 		writeErrorJSON(w, mapBarrierCeremonyHTTPError(err), err)
 		return
@@ -797,7 +819,9 @@ func (s *Server) handleTenantBarrierShareClaimBegin(w http.ResponseWriter, r *ht
 // exactly once (INV-1, INV-11).
 // Identity-gated (permission.IdentityGated): see handleTenantBarrierShareClaimBegin.
 func (s *Server) handleTenantBarrierShareClaimComplete(w http.ResponseWriter, r *http.Request, id, username string) {
-	if err := s.authorizeTenantBarrierOp(r.Context(), id, permission.IdentityGated); err != nil {
+	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
+	defer cancel()
+	if err := s.authorizeTenantBarrierOp(ctx, id, permission.IdentityGated); err != nil {
 		writeErrorJSON(w, http.StatusForbidden, err)
 		return
 	}
@@ -828,14 +852,19 @@ func (s *Server) handleTenantBarrierShareClaimComplete(w http.ResponseWriter, r 
 		return
 	}
 
-	result, err := s.tenantSvc.TenantBarrierShareClaimComplete(r.Context(), id, username, req.NonceHex, sigBytes, thumbprint)
+	result, err := s.tenantSvc.TenantBarrierShareClaimComplete(ctx, id, username, req.NonceHex, sigBytes, thumbprint)
 	if err != nil {
 		writeErrorJSON(w, mapBarrierCeremonyHTTPError(err), err)
 		return
 	}
 
-	// INV-11: share_bytes appears only here, in the claiming officer's own session.
+	// INV-11: share_bytes appears only here, in the claiming officer's own
+	// session. share_index must also be present -- it was silently dropped
+	// here (unlike the system-barrier handleBarrierShareClaimComplete),
+	// leaving every REST-transport caller's ShareClaimCompleteResponse.ShareIndex
+	// field at its zero value regardless of the officer's actual share index.
 	writeJSON(w, map[string]interface{}{
+		"share_index": result.ShareIndex,
 		"share_bytes": base64.StdEncoding.EncodeToString(result.ShareBytes),
 	})
 }
@@ -846,7 +875,9 @@ func (s *Server) handleTenantBarrierShareClaimComplete(w http.ResponseWriter, r 
 // tenant barrier is sealed automatically.
 // Required permission: tenant_barrier:seal_vote (ScopeTenantOnly).
 func (s *Server) handleTenantBarrierSealVote(w http.ResponseWriter, r *http.Request, id string) {
-	if err := s.authorizeTenantBarrierOp(r.Context(), id, permission.TenantBarrierSealVote); err != nil {
+	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
+	defer cancel()
+	if err := s.authorizeTenantBarrierOp(ctx, id, permission.TenantBarrierSealVote); err != nil {
 		writeErrorJSON(w, http.StatusForbidden, err)
 		return
 	}
@@ -861,7 +892,7 @@ func (s *Server) handleTenantBarrierSealVote(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	progress, err := s.tenantSvc.TenantBarrierShamirSealVote(r.Context(), id, req.Share)
+	progress, err := s.tenantSvc.TenantBarrierShamirSealVote(ctx, id, req.Share)
 	if err != nil {
 		writeErrorJSON(w, mapTenantError(err), err)
 		return

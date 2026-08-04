@@ -162,20 +162,22 @@ func (t *Transport) UpdateTenantQuotas(ctx context.Context, req *transport.Updat
 	payload, err := proto.Marshal(&pb.TenantUpdateQuotasRequest{
 		Id: req.TenantID,
 		Quotas: &pb.TenantQuotas{
-			MaxDatabases:         req.Quotas.MaxDatabases,
-			MaxRaftGroups:        req.Quotas.MaxRaftGroups,
-			MaxReplicasPerGroup:  req.Quotas.MaxReplicasPerGroup,
-			MaxTotalReplicas:     req.Quotas.MaxTotalReplicas,
-			MaxCollections:       req.Quotas.MaxCollections,
-			MaxKeys:              req.Quotas.MaxKeys,
-			MaxStorageBytes:      req.Quotas.MaxStorageBytes,
-			MaxDatabaseSizeBytes: req.Quotas.MaxDatabaseSizeBytes,
-			MaxUsers:             req.Quotas.MaxUsers,
-			MaxRoles:             req.Quotas.MaxRoles,
-			MaxCertificates:      req.Quotas.MaxCertificates,
-			MaxBackups:           req.Quotas.MaxBackups,
-			MaxVectorDims:        req.Quotas.MaxVectorDims,
-			MaxTsMetrics:         req.Quotas.MaxTSMetrics,
+			MaxDatabases:          req.Quotas.MaxDatabases,
+			MaxRaftGroups:         req.Quotas.MaxRaftGroups,
+			MaxReplicasPerGroup:   req.Quotas.MaxReplicasPerGroup,
+			MaxTotalReplicas:      req.Quotas.MaxTotalReplicas,
+			MaxCollections:        req.Quotas.MaxCollections,
+			MaxKeys:               req.Quotas.MaxKeys,
+			MaxStorageBytes:       req.Quotas.MaxStorageBytes,
+			MaxDatabaseSizeBytes:  req.Quotas.MaxDatabaseSizeBytes,
+			MaxUsers:              req.Quotas.MaxUsers,
+			MaxRoles:              req.Quotas.MaxRoles,
+			MaxCertificates:       req.Quotas.MaxCertificates,
+			MaxBackups:            req.Quotas.MaxBackups,
+			MaxVectorDims:         req.Quotas.MaxVectorDims,
+			MaxTsMetrics:          req.Quotas.MaxTSMetrics,
+			SystemBarrierQuota:    req.Quotas.SystemBarrierQuota,
+			MaxDedicatedWalGroups: req.Quotas.MaxDedicatedWALGroups,
 		},
 	})
 	if err != nil {
@@ -209,6 +211,8 @@ func (t *Transport) UpdateTenantEntitlements(ctx context.Context, req *transport
 			AllowDedicatedRaft:        req.Entitlements.AllowDedicatedRaft,
 			AllowVolumeStorage:        req.Entitlements.AllowVolumeStorage,
 			AllowSystemManagedBarrier: req.Entitlements.AllowSystemManagedBarrier,
+			AllowedBarrierModes:       req.Entitlements.AllowedBarrierModes,
+			AllowDedicatedWal:         req.Entitlements.AllowDedicatedWAL,
 		},
 	})
 	if err != nil {
@@ -500,20 +504,22 @@ func quicProtoToTenantInfo(resp *pb.TenantResponse) transport.TenantInfo {
 
 	if pbQ := resp.GetQuotas(); pbQ != nil {
 		info.Quotas = &transport.TenantQuotas{
-			MaxDatabases:         pbQ.GetMaxDatabases(),
-			MaxRaftGroups:        pbQ.GetMaxRaftGroups(),
-			MaxReplicasPerGroup:  pbQ.GetMaxReplicasPerGroup(),
-			MaxTotalReplicas:     pbQ.GetMaxTotalReplicas(),
-			MaxCollections:       pbQ.GetMaxCollections(),
-			MaxKeys:              pbQ.GetMaxKeys(),
-			MaxStorageBytes:      pbQ.GetMaxStorageBytes(),
-			MaxDatabaseSizeBytes: pbQ.GetMaxDatabaseSizeBytes(),
-			MaxUsers:             pbQ.GetMaxUsers(),
-			MaxRoles:             pbQ.GetMaxRoles(),
-			MaxCertificates:      pbQ.GetMaxCertificates(),
-			MaxBackups:           pbQ.GetMaxBackups(),
-			MaxVectorDims:        pbQ.GetMaxVectorDims(),
-			MaxTSMetrics:         pbQ.GetMaxTsMetrics(),
+			MaxDatabases:          pbQ.GetMaxDatabases(),
+			MaxRaftGroups:         pbQ.GetMaxRaftGroups(),
+			MaxReplicasPerGroup:   pbQ.GetMaxReplicasPerGroup(),
+			MaxTotalReplicas:      pbQ.GetMaxTotalReplicas(),
+			MaxCollections:        pbQ.GetMaxCollections(),
+			MaxKeys:               pbQ.GetMaxKeys(),
+			MaxStorageBytes:       pbQ.GetMaxStorageBytes(),
+			MaxDatabaseSizeBytes:  pbQ.GetMaxDatabaseSizeBytes(),
+			MaxUsers:              pbQ.GetMaxUsers(),
+			MaxRoles:              pbQ.GetMaxRoles(),
+			MaxCertificates:       pbQ.GetMaxCertificates(),
+			MaxBackups:            pbQ.GetMaxBackups(),
+			MaxVectorDims:         pbQ.GetMaxVectorDims(),
+			MaxTSMetrics:          pbQ.GetMaxTsMetrics(),
+			SystemBarrierQuota:    pbQ.GetSystemBarrierQuota(),
+			MaxDedicatedWALGroups: pbQ.GetMaxDedicatedWalGroups(),
 		}
 	}
 
@@ -523,6 +529,8 @@ func quicProtoToTenantInfo(resp *pb.TenantResponse) transport.TenantInfo {
 			AllowDedicatedRaft:        pbE.GetAllowDedicatedRaft(),
 			AllowVolumeStorage:        pbE.GetAllowVolumeStorage(),
 			AllowSystemManagedBarrier: pbE.GetAllowSystemManagedBarrier(),
+			AllowedBarrierModes:       pbE.GetAllowedBarrierModes(),
+			AllowDedicatedWAL:         pbE.GetAllowDedicatedWal(),
 		}
 	}
 

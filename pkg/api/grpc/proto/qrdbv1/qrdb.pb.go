@@ -15250,8 +15250,11 @@ type TenantQuotas struct {
 	// system_barrier_quota governs an isolated tenant's use of the shared system
 	// barrier (bytes): 0 makes the option unavailable, -1 unlimited, >0 a cap.
 	SystemBarrierQuota int64 `protobuf:"varint,15,opt,name=system_barrier_quota,json=systemBarrierQuota,proto3" json:"system_barrier_quota,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// max_dedicated_wal_groups caps the number of dedicated-raft groups a tenant
+	// may grant a dedicated WAL. -1 = unlimited; 0 = default (no dedicated WAL).
+	MaxDedicatedWalGroups int64 `protobuf:"varint,16,opt,name=max_dedicated_wal_groups,json=maxDedicatedWalGroups,proto3" json:"max_dedicated_wal_groups,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *TenantQuotas) Reset() {
@@ -15389,6 +15392,13 @@ func (x *TenantQuotas) GetSystemBarrierQuota() int64 {
 	return 0
 }
 
+func (x *TenantQuotas) GetMaxDedicatedWalGroups() int64 {
+	if x != nil {
+		return x.MaxDedicatedWalGroups
+	}
+	return 0
+}
+
 // TenantEntitlements describes which isolation tiers and dedicated-storage
 // features a tenant's plan permits.
 type TenantEntitlements struct {
@@ -15402,8 +15412,11 @@ type TenantEntitlements struct {
 	// allowed_barrier_modes lists the dedicated-barrier sealing strategies the
 	// isolated tenant may select (none/passphrase/shamir or an xkms hardware id).
 	AllowedBarrierModes []string `protobuf:"bytes,5,rep,name=allowed_barrier_modes,json=allowedBarrierModes,proto3" json:"allowed_barrier_modes,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// allow_dedicated_wal permits a tenant to opt a dedicated-raft database into
+	// a dedicated WAL group (requires the allow_dedicated_raft entitlement).
+	AllowDedicatedWal bool `protobuf:"varint,6,opt,name=allow_dedicated_wal,json=allowDedicatedWal,proto3" json:"allow_dedicated_wal,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *TenantEntitlements) Reset() {
@@ -15469,6 +15482,13 @@ func (x *TenantEntitlements) GetAllowedBarrierModes() []string {
 		return x.AllowedBarrierModes
 	}
 	return nil
+}
+
+func (x *TenantEntitlements) GetAllowDedicatedWal() bool {
+	if x != nil {
+		return x.AllowDedicatedWal
+	}
+	return false
 }
 
 // TenantResponse is the shared response shape for tenant CRUD operations.
@@ -24014,7 +24034,7 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\vshare_bytes\x18\x06 \x01(\fR\n" +
 	"shareBytes\"J\n" +
 	"%CeremonyEnrollExternalOfficerResponse\x12!\n" +
-	"\fsealed_share\x18\x01 \x01(\tR\vsealedShare\"\xeb\x04\n" +
+	"\fsealed_share\x18\x01 \x01(\tR\vsealedShare\"\xa4\x05\n" +
 	"\fTenantQuotas\x12#\n" +
 	"\rmax_databases\x18\x01 \x01(\x03R\fmaxDatabases\x12&\n" +
 	"\x0fmax_raft_groups\x18\x02 \x01(\x03R\rmaxRaftGroups\x12'\n" +
@@ -24032,13 +24052,15 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\x17max_database_size_bytes\x18\f \x01(\x03R\x14maxDatabaseSizeBytes\x123\n" +
 	"\x16max_replicas_per_group\x18\r \x01(\x03R\x13maxReplicasPerGroup\x12,\n" +
 	"\x12max_total_replicas\x18\x0e \x01(\x03R\x10maxTotalReplicas\x120\n" +
-	"\x14system_barrier_quota\x18\x0f \x01(\x03R\x12systemBarrierQuota\"\xa5\x02\n" +
+	"\x14system_barrier_quota\x18\x0f \x01(\x03R\x12systemBarrierQuota\x127\n" +
+	"\x18max_dedicated_wal_groups\x18\x10 \x01(\x03R\x15maxDedicatedWalGroups\"\xd5\x02\n" +
 	"\x12TenantEntitlements\x126\n" +
 	"\x17allowed_isolation_modes\x18\x01 \x03(\tR\x15allowedIsolationModes\x120\n" +
 	"\x14allow_dedicated_raft\x18\x02 \x01(\bR\x12allowDedicatedRaft\x120\n" +
 	"\x14allow_volume_storage\x18\x03 \x01(\bR\x12allowVolumeStorage\x12?\n" +
 	"\x1callow_system_managed_barrier\x18\x04 \x01(\bR\x19allowSystemManagedBarrier\x122\n" +
-	"\x15allowed_barrier_modes\x18\x05 \x03(\tR\x13allowedBarrierModes\"\x89\x02\n" +
+	"\x15allowed_barrier_modes\x18\x05 \x03(\tR\x13allowedBarrierModes\x12.\n" +
+	"\x13allow_dedicated_wal\x18\x06 \x01(\bR\x11allowDedicatedWal\"\x89\x02\n" +
 	"\x0eTenantResponse\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12%\n" +

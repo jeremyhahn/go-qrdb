@@ -214,7 +214,15 @@ qrdb barrier enable-encryption --tenant acme --strategy passphrase --passphrase 
 - **Mid-migration crash:** Each node's local recycle is crash-safe via the
   `MigrationJournal` (existing mechanism, deployed in single-node migrations).
   On restart, the journal roll-forwards or rolls back the replica deterministically,
-  and the node re-publishes its phase to the replicated status.
+  and the node re-publishes its phase to the replicated status. The journal
+  records the migration's store directories and staged snapshot files, so
+  recovery is scope-agnostic: the system barrier is reconciled at daemon boot
+  (`RecoverInterruptedMigration` before the barrier build), and each per-tenant
+  barrier is reconciled by the same recoverer, injected into the
+  `BarrierRegistry` and run when the tenant barrier is re-registered — before
+  the tenant's data stores open. A crash in the commit window (directory swaps
+  done, root key not yet adopted) rolls forward from the staged root-key blob;
+  an uncommitted crash rolls back to the untouched source stores.
 
 ### Observing completion
 

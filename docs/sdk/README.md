@@ -135,6 +135,128 @@ scope := qrdbsdk.BarrierScope{
 }
 ```
 
+## Shared Utilities (Stack Consolidation)
+
+### Health Probes
+
+The SDK re-exports the generic K8s-style health probe framework from `pkg/health`:
+
+```go
+checker := sdk.NewHealthChecker()
+checker.RegisterCheck("database", func(ctx context.Context) sdk.HealthCheckResult {
+    // Check database connectivity
+    return sdk.HealthCheckResult{
+        Name:   "database",
+        Status: sdk.HealthCheckStatusHealthy,
+    }
+})
+
+// Run readiness checks
+results := checker.Ready(ctx)
+status := sdk.AggregateHealthCheckStatus(results)
+
+// Kubernetes probes
+checker.MarkStarted() // After initialization
+status := checker.Startup(ctx)
+```
+
+Types: `HealthChecker`, `HealthCheckResult`, `HealthCheckFunc`, `HealthCheckStatus` (Healthy/Unhealthy/Degraded), `AggregateHealthCheckStatus()`.
+
+### Validation Framework
+
+The SDK re-exports domain-neutral validation primitives from `pkg/validation`:
+
+```go
+import "github.com/jeremyhahn/go-qrdb/sdk/go"
+
+// Constraint vocabulary for validation rules
+const (
+    sdk.ValidationConstraintEmpty
+    sdk.ValidationConstraintNullByte
+    sdk.ValidationConstraintTooLong
+    sdk.ValidationConstraintPathTraversal
+    sdk.ValidationConstraintInvalidFormat
+    // ... others
+)
+
+// Create typed validation error
+err := sdk.NewValidationError("tenant ID", sdk.ValidationConstraintEmpty, "required")
+
+// Domain packages embed ValidationError for uniform handling
+var e sdk.ValidationError
+if errors.As(err, &e) {
+    fmt.Printf("%s %s", e.Field, e.Constraint)
+}
+
+// Safe logging
+sanitized := sdk.SanitizeForLog(userInput)
+```
+
+### TLS Configuration Builder
+
+All SDK transports use the shared `sdk/go/transport` TLS builder:
+
+```go
+import transport "github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+
+cfg, err := transport.BuildTLSConfig(transport.TLSBuildOptions{
+    Enabled:  true,
+    CAFile:   "/etc/qrdb/ca.pem",     // Certificate verification
+    CertFile: "/etc/qrdb/client.pem",  // mTLS client cert
+    KeyFile:  "/etc/qrdb/client-key.pem",
+    NextProtos: []string{"qrdb-quic"},  // ALPN protocols
+})
+if err != nil {
+    // typed errors: CAFileReadError, CAParseError, CertificateLoadError
+}
+```
+
+Enforces TLS 1.3 minimum; precedence: Custom → file-based config → plaintext (when Enabled=false).
+
+### Context Helpers
+
+The SDK provides context utilities for tenant-scoped operations and logging:
+
+```go
+import qrdbsdk "github.com/jeremyhahn/go-qrdb/sdk/go"
+
+// Tenant scoping
+ctx = qrdbsdk.ContextWithTenant(ctx, "acme-corp")
+tenantID, ok := qrdbsdk.TenantFromContext(ctx)
+
+// Logger binding
+logger := qrdbsdk.NewLogger(sdk.DefaultLogConfig())
+ctx = qrdbsdk.ContextWithLogger(ctx, logger)
+logger = qrdbsdk.LoggerFromContext(ctx)
+```
+
+### Retry Strategies
+
+The SDK re-exports retry primitives for resilient operations:
+
+```go
+// Backoff strategies
+backoff := sdk.DefaultExponentialBackoff() // 100ms → 10s
+backoff := sdk.DefaultLinearBackoff()      // 100ms + 200ms increments
+backoff := sdk.DefaultConstantBackoff()    // 500ms constant
+
+// Execute with retry
+err := sdk.RetryDo(ctx, op, sdk.DefaultRetryConfig())
+
+// Or with specific backoff
+err := sdk.RetryDoExponential(ctx, op, 5) // max 5 attempts
+```
+
+### KVStore Adapter
+
+Compose KV transport clients into a `kvstore.KVStore` interface:
+
+```go
+kv := sdk.NewKVStoreAdapter(kvClient, indexClient)
+// Now usable by DAOs across any transport (REST/gRPC/QUIC/MCP/Unix/embedded)
+err := kv.Put(ctx, "key", []byte("value"))
+```
+
 ## TLS Configuration
 
 Certificate verification: configured CA file → OS trust store → reject.

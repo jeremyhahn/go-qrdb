@@ -17,7 +17,6 @@ package rest
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -98,7 +97,7 @@ func (t *Transport) QueryAudit(ctx context.Context, f transport.AuditFilter) (*t
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return nil, &transport.RequestError{
 			Method: "QueryAudit",
-			Err:    fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body)),
+			Err:    &transport.UnexpectedStatusError{StatusCode: resp.StatusCode, Body: string(body)},
 		}
 	}
 

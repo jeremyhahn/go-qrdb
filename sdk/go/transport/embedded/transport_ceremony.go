@@ -49,8 +49,13 @@ func (t *Transport) CeremonyInitialize(ctx context.Context, req *transport.Cerem
 		return nil, &InvalidRequestError{Method: "CeremonyInitialize"}
 	}
 	opts := &service.CeremonyInitializeOptions{
-		SOPin:   req.SOPin,
-		UserPin: req.UserPin,
+		SOPin:                  req.SOPin,
+		UserPin:                req.UserPin,
+		CredentialSealStrategy: req.CredentialSealStrategy,
+		Threshold:              req.Threshold,
+		Officers:               ceremonyOfficerConfigsFromRequest(req.Officers),
+		Hostname:               req.Hostname,
+		SANs:                   req.SANs,
 	}
 	result, err := t.ceremonySvc.CeremonyInitialize(ctx, t.ceremonyCA, opts)
 	if err != nil {
@@ -65,6 +70,21 @@ func (t *Transport) CeremonyInitialize(ctx context.Context, req *transport.Cerem
 		State:      result.State,
 		ShareCount: result.ShareCount,
 	}, nil
+}
+
+// ceremonyOfficerConfigsFromRequest converts the SDK-level officer request
+// shape to the service-layer type. Returns nil when officers is empty so
+// the service layer's "non-empty overrides the configured value"
+// precedence rule works unchanged.
+func ceremonyOfficerConfigsFromRequest(officers []transport.CeremonyOfficerRequest) []service.CeremonyOfficerConfig {
+	if len(officers) == 0 {
+		return nil
+	}
+	out := make([]service.CeremonyOfficerConfig, len(officers))
+	for i, o := range officers {
+		out[i] = service.CeremonyOfficerConfig{Username: o.Username, CSRPEM: o.CSRPEM}
+	}
+	return out
 }
 
 // CeremonyStatus returns the current ceremony state by delegating to the
