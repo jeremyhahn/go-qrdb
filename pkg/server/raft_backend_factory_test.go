@@ -259,7 +259,7 @@ func TestRaftBackendFactory_ReattachPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Services (re-attach): %v", err)
 	}
-	got, err := svcs2.KV.Get(ctx, "persist")
+	got, err := getWhenReadable(ctx, t, svcs2.KV.Get, "persist")
 	if err != nil {
 		t.Fatalf("KV.Get after re-attach: %v", err)
 	}
@@ -474,17 +474,38 @@ func TestManagerRaftInfoSource_NilManager(t *testing.T) {
 }
 
 // newSharedTestHostWithMux builds a shared Host whose LogDB is a MultiplexLogDB
-// over a shared (plaintext) WAL, with WithShardBarriers wired to the mux so a
-// dedicated-raft shard that registers a per-tenant-KEY WAL gets its snapshots
-// routed to the tenant barrier (4d Option C). It returns the host and the mux.
+// over a shared WAL encrypted under the system barrier, with WithShardBarriers
+// wired to the mux so a dedicated-raft shard that registers a per-tenant-KEY WAL
+// gets its snapshots routed to the tenant barrier (4d Option C). It returns the
+// host and the mux.
+//
+// The shared WAL is opened WithBarrier: with WithShardBarriers configured and no
+// host-wide WithBarrier, quicraft.NewHost refuses a LogDB that would store the
+// Raft log in plaintext, and the shared route (the default for every non-opted-in
+// shard) must therefore be encrypted at rest — exactly what the system barrier
+// provides in production.
 func newSharedTestHostWithMux(t *testing.T) (*quicraft.Host, *database.MultiplexLogDB) {
 	t.Helper()
 	hostDir := t.TempDir()
-	sharedWAL, err := waldb.Open(filepath.Join(hostDir, "wal"))
+	sysStrat, err := seal.NewSoftwareStrategy([]byte("mux-shared-wal-test"))
+	if err != nil {
+		t.Fatalf("NewSoftwareStrategy: %v", err)
+	}
+	sysBarrier, err := seal.NewStorageBarrier(volTestLogger(), seal.NewMemoryBackend(),
+		seal.BarrierConfig{RootKeyPath: "system/root-key", DeploymentID: 1}, sysStrat)
+	if err != nil {
+		t.Fatalf("NewStorageBarrier: %v", err)
+	}
+	if err := sysBarrier.Initialize(context.Background(),
+		seal.Credentials{Secret: []byte("mux-shared-wal-test")}); err != nil {
+		t.Fatalf("Initialize system barrier: %v", err)
+	}
+	sharedWAL, err := waldb.Open(filepath.Join(hostDir, "wal"),
+		waldb.WithBarrier(sysBarrier.EpochBarrier()))
 	if err != nil {
 		t.Fatalf("open shared WAL: %v", err)
 	}
-	mux, err := database.NewMultiplexLogDB(sharedWAL, nil)
+	mux, err := database.NewMultiplexLogDB(sharedWAL, sysBarrier.EpochBarrier())
 	if err != nil {
 		t.Fatalf("new multiplex: %v", err)
 	}
@@ -498,6 +519,11 @@ func newSharedTestHostWithMux(t *testing.T) (*quicraft.Host, *database.Multiplex
 	host, err := quicraft.NewHost(cfg,
 		quicraft.WithoutTransport(),
 		quicraft.WithLogDB(mux),
+		// The host-wide barrier is the shared route's snapshot key: a shard NOT
+		// opted into a dedicated WAL resolves to nil below and falls back to it,
+		// matching the shared WAL's own system-barrier encryption. Dedicated
+		// shards override it with their tenant barrier via the resolver.
+		quicraft.WithBarrier(sysBarrier.EpochBarrier()),
 		quicraft.WithShardBarriers(func(shardID uint64) quicraft.Barrier {
 			if b := mux.BarrierForShard(shardID); b != nil {
 				return b

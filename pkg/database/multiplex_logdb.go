@@ -97,6 +97,7 @@ var (
 	_ logdb.LogDB                     = (*MultiplexLogDB)(nil)
 	_ logdb.PerBarrierEpochAwareLogDB = (*MultiplexLogDB)(nil)
 	_ logdb.BarrierShardEnumerator    = (*MultiplexLogDB)(nil)
+	_ logdb.AtRestProtectedLogDB      = (*MultiplexLogDB)(nil)
 )
 
 // NewMultiplexLogDB builds a multiplex over the given shared WAL. sharedBarrier
@@ -166,6 +167,24 @@ func (m *MultiplexLogDB) BarrierForShard(shardID uint64) *seal.EpochBarrier {
 		return r.barrier
 	}
 	return nil
+}
+
+// AtRestProtection declares whether the records this multiplex persists are
+// encrypted at rest, so quicraft.NewHost can refuse a plaintext WAL under
+// per-shard barriers (WithShardBarriers without WithBarrier) instead of silently
+// storing the Raft log in cleartext.
+//
+// Every route is a single-barrier waldb: the shared route under the system
+// barrier and each dedicated route under a tenant barrier. Dedicated routes are
+// always opened WithBarrier, so the multiplex is encrypted at rest exactly when
+// its shared route is — delegate to the shared WAL's own declaration. A shared
+// db that does not declare its protection is treated as unprotected (fail
+// closed), matching the host's zero-value semantics.
+func (m *MultiplexLogDB) AtRestProtection() logdb.AtRestProtection {
+	if p, ok := m.shared.db.(logdb.AtRestProtectedLogDB); ok {
+		return p.AtRestProtection()
+	}
+	return logdb.AtRestUnprotected
 }
 
 // routeFor returns the WAL that owns shardID: the dedicated WAL when one is
