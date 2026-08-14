@@ -4,6 +4,8 @@
 bin/
 /qrdb
 /qrdbd
+/kvcompare
+test/performance/kvcompare
 *.exe
 *.test
 *.out
@@ -35,9 +37,11 @@ cmd/qrdb/frontend/dist/
 # Wails generated bindings
 cmd/qrdb/frontend/src/lib/wails/
 
-# Playwright output: the HTML reporter's report directory and the per-run
-# artifact directory, in both TypeScript projects.
-playwright-report/
+# Playwright output: the HTML reporter's report directories and the per-run
+# artifact directory, in both TypeScript projects. The glob is deliberate --
+# playwright.dom.config.ts and playwright.real.config.ts each write their own
+# suffixed report directory, and a bare `playwright-report/` misses both.
+playwright-report*/
 test-results/
 
 .serena
