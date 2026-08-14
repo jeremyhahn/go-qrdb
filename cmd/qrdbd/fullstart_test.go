@@ -363,22 +363,26 @@ func TestSealSubsystem_Close_WithRealSealStore(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// runStart: dbManager.OpenAll failure when databases/ dir is unreadable
+// runStart: dbManager.OpenAll failure when databases/ cannot be read
 //
 // Covers start.go line 869-871: the error return from dbManager.OpenAll when
-// os.ReadDir("{dataDir}/databases") fails with permission denied (not
-// os.IsNotExist), causing database.Manager.OpenAll to return *MetaReadError.
+// os.ReadDir("{dataDir}/databases") fails with anything other than
+// os.IsNotExist, causing database.Manager.OpenAll to return *MetaReadError.
 // ---------------------------------------------------------------------------
 
-func TestRunStart_OpenAll_DatabasesDirPermissionError(t *testing.T) {
+func TestRunStart_OpenAll_DatabasesDirUnreadable(t *testing.T) {
 	dir := t.TempDir()
 
-	// Pre-create the databases/ directory with 000 permissions so that
-	// os.ReadDir inside OpenAll fails with EACCES rather than ENOENT.
-	dbsDir := filepath.Join(dir, "databases")
-	require.NoError(t, os.Mkdir(dbsDir, 0o000))
-	// Restore permissions so t.TempDir cleanup can remove the directory.
-	t.Cleanup(func() { _ = os.Chmod(dbsDir, 0o755) })
+	// Put a regular file where the databases/ directory belongs, so that
+	// os.ReadDir inside OpenAll fails with ENOTDIR rather than ENOENT.
+	//
+	// A 0o000 directory would be the more obvious way to provoke the same
+	// branch, but permission bits are not a fault-injection mechanism here:
+	// CI job containers run as root, which bypasses the check entirely, and
+	// runStart would then go on to start a real node and block until the test
+	// binary's deadline (testing-guidelines.md, Fault Injection).
+	dbsPath := filepath.Join(dir, "databases")
+	require.NoError(t, os.WriteFile(dbsPath, nil, 0o600))
 
 	raftPort, portErr := findFreeUDPPort()
 	require.NoError(t, portErr)
@@ -400,7 +404,7 @@ func TestRunStart_OpenAll_DatabasesDirPermissionError(t *testing.T) {
 	}
 
 	err := runStart(f)
-	require.Error(t, err, "runStart must fail when databases/ dir is unreadable")
+	require.Error(t, err, "runStart must fail when databases/ cannot be read")
 
 	var metaErr *database.MetaReadError
 	require.True(t, errors.As(err, &metaErr),
