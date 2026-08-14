@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"syscall"
 	"testing"
@@ -89,7 +88,7 @@ func TestRunStart_AuthDisabled_SingleNode_ThenSIGTERM(t *testing.T) {
 	case <-time.After(25 * time.Second):
 		t.Fatal("runStart did not return within timeout after SIGTERM")
 	}
-	signal.Reset(syscall.SIGINT, syscall.SIGTERM)
+	resetSignalHandlers(syscall.SIGINT, syscall.SIGTERM)
 }
 
 func TestRunStart_AuthEnabled_SingleNode_ThenSIGTERM(t *testing.T) {
@@ -141,7 +140,7 @@ func TestRunStart_AuthEnabled_SingleNode_ThenSIGTERM(t *testing.T) {
 	case <-time.After(30 * time.Second):
 		t.Fatal("runStart did not return within timeout after SIGTERM")
 	}
-	signal.Reset(syscall.SIGINT, syscall.SIGTERM)
+	resetSignalHandlers(syscall.SIGINT, syscall.SIGTERM)
 }
 
 // ---------------------------------------------------------------------------
@@ -204,7 +203,7 @@ func TestRunStart_MultiNode_FirstNode_BootstrapServers_ThenSIGTERM(t *testing.T)
 	case <-time.After(20 * time.Second):
 		t.Fatal("runStart did not return within timeout after SIGTERM")
 	}
-	signal.Reset(syscall.SIGINT, syscall.SIGTERM)
+	resetSignalHandlers(syscall.SIGINT, syscall.SIGTERM)
 }
 
 // ---------------------------------------------------------------------------
@@ -265,7 +264,7 @@ func TestRunStart_AuthDisabled_WithVolumePool_ThenSIGTERM(t *testing.T) {
 	case <-time.After(25 * time.Second):
 		t.Fatal("runStart did not return within timeout after SIGTERM")
 	}
-	signal.Reset(syscall.SIGINT, syscall.SIGTERM)
+	resetSignalHandlers(syscall.SIGINT, syscall.SIGTERM)
 }
 
 // ---------------------------------------------------------------------------
@@ -329,7 +328,7 @@ func TestRunStart_SIGHUPThenSIGTERM(t *testing.T) {
 	case <-time.After(25 * time.Second):
 		t.Fatal("runStart did not return within timeout after SIGTERM")
 	}
-	signal.Reset(syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	resetSignalHandlers(syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 }
 
 // ---------------------------------------------------------------------------
@@ -392,7 +391,7 @@ func TestRunStart_ServerStartFails_PortInUse(t *testing.T) {
 	case <-time.After(15 * time.Second):
 		t.Fatal("runStart did not return within timeout")
 	}
-	signal.Reset(syscall.SIGINT, syscall.SIGTERM)
+	resetSignalHandlers(syscall.SIGINT, syscall.SIGTERM)
 }
 
 // ---------------------------------------------------------------------------
@@ -450,7 +449,7 @@ func TestRunStart_PebbleSMType_FullStartup_ThenSIGTERM(t *testing.T) {
 	case <-time.After(25 * time.Second):
 		t.Fatal("runStart did not return within timeout after SIGTERM")
 	}
-	signal.Reset(syscall.SIGINT, syscall.SIGTERM)
+	resetSignalHandlers(syscall.SIGINT, syscall.SIGTERM)
 }
 
 func TestRunStart_SealEnabled_SoftwareStrategy_ThenSIGTERM(t *testing.T) {
@@ -515,5 +514,5 @@ func TestRunStart_SealEnabled_SoftwareStrategy_ThenSIGTERM(t *testing.T) {
 	case <-time.After(20 * time.Second):
 		t.Fatal("runStart did not return within timeout after SIGTERM")
 	}
-	signal.Reset(syscall.SIGINT, syscall.SIGTERM)
+	resetSignalHandlers(syscall.SIGINT, syscall.SIGTERM)
 }

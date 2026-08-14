@@ -28,7 +28,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -1781,7 +1780,7 @@ func TestWaitForSignal(t *testing.T) {
 
 	// Reset the default signal handler so it does not interfere
 	// with subsequent tests.
-	signal.Reset(syscall.SIGINT, syscall.SIGTERM)
+	resetSignalHandlers(syscall.SIGINT, syscall.SIGTERM)
 }
 
 // ---------------------------------------------------------------------------
@@ -2632,7 +2631,7 @@ func TestNewStartCmd_MemorySM_SingleNodeStatic_WithPeer(t *testing.T) {
 	}
 
 	// Reset signal handler.
-	signal.Reset(syscall.SIGINT, syscall.SIGTERM)
+	resetSignalHandlers(syscall.SIGINT, syscall.SIGTERM)
 }
 
 func TestNewStartCmd_ValidConfig_SMUnknown(t *testing.T) {

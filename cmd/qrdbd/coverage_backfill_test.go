@@ -23,7 +23,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"syscall"
 	"testing"
@@ -860,7 +859,7 @@ func TestRunStart_WithVolumePool_ThenSIGTERM(t *testing.T) {
 		t.Fatal("runStart did not return within timeout after SIGTERM")
 	}
 
-	signal.Reset(syscall.SIGINT, syscall.SIGTERM)
+	resetSignalHandlers(syscall.SIGINT, syscall.SIGTERM)
 }
 
 // ---------------------------------------------------------------------------
