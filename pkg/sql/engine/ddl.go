@@ -28,6 +28,15 @@ type pgColumnType struct {
 	// spelling, including any fixed length modifier of its own.
 	Name string
 
+	// KeyedName is the type substituted instead of Name when the column
+	// participates in a key of the same statement (see keyedColumns). It is
+	// set for exactly those PostgreSQL types whose Name is one of MySQL's
+	// unbounded TEXT/BLOB families, because MySQL cannot index such a column
+	// at all without a prefix length -- "blob/text column 'code' used in key
+	// specification without a key length". An empty KeyedName means the
+	// substitution does not depend on key membership.
+	KeyedName string
+
 	// AutoIncrement reports whether the column additionally gains MySQL's
 	// AUTO_INCREMENT attribute. It is set for exactly the PostgreSQL
 	// serial pseudo-types, which are not types at all in PostgreSQL but
@@ -65,7 +74,9 @@ type pgColumnType struct {
 //   - text is PostgreSQL's unbounded string. MySQL's TEXT caps at 64 KiB,
 //     so the honest stand-in is LONGTEXT, which is also what
 //     gorm.io/driver/mysql itself picks for the same unbounded field.
-//     bytea maps to LONGBLOB for exactly the same reason.
+//     bytea maps to LONGBLOB for exactly the same reason. Both carry a
+//     KeyedName as well, because neither LONGTEXT nor LONGBLOB can appear
+//     in a key without a prefix length -- see keyedTextType.
 //
 //   - timestamptz and timestamp both map to DATETIME rather than MySQL's
 //     TIMESTAMP: MySQL's TIMESTAMP only spans 1970-2038, while DATETIME
@@ -80,8 +91,8 @@ var pgColumnTypes = map[string]pgColumnType{
 	"bigserial":                   {Name: "BIGINT", AutoIncrement: true},
 	"serial":                      {Name: "INT", AutoIncrement: true},
 	"smallserial":                 {Name: "SMALLINT", AutoIncrement: true},
-	"text":                        {Name: "LONGTEXT"},
-	"bytea":                       {Name: "LONGBLOB"},
+	"text":                        {Name: "LONGTEXT", KeyedName: keyedTextType},
+	"bytea":                       {Name: "LONGBLOB", KeyedName: keyedBlobType},
 	"uuid":                        {Name: "CHAR(36)"},
 	"timestamptz":                 {Name: "DATETIME", KeepModifier: true},
 	"timestamp":                   {Name: "DATETIME", KeepModifier: true},
@@ -92,6 +103,42 @@ var pgColumnTypes = map[string]pgColumnType{
 // maxTypePhraseWords is the greatest number of whitespace-separated words
 // any key of pgColumnTypes spans ("timestamp without time zone").
 const maxTypePhraseWords = 4
+
+// keyedTextType and keyedBlobType are the bounded types substituted for
+// PostgreSQL's unbounded text and bytea when the column participates in a
+// key. MySQL refuses to index a TEXT or BLOB column without a prefix length,
+// so the alternative to bounding the column is not "an unbounded key" -- it
+// is a table that cannot be created at all.
+//
+// Why 768 characters, and not some other number:
+//
+//   - InnoDB's index-key ceiling is 3072 bytes per column (DYNAMIC or
+//     COMPRESSED row format), which go-mysql-server enforces verbatim as
+//     analyzer.MaxBytePrefix and compares against a character count scaled by
+//     the charset's maximum bytes per character.
+//   - utf8mb4, the default here as on modern MySQL, is up to 4 bytes per
+//     character. 3072/4 = 768, so VARCHAR(768) is the LARGEST width that is
+//     indexable under every charset -- one more character can overflow the
+//     byte ceiling on a 4-byte charset and be rejected.
+//
+// 768 is therefore chosen to preserve the most caller data that can still be
+// indexed. The alternative worth naming is 191, which gorm.io/driver/mysql
+// picks for the same unbounded field: 191 is a legacy of MySQL's older
+// 767-byte limit (767/4 = 191) and additionally leaves room for a composite
+// key of four such columns, since real InnoDB checks the SUM of a composite
+// key's parts against 3072 while go-mysql-server checks only each part. That
+// composite-key headroom is the one thing 768 gives up: a PRIMARY KEY over
+// two text columns is accepted here and would be refused by real InnoDB.
+// Truncating every keyed text column to 191 characters to buy that headroom
+// would silently reject caller values between 192 and 768 characters that
+// this engine can index perfectly well, which is the worse trade.
+//
+// bytea's ceiling is stated directly in bytes because a BLOB prefix length
+// is a byte count, not a character count, so no charset scaling applies.
+const (
+	keyedTextType = "VARCHAR(768)"
+	keyedBlobType = "VARBINARY(3072)"
+)
 
 // tableConstraintKeywords are the leading keywords that mark an element of
 // a CREATE TABLE column list, or a clause of an ALTER TABLE, as a table
@@ -111,6 +158,39 @@ var tableConstraintKeywords = map[string]bool{
 	"SPATIAL":    true,
 	"EXCLUDE":    true,
 	"PERIOD":     true,
+}
+
+// keyConstraintKeywords are the table-constraint kinds whose parenthesized
+// column list becomes an index, and whose member columns therefore need a
+// bounded type (see keyedColumns). It is deliberately narrower than
+// tableConstraintKeywords:
+//
+//   - FOREIGN is absent. A FOREIGN KEY clause names the child columns of a
+//     reference, and go-mysql-server does not require a prefix length on
+//     them; the index a foreign key needs is the one on the REFERENCED
+//     column, which is declared by that other table's own key.
+//   - FULLTEXT is absent because a FULLTEXT index over a TEXT column is
+//     exactly what FULLTEXT is for and needs no prefix length, so bounding
+//     the column would narrow it for no reason.
+//   - SPATIAL is absent because it applies to geometry types, which have no
+//     PostgreSQL spelling in pgColumnTypes at all.
+//   - CHECK, EXCLUDE, and PERIOD create no index.
+//
+// All keys are upper case.
+var keyConstraintKeywords = map[string]bool{
+	"PRIMARY": true,
+	"UNIQUE":  true,
+	"KEY":     true,
+	"INDEX":   true,
+}
+
+// inlineKeyKeywords are the column-constraint keywords that make the column
+// they appear on a key by itself -- `"code" text PRIMARY KEY`, `"code" text
+// UNIQUE` -- as opposed to the table-level constraint clauses that name
+// their columns in a list. All keys are upper case.
+var inlineKeyKeywords = map[string]bool{
+	"PRIMARY": true,
+	"UNIQUE":  true,
 }
 
 // alterClauseColumnOffset maps an ALTER TABLE clause's leading keyword to
@@ -297,12 +377,45 @@ func applyDDLEdits(query string, edits []ddlEdit) string {
 	return b.String()
 }
 
+// ddlRange is a half-open range [start, end) of token indices.
+type ddlRange struct {
+	start, end int
+}
+
 // createTableTypeEdits returns the type substitutions for a CREATE TABLE
 // statement. The column list is the first parenthesized group in the
 // statement -- CREATE TABLE has no other -- and its top-level,
 // comma-separated elements are each either a table constraint (skipped) or
 // a column definition whose second token is the type.
+//
+// The list is walked twice, because whether a column's type substitution is
+// correct depends on a clause that may appear AFTER it: a column whose type
+// maps to one of MySQL's unbounded TEXT/BLOB families cannot be indexed, so
+// a `text` column named by this same statement's PRIMARY KEY, UNIQUE, or
+// INDEX clause takes the bounded KeyedName substitution instead. The first
+// pass collects those key member names, the second emits the edits.
 func createTableTypeEdits(query string, toks []ddlToken) ([]ddlEdit, error) {
+	elements := createTableElements(query, toks)
+	keyed := keyedColumns(query, toks, elements)
+
+	var edits []ddlEdit
+	for _, el := range elements {
+		var err error
+		if edits, err = appendColumnTypeEdit(query, toks, edits, el, keyed); err != nil {
+			return nil, err
+		}
+	}
+	return edits, nil
+}
+
+// createTableElements returns the token ranges of the top-level,
+// comma-separated elements of a CREATE TABLE column list, or nil when the
+// statement has no parenthesized group at all. A statement whose column list
+// is never closed contributes only the elements a comma already terminated:
+// the trailing fragment of a truncated statement is not an element, and the
+// rewriter is not a validator -- such a statement is passed through for the
+// parser to diagnose.
+func createTableElements(query string, toks []ddlToken) []ddlRange {
 	open := -1
 	for i, t := range toks {
 		if t.isPunct(query, '(') {
@@ -311,10 +424,10 @@ func createTableTypeEdits(query string, toks []ddlToken) ([]ddlEdit, error) {
 		}
 	}
 	if open < 0 {
-		return nil, nil
+		return nil
 	}
 
-	var edits []ddlEdit
+	var elements []ddlRange
 	depth := 1
 	start := open + 1
 	for i := open + 1; i < len(toks); i++ {
@@ -324,27 +437,120 @@ func createTableTypeEdits(query string, toks []ddlToken) ([]ddlEdit, error) {
 		case toks[i].isPunct(query, ')'):
 			depth--
 			if depth == 0 {
-				return appendColumnTypeEdit(query, toks, edits, start, i)
+				return append(elements, ddlRange{start: start, end: i})
 			}
 		case depth == 1 && toks[i].isPunct(query, ','):
-			var err error
-			if edits, err = appendColumnTypeEdit(query, toks, edits, start, i); err != nil {
-				return nil, err
-			}
+			elements = append(elements, ddlRange{start: start, end: i})
 			start = i + 1
 		}
 	}
-	return edits, nil
+	return elements
+}
+
+// keyedColumns returns the set of column names, normalized by identName,
+// that a CREATE TABLE statement's table-level key constraints name. Only the
+// constraint kinds that create an index contribute (see
+// keyConstraintKeywords); an inline column constraint is not a table
+// constraint and is detected separately by inlineKeyed.
+func keyedColumns(query string, toks []ddlToken, elements []ddlRange) map[string]bool {
+	keyed := make(map[string]bool)
+	for _, el := range elements {
+		at := el.start
+		if at < el.end && toks[at].word(query) == "CONSTRAINT" {
+			at += 2 // CONSTRAINT <name>
+		}
+		if at < el.end && keyConstraintKeywords[toks[at].word(query)] {
+			collectKeyColumns(query, toks, at, el.end, keyed)
+		}
+	}
+	return keyed
+}
+
+// collectKeyColumns adds to keyed the column names listed in the first
+// parenthesized group of the constraint clause spanning toks[at:end).
+//
+// Only the identifier in a name POSITION is collected -- the token just
+// after the opening paren or a top-level comma -- so an index option that
+// follows a name, such as the prefix length in `(code(10))` or a sort
+// direction in `(code DESC)`, cannot be mistaken for another column.
+func collectKeyColumns(query string, toks []ddlToken, at, end int, keyed map[string]bool) {
+	open := -1
+	for i := at; i < end; i++ {
+		if toks[i].isPunct(query, '(') {
+			open = i
+			break
+		}
+	}
+	if open < 0 {
+		return
+	}
+
+	depth := 1
+	expectName := true
+	for i := open + 1; i < end && depth > 0; i++ {
+		switch {
+		case toks[i].isPunct(query, '('):
+			depth++
+		case toks[i].isPunct(query, ')'):
+			depth--
+		case depth != 1:
+		case toks[i].isPunct(query, ','):
+			expectName = true
+		case expectName:
+			if name := identName(query, toks[i]); name != "" {
+				keyed[name] = true
+				expectName = false
+			}
+		}
+	}
+}
+
+// identName returns the normalized name a token denotes when it is an
+// identifier -- backticks stripped and lower cased, so that `Code`,
+// "`code`", and code all compare equal the way MySQL compares column names
+// -- and "" for every token that cannot be one.
+func identName(query string, t ddlToken) string {
+	switch t.kind {
+	case ddlWord:
+		return strings.ToLower(t.text(query))
+	case ddlQuoted:
+		return strings.ToLower(strings.Trim(t.text(query), "`"))
+	default:
+		return ""
+	}
+}
+
+// inlineKeyed reports whether the column definition spanning toks[at:end)
+// carries an inline PRIMARY KEY or UNIQUE column constraint, which makes the
+// column a key of its own without any table-level clause naming it. Only
+// keywords at the definition's own paren depth count, so neither a
+// parenthesized CHECK body nor a string literal that spells the same word
+// can trigger it.
+func inlineKeyed(query string, toks []ddlToken, at, end int) bool {
+	depth := 0
+	for i := at; i < end; i++ {
+		switch {
+		case toks[i].isPunct(query, '('):
+			depth++
+		case toks[i].isPunct(query, ')'):
+			depth--
+		case depth == 0 && inlineKeyKeywords[toks[i].word(query)]:
+			return true
+		}
+	}
+	return false
 }
 
 // appendColumnTypeEdit appends the type substitution for the CREATE TABLE
-// column-list element spanning toks[start:end), or leaves edits unchanged
-// when that element is a table constraint or is empty.
-func appendColumnTypeEdit(query string, toks []ddlToken, edits []ddlEdit, start, end int) ([]ddlEdit, error) {
-	if end-start < 2 || tableConstraintKeywords[toks[start].word(query)] {
+// column-list element el, or leaves edits unchanged when that element is a
+// table constraint or is empty. keyed is the statement's table-level key
+// membership as returned by keyedColumns.
+func appendColumnTypeEdit(query string, toks []ddlToken, edits []ddlEdit, el ddlRange, keyed map[string]bool) ([]ddlEdit, error) {
+	if el.end-el.start < 2 || tableConstraintKeywords[toks[el.start].word(query)] {
 		return edits, nil
 	}
-	return appendTypeEdit(query, toks, edits, start+1, end)
+	inKey := keyed[identName(query, toks[el.start])] || inlineKeyed(query, toks, el.start+1, el.end)
+	return appendTypeEdit(query, toks, edits, el.start+1, el.end, inKey)
 }
 
 // alterTableTypeEdits returns the type substitutions for an ALTER TABLE
@@ -409,13 +615,21 @@ func appendAlterClauseEdit(query string, toks []ddlToken, edits []ddlEdit, start
 	if i < end && tableConstraintKeywords[toks[i].word(query)] {
 		return edits, nil // ADD CONSTRAINT / ADD UNIQUE / ADD INDEX ...
 	}
-	return appendTypeEdit(query, toks, edits, i+names, end)
+
+	// An ALTER TABLE clause names one column and no table-level constraint
+	// list, so the only key membership visible from here is an inline one:
+	// ADD COLUMN `code` text UNIQUE. A column made a key by a SEPARATE
+	// statement is out of reach by construction and keeps its unbounded
+	// substitution -- see the doc comment on Translate.
+	at := i + names
+	return appendTypeEdit(query, toks, edits, at, end, inlineKeyed(query, toks, at, end))
 }
 
 // appendTypeEdit appends the substitution for the column type beginning at
-// toks[at], which must lie within toks[:limit].
-func appendTypeEdit(query string, toks []ddlToken, edits []ddlEdit, at, limit int) ([]ddlEdit, error) {
-	edit, ok, err := columnTypeEdit(query, toks, at, limit)
+// toks[at], which must lie within toks[:limit]. keyed reports whether the
+// column participates in a key of the same statement.
+func appendTypeEdit(query string, toks []ddlToken, edits []ddlEdit, at, limit int, keyed bool) ([]ddlEdit, error) {
+	edit, ok, err := columnTypeEdit(query, toks, at, limit, keyed)
 	if err != nil {
 		return nil, err
 	}
@@ -435,8 +649,18 @@ func appendTypeEdit(query string, toks []ddlToken, edits []ddlEdit, at, limit in
 // It returns a typed *UnsupportedColumnTypeError, never a silent
 // substitution, for the two shapes that cannot be expressed at all: an
 // array type (PostgreSQL's `text[]`, which MySQL has no counterpart for)
-// and a length modifier on a substituted type that cannot carry one.
-func columnTypeEdit(query string, toks []ddlToken, at, limit int) (ddlEdit, bool, error) {
+// and a length modifier on a substituted type that cannot carry one. The
+// latter is also what a keyed column that already names its own length
+// hits: `text(20)` is not PostgreSQL syntax, so a mapped type carrying a
+// modifier is refused by name rather than having that modifier replaced by
+// KeyedName's. A type that legitimately carries its own bound -- varchar(20)
+// -- has no pgColumnTypes entry, passes through untouched, and is indexable
+// as written whether or not it is in a key.
+//
+// keyed reports whether the column participates in a key of the same
+// statement; it selects mapped.KeyedName over mapped.Name for the types that
+// distinguish them.
+func columnTypeEdit(query string, toks []ddlToken, at, limit int, keyed bool) (ddlEdit, bool, error) {
 	if at >= limit || toks[at].kind != ddlWord {
 		return ddlEdit{}, false, nil
 	}
@@ -466,6 +690,9 @@ func columnTypeEdit(query string, toks []ddlToken, at, limit int) (ddlEdit, bool
 	}
 
 	replacement := mapped.Name
+	if keyed && mapped.KeyedName != "" {
+		replacement = mapped.KeyedName
+	}
 	if mapped.KeepModifier {
 		replacement += modifier
 	}

@@ -110,15 +110,33 @@ var (
 	// ON DUPLICATE KEY UPDATE.
 	onConflictDoUpdateRe = regexp.MustCompile(`(?i)\bON\s+CONFLICT\s*(?:\([^)]*\))?\s*DO\s+UPDATE\s+SET\b`)
 
-	// excludedColumnRe matches a column reference qualified by the
-	// EXCLUDED pseudo-table PostgreSQL exposes inside DO UPDATE SET, e.g.
-	// EXCLUDED.name, or EXCLUDED.`name` if the identifier was already
-	// backtick-quoted by the double-quote conversion step.
-	excludedColumnRe = regexp.MustCompile(`(?i)\bEXCLUDED\.(` + "`[^`]+`" + `|[A-Za-z_][A-Za-z0-9_]*)`)
+	// excludedColumnRe matches a column reference qualified by the EXCLUDED
+	// pseudo-table PostgreSQL exposes inside DO UPDATE SET.
+	//
+	// BOTH spellings of the qualifier have to be accepted, because by the
+	// time this runs the double-quote conversion (step 2 of Translate) has
+	// already been applied: a client that wrote EXCLUDED.name still reads as
+	// a bare word, but gorm.io/driver/postgres writes the qualifier quoted,
+	// "excluded"."name", which arrives here as `excluded`.`name`. Matching
+	// only the bare form left every driver-generated upsert with a live
+	// reference to a table named "excluded" and failed it downstream with
+	// "table not found: excluded". The word-boundary anchor belongs inside
+	// the bare alternative only -- a backtick is not a word character, so a
+	// leading \b could never match in front of one.
+	excludedColumnRe = regexp.MustCompile(`(?i)(?:\bEXCLUDED|` + "`excluded`" + `)\.(` + "`[^`]+`" + `|[A-Za-z_][A-Za-z0-9_]*)`)
 
 	// insertKeywordRe matches the leading INSERT keyword, used to inject
-	// the IGNORE modifier when translating ON CONFLICT DO NOTHING.
+	// the IGNORE modifier when translating ON CONFLICT DO NOTHING, and to
+	// confine the DEFAULT VALUES rewrite to INSERT statements.
 	insertKeywordRe = regexp.MustCompile(`(?i)^(\s*INSERT)\b`)
+
+	// defaultValuesRe matches PostgreSQL's all-defaults INSERT tail,
+	// INSERT INTO t DEFAULT VALUES, which asks for one row composed entirely
+	// of column defaults. MySQL spells the same request INSERT INTO t ()
+	// VALUES (). The pattern is only ever applied to a statement whose
+	// leading keyword is INSERT (see translateDefaultValues), which is the
+	// only production the phrase belongs to.
+	defaultValuesRe = regexp.MustCompile(`(?i)\bDEFAULT\s+VALUES\b`)
 
 	// currentSchemaRe matches PostgreSQL's current_schema() and
 	// current_database() niladic calls. Both are required to be written
@@ -209,7 +227,7 @@ func (t *Translator) Translate(query string) (string, error) {
 	// 3. Backtick-quote MySQL/GMS reserved words that appear as bare
 	// identifiers. This must run after double-quote conversion (step 2)
 	// so that already-backtick-quoted identifiers are skipped, and before
-	// cast conversion (step 6) so the cast regex recognizes the backtick-
+	// cast conversion (step 8) so the cast regex recognizes the backtick-
 	// quoted identifiers.
 	result = quoteReservedWords(result)
 
@@ -224,35 +242,42 @@ func (t *Translator) Translate(query string) (string, error) {
 		return "", err
 	}
 
-	// 5. Rewrite ON CONFLICT ... DO UPDATE / DO NOTHING into MySQL's
+	// 5. Rewrite INSERT ... DEFAULT VALUES into INSERT ... () VALUES ().
+	// Must run before the ON CONFLICT rewrite (step 6), whose DO NOTHING
+	// form prepends an IGNORE modifier to the same statement's INSERT
+	// keyword: this step's own guard anchors on that keyword and is stated
+	// against the statement as the client wrote it.
+	result = translateDefaultValues(result)
+
+	// 6. Rewrite ON CONFLICT ... DO UPDATE / DO NOTHING into MySQL's
 	// ON DUPLICATE KEY UPDATE / INSERT IGNORE. Must run after reserved-word
 	// quoting (step 3) rather than before: the text this step generates
 	// (the literal keywords "ON DUPLICATE KEY UPDATE" and the VALUES(...)
 	// call) must never be fed back through quoteReservedWords, or the bare
 	// keyword KEY -- itself a reserved word in the quoting table -- would
 	// be backtick-quoted into an invalid column reference. Running after
-	// step 3 also means an EXCLUDED.col reference may already be
-	// backtick-quoted, which excludedColumnRe accounts for.
+	// step 3 also means an EXCLUDED.col reference is already backtick-
+	// quoted, which excludedColumnRe accounts for.
 	if result, err = translateOnConflict(result); err != nil {
 		return "", err
 	}
 
-	// 6. Convert E'...' escape strings to regular string literals. Must
-	// run before cast conversion (step 7): a leading E left in place on
+	// 7. Convert E'...' escape strings to regular string literals. Must
+	// run before cast conversion (step 8): a leading E left in place on
 	// E'2024-01-01'::date would strand the E in front of the CAST(...)
 	// this step produces.
 	result = applyEscapeStrings(result)
 
-	// 7. Convert value::type cast syntax to CAST(value AS type).
+	// 8. Convert value::type cast syntax to CAST(value AS type).
 	result = applyCast(result)
 
-	// 8. Replace ILIKE with LIKE (case-insensitive).
+	// 9. Replace ILIKE with LIKE (case-insensitive).
 	result = applyOutsideRegions(result, ilikeRe, "LIKE")
 
-	// 9. Remove LIMIT ALL.
+	// 10. Remove LIMIT ALL.
 	result = applyOutsideRegions(result, limitAllRe, "")
 
-	// 10. Rewrite current_schema() / current_database() to DATABASE().
+	// 11. Rewrite current_schema() / current_database() to DATABASE().
 	// PostgreSQL's schema namespace and MySQL's database namespace are the
 	// same level of the hierarchy here: go-mysql-server reports a table's
 	// owning database as information_schema.tables.TABLE_SCHEMA, which is
@@ -262,6 +287,25 @@ func (t *Translator) Translate(query string) (string, error) {
 	result = applyOutsideRegions(result, currentSchemaRe, "DATABASE()")
 
 	return result, nil
+}
+
+// translateDefaultValues rewrites PostgreSQL's all-defaults insert,
+// INSERT INTO t DEFAULT VALUES, into MySQL's spelling of the same request,
+// INSERT INTO t () VALUES (). Both ask for exactly one row in which every
+// column takes its declared default, so the rewrite is a change of spelling
+// and not of meaning.
+//
+// It is confined to statements whose leading keyword is INSERT, the only
+// production the phrase belongs to, and the match itself is located with
+// findOutsideRegions, so the words DEFAULT VALUES inside a string literal,
+// a comment, or a dollar-quoted string are left alone. Every other
+// statement, and every INSERT that names its own column list, is returned
+// byte-for-byte unchanged.
+func translateDefaultValues(query string) string {
+	if insertKeywordRe.FindStringIndex(query) == nil {
+		return query
+	}
+	return applyOutsideRegions(query, defaultValuesRe, "() VALUES ()")
 }
 
 // translateOnConflict rewrites a PostgreSQL ON CONFLICT upsert clause into
