@@ -227,10 +227,31 @@ func (p *Provider) newDatabase(name string, engine database.EngineType) sqle.Dat
 	return db
 }
 
+// Registry returns the service.Registry the provider was built with, or nil
+// when relational tables are not available (see WithRegistry).
+//
+// It exists so that components which are handed the go-mysql-server catalog
+// rather than the Provider -- the SQL authorization handler and the
+// GRANT/REVOKE rewrite rule, both of which reach the provider through
+// analyzer.Catalog.DbProvider and a narrow local interface -- can resolve the
+// per-(tenant, database) privilege catalog without importing this package.
+func (p *Provider) Registry() service.Registry {
+	return p.registry
+}
+
 // Database returns a sql.Database for the given name. When backed by a
 // manager, it looks up the database by name and applies protocol filtering;
 // otherwise it falls back to legacy single-database mode.
+//
+// MySQLSchemaName is reserved and always resolves to the empty stand-in
+// schema (see mysql_schema.go), never to a user database: go-mysql-server's
+// plan builder resolves it while building every GRANT, REVOKE, and SHOW
+// GRANTS statement. CreateDatabase refuses the name for the same reason, so
+// the reservation cannot shadow a database a caller was allowed to create.
 func (p *Provider) Database(_ *sqle.Context, name string) (sqle.Database, error) {
+	if strings.EqualFold(name, MySQLSchemaName) {
+		return mysqlSchema{}, nil
+	}
 	if p.manager != nil {
 		db, err := p.manager.Get(name)
 		if err != nil {
@@ -288,6 +309,9 @@ func (p *Provider) AllDatabases(_ *sqle.Context) []sqle.Database {
 // and backend selection is not yet supported). Returns
 // MutableOperationNotSupportedError in legacy single-database mode.
 func (p *Provider) CreateDatabase(_ *sqle.Context, name string) error {
+	if strings.EqualFold(name, MySQLSchemaName) {
+		return &ReservedDatabaseNameError{Name: name}
+	}
 	if p.manager == nil {
 		return &MutableOperationNotSupportedError{Operation: "CREATE DATABASE"}
 	}

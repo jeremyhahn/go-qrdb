@@ -1411,29 +1411,3 @@ func matchRESTPattern(method, path string) (permission.Permission, bool) {
 	}
 	return bestPerm, true
 }
-
-// sqlPermissions maps SQL statement patterns to the permission required.
-// The key format is "VERB table" (e.g., "SELECT kv", "INSERT kv").
-// Statements not present in this map are considered public (no
-// authorization required), covering SET, SHOW, USE, BEGIN, COMMIT.
-var sqlPermissions = map[string]permission.Permission{
-
-	// KV data operations
-	"SELECT kv": permission.KVRange,
-	"INSERT kv": permission.KVPut,
-	"UPDATE kv": permission.KVPut,
-	"DELETE kv": permission.KVDelete,
-
-	// Admin read-only tables
-	"SELECT status": permission.AdminStatus,
-	"SELECT peers":  permission.AdminPeers,
-}
-
-// LookupSQL returns the permission required for a SQL operation identified
-// by its verb and table name. The lookup key is "VERB table". Returns an
-// empty Permission and false if the operation has no mapping, indicating a
-// public operation that does not require authorization.
-func LookupSQL(key string) (permission.Permission, bool) {
-	p, ok := sqlPermissions[key]
-	return p, ok
-}

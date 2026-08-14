@@ -1,6 +1,6 @@
 module github.com/jeremyhahn/go-qrdb/test/performance/qrdb
 
-go 1.26.5
+go 1.26.6
 
 require (
 	github.com/quic-go/quic-go v0.59.0

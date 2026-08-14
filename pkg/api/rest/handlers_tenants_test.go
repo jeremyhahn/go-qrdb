@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/kv"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -175,13 +176,20 @@ var _ tenant.TenantServicer = (*mockTenantService)(nil)
 type mockServiceRegistry struct {
 	kvSvc service.KVServicer
 	kvErr error
+
+	// mvccSvc and mvccErr drive the unfiltered data probe tenantHasData
+	// prefers. The zero value returns (nil, nil) -- a legitimate registry
+	// outcome meaning "nothing to hand back for this scope" -- which is
+	// exactly the shape that must not be dereferenced.
+	mvccSvc service.MVCCKVServicer
+	mvccErr error
 }
 
 func (m *mockServiceRegistry) KVService(_, _ string) (service.KVServicer, error) {
 	return m.kvSvc, m.kvErr
 }
 func (m *mockServiceRegistry) MVCCService(_, _ string) (service.MVCCKVServicer, error) {
-	return nil, nil
+	return m.mvccSvc, m.mvccErr
 }
 func (m *mockServiceRegistry) WatchService(_, _ string) (service.WatchServicer, error) {
 	return nil, nil
@@ -264,6 +272,83 @@ func TestHandleUpdateTenant_IsolationChange_FailsClosedOnListError(t *testing.T)
 	srv.dispatch(rec, req)
 
 	assertStatus(t, rec, http.StatusServiceUnavailable)
+}
+
+// TestHandleUpdateTenant_IsolationChange_ConflictWhenTenantHasOnlyRelationalData
+// is the regression guard for the probe's real purpose. Relational tables live
+// under the reserved __tbl:/__idx:/__seq: prefixes, which KVServicer.List
+// filters out, so a tenant whose ONLY content is relational tables lists as
+// empty. Probing with List alone would let that tenant flip isolation and
+// orphan every table it owns; the unfiltered MVCC count is what sees them.
+func TestHandleUpdateTenant_IsolationChange_ConflictWhenTenantHasOnlyRelationalData(t *testing.T) {
+	reg := &mockServiceRegistry{
+		// The KV list is empty -- exactly what a relational-only tenant
+		// reports once the internal-key filter runs.
+		kvSvc: &mockKVService{
+			listFn: func(_ context.Context, _ string) ([]string, error) { return nil, nil },
+		},
+		mvccSvc: &mockMVCCService{
+			rangeFn: func(_ context.Context, _, _ []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
+				return nil, 3, 0, nil // three reserved keys: a row, its index entry, a sequence
+			},
+		},
+	}
+	srv := newTenantServerWithRegistry(raftTenantSvc(t), reg)
+
+	req := httptest.NewRequest(http.MethodPut, "/v1/tenants/acme", strings.NewReader(`{"isolation_type":"volume"}`))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusConflict)
+}
+
+// TestHandleUpdateTenant_IsolationChange_FailsClosedOnRangeError proves an
+// erroring MVCC probe rejects the change rather than falling through to the
+// filtered KV list, which would silently answer a question the probe just
+// failed to answer.
+func TestHandleUpdateTenant_IsolationChange_FailsClosedOnRangeError(t *testing.T) {
+	reg := &mockServiceRegistry{
+		kvSvc: &mockKVService{
+			listFn: func(_ context.Context, _ string) ([]string, error) { return nil, nil },
+		},
+		mvccSvc: &mockMVCCService{
+			rangeFn: func(_ context.Context, _, _ []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
+				return nil, 0, 0, errors.New("range timeout")
+			},
+		},
+	}
+	srv := newTenantServerWithRegistry(raftTenantSvc(t), reg)
+
+	req := httptest.NewRequest(http.MethodPut, "/v1/tenants/acme", strings.NewReader(`{"isolation_type":"volume"}`))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusServiceUnavailable)
+}
+
+// TestHandleUpdateTenant_IsolationChange_NonMVCCShardUsesKVList proves that a
+// shard with no MVCC backend answers from the KV list instead. That is not a
+// fallback to a weaker probe: relational tables require the MVCC state
+// machine, so a shard that cannot serve Range cannot hold relational data and
+// the list is exact for it.
+func TestHandleUpdateTenant_IsolationChange_NonMVCCShardUsesKVList(t *testing.T) {
+	reg := &mockServiceRegistry{
+		kvSvc: &mockKVService{
+			listFn: func(_ context.Context, _ string) ([]string, error) { return []string{"user-key"}, nil },
+		},
+		mvccSvc: &mockMVCCService{
+			rangeFn: func(_ context.Context, _, _ []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
+				return nil, 0, 0, &service.MVCCBackendRequiredError{}
+			},
+		},
+	}
+	srv := newTenantServerWithRegistry(raftTenantSvc(t), reg)
+
+	req := httptest.NewRequest(http.MethodPut, "/v1/tenants/acme", strings.NewReader(`{"isolation_type":"volume"}`))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusConflict)
 }
 
 // TestHandleUpdateTenant_IsolationChange_ConflictWhenTenantHasData proves the

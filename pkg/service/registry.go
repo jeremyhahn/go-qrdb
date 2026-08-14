@@ -63,6 +63,14 @@ type Registry interface {
 	// AUTO_INCREMENT columns allocate from the same per-database sequence
 	// space directly, without going through the table catalog.
 	SequenceService(tenant, db string) (SequenceServicer, error)
+
+	// PrivilegeService returns the PrivilegeServicer for the given
+	// (tenant, db) scope -- the SQL table-privilege catalog GRANT, REVOKE,
+	// and SHOW GRANTS operate on, and the SQL authorization handler
+	// enforces from. Like the table catalog, its keyspace is scoped to the
+	// caller's (tenant, db) namespace, so one tenant's grants are
+	// invisible to another.
+	PrivilegeService(tenant, db string) (PrivilegeServicer, error)
 }
 
 // TenantNotFoundError is returned when the tenant ID from the authenticated

@@ -1,6 +1,6 @@
 module github.com/jeremyhahn/go-qrdb/cmd/qrdb-sqlite
 
-go 1.26.5
+go 1.26.6
 
 require (
 	github.com/mattn/go-sqlite3 v1.14.32

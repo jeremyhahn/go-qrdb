@@ -681,3 +681,20 @@ func (r *restServiceRegistry) SequenceService(tenantID, db string) (service.Sequ
 	}
 	return service.NewSequenceService(svcs.MVCC, svcs.Transaction), nil
 }
+
+// PrivilegeService returns the PrivilegeServicer for the given (tenant, db)
+// scope -- the SQL table-privilege catalog. It is built fresh on every call
+// from the resolved (tenant, db)-scoped KV/MVCC/Transaction servicers, for
+// the same reason TableService is: resolve already applies the per-tenant
+// barrier/quota/isolation wrapping, and PrivilegeService holds no state
+// beyond those three servicers.
+func (r *restServiceRegistry) PrivilegeService(tenantID, db string) (service.PrivilegeServicer, error) {
+	svcs, err := r.resolve(tenantID, db)
+	if err != nil {
+		return nil, err
+	}
+	if svcs.KV == nil || svcs.MVCC == nil || svcs.Transaction == nil {
+		return nil, &rest.ServiceNotImplementedError{Service: "privilege"}
+	}
+	return service.NewPrivilegeService(svcs.KV, svcs.MVCC, svcs.Transaction), nil
+}

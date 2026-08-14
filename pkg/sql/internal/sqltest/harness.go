@@ -364,6 +364,7 @@ type Harness struct {
 	Store    *MemStore
 	TableSvc service.TableServicer
 	SeqSvc   service.SequenceServicer
+	PrivSvc  service.PrivilegeServicer
 	KVSvc    service.KVServicer
 	MVCCSvc  service.MVCCKVServicer
 	BatchSvc service.BatchServicer
@@ -376,12 +377,14 @@ func NewHarness() *Harness {
 	txn := &Txn{store: store}
 	seq := service.NewSequenceService(store, txn)
 	tableSvc := service.NewTableService(store, store, txn, seq)
+	privSvc := service.NewPrivilegeService(store, store, txn)
 	batch := &Batch{store: store}
 
 	h := &Harness{
 		Store:    store,
 		TableSvc: tableSvc,
 		SeqSvc:   seq,
+		PrivSvc:  privSvc,
 		KVSvc:    store,
 		MVCCSvc:  store,
 		BatchSvc: batch,
@@ -393,6 +396,7 @@ func NewHarness() *Harness {
 		BatchServiceFn:       func(string, string) (service.BatchServicer, error) { return h.BatchSvc, nil },
 		TransactionServiceFn: func(string, string) (service.TransactionServicer, error) { return txn, nil },
 		SequenceServiceFn:    func(string, string) (service.SequenceServicer, error) { return h.SeqSvc, nil },
+		PrivilegeServiceFn:   func(string, string) (service.PrivilegeServicer, error) { return h.PrivSvc, nil },
 	}
 	return h
 }
@@ -429,6 +433,7 @@ type FakeRegistry struct {
 	BatchServiceFn       func(tenant, db string) (service.BatchServicer, error)
 	TransactionServiceFn func(tenant, db string) (service.TransactionServicer, error)
 	SequenceServiceFn    func(tenant, db string) (service.SequenceServicer, error)
+	PrivilegeServiceFn   func(tenant, db string) (service.PrivilegeServicer, error)
 }
 
 // KVService implements service.Registry.
@@ -459,6 +464,11 @@ func (r *FakeRegistry) TransactionService(tenant, db string) (service.Transactio
 // SequenceService implements service.Registry.
 func (r *FakeRegistry) SequenceService(tenant, db string) (service.SequenceServicer, error) {
 	return r.SequenceServiceFn(tenant, db)
+}
+
+// PrivilegeService implements service.Registry.
+func (r *FakeRegistry) PrivilegeService(tenant, db string) (service.PrivilegeServicer, error) {
+	return r.PrivilegeServiceFn(tenant, db)
 }
 
 // ---------------------------------------------------------------------------

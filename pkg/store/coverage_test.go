@@ -2390,6 +2390,71 @@ func TestPebbleStateMachine_ListAndScanGuardTheRelationalKeyspace(t *testing.T) 
 	}
 }
 
+// TestPebbleStateMachine_LookupRichQuery dispatches a rich time-series query
+// through Lookup against a store that has time-series storage configured,
+// which is the branch the "time-series storage not configured" refusal beside
+// it guards.
+func TestPebbleStateMachine_LookupRichQuery(t *testing.T) {
+	s := openStoreWithTS(t)
+
+	got, err := s.Lookup(context.Background(), timeseries.TSRichQueryRequest{
+		Request: &timeseries.QueryRequest{
+			Metric:    "cpu",
+			StartTime: time.Unix(0, 0),
+			EndTime:   time.Unix(0, 0).Add(time.Hour),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Lookup rich query: %v", err)
+	}
+	if _, ok := got.(*timeseries.QueryResult); !ok {
+		t.Fatalf("Lookup rich query returned %T, want *timeseries.QueryResult", got)
+	}
+}
+
+// TestPebbleStateMachine_PutIfAbsentNotifiesWatchers covers the notification
+// half of a successful conditional put: a watcher must see the created key.
+// The declined case carries no notification because nothing changed, so this
+// is the only path that emits one.
+func TestPebbleStateMachine_PutIfAbsentNotifiesWatchers(t *testing.T) {
+	s, hub := openStoreWithHub(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	w, err := hub.Watch(ctx, "fresh")
+	if err != nil {
+		t.Fatalf("Watch: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	results := applyEntries(t, s, []sm.Entry{
+		mvccPutIfAbsentEntry(1, []byte("fresh"), []byte("v")),
+	})
+	if results[0].Value != kv.ResultStored {
+		t.Fatalf("PutIfAbsent on an absent key returned %d, want stored", results[0].Value)
+	}
+
+	select {
+	case resp := <-w.Events():
+		if len(resp.Events) != 1 || resp.Events[0].Type != watch.EventPut {
+			t.Fatalf("expected one put event, got %+v", resp.Events)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the conditional put's watch event")
+	}
+}
+
+// TestPebbleStateMachine_ClearAllOnEmptyDB covers the empty-database path of
+// the snapshot recovery helper: a node recovering into a store that holds
+// nothing has no range to delete, and that is a no-op rather than an error.
+func TestPebbleStateMachine_ClearAllOnEmptyDB(t *testing.T) {
+	s := openStore(t)
+	if err := s.clearAll(); err != nil {
+		t.Fatalf("clearAll on an empty database: %v", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // pebble.go: PebbleStateMachine SaveSnapshot empty DB count=0
 // ---------------------------------------------------------------------------

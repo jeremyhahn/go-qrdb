@@ -28,6 +28,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -422,17 +423,12 @@ func (s *Server) handleUpdateTenant(w http.ResponseWriter, r *http.Request, id s
 			// rejected rather than allowed to proceed on an unverified — and
 			// possibly data-bearing — tenant, which could orphan its stored data.
 			if s.serviceRegistry != nil {
-				kvSvc, resolveErr := s.serviceRegistry.KVService(id, "")
-				if resolveErr != nil {
-					writeErrorJSON(w, http.StatusServiceUnavailable, resolveErr)
+				hasData, probeErr := s.tenantHasData(ctx, id)
+				if probeErr != nil {
+					writeErrorJSON(w, http.StatusServiceUnavailable, probeErr)
 					return
 				}
-				keys, listErr := kvSvc.List(ctx, "")
-				if listErr != nil {
-					writeErrorJSON(w, http.StatusServiceUnavailable, listErr)
-					return
-				}
-				if len(keys) > 0 {
+				if hasData {
 					writeErrorJSON(w, http.StatusConflict, tenant.ErrTenantHasData)
 					return
 				}
@@ -452,6 +448,58 @@ func (s *Server) handleUpdateTenant(w http.ResponseWriter, r *http.Request, id s
 	}
 
 	writeJSON(w, tenantToResponse(info))
+}
+
+// tenantHasData reports whether the tenant holds any stored data at all,
+// which is the precondition for changing its isolation type: flipping
+// isolation on a data-bearing tenant orphans that data in the old
+// namespace.
+//
+// The probe has to see RESERVED keys as well as user keys. Relational
+// tables live under the reserved __tbl:/__idx:/__seq: prefixes, and
+// KVServicer.List deliberately filters those out (see
+// service.FilterInternalKeys) -- so a tenant whose only content is
+// relational tables lists as empty. Probing with List alone is what would
+// let such a tenant flip isolation and orphan every table it owns.
+//
+// MVCCKVServicer.Range is the unfiltered, namespace-confined count, so it
+// is used wherever it exists. Where it does NOT exist the KV list is not a
+// weaker substitute but a complete answer: relational tables require the
+// MVCC state machine (their catalog resolves TransactionServicer and
+// MVCCKVServicer, and DDL against a non-MVCC shard fails with
+// "statemachine: mvcc not configured"), so a shard that cannot serve Range
+// cannot be holding relational data either. Each probe is exact for the
+// engine it runs on; neither is a fallback for the other.
+//
+// Every error is returned to the caller, so the precondition keeps failing
+// CLOSED: an unreachable data plane rejects the isolation change rather
+// than admitting it on an unverified tenant.
+func (s *Server) tenantHasData(ctx context.Context, id string) (bool, error) {
+	// A nil servicer with a nil error is a legitimate registry outcome (a
+	// resolver that has nothing to hand back for this scope), so both are
+	// checked before the call rather than the error alone.
+	if mvccSvc, err := s.serviceRegistry.MVCCService(id, ""); err == nil && mvccSvc != nil {
+		_, count, _, rangeErr := mvccSvc.Range(ctx, nil, nil, service.WithCountOnly())
+		var backendErr *service.MVCCBackendRequiredError
+		if rangeErr == nil {
+			return count > 0, nil
+		}
+		if !errors.As(rangeErr, &backendErr) {
+			return false, rangeErr
+		}
+		// Fall through: this shard has no MVCC backend, so it can hold no
+		// relational data and the KV list below is exact.
+	}
+
+	kvSvc, err := s.serviceRegistry.KVService(id, "")
+	if err != nil {
+		return false, err
+	}
+	keys, err := kvSvc.List(ctx, "")
+	if err != nil {
+		return false, err
+	}
+	return len(keys) > 0, nil
 }
 
 // handleSetTenantQuotas handles POST /v1/tenants/{id}/quotas -- updates the

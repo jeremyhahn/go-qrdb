@@ -16,7 +16,7 @@
 # in its go.mod, and the official golang images pin GOTOOLCHAIN=local so an
 # older base cannot satisfy that requirement (and cannot auto-upgrade).
 # This must stay >= the highest `go` directive across the workspace modules.
-FROM golang:1.26.5-bookworm
+FROM golang:1.26.6-bookworm
 
 # Install build, test, and debugging dependencies.
 RUN apt-get update && apt-get install -y --no-install-recommends \

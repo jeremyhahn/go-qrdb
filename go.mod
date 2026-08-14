@@ -1,6 +1,6 @@
 module github.com/jeremyhahn/go-qrdb
 
-go 1.26.5
+go 1.26.6
 
 // No local-path replace directives are committed in this module: it builds
 // against upstream-published versions of its dependencies. Local development

@@ -126,6 +126,20 @@ func (e *MutableOperationNotSupportedError) Error() string {
 	return "provider: " + e.Operation + " not supported without database manager"
 }
 
+// ReservedDatabaseNameError is returned when CREATE DATABASE names a schema
+// the SQL layer reserves for itself. Today that is only MySQLSchemaName,
+// which every GRANT, REVOKE, and SHOW GRANTS statement resolves; allowing a
+// user database to take the name would make those statements resolve the
+// user's database instead, and make the user's database unreachable.
+type ReservedDatabaseNameError struct {
+	Name string
+}
+
+// Error returns a human-readable description.
+func (e *ReservedDatabaseNameError) Error() string {
+	return "provider: database name is reserved: " + e.Name
+}
+
 // IndexLookupError is returned when an index lookup operation fails
 // during SQL query execution.
 type IndexLookupError struct {

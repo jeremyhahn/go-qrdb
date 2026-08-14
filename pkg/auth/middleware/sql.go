@@ -26,17 +26,3 @@ import (
 func (m *AuthMiddleware) Authenticate(ctx context.Context) (context.Context, *auth.Identity, error) {
 	return m.authenticate(ctx)
 }
-
-// AuthorizeSQL checks whether the authenticated identity is permitted to
-// execute the given SQL operation. The permKey is looked up in the SQL
-// permission table. Operations not found in the table are considered
-// public (no authorization required). Returns nil on success or an error
-// when authorization is denied.
-func (m *AuthMiddleware) AuthorizeSQL(ctx context.Context, identity *auth.Identity, permKey string) error {
-	perm, ok := LookupSQL(permKey)
-	if !ok {
-		// Not mapped = public operation (SET, SHOW, USE, BEGIN, COMMIT, etc.)
-		return nil
-	}
-	return m.authorize(ctx, identity, perm)
-}

@@ -18,9 +18,10 @@ upstream test suite against qrdb, over three surfaces:
 
 **This is infrastructure, not a gate.** A tracked fraction of the upstream
 suite fails on every target and is expected to — see
-[Observed results](#observed-results) below, where the **pgsql** target in
-particular is very red for one identifiable reason. The point of this harness
-is that the RED is *precise, tracked, and ratcheted*, not that it is green.
+[Observed results](#observed-results) below, where **pgsql** remains the
+weakest target, blocked now on `pg_catalog` introspection rather than on the
+DDL gaps that originally dominated it. The point of this harness is that the
+RED is *precise, tracked, and ratcheted*, not that it is green.
 
 ## Why a separate module
 
@@ -200,7 +201,7 @@ real failures outside the allowlist and all three exit non-zero.
 |---|---|---|---|---|---|---|
 | **node** | 361 | 17 | 18 | 0 | 396 | 2 excluded, see below |
 | **mysql** | 369 | 11 | 18 | 0 | 398 | whole suite |
-| **pgsql** | 61 | 304 | 17 | 0 | 382 | 16 excluded, see below |
+| **pgsql** | 168 | 200 | 17 | 0 | 385 | 13 excluded, see below |
 
 mysql was run three times; two runs gave 369/11/18 and one gave 368/12/18
 (`TestSelectWithUpdate` is order-dependent). `GORM_SUITE.lock`'s ceiling for
@@ -217,10 +218,20 @@ GORM_QRDB_TARGET=node go test -tags gormconformance -v -count=1 -timeout 45m \
 # mysql — no -skip at all; the whole suite runs to completion
 GORM_QRDB_TARGET=mysql go test -tags gormconformance -v -count=1 -timeout 40m ./...
 
-# pgsql — 14 -skip patterns, 11 of them upstream tests that PANIC here
+# pgsql — 13 -skip patterns, 10 of them upstream tests that PANIC here
 GORM_QRDB_TARGET=pgsql go test -tags gormconformance -v -count=1 -timeout 40m \
-  -skip 'TestGenericsPreloads|TestGenericsNestedPreloads|TestPreparedStmtDeadlock|TestDifferentTypeWithoutDeclaredLength|TestMigrateArrayTypeModel|TestMigrateWithDefaultValue|TestManyToManyPreloadForNestedPointer|TestNestedPreloadWithNestedJoin|TestSelectWithVariables|TestScanRows|TestRows|TestRaw|TestUpdateReturning|TestSaveWithHooks' ./...
+  -skip 'TestGenericsPreloads|TestGenericsNestedPreloads|TestPreparedStmtDeadlock|TestEmbeddedPointerTypeStruct|TestDifferentTypeWithoutDeclaredLength|TestMigrateArrayTypeModel|TestMigrateWithDefaultValue|TestManyToManyPreloadForNestedPointer|TestPrefixedPreloadDuplication|TestPreloadWithConds|TestUpdateReturning|TestNestedPreloadWithConds|TestSaveWithHooks' ./...
 ```
+
+**The pgsql skip list is re-derived, not accumulated.** As failures are
+fixed, tests that panicked only because a table was never created stop
+panicking and leave the list; tests that progress newly reaches can enter
+it. Five left (`TestNestedPreloadWithNestedJoin`, `TestSelectWithVariables`,
+`TestScanRows`, `TestRows`, `TestRaw`) and three entered
+(`TestPrefixedPreloadDuplication`, `TestPreloadWithConds`,
+`TestNestedPreloadWithConds`) in the 61 -> 168 improvement. A like-for-like
+rerun on an older list is therefore not possible: the binary aborts before
+process exit and yields a PARTIAL count, which is not a result.
 
 ### node — 361 / 17 / 18
 
@@ -279,37 +290,45 @@ Failing: `TestHasManyAssociation`, `TestSingleTableMany2ManyAssociation`,
 of three. Nine of the eleven stable failures also fail on node, so they are
 relational-surface gaps rather than wire-protocol ones.
 
-### pgsql — 61 / 304 / 17, and why it is so much worse
+### pgsql — 168 / 200 / 17
 
-**Not one model table exists on this target.** `gorm.io/driver/postgres`
-emits `bigserial` for an auto-increment primary key, and qrdb's PostgreSQL
-surface cannot parse it:
+This target was 61 / 304 when first measured. The gap was never one thing:
 
-```
-CREATE TABLE "companies" ("id" bigserial,"name" text,PRIMARY KEY ("id"))
-  -> syntax error at position 41 near 'bigserial'
-```
+| fix | pass | delta fail |
+|---|---|---|
+| first measurement | 61 | — |
+| PG->MySQL DDL type mapping (`bigserial` etc.) + `current_schema()` | 80 | −224 combined |
+| `text` in a key -> bounded `VARCHAR(768)` | 80 | −1 |
+| `INSERT ... DEFAULT VALUES` -> `INSERT ... () VALUES ()` | 81 | −1 |
+| `excluded.col` -> `VALUES(col)` | 82 | −1 |
+| **`INSERT ... RETURNING` result-column description** | 124 | **−44** |
+| **probe placeholder substitution deleted** | **168** | **−38** |
 
-`RunMigrations` therefore creates nothing, and the overwhelming majority of
-the 304 failures are the single downstream symptom `table not found: users`
-(and friends). Two further PostgreSQL-dialect gaps are visible behind it and
-would be the next blockers even if `serial` were handled: `current_schema()`
-is not implemented (73 occurrences, from gorm's own `HasTable` probe), and
-the `pg_catalog`/`pg_type` system catalogs do not exist (gorm's
-`ColumnTypes`). These are described in
-[What is still blocking the suite](#what-is-still-blocking-the-suite); they
-are a dialect-coverage project, not a bug fix, and nothing was changed here
-to paper over them.
+The two largest wins were not in the original plan and were found only by
+ranking the corpus by failure count:
 
-Run with only the standard three-test skip list, this target does **not**
-reach process exit: `TestDifferentTypeWithoutDeclaredLength` panics on a nil
-`*ColumnType` (upstream uses `t.Errorf`, not `t.Fatalf`, and dereferences
-anyway) and kills the binary at 211 of 398 observed, reporting 27 / 171 / 13.
-Skipping panicking tests one at a time until the run converges took eleven
-more names — every one an upstream test that dereferences a nil `*sql.Rows`
-or nil `*ColumnType` that qrdb left nil — and produced the 61 / 304 / 17 in
-the table. Both figures are reported because both are true; the converged one
-is the useful baseline.
+- `executeDeferred` described result columns only for statements literally
+  prefixed `SELECT`, so every `INSERT ... RETURNING` declared **zero**
+  columns at Describe and died at Execute. That is how gorm reads back every
+  generated primary key — the single most common write in the suite.
+- The probe rewrote `?` to `''` before analysis, so `LIMIT ?` became
+  `LIMIT ''` and failed. `PrepareQuery` accepts `?` natively, so the
+  substitution was a workaround for a limitation that does not exist;
+  deleting it fixed 38 tests.
+
+**What still blocks this target is one architectural item, not more
+translation.** `pg_type` accounts for 97 occurrences, with `languages` (47),
+`pets` (20) and `accounts` (19) downstream of it. Supplying it is not "add a
+table": the measured query also wants `udt_name`,
+`numeric_precision_radix` and `identity_increment` on
+`information_schema.columns` — three PostgreSQL-only columns absent from
+go-mysql-server's MySQL-shaped one — plus `pg_description`, `pg_class` and
+`pg_namespace`, with bare `pg_type` resolving unqualified (a `search_path`
+notion MySQL resolution lacks). And `sql/analyzer/catalog.go:185` intercepts
+`information_schema` **before** `DbProvider`, while `engineFor` caches
+engines by `(tenant, database)` across protocols — so replacing `InfoSchema`
+would change the MySQL endpoint too. That is a decision, not a fix, and it
+has not been made.
 
 ### The `openNode` connection-pool fix
 
