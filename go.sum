@@ -288,7 +288,7 @@ github.com/jchv/go-winloader v0.0.0-20250406163304-c1995be93bd1 h1:njuLRcjAuMKr7
 github.com/jchv/go-winloader v0.0.0-20250406163304-c1995be93bd1/go.mod h1:alcuEEnZsY1WQsagKhZDsoPCRoOijYqhZvPwLG0kzVs=
 github.com/jeremyhahn/go-codec v1.3.1 h1:2iwXZzQic7G/JWPqaZiqOBYiPVdPt6AoRKKUnmpgRDQ=
 github.com/jeremyhahn/go-codec v1.3.1/go.mod h1:xywTk9jSdUtVY2yP/BHdAwQWhY0Uw3tkISellazZJSI=
-github.com/jeremyhahn/go-objstore v0.2.1-alpha h1:IYCxG+0IxvtTAbnbv+jkbOtBLpBGcYflBsfiRipM30k=
+github.com/jeremyhahn/go-objstore v0.2.1-alpha h1:HySwZ3IwDTbQ2nk2xmztk7CSDSlDA6nmfStnwXdEQ04=
 github.com/jeremyhahn/go-objstore v0.2.1-alpha/go.mod h1:rgQpAk8AFV4bb4FPPGxT2Z78u9JOtVOePJqWog/sJSY=
 github.com/jeremyhahn/go-quicraft v0.3.0-alpha h1:+fhmRMSn35LZmaO25fxpdrL9WR3RTfuZcjnLYsYd4Lw=
 github.com/jeremyhahn/go-quicraft v0.3.0-alpha/go.mod h1:aUBfpx8zrNsaydnfRIUmVMaEwsOwAsrvxxQfz3XRdsk=
