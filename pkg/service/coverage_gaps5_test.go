@@ -204,7 +204,7 @@ func TestMVCCKVService_ExistsWithConsistency_NoErrorIsTrue(t *testing.T) {
 func TestMVCCKVService_ExistsWithConsistency_KeyNotFound(t *testing.T) {
 	host := &mockHost{
 		readWithConsistencyFn: func(_ context.Context, _ uint64, _ interface{}, _ consistency.ReadOptions) (interface{}, error) {
-			return nil, &mockKeyNotFoundErr{key: "k"}
+			return nil, &mockKeyNotFoundError{key: "k"}
 		},
 	}
 	svc := NewMVCCKVService(host, 1)

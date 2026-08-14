@@ -333,6 +333,7 @@ type memRegistry struct {
 	txnSvc   service.TransactionServicer
 	batchSvc service.BatchServicer
 	seqSvc   service.SequenceServicer
+	privSvc  service.PrivilegeServicer
 }
 
 func (r *memRegistry) KVService(string, string) (service.KVServicer, error) { return r.kvSvc, nil }
@@ -350,6 +351,9 @@ func (r *memRegistry) BatchService(string, string) (service.BatchServicer, error
 }
 func (r *memRegistry) SequenceService(string, string) (service.SequenceServicer, error) {
 	return r.seqSvc, nil
+}
+func (r *memRegistry) PrivilegeService(string, string) (service.PrivilegeServicer, error) {
+	return r.privSvc, nil
 }
 
 // newRelationalRegistry builds a memRegistry backed by a real

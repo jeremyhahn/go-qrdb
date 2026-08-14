@@ -244,7 +244,7 @@ func TestMVCCKVService_GetEntity_ReadError(t *testing.T) {
 	host := &mockHost{
 		syncReadFn: func(_ context.Context, _ uint64, query interface{}) (interface{}, error) {
 			if _, ok := query.(MVCCGetQuery); ok {
-				return nil, &mockKeyNotFoundErr{key: "session/s99"}
+				return nil, &mockKeyNotFoundError{key: "session/s99"}
 			}
 			return nil, nil
 		},

@@ -100,7 +100,7 @@ func (s *restoreStoreMock) del(key string) int64 {
 // revision-not-found error, and a tombstone yields a key-not-found error.
 func (s *restoreStoreMock) at(key string, revision int64) (*KeyValue, error) {
 	if revision > 0 && revision <= s.compacted {
-		return nil, &mockRevisionCompactedErr{requested: revision, compacted: s.compacted}
+		return nil, &mockRevisionCompactedError{requested: revision, compacted: s.compacted}
 	}
 	target := revision
 	if target == 0 {
@@ -115,10 +115,10 @@ func (s *restoreStoreMock) at(key string, revision int64) (*KeyValue, error) {
 		}
 	}
 	if found == nil {
-		return nil, &mockRevisionNotFoundErr{key: key, revision: revision}
+		return nil, &mockRevisionNotFoundError{key: key, revision: revision}
 	}
 	if found.deleted {
-		return nil, &mockKeyNotFoundErr{key: key}
+		return nil, &mockKeyNotFoundError{key: key}
 	}
 	return &KeyValue{Key: []byte(key), Value: found.value, ModRevision: found.rev}, nil
 }
@@ -147,7 +147,7 @@ func (s *restoreStoreMock) read(_ context.Context, _ uint64, query interface{}) 
 		if err != nil {
 			// A latest-revision read reports absence as key-not-found
 			// whether the key was deleted or never existed.
-			return nil, &mockKeyNotFoundErr{key: string(q.Key)}
+			return nil, &mockKeyNotFoundError{key: string(q.Key)}
 		}
 		return kv, nil
 
@@ -199,7 +199,7 @@ func (s *restoreStoreMock) scanChangesQuery(q MVCCScanChangesQuery) (interface{}
 // then resolve every live key in [Start, End) at the target revision.
 func (s *restoreStoreMock) rangeQuery(q MVCCRangeQuery) (interface{}, error) {
 	if q.Revision > 0 && q.Revision <= s.compacted {
-		return nil, &mockRevisionCompactedErr{requested: q.Revision, compacted: s.compacted}
+		return nil, &mockRevisionCompactedError{requested: q.Revision, compacted: s.compacted}
 	}
 
 	result := &MVCCRangeResult{Revision: s.revision}

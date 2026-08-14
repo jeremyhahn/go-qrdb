@@ -103,6 +103,11 @@ func (r *recordingRegistry) SequenceService(t, d string) (service.SequenceServic
 	return nil, nil
 }
 
+func (r *recordingRegistry) PrivilegeService(t, d string) (service.PrivilegeServicer, error) {
+	r.record("privilege", t, d)
+	return nil, nil
+}
+
 // scopedCtx builds a context carrying the given tenant and database scope,
 // mirroring what the auth middleware and handleStream bind per request.
 func scopedCtx(tenantID, db string) context.Context {

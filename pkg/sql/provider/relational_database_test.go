@@ -124,6 +124,7 @@ type fakeRelationalRegistry struct {
 	batchErr   error
 	txnSvc     service.TransactionServicer
 	seqSvc     service.SequenceServicer
+	privSvc    service.PrivilegeServicer
 
 	calls []relationalScopeCall
 }
@@ -186,6 +187,10 @@ func (r *fakeRelationalRegistry) TableService(tenantID, db string) (service.Tabl
 
 func (r *fakeRelationalRegistry) SequenceService(string, string) (service.SequenceServicer, error) {
 	return r.seqSvc, nil
+}
+
+func (r *fakeRelationalRegistry) PrivilegeService(string, string) (service.PrivilegeServicer, error) {
+	return r.privSvc, nil
 }
 
 // ---------------------------------------------------------------------------
