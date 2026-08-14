@@ -30,8 +30,6 @@ var extensionFormats = map[string]string{
 	".msgpack":  "msgpack",
 	".mp":       "msgpack",
 	".bson":     "bson",
-	".avro":     "avro",
-	".avsc":     "avro",
 	".zip":      "zip",
 	".tar":      "tar",
 	".tgz":      "tar.gz",
@@ -142,7 +140,6 @@ func detectMagicBytes(data []byte) (string, bool) {
 //   - yaml: too permissive; accepts arbitrary bytes as string scalars
 var probeableCodecs = map[string]struct{}{
 	TypeProtoBuf: {},
-	TypeAvro:     {},
 }
 
 // probeCodecs tries each registered, probeable codec's Unmarshal on the data

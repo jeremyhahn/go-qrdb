@@ -75,7 +75,6 @@ func IsCodecSupported(ct CodecType) bool {
 //
 // Build-tag codecs (require -tags flag):
 //   - CodecCBOR: CBOR binary encoding (build tag: codec_cbor)
-//   - CodecAvro: Avro binary encoding (build tag: codec_avro)
 //   - CodecProtoBuf: Protocol Buffers (build tag: codec_protobuf, use NewProtoBufCodec[E]())
 //
 // Use SupportedCodecs() to discover available codecs at runtime.
@@ -103,8 +102,6 @@ func NewCodec[E any](ct CodecType) (Codec[E], error) {
 		c = bson.New[E]()
 	case CodecCBOR:
 		c = newCBORCodec[E]()
-	case CodecAvro:
-		c = newAvroCodec[E]()
 	case CodecProtoBuf:
 		// ProtoBuf requires special handling - entities must implement proto.Message
 		// Use NewProtoBufCodec[E]() directly for protobuf types

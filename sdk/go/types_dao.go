@@ -24,7 +24,7 @@ import "github.com/jeremyhahn/go-qrdb/pkg/dao"
 // unmarshal entities.
 type Codec[E any] = dao.Codec[E]
 
-// CodecType identifies a serialization format (JSON, CBOR, Avro, etc.).
+// CodecType identifies a serialization format (JSON, CBOR, MsgPack, etc.).
 type CodecType = dao.CodecType
 
 // SupportedCodecs returns the list of codec types compiled into the binary.
