@@ -1487,6 +1487,23 @@ func TestRunStart_AuthEnabled_ContextCanceled_ReturnsNil(t *testing.T) {
 		enableGRPC:      true,
 	}
 
+	// Take SIGTERM off its default disposition before anything can deliver
+	// one. runStart installs its own handler partway through startup and the
+	// sleep below is only a guess at when; if the signal wins that race, the
+	// default action for SIGTERM terminates the whole test binary instead of
+	// being delivered to runStart. A slower CI runner did exactly that --
+	// "signal: terminated", no --- FAIL line, the entire package lost.
+	// Registering here is sufficient: once any handler exists the default no
+	// longer applies, and the select below already tolerates the signal
+	// arriving before runStart can observe it.
+	//
+	// The sleep itself is still a synchronisation guess and belongs in the
+	// timing-migration sweep (testing-guidelines.md); this only removes its
+	// ability to kill the package.
+	sigGuard := make(chan os.Signal, 1)
+	signal.Notify(sigGuard, syscall.SIGTERM)
+	t.Cleanup(func() { signal.Stop(sigGuard) })
+
 	done := make(chan error, 1)
 	go func() {
 		done <- runStart(f)
