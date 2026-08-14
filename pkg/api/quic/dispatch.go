@@ -14,22 +14,75 @@
 
 package quic
 
+import (
+	"fmt"
+	"sort"
+	"strings"
+
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+)
+
+// handle registers a unary frame-method handler in the dispatch map and
+// declares the permission required to invoke it in the server's
+// QUICMethodRegistry — ONE registration per method, with authorization
+// declared at the registration site (this replaced the old hand-maintained
+// quicPermissions table). AuthorizeQUIC consults the registry with
+// DEFAULT-DENY semantics, so a method registered here is reachable only by a
+// caller holding perm (or, for the permission.IdentityGated sentinel, an
+// authenticated identity; the handler enforces the real binding check).
+func (s *Server) handle(method string, perm permission.Permission, h methodHandler) {
+	s.handleIf(true, method, perm, h)
+}
+
+// handleIf registers the method's PERMISSION unconditionally but attaches
+// the handler to the dispatch map only when enabled (its backing service is
+// wired). The unconditional registry entry preserves the legacy middleware
+// contract, where the permission table was static: a request for an un-wired
+// method is authorized against its declared permission first and then falls
+// through to the dispatch loop's StatusUnimplemented, exactly as before the
+// cutover.
+func (s *Server) handleIf(enabled bool, method string, perm permission.Permission, h methodHandler) {
+	s.methodPerms.Register(method, perm)
+	if !enabled {
+		return
+	}
+	s.handlers[method] = h
+}
+
+// handleStreamOnly declares the permission for a server-streaming method
+// that is dispatched by handleStream's stream path (see isWatchMethod)
+// rather than the unary dispatch map, so it has a registry entry but no
+// methodHandler.
+func (s *Server) handleStreamOnly(method string, perm permission.Permission) {
+	s.methodPerms.Register(method, perm)
+}
+
 // buildHandlers populates the handler dispatch map with all QUIC method
-// handlers. Each method name maps to a handler function that decodes the
-// protobuf request, calls the service layer, and encodes the response.
-// KV and admin handlers are registered only when the respective service
-// is non-nil; absent methods return StatusUnimplemented via the dispatch loop.
+// handlers and, through the s.handle/s.handleIf helpers, declares each
+// method's required permission in the QUICMethodRegistry at the same site.
+// Each method name maps to a handler function that decodes the protobuf
+// request, calls the service layer, and encodes the response. KV and admin
+// handlers are registered only when the respective service is non-nil;
+// absent methods return StatusUnimplemented via the dispatch loop (their
+// permissions are still declared, preserving the static-table contract).
+//
+// The unified-authz cutover dropped the old table's dead aliases — methods
+// that never had a handler (barrier.UnsealShare, barrier.UnsealShares,
+// barrier.GenerateRecovery, barrier.RecoverWithKeys, ceremony.ClaimShare):
+// a request for them is now denied at authorization instead of authorized
+// and then StatusUnimplemented.
 func (s *Server) buildHandlers() {
 	s.handlers = make(map[string]methodHandler)
+	s.methodPerms = authmw.NewQUICMethodRegistry()
 
 	// KV handlers are registered only when a KV service is provided.
-	if s.kvSvc != nil {
-		s.handlers["kv.Put"] = s.handleKVPut
-		s.handlers["kv.Get"] = s.handleKVGet
-		s.handlers["kv.Delete"] = s.handleKVDelete
-		s.handlers["kv.List"] = s.handleKVList
-		s.handlers["kv.Scan"] = s.handleKVScan
-	}
+	kvOn := s.kvSvc != nil
+	s.handleIf(kvOn, "kv.Put", permission.KVPut, s.handleKVPut)
+	s.handleIf(kvOn, "kv.Get", permission.KVGet, s.handleKVGet)
+	s.handleIf(kvOn, "kv.Delete", permission.KVDelete, s.handleKVDelete)
+	s.handleIf(kvOn, "kv.List", permission.KVList, s.handleKVList)
+	s.handleIf(kvOn, "kv.Scan", permission.KVRange, s.handleKVScan)
 
 	// admin.Health is registered unconditionally: it is on the sealed-window
 	// allowlist (pkg/api/sealedwindow.Table VerbHealth) and reachable BEFORE
@@ -43,293 +96,323 @@ func (s *Server) buildHandlers() {
 	// runs, defeating that fix and leaving sdk/go/transport/quic's Connect()
 	// (which requires a successful Health RPC) unable to reach a
 	// correctly-sealed, perfectly healthy daemon.
-	s.handlers["admin.Health"] = s.handleHealth
+	s.handle("admin.Health", permission.AdminHealth, s.handleHealth)
 
 	// The remaining admin handlers are registered only when an admin
 	// service is provided.
-	if s.adminSvc != nil {
-		s.handlers["admin.Status"] = s.handleStatus
-		s.handlers["admin.Peers"] = s.handlePeers
-		s.handlers["admin.AddMember"] = s.handleAddMember
-		s.handlers["admin.RemoveMember"] = s.handleRemoveMember
-		s.handlers["admin.RequestSnapshot"] = s.handleRequestSnapshot
-		s.handlers["admin.Drain"] = s.handleDrain
-		s.handlers["admin.Capabilities"] = s.handleCapabilities
-		s.handlers["admin.StartShard"] = s.handleStartShard
-		s.handlers["admin.StopShard"] = s.handleStopShard
-		s.handlers["admin.GetShardState"] = s.handleGetShardState
-		s.handlers["admin.GetTopology"] = s.handleGetTopology
-	}
+	adminOn := s.adminSvc != nil
+	s.handleIf(adminOn, "admin.Status", permission.AdminStatus, s.handleStatus)
+	s.handleIf(adminOn, "admin.Peers", permission.AdminPeers, s.handlePeers)
+	s.handleIf(adminOn, "admin.AddMember", permission.AdminAddMember, s.handleAddMember)
+	s.handleIf(adminOn, "admin.RemoveMember", permission.AdminRemoveMember, s.handleRemoveMember)
+	s.handleIf(adminOn, "admin.RequestSnapshot", permission.AdminSnapshot, s.handleRequestSnapshot)
+	s.handleIf(adminOn, "admin.Drain", permission.AdminDrain, s.handleDrain)
+	s.handleIf(adminOn, "admin.Capabilities", permission.AdminCapabilities, s.handleCapabilities)
+	s.handleIf(adminOn, "admin.StartShard", permission.AdminStartShard, s.handleStartShard)
+	s.handleIf(adminOn, "admin.StopShard", permission.AdminStopShard, s.handleStopShard)
+	s.handleIf(adminOn, "admin.GetShardState", permission.AdminShardState, s.handleGetShardState)
+	s.handleIf(adminOn, "admin.GetTopology", permission.AdminTopology, s.handleGetTopology)
 
 	// MVCC
-	s.handlers["mvcc.PutWithLease"] = s.handlePutWithLease
-	s.handlers["mvcc.GetRevision"] = s.handleGetRevision
-	s.handlers["mvcc.GetAtRevision"] = s.handleGetAtRevision
-	s.handlers["mvcc.Range"] = s.handleRange
-	s.handlers["mvcc.Compact"] = s.handleCompact
-	s.handlers["mvcc.CurrentRevision"] = s.handleCurrentRevision
-	s.handlers["mvcc.RestoreToRevision"] = s.handleRestoreToRevision
+	s.handle("mvcc.PutWithLease", permission.MVCCPutWithLease, s.handlePutWithLease)
+	s.handle("mvcc.GetRevision", permission.MVCCGetRevision, s.handleGetRevision)
+	s.handle("mvcc.GetAtRevision", permission.MVCCGetAtRevision, s.handleGetAtRevision)
+	s.handle("mvcc.Range", permission.MVCCRange, s.handleRange)
+	s.handle("mvcc.Compact", permission.MVCCCompact, s.handleCompact)
+	s.handle("mvcc.CurrentRevision", permission.MVCCCurrentRevision, s.handleCurrentRevision)
+	s.handle("mvcc.RestoreToRevision", permission.MVCCRestore, s.handleRestoreToRevision)
 
 	// Transaction
-	s.handlers["tx.Transaction"] = s.handleTransaction
+	s.handle("tx.Transaction", permission.TransactionExecute, s.handleTransaction)
 
 	// Batch
-	s.handlers["batch.Batch"] = s.handleBatch
-	s.handlers["batch.Import"] = s.handleBatchImport
+	s.handle("batch.Batch", permission.BatchExecute, s.handleBatch)
+	s.handle("batch.Import", permission.BatchExecute, s.handleBatchImport)
 
 	// Watch is server-streaming: handled by handleWatchStream in the stream
 	// dispatch path (see handleStream + isWatchMethod), NOT registered here as
-	// a unary handler. Authorization for "watch.Watch"/"watch.WatchPrefix"
-	// still applies via the AuthorizeQUIC permission mapping.
+	// a unary handler. Authorization still applies: the stream methods declare
+	// their permission in the registry so AuthorizeQUIC resolves them.
+	s.handleStreamOnly("watch.Watch", permission.WatchWatch)
+	s.handleStreamOnly("watch.WatchPrefix", permission.WatchWatch)
 
 	// Lease
-	s.handlers["lease.Grant"] = s.handleLeaseGrant
-	s.handlers["lease.Revoke"] = s.handleLeaseRevoke
-	s.handlers["lease.KeepAlive"] = s.handleLeaseKeepAlive
-	s.handlers["lease.TimeToLive"] = s.handleLeaseTimeToLive
-	s.handlers["lease.List"] = s.handleLeaseList
+	s.handle("lease.Grant", permission.LeaseGrant, s.handleLeaseGrant)
+	s.handle("lease.Revoke", permission.LeaseRevoke, s.handleLeaseRevoke)
+	s.handle("lease.KeepAlive", permission.LeaseKeepAlive, s.handleLeaseKeepAlive)
+	s.handle("lease.TimeToLive", permission.LeaseTTL, s.handleLeaseTimeToLive)
+	s.handle("lease.List", permission.LeaseList, s.handleLeaseList)
 
 	// Lock
-	s.handlers["lock.Acquire"] = s.handleLockAcquire
-	s.handlers["lock.TryLock"] = s.handleLockTryLock
-	s.handlers["lock.Release"] = s.handleLockRelease
-	s.handlers["lock.Extend"] = s.handleLockExtend
-	s.handlers["lock.Status"] = s.handleLockStatus
-	s.handlers["lock.List"] = s.handleLockList
+	s.handle("lock.Acquire", permission.LocksAcquire, s.handleLockAcquire)
+	s.handle("lock.TryLock", permission.LocksAcquire, s.handleLockTryLock)
+	s.handle("lock.Release", permission.LocksRelease, s.handleLockRelease)
+	s.handle("lock.Extend", permission.LocksExtend, s.handleLockExtend)
+	s.handle("lock.Status", permission.LocksStatus, s.handleLockStatus)
+	s.handle("lock.List", permission.LocksList, s.handleLockList)
 
 	// Index
-	s.handlers["index.Create"] = s.handleIndexCreate
-	s.handlers["index.Drop"] = s.handleIndexDrop
-	s.handlers["index.Query"] = s.handleIndexQuery
-	s.handlers["index.Scan"] = s.handleIndexScan
-	s.handlers["index.List"] = s.handleIndexList
+	s.handle("index.Create", permission.IndexCreate, s.handleIndexCreate)
+	s.handle("index.Drop", permission.IndexDrop, s.handleIndexDrop)
+	s.handle("index.Query", permission.IndexQuery, s.handleIndexQuery)
+	s.handle("index.Scan", permission.IndexScan, s.handleIndexScan)
+	s.handle("index.List", permission.IndexList, s.handleIndexList)
 
 	// TimeSeries
-	s.handlers["ts.Write"] = s.handleTSWrite
-	s.handlers["ts.WriteBatch"] = s.handleTSWriteBatch
-	s.handlers["ts.Query"] = s.handleTSQuery
-	s.handlers["ts.Aggregate"] = s.handleTSAggregate
-	s.handlers["ts.WritePoint"] = s.handleTSWritePoint
-	s.handlers["ts.RichQuery"] = s.handleTSRichQuery
-	s.handlers["ts.DeleteSeries"] = s.handleTSDeleteSeries
-	s.handlers["ts.GetRetention"] = s.handleTSGetRetention
-	s.handlers["ts.SetRetention"] = s.handleTSSetRetention
-	s.handlers["ts.ListMetrics"] = s.handleTSListMetrics
+	s.handle("ts.Write", permission.TSWrite, s.handleTSWrite)
+	s.handle("ts.WriteBatch", permission.TSWriteBatch, s.handleTSWriteBatch)
+	s.handle("ts.Query", permission.TSQuery, s.handleTSQuery)
+	s.handle("ts.Aggregate", permission.TSAggregate, s.handleTSAggregate)
+	s.handle("ts.WritePoint", permission.TSWritePoint, s.handleTSWritePoint)
+	s.handle("ts.RichQuery", permission.TSRichQuery, s.handleTSRichQuery)
+	s.handle("ts.DeleteSeries", permission.TSDeleteSeries, s.handleTSDeleteSeries)
+	s.handle("ts.GetRetention", permission.TSGetRetention, s.handleTSGetRetention)
+	s.handle("ts.SetRetention", permission.TSSetRetention, s.handleTSSetRetention)
+	s.handle("ts.ListMetrics", permission.TSListMetrics, s.handleTSListMetrics)
 
 	// Vector
-	s.handlers["vector.CreateNamespace"] = s.handleVectorCreateNamespace
-	s.handlers["vector.DeleteNamespace"] = s.handleVectorDeleteNamespace
-	s.handlers["vector.ListNamespaces"] = s.handleVectorListNamespaces
-	s.handlers["vector.GetNamespaceInfo"] = s.handleVectorGetNamespaceInfo
-	s.handlers["vector.Upsert"] = s.handleVectorUpsert
-	s.handlers["vector.Get"] = s.handleVectorGet
-	s.handlers["vector.Delete"] = s.handleVectorDelete
-	s.handlers["vector.BatchUpsert"] = s.handleVectorBatchUpsert
-	s.handlers["vector.BatchDelete"] = s.handleVectorBatchDelete
-	s.handlers["vector.List"] = s.handleVectorList
-	s.handlers["vector.UpdateMetadata"] = s.handleVectorUpdateMetadata
-	s.handlers["vector.SearchSimilar"] = s.handleVectorSearchSimilar
-	s.handlers["vector.SearchByMetadata"] = s.handleVectorSearchByMetadata
-	s.handlers["vector.HybridSearch"] = s.handleVectorHybridSearch
-	s.handlers["vector.SearchByID"] = s.handleVectorSearchByID
-	s.handlers["vector.RebuildIndex"] = s.handleVectorRebuildIndex
-	s.handlers["vector.GetRebuildProgress"] = s.handleVectorGetRebuildProgress
-	s.handlers["vector.GetIndexStats"] = s.handleVectorGetIndexStats
-	s.handlers["vector.CompactNamespace"] = s.handleVectorCompactNamespace
-	s.handlers["vector.GetCompactionProgress"] = s.handleVectorGetCompactionProgress
+	s.handle("vector.CreateNamespace", permission.VectorNamespaceCreate, s.handleVectorCreateNamespace)
+	s.handle("vector.DeleteNamespace", permission.VectorNamespaceDelete, s.handleVectorDeleteNamespace)
+	s.handle("vector.ListNamespaces", permission.VectorNamespaceList, s.handleVectorListNamespaces)
+	s.handle("vector.GetNamespaceInfo", permission.VectorNamespaceInfo, s.handleVectorGetNamespaceInfo)
+	s.handle("vector.Upsert", permission.VectorUpsert, s.handleVectorUpsert)
+	s.handle("vector.Get", permission.VectorGet, s.handleVectorGet)
+	s.handle("vector.Delete", permission.VectorDelete, s.handleVectorDelete)
+	s.handle("vector.BatchUpsert", permission.VectorBatchUpsert, s.handleVectorBatchUpsert)
+	s.handle("vector.BatchDelete", permission.VectorBatchDelete, s.handleVectorBatchDelete)
+	s.handle("vector.List", permission.VectorList, s.handleVectorList)
+	s.handle("vector.UpdateMetadata", permission.VectorUpdateMetadata, s.handleVectorUpdateMetadata)
+	s.handle("vector.SearchSimilar", permission.VectorSearchSimilar, s.handleVectorSearchSimilar)
+	s.handle("vector.SearchByMetadata", permission.VectorSearchByMetadata, s.handleVectorSearchByMetadata)
+	s.handle("vector.HybridSearch", permission.VectorHybridSearch, s.handleVectorHybridSearch)
+	s.handle("vector.SearchByID", permission.VectorSearchByID, s.handleVectorSearchByID)
+	s.handle("vector.RebuildIndex", permission.VectorRebuildIndex, s.handleVectorRebuildIndex)
+	s.handle("vector.GetRebuildProgress", permission.VectorGetRebuildProg, s.handleVectorGetRebuildProgress)
+	s.handle("vector.GetIndexStats", permission.VectorGetIndexStats, s.handleVectorGetIndexStats)
+	s.handle("vector.CompactNamespace", permission.VectorCompact, s.handleVectorCompactNamespace)
+	s.handle("vector.GetCompactionProgress", permission.VectorGetCompactProg, s.handleVectorGetCompactionProgress)
 
-	// User management
-	s.handlers["user.Create"] = s.handleCreateUser
-	s.handlers["user.Get"] = s.handleGetUser
-	s.handlers["user.GetByUsername"] = s.handleGetUserByUsername
-	s.handlers["user.GetByCertThumbprint"] = s.handleGetUserByCertThumbprint
-	s.handlers["user.AddCertBinding"] = s.handleAddCertBinding
-	s.handlers["user.Update"] = s.handleUpdateUser
-	s.handlers["user.Delete"] = s.handleDeleteUser
-	s.handlers["user.List"] = s.handleListUsers
-	s.handlers["user.Enable"] = s.handleEnableUser
-	s.handlers["user.Disable"] = s.handleDisableUser
+	// User management. Thumbprint lookup is a read, cert binding is a user
+	// mutation (parity with gRPC/REST).
+	s.handle("user.Create", permission.UsersCreate, s.handleCreateUser)
+	s.handle("user.Get", permission.UsersRead, s.handleGetUser)
+	s.handle("user.GetByUsername", permission.UsersRead, s.handleGetUserByUsername)
+	s.handle("user.GetByCertThumbprint", permission.UsersGetByCertThumbprint, s.handleGetUserByCertThumbprint)
+	s.handle("user.AddCertBinding", permission.UsersAddCertBinding, s.handleAddCertBinding)
+	s.handle("user.Update", permission.UsersUpdate, s.handleUpdateUser)
+	s.handle("user.Delete", permission.UsersDelete, s.handleDeleteUser)
+	s.handle("user.List", permission.UsersList, s.handleListUsers)
+	s.handle("user.Enable", permission.UsersEnable, s.handleEnableUser)
+	s.handle("user.Disable", permission.UsersDisable, s.handleDisableUser)
 
 	// Role management
-	s.handlers["role.Create"] = s.handleCreateRole
-	s.handlers["role.Get"] = s.handleGetRole
-	s.handlers["role.GetByName"] = s.handleGetRoleByName
-	s.handlers["role.Update"] = s.handleUpdateRole
-	s.handlers["role.Delete"] = s.handleDeleteRole
-	s.handlers["role.List"] = s.handleListRoles
-	s.handlers["role.Assign"] = s.handleAssignRole
-	s.handlers["role.Unassign"] = s.handleUnassignRole
-	s.handlers["role.ListPermissions"] = s.handleListPermissions
-	s.handlers["role.ResolvePermissions"] = s.handleResolvePermissions
+	s.handle("role.Create", permission.RolesCreate, s.handleCreateRole)
+	s.handle("role.Get", permission.RolesRead, s.handleGetRole)
+	s.handle("role.GetByName", permission.RolesRead, s.handleGetRoleByName)
+	s.handle("role.Update", permission.RolesUpdate, s.handleUpdateRole)
+	s.handle("role.Delete", permission.RolesDelete, s.handleDeleteRole)
+	s.handle("role.List", permission.RolesList, s.handleListRoles)
+	s.handle("role.Assign", permission.RolesAssign, s.handleAssignRole)
+	s.handle("role.Unassign", permission.RolesUnassign, s.handleUnassignRole)
+	s.handle("role.ListPermissions", permission.PermissionsList, s.handleListPermissions)
+	s.handle("role.ResolvePermissions", permission.PermissionsResolve, s.handleResolvePermissions)
 
 	// Certificate management
-	s.handlers["cert.Generate"] = s.handleGenerateCert
-	s.handlers["cert.Export"] = s.handleExportCert
-	s.handlers["cert.Revoke"] = s.handleRevokeCert
-	s.handlers["cert.List"] = s.handleListCerts
+	s.handle("cert.Generate", permission.CertsGenerate, s.handleGenerateCert)
+	s.handle("cert.Export", permission.CertsExport, s.handleExportCert)
+	s.handle("cert.Revoke", permission.CertsRevoke, s.handleRevokeCert)
+	s.handle("cert.List", permission.CertsList, s.handleListCerts)
 
 	// Collection
-	s.handlers["collection.Create"] = s.handleCollectionCreate
-	s.handlers["collection.GetInfo"] = s.handleCollectionGetInfo
-	s.handlers["collection.List"] = s.handleCollectionList
-	s.handlers["collection.Drop"] = s.handleCollectionDrop
-	s.handlers["collection.InsertDocument"] = s.handleCollectionInsertDocument
-	s.handlers["collection.GetDocument"] = s.handleCollectionGetDocument
-	s.handlers["collection.UpdateDocument"] = s.handleCollectionUpdateDocument
-	s.handlers["collection.DeleteDocument"] = s.handleCollectionDeleteDocument
-	s.handlers["collection.ListDocuments"] = s.handleCollectionListDocuments
+	s.handle("collection.Create", permission.CollectionsCreate, s.handleCollectionCreate)
+	s.handle("collection.GetInfo", permission.CollectionsRead, s.handleCollectionGetInfo)
+	s.handle("collection.List", permission.CollectionsList, s.handleCollectionList)
+	s.handle("collection.Drop", permission.CollectionsDrop, s.handleCollectionDrop)
+	s.handle("collection.InsertDocument", permission.CollectionsInsert, s.handleCollectionInsertDocument)
+	s.handle("collection.GetDocument", permission.CollectionsRead, s.handleCollectionGetDocument)
+	s.handle("collection.UpdateDocument", permission.CollectionsUpdate, s.handleCollectionUpdateDocument)
+	s.handle("collection.DeleteDocument", permission.CollectionsDelete, s.handleCollectionDeleteDocument)
+	s.handle("collection.ListDocuments", permission.CollectionsList, s.handleCollectionListDocuments)
 
 	// Database management
-	s.handlers["db.Create"] = s.handleDatabaseCreate
-	s.handlers["db.Get"] = s.handleDatabaseGet
-	s.handlers["db.List"] = s.handleDatabaseList
-	s.handlers["db.Drop"] = s.handleDatabaseDrop
-	s.handlers["db.UpdateProtocol"] = s.handleDatabaseUpdateProtocol
-	s.handlers["db.UpdateEtcd"] = s.handleDatabaseUpdateEtcd
-	s.handlers["db.UpdateRaft"] = s.handleDatabaseUpdateRaft
-	s.handlers["db.Scale"] = s.handleDatabaseScale
-	s.handlers["db.UpdateBarrier"] = s.handleDatabaseUpdateBarrier
-	s.handlers["db.UpdateConnection"] = s.handleDatabaseUpdateConnection
-	s.handlers["db.Seal"] = s.handleDatabaseSeal
-	s.handlers["db.Unseal"] = s.handleDatabaseUnseal
-	s.handlers["db.BarrierStatus"] = s.handleDatabaseBarrierStatus
+	s.handle("db.Create", permission.DatabasesCreate, s.handleDatabaseCreate)
+	s.handle("db.Get", permission.DatabasesRead, s.handleDatabaseGet)
+	s.handle("db.List", permission.DatabasesList, s.handleDatabaseList)
+	s.handle("db.Drop", permission.DatabasesDelete, s.handleDatabaseDrop)
+	s.handle("db.UpdateProtocol", permission.DatabasesUpdate, s.handleDatabaseUpdateProtocol)
+	s.handle("db.UpdateEtcd", permission.DatabasesUpdate, s.handleDatabaseUpdateEtcd)
+	s.handle("db.UpdateRaft", permission.DatabasesUpdate, s.handleDatabaseUpdateRaft)
+	s.handle("db.Scale", permission.DatabasesScale, s.handleDatabaseScale)
+	s.handle("db.UpdateBarrier", permission.DatabasesUpdate, s.handleDatabaseUpdateBarrier)
+	s.handle("db.UpdateConnection", permission.DatabasesUpdate, s.handleDatabaseUpdateConnection)
+	s.handle("db.Seal", permission.DatabasesSeal, s.handleDatabaseSeal)
+	s.handle("db.Unseal", permission.DatabasesUnseal, s.handleDatabaseUnseal)
+	s.handle("db.BarrierStatus", permission.DatabasesBarrierStatus, s.handleDatabaseBarrierStatus)
 
-	// SQL
-	s.handlers["sql.Query"] = s.handleSQLQuery
+	// SQL query (read-through over the KV range surface). Mirrors the REST
+	// "POST /sql/query" route / the gRPC SQLQuery permission option.
+	s.handle("sql.Query", permission.KVRange, s.handleSQLQuery)
 
 	// Barrier
-	s.handlers["barrier.Initialize"] = s.handleBarrierInitialize
-	s.handlers["barrier.Unseal"] = s.handleBarrierUnseal
-	s.handlers["barrier.Seal"] = s.handleBarrierSeal
-	s.handlers["barrier.Status"] = s.handleBarrierStatus
-	s.handlers["barrier.ShamirInitialize"] = s.handleBarrierShamirInitialize
-	s.handlers["barrier.ShamirUnsealShare"] = s.handleBarrierShamirUnsealShare
-	s.handlers["barrier.ShamirUnsealShares"] = s.handleBarrierShamirUnsealShares
-	s.handlers["barrier.Rekey"] = s.handleBarrierRekey
-	s.handlers["barrier.RecoveryGenerate"] = s.handleBarrierRecoveryGenerate
-	s.handlers["barrier.RecoveryRecover"] = s.handleBarrierRecoveryRecover
-	s.handlers["barrier.RecoveryDelete"] = s.handleBarrierRecoveryDelete
-	s.handlers["barrier.RecoveryStatus"] = s.handleBarrierRecoveryStatus
-	s.handlers["barrier.RootToken"] = s.handleBarrierRootToken
-	// Barrier Security Officer (system barrier SO distribution).
-	s.handlers["barrier.OfficerRegister"] = s.handleBarrierOfficerRegister
-	s.handlers["barrier.OfficerList"] = s.handleBarrierOfficerList
-	s.handlers["barrier.ShareClaimBegin"] = s.handleBarrierShareClaimBegin
-	s.handlers["barrier.ShareClaimComplete"] = s.handleBarrierShareClaimComplete
-	s.handlers["barrier.OfficerClaimStatus"] = s.handleBarrierOfficerClaimStatus
-	s.handlers["barrier.ShamirSealVote"] = s.handleBarrierShamirSealVote
-	s.handlers["barrier.RecoveryOfficerRegister"] = s.handleBarrierRecoveryOfficerRegister
-	s.handlers["barrier.RecoveryShareClaimBegin"] = s.handleBarrierRecoveryShareClaimBegin
-	s.handlers["barrier.RecoveryShareClaimComplete"] = s.handleBarrierRecoveryShareClaimComplete
-	s.handlers["barrier.EnableEncryption"] = s.handleBarrierEnableEncryption
+	s.handle("barrier.Initialize", permission.SealBootstrap, s.handleBarrierInitialize)
+	s.handle("barrier.Unseal", permission.SealUnseal, s.handleBarrierUnseal)
+	s.handle("barrier.Seal", permission.SealSeal, s.handleBarrierSeal)
+	s.handle("barrier.Status", permission.SealStatus, s.handleBarrierStatus)
+	s.handle("barrier.ShamirInitialize", permission.SealInitializeShamir, s.handleBarrierShamirInitialize)
+	s.handle("barrier.ShamirUnsealShare", permission.BarrierUnsealShare, s.handleBarrierShamirUnsealShare)
+	s.handle("barrier.ShamirUnsealShares", permission.BarrierUnsealShare, s.handleBarrierShamirUnsealShares)
+	s.handle("barrier.Rekey", permission.SealRekey, s.handleBarrierRekey)
+	s.handle("barrier.RecoveryGenerate", permission.SealGenerateRecovery, s.handleBarrierRecoveryGenerate)
+	s.handle("barrier.RecoveryRecover", permission.SealRecoverWithKeys, s.handleBarrierRecoveryRecover)
+	s.handle("barrier.RecoveryDelete", permission.SealGenerateRecovery, s.handleBarrierRecoveryDelete)
+	s.handle("barrier.RecoveryStatus", permission.SealStatus, s.handleBarrierRecoveryStatus)
+	s.handle("barrier.RootToken", permission.SealBootstrap, s.handleBarrierRootToken)
+	// Barrier Security Officer (system barrier SO distribution). Share-claim
+	// routes are identity-gated (see permission.IdentityGated): the registered
+	// officer's mTLS certificate is the credential, and the handler enforces
+	// registry lookup, thumbprint match, and nonce signature.
+	s.handle("barrier.OfficerRegister", permission.SealOfficerRegister, s.handleBarrierOfficerRegister)
+	s.handle("barrier.OfficerList", permission.SealOfficerList, s.handleBarrierOfficerList)
+	s.handle("barrier.ShareClaimBegin", permission.IdentityGated, s.handleBarrierShareClaimBegin)
+	s.handle("barrier.ShareClaimComplete", permission.IdentityGated, s.handleBarrierShareClaimComplete)
+	s.handle("barrier.OfficerClaimStatus", permission.SealOfficerList, s.handleBarrierOfficerClaimStatus)
+	s.handle("barrier.ShamirSealVote", permission.SealSubmitSealVote, s.handleBarrierShamirSealVote)
+	s.handle("barrier.RecoveryOfficerRegister", permission.SealOfficerRegister, s.handleBarrierRecoveryOfficerRegister)
+	s.handle("barrier.RecoveryShareClaimBegin", permission.IdentityGated, s.handleBarrierRecoveryShareClaimBegin)
+	s.handle("barrier.RecoveryShareClaimComplete", permission.IdentityGated, s.handleBarrierRecoveryShareClaimComplete)
+	s.handle("barrier.EnableEncryption", permission.SealEnableEncryption, s.handleBarrierEnableEncryption)
 
-	// Ceremony
-	s.handlers["ceremony.Initialize"] = s.handleCeremonyInitialize
-	s.handlers["ceremony.Status"] = s.handleCeremonyStatus
-	s.handlers["ceremony.ClaimCertBegin"] = s.handleCeremonyClaimCertBegin
-	s.handlers["ceremony.ClaimCertComplete"] = s.handleCeremonyClaimCertComplete
-	s.handlers["ceremony.BeginClaimShare"] = s.handleCeremonyBeginClaimShare
-	s.handlers["ceremony.CompleteClaimShare"] = s.handleCeremonyCompleteClaimShare
-	s.handlers["ceremony.SignCSR"] = s.handleCeremonySignCSR
-	s.handlers["ceremony.ClaimShareBegin"] = s.handleCeremonyClaimShareBegin
-	s.handlers["ceremony.ClaimShareComplete"] = s.handleCeremonyClaimShareComplete
-	s.handlers["ceremony.SubmitUnsealShare"] = s.handleCeremonySubmitUnsealShare
+	// Ceremony. Share-claim routes are identity-gated (see
+	// permission.IdentityGated): the officer flow (Begin/CompleteClaimShare)
+	// verifies the enrolled officer's mTLS thumbprint and nonce signature in
+	// the handler, matching the gRPC CeremonyBeginClaimShare /
+	// CeremonyCompleteClaimShare "identity:gated" proto options and the REST
+	// /v1/ceremony/officer-share/* routes (the old quicPermissions table
+	// omitted these two methods, leaving them unconditionally denied on this
+	// transport — a parity gap closed at the cutover); the custodian flow
+	// (ClaimShareBegin/Complete) verifies the enrolled custodian's factor
+	// challenge response.
+	s.handle("ceremony.Initialize", permission.CeremonyInitialize, s.handleCeremonyInitialize)
+	s.handle("ceremony.Status", permission.CeremonyStatus, s.handleCeremonyStatus)
+	s.handle("ceremony.ClaimCertBegin", permission.CeremonyClaimCert, s.handleCeremonyClaimCertBegin)
+	s.handle("ceremony.ClaimCertComplete", permission.CeremonyClaimCert, s.handleCeremonyClaimCertComplete)
+	s.handle("ceremony.BeginClaimShare", permission.IdentityGated, s.handleCeremonyBeginClaimShare)
+	s.handle("ceremony.CompleteClaimShare", permission.IdentityGated, s.handleCeremonyCompleteClaimShare)
+	s.handle("ceremony.SignCSR", permission.CeremonySignCSR, s.handleCeremonySignCSR)
+	s.handle("ceremony.ClaimShareBegin", permission.IdentityGated, s.handleCeremonyClaimShareBegin)
+	s.handle("ceremony.ClaimShareComplete", permission.IdentityGated, s.handleCeremonyClaimShareComplete)
+	s.handle("ceremony.SubmitUnsealShare", permission.BarrierUnsealShare, s.handleCeremonySubmitUnsealShare)
 
 	// Tenant management
-	s.handlers["tenant.Create"] = s.handleTenantCreate
-	s.handlers["tenant.Get"] = s.handleTenantGet
-	s.handlers["tenant.List"] = s.handleTenantList
-	s.handlers["tenant.Update"] = s.handleTenantUpdate
-	s.handlers["tenant.Delete"] = s.handleTenantDelete
-	s.handlers["tenant.UpdateQuotas"] = s.handleTenantUpdateQuotas
-	s.handlers["tenant.UpdateEntitlements"] = s.handleTenantUpdateEntitlements
+	s.handle("tenant.Create", permission.TenantsCreate, s.handleTenantCreate)
+	s.handle("tenant.Get", permission.TenantsRead, s.handleTenantGet)
+	s.handle("tenant.List", permission.TenantsList, s.handleTenantList)
+	s.handle("tenant.Update", permission.TenantsUpdate, s.handleTenantUpdate)
+	s.handle("tenant.Delete", permission.TenantsDelete, s.handleTenantDelete)
+	s.handle("tenant.UpdateQuotas", permission.TenantsUpdate, s.handleTenantUpdateQuotas)
+	s.handle("tenant.UpdateEntitlements", permission.TenantsSetEntitlements, s.handleTenantUpdateEntitlements)
 
 	// Credential management
-	if s.credentialSvc != nil {
-		s.handlers["credential.Submit"] = s.handleCredentialSubmit
-		s.handlers["credential.Strategy"] = s.handleCredentialStrategy
-		s.handlers["credential.Delete"] = s.handleCredentialDelete
-		s.handlers["credential.List"] = s.handleCredentialList
-		s.handlers["credential.Rotate"] = s.handleCredentialRotate
-		s.handlers["credential.RetrieveVersion"] = s.handleCredentialRetrieveVersion
-		s.handlers["credential.ListVersions"] = s.handleCredentialListVersions
-		s.handlers["credential.GCExpired"] = s.handleCredentialGCExpired
-		s.handlers["credential.Store"] = s.handleCredentialStore
-		s.handlers["credential.Retrieve"] = s.handleCredentialRetrieve
-	}
+	credOn := s.credentialSvc != nil
+	s.handleIf(credOn, "credential.Submit", permission.CredentialsSubmit, s.handleCredentialSubmit)
+	s.handleIf(credOn, "credential.Strategy", permission.CredentialsStrategy, s.handleCredentialStrategy)
+	s.handleIf(credOn, "credential.Delete", permission.CredentialsDelete, s.handleCredentialDelete)
+	s.handleIf(credOn, "credential.List", permission.CredentialsList, s.handleCredentialList)
+	s.handleIf(credOn, "credential.Rotate", permission.CredentialsRotate, s.handleCredentialRotate)
+	s.handleIf(credOn, "credential.RetrieveVersion", permission.CredentialsRetrieveVersion, s.handleCredentialRetrieveVersion)
+	s.handleIf(credOn, "credential.ListVersions", permission.CredentialsListVersions, s.handleCredentialListVersions)
+	s.handleIf(credOn, "credential.GCExpired", permission.CredentialsGCExpired, s.handleCredentialGCExpired)
+	s.handleIf(credOn, "credential.Store", permission.CredentialsStore, s.handleCredentialStore)
+	s.handleIf(credOn, "credential.Retrieve", permission.CredentialsRetrieve, s.handleCredentialRetrieve)
 
-	// Per-tenant barrier lifecycle and SO distribution.
-	if s.tenantSvc != nil {
-		s.handlers["tenant.BarrierInit"] = s.handleTenantBarrierInit
-		s.handlers["tenant.BarrierUnseal"] = s.handleTenantBarrierUnseal
-		s.handlers["tenant.BarrierUnsealShare"] = s.handleTenantBarrierUnsealShare
-		s.handlers["tenant.BarrierSeal"] = s.handleTenantBarrierSeal
-		s.handlers["tenant.BarrierStatus"] = s.handleTenantBarrierStatus
-		s.handlers["tenant.BarrierOfficerRegister"] = s.handleTenantBarrierOfficerRegister
-		s.handlers["tenant.BarrierOfficerList"] = s.handleTenantBarrierOfficerList
-		s.handlers["tenant.BarrierShareClaimBegin"] = s.handleTenantBarrierShareClaimBegin
-		s.handlers["tenant.BarrierShareClaimComplete"] = s.handleTenantBarrierShareClaimComplete
-		s.handlers["tenant.BarrierOfficerClaimStatus"] = s.handleTenantBarrierOfficerClaimStatus
-		s.handlers["tenant.BarrierShamirSealVote"] = s.handleTenantBarrierShamirSealVote
-	}
+	// Per-tenant barrier lifecycle and SO distribution. These carry the
+	// tenant-scoped (ScopeTenantOnly) permissions; the handler additionally
+	// enforces the fine-grained gate against the request's tenant_id.
+	// Share-claim routes are identity-gated (see permission.IdentityGated);
+	// the handler enforces the per-tenant registry lookup, thumbprint match,
+	// and nonce signature.
+	tenantOn := s.tenantSvc != nil
+	s.handleIf(tenantOn, "tenant.BarrierInit", permission.TenantBarrierInit, s.handleTenantBarrierInit)
+	s.handleIf(tenantOn, "tenant.BarrierUnseal", permission.TenantBarrierUnseal, s.handleTenantBarrierUnseal)
+	s.handleIf(tenantOn, "tenant.BarrierUnsealShare", permission.TenantBarrierUnseal, s.handleTenantBarrierUnsealShare)
+	s.handleIf(tenantOn, "tenant.BarrierSeal", permission.TenantBarrierSeal, s.handleTenantBarrierSeal)
+	s.handleIf(tenantOn, "tenant.BarrierStatus", permission.TenantBarrierStatus, s.handleTenantBarrierStatus)
+	s.handleIf(tenantOn, "tenant.BarrierOfficerRegister", permission.TenantBarrierOfficerRegister, s.handleTenantBarrierOfficerRegister)
+	s.handleIf(tenantOn, "tenant.BarrierOfficerList", permission.TenantBarrierOfficerList, s.handleTenantBarrierOfficerList)
+	s.handleIf(tenantOn, "tenant.BarrierShareClaimBegin", permission.IdentityGated, s.handleTenantBarrierShareClaimBegin)
+	s.handleIf(tenantOn, "tenant.BarrierShareClaimComplete", permission.IdentityGated, s.handleTenantBarrierShareClaimComplete)
+	s.handleIf(tenantOn, "tenant.BarrierOfficerClaimStatus", permission.TenantBarrierOfficerList, s.handleTenantBarrierOfficerClaimStatus)
+	s.handleIf(tenantOn, "tenant.BarrierShamirSealVote", permission.TenantBarrierSealVote, s.handleTenantBarrierShamirSealVote)
 
 	// Backup management
-	if s.backupSvc != nil {
-		s.handlers["backup.Create"] = s.handleBackupCreate
-		s.handlers["backup.List"] = s.handleBackupList
-		s.handlers["backup.Get"] = s.handleBackupGet
-		s.handlers["backup.Delete"] = s.handleBackupDelete
-		s.handlers["backup.Restore"] = s.handleBackupRestore
-		s.handlers["backup.Verify"] = s.handleBackupVerify
-	}
+	backupOn := s.backupSvc != nil
+	s.handleIf(backupOn, "backup.Create", permission.BackupCreate, s.handleBackupCreate)
+	s.handleIf(backupOn, "backup.List", permission.BackupList, s.handleBackupList)
+	s.handleIf(backupOn, "backup.Get", permission.BackupRead, s.handleBackupGet)
+	s.handleIf(backupOn, "backup.Delete", permission.BackupDelete, s.handleBackupDelete)
+	s.handleIf(backupOn, "backup.Restore", permission.BackupRestore, s.handleBackupRestore)
+	s.handleIf(backupOn, "backup.Verify", permission.BackupVerify, s.handleBackupVerify)
 
 	// Cluster rebalance
-	if s.rebalanceSvc != nil {
-		s.handlers["rebalance.GetShardStats"] = s.handleRebalanceGetShardStats
-		s.handlers["rebalance.CreatePlan"] = s.handleRebalanceCreatePlan
-		s.handlers["rebalance.Execute"] = s.handleRebalanceExecute
-		s.handlers["rebalance.GetImbalanceReport"] = s.handleRebalanceGetImbalanceReport
-	}
+	rebalanceOn := s.rebalanceSvc != nil
+	s.handleIf(rebalanceOn, "rebalance.GetShardStats", permission.RebalanceStats, s.handleRebalanceGetShardStats)
+	s.handleIf(rebalanceOn, "rebalance.CreatePlan", permission.RebalancePlan, s.handleRebalanceCreatePlan)
+	s.handleIf(rebalanceOn, "rebalance.Execute", permission.RebalanceExecute, s.handleRebalanceExecute)
+	s.handleIf(rebalanceOn, "rebalance.GetImbalanceReport", permission.RebalanceReport, s.handleRebalanceGetImbalanceReport)
 
 	// Embedding
-	if s.embeddingSvc != nil {
-		s.handlers["embedding.Embed"] = s.handleEmbed
-		s.handlers["embedding.BatchEmbed"] = s.handleBatchEmbed
-		s.handlers["embedding.ListModels"] = s.handleListEmbeddingModels
-	}
+	embeddingOn := s.embeddingSvc != nil
+	s.handleIf(embeddingOn, "embedding.Embed", permission.EmbeddingEmbed, s.handleEmbed)
+	s.handleIf(embeddingOn, "embedding.BatchEmbed", permission.EmbeddingEmbed, s.handleBatchEmbed)
+	s.handleIf(embeddingOn, "embedding.ListModels", permission.EmbeddingListModels, s.handleListEmbeddingModels)
 
 	// RAG (retrieval-augmented generation)
-	if s.ragSvc != nil {
-		s.handlers["rag.IngestDocument"] = s.handleRAGIngestDocument
-		s.handlers["rag.Query"] = s.handleRAGQuery
-		s.handlers["rag.DeleteDocument"] = s.handleRAGDeleteDocument
-		s.handlers["rag.ListDocuments"] = s.handleRAGListDocuments
-	}
+	ragOn := s.ragSvc != nil
+	s.handleIf(ragOn, "rag.IngestDocument", permission.RAGIngest, s.handleRAGIngestDocument)
+	s.handleIf(ragOn, "rag.Query", permission.RAGQuery, s.handleRAGQuery)
+	s.handleIf(ragOn, "rag.DeleteDocument", permission.RAGDeleteDocument, s.handleRAGDeleteDocument)
+	s.handleIf(ragOn, "rag.ListDocuments", permission.RAGListDocuments, s.handleRAGListDocuments)
 
-	// Auth factors
-	if s.authFactorSvc != nil {
-		s.handlers["authfactor.Enroll"] = s.handleAuthFactorEnroll
-		s.handlers["authfactor.Challenge"] = s.handleAuthFactorChallenge
-		s.handlers["authfactor.Verify"] = s.handleAuthFactorVerify
-		s.handlers["authfactor.List"] = s.handleAuthFactorList
-		s.handlers["authfactor.Revoke"] = s.handleAuthFactorRevoke
-	}
+	// Auth factors (factor-type challenge/response lifecycle)
+	factorOn := s.authFactorSvc != nil
+	s.handleIf(factorOn, "authfactor.Enroll", permission.AuthFactorEnroll, s.handleAuthFactorEnroll)
+	s.handleIf(factorOn, "authfactor.Challenge", permission.AuthFactorChallenge, s.handleAuthFactorChallenge)
+	s.handleIf(factorOn, "authfactor.Verify", permission.AuthFactorVerify, s.handleAuthFactorVerify)
+	s.handleIf(factorOn, "authfactor.List", permission.AuthFactorList, s.handleAuthFactorList)
+	s.handleIf(factorOn, "authfactor.Revoke", permission.AuthFactorRevoke, s.handleAuthFactorRevoke)
 
 	// User auth factors (M14)
-	if s.userAuthFactorSvc != nil {
-		s.handlers["userauthfactor.Add"] = s.handleUserAuthFactorAdd
-		s.handlers["userauthfactor.List"] = s.handleUserAuthFactorList
-		s.handlers["userauthfactor.Get"] = s.handleUserAuthFactorGet
-		s.handlers["userauthfactor.Remove"] = s.handleUserAuthFactorRemove
-		s.handlers["userauthfactor.Rotate"] = s.handleUserAuthFactorRotate
-		s.handlers["userauthfactor.Relabel"] = s.handleUserAuthFactorRelabel
-		s.handlers["userauthfactor.Login"] = s.handleUserAuthFactorLogin
-	}
+	userFactorOn := s.userAuthFactorSvc != nil
+	s.handleIf(userFactorOn, "userauthfactor.Add", permission.UserAuthFactorsAdd, s.handleUserAuthFactorAdd)
+	s.handleIf(userFactorOn, "userauthfactor.List", permission.UserAuthFactorsList, s.handleUserAuthFactorList)
+	s.handleIf(userFactorOn, "userauthfactor.Get", permission.UserAuthFactorsGet, s.handleUserAuthFactorGet)
+	s.handleIf(userFactorOn, "userauthfactor.Remove", permission.UserAuthFactorsRemove, s.handleUserAuthFactorRemove)
+	s.handleIf(userFactorOn, "userauthfactor.Rotate", permission.UserAuthFactorsRotate, s.handleUserAuthFactorRotate)
+	s.handleIf(userFactorOn, "userauthfactor.Relabel", permission.UserAuthFactorsRelabel, s.handleUserAuthFactorRelabel)
+	s.handleIf(userFactorOn, "userauthfactor.Login", permission.UserAuthFactorsLogin, s.handleUserAuthFactorLogin)
 
 	// Audit
-	// Authorization: requires "audit:query" permission.
-	// TODO: switch to permission.AuditQuery constant once Phase 2 lands.
-	if s.auditLogger != nil {
-		s.handlers["audit.Query"] = s.handleAuditQuery
+	s.handleIf(s.auditLogger != nil, "audit.Query", permission.AuditQuery, s.handleAuditQuery)
+
+	s.assertMethodsAuthorized()
+}
+
+// assertMethodsAuthorized is the DEFAULT-DENY startup assertion: it walks the
+// dispatch map and panics if any registered handler is missing from the
+// methodPerms registry (i.e. was assigned to s.handlers directly instead of
+// through s.handle/s.handleIf, and would therefore be denied at runtime).
+// This mirrors the REST server's assertRoutesAuthorized structural invariant.
+func (s *Server) assertMethodsAuthorized() {
+	var missing []string
+	for method := range s.handlers {
+		if !s.methodPerms.Covered(method) {
+			missing = append(missing, method)
+		}
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		panic(fmt.Sprintf(
+			"quic: DEFAULT-DENY startup assertion failed: %d method(s) registered without a permission: %s",
+			len(missing), strings.Join(missing, ", ")))
 	}
 }

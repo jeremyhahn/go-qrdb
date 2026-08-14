@@ -53,6 +53,22 @@ var (
 	// limitAllRe matches LIMIT ALL (case-insensitive) and removes it.
 	limitAllRe = regexp.MustCompile(`(?i)\bLIMIT\s+ALL\b`)
 
+	// quotedRowCountRe matches a LIMIT or OFFSET whose row count is written
+	// as a quoted string of digits, capturing the keyword and the digits.
+	//
+	// PostgreSQL types a bare '123' as `unknown` and coerces it to bigint in
+	// a row-count position, so LIMIT '5' is legal there and means LIMIT 5.
+	// MySQL has no such coercion and go-mysql-server rejects it outright
+	// with a syntax error. The form is not exotic: pgx renders every bind
+	// parameter as a quoted literal when it interpolates a simple-protocol
+	// query, so a driver issuing LIMIT $1 -- which gorm does on every
+	// First/Take/Last -- sends exactly this.
+	//
+	// Only an all-digits body is rewritten. Anything else is left alone,
+	// because PostgreSQL would reject it too and the honest answer is the
+	// engine's own error rather than a guess.
+	quotedRowCountRe = regexp.MustCompile(`(?i)\b(LIMIT|OFFSET)\s+'(\d+)'`)
+
 	// ilikeRe matches the exact-case ILIKE/ilike spellings Translate has
 	// always normalized to LIKE; a mixed-case spelling such as IlIkE was
 	// never rewritten and still isn't.
@@ -114,7 +130,7 @@ var (
 	// pseudo-table PostgreSQL exposes inside DO UPDATE SET.
 	//
 	// BOTH spellings of the qualifier have to be accepted, because by the
-	// time this runs the double-quote conversion (step 2 of Translate) has
+	// time this runs the double-quote conversion (step 3 of Translate) has
 	// already been applied: a client that wrote EXCLUDED.name still reads as
 	// a bare word, but gorm.io/driver/postgres writes the qualifier quoted,
 	// "excluded"."name", which arrives here as `excluded`.`name`. Matching
@@ -216,68 +232,83 @@ func (t *Translator) Translate(query string) (string, error) {
 
 	result := query
 
-	// 1. Replace $N positional parameters with ? placeholders.
+	// 1. Re-escape backslashes inside plain string literals so that
+	// go-mysql-server's MySQL lexer reads them as PostgreSQL specifies.
+	// Must run FIRST among the literal-touching steps, and in particular
+	// before applyEscapeStrings (step 8) collapses E'...' into '...' --
+	// after that the two kinds are indistinguishable, and an E-string's
+	// backslashes must NOT be doubled. See
+	// escapeBackslashesInStringLiterals for why this is a correctness and
+	// injection concern rather than a cosmetic one.
+	result = escapeBackslashesInStringLiterals(result)
+
+	// 2. Replace $N positional parameters with ? placeholders.
 	result = applyOutsideRegions(result, dollarParamRe, "?")
 
-	// 2. Convert double-quoted identifiers to backtick-quoted identifiers.
+	// 3. Convert double-quoted identifiers to backtick-quoted identifiers.
 	// This must happen before cast conversion so that backtick-quoted
 	// identifiers are recognized in cast expressions like `col`::type.
 	result = convertDoubleQuotedIdentifiers(result)
 
-	// 3. Backtick-quote MySQL/GMS reserved words that appear as bare
-	// identifiers. This must run after double-quote conversion (step 2)
+	// 4. Backtick-quote MySQL/GMS reserved words that appear as bare
+	// identifiers. This must run after double-quote conversion (step 3)
 	// so that already-backtick-quoted identifiers are skipped, and before
-	// cast conversion (step 8) so the cast regex recognizes the backtick-
+	// cast conversion (step 9) so the cast regex recognizes the backtick-
 	// quoted identifiers.
 	result = quoteReservedWords(result)
 
-	// 4. Rewrite PostgreSQL column types in CREATE TABLE / ALTER TABLE
+	// 5. Rewrite PostgreSQL column types in CREATE TABLE / ALTER TABLE
 	// column definitions into their go-mysql-server counterparts. Must run
-	// after double-quote conversion (step 2) so a quoted column name is a
+	// after double-quote conversion (step 3) so a quoted column name is a
 	// single backtick-quoted token to the DDL tokenizer rather than a bare
 	// word that could be mistaken for a type, and after reserved-word
-	// quoting (step 3) for the same reason.
+	// quoting (step 4) for the same reason.
 	result, err := translateDDLTypes(result)
 	if err != nil {
 		return "", err
 	}
 
-	// 5. Rewrite INSERT ... DEFAULT VALUES into INSERT ... () VALUES ().
-	// Must run before the ON CONFLICT rewrite (step 6), whose DO NOTHING
+	// 6. Rewrite INSERT ... DEFAULT VALUES into INSERT ... () VALUES ().
+	// Must run before the ON CONFLICT rewrite (step 7), whose DO NOTHING
 	// form prepends an IGNORE modifier to the same statement's INSERT
 	// keyword: this step's own guard anchors on that keyword and is stated
 	// against the statement as the client wrote it.
 	result = translateDefaultValues(result)
 
-	// 6. Rewrite ON CONFLICT ... DO UPDATE / DO NOTHING into MySQL's
+	// 7. Rewrite ON CONFLICT ... DO UPDATE / DO NOTHING into MySQL's
 	// ON DUPLICATE KEY UPDATE / INSERT IGNORE. Must run after reserved-word
-	// quoting (step 3) rather than before: the text this step generates
+	// quoting (step 4) rather than before: the text this step generates
 	// (the literal keywords "ON DUPLICATE KEY UPDATE" and the VALUES(...)
 	// call) must never be fed back through quoteReservedWords, or the bare
 	// keyword KEY -- itself a reserved word in the quoting table -- would
 	// be backtick-quoted into an invalid column reference. Running after
-	// step 3 also means an EXCLUDED.col reference is already backtick-
+	// step 4 also means an EXCLUDED.col reference is already backtick-
 	// quoted, which excludedColumnRe accounts for.
 	if result, err = translateOnConflict(result); err != nil {
 		return "", err
 	}
 
-	// 7. Convert E'...' escape strings to regular string literals. Must
-	// run before cast conversion (step 8): a leading E left in place on
+	// 8. Convert E'...' escape strings to regular string literals. Must
+	// run before cast conversion (step 9): a leading E left in place on
 	// E'2024-01-01'::date would strand the E in front of the CAST(...)
 	// this step produces.
 	result = applyEscapeStrings(result)
 
-	// 8. Convert value::type cast syntax to CAST(value AS type).
+	// 9. Convert value::type cast syntax to CAST(value AS type).
 	result = applyCast(result)
 
-	// 9. Replace ILIKE with LIKE (case-insensitive).
+	// 10. Replace ILIKE with LIKE (case-insensitive).
 	result = applyOutsideRegions(result, ilikeRe, "LIKE")
 
-	// 10. Remove LIMIT ALL.
+	// 11. Remove LIMIT ALL.
 	result = applyOutsideRegions(result, limitAllRe, "")
 
-	// 11. Rewrite current_schema() / current_database() to DATABASE().
+	// 12. Unquote a quoted row count in LIMIT/OFFSET. The match is anchored
+	// on the keyword, which is outside any region, so applyOutsideRegions
+	// rewrites the whole match including the literal that follows it.
+	result = applyOutsideRegions(result, quotedRowCountRe, "$1 $2")
+
+	// 13. Rewrite current_schema() / current_database() to DATABASE().
 	// PostgreSQL's schema namespace and MySQL's database namespace are the
 	// same level of the hierarchy here: go-mysql-server reports a table's
 	// owning database as information_schema.tables.TABLE_SCHEMA, which is

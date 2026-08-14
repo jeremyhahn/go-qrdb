@@ -22,6 +22,69 @@ psql --> psql-wire (PG framing) --> PG translator --> go-mysql-server --> KVTabl
                                                                      \-> RelationalTable -^
 ```
 
+#### Startup parameters
+
+QRDB reports `standard_conforming_strings=on` alongside the parameters
+psql-wire emits for itself. It is required rather than decorative: pgx refuses
+to run *any* simple-protocol query against a server that has not reported it,
+and `gorm.io/driver/postgres` forces simple protocol for `Migrator.GetRows`,
+which backs `ColumnTypes` and therefore every schema-introspecting migration.
+See the literal-escaping note under [PostgreSQL Syntax
+Translation](#postgresql-syntax-translation) for what makes the claim true.
+
+#### Prepared statements and cached plans
+
+A PostgreSQL client may PARSE a statement once and then BIND/EXECUTE it many
+times against the `RowDescription` it was given at Describe time; pgx does this
+by default (`QueryExecModeCacheStatement`). If DDL changes the statement's
+result shape in between, the rows it now produces no longer match the
+descriptor the client is still decoding against.
+
+QRDB refuses that execution with PostgreSQL's own condition — `cached plan must
+not change result type`, SQLSTATE **0A000** — rather than writing rows the
+client would mis-map. Column count, column names, and type OIDs are all
+compared: an equal-width rename or retype is the case that would otherwise
+corrupt silently, because nothing downstream notices and a client scanning by
+name lands each value in the wrong field. Clients recover on their own, as they
+do against PostgreSQL: pgx drops the statement from its cache on any error, so
+a retry of the same SQL re-parses and succeeds.
+
+#### `pg_catalog`
+
+QRDB serves the subset of PostgreSQL's system catalogue that schema
+introspection reads — `pg_type`, `pg_class`, `pg_namespace`, `pg_description`,
+`pg_indexes` — from `pkg/sql/pgcatalog`, reachable both qualified
+(`pg_catalog.pg_class`) and bare (`pg_type`), as PostgreSQL's implicit search
+path allows. The relations are computed per query, read-only (they implement no
+write-capability interface, so DDL against them fails during analysis), and
+scoped to the session's tenant. They are served only to PostgreSQL clients: a
+MySQL client has no more business resolving `pg_type` than a PostgreSQL client
+has resolving MySQL's grant tables.
+
+`pg_indexes` reports a table's primary key under PostgreSQL's `<table>_pkey`
+name rather than go-mysql-server's MySQL spelling `PRIMARY`, because that is
+the name a client compares against; its `indexdef` is reconstructed from the
+index's own metadata, since nothing in the engine keeps the original statement
+text.
+
+#### information_schema
+
+`information_schema` is go-mysql-server's own database — the analyzer's catalog
+resolves the name to its built-in instance and never consults the
+`DatabaseProvider` — so QRDB cannot contribute a view to it the way it
+contributes the `pg_catalog` schema. go-mysql-server exposes
+`NewInformationSchemaTablesToAdd` for exactly this, documented as the hook
+Doltgres injects PostgreSQL-specific tables through, and `pkg/sql/infoschema`
+uses it to add **`constraint_column_usage`**.
+
+That view is SQL-standard (PostgreSQL implements it; MySQL offers the
+overlapping `key_column_usage` instead), and GORM's PostgreSQL Migrator joins
+it against `table_constraints` and `columns` to resolve a table's primary-key
+and unique constraints. It reports only PRIMARY KEY and UNIQUE constraints:
+PostgreSQL's view lists, for a FOREIGN KEY, the columns of the constraint it
+*references*, which cannot be named from an `sql.ForeignKeyConstraint` alone,
+and a plausible-looking wrong answer would be worse than a true partial one.
+
 ## Build Tags
 
 SQL protocols are opt-in via build tags (enabled by default in the Makefile):
@@ -94,18 +157,63 @@ Client cert (CN=alice, OU=acme-corp)
 
 ## Authorization
 
-Per-query RBAC authorization maps SQL statements to QRDB permissions:
+SQL is authorized over **two planes with disjoint resources**. Neither consults the other, and there is deliberately no mapping between them: a role is not a grant, and a grant is not a role.
 
-| SQL Statement | Permission |
-|---------------|------------|
-| `SELECT ... FROM kv` | `kv:range` |
-| `INSERT INTO kv` | `kv:put` |
-| `UPDATE kv` | `kv:put` |
-| `DELETE FROM kv` | `kv:delete` |
-| `SELECT ... FROM status` | `admin:status` |
-| `SELECT ... FROM peers` | `admin:peers` |
+| Plane | Owner | Question it answers |
+|-------|-------|---------------------|
+| **Control** — service RBAC | `pkg/auth/rbac`, `pkg/auth/middleware` | May this identity reach the SQL endpoint at all, and may it create or drop a database? |
+| **Data** — SQL table privileges | `pkg/sql/privilege`, `pkg/service` (`PrivilegeServicer`) | May this identity touch THIS table, or THIS column? |
 
-Session management statements (`SET`, `SHOW`, `USE`, `BEGIN`, `COMMIT`) are public and require no authorization.
+RBAC gates the endpoint and the database lifecycle; privileges govern everything inside a database.
+
+### Table privileges
+
+`GRANT`, `REVOKE`, and `SHOW GRANTS` are real MySQL statements, parsed by the real parser and rewritten by an analyzer post-analyze rule onto QRDB's own per-`(tenant, database)` privilege catalog. QRDB does not implement MySQL's `mysql` grant tables; the `mysql` schema is served as an empty stand-in purely because go-mysql-server's plan builder resolves it while building these statements.
+
+```sql
+GRANT SELECT, INSERT ON shop.orders TO 'alice'@'%';
+GRANT SELECT (id, total) ON shop.orders TO 'bob'@'%';
+GRANT ALL PRIVILEGES ON shop.* TO 'admin'@'%' WITH GRANT OPTION;
+SHOW GRANTS FOR 'alice'@'%';
+REVOKE INSERT ON shop.orders FROM 'alice'@'%';
+```
+
+Three tiers are enforced, each covering the ones below it: **database** (`ON db.*`), **table** (`ON db.tbl`), and **column** (`ON db.tbl(col)`).
+
+Supported privileges: `SELECT`, `INSERT`, `UPDATE`, `DELETE`, `CREATE`, `DROP`, `ALTER`, `INDEX`, `REFERENCES`, `GRANT OPTION`, `ALL PRIVILEGES`, and `USAGE`.
+
+Anything that cannot be represented is **refused by name** rather than stored and never checked — server-wide privileges (`SUPER`, `PROCESS`, `FILE`, `CREATE USER`, ...), routine and trigger privileges, `ON FUNCTION` / `ON PROCEDURE`, `ON *.*` at any privilege, and host-qualified grantees other than `'user'@'%'` (QRDB identities are certificate subjects and carry no host).
+
+### Activation latch — the default posture
+
+A database with **no privilege catalog is unrestricted**. The **first** privilege mutation arms the database, and from that moment it is **default-deny** for every session: an identity may do only what its record grants. `REVOKE` never disarms it, and nothing else does — the posture is monotonic and can only ever tighten.
+
+This is MySQL's own model made per-database: MySQL's privilege system is inert until the `mysql` schema's grant tables are loaded (`mysql_db.MySQLDb.Enabled()`), and flips exactly once.
+
+The **system tenant is exempt permanently**. There is no `--skip-grant-tables` recovery mode in QRDB, so the exemption is what makes arming a database safe. Note the consequences:
+
+- Privileges are enforced for **non-system tenants only**. A deployment that runs everything as the system tenant is unrestricted by design.
+- The catalog is scoped to `(tenant, database)` exactly as the relational table catalog is, so a tenant's catalog is bootstrapped **from inside that tenant** — which the unrestricted-until-armed rule always permits.
+
+### Enforcement
+
+Enforcement is a `sql.AuthorizationHandler` installed process-wide, so go-mysql-server asks about **every statement it builds**. A statement kind the handler does not model is **denied** on an armed database rather than waved through. Refusals reach the client as MySQL's own codes — `1044` (`ER_DBACCESS_DENIED_ERROR`), `1142` (`ER_TABLEACCESS_DENIED_ERROR`), `1143` (`ER_COLUMNACCESS_DENIED_ERROR`) — so a client classifies them by number.
+
+Each query resolves the identity's privilege set **once**, from a lock-free snapshot cache gated on the catalog generation the service maintains. An unarmed database costs no reads at all.
+
+Administering privileges requires `GRANT OPTION` at the **database** tier: the authorization information the parser attaches to `GRANT` and `REVOKE` names no target, so no finer tier can be checked. That is stricter than MySQL, which would let the holder of a table-level `GRANT OPTION` re-grant that one table.
+
+Session management statements (`SET`, `SHOW`, `USE`, `BEGIN`, `COMMIT`) require no authorization.
+
+### Storage
+
+```
+__sys:privs/{database}/__latch            # activation latch + monotonic catalog generation
+__sys:privs/{database}/{grantee}          # privilege set (database + table + column tiers)
+__sys:privs/{database}/{grantee}/__epoch  # per-grantee generation
+```
+
+All three move together in a single Raft compare-and-swap. The prefix lies under `__sys:`, which the internal-key guard already excludes from user key enumeration.
 
 ## KV Table Schema
 
@@ -139,6 +247,25 @@ SELECT * FROM kv WHERE key = 'config/db';
 -- Reads: acme-corp/config/db
 -- Returns: key='config/db' (prefix stripped)
 ```
+
+### Catalog visibility
+
+The database *catalog* is scoped to the session's tenant as well, not just the
+keyspace. The database manager is node-local and holds every tenant's databases
+side by side, so `SHOW DATABASES`, `information_schema`, and
+`pg_catalog.pg_namespace`/`pg_class` enumerate only the databases belonging to
+the tenant on the connection's certificate.
+
+Data access was never reachable across tenants — `service.Registry` resolves
+every read and write against the session's own tenant, so another tenant's
+database name simply is not found — but the *names* were, and through
+`pg_class` their table names with them. A tenant's schema is its own business.
+
+A database created before any tenant existed carries no tenant ID; those are
+system-owned, visible to the system tenant and to no one else. That is the only
+reading that is both safe and true: treating them as ownerless would hide them
+from the operator, and treating them as everyone's is the disclosure this
+prevents.
 
 ## Index-Accelerated WHERE Clauses
 
@@ -317,6 +444,46 @@ An open transaction buffers its writes in a `provider.WriteSet` and **commits th
 - **One database per transaction.** A single CAS commit targets one Raft shard, so a write to a second database inside an open transaction is refused with `CrossDatabaseTransactionError` rather than split into two non-atomic commits.
 - **`START TRANSACTION READ ONLY`** is honoured: any buffered write returns `ReadOnlyTransactionError`.
 
+### Tuning conflict detection
+
+The scope of that write-set compare is selectable per session:
+
+```sql
+SET qrdb_isolation = 'none';          -- last-writer-wins: no preconditions
+SET qrdb_isolation = 'written';       -- the default, described above
+SET qrdb_isolation = 'written+reads'; -- also compare every point read
+SELECT @@qrdb_isolation;
+```
+
+`written+reads` closes the write skew `written` misses — the classic case where
+two transactions each read a row the other writes, and both commit — by
+attaching a precondition to every key the transaction *read* as well. It pays
+for that with a larger compare set, and it refuses a *range* read outright
+(`IsolationRangeReadError`) rather than pretending to cover one: a range's
+conflict set is the keys that do not exist yet, which a point compare cannot
+express.
+
+The variable is session-scoped only; `SET GLOBAL qrdb_isolation` is refused,
+because the setting is a property of one client's workload and a global default
+would silently change the isolation of every other connection.
+
+Note what is *not* tunable. `none` does not mean "no atomicity": a row and its
+index entries still commit in a single compare-and-swap at every level. And
+there is deliberately no "retry automatically" setting — the write-set holds
+*ops*, not the statements that produced them, so replaying `SET n = n + 1`
+re-applies a stale value and loses the concurrent update. A correct retry has to
+re-execute the statements, which only the client (or GORM's transaction
+closure) can do.
+
+MySQL's own `transaction_isolation` and `SET TRANSACTION ISOLATION LEVEL` are
+left exactly as go-mysql-server already treats them — accepted, recorded, not
+interpreted. They name the behaviour of a lock-based engine and QRDB's
+transactions are optimistic; the two do not correspond, and aliasing them would
+be a straightforward lie. InnoDB's `READ COMMITTED` still prevents a lost update
+because the row is locked until commit, which `none` does not; InnoDB's
+`REPEATABLE READ` *blocks* a second writer and then applies it, where QRDB
+aborts it with 1213.
+
 ### Conflicts surface as MySQL 1213
 
 A losing commit clears the write-set (matching InnoDB, which rolls back a transaction that hits `ER_LOCK_DEADLOCK`) and returns a `TransactionConflictError` wrapped in go-mysql-server's `sql.ErrLockDeadlock` — which `sql.CastSQLError` maps to **MySQL error 1213 / SQLSTATE 40001**. That is the code `database/sql` clients and ORM retry loops already recognise as "retry the transaction". A genuine infrastructure error (an unreachable leader, say) leaves the write-set in place instead, so `COMMIT` may safely be retried without losing buffered work.
@@ -346,7 +513,35 @@ Single-statement atomicity is still provided by Raft for every table kind, and t
 | `value::type` | `CAST(value AS type)` |
 | `ILIKE` | `LIKE` |
 | `LIMIT ALL` | *(removed)* |
+| `LIMIT '5'`, `OFFSET '10'` | `LIMIT 5`, `OFFSET 10` (see below) |
+| `'C:\temp'` | `'C:\\temp'` (see below) |
 | `INSERT ... RETURNING` | *(unchanged — go-mysql-server parses and evaluates it natively)* |
+
+Two of those rows are about semantics rather than spelling, and both are
+load-bearing:
+
+**Backslashes in string literals.** PostgreSQL, with
+`standard_conforming_strings` on (its default since 9.1), treats a backslash
+inside `'...'` as an ordinary character; MySQL treats it as an escape
+introducer, and go-mysql-server does not honour the `NO_BACKSLASH_ESCAPES`
+`sql_mode` that would turn that off. Left untranslated, `'C:\temp'` reached
+storage as `C:<tab>emp`. The rewrite doubles each backslash inside plain
+literals so the MySQL lexer reproduces PostgreSQL's bytes exactly. `E'...'`
+literals are excluded — PostgreSQL's escape-string syntax already processes
+backslashes the way MySQL does.
+
+This is also what makes QRDB's `standard_conforming_strings=on`
+ParameterStatus honest. Clients act on that parameter: having seen it, pgx
+escapes an interpolated value by doubling quotes alone, so without the rewrite
+a value ending in a backslash would escape its own closing quote and let the
+remainder of the statement be parsed as SQL.
+
+**Quoted row counts.** PostgreSQL types a bare `'5'` as `unknown` and coerces
+it to `bigint` in a row-count position; MySQL has no such coercion. This is not
+an exotic form — pgx renders every bind parameter as a quoted literal when it
+interpolates a simple-protocol query, and GORM issues `LIMIT $1` on every
+`First`/`Take`/`Last`. Only an all-digits body is unquoted; anything else is
+left for the engine to reject, because PostgreSQL would reject it too.
 
 Rejected with a typed `*engine.UnsupportedSyntaxError` rather than mistranslated:
 
@@ -381,7 +576,10 @@ pkg/sql/
   provider/       # DatabaseProvider, Database, KVTable, RelationalTable,
                   #   WriteSet, QRDBSession (no build tag)
   catalog/        # TableDef <-> sql.Type mapping, RowCodec, KeyCodec (no build tag)
-  engine/         # Shared SQL engine factory, PG translator + lexer (no build tag)
+  engine/         # Shared SQL engine factory (default analyzer + the privilege
+                  #   post-analyze rule), PG translator + lexer (no build tag)
+  privilege/      # SQL table privileges: the authorization handler every engine
+                  #   installs, and the GRANT/REVOKE/SHOW GRANTS rewrite (no build tag)
   mysql/          # MySQL wire server (qrdb_mysql build tag)
   pgsql/          # PostgreSQL wire server (qrdb_pgsql build tag)
 ```
@@ -395,11 +593,13 @@ make test-sql-provider     # Provider unit tests
 make test-sql-engine       # Engine + translator tests
 make test-sql-mysql        # MySQL server tests
 make test-sql-pgsql        # PgSQL server tests
+make test-sql-privilege    # Table privilege tests (enforcement + GRANT/REVOKE)
 make test-sql              # All SQL tests
 
 make coverage-sql-provider # Provider coverage (91%+ required)
 make coverage-sql-engine   # Engine coverage
 make coverage-sql-mysql    # MySQL coverage
 make coverage-sql-pgsql    # PgSQL coverage
+make coverage-sql-privilege # Table privilege coverage
 make coverage-sql          # All SQL coverage
 ```

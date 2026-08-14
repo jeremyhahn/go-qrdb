@@ -16,8 +16,10 @@ package provider
 
 import (
 	"context"
+	"math"
 	"testing"
 
+	sqle "github.com/dolthub/go-mysql-server/sql"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -245,4 +247,135 @@ func autoIncTableDef() *service.TableDef {
 		AutoIncColumn: "id",
 		SchemaVersion: 1,
 	}
+}
+
+// ---------------------------------------------------------------------------
+// LAST_INSERT_ID publication
+//
+// GetNextAutoIncrementValue is the only layer that knows which rows of a
+// statement needed a GENERATED value, so it is the layer that publishes
+// LAST_INSERT_ID. See publishLastInsertID for why go-mysql-server cannot be
+// left to derive it (it stops counting rows down the moment one is diverted
+// into ON DUPLICATE KEY UPDATE, which is the shape every ORM emits when it
+// saves an association mixing existing and new rows).
+// ---------------------------------------------------------------------------
+
+// lastInsertID reads the LAST_INSERT_ID ctx's session currently reports.
+func lastInsertID(ctx *sqle.Context) int64 {
+	return ctx.GetLastQueryInfo().LastInsertId.Load()
+}
+
+func TestRelationalTable_GeneratedValuePublishesLastInsertID(t *testing.T) {
+	h := newDDLHarness()
+	tbl, _ := newAutoIncHarnessTable(t, h)
+	ctx := newTestContext()
+
+	require.Equal(t, int64(0), lastInsertID(ctx), "precondition: no insert id yet")
+
+	v, err := tbl.GetNextAutoIncrementValue(ctx, nil)
+	require.NoError(t, err)
+	assert.Equal(t, int64(v), lastInsertID(ctx))
+}
+
+func TestRelationalTable_OnlyFirstGeneratedValuePublishesLastInsertID(t *testing.T) {
+	h := newDDLHarness()
+	tbl, _ := newAutoIncHarnessTable(t, h)
+	ctx := newTestContext()
+
+	first, err := tbl.GetNextAutoIncrementValue(ctx, nil)
+	require.NoError(t, err)
+	for i := 0; i < 4; i++ {
+		later, lerr := tbl.GetNextAutoIncrementValue(ctx, nil)
+		require.NoError(t, lerr)
+		require.Greater(t, later, first)
+	}
+
+	// MySQL reports the id of the FIRST row a statement generated a value
+	// for; the client derives the rest by adding auto_increment_increment.
+	assert.Equal(t, int64(first), lastInsertID(ctx))
+}
+
+func TestRelationalTable_ExplicitValueDoesNotPublishLastInsertID(t *testing.T) {
+	h := newDDLHarness()
+	tbl, _ := newAutoIncHarnessTable(t, h)
+	ctx := newTestContext()
+
+	_, err := tbl.GetNextAutoIncrementValue(ctx, int64(100))
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), lastInsertID(ctx),
+		"a row that supplied its own AUTO_INCREMENT value must not set LAST_INSERT_ID")
+}
+
+// TestRelationalTable_ExplicitThenGeneratedPublishesGenerated is the exact
+// shape that motivated publishLastInsertID: leading rows carry explicit
+// primary keys (they already exist and are about to be diverted into ON
+// DUPLICATE KEY UPDATE) and a trailing row asks for a generated one. The
+// generated value, not the leading explicit one, is LAST_INSERT_ID.
+func TestRelationalTable_ExplicitThenGeneratedPublishesGenerated(t *testing.T) {
+	h := newDDLHarness()
+	tbl, _ := newAutoIncHarnessTable(t, h)
+	ctx := newTestContext()
+
+	for _, explicit := range []int64{3, 2} {
+		_, err := tbl.GetNextAutoIncrementValue(ctx, explicit)
+		require.NoError(t, err)
+	}
+	generated, err := tbl.GetNextAutoIncrementValue(ctx, nil)
+	require.NoError(t, err)
+
+	assert.Equal(t, int64(generated), lastInsertID(ctx))
+	assert.Greater(t, generated, uint64(3), "generated value must clear the explicit watermark")
+}
+
+// TestRelationalTable_LastInsertIDIsStatementScoped pins the lifetime the
+// "first generated value" marker relies on: it lives on the RelationalTable
+// instance, and Database.GetTableInsensitive builds a fresh one per
+// statement, so a second statement over the same table publishes again
+// rather than being suppressed by the first.
+func TestRelationalTable_LastInsertIDIsStatementScoped(t *testing.T) {
+	h := newDDLHarness()
+	first, _ := newAutoIncHarnessTable(t, h)
+	ctx := newTestContext()
+
+	v1, err := first.GetNextAutoIncrementValue(ctx, nil)
+	require.NoError(t, err)
+	require.Equal(t, int64(v1), lastInsertID(ctx))
+
+	// A new statement resolves the table again, yielding a new instance
+	// that shares the same Raft-committed sequence.
+	def, err := h.tableSvc.GetTable(context.Background(), "shop", "widgets")
+	require.NoError(t, err)
+	second, err := NewRelationalTable(def, h.kvSvc, h.mvccSvc,
+		WithTableService(h.tableSvc),
+		WithTransactionService(h.txnSvc),
+		WithSequenceService(h.seqSvc))
+	require.NoError(t, err)
+
+	v2, err := second.GetNextAutoIncrementValue(ctx, nil)
+	require.NoError(t, err)
+	assert.Greater(t, v2, v1)
+	assert.Equal(t, int64(v2), lastInsertID(ctx))
+}
+
+// TestRelationalTable_PublishLastInsertIDGuards covers the inputs
+// publishLastInsertID must ignore rather than store: a context with no
+// session to store into, a zero value, and a value too large for the
+// signed 64-bit slot go-mysql-server keeps LAST_INSERT_ID in.
+func TestRelationalTable_PublishLastInsertIDGuards(t *testing.T) {
+	h := newDDLHarness()
+	tbl, _ := newAutoIncHarnessTable(t, h)
+
+	// No context at all, and a context with no session: must not panic.
+	tbl.publishLastInsertID(nil, 7)
+	tbl.publishLastInsertID(&sqle.Context{}, 7)
+
+	ctx := newTestContext()
+	tbl.publishLastInsertID(ctx, 0)
+	assert.Equal(t, int64(0), lastInsertID(ctx), "zero is not a generated value")
+
+	tbl.publishLastInsertID(ctx, math.MaxUint64)
+	assert.Equal(t, int64(0), lastInsertID(ctx), "a value that cannot be represented is dropped")
+
+	tbl.publishLastInsertID(ctx, 7)
+	assert.Equal(t, int64(7), lastInsertID(ctx))
 }

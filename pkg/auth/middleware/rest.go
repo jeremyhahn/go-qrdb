@@ -19,20 +19,31 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 )
 
-// RESTMiddleware returns an http.Handler that wraps the given handler
-// with authentication and authorization. Requests to routes without a
-// permission mapping are passed through without authorization.
+// RESTMiddleware returns an http.Handler that wraps the given handler with
+// authentication and authorization. Per-route permissions come from the
+// RESTRouteRegistry the REST server populates at route-registration time —
+// the single source of truth that replaced the old static permission tables.
 //
-// The middleware reads the request path and method, authenticates the
-// caller (typically via mTLS from the TLS state in context), looks up
-// the required permission, and authorizes the action. On failure it
-// returns a JSON error response with the appropriate HTTP status code.
-func (m *AuthMiddleware) RESTMiddleware(next http.Handler) http.Handler {
+// The middleware injects TLS state, short-circuits the small
+// pre-authentication public allowlist, authenticates the caller (mTLS, or a
+// verified on-behalf-of assertion for forwarded writes), resolves the
+// matched route's registered permission via the registry's chi matcher, and
+// authorizes the action. On failure it returns a JSON error response with
+// the appropriate HTTP status code.
+//
+// DEFAULT-DENY: a request whose path belongs to the registered API surface
+// but whose method+path resolves to no registered permission is rejected
+// rather than treated as public. Requests outside the registered surface
+// (the embedded web UI / static assets served as the router's fallback) pass
+// through after authentication.
+//
+// The middleware never wraps the ResponseWriter, so streaming handlers
+// (the SSE /watch endpoint) keep their http.Flusher.
+func (m *AuthMiddleware) RESTMiddleware(routes *RESTRouteRegistry, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 
@@ -54,6 +65,8 @@ func (m *AuthMiddleware) RESTMiddleware(next http.Handler) http.Handler {
 		// The cluster paths are matched EXACTLY (not by prefix) so that a future
 		// handler accidentally mounted under /v1/cluster/ is not silently left
 		// unauthenticated; each exact path here is a route that self-authorizes.
+		// The same routes are registered as RESTRoutePublic in the registry so
+		// the server's default-deny startup assertion accounts for them.
 		if r.URL.Path == "/health" ||
 			r.URL.Path == "/v1/ca/bootstrap" ||
 			r.URL.Path == "/v1/config/initialized" ||
@@ -85,42 +98,37 @@ func (m *AuthMiddleware) RESTMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// Determine the canonical path for permission lookup.
-		//
-		// An EXACT mapping always wins. A sub-route that declares its own
-		// permission (POST /kv/restore, /kv/scan, ...) must never be collapsed
-		// into the /kv/{key} dispatch: normalization would authorize it under a
-		// different permission than the one it declared, or — when /kv has no
-		// mapping for that method — reject it outright. Normalization is only
-		// the fallback for the genuinely dynamic /kv/{key} form, where the key
-		// is arbitrary and cannot be enumerated in the map.
-		//
-		// This ordering also means a NEW sub-route is protected by simply
-		// declaring it in the permission map, with no second registration to
-		// keep in sync.
-		path := r.URL.Path
-		perm, ok := LookupREST(r.Method, path)
+		// Resolve the route's registered authorization contract. The registry
+		// matches with chi's own trie, so templated routes ("/users/{id}") and
+		// most-specific-wins resolution come from the router, not a parallel
+		// pattern table.
+		perm, kind, ok := routes.Lookup(r.Method, r.URL.Path)
 		if !ok {
-			path = normalizePath(r.URL.Path)
-			perm, ok = LookupREST(r.Method, path)
-		}
-
-		// DEFAULT-DENY: an unmapped route that lands on the REST API surface is
-		// rejected rather than treated as public. Requests outside the API
-		// surface (the embedded web UI / static assets served as the router's
-		// fallback) and a small authenticated-but-unprivileged allowlist (e.g.
-		// /metrics) pass through so the SPA and monitoring keep working.
-		if !ok {
-			if isRESTAPISurface(path) && !isRESTAuthzPublic(path) {
+			// DEFAULT-DENY: the path belongs to a registered API route but the
+			// method carries no registered permission (e.g. a wrong-method
+			// request). Reject rather than fall through to the router.
+			if routes.PathHasRoutes(r.URL.Path) {
 				code := mapHTTPAuthError(&auth.AuthError{Code: "unauthorized"})
-				writeJSONError(w, code, "route not authorized (no permission mapping): "+r.Method+" "+path)
+				writeJSONError(w, code, "route not authorized (no permission mapping): "+r.Method+" "+r.URL.Path)
 				return
 			}
+			// Outside the registered API surface: the embedded web UI /
+			// static assets served as the router's fallback.
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
 
-		// Authorize the action.
+		switch kind {
+		case RESTRoutePublic, RESTRouteAuthenticated:
+			// Public routes normally short-circuit above; authenticated-only
+			// routes (/metrics) require no specific permission.
+			next.ServeHTTP(w, r.WithContext(ctx))
+			return
+		}
+
+		// Authorize the action (permission.IdentityGated short-circuits inside
+		// authorize: possession of an authenticated identity is the middleware
+		// requirement and the handler enforces the real binding check).
 		if authzErr := m.authorize(ctx, identity, perm); authzErr != nil {
 			code := mapHTTPAuthError(authzErr)
 			writeJSONError(w, code, authzErr.Error())
@@ -129,61 +137,6 @@ func (m *AuthMiddleware) RESTMiddleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
-}
-
-// normalizePath maps REST request paths to their canonical permission
-// lookup form. Paths under /kv/ with a key component are normalized
-// to /kv for the method-based KV dispatch.
-func normalizePath(path string) string {
-	// Exact matches for known sub-paths take priority.
-	switch {
-	case path == "/kv" || path == "/kv/":
-		return "/kv"
-	case path == "/kv/scan" || path == "/kv/range" ||
-		path == "/kv/lease" || path == "/kv/revision" ||
-		path == "/kv/compact":
-		return path
-	case strings.HasPrefix(path, "/kv/"):
-		// /kv/{key} -> /kv (method-dispatched)
-		return "/kv"
-	}
-	return path
-}
-
-// restAPIPrefixes enumerates the path prefixes that make up the REST API
-// surface. Under DEFAULT-DENY, a request whose path is under one of these
-// prefixes but has no permission mapping is rejected. Paths outside these
-// prefixes (the embedded web UI / static assets served as the router fallback,
-// favicon, etc.) are not part of the protected API surface and pass through.
-var restAPIPrefixes = []string{
-	"/kv", "/tx", "/batch", "/watch", "/lease", "/index", "/ts", "/vector",
-	"/lock", "/status", "/peers", "/membership", "/snapshot", "/drain",
-	"/capabilities", "/users", "/roles", "/permissions", "/certs", "/v1/",
-}
-
-// restAuthzPublicPaths are API-surface paths that require authentication but no
-// specific permission (e.g. Prometheus metrics scraping by any authenticated
-// peer). Pre-authentication-exempt paths (/health, /v1/ca/bootstrap,
-// /v1/config/initialized) are handled earlier and never reach here.
-var restAuthzPublicPaths = map[string]struct{}{
-	"/metrics": {},
-}
-
-// isRESTAPISurface reports whether path is part of the protected REST API.
-func isRESTAPISurface(path string) bool {
-	for _, p := range restAPIPrefixes {
-		if path == p || strings.HasPrefix(path, p) {
-			return true
-		}
-	}
-	return false
-}
-
-// isRESTAuthzPublic reports whether an (authenticated) caller may reach path
-// without holding a specific permission.
-func isRESTAuthzPublic(path string) bool {
-	_, ok := restAuthzPublicPaths[path]
-	return ok
 }
 
 // mapHTTPAuthError maps auth errors to HTTP status codes.

@@ -23,18 +23,19 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // authFactorTools returns the MCP tool registrations for custodian auth factor
 // operations: enroll, challenge, verify, list, revoke.
-func authFactorTools(svc service.AuthFactorServicer) []mcpserver.ServerTool {
-	return []mcpserver.ServerTool{
-		{Tool: toolAuthFactorEnroll(), Handler: handleAuthFactorEnroll(svc)},
-		{Tool: toolAuthFactorChallenge(), Handler: handleAuthFactorChallenge(svc)},
-		{Tool: toolAuthFactorVerify(), Handler: handleAuthFactorVerify(svc)},
-		{Tool: toolAuthFactorList(), Handler: handleAuthFactorList(svc)},
-		{Tool: toolAuthFactorRevoke(), Handler: handleAuthFactorRevoke(svc)},
+func authFactorTools(svc service.AuthFactorServicer) []serverTool {
+	return []serverTool{
+		{Tool: toolAuthFactorEnroll(), Perm: permission.AuthFactorEnroll, Handler: handleAuthFactorEnroll(svc)},
+		{Tool: toolAuthFactorChallenge(), Perm: permission.AuthFactorChallenge, Handler: handleAuthFactorChallenge(svc)},
+		{Tool: toolAuthFactorVerify(), Perm: permission.AuthFactorVerify, Handler: handleAuthFactorVerify(svc)},
+		{Tool: toolAuthFactorList(), Perm: permission.AuthFactorList, Handler: handleAuthFactorList(svc)},
+		{Tool: toolAuthFactorRevoke(), Perm: permission.AuthFactorRevoke, Handler: handleAuthFactorRevoke(svc)},
 	}
 }
 

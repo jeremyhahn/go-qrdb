@@ -22,19 +22,20 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // backupTools returns the MCP tool registrations for backup lifecycle
 // management: create, list, get, delete, restore, and verify.
-func backupTools(svc service.BackupServicer) []mcpserver.ServerTool {
-	return []mcpserver.ServerTool{
-		{Tool: toolBackupCreate(), Handler: handleBackupCreate(svc)},
-		{Tool: toolBackupList(), Handler: handleBackupList(svc)},
-		{Tool: toolBackupGet(), Handler: handleBackupGet(svc)},
-		{Tool: toolBackupDelete(), Handler: handleBackupDelete(svc)},
-		{Tool: toolBackupRestore(), Handler: handleBackupRestore(svc)},
-		{Tool: toolBackupVerify(), Handler: handleBackupVerify(svc)},
+func backupTools(svc service.BackupServicer) []serverTool {
+	return []serverTool{
+		{Tool: toolBackupCreate(), Perm: permission.BackupCreate, Handler: handleBackupCreate(svc)},
+		{Tool: toolBackupList(), Perm: permission.BackupList, Handler: handleBackupList(svc)},
+		{Tool: toolBackupGet(), Perm: permission.BackupRead, Handler: handleBackupGet(svc)},
+		{Tool: toolBackupDelete(), Perm: permission.BackupDelete, Handler: handleBackupDelete(svc)},
+		{Tool: toolBackupRestore(), Perm: permission.BackupRestore, Handler: handleBackupRestore(svc)},
+		{Tool: toolBackupVerify(), Perm: permission.BackupVerify, Handler: handleBackupVerify(svc)},
 	}
 }
 

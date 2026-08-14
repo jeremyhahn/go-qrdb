@@ -147,10 +147,24 @@ func authedContext(tenantID string) context.Context {
 type mockRegistry struct {
 	service.Registry
 	kvServiceFn func(tenantID, db string) (service.KVServicer, error)
+
+	// privilegeServiceFn resolves the SQL privilege catalog. A non-system
+	// tenant's every statement resolves it (pkg/sql/privilege), so it must
+	// be answered even by a test that is not about privileges; the harness
+	// serves an empty, unlatched catalog by default, which is the
+	// unrestricted posture.
+	privilegeServiceFn func(tenantID, db string) (service.PrivilegeServicer, error)
 }
 
 func (m *mockRegistry) KVService(tenantID, db string) (service.KVServicer, error) {
 	return m.kvServiceFn(tenantID, db)
+}
+
+func (m *mockRegistry) PrivilegeService(tenantID, db string) (service.PrivilegeServicer, error) {
+	if m.privilegeServiceFn != nil {
+		return m.privilegeServiceFn(tenantID, db)
+	}
+	return sqltest.NewHarness().PrivSvc, nil
 }
 
 // ---------------------------------------------------------------------------

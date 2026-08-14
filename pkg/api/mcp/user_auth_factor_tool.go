@@ -25,6 +25,7 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
@@ -33,15 +34,15 @@ import (
 // user-side auth factor surface: add, list, get, remove, rotate, relabel,
 // login. The userSvc is optional and enriches the login result with the
 // user's username, tenant, and roles; a nil userSvc leaves those empty.
-func userAuthFactorTools(svc service.UserAuthFactorServicer, userSvc user.UserServicer) []mcpserver.ServerTool {
-	return []mcpserver.ServerTool{
-		{Tool: toolUserAuthFactorAdd(), Handler: handleUserAuthFactorAddTool(svc)},
-		{Tool: toolUserAuthFactorList(), Handler: handleUserAuthFactorListTool(svc)},
-		{Tool: toolUserAuthFactorGet(), Handler: handleUserAuthFactorGetTool(svc)},
-		{Tool: toolUserAuthFactorRemove(), Handler: handleUserAuthFactorRemoveTool(svc)},
-		{Tool: toolUserAuthFactorRotate(), Handler: handleUserAuthFactorRotateTool(svc)},
-		{Tool: toolUserAuthFactorRelabel(), Handler: handleUserAuthFactorRelabelTool(svc)},
-		{Tool: toolUserAuthFactorLogin(), Handler: handleUserAuthFactorLoginTool(svc, userSvc)},
+func userAuthFactorTools(svc service.UserAuthFactorServicer, userSvc user.UserServicer) []serverTool {
+	return []serverTool{
+		{Tool: toolUserAuthFactorAdd(), Perm: permission.UserAuthFactorsAdd, Handler: handleUserAuthFactorAddTool(svc)},
+		{Tool: toolUserAuthFactorList(), Perm: permission.UserAuthFactorsList, Handler: handleUserAuthFactorListTool(svc)},
+		{Tool: toolUserAuthFactorGet(), Perm: permission.UserAuthFactorsGet, Handler: handleUserAuthFactorGetTool(svc)},
+		{Tool: toolUserAuthFactorRemove(), Perm: permission.UserAuthFactorsRemove, Handler: handleUserAuthFactorRemoveTool(svc)},
+		{Tool: toolUserAuthFactorRotate(), Perm: permission.UserAuthFactorsRotate, Handler: handleUserAuthFactorRotateTool(svc)},
+		{Tool: toolUserAuthFactorRelabel(), Perm: permission.UserAuthFactorsRelabel, Handler: handleUserAuthFactorRelabelTool(svc)},
+		{Tool: toolUserAuthFactorLogin(), Perm: permission.UserAuthFactorsLogin, Handler: handleUserAuthFactorLoginTool(svc, userSvc)},
 	}
 }
 

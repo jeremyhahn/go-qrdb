@@ -21,25 +21,30 @@ import (
 )
 
 // AuthorizeMCP checks whether the authenticated caller in ctx may invoke the
-// named MCP tool. Unlike the QUIC/REST/gRPC authorizers — which treat an
-// unmapped method as a public endpoint — MCP is DEFAULT-DENY: the MCP surface
-// is a privileged agent interface exposing the full administrative API, so a
-// tool with no explicit permission mapping is denied rather than left open. A
-// new tool must be added to mcpPermissions to become callable.
+// named MCP tool. Per-tool permissions come from the MCPToolRegistry the MCP
+// server populates at tool-registration time — the single source of truth
+// that replaced the old static mcpPermissions table. MCP is DEFAULT-DENY:
+// the MCP surface is a privileged agent interface exposing the full
+// administrative API, so a tool with no registered permission (or a nil
+// registry) is denied rather than left open. A new tool becomes callable
+// only by being registered with its permission through the MCP server's
+// addTools helper; tools registered directly on the underlying mcp-go server
+// (e.g. by a ServiceModule's RegisterMCP hook) bypass the registry and are
+// therefore denied until they gain registry coverage.
 //
 // The identity must already have been established (see the MCP server's HTTP
 // context func, which authenticates the mTLS peer and injects the identity).
-func (m *AuthMiddleware) AuthorizeMCP(ctx context.Context, toolName string) error {
+func (m *AuthMiddleware) AuthorizeMCP(ctx context.Context, tools *MCPToolRegistry, toolName string) error {
 	identity := auth.IdentityFromContext(ctx)
 	if identity == nil {
 		return &auth.AuthError{Code: "unauthenticated", Message: "mcp: no authenticated identity"}
 	}
 
-	perm, ok := LookupMCP(toolName)
+	perm, ok := tools.Lookup(toolName)
 	if !ok {
 		return &auth.AuthError{
 			Code:    "unauthorized",
-			Message: "mcp: tool not permitted (no permission mapping): " + toolName,
+			Message: "mcp: tool not permitted (no permission registration): " + toolName,
 		}
 	}
 

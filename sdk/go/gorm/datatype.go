@@ -154,7 +154,7 @@ func isIndexed(field *schema.Field) bool {
 
 // timeType returns the SQL datetime type for a Time field.
 //
-// field.Precision defaults to Config.DefaultDatetimePrecision (3) when the
+// field.Precision defaults to Config.DefaultDatetimePrecision (6) when the
 // field carries neither an explicit gorm:"precision:N" tag nor
 // Config.DisableDatetimePrecision — this mutates field.Precision so that a
 // caller inspecting the field afterward (e.g. the Migrator implemented in a

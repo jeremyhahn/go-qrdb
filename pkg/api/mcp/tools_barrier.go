@@ -27,6 +27,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -45,35 +46,36 @@ import (
 // encMigrator is optional: when supplied, the qrdb_barrier_enable_encryption
 // tool is available to migrate a previously-unencrypted barrier to a keyed
 // strategy, mirroring the REST/gRPC/QUIC BarrierEnableEncryption handlers.
-func barrierTools(svc service.BarrierServicer, pinBackend pin.PINBackend, encMigrator service.EncryptionMigrator) []mcpserver.ServerTool {
-	tools := []mcpserver.ServerTool{
-		{Tool: toolBarrierInitialize(), Handler: handleBarrierInitialize(svc, pinBackend)},
-		{Tool: toolBarrierUnseal(), Handler: handleBarrierUnseal(svc)},
-		{Tool: toolBarrierSeal(), Handler: handleBarrierSeal(svc, pinBackend)},
-		{Tool: toolBarrierStatus(), Handler: handleBarrierStatus(svc)},
-		{Tool: toolBarrierShamirInitialize(), Handler: handleBarrierShamirInitialize(svc, pinBackend)},
-		{Tool: toolBarrierShamirUnsealShare(), Handler: handleBarrierShamirUnsealShare(svc)},
-		{Tool: toolBarrierShamirUnsealShares(), Handler: handleBarrierShamirUnsealShares(svc)},
-		{Tool: toolBarrierRekey(), Handler: handleBarrierRekey(svc, pinBackend)},
-		{Tool: toolBarrierRecoveryGenerate(), Handler: handleBarrierRecoveryGenerate(svc, pinBackend)},
-		{Tool: toolBarrierRecoveryRecover(), Handler: handleBarrierRecoveryRecover(svc)},
-		{Tool: toolBarrierRecoveryDelete(), Handler: handleBarrierRecoveryDelete(svc)},
-		{Tool: toolBarrierRecoveryStatus(), Handler: handleBarrierRecoveryStatus(svc)},
-		{Tool: toolBarrierRootToken(), Handler: handleBarrierRootToken(svc)},
+func barrierTools(svc service.BarrierServicer, pinBackend pin.PINBackend, encMigrator service.EncryptionMigrator) []serverTool {
+	tools := []serverTool{
+		{Tool: toolBarrierInitialize(), Perm: permission.SealBootstrap, Handler: handleBarrierInitialize(svc, pinBackend)},
+		{Tool: toolBarrierUnseal(), Perm: permission.SealUnseal, Handler: handleBarrierUnseal(svc)},
+		{Tool: toolBarrierSeal(), Perm: permission.SealSeal, Handler: handleBarrierSeal(svc, pinBackend)},
+		{Tool: toolBarrierStatus(), Perm: permission.SealStatus, Handler: handleBarrierStatus(svc)},
+		{Tool: toolBarrierShamirInitialize(), Perm: permission.SealInitializeShamir, Handler: handleBarrierShamirInitialize(svc, pinBackend)},
+		{Tool: toolBarrierShamirUnsealShare(), Perm: permission.BarrierUnsealShare, Handler: handleBarrierShamirUnsealShare(svc)},
+		{Tool: toolBarrierShamirUnsealShares(), Perm: permission.BarrierUnsealShare, Handler: handleBarrierShamirUnsealShares(svc)},
+		{Tool: toolBarrierRekey(), Perm: permission.SealRekey, Handler: handleBarrierRekey(svc, pinBackend)},
+		{Tool: toolBarrierRecoveryGenerate(), Perm: permission.SealGenerateRecovery, Handler: handleBarrierRecoveryGenerate(svc, pinBackend)},
+		{Tool: toolBarrierRecoveryRecover(), Perm: permission.SealRecoverWithKeys, Handler: handleBarrierRecoveryRecover(svc)},
+		{Tool: toolBarrierRecoveryDelete(), Perm: permission.SealGenerateRecovery, Handler: handleBarrierRecoveryDelete(svc)},
+		{Tool: toolBarrierRecoveryStatus(), Perm: permission.SealStatus, Handler: handleBarrierRecoveryStatus(svc)},
+		{Tool: toolBarrierRootToken(), Perm: permission.SealBootstrap, Handler: handleBarrierRootToken(svc)},
 		// Security Officer distribution tools.
-		{Tool: toolBarrierOfficerRegister(), Handler: handleBarrierOfficerRegister(svc)},
-		{Tool: toolBarrierOfficerList(), Handler: handleBarrierOfficerList(svc)},
-		{Tool: toolBarrierShareClaimBegin(), Handler: handleBarrierShareClaimBegin(svc)},
-		{Tool: toolBarrierShareClaimComplete(), Handler: handleBarrierShareClaimComplete(svc)},
-		{Tool: toolBarrierOfficerClaimStatus(), Handler: handleBarrierOfficerClaimStatus(svc)},
-		{Tool: toolBarrierShamirSealVote(), Handler: handleBarrierShamirSealVote(svc)},
-		{Tool: toolBarrierRecoveryOfficerRegister(), Handler: handleBarrierRecoveryOfficerRegister(svc)},
-		{Tool: toolBarrierRecoveryShareClaimBegin(), Handler: handleBarrierRecoveryShareClaimBegin(svc)},
-		{Tool: toolBarrierRecoveryShareClaimComplete(), Handler: handleBarrierRecoveryShareClaimComplete(svc)},
+		{Tool: toolBarrierOfficerRegister(), Perm: permission.SealOfficerRegister, Handler: handleBarrierOfficerRegister(svc)},
+		{Tool: toolBarrierOfficerList(), Perm: permission.SealOfficerList, Handler: handleBarrierOfficerList(svc)},
+		{Tool: toolBarrierShareClaimBegin(), Perm: permission.IdentityGated, Handler: handleBarrierShareClaimBegin(svc)},
+		{Tool: toolBarrierShareClaimComplete(), Perm: permission.IdentityGated, Handler: handleBarrierShareClaimComplete(svc)},
+		{Tool: toolBarrierOfficerClaimStatus(), Perm: permission.SealOfficerList, Handler: handleBarrierOfficerClaimStatus(svc)},
+		{Tool: toolBarrierShamirSealVote(), Perm: permission.SealSubmitSealVote, Handler: handleBarrierShamirSealVote(svc)},
+		{Tool: toolBarrierRecoveryOfficerRegister(), Perm: permission.SealOfficerRegister, Handler: handleBarrierRecoveryOfficerRegister(svc)},
+		{Tool: toolBarrierRecoveryShareClaimBegin(), Perm: permission.IdentityGated, Handler: handleBarrierRecoveryShareClaimBegin(svc)},
+		{Tool: toolBarrierRecoveryShareClaimComplete(), Perm: permission.IdentityGated, Handler: handleBarrierRecoveryShareClaimComplete(svc)},
 	}
 	if encMigrator != nil {
-		tools = append(tools, mcpserver.ServerTool{
+		tools = append(tools, serverTool{
 			Tool:    toolBarrierEnableEncryption(),
+			Perm:    permission.SealEnableEncryption,
 			Handler: handleBarrierEnableEncryption(encMigrator),
 		})
 	}
@@ -166,7 +168,7 @@ func handleBarrierEnableEncryption(migrator service.EncryptionMigrator) mcpserve
 		// continue independent of this call's lifetime.
 		resultCh := make(chan error, 1)
 		// #nosec G118 -- detaching from the request context is the point: the
-		// migration must survive the response returning.
+		// migration must survive the tool result returning.
 		go func() {
 			resultCh <- migrator.EnableEncryption(context.Background(), scope, opts)
 		}()

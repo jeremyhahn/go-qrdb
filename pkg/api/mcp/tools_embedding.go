@@ -20,22 +20,26 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // embeddingTools returns the MCP tool registrations for embedding operations.
-func embeddingTools(embeddingSvc service.EmbeddingServicer) []mcpserver.ServerTool {
-	return []mcpserver.ServerTool{
+func embeddingTools(embeddingSvc service.EmbeddingServicer) []serverTool {
+	return []serverTool{
 		{
 			Tool:    toolEmbedText(),
+			Perm:    permission.EmbeddingEmbed,
 			Handler: handleEmbedText(embeddingSvc),
 		},
 		{
 			Tool:    toolBatchEmbed(),
+			Perm:    permission.EmbeddingEmbed,
 			Handler: handleBatchEmbed(embeddingSvc),
 		},
 		{
 			Tool:    toolListEmbeddingModels(),
+			Perm:    permission.EmbeddingListModels,
 			Handler: handleListEmbeddingModels(embeddingSvc),
 		},
 	}

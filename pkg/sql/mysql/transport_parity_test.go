@@ -18,12 +18,20 @@ package mysql
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"database/sql"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"math"
+	"math/big"
+	"net"
 	"reflect"
 	"strconv"
 	"testing"
@@ -33,6 +41,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/internal/sqltest"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/query"
@@ -651,4 +661,199 @@ func TestTransportParity_ForeignKeyMetadataIsShared(t *testing.T) {
 	assert.NoError(t, err, "mysql wire")
 	_, err = s.embedded.Exec("INSERT INTO parity_users VALUES (2, 99)")
 	assert.NoError(t, err, "embedded driver")
+}
+
+// ---------------------------------------------------------------------------
+// SQL table privileges over the MySQL wire.
+//
+// Enforcement lives in pkg/sql/privilege, which is transport-neutral, so the
+// question these tests answer is specific to this transport: does a refusal
+// reach a real MySQL client as a real MySQL access-denied error, with the
+// number a client classifies on, rather than as a generic engine failure?
+//
+// A privilege-governed session needs an authenticated, non-system-tenant
+// identity, which on this transport means a genuine TLS connection running
+// through the auth middleware chain (see sessionBuilder.Build). These tests
+// therefore stand up their own mTLS-capable server rather than reusing the
+// unauthenticated one newParitySuite builds.
+// ---------------------------------------------------------------------------
+
+// privilegeWireTenant is the tenant the governed wire session belongs to. It
+// is deliberately not the system tenant, which is exempt from privilege
+// checks permanently.
+const privilegeWireTenant = "acme"
+
+// fixedIdentityAuthenticator is an auth.Authenticator that returns one
+// identity for any TLS-bearing request. It stands in for mTLS certificate
+// mapping, which is not what these tests are about: what matters is that the
+// session reaches the SQL layer carrying a named, non-system identity.
+type fixedIdentityAuthenticator struct {
+	identity *auth.Identity
+}
+
+// Authenticate implements auth.Authenticator.
+func (a *fixedIdentityAuthenticator) Authenticate(ctx context.Context) (*auth.Identity, error) {
+	if auth.TLSStateFromContext(ctx) == nil {
+		return nil, auth.ErrNoPeerCertificate
+	}
+	return a.identity, nil
+}
+
+// Name implements auth.Authenticator.
+func (a *fixedIdentityAuthenticator) Name() string { return "test-fixed" }
+
+// newPrivilegeWireSuite starts a TLS MySQL server over a fresh catalog whose
+// sessions authenticate as subject in privilegeWireTenant, and returns a
+// database/sql handle connected to it over TLS.
+func newPrivilegeWireSuite(t *testing.T, subject string) (*sql.DB, *sqltest.Harness) {
+	t.Helper()
+
+	h := sqltest.NewHarness()
+	return newPrivilegeWireConn(t, h, subject), h
+}
+
+// newPrivilegeWireConn starts one more TLS MySQL server over an EXISTING
+// catalog, so two subjects can be observed against one set of tables.
+func newPrivilegeWireConn(t *testing.T, h *sqltest.Harness, subject string) *sql.DB {
+	t.Helper()
+
+	serverTLS, clientTLS := wireTLSPair(t)
+
+	mw := authmw.New(nil, authmw.WithAuthenticator(&fixedIdentityAuthenticator{
+		identity: &auth.Identity{Subject: subject, TenantID: privilegeWireTenant},
+	}))
+
+	srv := NewServer(&mockKVService{}, &mockAdminService{}, "127.0.0.1:0",
+		WithDatabaseName("qrdb"),
+		WithServiceRegistry(h.Registry),
+		WithTLS(serverTLS),
+		WithAuthMiddleware(mw),
+		WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))),
+	)
+	require.NoError(t, srv.Start())
+	t.Cleanup(srv.Stop)
+
+	tlsName := "qrdb-priv-" + subject + "-" + strconv.Itoa(int(time.Now().UnixNano()))
+	require.NoError(t, gomysql.RegisterTLSConfig(tlsName, clientTLS))
+	t.Cleanup(func() { gomysql.DeregisterTLSConfig(tlsName) })
+
+	cfg := gomysql.NewConfig()
+	cfg.Net = "tcp"
+	cfg.Addr = srv.Addr()
+	cfg.User = subject
+	cfg.DBName = "qrdb"
+	cfg.TLSConfig = tlsName
+	cfg.AllowNativePasswords = true
+	cfg.Timeout = 30 * time.Second
+
+	db, err := sql.Open("mysql", cfg.FormatDSN())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	require.NoError(t, db.Ping())
+	return db
+}
+
+// wireTLSPair generates a throwaway self-signed certificate and returns the
+// server and client TLS configurations that use it. A real handshake is
+// required: sessionBuilder.Build refuses any connection whose transport is not
+// a *tls.Conn, because an unauthenticated session could not carry an identity.
+func wireTLSPair(t *testing.T) (server *tls.Config, client *tls.Config) {
+	t.Helper()
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+
+	template := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "qrdb-privilege-test"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:              []string{"qrdb-privilege-test"},
+		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1")},
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	require.NoError(t, err)
+
+	cert := tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
+	pool := x509.NewCertPool()
+	parsed, err := x509.ParseCertificate(der)
+	require.NoError(t, err)
+	pool.AddCert(parsed)
+
+	return &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12},
+		&tls.Config{RootCAs: pool, ServerName: "qrdb-privilege-test", MinVersion: tls.VersionTLS12}
+}
+
+// TestTransportParity_PrivilegeRefusalCarriesTheMySQLCode is the wire
+// guarantee: a statement refused by the privilege plane reaches a real MySQL
+// client as ER_TABLEACCESS_DENIED_ERROR (1142), not as the generic 1105 every
+// unclassified engine error collapses to. The number is what a client
+// classifies on -- go-sql-driver/mysql surfaces it as *mysql.MySQLError.Number
+// and qrdb's own driver as *driver.SQLStateError.Number.
+func TestTransportParity_PrivilegeRefusalCarriesTheMySQLCode(t *testing.T) {
+	admin, h := newPrivilegeWireSuite(t, "alice")
+
+	_, err := admin.Exec("CREATE TABLE priv_users (id BIGINT PRIMARY KEY, name VARCHAR(64))")
+	require.NoError(t, err)
+	_, err = admin.Exec("INSERT INTO priv_users VALUES (1, 'alice')")
+	require.NoError(t, err)
+
+	governed := newPrivilegeWireConn(t, h, "bob")
+
+	// While the database has no privilege catalog it is unrestricted, which
+	// is what lets the first GRANT be issued at all.
+	require.Equal(t, "1", text(t, governed, "SELECT COUNT(*) FROM priv_users").String,
+		"an unlatched database must be unrestricted over the wire too")
+
+	_, err = admin.Exec("GRANT ALL PRIVILEGES ON qrdb.* TO 'alice'@'%' WITH GRANT OPTION")
+	require.NoError(t, err)
+
+	_, err = governed.Query("SELECT id FROM priv_users")
+	assert.Equal(t, uint16(1142), mysqlErrorNumber(t, err),
+		"a refusal must reach the client as ER_TABLEACCESS_DENIED_ERROR, not the generic 1105")
+
+	_, err = admin.Exec("GRANT SELECT ON priv_users TO 'bob'@'%'")
+	require.NoError(t, err)
+
+	assert.Equal(t, "1", text(t, governed, "SELECT COUNT(*) FROM priv_users").String,
+		"the grant must take effect on the very next statement")
+
+	_, err = governed.Exec("DELETE FROM priv_users WHERE id = 1")
+	assert.Equal(t, uint16(1142), mysqlErrorNumber(t, err),
+		"a table-level refusal must use the table-level code")
+}
+
+// TestTransportParity_ShowGrantsOverTheWire pins the administration surface
+// on the wire, including that SHOW GRANTS with no FOR clause reports the
+// session's authenticated identity rather than the wire client's user string.
+func TestTransportParity_ShowGrantsOverTheWire(t *testing.T) {
+	admin, h := newPrivilegeWireSuite(t, "alice")
+
+	_, err := admin.Exec("CREATE TABLE priv_show (id BIGINT PRIMARY KEY)")
+	require.NoError(t, err)
+	_, err = admin.Exec("GRANT SELECT ON priv_show TO 'bob'@'%'")
+	require.NoError(t, err)
+
+	governed := newPrivilegeWireConn(t, h, "bob")
+
+	rows, err := governed.Query("SHOW GRANTS")
+	require.NoError(t, err)
+	defer func() { _ = rows.Close() }()
+
+	var lines []string
+	for rows.Next() {
+		var line string
+		require.NoError(t, rows.Scan(&line))
+		lines = append(lines, line)
+	}
+	require.NoError(t, rows.Err())
+
+	assert.Equal(t, []string{
+		"GRANT USAGE ON *.* TO `bob`@`%`",
+		"GRANT SELECT ON `qrdb`.`priv_show` TO `bob`@`%`",
+	}, lines)
 }

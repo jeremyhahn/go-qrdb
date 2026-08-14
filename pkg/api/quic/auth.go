@@ -49,9 +49,11 @@ func (s *Server) authenticate(ctx context.Context, conn *quicgo.Conn) (context.C
 }
 
 // authorize checks whether the authenticated caller has permission for
-// the given QUIC method.
+// the given QUIC method, resolving the required permission from the
+// registration-site methodPerms registry (DEFAULT-DENY for unregistered
+// methods).
 func (s *Server) authorize(ctx context.Context, method string) error {
-	if err := s.authMW.AuthorizeQUIC(ctx, method); err != nil {
+	if err := s.authMW.AuthorizeQUIC(ctx, s.methodPerms, method); err != nil {
 		return &AuthorizationError{Method: method, Reason: err.Error()}
 	}
 	return nil

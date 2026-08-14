@@ -14,7 +14,10 @@
 
 package sdk
 
-import qrdbserver "github.com/jeremyhahn/go-qrdb/pkg/server"
+import (
+	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
+	qrdbserver "github.com/jeremyhahn/go-qrdb/pkg/server"
+)
 
 // ---------------------------------------------------------------------------
 // Embedded qrdb server options
@@ -44,3 +47,31 @@ var WithFactorRegistry = qrdbserver.WithFactorRegistry
 // ceremony verb fails closed with ErrCeremonyCANotInitialized. The argument
 // type is the re-exported CeremonyCA (see types_ceremony.go).
 var WithCeremonyCA = qrdbserver.WithCeremonyCA
+
+// ---------------------------------------------------------------------------
+// Capability modules
+//
+// A higher layer (e.g. go-xkms) registers its capabilities as a ServiceModule
+// via WithModule, instead of standing up a parallel transport stack. The
+// module's gRPC/HTTP(REST)/MCP surfaces are exposed by qrdb's own unified
+// server, gated by qrdb's authorizer.
+// ---------------------------------------------------------------------------
+
+// ServiceModule is a self-contained capability registered into the embedded
+// qrdb server via WithModule. See pkg/apimodule for the contract.
+type ServiceModule = apimodule.ServiceModule
+
+// BaseModule provides no-op defaults for every ServiceModule hook except Name;
+// embed it and override only what applies.
+type BaseModule = apimodule.BaseModule
+
+// ModuleHTTPRegistrar is the permission-recording HTTP registration surface the
+// unified server passes to ServiceModule.RegisterHTTP. Routes registered via
+// Handle declare their permission at the registration site; HandlePublic marks
+// genuine first-contact surfaces. It embeds the live chi.Router.
+type ModuleHTTPRegistrar = apimodule.HTTPRegistrar
+
+// WithModule registers a capability module into the embedded qrdb server. Its
+// gRPC/REST/MCP surfaces are attached to every transport at startup and its
+// Start/Stop lifecycle runs with the server's.
+var WithModule = qrdbserver.WithModule

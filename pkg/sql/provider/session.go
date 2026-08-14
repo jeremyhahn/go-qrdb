@@ -15,9 +15,18 @@
 package provider
 
 import (
+	"strings"
 	"sync/atomic"
 
 	sqle "github.com/dolthub/go-mysql-server/sql"
+	"github.com/dolthub/go-mysql-server/sql/types"
+
+	// Imported for its initialization side effect: sql.SystemVariables, the
+	// registry this file's init registers qrdb_isolation with, is populated
+	// by this package's own init. Go guarantees an imported package is
+	// initialized first, so the blank import is what makes that ordering a
+	// fact rather than a hope about who else happens to import it.
+	_ "github.com/dolthub/go-mysql-server/sql/variables"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -80,6 +89,109 @@ func NewSession(base *sqle.BaseSession, identity *auth.Identity) *QRDBSession {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// qrdb_isolation session system variable
+// ---------------------------------------------------------------------------
+
+// IsolationVariable is the name of the session system variable selecting an
+// interactive transaction's conflict-detection scope:
+//
+//	SET qrdb_isolation = 'none';           -- last-writer-wins
+//	SET qrdb_isolation = 'written';        -- the default
+//	SET qrdb_isolation = 'written+reads';  -- also compare point reads
+//	SELECT @@qrdb_isolation;
+//
+// See IsolationLevel for exactly what each value does and does not
+// guarantee. The variable is SESSION-scoped only: SET GLOBAL qrdb_isolation
+// is refused (ErrSystemVariableSessionOnly), because the setting is a
+// property of one client's workload, not of the cluster, and a global
+// default would silently change the isolation of every other connection.
+//
+// # Why a qrdb-specific variable rather than SET TRANSACTION ISOLATION LEVEL
+//
+// MySQL's isolation levels name the behavior of a LOCK-based engine, and
+// QRDB's transactions are optimistic; the two do not correspond, so no
+// MySQL level is accepted as a spelling of a qrdb_isolation value and none
+// of the values below claims to be equivalent to one. Concretely:
+//
+//   - InnoDB's READ COMMITTED still prevents a lost update, because a row
+//     an UPDATE touches is locked until commit. IsolationNone does not.
+//     Aliasing the two would be a straightforward lie.
+//   - InnoDB's REPEATABLE READ, the closest fit to IsolationWritten,
+//     BLOCKS a second writer of the same row and then applies it; QRDB
+//     ABORTS it with 1213. Two concurrent "UPDATE t SET n = n + 1" both
+//     succeed under InnoDB RR and one is rejected here. Same guarantee
+//     against lost updates, materially different behavior.
+//   - InnoDB's SERIALIZABLE covers ranges with next-key locks, which is
+//     exactly what IsolationWrittenReads does not do (see
+//     IsolationRangeReadError).
+//
+// MySQL's own transaction_isolation variable, and the SET TRANSACTION
+// ISOLATION LEVEL statement that writes it, are therefore left exactly as
+// go-mysql-server already treats them -- accepted, recorded, and not
+// interpreted by this package -- rather than being wired to this setting.
+// A client that issues one gets the behavior it got before this variable
+// existed, which for the default is also the behavior it gets now.
+const IsolationVariable = "qrdb_isolation"
+
+// init registers qrdb_isolation with go-mysql-server's global system
+// variable registry, which is what gives every session created afterwards a
+// copy of it (sql.BaseSession takes SystemVariables.NewSessionMap() at
+// construction) and what makes SET/SELECT @@qrdb_isolation resolve at all.
+//
+// Registration is global; the VALUE is per session. AddSystemVariables also
+// records the definition in the registry's own backing collection, so a
+// later variables.InitSystemVariables() -- which rebuilds the registry from
+// that collection -- keeps qrdb_isolation rather than dropping it.
+func init() {
+	sqle.SystemVariables.AddSystemVariables([]sqle.SystemVariable{isolationSystemVariable()})
+}
+
+// isolationSystemVariable is the definition init registers: a session-scoped,
+// dynamic ENUM over every level in isolationLevelOrder, defaulting to
+// IsolationWritten. The enum type is what rejects a misspelled level at the
+// SET statement itself, rather than accepting it and quietly running at some
+// other level.
+func isolationSystemVariable() sqle.SystemVariable {
+	values := make([]string, 0, len(isolationLevelOrder))
+	for _, level := range isolationLevelOrder {
+		values = append(values, level.String())
+	}
+	return &sqle.MysqlSystemVariable{
+		Name:              IsolationVariable,
+		Scope:             sqle.GetMysqlScope(sqle.SystemVariableScope_Session),
+		Dynamic:           true,
+		SetVarHintApplies: false,
+		Type:              types.NewSystemEnumType(IsolationVariable, values...),
+		Default:           IsolationWritten.String(),
+	}
+}
+
+// isolationLevel returns the conflict-detection scope this session has
+// selected, which StartTransaction samples once per transaction.
+//
+// It answers IsolationWritten -- the default, and the registered default of
+// the variable itself -- for a session whose variable map does not carry
+// qrdb_isolation at all. That is not a silent downgrade of a selected
+// level: a session can only lack the variable if it was built against a
+// system variable registry this package's init never reached, in which case
+// no level was ever selected and the answer is the default by definition.
+func (s *QRDBSession) isolationLevel(ctx *sqle.Context) IsolationLevel {
+	value, err := s.GetSessionVariable(ctx, IsolationVariable)
+	if err != nil {
+		return IsolationWritten
+	}
+	name, ok := value.(string)
+	if !ok {
+		return IsolationWritten
+	}
+	level, ok := isolationLevels[strings.ToLower(name)]
+	if !ok {
+		return IsolationWritten
+	}
+	return level
+}
+
 // Identity returns the authenticated identity associated with this session.
 func (s *QRDBSession) Identity() *auth.Identity {
 	return s.identity
@@ -136,9 +248,16 @@ func (s *QRDBSession) writeSet() *WriteSet {
 // therefore free of any snapshot-read cost, until a relational table
 // actually participates (see WriteSet.bind, called from
 // RelationalTable.activeWriteSet).
-func (s *QRDBSession) StartTransaction(_ *sqle.Context, tCharacteristic sqle.TransactionCharacteristic) (sqle.Transaction, error) {
+//
+// The session's qrdb_isolation setting is sampled here and fixed for the
+// whole transaction, so that changing it mid-transaction cannot retroactively
+// alter the conflict detection of work already buffered under the old
+// setting. Because engine.beginTransaction is a no-op while a transaction is
+// already open, this is once per BEGIN inside an explicit transaction, and
+// once per statement in autocommit.
+func (s *QRDBSession) StartTransaction(ctx *sqle.Context, tCharacteristic sqle.TransactionCharacteristic) (sqle.Transaction, error) {
 	readOnly := tCharacteristic == sqle.ReadOnly
-	s.ws.Store(newWriteSet(readOnly))
+	s.ws.Store(newWriteSet(readOnly, s.isolationLevel(ctx)))
 	return &transactionToken{readOnly: readOnly}, nil
 }
 

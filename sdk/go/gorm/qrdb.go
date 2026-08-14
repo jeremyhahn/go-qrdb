@@ -48,7 +48,17 @@ const defaultStringSize = 256
 // defaultDatetimePrecision is the fractional-second precision applied to
 // DATETIME columns and to Config.NowFunc when the caller does not set
 // Config.DefaultDatetimePrecision.
-const defaultDatetimePrecision = 3
+//
+// Microseconds, the most MySQL's DATETIME offers and exactly what qrdb
+// stores at that width. The precision is load-bearing in two directions and
+// 6 is the only value that satisfies both. It must not exceed what the
+// column keeps, or Apply's NowFunc hands GORM a timestamp with digits the
+// write silently truncates and a read-back comparison fails; and it must
+// not be coarser than necessary, or two writes close together round to the
+// same instant and a caller that asks "did UpdatedAt change?" is told no.
+// At millisecond precision that collision is common enough to be observed
+// routinely; at microsecond it takes a thousandfold coincidence.
+const defaultDatetimePrecision = 6
 
 // savepointNamePattern matches a bare SQL identifier: a letter or underscore
 // followed by letters, digits, or underscores. SavePoint and RollbackTo
@@ -97,8 +107,9 @@ type Config struct {
 
 	// DefaultDatetimePrecision is the fractional-second precision applied to
 	// DATETIME columns and to the NowFunc installed by Apply. Defaults to a
-	// pointer to 3. A field's own gorm:"precision:N" tag, or an explicit
-	// zero from DisableDatetimePrecision, overrides it.
+	// pointer to defaultDatetimePrecision (6). A field's own
+	// gorm:"precision:N" tag, or an explicit zero from
+	// DisableDatetimePrecision, overrides it.
 	DefaultDatetimePrecision *int
 
 	// DisableDatetimePrecision omits the fractional-second precision from

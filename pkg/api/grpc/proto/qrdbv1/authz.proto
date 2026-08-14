@@ -1,0 +1,37 @@
+// Copyright 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+
+package qrdb.v1;
+
+option go_package = "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1";
+
+import "google/protobuf/descriptor.proto";
+
+// The permission method option declares the authorization permission a
+// caller must hold to invoke the annotated RPC. It is the single source
+// of truth for gRPC authorization: the auth middleware resolves it via
+// protobuf reflection (LookupGRPCFromDescriptor) and enforces it in the
+// unary/stream interceptors. An RPC without this option is DEFAULT-DENY —
+// it is rejected before reaching the service handler unless it belongs to
+// an infrastructure service (health checking, server reflection).
+//
+// The value is a permission string from pkg/permission (e.g. "kv:put").
+// The sentinel "identity:gated" marks endpoints whose authorization is
+// enforced at the handler layer; the middleware then only requires an
+// authenticated identity (see permission.IdentityGated).
+extend google.protobuf.MethodOptions {
+    string permission = 51000;
+}

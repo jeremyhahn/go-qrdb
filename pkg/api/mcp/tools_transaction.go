@@ -21,6 +21,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -52,10 +53,11 @@ var mcpOpTypeMap = map[string]service.OpType{
 }
 
 // transactionTools returns the MCP tool registrations for transaction operations.
-func transactionTools(txSvc service.TransactionServicer) []mcpserver.ServerTool {
-	return []mcpserver.ServerTool{
+func transactionTools(txSvc service.TransactionServicer) []serverTool {
+	return []serverTool{
 		{
 			Tool:    toolTxExecute(),
+			Perm:    permission.TransactionExecute,
 			Handler: handleTxExecute(txSvc),
 		},
 	}

@@ -247,7 +247,10 @@ a request that reaches a service handler/tool with **no permission mapping** is
 - **gRPC** (`UnaryInterceptor`/`StreamInterceptor`): an unmapped `QRDBService`
   method is denied with `PermissionDenied`; only infrastructure services
   (`grpc.health.v1.Health`, `grpc.reflection.*`) are exempt.
-- **QUIC** (`AuthorizeQUIC`): an unmapped dispatch method is denied.
+- **QUIC** (`AuthorizeQUIC`): permissions are declared at the
+  handler-registration site (`pkg/api/quic` `buildHandlers`, via the
+  `handle`/`handleIf` helpers) into a `QUICMethodRegistry`; an unregistered
+  dispatch method is denied.
 - **REST** (`RESTMiddleware`): an unmapped route on the API surface (paths under
   `/kv`, `/v1/`, `/users`, `/certs`, … — see `restAPIPrefixes`) is denied.
   Pre-authentication-exempt public endpoints are `/health`, `/v1/ca/bootstrap`,
@@ -255,13 +258,18 @@ a request that reaches a service handler/tool with **no permission mapping** is
   specific permission; the embedded web UI / static assets (outside the API
   prefixes) pass through.
 - **MCP**: every tool call is authenticated (mTLS peer identity) and authorized
-  against the tool's permission via `mcpPermissions` — also default-deny (an
-  unmapped tool is rejected). The MCP surface exposes the full administrative
-  API, so it must never be reachable without an authorized identity.
+  against the tool's permission, declared WITH the tool at registration time
+  (`pkg/api/mcp` `addTools`, recorded in an `MCPToolRegistry`) — also
+  default-deny (an unregistered tool is rejected, including `ServiceModule`
+  tools added directly on the mcp-go server until they gain registry
+  coverage). The MCP surface exposes the full administrative API, so it must
+  never be reachable without an authorized identity.
 
-The mappings are validated by `TestGRPCPermissions_EveryMethodMapped` (every
-generated `QRDBService` RPC must have a permission) so a newly-added endpoint
-cannot silently ship unauthorized.
+The declarations are validated per transport: gRPC by
+`TestGRPCPermissions_EveryMethodMapped` (every generated RPC must carry a
+`(qrdb.v1.permission)` option), REST by `route_mapping_guard_test.go`, QUIC by
+`method_mapping_guard_test.go`, and MCP by `tool_mapping_guard_test.go` — so a
+newly-added endpoint cannot silently ship unauthorized.
 
 ## Category Groups
 

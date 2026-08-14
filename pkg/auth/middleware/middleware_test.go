@@ -963,7 +963,7 @@ func TestRESTMiddleware_Authorized(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	handler := m.RESTMiddleware(next)
+	handler := m.RESTMiddleware(testRESTRoutes(), next)
 
 	req := httptest.NewRequest(http.MethodPut, "/kv/mykey", nil)
 	rec := httptest.NewRecorder()
@@ -991,7 +991,7 @@ func TestRESTMiddleware_Unauthenticated(t *testing.T) {
 		t.Error("handler should not be called")
 	})
 
-	handler := m.RESTMiddleware(next)
+	handler := m.RESTMiddleware(testRESTRoutes(), next)
 
 	req := httptest.NewRequest(http.MethodPut, "/kv/key1", nil)
 	rec := httptest.NewRecorder()
@@ -1027,7 +1027,7 @@ func TestRESTMiddleware_IdentityGated_AuthenticatedPasses(t *testing.T) {
 		handlerCalled = true
 		w.WriteHeader(http.StatusOK)
 	})
-	handler := m.RESTMiddleware(next)
+	handler := m.RESTMiddleware(testRESTRoutes(), next)
 
 	routes := []string{
 		"/v1/ceremony/claim-share/begin",
@@ -1064,7 +1064,7 @@ func TestRESTMiddleware_IdentityGated_UnauthenticatedDenied(t *testing.T) {
 	next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		t.Error("handler should not be called")
 	})
-	handler := m.RESTMiddleware(next)
+	handler := m.RESTMiddleware(testRESTRoutes(), next)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/barrier/officers/so-1/claim/begin", nil)
 	rec := httptest.NewRecorder()
@@ -1086,7 +1086,7 @@ func TestRESTMiddleware_Unauthorized(t *testing.T) {
 		t.Error("handler should not be called")
 	})
 
-	handler := m.RESTMiddleware(next)
+	handler := m.RESTMiddleware(testRESTRoutes(), next)
 
 	req := httptest.NewRequest(http.MethodPut, "/kv/key1", nil)
 	rec := httptest.NewRecorder()
@@ -1119,7 +1119,7 @@ func TestRESTMiddleware_NoMapping(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	handler := m.RESTMiddleware(next)
+	handler := m.RESTMiddleware(testRESTRoutes(), next)
 
 	// /unknown is not in the mapping table.
 	req := httptest.NewRequest(http.MethodGet, "/unknown", nil)
@@ -1156,7 +1156,7 @@ func TestRESTMiddleware_UserDisabled(t *testing.T) {
 		t.Error("handler should not be called")
 	})
 
-	handler := m.RESTMiddleware(next)
+	handler := m.RESTMiddleware(testRESTRoutes(), next)
 
 	req := httptest.NewRequest(http.MethodGet, "/status", nil)
 	rec := httptest.NewRecorder()
@@ -1181,7 +1181,7 @@ func TestRESTMiddleware_HealthPublic(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	handler := m.RESTMiddleware(next)
+	handler := m.RESTMiddleware(testRESTRoutes(), next)
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	rec := httptest.NewRecorder()
 
@@ -1211,7 +1211,7 @@ func TestRESTMiddleware_CABootstrapPublic(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	handler := m.RESTMiddleware(next)
+	handler := m.RESTMiddleware(testRESTRoutes(), next)
 	req := httptest.NewRequest(http.MethodGet, "/v1/ca/bootstrap", nil)
 	rec := httptest.NewRecorder()
 
@@ -1255,7 +1255,7 @@ func TestRESTMiddleware_ClusterPathsPublic(t *testing.T) {
 				handlerCalled = true
 				w.WriteHeader(http.StatusOK)
 			})
-			handler := m.RESTMiddleware(next)
+			handler := m.RESTMiddleware(testRESTRoutes(), next)
 			req := httptest.NewRequest(http.MethodPost, tc.path, nil)
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)
@@ -1291,7 +1291,7 @@ func TestRESTMiddleware_NonClusterV1PathStillRequiresAuth(t *testing.T) {
 	next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		t.Error("handler must not be called for unauthenticated /v1/ path")
 	})
-	handler := m.RESTMiddleware(next)
+	handler := m.RESTMiddleware(testRESTRoutes(), next)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/barrier/status", nil)
 	rec := httptest.NewRecorder()
@@ -1310,7 +1310,7 @@ func TestRESTMiddleware_JSONContentType(t *testing.T) {
 	authz := &mockAuthorizer{}
 	m := New(authz, WithAuthenticator(authn))
 
-	handler := m.RESTMiddleware(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {}))
+	handler := m.RESTMiddleware(testRESTRoutes(), http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {}))
 	req := httptest.NewRequest(http.MethodGet, "/status", nil)
 	rec := httptest.NewRecorder()
 
@@ -1323,35 +1323,42 @@ func TestRESTMiddleware_JSONContentType(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// REST normalizePath tests
+// RESTRouteRegistry lookup tests (replaces the old normalizePath tests: the
+// /kv/{key} -> KV-permission collapse is now chi trie matching with static
+// sub-routes winning over the wildcard)
 // ---------------------------------------------------------------------------
 
-func TestNormalizePath(t *testing.T) {
+func TestRESTRouteRegistry_KVLookups(t *testing.T) {
+	rr := NewRESTRouteRegistry()
+	rr.Register(http.MethodGet, "/kv", permission.KVGet)
+	rr.Register(http.MethodPut, "/kv", permission.KVPut)
+	rr.Register(http.MethodGet, "/kv/*", permission.KVGet)
+	rr.Register(http.MethodPut, "/kv/*", permission.KVPut)
+	rr.Register(http.MethodGet, "/kv/scan", permission.KVList)
+	rr.Register(http.MethodGet, "/kv/range", permission.KVRange)
+
 	tests := []struct {
-		input string
-		want  string
+		method string
+		path   string
+		want   permission.Permission
 	}{
-		{"/kv", "/kv"},
-		{"/kv/", "/kv"},
-		{"/kv/mykey", "/kv"},
-		{"/kv/deep/key/path", "/kv"},
-		{"/kv/scan", "/kv/scan"},
-		{"/kv/range", "/kv/range"},
-		{"/kv/lease", "/kv/lease"},
-		{"/kv/revision", "/kv/revision"},
-		{"/kv/compact", "/kv/compact"},
-		{"/health", "/health"},
-		{"/status", "/status"},
-		{"/tx", "/tx"},
-		{"/batch", "/batch"},
-		{"/vector/namespace", "/vector/namespace"},
+		{http.MethodGet, "/kv", permission.KVGet},
+		{http.MethodGet, "/kv/", permission.KVGet},
+		{http.MethodGet, "/kv/mykey", permission.KVGet},
+		{http.MethodPut, "/kv/mykey", permission.KVPut},
+		{http.MethodGet, "/kv/deep/key/path", permission.KVGet},
+		// Static sub-routes declare their own permission and must never be
+		// collapsed into the /kv/{key} wildcard.
+		{http.MethodGet, "/kv/scan", permission.KVList},
+		{http.MethodGet, "/kv/range", permission.KVRange},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			got := normalizePath(tt.input)
-			if got != tt.want {
-				t.Errorf("normalizePath(%q) = %q, want %q", tt.input, got, tt.want)
+		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
+			got, kind, ok := rr.Lookup(tt.method, tt.path)
+			if !ok || kind != RESTRoutePermission || got != tt.want {
+				t.Errorf("Lookup(%q, %q) = %q (ok=%v kind=%v), want %q",
+					tt.method, tt.path, got, ok, kind, tt.want)
 			}
 		})
 	}

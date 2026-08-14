@@ -97,7 +97,7 @@ func TestSOMiddleware_PlainHTTP_Rejected(t *testing.T) {
 		t.Error("next should not be called for plain HTTP")
 	})
 
-	h := SOMiddleware(verifier, nil, discardLogger(), next)
+	h := SOMiddleware(testRESTRoutes(), verifier, nil, discardLogger(), next)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/initialize", nil)
 	// req.TLS is nil — plain HTTP
@@ -124,7 +124,7 @@ func TestSOMiddleware_UnmappedRoute_PassesThrough(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	h := SOMiddleware(verifier, nil, discardLogger(), next)
+	h := SOMiddleware(testRESTRoutes(), verifier, nil, discardLogger(), next)
 
 	req := newSORequest(http.MethodGet, "/v1/status", "")
 	rec := httptest.NewRecorder()
@@ -150,7 +150,7 @@ func TestSOMiddleware_NonSOPermission_PassesThrough(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	h := SOMiddleware(verifier, nil, discardLogger(), next)
+	h := SOMiddleware(testRESTRoutes(), verifier, nil, discardLogger(), next)
 
 	// PUT /v1/kv/{key} maps to KVPut which is NOT an SO permission.
 	req := newSORequest(http.MethodPut, "/v1/kv/mykey", "")
@@ -175,7 +175,7 @@ func TestSOMiddleware_SORoute_NoIdentity_Forbidden(t *testing.T) {
 		t.Error("next should not be called without identity")
 	})
 
-	h := SOMiddleware(verifier, nil, discardLogger(), next)
+	h := SOMiddleware(testRESTRoutes(), verifier, nil, discardLogger(), next)
 
 	req := newSORequest(http.MethodPost, "/v1/ceremony/initialize", "correct-pin")
 	// No identity stored in context.
@@ -197,7 +197,7 @@ func TestSOMiddleware_SORoute_NonSORole_Forbidden(t *testing.T) {
 		t.Error("next should not be called without SO role")
 	})
 
-	h := SOMiddleware(verifier, nil, discardLogger(), next)
+	h := SOMiddleware(testRESTRoutes(), verifier, nil, discardLogger(), next)
 
 	req := newSORequest(http.MethodPost, "/v1/ceremony/initialize", "pin")
 	id := &auth.Identity{Subject: "alice", TenantID: "t1", Roles: []string{"operator"}}
@@ -221,7 +221,7 @@ func TestSOMiddleware_SORoute_MissingPIN_Unauthorized(t *testing.T) {
 		t.Error("next should not be called when PIN is missing")
 	})
 
-	h := SOMiddleware(verifier, al, discardLogger(), next)
+	h := SOMiddleware(testRESTRoutes(), verifier, al, discardLogger(), next)
 
 	req := newSORequest(http.MethodPost, "/v1/ceremony/initialize", "" /* no PIN */)
 	req = withSOIdentity(req, "t1")
@@ -253,7 +253,7 @@ func TestSOMiddleware_SORoute_WrongPIN_Unauthorized(t *testing.T) {
 		t.Error("next should not be called with wrong PIN")
 	})
 
-	h := SOMiddleware(verifier, al, discardLogger(), next)
+	h := SOMiddleware(testRESTRoutes(), verifier, al, discardLogger(), next)
 
 	req := newSORequest(http.MethodPost, "/v1/ceremony/initialize", "wrong-pin")
 	req = withSOIdentity(req, "t1")
@@ -292,7 +292,7 @@ func TestSOMiddleware_SORoute_CorrectPIN_Success(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	h := SOMiddleware(verifier, al, discardLogger(), next)
+	h := SOMiddleware(testRESTRoutes(), verifier, al, discardLogger(), next)
 
 	req := newSORequest(http.MethodPost, "/v1/ceremony/initialize", "correct-pin")
 	req = withSOIdentity(req, "t1")
@@ -327,7 +327,7 @@ func TestSOMiddleware_NilAuditLogger_NoPanic(t *testing.T) {
 	})
 
 	// nil audit logger — must not panic.
-	h := SOMiddleware(verifier, nil, discardLogger(), next)
+	h := SOMiddleware(testRESTRoutes(), verifier, nil, discardLogger(), next)
 
 	req := newSORequest(http.MethodPost, "/v1/ceremony/initialize", "pin")
 	req = withSOIdentity(req, "t1")
@@ -355,7 +355,7 @@ func TestSOMiddleware_PlainHTTP_NonSORoute_PassesThrough(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	h := SOMiddleware(verifier, nil, discardLogger(), next)
+	h := SOMiddleware(testRESTRoutes(), verifier, nil, discardLogger(), next)
 
 	// GET /v1/barrier/status maps to a non-SO permission; req.TLS is nil.
 	req := httptest.NewRequest(http.MethodGet, "/v1/barrier/status", nil)

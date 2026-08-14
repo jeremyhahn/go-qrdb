@@ -20,26 +20,31 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // ragTools returns the MCP tool registrations for RAG operations.
-func ragTools(ragSvc service.RAGServicer) []mcpserver.ServerTool {
-	return []mcpserver.ServerTool{
+func ragTools(ragSvc service.RAGServicer) []serverTool {
+	return []serverTool{
 		{
 			Tool:    toolRAGIngest(),
+			Perm:    permission.RAGIngest,
 			Handler: handleRAGIngest(ragSvc),
 		},
 		{
 			Tool:    toolRAGQuery(),
+			Perm:    permission.RAGQuery,
 			Handler: handleRAGQuery(ragSvc),
 		},
 		{
 			Tool:    toolRAGDeleteDocument(),
+			Perm:    permission.RAGDeleteDocument,
 			Handler: handleRAGDeleteDocument(ragSvc),
 		},
 		{
 			Tool:    toolRAGListDocuments(),
+			Perm:    permission.RAGListDocuments,
 			Handler: handleRAGListDocuments(ragSvc),
 		},
 	}

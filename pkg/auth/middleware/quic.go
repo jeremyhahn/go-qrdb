@@ -18,7 +18,6 @@ import (
 	"context"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
-	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 )
 
 // AuthenticateQUIC performs authentication for a QUIC request. The
@@ -33,31 +32,26 @@ func (m *AuthMiddleware) AuthenticateQUIC(ctx context.Context) (context.Context,
 }
 
 // AuthorizeQUIC checks whether the authenticated caller in the context has
-// permission for the given QUIC method. DEFAULT-DENY: every dispatched method
-// must carry a permission mapping; an unmapped method is rejected rather than
-// treated as public, so a newly-added handler cannot silently become
+// permission for the given QUIC method. Per-method permissions come from the
+// QUICMethodRegistry the QUIC server populates at handler-registration time —
+// the single source of truth that replaced the old static quicPermissions
+// table. DEFAULT-DENY: every dispatched method must carry a registered
+// permission; an unregistered method (or a nil registry) is rejected rather
+// than treated as public, so a newly-added handler cannot silently become
 // unauthorized.
-func (m *AuthMiddleware) AuthorizeQUIC(ctx context.Context, method string) error {
+func (m *AuthMiddleware) AuthorizeQUIC(ctx context.Context, methods *QUICMethodRegistry, method string) error {
 	identity := auth.IdentityFromContext(ctx)
 	if identity == nil {
 		return &auth.AuthError{Code: "unauthenticated", Message: "no identity in context"}
 	}
 
-	perm, ok := LookupQUIC(method)
+	perm, ok := methods.Lookup(method)
 	if !ok {
 		return &auth.AuthError{
 			Code:    "unauthorized",
-			Message: "quic: method not authorized (no permission mapping): " + method,
+			Message: "quic: method not authorized (no permission registration): " + method,
 		}
 	}
 
 	return m.authorize(ctx, identity, perm)
-}
-
-// LookupQUIC returns the permission required for a native QUIC method.
-// Returns an empty Permission and false if the method has no mapping,
-// indicating a public endpoint that does not require authorization.
-func LookupQUIC(method string) (permission.Permission, bool) {
-	p, ok := quicPermissions[method]
-	return p, ok
 }

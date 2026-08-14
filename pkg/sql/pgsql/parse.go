@@ -33,6 +33,7 @@ import (
 	"github.com/dolthub/vitess/go/vt/sqlparser"
 	"github.com/jackc/pgx/v5/pgtype"
 	wire "github.com/jeroenrinzema/psql-wire"
+	"github.com/jeroenrinzema/psql-wire/codes"
 	psqlerr "github.com/jeroenrinzema/psql-wire/errors"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/catalog"
@@ -186,7 +187,7 @@ func (h *ParseHandler) executeEager(ctx context.Context, trimmed, translated str
 	}
 
 	// Convert GMS schema to PG wire columns.
-	columns := schemaToColumns(schema)
+	columns := schemaToColumns(sqlCtx, schema)
 
 	// Collect all rows from the iterator so we can serve them
 	// from the PreparedStatementFn callback.
@@ -232,11 +233,17 @@ func (h *ParseHandler) executeDeferred(ctx context.Context, trimmed, translated 
 		}
 	}
 
+	// declared is the RowDescription this statement is described with. The
+	// client may reuse it across many BIND/EXECUTE rounds without ever
+	// re-issuing PARSE, so it is also what every later execution must keep
+	// producing -- see ensureStableResultType.
+	declared := h.resultColumns(sqlCtx, translated)
+
 	stmt := wire.NewStatement(
 		func(execCtx context.Context, writer wire.DataWriter, parameters []wire.Parameter) error {
-			return h.executeDeferredCallback(execCtx, writer, parameters, trimmed, translated, parsedStmt, paramOIDs)
+			return h.executeDeferredCallback(execCtx, writer, parameters, trimmed, translated, parsedStmt, paramOIDs, declared)
 		},
-		wire.WithColumns(h.resultColumns(sqlCtx, translated)),
+		wire.WithColumns(declared),
 		wire.WithParameters(paramOIDs),
 	)
 
@@ -294,7 +301,7 @@ func (h *ParseHandler) resultColumns(sqlCtx *sql.Context, translated string) wir
 	if len(schema) == 0 {
 		return nil
 	}
-	return schemaToColumns(schema)
+	return schemaToColumns(sqlCtx, schema)
 }
 
 // executeDeferredCallback is the body of the deferred PreparedStatementFn
@@ -306,7 +313,9 @@ func (h *ParseHandler) resultColumns(sqlCtx *sql.Context, translated string) wir
 // that parse failed); passing it through to QueryWithBindings lets the
 // engine execute directly against it instead of re-parsing translated from
 // scratch. paramOIDs is the same slice executeDeferred declared in
-// ParameterDescription, positionally aligned with parameters.
+// ParameterDescription, positionally aligned with parameters. declared is the
+// RowDescription sent at Describe time, which this execution must still
+// match.
 func (h *ParseHandler) executeDeferredCallback(
 	ctx context.Context,
 	writer wire.DataWriter,
@@ -314,6 +323,7 @@ func (h *ParseHandler) executeDeferredCallback(
 	trimmed, translated string,
 	parsedStmt sqlparser.Statement,
 	paramOIDs []uint32,
+	declared wire.Columns,
 ) error {
 	// Convert wire parameters to GMS binding expressions.
 	bindings, err := parametersToBindings(parameters, paramOIDs)
@@ -331,6 +341,14 @@ func (h *ParseHandler) executeDeferredCallback(
 	schema, rowIter, _, err := h.sqlEngine.QueryWithBindings(sqlCtx, translated, parsedStmt, bindings, nil)
 	if err != nil {
 		return &QueryError{Query: trimmed, Err: err}
+	}
+
+	// The client is still decoding against the RowDescription this statement
+	// was described with. If DDL has changed the result shape since, refuse
+	// exactly as PostgreSQL does rather than writing rows the client will
+	// mis-map.
+	if err := ensureStableResultType(sqlCtx, declared, schema); err != nil {
+		return err
 	}
 
 	// Column metadata was already provided at PARSE time via
@@ -497,15 +515,23 @@ func paramOIDForColumn(t sql.Type) uint32 {
 // bind parameter's target column type, returning the PostgreSQL OID to
 // declare for it, keyed by 1-indexed parameter ordinal.
 //
-// Only two statement shapes are resolved: an INSERT with an explicit
-// column list, and an UPDATE SET clause — the shapes GORM's Create and
-// Save/Updates paths generate, and the only ones where an unresolved
-// binary column corrupts data on write (see paramOIDForColumn's doc
-// comment). Every other parameter position — including WHERE-clause
-// parameters, multi-table statements, and anything this walk cannot
-// uniquely resolve — is left unmapped and falls back to the pre-existing
-// string-literal binding in parametersToBindings, exactly as before this
-// change for every type except an unresolved binary column.
+// Three assignment positions are resolved: an INSERT's VALUES tuples (with
+// an explicit column list), the SET clause of an UPDATE, and the SET clause
+// of an INSERT's ON DUPLICATE KEY UPDATE — the shapes GORM's Create, Save,
+// Updates, and upsert paths generate. Every other parameter position —
+// including WHERE-clause parameters, multi-table statements, and anything
+// this walk cannot uniquely resolve — is left unmapped and falls back to the
+// string-literal binding in parametersToBindings.
+//
+// That fallback is safe for a scalar, because go-mysql-server coerces a
+// string literal to the target column's type during analysis, but it is NOT
+// safe for every type: a binary column corrupts on write (see
+// paramOIDForColumn), and a timestamp arrives in PostgreSQL's wire form,
+// which carries a zone designator MySQL's DATETIME parser rejects outright
+// ("'2026-08-14T15:19:59.250406Z' is not a valid value for 'datetime'").
+// The ON DUPLICATE KEY UPDATE clause is resolved for exactly that reason:
+// gorm.io/driver/postgres writes `ON CONFLICT ... DO UPDATE SET
+// "updated_at" = $N` on every upsert, and that parameter is a timestamp.
 func inferParamOIDs(sqlCtx *sql.Context, catalog sql.Catalog, dbName string, stmt sqlparser.Statement) map[int]uint32 {
 	oids := make(map[int]uint32)
 
@@ -536,6 +562,9 @@ func inferParamOIDs(sqlCtx *sql.Context, catalog sql.Catalog, dbName string, stm
 				oids[ordinal] = paramOIDForColumn(colType)
 			}
 		}
+		// An upsert's SET clause assigns to the same table, so its
+		// parameters resolve against the same schema.
+		assignmentOIDs(schema, sqlparser.AssignmentExprs(node.OnDup), oids)
 
 	case *sqlparser.Update:
 		if len(node.TableExprs) != 1 {
@@ -549,21 +578,29 @@ func inferParamOIDs(sqlCtx *sql.Context, catalog sql.Catalog, dbName string, stm
 		if !ok {
 			return oids
 		}
-		schema := table.Schema(sqlCtx)
-		for _, assign := range node.Exprs {
-			ordinal, ok := valArgOrdinal(assign.Expr)
-			if !ok {
-				continue
-			}
-			colType, ok := columnType(schema, assign.Name.Name)
-			if !ok {
-				continue
-			}
-			oids[ordinal] = paramOIDForColumn(colType)
-		}
+		assignmentOIDs(table.Schema(sqlCtx), node.Exprs, oids)
 	}
 
 	return oids
+}
+
+// assignmentOIDs resolves the parameter in each `column = $N` assignment
+// against schema, recording the OID to declare for it in oids. An assignment
+// whose right-hand side is not a bare parameter, or whose column schema does
+// not name, is skipped: the parameter then falls back to a string literal,
+// which is the same answer it got before this walk existed.
+func assignmentOIDs(schema sql.Schema, assignments sqlparser.AssignmentExprs, oids map[int]uint32) {
+	for _, assign := range assignments {
+		ordinal, ok := valArgOrdinal(assign.Expr)
+		if !ok {
+			continue
+		}
+		colType, ok := columnType(schema, assign.Name.Name)
+		if !ok {
+			continue
+		}
+		oids[ordinal] = paramOIDForColumn(colType)
+	}
 }
 
 // lookupTable resolves tableName in dbName through catalog, reporting false
@@ -763,16 +800,73 @@ func connectionSessionFromContext(ctx context.Context) *provider.QRDBSession {
 	return session
 }
 
+// ensureStableResultType reports a CachedPlanResultTypeError when schema, the
+// result an execution actually produced, no longer matches declared, the
+// RowDescription the statement was described with at PARSE time.
+//
+// Both the column count and each column's name and type OID are compared,
+// because both ways of diverging are harmful and only one of them is
+// self-announcing. A differing count is caught by psql-wire's own row writer
+// anyway, but as an internal error (SQLSTATE XXUUU) that no client
+// recognises; routing it through here replaces that with PostgreSQL's own
+// condition. A count that still agrees while names or OIDs have changed is
+// the dangerous case: nothing downstream notices, the rows are written
+// against the stale descriptor, and the client decodes each value into the
+// wrong column -- so a client scanning by name lands a value in the wrong
+// struct field with no error anywhere. Comparing here is what makes that
+// impossible.
+//
+// A statement that was described as producing no rows (declared empty) is
+// exempt: that is every DML statement without RETURNING, whose one-cell
+// OkResult row is not a result set and is never described as one.
+func ensureStableResultType(ctx *sql.Context, declared wire.Columns, schema sql.Schema) error {
+	if len(declared) == 0 {
+		return nil
+	}
+
+	actual := schemaToColumns(ctx, schema)
+	if len(actual) == len(declared) && !columnsDiverge(declared, actual) {
+		return nil
+	}
+
+	return psqlerr.WithCode(
+		&CachedPlanResultTypeError{Declared: len(declared), Actual: len(actual)},
+		codes.FeatureNotSupported,
+	)
+}
+
+// columnsDiverge reports whether any column of a and b, which the caller has
+// already established are the same length, differs in name or type OID.
+// Width is deliberately not compared: it is a display hint pgx does not
+// decode against, and for a variable-length type it legitimately varies with
+// the data.
+func columnsDiverge(a, b wire.Columns) bool {
+	for i := range a {
+		if a[i].Name != b[i].Name || a[i].Oid != b[i].Oid {
+			return true
+		}
+	}
+	return false
+}
+
 // schemaToColumns converts a GMS sql.Schema to psql-wire Columns with
 // the appropriate PostgreSQL OIDs.
-func schemaToColumns(schema sql.Schema) wire.Columns {
+//
+// ctx is required: go-mysql-server resolves a TEXT column's declared width
+// against the session's result character set, so StringType dereferences the
+// context for every TEXT variant narrower than LONGTEXT. Passing nil there
+// panics the connection goroutine. PostgreSQL's own `text` translates to
+// LONGTEXT (see pkg/sql/engine/ddl.go), which takes the branch that needs no
+// context -- but the engine is shared, so a table created over the MySQL wire
+// with a plain TEXT column is read back over this one, and that is the case
+// nil would crash on.
+func schemaToColumns(ctx *sql.Context, schema sql.Schema) wire.Columns {
 	columns := make(wire.Columns, len(schema))
 	for i, col := range schema {
-		typeName := strings.ToUpper(col.Type.Type().String())
 		columns[i] = wire.Column{
 			Name:  col.Name,
-			Oid:   LookupOID(typeName),
-			Width: int16(col.Type.MaxTextResponseByteLength(nil)),
+			Oid:   ColumnOID(col.Type),
+			Width: int16(col.Type.MaxTextResponseByteLength(ctx)),
 		}
 	}
 	return columns
@@ -796,6 +890,19 @@ type queryResult struct {
 // single-cell OkResult rows DML produces.
 func collectRows(ctx *sql.Context, schema sql.Schema, iter sql.RowIter) (*queryResult, error) {
 	result := &queryResult{}
+
+	// The OID each column was DESCRIBED with, computed once for the whole
+	// result rather than per cell. Every value below is normalized to what
+	// pgx can encode under its own column's declaration -- see ColumnOID.
+	oids := make([]uint32, len(schema))
+	for i, col := range schema {
+		if col == nil {
+			oids[i] = DefaultOID
+			continue
+		}
+		oids[i] = ColumnOID(col.Type)
+	}
+
 	for {
 		row, err := iter.Next(ctx)
 		if errors.Is(err, io.EOF) {
@@ -818,6 +925,7 @@ func collectRows(ctx *sql.Context, schema sql.Schema, iter sql.RowIter) (*queryR
 		// Convert sql.Row ([]interface{}) to []any for the wire writer.
 		anyRow := make([]any, len(row))
 		for j, v := range row {
+			oid := uint32(DefaultOID)
 			if j < len(schema) && schema[j] != nil {
 				resolved, resolveErr := catalog.ResolveColumnValue(ctx, schema[j].Type, v)
 				if resolveErr != nil {
@@ -825,8 +933,9 @@ func collectRows(ctx *sql.Context, schema sql.Schema, iter sql.RowIter) (*queryR
 					return nil, resolveErr
 				}
 				v = resolved
+				oid = oids[j]
 			}
-			anyRow[j] = formatValue(v)
+			anyRow[j] = formatValue(v, oid)
 		}
 		result.rows = append(result.rows, anyRow)
 	}
@@ -874,17 +983,21 @@ func buildCompleteTag(query string, rowCount int) string {
 }
 
 // formatValue converts a GMS value to a format suitable for the PG wire
-// protocol. Byte slices are converted to string for text-mode encoding
-// since BLOB/VARBINARY columns use TextOID to avoid binary format
-// issues with pgx's extended query protocol.
-func formatValue(v any) any {
+// protocol, under the OID its column was described with.
+//
+// Byte slices are converted to string for text-mode encoding since
+// BLOB/VARBINARY columns use TextOID to avoid binary format issues with
+// pgx's extended query protocol. Everything else is handed to
+// NormalizeForOID, which coerces the cell to the Go type pgx has an encode
+// plan for under that declaration -- a value that does not match the
+// description the client already received fails the statement rather than
+// arriving wrong, so this is not a convenience.
+func formatValue(v any, oid uint32) any {
 	if v == nil {
 		return nil
 	}
-	switch val := v.(type) {
-	case []byte:
-		return string(val)
-	default:
-		return val
+	if b, isBytes := v.([]byte); isBytes {
+		return string(b)
 	}
+	return NormalizeForOID(v, oid)
 }

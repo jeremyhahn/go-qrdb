@@ -24,6 +24,7 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -31,18 +32,18 @@ import (
 // management operations: non-versioned submission/strategy/deletion plus
 // the versioned-rotation surface (list, rotate, retrieve-version,
 // list-versions, gc-expired).
-func credentialTools(svc service.CredentialServicer) []mcpserver.ServerTool {
-	return []mcpserver.ServerTool{
-		{Tool: toolCredentialSubmit(), Handler: handleCredentialSubmit(svc)},
-		{Tool: toolCredentialStrategy(), Handler: handleCredentialStrategy(svc)},
-		{Tool: toolCredentialDelete(), Handler: handleCredentialDelete(svc)},
-		{Tool: toolCredentialList(), Handler: handleCredentialList(svc)},
-		{Tool: toolCredentialRotate(), Handler: handleCredentialRotate(svc)},
-		{Tool: toolCredentialRetrieveVersion(), Handler: handleCredentialRetrieveVersion(svc)},
-		{Tool: toolCredentialListVersions(), Handler: handleCredentialListVersions(svc)},
-		{Tool: toolCredentialGCExpired(), Handler: handleCredentialGCExpired(svc)},
-		{Tool: toolCredentialStore(), Handler: handleCredentialStore(svc)},
-		{Tool: toolCredentialRetrieve(), Handler: handleCredentialRetrieve(svc)},
+func credentialTools(svc service.CredentialServicer) []serverTool {
+	return []serverTool{
+		{Tool: toolCredentialSubmit(), Perm: permission.CredentialsSubmit, Handler: handleCredentialSubmit(svc)},
+		{Tool: toolCredentialStrategy(), Perm: permission.CredentialsStrategy, Handler: handleCredentialStrategy(svc)},
+		{Tool: toolCredentialDelete(), Perm: permission.CredentialsDelete, Handler: handleCredentialDelete(svc)},
+		{Tool: toolCredentialList(), Perm: permission.CredentialsList, Handler: handleCredentialList(svc)},
+		{Tool: toolCredentialRotate(), Perm: permission.CredentialsRotate, Handler: handleCredentialRotate(svc)},
+		{Tool: toolCredentialRetrieveVersion(), Perm: permission.CredentialsRetrieveVersion, Handler: handleCredentialRetrieveVersion(svc)},
+		{Tool: toolCredentialListVersions(), Perm: permission.CredentialsListVersions, Handler: handleCredentialListVersions(svc)},
+		{Tool: toolCredentialGCExpired(), Perm: permission.CredentialsGCExpired, Handler: handleCredentialGCExpired(svc)},
+		{Tool: toolCredentialStore(), Perm: permission.CredentialsStore, Handler: handleCredentialStore(svc)},
+		{Tool: toolCredentialRetrieve(), Perm: permission.CredentialsRetrieve, Handler: handleCredentialRetrieve(svc)},
 	}
 }
 

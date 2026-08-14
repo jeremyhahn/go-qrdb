@@ -250,6 +250,67 @@ func applyEscapeStrings(query string) string {
 	return b.String()
 }
 
+// escapeBackslashesInStringLiterals doubles every backslash inside each plain
+// single-quoted string literal, and leaves every other byte of query alone.
+//
+// # Why
+//
+// The two dialects disagree about what a backslash means inside '...'.
+// PostgreSQL, with standard_conforming_strings on (the default since 9.1),
+// treats it as an ordinary character: 'C:\temp' is eight characters and the
+// only escape is a doubled quote. MySQL -- and therefore go-mysql-server's
+// vitess-derived lexer, which does not honour the NO_BACKSLASH_ESCAPES
+// sql_mode -- treats it as an escape introducer: '\t' is a tab, '\b' is a
+// backspace, and '\” is a quote that does NOT close the literal.
+//
+// Handing PostgreSQL literal text to that lexer unchanged is therefore not a
+// dialect nicety but silent corruption: a Windows path 'C:\temp' arrives as
+// "C:<tab>emp", and a value ending in a backslash swallows the closing quote
+// and consumes whatever follows as literal content. Doubling each backslash
+// makes the MySQL lexer reproduce exactly the bytes PostgreSQL's rules
+// specify.
+//
+// It is also what makes advertising standard_conforming_strings=on honest.
+// The parameter is a promise about escaping, and clients act on it: pgx
+// refuses to run simple-protocol queries without it, and having seen it,
+// escapes an interpolated value by doubling quotes alone. Under the MySQL
+// reading, a value ending in a backslash would then escape the quote pgx
+// placed after it and let the rest of the statement be read as SQL -- an
+// injection. This rewrite is what makes the promise true.
+//
+// E'...' literals are deliberately excluded. PostgreSQL's escape-string
+// syntax processes backslash escapes exactly as MySQL does, so its text is
+// already in the target dialect; applyEscapeStrings converts those to plain
+// literals afterwards, which is why this must run BEFORE it, while the two
+// kinds are still distinguishable. Dollar-quoted strings are excluded for
+// the opposite reason: they have no escape processing at all in either
+// dialect, and go-mysql-server does not accept them regardless.
+func escapeBackslashesInStringLiterals(query string) string {
+	if !strings.ContainsRune(query, '\\') {
+		return query
+	}
+
+	regions := scanRegions(query)
+
+	var b strings.Builder
+	b.Grow(len(query))
+	last := 0
+	for _, r := range regions {
+		if r.kind != regionStringLiteral {
+			continue
+		}
+		literal := query[r.start:r.end]
+		if !strings.ContainsRune(literal, '\\') {
+			continue
+		}
+		b.WriteString(query[last:r.start])
+		b.WriteString(strings.ReplaceAll(literal, `\`, `\\`))
+		last = r.end
+	}
+	b.WriteString(query[last:])
+	return b.String()
+}
+
 // castMaskByte is the sentinel byte maskForCast substitutes for protected
 // content. It is a non-printable control byte, so it can never satisfy
 // castRe's quote, backtick, identifier, digit, or placeholder

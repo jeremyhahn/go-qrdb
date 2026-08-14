@@ -646,3 +646,95 @@ func openNodeNoCleanup(t *testing.T, dsn string) *sql.DB {
 	}
 	return db
 }
+
+// TestNode_LastInsertIDWithOnDuplicateKeyUpdate covers the statement shape
+// every ORM emits when it saves an association whose members are a mix of
+// rows that already exist and rows that do not: leading tuples carry
+// explicit primary keys and are diverted into ON DUPLICATE KEY UPDATE, and
+// a trailing tuple asks for a generated one.
+//
+// MySQL reports the GENERATED id here. Reporting anything else -- in
+// particular the previous statement's id, which is what go-mysql-server's
+// accumulator falls back to when its row countdown never reaches zero
+// because the leading rows were diverted -- makes the caller believe the
+// new row reused an existing id, so N appended association members collapse
+// into N-1. See provider.publishLastInsertID.
+func TestNode_LastInsertIDWithOnDuplicateKeyUpdate(t *testing.T) {
+	db := openNode(t, "node://memory?database=autoincdup")
+
+	if _, err := db.Exec("CREATE TABLE items (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, label VARCHAR(32))"); err != nil {
+		t.Fatalf("CREATE TABLE: %v", err)
+	}
+	if _, err := db.Exec("INSERT INTO items (label) VALUES ('one'),('two'),('three')"); err != nil {
+		t.Fatalf("seed INSERT: %v", err)
+	}
+
+	res, err := db.Exec("INSERT INTO items (label,id) VALUES ('three',3),('two',2),('four',DEFAULT) " +
+		"ON DUPLICATE KEY UPDATE id=id")
+	if err != nil {
+		t.Fatalf("mixed INSERT: %v", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("LastInsertId: %v", err)
+	}
+	if id != 4 {
+		t.Fatalf("LastInsertId = %d, want 4 (the generated id, not a reused or stale one)", id)
+	}
+
+	var label string
+	if err := db.QueryRow("SELECT label FROM items WHERE id = ?", id).Scan(&label); err != nil {
+		t.Fatalf("SELECT by LastInsertId: %v", err)
+	}
+	if label != "four" {
+		t.Errorf("row at LastInsertId = %q, want \"four\"", label)
+	}
+}
+
+// TestNode_LastInsertIDReportsFirstGeneratedOfStatement pins the other half
+// of MySQL's contract: when one statement generates several ids, the one
+// reported is the FIRST, which is what lets a client derive the rest by
+// counting up from it. Two existing rows and two new ones is the shape an
+// ORM produces when it appends to an association that already has members.
+func TestNode_LastInsertIDReportsFirstGeneratedOfStatement(t *testing.T) {
+	db := openNode(t, "node://memory?database=autoincfirst")
+
+	if _, err := db.Exec("CREATE TABLE items (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, label VARCHAR(32))"); err != nil {
+		t.Fatalf("CREATE TABLE: %v", err)
+	}
+	if _, err := db.Exec("INSERT INTO items (label) VALUES ('one'),('two'),('three')"); err != nil {
+		t.Fatalf("seed INSERT: %v", err)
+	}
+
+	res, err := db.Exec("INSERT INTO items (label,id) VALUES ('three',3),('two',2),('four',DEFAULT),('five',DEFAULT) " +
+		"ON DUPLICATE KEY UPDATE id=id")
+	if err != nil {
+		t.Fatalf("mixed INSERT: %v", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("LastInsertId: %v", err)
+	}
+	if id != 4 {
+		t.Fatalf("LastInsertId = %d, want 4 (the first of the two generated ids)", id)
+	}
+
+	// Counting up from the reported id must land on the second new row,
+	// which is the whole reason a client is given the first rather than the
+	// last.
+	var label string
+	if err := db.QueryRow("SELECT label FROM items WHERE id = ?", id+1).Scan(&label); err != nil {
+		t.Fatalf("SELECT at LastInsertId+1: %v", err)
+	}
+	if label != "five" {
+		t.Errorf("row at LastInsertId+1 = %q, want \"five\"", label)
+	}
+
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM items").Scan(&count); err != nil {
+		t.Fatalf("SELECT COUNT: %v", err)
+	}
+	if count != 5 {
+		t.Errorf("row count = %d, want 5", count)
+	}
+}

@@ -42,19 +42,19 @@ type tenantScopeAuthorizer func(ctx context.Context, tenantID string, perm permi
 // barrier lifecycle: init, unseal, seal, status, and Security Officer flows.
 // Every handler authorizes against the target tenant parsed from the tool
 // arguments via authorize before delegating to the tenant service.
-func tenantBarrierTools(svc tenant.TenantServicer, authorize tenantScopeAuthorizer) []mcpserver.ServerTool {
-	return []mcpserver.ServerTool{
-		{Tool: toolTenantBarrierInit(), Handler: handleTenantBarrierInit(svc, authorize)},
-		{Tool: toolTenantBarrierUnseal(), Handler: handleTenantBarrierUnseal(svc, authorize)},
-		{Tool: toolTenantBarrierUnsealShare(), Handler: handleTenantBarrierUnsealShare(svc, authorize)},
-		{Tool: toolTenantBarrierSeal(), Handler: handleTenantBarrierSeal(svc, authorize)},
-		{Tool: toolTenantBarrierStatus(), Handler: handleTenantBarrierStatus(svc, authorize)},
-		{Tool: toolTenantBarrierOfficerRegister(), Handler: handleTenantBarrierOfficerRegister(svc, authorize)},
-		{Tool: toolTenantBarrierOfficerList(), Handler: handleTenantBarrierOfficerList(svc, authorize)},
-		{Tool: toolTenantBarrierShareClaimBegin(), Handler: handleTenantBarrierShareClaimBegin(svc, authorize)},
-		{Tool: toolTenantBarrierShareClaimComplete(), Handler: handleTenantBarrierShareClaimComplete(svc, authorize)},
-		{Tool: toolTenantBarrierOfficerClaimStatus(), Handler: handleTenantBarrierOfficerClaimStatus(svc, authorize)},
-		{Tool: toolTenantBarrierShamirSealVote(), Handler: handleTenantBarrierShamirSealVote(svc, authorize)},
+func tenantBarrierTools(svc tenant.TenantServicer, authorize tenantScopeAuthorizer) []serverTool {
+	return []serverTool{
+		{Tool: toolTenantBarrierInit(), Perm: permission.TenantBarrierInit, Handler: handleTenantBarrierInit(svc, authorize)},
+		{Tool: toolTenantBarrierUnseal(), Perm: permission.TenantBarrierUnseal, Handler: handleTenantBarrierUnseal(svc, authorize)},
+		{Tool: toolTenantBarrierUnsealShare(), Perm: permission.TenantBarrierUnseal, Handler: handleTenantBarrierUnsealShare(svc, authorize)},
+		{Tool: toolTenantBarrierSeal(), Perm: permission.TenantBarrierSeal, Handler: handleTenantBarrierSeal(svc, authorize)},
+		{Tool: toolTenantBarrierStatus(), Perm: permission.TenantBarrierStatus, Handler: handleTenantBarrierStatus(svc, authorize)},
+		{Tool: toolTenantBarrierOfficerRegister(), Perm: permission.TenantBarrierOfficerRegister, Handler: handleTenantBarrierOfficerRegister(svc, authorize)},
+		{Tool: toolTenantBarrierOfficerList(), Perm: permission.TenantBarrierOfficerList, Handler: handleTenantBarrierOfficerList(svc, authorize)},
+		{Tool: toolTenantBarrierShareClaimBegin(), Perm: permission.IdentityGated, Handler: handleTenantBarrierShareClaimBegin(svc, authorize)},
+		{Tool: toolTenantBarrierShareClaimComplete(), Perm: permission.IdentityGated, Handler: handleTenantBarrierShareClaimComplete(svc, authorize)},
+		{Tool: toolTenantBarrierOfficerClaimStatus(), Perm: permission.TenantBarrierOfficerList, Handler: handleTenantBarrierOfficerClaimStatus(svc, authorize)},
+		{Tool: toolTenantBarrierShamirSealVote(), Perm: permission.TenantBarrierSealVote, Handler: handleTenantBarrierShamirSealVote(svc, authorize)},
 	}
 }
 

@@ -97,8 +97,16 @@ type Server struct {
 	tlsConfig *tls.Config
 	listener  *quicgo.Listener
 	handlers  map[string]methodHandler
-	closed    atomic.Bool
-	wg        sync.WaitGroup
+
+	// methodPerms is the single source of truth for per-method authorization.
+	// buildHandlers populates it through the s.handle/s.handleIf registration
+	// helpers, so every dispatched method declares its permission at the
+	// registration site; AuthorizeQUIC consults it with DEFAULT-DENY
+	// semantics, and the startup assertion walks the dispatch map against it.
+	methodPerms *authmw.QUICMethodRegistry
+
+	closed atomic.Bool
+	wg     sync.WaitGroup
 
 	// conns tracks every live *quicgo.Conn (key) accepted by acceptLoop,
 	// mapped to struct{}{}, so Stop can actively close them instead of

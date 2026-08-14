@@ -21,30 +21,36 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // leaseTools returns the MCP tool registrations for lease operations.
-func leaseTools(leaseSvc service.LeaseServicer) []mcpserver.ServerTool {
-	return []mcpserver.ServerTool{
+func leaseTools(leaseSvc service.LeaseServicer) []serverTool {
+	return []serverTool{
 		{
 			Tool:    toolLeaseGrant(),
+			Perm:    permission.LeaseGrant,
 			Handler: handleLeaseGrant(leaseSvc),
 		},
 		{
 			Tool:    toolLeaseRevoke(),
+			Perm:    permission.LeaseRevoke,
 			Handler: handleLeaseRevoke(leaseSvc),
 		},
 		{
 			Tool:    toolLeaseKeepAlive(),
+			Perm:    permission.LeaseKeepAlive,
 			Handler: handleLeaseKeepAlive(leaseSvc),
 		},
 		{
 			Tool:    toolLeaseTTL(),
+			Perm:    permission.LeaseTTL,
 			Handler: handleLeaseTTL(leaseSvc),
 		},
 		{
 			Tool:    toolLeaseList(),
+			Perm:    permission.LeaseList,
 			Handler: handleLeaseList(leaseSvc),
 		},
 	}

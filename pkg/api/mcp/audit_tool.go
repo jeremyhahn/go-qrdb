@@ -24,14 +24,15 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 )
 
 // auditTools returns the MCP tool registrations for audit event retrieval.
 // Authorization: requires "audit:query" permission.
 // TODO: switch to permission.AuditQuery constant once Phase 2 lands.
-func auditTools(l audit.AuditLogger) []mcpserver.ServerTool {
-	return []mcpserver.ServerTool{
-		{Tool: toolAuditQuery(), Handler: handleAuditQuery(l)},
+func auditTools(l audit.AuditLogger) []serverTool {
+	return []serverTool{
+		{Tool: toolAuditQuery(), Perm: permission.AuditQuery, Handler: handleAuditQuery(l)},
 	}
 }
 

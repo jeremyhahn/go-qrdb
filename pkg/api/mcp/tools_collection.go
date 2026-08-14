@@ -21,47 +21,57 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // collectionTools returns the MCP tool registrations for document collection
 // operations.
-func collectionTools(svc service.CollectionServicer) []mcpserver.ServerTool {
-	return []mcpserver.ServerTool{
+func collectionTools(svc service.CollectionServicer) []serverTool {
+	return []serverTool{
 		{
 			Tool:    toolCollectionCreate(),
+			Perm:    permission.CollectionsCreate,
 			Handler: handleCollectionCreate(svc),
 		},
 		{
 			Tool:    toolCollectionDrop(),
+			Perm:    permission.CollectionsDrop,
 			Handler: handleCollectionDrop(svc),
 		},
 		{
 			Tool:    toolCollectionList(),
+			Perm:    permission.CollectionsList,
 			Handler: handleCollectionList(svc),
 		},
 		{
 			Tool:    toolCollectionInfo(),
+			Perm:    permission.CollectionsRead,
 			Handler: handleCollectionInfo(svc),
 		},
 		{
 			Tool:    toolCollectionInsert(),
+			Perm:    permission.CollectionsInsert,
 			Handler: handleCollectionInsert(svc),
 		},
 		{
 			Tool:    toolCollectionGet(),
+			Perm:    permission.CollectionsRead,
 			Handler: handleCollectionGet(svc),
 		},
 		{
 			Tool:    toolCollectionUpdate(),
+			Perm:    permission.CollectionsUpdate,
 			Handler: handleCollectionUpdate(svc),
 		},
 		{
 			Tool:    toolCollectionDelete(),
+			Perm:    permission.CollectionsDelete,
 			Handler: handleCollectionDelete(svc),
 		},
 		{
 			Tool:    toolCollectionListDocuments(),
+			Perm:    permission.CollectionsList,
 			Handler: handleCollectionListDocuments(svc),
 		},
 	}

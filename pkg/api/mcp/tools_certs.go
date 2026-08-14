@@ -24,27 +24,32 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // certTools returns the MCP tool registrations for certificate management
 // operations.
-func certTools(svc cert.CertProvider) []mcpserver.ServerTool {
-	return []mcpserver.ServerTool{
+func certTools(svc cert.CertProvider) []serverTool {
+	return []serverTool{
 		{
 			Tool:    toolCertGenerate(),
+			Perm:    permission.CertsGenerate,
 			Handler: handleCertGenerate(svc),
 		},
 		{
 			Tool:    toolCertExport(),
+			Perm:    permission.CertsExport,
 			Handler: handleCertExport(svc),
 		},
 		{
 			Tool:    toolCertRevoke(),
+			Perm:    permission.CertsRevoke,
 			Handler: handleCertRevoke(svc),
 		},
 		{
 			Tool:    toolCertList(),
+			Perm:    permission.CertsList,
 			Handler: handleCertList(svc),
 		},
 	}

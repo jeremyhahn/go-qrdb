@@ -23,6 +23,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/entity"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/sql/pgcatalog"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -220,6 +221,7 @@ func (p *Provider) newDatabase(name string, engine database.EngineType) sqle.Dat
 		readOnly:      p.readOnly,
 		prescopedKV:   p.prescopedKV,
 		registry:      p.registry,
+		pgCatalog:     p.servesPGCatalog(),
 	}
 	if p.readOnly {
 		return newReadOnlyDatabase(db)
@@ -252,6 +254,9 @@ func (p *Provider) Database(_ *sqle.Context, name string) (sqle.Database, error)
 	if strings.EqualFold(name, MySQLSchemaName) {
 		return mysqlSchema{}, nil
 	}
+	if p.servesPGCatalog() && strings.EqualFold(name, pgcatalog.SchemaName) {
+		return pgcatalog.New(), nil
+	}
 	if p.manager != nil {
 		db, err := p.manager.Get(name)
 		if err != nil {
@@ -269,10 +274,30 @@ func (p *Provider) Database(_ *sqle.Context, name string) (sqle.Database, error)
 	return p.newDatabase(p.dbName, p.engine), nil
 }
 
+// servesPGCatalog reports whether this provider serves the PostgreSQL
+// system catalogue (see pkg/sql/pgcatalog).
+//
+// It is gated on the protocol filter rather than served unconditionally so
+// that the MySQL endpoint's namespace is untouched: pg_type is a
+// PostgreSQL relation, and a MySQL client has no more business resolving
+// it than a PostgreSQL client has resolving MySQL's grant tables. The
+// pgcatalog relations exist to answer PostgreSQL clients' introspection
+// queries, and only the PostgreSQL listener has any.
+func (p *Provider) servesPGCatalog() bool {
+	return p.protocol == ProtocolPostgreSQL
+}
+
 // HasDatabase reports whether the named database exists. When backed by
 // a manager, it checks all managed databases; otherwise it checks the
 // single legacy database name.
+//
+// pg_catalog answers true on a PostgreSQL provider for the same reason
+// Database resolves it: a schema a caller can select from is a schema that
+// exists.
 func (p *Provider) HasDatabase(_ *sqle.Context, name string) bool {
+	if p.servesPGCatalog() && strings.EqualFold(name, pgcatalog.SchemaName) {
+		return true
+	}
 	if p.manager != nil {
 		_, err := p.manager.Get(name)
 		return err == nil
@@ -283,11 +308,31 @@ func (p *Provider) HasDatabase(_ *sqle.Context, name string) bool {
 // AllDatabases returns all available databases. When backed by a manager,
 // it returns all managed databases filtered by the provider's protocol
 // setting; otherwise it returns just the single legacy database.
-func (p *Provider) AllDatabases(_ *sqle.Context) []sqle.Database {
+//
+// pg_catalog is deliberately absent, exactly as MySQLSchemaName is: this
+// method is what SHOW DATABASES and information_schema enumerate, and
+// pg_catalog is an implicit per-session schema qrdb serves so PostgreSQL
+// clients can introspect, not a database anything created or can drop.
+// Listing it would also make pg_class report on pg_class.
+//
+// The result is scoped to the session's tenant. The database manager is
+// node-local and holds every tenant's databases side by side, so an
+// unfiltered enumeration disclosed one tenant's database names to every
+// other tenant through SHOW DATABASES, information_schema, and
+// pg_catalog.pg_namespace/pg_class -- the last of which also names their
+// tables. Data access was never reachable that way (service.Registry
+// resolves every read and write against the session's own tenant, so a
+// cross-tenant name 404s), but the names themselves were, and a tenant's
+// schema is its own business.
+func (p *Provider) AllDatabases(ctx *sqle.Context) []sqle.Database {
 	if p.manager != nil {
+		tenantID := providerSessionTenantID(ctx)
 		infos := p.manager.List()
 		dbs := make([]sqle.Database, 0, len(infos))
 		for _, info := range infos {
+			if !strings.EqualFold(databaseOwner(info), tenantID) {
+				continue
+			}
 			if p.protocol != ProtocolAny {
 				db, err := p.manager.Get(info.Name)
 				if err != nil {
@@ -304,12 +349,42 @@ func (p *Provider) AllDatabases(_ *sqle.Context) []sqle.Database {
 	return []sqle.Database{p.newDatabase(p.dbName, p.engine)}
 }
 
+// databaseOwner returns the tenant a managed database belongs to, treating an
+// empty TenantID as the system tenant.
+//
+// The bootstrap databases a node creates before any tenant exists carry no
+// TenantID at all. Reading that as "owned by nobody" would hide them from
+// every session including the operator's; reading it as "owned by everyone"
+// is the disclosure AllDatabases exists to prevent. System-owned is the only
+// reading that is both safe and true, and it matches the fallback
+// Database.sessionTenantID already applies at the other end of the same
+// comparison.
+func databaseOwner(info database.DatabaseInfo) string {
+	if info.TenantID == "" {
+		return tenant.SystemTenantID
+	}
+	return info.TenantID
+}
+
+// providerSessionTenantID returns the tenant of the session driving ctx,
+// falling back to the system tenant for a context carrying no QRDB session --
+// the same fallback, for the same reason, as Database.sessionTenantID.
+func providerSessionTenantID(ctx *sqle.Context) string {
+	if ctx == nil || ctx.Session == nil {
+		return tenant.SystemTenantID
+	}
+	if sess, ok := ctx.Session.(*QRDBSession); ok {
+		return sess.TenantID()
+	}
+	return tenant.SystemTenantID
+}
+
 // CreateDatabase creates a new database via the manager. The database
 // defaults to the KV engine with pebble backend (SQL syntax for engine
 // and backend selection is not yet supported). Returns
 // MutableOperationNotSupportedError in legacy single-database mode.
 func (p *Provider) CreateDatabase(_ *sqle.Context, name string) error {
-	if strings.EqualFold(name, MySQLSchemaName) {
+	if strings.EqualFold(name, MySQLSchemaName) || strings.EqualFold(name, pgcatalog.SchemaName) {
 		return &ReservedDatabaseNameError{Name: name}
 	}
 	if p.manager == nil {
@@ -327,8 +402,14 @@ func (p *Provider) CreateDatabase(_ *sqle.Context, name string) error {
 }
 
 // DropDatabase drops an existing database via the manager. Returns
-// MutableOperationNotSupportedError in legacy single-database mode.
+// MutableOperationNotSupportedError in legacy single-database mode, and
+// ReservedDatabaseNameError for the reserved system schemas -- the only
+// write against pg_catalog that is syntactically reachable at all, since
+// none of its relations implements a write-capability interface.
 func (p *Provider) DropDatabase(_ *sqle.Context, name string) error {
+	if strings.EqualFold(name, MySQLSchemaName) || strings.EqualFold(name, pgcatalog.SchemaName) {
+		return &ReservedDatabaseNameError{Name: name}
+	}
 	if p.manager == nil {
 		return &MutableOperationNotSupportedError{Operation: "DROP DATABASE"}
 	}
@@ -353,6 +434,7 @@ type Database struct {
 	readOnly      bool                       // true strips write capability from served tables
 	prescopedKV   bool                       // true when kvSvc is already scoped to the caller's namespace
 	registry      service.Registry           // nil when relational tables are not available
+	pgCatalog     bool                       // true when unqualified pg_catalog relations resolve here
 }
 
 // Name returns the database name.
@@ -405,14 +487,28 @@ func (d *Database) hasTable(name string) bool {
 // are accessible. When d.readOnly is set, every returned table has its
 // write-capability interfaces stripped (see readOnlyTable).
 //
-// Resolution order is static engine tables, then DAO-registered entity
-// types, then the relational catalog (see relationalTable), then dynamic
-// collections. Relational tables take precedence over collections so that a
-// CREATE TABLE deterministically shadows a legacy same-named collection
-// rather than silently continuing to serve the collection's inferred
-// document schema.
+// Resolution order is the PostgreSQL system catalogue (PostgreSQL listener
+// only), then static engine tables, then DAO-registered entity types, then
+// the relational catalog (see relationalTable), then dynamic collections.
+// Relational tables take precedence over collections so that a CREATE TABLE
+// deterministically shadows a legacy same-named collection rather than
+// silently continuing to serve the collection's inferred document schema.
+//
+// pg_catalog comes first because PostgreSQL puts it first on every
+// session's implicit search_path: an unqualified pg_type arrives here as an
+// ordinary lookup in whatever database the session is connected to, and
+// resolving it to a user table of that name would be the wrong answer on
+// the surface that spelling belongs to. These names are not listed by
+// GetTableNames, for the same reason PostgreSQL does not list pg_catalog's
+// relations among the current schema's.
 func (d *Database) GetTableInsensitive(ctx *sqle.Context, name string) (sqle.Table, bool, error) {
 	lower := strings.ToLower(name)
+
+	if d.pgCatalog {
+		if tbl, ok := pgcatalog.Relation(lower); ok {
+			return tbl, true, nil
+		}
+	}
 
 	// Check static engine tables first.
 	if d.hasTable(lower) {

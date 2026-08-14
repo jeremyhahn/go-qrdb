@@ -22,6 +22,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
+	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 )
 
 // IndexServicer is an alias for the canonical index.IndexServicer interface.
@@ -138,6 +139,14 @@ func (s *IndexService) translateReadError(err error) error {
 			LeaderID:      nle.LeaderID,
 			LeaderAddress: nle.LeaderAddress,
 		}
+	}
+	// A state machine built without the index subsystem is a missing
+	// capability, not a failed read: the index is an optional accelerator,
+	// and a caller that can scan instead needs to be able to tell the two
+	// apart. See SubsystemNotConfiguredError.
+	var snc *statemachine.ServiceNotConfiguredError
+	if errors.As(err, &snc) {
+		return &SubsystemNotConfiguredError{Subsystem: snc.Service}
 	}
 	return &ReadError{Err: err}
 }

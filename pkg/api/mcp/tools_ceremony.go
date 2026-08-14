@@ -24,24 +24,25 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // ceremonyTools returns the MCP tool registrations for initialization
 // ceremony operations including initialization, status, certificate
 // claiming, share distribution, and CSR signing.
-func ceremonyTools(svc service.CeremonyServicer, ca ceremony.CeremonyCA) []mcpserver.ServerTool {
-	return []mcpserver.ServerTool{
-		{Tool: toolCeremonyInitialize(), Handler: handleCeremonyInitialize(svc, ca)},
-		{Tool: toolCeremonyStatus(), Handler: handleCeremonyStatus(svc)},
-		{Tool: toolCeremonyClaimCertBegin(), Handler: handleCeremonyClaimCertBegin(svc)},
-		{Tool: toolCeremonyClaimCertComplete(), Handler: handleCeremonyClaimCertComplete(svc)},
-		{Tool: toolCeremonyBeginClaimShare(), Handler: handleCeremonyBeginClaimShare(svc)},
-		{Tool: toolCeremonyCompleteClaimShare(), Handler: handleCeremonyCompleteClaimShare(svc)},
-		{Tool: toolCeremonySignCSR(), Handler: handleCeremonySignCSR(svc)},
-		{Tool: toolCeremonyClaimShareBegin(), Handler: handleCeremonyClaimShareBegin(svc)},
-		{Tool: toolCeremonyClaimShareComplete(), Handler: handleCeremonyClaimShareComplete(svc)},
-		{Tool: toolCeremonySubmitUnsealShare(), Handler: handleCeremonySubmitUnsealShare(svc)},
+func ceremonyTools(svc service.CeremonyServicer, ca ceremony.CeremonyCA) []serverTool {
+	return []serverTool{
+		{Tool: toolCeremonyInitialize(), Perm: permission.CeremonyInitialize, Handler: handleCeremonyInitialize(svc, ca)},
+		{Tool: toolCeremonyStatus(), Perm: permission.CeremonyStatus, Handler: handleCeremonyStatus(svc)},
+		{Tool: toolCeremonyClaimCertBegin(), Perm: permission.CeremonyClaimCert, Handler: handleCeremonyClaimCertBegin(svc)},
+		{Tool: toolCeremonyClaimCertComplete(), Perm: permission.CeremonyClaimCert, Handler: handleCeremonyClaimCertComplete(svc)},
+		{Tool: toolCeremonyBeginClaimShare(), Perm: permission.IdentityGated, Handler: handleCeremonyBeginClaimShare(svc)},
+		{Tool: toolCeremonyCompleteClaimShare(), Perm: permission.IdentityGated, Handler: handleCeremonyCompleteClaimShare(svc)},
+		{Tool: toolCeremonySignCSR(), Perm: permission.CeremonySignCSR, Handler: handleCeremonySignCSR(svc)},
+		{Tool: toolCeremonyClaimShareBegin(), Perm: permission.IdentityGated, Handler: handleCeremonyClaimShareBegin(svc)},
+		{Tool: toolCeremonyClaimShareComplete(), Perm: permission.IdentityGated, Handler: handleCeremonyClaimShareComplete(svc)},
+		{Tool: toolCeremonySubmitUnsealShare(), Perm: permission.BarrierUnsealShare, Handler: handleCeremonySubmitUnsealShare(svc)},
 	}
 }
 

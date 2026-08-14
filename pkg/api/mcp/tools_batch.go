@@ -25,6 +25,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -47,14 +48,16 @@ const maxImportFileSize = 100 << 20
 var maxEncodedImportFileSize = base64.StdEncoding.EncodedLen(maxImportFileSize)
 
 // batchTools returns the MCP tool registrations for batch operations.
-func batchTools(batchSvc service.BatchServicer) []mcpserver.ServerTool {
-	return []mcpserver.ServerTool{
+func batchTools(batchSvc service.BatchServicer) []serverTool {
+	return []serverTool{
 		{
 			Tool:    toolBatchExecute(),
+			Perm:    permission.BatchExecute,
 			Handler: handleBatchExecute(batchSvc),
 		},
 		{
 			Tool:    toolBatchImport(),
+			Perm:    permission.BatchExecute,
 			Handler: handleBatchImport(batchSvc),
 		},
 	}

@@ -135,7 +135,7 @@ func (c *embeddedConn) CheckNamedValue(nv *sqld.NamedValue) error {
 		return &NamedParameterUnsupportedError{Name: nv.Name}
 	}
 
-	val, err := normalizeArgValue(nv.Value)
+	val, err := normalizeArgValue(nv.Ordinal, nv.Value)
 	if err != nil {
 		return err
 	}

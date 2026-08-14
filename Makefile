@@ -198,6 +198,7 @@ PKG_SQL_MYSQL      := ./pkg/sql/mysql/...
 PKG_SQL_PGSQL      := ./pkg/sql/pgsql/...
 PKG_SQL_QUERY      := ./pkg/sql/query/...
 PKG_SQL_CATALOG    := ./pkg/sql/catalog/...
+PKG_SQL_PRIVILEGE  := ./pkg/sql/privilege/...
 PKG_CODEC          := ./pkg/codec/...
 PKG_ETCD           := ./pkg/api/etcd/...
 PKG_DATABASE       := ./pkg/database/...
@@ -280,6 +281,7 @@ clean:
 proto:
 	protoc --go_out=. --go_opt=paths=source_relative \
 		--go-grpc_out=. --go-grpc_opt=paths=source_relative \
+		pkg/api/grpc/proto/qrdbv1/authz.proto \
 		pkg/api/grpc/proto/qrdbv1/qrdb.proto
 
 # ============================================================================
@@ -482,6 +484,10 @@ test-sql-query:
 test-sql-catalog:
 	$(GOTEST) $(TAG_FLAG) $(PKG_SQL_CATALOG)
 
+.PHONY: test-sql-privilege
+test-sql-privilege:
+	$(GOTEST) $(TAG_FLAG) $(PKG_SQL_PRIVILEGE)
+
 .PHONY: test-codec
 test-codec:
 	$(GOTEST) $(TAG_FLAG) $(PKG_CODEC)
@@ -503,7 +509,7 @@ test-mcp:
 	$(GOTEST) $(TAG_FLAG) $(PKG_MCP)
 
 .PHONY: test-sql
-test-sql: test-sql-provider test-sql-engine test-sql-mysql test-sql-pgsql test-sql-query test-sql-catalog
+test-sql: test-sql-provider test-sql-engine test-sql-mysql test-sql-pgsql test-sql-query test-sql-catalog test-sql-privilege
 
 .PHONY: test-sdk
 test-sdk:
@@ -936,6 +942,11 @@ coverage-sql-catalog: | _cover-dir
 	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/sql-catalog.out $(PKG_SQL_CATALOG)
 	$(call check-coverage,$(COVER_DIR)/sql-catalog.out,sql-catalog)
 
+.PHONY: coverage-sql-privilege
+coverage-sql-privilege: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/sql-privilege.out $(PKG_SQL_PRIVILEGE)
+	$(call check-coverage,$(COVER_DIR)/sql-privilege.out,sql-privilege)
+
 .PHONY: coverage-codec
 coverage-codec: | _cover-dir
 	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/codec.out $(PKG_CODEC)
@@ -962,7 +973,7 @@ coverage-mcp: | _cover-dir
 	$(call check-coverage,$(COVER_DIR)/mcp.out,mcp)
 
 .PHONY: coverage-sql
-coverage-sql: coverage-sql-provider coverage-sql-engine coverage-sql-mysql coverage-sql-pgsql coverage-sql-query coverage-sql-catalog
+coverage-sql: coverage-sql-provider coverage-sql-engine coverage-sql-mysql coverage-sql-pgsql coverage-sql-query coverage-sql-catalog coverage-sql-privilege
 
 .PHONY: coverage-sdk
 coverage-sdk: | _cover-dir

@@ -25,6 +25,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 )
@@ -80,46 +81,56 @@ var aggFuncMap = map[string]timeseries.AggFunc{
 }
 
 // timeSeriesTools returns the MCP tool registrations for time-series operations.
-func timeSeriesTools(tsSvc service.TimeSeriesServicer) []mcpserver.ServerTool {
-	return []mcpserver.ServerTool{
+func timeSeriesTools(tsSvc service.TimeSeriesServicer) []serverTool {
+	return []serverTool{
 		{
 			Tool:    toolTSWrite(),
+			Perm:    permission.TSWrite,
 			Handler: handleTSWrite(tsSvc),
 		},
 		{
 			Tool:    toolTSWriteBatch(),
+			Perm:    permission.TSWriteBatch,
 			Handler: handleTSWriteBatch(tsSvc),
 		},
 		{
 			Tool:    toolTSQuery(),
+			Perm:    permission.TSQuery,
 			Handler: handleTSQuery(tsSvc),
 		},
 		{
 			Tool:    toolTSAggregate(),
+			Perm:    permission.TSAggregate,
 			Handler: handleTSAggregate(tsSvc),
 		},
 		{
 			Tool:    toolTSDeleteSeries(),
+			Perm:    permission.TSDeleteSeries,
 			Handler: handleTSDeleteSeries(tsSvc),
 		},
 		{
 			Tool:    toolTSGetRetentionPolicy(),
+			Perm:    permission.TSGetRetention,
 			Handler: handleTSGetRetentionPolicy(tsSvc),
 		},
 		{
 			Tool:    toolTSSetRetentionPolicy(),
+			Perm:    permission.TSSetRetention,
 			Handler: handleTSSetRetentionPolicy(tsSvc),
 		},
 		{
 			Tool:    toolTSListMetrics(),
+			Perm:    permission.TSListMetrics,
 			Handler: handleTSListMetrics(tsSvc),
 		},
 		{
 			Tool:    toolTSWritePoint(),
+			Perm:    permission.TSWritePoint,
 			Handler: handleTSWritePoint(tsSvc),
 		},
 		{
 			Tool:    toolTSRichQuery(),
+			Perm:    permission.TSRichQuery,
 			Handler: handleTSRichQuery(tsSvc),
 		},
 	}

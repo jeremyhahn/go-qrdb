@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync/atomic"
 
 	sqle "github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/vitess/go/sqltypes"
@@ -96,6 +97,16 @@ type RelationalTable struct {
 	// AUTO_INCREMENT column, since allocating the (unused) struct is
 	// cheaper than nil-checking it everywhere.
 	autoInc *sequenceBlock
+
+	// firstAutoInc is the first AUTO_INCREMENT value this table instance
+	// generated, or zero if it has generated none. It is what
+	// publishLastInsertID reports as the statement's LAST_INSERT_ID, and it
+	// is scoped to the statement for exactly the same reason autoInc's
+	// block cursor is: Database.GetTableInsensitive builds a fresh
+	// RelationalTable per table resolution, and go-mysql-server re-resolves
+	// (re-analyzes) every statement, including every execution of a
+	// prepared one. See relational_autoincrement.go.
+	firstAutoInc atomic.Uint64
 
 	// rowIDs is the equivalent cursor backing the hidden row id of a table
 	// with no declared primary key (see relational_rowid.go). It is a

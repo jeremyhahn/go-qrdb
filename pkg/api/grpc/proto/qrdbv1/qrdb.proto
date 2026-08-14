@@ -19,6 +19,7 @@ package qrdb.v1;
 option go_package = "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1";
 
 import "google/protobuf/empty.proto";
+import "pkg/api/grpc/proto/qrdbv1/authz.proto";
 
 // QRDBService is the gRPC API for the QRDB distributed key-value database.
 // It provides data-plane (KV CRUD) and control-plane (admin) operations.
@@ -28,68 +29,98 @@ service QRDBService {
     // -----------------------------------------------------------------------
 
     // Put stores a key-value pair via Raft consensus.
-    rpc Put(PutRequest) returns (PutResponse);
+    rpc Put(PutRequest) returns (PutResponse) {
+        option (qrdb.v1.permission) = "kv:put";
+    }
 
     // Get retrieves a value by key using a linearizable read.
-    rpc Get(GetRequest) returns (GetResponse);
+    rpc Get(GetRequest) returns (GetResponse) {
+        option (qrdb.v1.permission) = "kv:get";
+    }
 
     // Delete removes a key via Raft consensus.
-    rpc Delete(DeleteRequest) returns (DeleteResponse);
+    rpc Delete(DeleteRequest) returns (DeleteResponse) {
+        option (qrdb.v1.permission) = "kv:delete";
+    }
 
     // List returns sorted keys matching a prefix.
-    rpc List(ListRequest) returns (ListResponse);
+    rpc List(ListRequest) returns (ListResponse) {
+        option (qrdb.v1.permission) = "kv:list";
+    }
 
     // Scan returns key-value pairs matching a prefix.
-    rpc Scan(ScanRequest) returns (ScanResponse);
+    rpc Scan(ScanRequest) returns (ScanResponse) {
+        option (qrdb.v1.permission) = "kv:range";
+    }
 
     // -----------------------------------------------------------------------
     // MVCC operations
     // -----------------------------------------------------------------------
 
     // PutWithLease stores a key-value pair with an attached lease.
-    rpc PutWithLease(PutWithLeaseRequest) returns (PutWithLeaseResponse);
+    rpc PutWithLease(PutWithLeaseRequest) returns (PutWithLeaseResponse) {
+        option (qrdb.v1.permission) = "mvcc:put_with_lease";
+    }
 
     // GetRevision retrieves a key-value pair with full MVCC revision metadata.
-    rpc GetRevision(GetRevisionRequest) returns (GetRevisionResponse);
+    rpc GetRevision(GetRevisionRequest) returns (GetRevisionResponse) {
+        option (qrdb.v1.permission) = "mvcc:get_revision";
+    }
 
     // GetAtRevision retrieves a key-value pair at a historical revision.
-    rpc GetAtRevision(GetAtRevisionRequest) returns (GetAtRevisionResponse);
+    rpc GetAtRevision(GetAtRevisionRequest) returns (GetAtRevisionResponse) {
+        option (qrdb.v1.permission) = "mvcc:get_at_revision";
+    }
 
     // Range returns key-value pairs in the half-open interval [start, end).
-    rpc Range(RangeRequest) returns (RangeResponse);
+    rpc Range(RangeRequest) returns (RangeResponse) {
+        option (qrdb.v1.permission) = "mvcc:range";
+    }
 
     // Compact discards all MVCC revisions older than the specified revision.
-    rpc Compact(CompactRequest) returns (google.protobuf.Empty);
+    rpc Compact(CompactRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "mvcc:compact";
+    }
 
     // CurrentRevision returns the latest committed MVCC revision.
-    rpc CurrentRevision(google.protobuf.Empty) returns (CurrentRevisionResponse);
+    rpc CurrentRevision(google.protobuf.Empty) returns (CurrentRevisionResponse) {
+        option (qrdb.v1.permission) = "mvcc:current_revision";
+    }
 
     // RestoreToRevision returns a bounded set of keys to the value they held
     // at an earlier MVCC revision by proposing new writes -- a logical undo,
     // never a Raft rewind. Exactly one of RestoreRevisionRequest.prefix and
     // .keys must be set.
-    rpc RestoreToRevision(RestoreRevisionRequest) returns (RestoreRevisionResponse);
+    rpc RestoreToRevision(RestoreRevisionRequest) returns (RestoreRevisionResponse) {
+        option (qrdb.v1.permission) = "mvcc:restore";
+    }
 
     // -----------------------------------------------------------------------
     // Transaction operations
     // -----------------------------------------------------------------------
 
     // Transaction executes an atomic compare-and-swap transaction.
-    rpc Transaction(TransactionRequest) returns (TransactionResponse);
+    rpc Transaction(TransactionRequest) returns (TransactionResponse) {
+        option (qrdb.v1.permission) = "transaction:execute";
+    }
 
     // -----------------------------------------------------------------------
     // Batch operations
     // -----------------------------------------------------------------------
 
     // Batch executes multiple operations atomically.
-    rpc Batch(BatchRequest) returns (BatchResponse);
+    rpc Batch(BatchRequest) returns (BatchResponse) {
+        option (qrdb.v1.permission) = "batch:execute";
+    }
 
     // BatchImport parses and imports key-value pairs from a file (CSV, JSON,
     // NDJSON, YAML, or archive) carried in the request. This is a bounded
     // unary RPC, not a stream; the file must fit within the server's
     // configured max receive message size (mirrors the REST /batch/import
     // 100 MB bound).
-    rpc BatchImport(BatchImportRequest) returns (BatchImportResponse);
+    rpc BatchImport(BatchImportRequest) returns (BatchImportResponse) {
+        option (qrdb.v1.permission) = "batch:execute";
+    }
 
     // -----------------------------------------------------------------------
     // Watch operations
@@ -97,26 +128,38 @@ service QRDBService {
 
     // Watch creates a server-streaming watcher that delivers events for
     // the specified key or prefix.
-    rpc Watch(WatchRequest) returns (stream WatchResponse);
+    rpc Watch(WatchRequest) returns (stream WatchResponse) {
+        option (qrdb.v1.permission) = "watch:watch";
+    }
 
     // -----------------------------------------------------------------------
     // Lease operations
     // -----------------------------------------------------------------------
 
     // LeaseGrant creates a new lease with the specified TTL.
-    rpc LeaseGrant(LeaseGrantRequest) returns (LeaseGrantResponse);
+    rpc LeaseGrant(LeaseGrantRequest) returns (LeaseGrantResponse) {
+        option (qrdb.v1.permission) = "lease:grant";
+    }
 
     // LeaseRevoke immediately expires a lease and deletes attached keys.
-    rpc LeaseRevoke(LeaseRevokeRequest) returns (google.protobuf.Empty);
+    rpc LeaseRevoke(LeaseRevokeRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "lease:revoke";
+    }
 
     // LeaseKeepAlive resets the TTL on an existing lease.
-    rpc LeaseKeepAlive(LeaseKeepAliveRequest) returns (LeaseKeepAliveResponse);
+    rpc LeaseKeepAlive(LeaseKeepAliveRequest) returns (LeaseKeepAliveResponse) {
+        option (qrdb.v1.permission) = "lease:keepalive";
+    }
 
     // LeaseTimeToLive returns the current state of a lease.
-    rpc LeaseTimeToLive(LeaseTimeToLiveRequest) returns (LeaseTimeToLiveResponse);
+    rpc LeaseTimeToLive(LeaseTimeToLiveRequest) returns (LeaseTimeToLiveResponse) {
+        option (qrdb.v1.permission) = "lease:ttl";
+    }
 
     // LeaseList returns all active leases.
-    rpc LeaseList(google.protobuf.Empty) returns (LeaseListResponse);
+    rpc LeaseList(google.protobuf.Empty) returns (LeaseListResponse) {
+        option (qrdb.v1.permission) = "lease:list";
+    }
 
     // -----------------------------------------------------------------------
     // Distributed lock operations
@@ -124,332 +167,524 @@ service QRDBService {
 
     // LockAcquire acquires a distributed lock, blocking until acquired or
     // the context is cancelled.
-    rpc LockAcquire(LockAcquireRequest) returns (LockAcquireResponse);
+    rpc LockAcquire(LockAcquireRequest) returns (LockAcquireResponse) {
+        option (qrdb.v1.permission) = "locks:acquire";
+    }
 
     // LockTryLock attempts to acquire a lock immediately without blocking.
-    rpc LockTryLock(LockTryLockRequest) returns (LockTryLockResponse);
+    rpc LockTryLock(LockTryLockRequest) returns (LockTryLockResponse) {
+        option (qrdb.v1.permission) = "locks:acquire";
+    }
 
     // LockRelease releases a held lock. The fencing token must match.
-    rpc LockRelease(LockReleaseRequest) returns (google.protobuf.Empty);
+    rpc LockRelease(LockReleaseRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "locks:release";
+    }
 
     // LockExtend refreshes the TTL on a held lock without releasing it.
-    rpc LockExtend(LockExtendRequest) returns (LockExtendResponse);
+    rpc LockExtend(LockExtendRequest) returns (LockExtendResponse) {
+        option (qrdb.v1.permission) = "locks:extend";
+    }
 
     // LockStatus returns the current lock state for a key.
-    rpc LockStatus(LockStatusRequest) returns (LockStatusResponse);
+    rpc LockStatus(LockStatusRequest) returns (LockStatusResponse) {
+        option (qrdb.v1.permission) = "locks:status";
+    }
 
     // LockList returns all active locks, optionally filtered by prefix.
-    rpc LockList(LockListRequest) returns (LockListResponse);
+    rpc LockList(LockListRequest) returns (LockListResponse) {
+        option (qrdb.v1.permission) = "locks:list";
+    }
 
     // -----------------------------------------------------------------------
     // Index operations (Tier 2)
     // -----------------------------------------------------------------------
 
     // IndexCreate creates a new secondary index.
-    rpc IndexCreate(IndexCreateRequest) returns (google.protobuf.Empty);
+    rpc IndexCreate(IndexCreateRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "index:create";
+    }
 
     // IndexDrop removes a secondary index.
-    rpc IndexDrop(IndexDropRequest) returns (google.protobuf.Empty);
+    rpc IndexDrop(IndexDropRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "index:drop";
+    }
 
     // IndexQuery returns entry IDs matching an exact value in an index.
-    rpc IndexQuery(IndexQueryRequest) returns (IndexQueryResponse);
+    rpc IndexQuery(IndexQueryRequest) returns (IndexQueryResponse) {
+        option (qrdb.v1.permission) = "index:query";
+    }
 
     // IndexScan returns entries in an index within a value range.
-    rpc IndexScan(IndexScanRequest) returns (IndexScanResponse);
+    rpc IndexScan(IndexScanRequest) returns (IndexScanResponse) {
+        option (qrdb.v1.permission) = "index:scan";
+    }
 
     // IndexList returns the names of all registered indexes.
-    rpc IndexList(google.protobuf.Empty) returns (IndexListResponse);
+    rpc IndexList(google.protobuf.Empty) returns (IndexListResponse) {
+        option (qrdb.v1.permission) = "index:list";
+    }
 
     // -----------------------------------------------------------------------
     // Time-series operations (Tier 2)
     // -----------------------------------------------------------------------
 
     // TSWrite stores a single time-series data point.
-    rpc TSWrite(TSWriteRequest) returns (google.protobuf.Empty);
+    rpc TSWrite(TSWriteRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "timeseries:write";
+    }
 
     // TSWriteBatch stores multiple time-series data points atomically.
-    rpc TSWriteBatch(TSWriteBatchRequest) returns (google.protobuf.Empty);
+    rpc TSWriteBatch(TSWriteBatchRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "timeseries:write_batch";
+    }
 
     // TSQuery retrieves data points for a metric within a time range.
-    rpc TSQuery(TSQueryRequest) returns (TSQueryResponse);
+    rpc TSQuery(TSQueryRequest) returns (TSQueryResponse) {
+        option (qrdb.v1.permission) = "timeseries:query";
+    }
 
     // TSAggregate computes an aggregation over data points in a time range.
-    rpc TSAggregate(TSAggregateRequest) returns (TSAggregateResponse);
+    rpc TSAggregate(TSAggregateRequest) returns (TSAggregateResponse) {
+        option (qrdb.v1.permission) = "timeseries:aggregate";
+    }
 
     // TSWritePoint stores a single validated data point.
-    rpc TSWritePoint(TSWriteRequest) returns (google.protobuf.Empty);
+    rpc TSWritePoint(TSWriteRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "timeseries:write_point";
+    }
 
     // TSRichQuery performs a rich query with aggregation, downsampling, and grouping.
-    rpc TSRichQuery(TSRichQueryRequest) returns (TSRichQueryResponse);
+    rpc TSRichQuery(TSRichQueryRequest) returns (TSRichQueryResponse) {
+        option (qrdb.v1.permission) = "timeseries:rich_query";
+    }
 
     // TSDeleteSeries deletes time-series data matching the criteria.
-    rpc TSDeleteSeries(TSDeleteSeriesRequest) returns (google.protobuf.Empty);
+    rpc TSDeleteSeries(TSDeleteSeriesRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "timeseries:delete_series";
+    }
 
     // TSGetRetention retrieves the retention policy for a metric.
-    rpc TSGetRetention(TSGetRetentionRequest) returns (TSRetentionPolicyResponse);
+    rpc TSGetRetention(TSGetRetentionRequest) returns (TSRetentionPolicyResponse) {
+        option (qrdb.v1.permission) = "timeseries:get_retention";
+    }
 
     // TSSetRetention sets the retention policy for a metric.
-    rpc TSSetRetention(TSSetRetentionRequest) returns (google.protobuf.Empty);
+    rpc TSSetRetention(TSSetRetentionRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "timeseries:set_retention";
+    }
 
     // TSListMetrics lists metric names matching a prefix.
-    rpc TSListMetrics(TSListMetricsRequest) returns (TSListMetricsResponse);
+    rpc TSListMetrics(TSListMetricsRequest) returns (TSListMetricsResponse) {
+        option (qrdb.v1.permission) = "timeseries:list_metrics";
+    }
 
     // -----------------------------------------------------------------------
     // Vector operations (Tier 2)
     // -----------------------------------------------------------------------
 
     // VectorCreateNamespace creates a new vector namespace.
-    rpc VectorCreateNamespace(VectorCreateNamespaceRequest) returns (VectorCreateNamespaceResponse);
+    rpc VectorCreateNamespace(VectorCreateNamespaceRequest) returns (VectorCreateNamespaceResponse) {
+        option (qrdb.v1.permission) = "vector:namespace_create";
+    }
 
     // VectorDeleteNamespace removes a namespace and all its vectors.
-    rpc VectorDeleteNamespace(VectorDeleteNamespaceRequest) returns (google.protobuf.Empty);
+    rpc VectorDeleteNamespace(VectorDeleteNamespaceRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "vector:namespace_delete";
+    }
 
     // VectorListNamespaces returns all vector namespace names.
-    rpc VectorListNamespaces(VectorListNamespacesRequest) returns (VectorListNamespacesResponse);
+    rpc VectorListNamespaces(VectorListNamespacesRequest) returns (VectorListNamespacesResponse) {
+        option (qrdb.v1.permission) = "vector:namespace_list";
+    }
 
     // VectorGetNamespaceInfo returns metadata about a namespace.
-    rpc VectorGetNamespaceInfo(VectorGetNamespaceInfoRequest) returns (VectorNamespaceInfo);
+    rpc VectorGetNamespaceInfo(VectorGetNamespaceInfoRequest) returns (VectorNamespaceInfo) {
+        option (qrdb.v1.permission) = "vector:namespace_info";
+    }
 
     // VectorUpsert inserts or updates a vector in a namespace.
-    rpc VectorUpsert(VectorUpsertRequest) returns (VectorUpsertResponse);
+    rpc VectorUpsert(VectorUpsertRequest) returns (VectorUpsertResponse) {
+        option (qrdb.v1.permission) = "vector:upsert";
+    }
 
     // VectorGet retrieves a single vector by ID.
-    rpc VectorGet(VectorGetRequest) returns (VectorDataProto);
+    rpc VectorGet(VectorGetRequest) returns (VectorDataProto) {
+        option (qrdb.v1.permission) = "vector:get";
+    }
 
     // VectorDelete removes a single vector by ID.
-    rpc VectorDelete(VectorDeleteRequest) returns (google.protobuf.Empty);
+    rpc VectorDelete(VectorDeleteRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "vector:delete";
+    }
 
     // VectorBatchUpsert inserts or updates multiple vectors.
-    rpc VectorBatchUpsert(VectorBatchUpsertRequest) returns (VectorBatchUpsertResponse);
+    rpc VectorBatchUpsert(VectorBatchUpsertRequest) returns (VectorBatchUpsertResponse) {
+        option (qrdb.v1.permission) = "vector:batch_upsert";
+    }
 
     // VectorBatchDelete removes multiple vectors by ID.
-    rpc VectorBatchDelete(VectorBatchDeleteRequest) returns (VectorBatchDeleteResponse);
+    rpc VectorBatchDelete(VectorBatchDeleteRequest) returns (VectorBatchDeleteResponse) {
+        option (qrdb.v1.permission) = "vector:batch_delete";
+    }
 
     // VectorList returns a paginated list of vectors in a namespace.
-    rpc VectorList(VectorListRequest) returns (VectorListResponse);
+    rpc VectorList(VectorListRequest) returns (VectorListResponse) {
+        option (qrdb.v1.permission) = "vector:list";
+    }
 
     // VectorUpdateMetadata updates vector metadata without modifying vector data.
-    rpc VectorUpdateMetadata(VectorUpdateMetadataRequest) returns (google.protobuf.Empty);
+    rpc VectorUpdateMetadata(VectorUpdateMetadataRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "vector:update_metadata";
+    }
 
     // VectorSearchSimilar performs k-nearest-neighbor search using a query vector.
-    rpc VectorSearchSimilar(VectorSearchSimilarRequest) returns (VectorSearchSimilarResponse);
+    rpc VectorSearchSimilar(VectorSearchSimilarRequest) returns (VectorSearchSimilarResponse) {
+        option (qrdb.v1.permission) = "vector:search_similar";
+    }
 
     // VectorSearchByMetadata returns vectors matching metadata filters.
-    rpc VectorSearchByMetadata(VectorSearchByMetadataRequest) returns (VectorSearchByMetadataResponse);
+    rpc VectorSearchByMetadata(VectorSearchByMetadataRequest) returns (VectorSearchByMetadataResponse) {
+        option (qrdb.v1.permission) = "vector:search_by_metadata";
+    }
 
     // VectorHybridSearch combines vector similarity and metadata filtering.
-    rpc VectorHybridSearch(VectorHybridSearchRequest) returns (VectorHybridSearchResponse);
+    rpc VectorHybridSearch(VectorHybridSearchRequest) returns (VectorHybridSearchResponse) {
+        option (qrdb.v1.permission) = "vector:hybrid_search";
+    }
 
     // VectorSearchByID searches using an existing vector's ID as the query.
-    rpc VectorSearchByID(VectorSearchByIDRequest) returns (VectorSearchSimilarResponse);
+    rpc VectorSearchByID(VectorSearchByIDRequest) returns (VectorSearchSimilarResponse) {
+        option (qrdb.v1.permission) = "vector:search_by_id";
+    }
 
     // VectorRebuildIndex triggers an asynchronous index rebuild for a namespace.
-    rpc VectorRebuildIndex(VectorRebuildIndexRequest) returns (VectorRebuildIndexResponse);
+    rpc VectorRebuildIndex(VectorRebuildIndexRequest) returns (VectorRebuildIndexResponse) {
+        option (qrdb.v1.permission) = "vector:rebuild_index";
+    }
 
     // VectorGetRebuildProgress returns the progress of an index rebuild job.
-    rpc VectorGetRebuildProgress(VectorGetRebuildProgressRequest) returns (VectorRebuildProgress);
+    rpc VectorGetRebuildProgress(VectorGetRebuildProgressRequest) returns (VectorRebuildProgress) {
+        option (qrdb.v1.permission) = "vector:get_rebuild_progress";
+    }
 
     // VectorGetIndexStats returns statistics about a namespace's vector index.
-    rpc VectorGetIndexStats(VectorGetIndexStatsRequest) returns (VectorIndexStats);
+    rpc VectorGetIndexStats(VectorGetIndexStatsRequest) returns (VectorIndexStats) {
+        option (qrdb.v1.permission) = "vector:get_index_stats";
+    }
 
     // VectorCompactNamespace triggers asynchronous compaction for a namespace.
-    rpc VectorCompactNamespace(VectorCompactNamespaceRequest) returns (VectorCompactNamespaceResponse);
+    rpc VectorCompactNamespace(VectorCompactNamespaceRequest) returns (VectorCompactNamespaceResponse) {
+        option (qrdb.v1.permission) = "vector:compact";
+    }
 
     // VectorGetCompactionProgress returns the progress of a compaction job.
-    rpc VectorGetCompactionProgress(VectorGetCompactionProgressRequest) returns (VectorCompactionProgress);
+    rpc VectorGetCompactionProgress(VectorGetCompactionProgressRequest) returns (VectorCompactionProgress) {
+        option (qrdb.v1.permission) = "vector:get_compaction_progress";
+    }
 
     // -----------------------------------------------------------------------
     // Admin operations (unchanged)
     // -----------------------------------------------------------------------
 
     // Health returns the node health status.
-    rpc Health(google.protobuf.Empty) returns (HealthResponse);
+    rpc Health(google.protobuf.Empty) returns (HealthResponse) {
+        option (qrdb.v1.permission) = "admin:health";
+    }
 
     // Status returns detailed node status information.
-    rpc Status(google.protobuf.Empty) returns (StatusResponse);
+    rpc Status(google.protobuf.Empty) returns (StatusResponse) {
+        option (qrdb.v1.permission) = "admin:status";
+    }
 
     // Peers returns the peer list for all loaded shards.
-    rpc Peers(google.protobuf.Empty) returns (PeersResponse);
+    rpc Peers(google.protobuf.Empty) returns (PeersResponse) {
+        option (qrdb.v1.permission) = "admin:peers";
+    }
 
     // AddMember adds a new node to a shard.
-    rpc AddMember(AddMemberRequest) returns (google.protobuf.Empty);
+    rpc AddMember(AddMemberRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "admin:add_member";
+    }
 
     // RemoveMember removes a node from a shard.
-    rpc RemoveMember(RemoveMemberRequest) returns (google.protobuf.Empty);
+    rpc RemoveMember(RemoveMemberRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "admin:remove_member";
+    }
 
     // RequestSnapshot triggers a snapshot for the given shard.
-    rpc RequestSnapshot(RequestSnapshotMessage) returns (google.protobuf.Empty);
+    rpc RequestSnapshot(RequestSnapshotMessage) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "admin:snapshot";
+    }
 
     // Drain transitions the node into drain mode.
-    rpc Drain(google.protobuf.Empty) returns (google.protobuf.Empty);
+    rpc Drain(google.protobuf.Empty) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "admin:drain";
+    }
 
     // Capabilities returns the compile-time feature set of the node.
-    rpc Capabilities(CapabilitiesRequest) returns (CapabilitiesResponse);
+    rpc Capabilities(CapabilitiesRequest) returns (CapabilitiesResponse) {
+        option (qrdb.v1.permission) = "admin:capabilities";
+    }
 
     // StartShard initializes and starts a Raft group for the given shard.
-    rpc StartShard(StartShardRequest) returns (google.protobuf.Empty);
+    rpc StartShard(StartShardRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "admin:start_shard";
+    }
 
     // StopShard stops the Raft group for the given shard.
-    rpc StopShard(StopShardRequest) returns (google.protobuf.Empty);
+    rpc StopShard(StopShardRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "admin:stop_shard";
+    }
 
     // GetShardState returns the Raft state for a shard.
-    rpc GetShardState(GetShardStateRequest) returns (ShardStateResponse);
+    rpc GetShardState(GetShardStateRequest) returns (ShardStateResponse) {
+        option (qrdb.v1.permission) = "admin:shard_state";
+    }
 
     // GetTopology returns the full cluster topology.
-    rpc GetTopology(google.protobuf.Empty) returns (TopologyResponse);
+    rpc GetTopology(google.protobuf.Empty) returns (TopologyResponse) {
+        option (qrdb.v1.permission) = "admin:topology";
+    }
 
     // -----------------------------------------------------------------------
     // User management
     // -----------------------------------------------------------------------
 
     // CreateUser creates a new passwordless user.
-    rpc CreateUser(CreateUserRequest) returns (UserResponse);
+    rpc CreateUser(CreateUserRequest) returns (UserResponse) {
+        option (qrdb.v1.permission) = "users:create";
+    }
 
     // GetUser retrieves a user by ID.
-    rpc GetUser(GetUserRequest) returns (UserResponse);
+    rpc GetUser(GetUserRequest) returns (UserResponse) {
+        option (qrdb.v1.permission) = "users:read";
+    }
 
     // GetUserByUsername retrieves a user by tenant-scoped username.
-    rpc GetUserByUsername(GetUserByUsernameRequest) returns (UserResponse);
+    rpc GetUserByUsername(GetUserByUsernameRequest) returns (UserResponse) {
+        option (qrdb.v1.permission) = "users:read";
+    }
 
     // GetUserByCertThumbprint resolves a user by an mTLS certificate's
     // SPKI thumbprint via the secondary index (the mTLS-auth hot path).
-    rpc GetUserByCertThumbprint(GetUserByCertThumbprintRequest) returns (UserResponse);
+    rpc GetUserByCertThumbprint(GetUserByCertThumbprintRequest) returns (UserResponse) {
+        option (qrdb.v1.permission) = "users:get_by_cert_thumbprint";
+    }
 
     // AddCertBinding binds an mTLS certificate's SPKI thumbprint to a user
     // so GetUserByCertThumbprint resolves it (the enrollment seam).
-    rpc AddCertBinding(AddCertBindingRequest) returns (UserResponse);
+    rpc AddCertBinding(AddCertBindingRequest) returns (UserResponse) {
+        option (qrdb.v1.permission) = "users:add_cert_binding";
+    }
 
     // UpdateUser applies partial updates to an existing user.
-    rpc UpdateUser(UpdateUserProtoRequest) returns (UserResponse);
+    rpc UpdateUser(UpdateUserProtoRequest) returns (UserResponse) {
+        option (qrdb.v1.permission) = "users:update";
+    }
 
     // DeleteUser removes a non-system user by ID.
-    rpc DeleteUser(DeleteUserRequest) returns (google.protobuf.Empty);
+    rpc DeleteUser(DeleteUserRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "users:delete";
+    }
 
     // ListUsers returns a paginated list of users.
-    rpc ListUsers(ListUsersRequest) returns (ListUsersResponse);
+    rpc ListUsers(ListUsersRequest) returns (ListUsersResponse) {
+        option (qrdb.v1.permission) = "users:list";
+    }
 
     // EnableUser activates a user account.
-    rpc EnableUser(EnableUserRequest) returns (google.protobuf.Empty);
+    rpc EnableUser(EnableUserRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "users:enable";
+    }
 
     // DisableUser deactivates a user account.
-    rpc DisableUser(DisableUserRequest) returns (google.protobuf.Empty);
+    rpc DisableUser(DisableUserRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "users:disable";
+    }
 
     // -----------------------------------------------------------------------
     // Role management
     // -----------------------------------------------------------------------
 
     // CreateRole creates a new role.
-    rpc CreateRole(CreateRoleRequest) returns (RoleResponse);
+    rpc CreateRole(CreateRoleRequest) returns (RoleResponse) {
+        option (qrdb.v1.permission) = "roles:create";
+    }
 
     // GetRole retrieves a role by ID.
-    rpc GetRole(GetRoleRequest) returns (RoleResponse);
+    rpc GetRole(GetRoleRequest) returns (RoleResponse) {
+        option (qrdb.v1.permission) = "roles:read";
+    }
 
     // GetRoleByName retrieves a role by tenant-scoped name.
-    rpc GetRoleByName(GetRoleByNameRequest) returns (RoleResponse);
+    rpc GetRoleByName(GetRoleByNameRequest) returns (RoleResponse) {
+        option (qrdb.v1.permission) = "roles:read";
+    }
 
     // UpdateRole applies partial updates to an existing role.
-    rpc UpdateRole(UpdateRoleProtoRequest) returns (RoleResponse);
+    rpc UpdateRole(UpdateRoleProtoRequest) returns (RoleResponse) {
+        option (qrdb.v1.permission) = "roles:update";
+    }
 
     // DeleteRole removes a non-system role by ID.
-    rpc DeleteRole(DeleteRoleRequest) returns (google.protobuf.Empty);
+    rpc DeleteRole(DeleteRoleRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "roles:delete";
+    }
 
     // ListRoles returns a paginated list of roles.
-    rpc ListRoles(ListRolesRequest) returns (ListRolesResponse);
+    rpc ListRoles(ListRolesRequest) returns (ListRolesResponse) {
+        option (qrdb.v1.permission) = "roles:list";
+    }
 
     // AssignRole assigns a role to a user.
-    rpc AssignRole(AssignRoleRequest) returns (google.protobuf.Empty);
+    rpc AssignRole(AssignRoleRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "roles:assign";
+    }
 
     // UnassignRole removes a role assignment.
-    rpc UnassignRole(UnassignRoleRequest) returns (google.protobuf.Empty);
+    rpc UnassignRole(UnassignRoleRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "roles:unassign";
+    }
 
     // ListPermissions returns all available permission categories.
-    rpc ListPermissions(google.protobuf.Empty) returns (ListPermissionsResponse);
+    rpc ListPermissions(google.protobuf.Empty) returns (ListPermissionsResponse) {
+        option (qrdb.v1.permission) = "permissions:list";
+    }
 
     // ResolveRolePermissions returns the union of effective permissions
     // for the given role IDs (sorted, deduplicated).
-    rpc ResolveRolePermissions(ResolveRolePermissionsRequest) returns (ResolveRolePermissionsResponse);
+    rpc ResolveRolePermissions(ResolveRolePermissionsRequest) returns (ResolveRolePermissionsResponse) {
+        option (qrdb.v1.permission) = "permissions:resolve";
+    }
 
     // -----------------------------------------------------------------------
     // Certificate management
     // -----------------------------------------------------------------------
 
     // GenerateCert creates a client certificate.
-    rpc GenerateCert(GenerateCertRequest) returns (CertBundleResponse);
+    rpc GenerateCert(GenerateCertRequest) returns (CertBundleResponse) {
+        option (qrdb.v1.permission) = "certs:generate";
+    }
 
     // ExportCert exports a certificate as PKCS#12.
-    rpc ExportCert(ExportCertRequest) returns (ExportCertResponse);
+    rpc ExportCert(ExportCertRequest) returns (ExportCertResponse) {
+        option (qrdb.v1.permission) = "certs:export";
+    }
 
     // RevokeCert marks a certificate serial as revoked.
-    rpc RevokeCert(RevokeCertRequest) returns (google.protobuf.Empty);
+    rpc RevokeCert(RevokeCertRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "certs:revoke";
+    }
 
     // ListCerts lists all issued client certificates for a tenant.
-    rpc ListCerts(ListCertsRequest) returns (ListCertsResponse);
+    rpc ListCerts(ListCertsRequest) returns (ListCertsResponse) {
+        option (qrdb.v1.permission) = "certs:list";
+    }
 
     // -----------------------------------------------------------------------
     // Collection operations
     // -----------------------------------------------------------------------
 
     // CreateCollection creates a new document collection in a database.
-    rpc CreateCollection(CreateCollectionRequest) returns (CollectionInfoResponse);
+    rpc CreateCollection(CreateCollectionRequest) returns (CollectionInfoResponse) {
+        option (qrdb.v1.permission) = "collections:create";
+    }
 
     // GetCollectionInfo returns metadata about a specific collection.
-    rpc GetCollectionInfo(GetCollectionInfoRequest) returns (CollectionInfoResponse);
+    rpc GetCollectionInfo(GetCollectionInfoRequest) returns (CollectionInfoResponse) {
+        option (qrdb.v1.permission) = "collections:read";
+    }
 
     // ListCollections returns all collections within a database.
-    rpc ListCollections(ListCollectionsRequest) returns (ListCollectionsResponse);
+    rpc ListCollections(ListCollectionsRequest) returns (ListCollectionsResponse) {
+        option (qrdb.v1.permission) = "collections:list";
+    }
 
     // DropCollection removes a collection and all its documents.
-    rpc DropCollection(DropCollectionRequest) returns (google.protobuf.Empty);
+    rpc DropCollection(DropCollectionRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "collections:drop";
+    }
 
     // InsertDocument inserts a document into a collection.
-    rpc InsertDocument(InsertDocumentRequest) returns (InsertDocumentResponse);
+    rpc InsertDocument(InsertDocumentRequest) returns (InsertDocumentResponse) {
+        option (qrdb.v1.permission) = "collections:insert";
+    }
 
     // GetDocument retrieves a single document by ID.
-    rpc GetDocument(GetDocumentRequest) returns (DocumentResponse);
+    rpc GetDocument(GetDocumentRequest) returns (DocumentResponse) {
+        option (qrdb.v1.permission) = "collections:read";
+    }
 
     // UpdateDocument replaces an existing document in a collection.
-    rpc UpdateDocument(UpdateDocumentRequest) returns (google.protobuf.Empty);
+    rpc UpdateDocument(UpdateDocumentRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "collections:update";
+    }
 
     // DeleteDocument removes a document from a collection by ID.
-    rpc DeleteDocument(DeleteDocumentRequest) returns (google.protobuf.Empty);
+    rpc DeleteDocument(DeleteDocumentRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "collections:delete";
+    }
 
     // ListDocuments returns a paginated list of documents in a collection.
-    rpc ListDocuments(ListDocumentsRequest) returns (ListDocumentsResponse);
+    rpc ListDocuments(ListDocumentsRequest) returns (ListDocumentsResponse) {
+        option (qrdb.v1.permission) = "collections:list";
+    }
 
     // -----------------------------------------------------------------------
     // Database management operations
     // -----------------------------------------------------------------------
 
     // DatabaseCreate creates a new database with the specified configuration.
-    rpc DatabaseCreate(DatabaseCreateRequest) returns (DatabaseInfoResponse);
+    rpc DatabaseCreate(DatabaseCreateRequest) returns (DatabaseInfoResponse) {
+        option (qrdb.v1.permission) = "databases:create";
+    }
 
     // DatabaseGet returns information about a specific database.
-    rpc DatabaseGet(DatabaseGetRequest) returns (DatabaseInfoResponse);
+    rpc DatabaseGet(DatabaseGetRequest) returns (DatabaseInfoResponse) {
+        option (qrdb.v1.permission) = "databases:read";
+    }
 
     // DatabaseList returns information about all open databases.
-    rpc DatabaseList(google.protobuf.Empty) returns (DatabaseListResponse);
+    rpc DatabaseList(google.protobuf.Empty) returns (DatabaseListResponse) {
+        option (qrdb.v1.permission) = "databases:list";
+    }
 
     // DatabaseDrop closes and removes a database.
-    rpc DatabaseDrop(DatabaseDropRequest) returns (google.protobuf.Empty);
+    rpc DatabaseDrop(DatabaseDropRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "databases:delete";
+    }
 
     // DatabaseUpdateProtocol updates the wire protocol configuration.
-    rpc DatabaseUpdateProtocol(DatabaseUpdateProtocolRequest) returns (DatabaseInfoResponse);
+    rpc DatabaseUpdateProtocol(DatabaseUpdateProtocolRequest) returns (DatabaseInfoResponse) {
+        option (qrdb.v1.permission) = "databases:update";
+    }
 
     // DatabaseUpdateEtcd updates the etcd wire protocol configuration.
-    rpc DatabaseUpdateEtcd(DatabaseUpdateEtcdRequest) returns (DatabaseInfoResponse);
+    rpc DatabaseUpdateEtcd(DatabaseUpdateEtcdRequest) returns (DatabaseInfoResponse) {
+        option (qrdb.v1.permission) = "databases:update";
+    }
 
     // DatabaseUpdateRaft updates the Raft consensus configuration.
-    rpc DatabaseUpdateRaft(DatabaseUpdateRaftRequest) returns (DatabaseInfoResponse);
+    rpc DatabaseUpdateRaft(DatabaseUpdateRaftRequest) returns (DatabaseInfoResponse) {
+        option (qrdb.v1.permission) = "databases:update";
+    }
 
     // DatabaseScale changes the replication factor of an existing
     // dedicated-raft database.
-    rpc DatabaseScale(DatabaseScaleRequest) returns (DatabaseInfoResponse);
+    rpc DatabaseScale(DatabaseScaleRequest) returns (DatabaseInfoResponse) {
+        option (qrdb.v1.permission) = "databases:scale";
+    }
 
     // DatabaseUpdateBarrier updates the encryption barrier configuration.
-    rpc DatabaseUpdateBarrier(DatabaseUpdateBarrierRequest) returns (DatabaseInfoResponse);
+    rpc DatabaseUpdateBarrier(DatabaseUpdateBarrierRequest) returns (DatabaseInfoResponse) {
+        option (qrdb.v1.permission) = "databases:update";
+    }
 
     // DatabaseUpdateConnection updates the remote connection configuration.
-    rpc DatabaseUpdateConnection(DatabaseUpdateConnectionRequest) returns (DatabaseInfoResponse);
+    rpc DatabaseUpdateConnection(DatabaseUpdateConnectionRequest) returns (DatabaseInfoResponse) {
+        option (qrdb.v1.permission) = "databases:update";
+    }
 
     // -----------------------------------------------------------------------
     // Barrier operations
@@ -457,196 +692,298 @@ service QRDBService {
 
     // BarrierInitialize initializes the cryptographic barrier with a single
     // master key.
-    rpc BarrierInitialize(BarrierInitializeRequest) returns (google.protobuf.Empty);
+    rpc BarrierInitialize(BarrierInitializeRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "seal:bootstrap";
+    }
 
     // BarrierUnseal unseals the barrier using the master key.
-    rpc BarrierUnseal(BarrierUnsealRequest) returns (google.protobuf.Empty);
+    rpc BarrierUnseal(BarrierUnsealRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "seal:unseal";
+    }
 
     // BarrierSeal seals the barrier, preventing data access until unsealed.
-    rpc BarrierSeal(google.protobuf.Empty) returns (google.protobuf.Empty);
+    rpc BarrierSeal(google.protobuf.Empty) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "seal:seal";
+    }
 
     // BarrierStatus returns the current barrier state.
-    rpc BarrierStatus(google.protobuf.Empty) returns (BarrierStatusResponse);
+    rpc BarrierStatus(google.protobuf.Empty) returns (BarrierStatusResponse) {
+        option (qrdb.v1.permission) = "seal:status";
+    }
 
     // BarrierShamirInitialize initializes the barrier with Shamir secret sharing.
-    rpc BarrierShamirInitialize(BarrierShamirInitializeRequest) returns (BarrierShamirOperationResponse);
+    rpc BarrierShamirInitialize(BarrierShamirInitializeRequest) returns (BarrierShamirOperationResponse) {
+        option (qrdb.v1.permission) = "seal:initialize_shamir";
+    }
 
     // BarrierShamirUnsealShare submits a single Shamir share toward the unseal threshold.
-    rpc BarrierShamirUnsealShare(BarrierShamirUnsealShareRequest) returns (BarrierShamirUnsealShareResponse);
+    rpc BarrierShamirUnsealShare(BarrierShamirUnsealShareRequest) returns (BarrierShamirUnsealShareResponse) {
+        option (qrdb.v1.permission) = "barrier:unseal-share";
+    }
 
     // BarrierShamirUnsealShares submits multiple Shamir shares to unseal in one call.
-    rpc BarrierShamirUnsealShares(BarrierShamirUnsealSharesRequest) returns (google.protobuf.Empty);
+    rpc BarrierShamirUnsealShares(BarrierShamirUnsealSharesRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "barrier:unseal-share";
+    }
 
     // BarrierRekey generates new Shamir shares with the specified parameters.
-    rpc BarrierRekey(BarrierRekeyRequest) returns (BarrierShamirOperationResponse);
+    rpc BarrierRekey(BarrierRekeyRequest) returns (BarrierShamirOperationResponse) {
+        option (qrdb.v1.permission) = "seal:rekey";
+    }
 
     // BarrierEnableEncryption migrates a previously-unencrypted barrier to a
     // keyed strategy (enable encryption after the fact). The migration runs
     // asynchronously because a system-scope migration recycles the data-plane
     // server in process; the call returns immediately and clients poll
     // BarrierStatus for the strategy change.
-    rpc BarrierEnableEncryption(BarrierEnableEncryptionRequest) returns (BarrierEnableEncryptionResponse);
+    rpc BarrierEnableEncryption(BarrierEnableEncryptionRequest) returns (BarrierEnableEncryptionResponse) {
+        option (qrdb.v1.permission) = "seal:enable_encryption";
+    }
 
     // -----------------------------------------------------------------------
     // Barrier Security Officer management (system barrier)
     // -----------------------------------------------------------------------
 
     // BarrierOfficerRegister registers a new Security Officer for the system barrier.
-    rpc BarrierOfficerRegister(BarrierOfficerRegisterRequest) returns (BarrierOfficerRegisterResponse);
+    rpc BarrierOfficerRegister(BarrierOfficerRegisterRequest) returns (BarrierOfficerRegisterResponse) {
+        option (qrdb.v1.permission) = "seal:officer_register";
+    }
 
     // BarrierOfficerList lists all registered Security Officers for the system barrier.
-    rpc BarrierOfficerList(google.protobuf.Empty) returns (BarrierOfficerListResponse);
+    rpc BarrierOfficerList(google.protobuf.Empty) returns (BarrierOfficerListResponse) {
+        option (qrdb.v1.permission) = "seal:officer_list";
+    }
 
     // BarrierShareClaimBegin starts the share claim handshake for the calling SO.
-    rpc BarrierShareClaimBegin(BarrierShareClaimBeginRequest) returns (BarrierShareClaimBeginResponse);
+    rpc BarrierShareClaimBegin(BarrierShareClaimBeginRequest) returns (BarrierShareClaimBeginResponse) {
+        option (qrdb.v1.permission) = "identity:gated";
+    }
 
     // BarrierShareClaimComplete completes the share claim handshake and returns
     // the share exactly once. Only callable by the SO's own mTLS session.
-    rpc BarrierShareClaimComplete(BarrierShareClaimCompleteRequest) returns (BarrierShareClaimCompleteResponse);
+    rpc BarrierShareClaimComplete(BarrierShareClaimCompleteRequest) returns (BarrierShareClaimCompleteResponse) {
+        option (qrdb.v1.permission) = "identity:gated";
+    }
 
     // BarrierOfficerClaimStatus returns per-officer claim status (no share data).
-    rpc BarrierOfficerClaimStatus(google.protobuf.Empty) returns (BarrierOfficerClaimStatusResponse);
+    rpc BarrierOfficerClaimStatus(google.protobuf.Empty) returns (BarrierOfficerClaimStatusResponse) {
+        option (qrdb.v1.permission) = "seal:officer_list";
+    }
 
     // BarrierShamirSealVote submits a share as a seal vote (Shamir barriers only).
-    rpc BarrierShamirSealVote(BarrierShamirSealVoteRequest) returns (BarrierShamirSealVoteResponse);
+    rpc BarrierShamirSealVote(BarrierShamirSealVoteRequest) returns (BarrierShamirSealVoteResponse) {
+        option (qrdb.v1.permission) = "seal:submit_seal_vote";
+    }
 
     // BarrierRecoveryOfficerRegister registers an SO for recovery key distribution.
-    rpc BarrierRecoveryOfficerRegister(BarrierOfficerRegisterRequest) returns (BarrierOfficerRegisterResponse);
+    rpc BarrierRecoveryOfficerRegister(BarrierOfficerRegisterRequest) returns (BarrierOfficerRegisterResponse) {
+        option (qrdb.v1.permission) = "seal:officer_register";
+    }
 
     // BarrierRecoveryShareClaimBegin starts the recovery share claim handshake.
-    rpc BarrierRecoveryShareClaimBegin(BarrierShareClaimBeginRequest) returns (BarrierShareClaimBeginResponse);
+    rpc BarrierRecoveryShareClaimBegin(BarrierShareClaimBeginRequest) returns (BarrierShareClaimBeginResponse) {
+        option (qrdb.v1.permission) = "identity:gated";
+    }
 
     // BarrierRecoveryShareClaimComplete completes the recovery share claim handshake.
-    rpc BarrierRecoveryShareClaimComplete(BarrierShareClaimCompleteRequest) returns (BarrierShareClaimCompleteResponse);
+    rpc BarrierRecoveryShareClaimComplete(BarrierShareClaimCompleteRequest) returns (BarrierShareClaimCompleteResponse) {
+        option (qrdb.v1.permission) = "identity:gated";
+    }
 
     // BarrierRecoveryGenerate generates recovery keys for disaster recovery.
-    rpc BarrierRecoveryGenerate(BarrierRecoveryGenerateRequest) returns (BarrierRecoveryKeysResponse);
+    rpc BarrierRecoveryGenerate(BarrierRecoveryGenerateRequest) returns (BarrierRecoveryKeysResponse) {
+        option (qrdb.v1.permission) = "seal:generate_recovery";
+    }
 
     // BarrierRecoveryRecover unseals the barrier using recovery keys.
-    rpc BarrierRecoveryRecover(BarrierRecoveryRecoverRequest) returns (google.protobuf.Empty);
+    rpc BarrierRecoveryRecover(BarrierRecoveryRecoverRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "seal:recover_with_keys";
+    }
 
     // BarrierRecoveryDelete deletes all stored recovery keys.
-    rpc BarrierRecoveryDelete(google.protobuf.Empty) returns (google.protobuf.Empty);
+    rpc BarrierRecoveryDelete(google.protobuf.Empty) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "seal:generate_recovery";
+    }
 
     // BarrierRecoveryStatus checks whether recovery keys have been generated.
-    rpc BarrierRecoveryStatus(google.protobuf.Empty) returns (BarrierRecoveryStatusResponse);
+    rpc BarrierRecoveryStatus(google.protobuf.Empty) returns (BarrierRecoveryStatusResponse) {
+        option (qrdb.v1.permission) = "seal:status";
+    }
 
     // BarrierRootToken generates a new root token using Shamir shares.
-    rpc BarrierRootToken(BarrierRootTokenRequest) returns (BarrierRootTokenResponse);
+    rpc BarrierRootToken(BarrierRootTokenRequest) returns (BarrierRootTokenResponse) {
+        option (qrdb.v1.permission) = "seal:bootstrap";
+    }
 
     // -----------------------------------------------------------------------
     // Ceremony operations
     // -----------------------------------------------------------------------
 
     // CeremonyInitialize starts the initialization ceremony.
-    rpc CeremonyInitialize(CeremonyInitializeRequest) returns (CeremonyInitializeResponse);
+    rpc CeremonyInitialize(CeremonyInitializeRequest) returns (CeremonyInitializeResponse) {
+        option (qrdb.v1.permission) = "ceremony:initialize";
+    }
 
     // CeremonyStatus returns the current ceremony state.
-    rpc CeremonyStatus(google.protobuf.Empty) returns (CeremonyStatusResponse);
+    rpc CeremonyStatus(google.protobuf.Empty) returns (CeremonyStatusResponse) {
+        option (qrdb.v1.permission) = "ceremony:status";
+    }
 
     // CeremonyClaimCertBegin starts a certificate claim challenge for an officer.
-    rpc CeremonyClaimCertBegin(CeremonyClaimCertBeginRequest) returns (CeremonyClaimCertBeginResponse);
+    rpc CeremonyClaimCertBegin(CeremonyClaimCertBeginRequest) returns (CeremonyClaimCertBeginResponse) {
+        option (qrdb.v1.permission) = "ceremony:claim_cert";
+    }
 
     // CeremonyClaimCertComplete completes a certificate claim by submitting the signed nonce.
-    rpc CeremonyClaimCertComplete(CeremonyClaimCertCompleteRequest) returns (CeremonyClaimCertCompleteResponse);
+    rpc CeremonyClaimCertComplete(CeremonyClaimCertCompleteRequest) returns (CeremonyClaimCertCompleteResponse) {
+        option (qrdb.v1.permission) = "ceremony:claim_cert";
+    }
 
     // CeremonyBeginClaimShare starts the Shamir share claim handshake for an
     // officer. The caller MUST present an mTLS client certificate; the server
     // matches its thumbprint against the enrolled officer record before
     // issuing the challenge nonce.
-    rpc CeremonyBeginClaimShare(CeremonyBeginClaimShareRequest) returns (CeremonyBeginClaimShareResponse);
+    rpc CeremonyBeginClaimShare(CeremonyBeginClaimShareRequest) returns (CeremonyBeginClaimShareResponse) {
+        option (qrdb.v1.permission) = "identity:gated";
+    }
 
     // CeremonyCompleteClaimShare completes the Shamir share claim handshake by
     // submitting the signed nonce. The caller's mTLS certificate thumbprint is
     // re-verified before the share is released exactly once.
-    rpc CeremonyCompleteClaimShare(CeremonyCompleteClaimShareRequest) returns (CeremonyCompleteClaimShareResponse);
+    rpc CeremonyCompleteClaimShare(CeremonyCompleteClaimShareRequest) returns (CeremonyCompleteClaimShareResponse) {
+        option (qrdb.v1.permission) = "identity:gated";
+    }
 
     // CeremonySignCSR submits a CSR for signing during the ceremony.
-    rpc CeremonySignCSR(CeremonySignCSRRequest) returns (CeremonySignCSRResponse);
+    rpc CeremonySignCSR(CeremonySignCSRRequest) returns (CeremonySignCSRResponse) {
+        option (qrdb.v1.permission) = "ceremony:sign_csr";
+    }
 
     // CeremonyEnrollExternalOfficer enrols an officer whose key material
     // lives outside go-qrdb. Either CertPEM (validated against the
     // configured CA pools) or PubKeyPEM (admin-asserted trust) MUST be
     // supplied, but not both.
-    rpc CeremonyEnrollExternalOfficer(CeremonyEnrollExternalOfficerRequest) returns (CeremonyEnrollExternalOfficerResponse);
+    rpc CeremonyEnrollExternalOfficer(CeremonyEnrollExternalOfficerRequest) returns (CeremonyEnrollExternalOfficerResponse) {
+        option (qrdb.v1.permission) = "ceremony:enroll_custodian";
+    }
 
     // CeremonyClaimShareBegin issues a factor challenge for an enrolled
     // custodian to claim their Shamir share.
-    rpc CeremonyClaimShareBegin(CeremonyClaimShareBeginRequest) returns (CeremonyClaimShareBeginResponse);
+    rpc CeremonyClaimShareBegin(CeremonyClaimShareBeginRequest) returns (CeremonyClaimShareBeginResponse) {
+        option (qrdb.v1.permission) = "identity:gated";
+    }
 
     // CeremonyClaimShareComplete verifies the custodian's factor response and
     // returns the custodian metadata confirming share delivery.
-    rpc CeremonyClaimShareComplete(CeremonyClaimShareCompleteRequest) returns (CeremonyCustodianResponse);
+    rpc CeremonyClaimShareComplete(CeremonyClaimShareCompleteRequest) returns (CeremonyCustodianResponse) {
+        option (qrdb.v1.permission) = "identity:gated";
+    }
 
     // CeremonySubmitUnsealShare submits a custodian's plaintext Shamir share
     // (with factor proof) toward the unseal quorum.
-    rpc CeremonySubmitUnsealShare(CeremonySubmitUnsealShareRequest) returns (CeremonySubmitUnsealShareResponse);
+    rpc CeremonySubmitUnsealShare(CeremonySubmitUnsealShareRequest) returns (CeremonySubmitUnsealShareResponse) {
+        option (qrdb.v1.permission) = "barrier:unseal-share";
+    }
 
     // -----------------------------------------------------------------------
     // Tenant operations
     // -----------------------------------------------------------------------
 
     // TenantCreate creates a new tenant with the given ID, name, and isolation type.
-    rpc TenantCreate(TenantCreateRequest) returns (TenantResponse);
+    rpc TenantCreate(TenantCreateRequest) returns (TenantResponse) {
+        option (qrdb.v1.permission) = "tenants:create";
+    }
 
     // TenantGet retrieves a tenant by ID.
-    rpc TenantGet(TenantGetRequest) returns (TenantResponse);
+    rpc TenantGet(TenantGetRequest) returns (TenantResponse) {
+        option (qrdb.v1.permission) = "tenants:read";
+    }
 
     // TenantList returns metadata for all registered tenants.
-    rpc TenantList(google.protobuf.Empty) returns (TenantListResponse);
+    rpc TenantList(google.protobuf.Empty) returns (TenantListResponse) {
+        option (qrdb.v1.permission) = "tenants:list";
+    }
 
     // TenantUpdate applies a partial update to an existing tenant.
-    rpc TenantUpdate(TenantUpdateRequest) returns (TenantResponse);
+    rpc TenantUpdate(TenantUpdateRequest) returns (TenantResponse) {
+        option (qrdb.v1.permission) = "tenants:update";
+    }
 
     // TenantDelete removes a tenant and its metadata.
-    rpc TenantDelete(TenantDeleteRequest) returns (google.protobuf.Empty);
+    rpc TenantDelete(TenantDeleteRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "tenants:delete";
+    }
 
     // TenantUpdateQuotas sets the resource quotas for a tenant.
-    rpc TenantUpdateQuotas(TenantUpdateQuotasRequest) returns (TenantResponse);
+    rpc TenantUpdateQuotas(TenantUpdateQuotasRequest) returns (TenantResponse) {
+        option (qrdb.v1.permission) = "tenants:update";
+    }
 
     // TenantUpdateEntitlements sets the feature entitlements for a tenant.
-    rpc TenantUpdateEntitlements(TenantUpdateEntitlementsRequest) returns (TenantResponse);
+    rpc TenantUpdateEntitlements(TenantUpdateEntitlementsRequest) returns (TenantResponse) {
+        option (qrdb.v1.permission) = "tenants:set_entitlements";
+    }
 
     // -----------------------------------------------------------------------
     // Credential operations
     // -----------------------------------------------------------------------
 
     // CredentialSubmit submits a named credential value via the active strategy.
-    rpc CredentialSubmit(CredentialSubmitRequest) returns (google.protobuf.Empty);
+    rpc CredentialSubmit(CredentialSubmitRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "credentials:submit";
+    }
 
     // CredentialStrategy returns the active credential management strategy.
-    rpc CredentialStrategy(google.protobuf.Empty) returns (CredentialStrategyResponse);
+    rpc CredentialStrategy(google.protobuf.Empty) returns (CredentialStrategyResponse) {
+        option (qrdb.v1.permission) = "credentials:strategy";
+    }
 
     // CredentialDelete removes a named credential and any non-current versions.
-    rpc CredentialDelete(CredentialDeleteRequest) returns (google.protobuf.Empty);
+    rpc CredentialDelete(CredentialDeleteRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "credentials:delete";
+    }
 
     // CredentialList returns the names of every stored credential. Values are
     // never returned by enumeration.
-    rpc CredentialList(CredentialListRequest) returns (CredentialListResponse);
+    rpc CredentialList(CredentialListRequest) returns (CredentialListResponse) {
+        option (qrdb.v1.permission) = "credentials:list";
+    }
 
     // CredentialRotate atomically replaces the current value of a credential,
     // optionally keeping the previous version retrievable for a grace period.
-    rpc CredentialRotate(CredentialRotateRequest) returns (CredentialRotateResponse);
+    rpc CredentialRotate(CredentialRotateRequest) returns (CredentialRotateResponse) {
+        option (qrdb.v1.permission) = "credentials:rotate";
+    }
 
     // CredentialRetrieveVersion returns the stored credential value for a
     // specific version. Version == 0 means "current version".
-    rpc CredentialRetrieveVersion(CredentialRetrieveVersionRequest) returns (CredentialRetrieveVersionResponse);
+    rpc CredentialRetrieveVersion(CredentialRetrieveVersionRequest) returns (CredentialRetrieveVersionResponse) {
+        option (qrdb.v1.permission) = "credentials:retrieve_version";
+    }
 
     // CredentialListVersions returns the version history (current + non-expired
     // grace versions) for a credential. Values are never returned.
-    rpc CredentialListVersions(CredentialListVersionsRequest) returns (CredentialListVersionsResponse);
+    rpc CredentialListVersions(CredentialListVersionsRequest) returns (CredentialListVersionsResponse) {
+        option (qrdb.v1.permission) = "credentials:list_versions";
+    }
 
     // CredentialGCExpired reaps historical versions whose grace period has
     // elapsed. Returns the count reaped.
-    rpc CredentialGCExpired(CredentialGCRequest) returns (CredentialGCResponse);
+    rpc CredentialGCExpired(CredentialGCRequest) returns (CredentialGCResponse) {
+        option (qrdb.v1.permission) = "credentials:gc_expired";
+    }
 
     // CredentialStore persists a credential value under the given name.
-    rpc CredentialStore(CredentialStoreRequest) returns (google.protobuf.Empty);
+    rpc CredentialStore(CredentialStoreRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "credentials:store";
+    }
 
     // CredentialRetrieve returns the credential value for the given name. For
     // the manual strategy this blocks until the credential is submitted or the
     // context is cancelled.
-    rpc CredentialRetrieve(CredentialRetrieveRequest) returns (CredentialRetrieveResponse);
+    rpc CredentialRetrieve(CredentialRetrieveRequest) returns (CredentialRetrieveResponse) {
+        option (qrdb.v1.permission) = "credentials:retrieve";
+    }
 
     // -----------------------------------------------------------------------
     // Backup operations
@@ -654,23 +991,35 @@ service QRDBService {
 
     // BackupCreate captures a consistent snapshot of the selected shards (or
     // all shards) and stores it as a named backup artifact.
-    rpc BackupCreate(BackupCreateRequest) returns (BackupInfo);
+    rpc BackupCreate(BackupCreateRequest) returns (BackupInfo) {
+        option (qrdb.v1.permission) = "backup:create";
+    }
 
     // BackupList returns metadata for every stored backup. Artifact contents
     // are never returned by enumeration.
-    rpc BackupList(google.protobuf.Empty) returns (BackupListResponse);
+    rpc BackupList(google.protobuf.Empty) returns (BackupListResponse) {
+        option (qrdb.v1.permission) = "backup:list";
+    }
 
     // BackupGet returns the metadata for a single backup by ID.
-    rpc BackupGet(BackupGetRequest) returns (BackupInfo);
+    rpc BackupGet(BackupGetRequest) returns (BackupInfo) {
+        option (qrdb.v1.permission) = "backup:read";
+    }
 
     // BackupDelete removes a stored backup and its artifact.
-    rpc BackupDelete(BackupDeleteRequest) returns (google.protobuf.Empty);
+    rpc BackupDelete(BackupDeleteRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "backup:delete";
+    }
 
     // BackupRestore restores shards from a previously created backup.
-    rpc BackupRestore(BackupRestoreRequest) returns (BackupRestoreResponse);
+    rpc BackupRestore(BackupRestoreRequest) returns (BackupRestoreResponse) {
+        option (qrdb.v1.permission) = "backup:restore";
+    }
 
     // BackupVerify validates the integrity (checksum) of a stored backup.
-    rpc BackupVerify(BackupVerifyRequest) returns (BackupVerifyResponse);
+    rpc BackupVerify(BackupVerifyRequest) returns (BackupVerifyResponse) {
+        option (qrdb.v1.permission) = "backup:verify";
+    }
 
     // -----------------------------------------------------------------------
     // Rebalance operations
@@ -678,34 +1027,48 @@ service QRDBService {
 
     // RebalanceGetShardStats returns statistics for a single shard including
     // key count, byte count, leader, and replica count.
-    rpc RebalanceGetShardStats(RebalanceShardStatsRequest) returns (ShardStats);
+    rpc RebalanceGetShardStats(RebalanceShardStatsRequest) returns (ShardStats) {
+        option (qrdb.v1.permission) = "rebalance:stats";
+    }
 
     // RebalanceCreatePlan analyzes shard distribution across nodes and
     // generates an optimal move plan to balance the cluster.
-    rpc RebalanceCreatePlan(RebalancePlanRequest) returns (RebalancePlan);
+    rpc RebalanceCreatePlan(RebalancePlanRequest) returns (RebalancePlan) {
+        option (qrdb.v1.permission) = "rebalance:plan";
+    }
 
     // RebalanceExecute executes a previously generated rebalance plan by
     // moving shards between nodes.
-    rpc RebalanceExecute(RebalancePlan) returns (RebalanceExecutionResponse);
+    rpc RebalanceExecute(RebalancePlan) returns (RebalanceExecutionResponse) {
+        option (qrdb.v1.permission) = "rebalance:execute";
+    }
 
     // RebalanceGetImbalanceReport returns the current cluster balance report
     // including per-node load distribution and hotspot identification.
-    rpc RebalanceGetImbalanceReport(google.protobuf.Empty) returns (ImbalanceReport);
+    rpc RebalanceGetImbalanceReport(google.protobuf.Empty) returns (ImbalanceReport) {
+        option (qrdb.v1.permission) = "rebalance:report";
+    }
 
     // -----------------------------------------------------------------------
     // Embedding operations
     // -----------------------------------------------------------------------
 
     // Embed generates embedding vectors for one or more texts.
-    rpc Embed(EmbedRequest) returns (EmbedResponse);
+    rpc Embed(EmbedRequest) returns (EmbedResponse) {
+        option (qrdb.v1.permission) = "embedding:embed";
+    }
 
     // BatchEmbed embeds a large set of texts, splitting them into provider
     // sub-batches and aggregating the results in input order.
-    rpc BatchEmbed(BatchEmbedRequest) returns (BatchEmbedResponse);
+    rpc BatchEmbed(BatchEmbedRequest) returns (BatchEmbedResponse) {
+        option (qrdb.v1.permission) = "embedding:embed";
+    }
 
     // ListEmbeddingModels returns the embedding models available from a
     // provider.
-    rpc ListEmbeddingModels(ListEmbeddingModelsRequest) returns (ListEmbeddingModelsResponse);
+    rpc ListEmbeddingModels(ListEmbeddingModelsRequest) returns (ListEmbeddingModelsResponse) {
+        option (qrdb.v1.permission) = "embedding:list_models";
+    }
 
     // -----------------------------------------------------------------------
     // RAG (retrieval-augmented generation) operations
@@ -713,32 +1076,46 @@ service QRDBService {
 
     // RAGIngestDocument chunks, embeds, and stores a document for later
     // semantic retrieval.
-    rpc RAGIngestDocument(RAGIngestDocumentRequest) returns (RAGIngestDocumentResponse);
+    rpc RAGIngestDocument(RAGIngestDocumentRequest) returns (RAGIngestDocumentResponse) {
+        option (qrdb.v1.permission) = "rag:ingest";
+    }
 
     // RAGQuery embeds the query text and retrieves the most semantically
     // similar passages from a namespace.
-    rpc RAGQuery(RAGQueryRequest) returns (RAGQueryResponse);
+    rpc RAGQuery(RAGQueryRequest) returns (RAGQueryResponse) {
+        option (qrdb.v1.permission) = "rag:query";
+    }
 
     // RAGDeleteDocument removes a document and all of its chunk vectors and
     // KV entries.
-    rpc RAGDeleteDocument(RAGDeleteDocumentRequest) returns (RAGDeleteDocumentResponse);
+    rpc RAGDeleteDocument(RAGDeleteDocumentRequest) returns (RAGDeleteDocumentResponse) {
+        option (qrdb.v1.permission) = "rag:delete_document";
+    }
 
     // RAGListDocuments returns metadata about ingested documents in a
     // namespace, with optional pagination.
-    rpc RAGListDocuments(RAGListDocumentsRequest) returns (RAGListDocumentsResponse);
+    rpc RAGListDocuments(RAGListDocumentsRequest) returns (RAGListDocumentsResponse) {
+        option (qrdb.v1.permission) = "rag:list_documents";
+    }
 
     // -----------------------------------------------------------------------
     // Database encryption-barrier operations
     // -----------------------------------------------------------------------
 
     // DatabaseSeal seals the encryption barrier for a database.
-    rpc DatabaseSeal(DatabaseSealRequest) returns (google.protobuf.Empty);
+    rpc DatabaseSeal(DatabaseSealRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "databases:seal";
+    }
 
     // DatabaseUnseal unseals the encryption barrier for a database.
-    rpc DatabaseUnseal(DatabaseUnsealRequest) returns (google.protobuf.Empty);
+    rpc DatabaseUnseal(DatabaseUnsealRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "databases:unseal";
+    }
 
     // DatabaseBarrierStatus returns the encryption-barrier status for a database.
-    rpc DatabaseBarrierStatus(DatabaseBarrierStatusRequest) returns (DatabaseBarrierStatusResponse);
+    rpc DatabaseBarrierStatus(DatabaseBarrierStatusRequest) returns (DatabaseBarrierStatusResponse) {
+        option (qrdb.v1.permission) = "databases:barrier_status";
+    }
 
     // -----------------------------------------------------------------------
     // SQL operations
@@ -746,7 +1123,9 @@ service QRDBService {
 
     // SQLQuery executes an ad-hoc SQL query against a named database and
     // returns the result set. Mirrors the REST POST /sql/query contract.
-    rpc SQLQuery(SQLQueryRequest) returns (SQLQueryResponse);
+    rpc SQLQuery(SQLQueryRequest) returns (SQLQueryResponse) {
+        option (qrdb.v1.permission) = "kv:range";
+    }
 
 }
 
@@ -3445,41 +3824,63 @@ service TenantBarrierService {
     // Init initializes a tenant barrier with the selected strategy. For the
     // Shamir strategy the share_count field indicates how many officer shares
     // were sealed; shares are never returned in the response.
-    rpc Init(TenantBarrierInitRequest) returns (TenantBarrierInitResponse);
+    rpc Init(TenantBarrierInitRequest) returns (TenantBarrierInitResponse) {
+        option (qrdb.v1.permission) = "tenant_barrier:init";
+    }
 
     // Unseal unseals a tenant barrier using a single key (passphrase strategy).
-    rpc Unseal(TenantBarrierUnsealRequest) returns (google.protobuf.Empty);
+    rpc Unseal(TenantBarrierUnsealRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "tenant_barrier:unseal";
+    }
 
     // UnsealShare submits one Shamir share toward the tenant quorum threshold,
     // auto-unsealing once enough distinct shares have been submitted.
-    rpc UnsealShare(TenantBarrierUnsealShareRequest) returns (TenantBarrierUnsealProgress);
+    rpc UnsealShare(TenantBarrierUnsealShareRequest) returns (TenantBarrierUnsealProgress) {
+        option (qrdb.v1.permission) = "tenant_barrier:unseal";
+    }
 
     // Seal seals a tenant barrier.
-    rpc Seal(TenantBarrierSealRequest) returns (google.protobuf.Empty);
+    rpc Seal(TenantBarrierSealRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "tenant_barrier:seal";
+    }
 
     // Status reports a tenant barrier's sealed/initialized state and strategy.
-    rpc Status(TenantBarrierStatusRequest) returns (TenantBarrierStatusResponse);
+    rpc Status(TenantBarrierStatusRequest) returns (TenantBarrierStatusResponse) {
+        option (qrdb.v1.permission) = "tenant_barrier:status";
+    }
 
     // OfficerRegister enrolls a Security Officer for this tenant's barrier.
     // Only valid for Shamir-strategy tenant barriers.
-    rpc OfficerRegister(TenantBarrierOfficerRegisterRequest) returns (TenantBarrierOfficerRegisterResponse);
+    rpc OfficerRegister(TenantBarrierOfficerRegisterRequest) returns (TenantBarrierOfficerRegisterResponse) {
+        option (qrdb.v1.permission) = "tenant_barrier:officer_register";
+    }
 
     // OfficerList returns the enrolled officers for this tenant's barrier.
-    rpc OfficerList(TenantBarrierOfficerListRequest) returns (TenantBarrierOfficerListResponse);
+    rpc OfficerList(TenantBarrierOfficerListRequest) returns (TenantBarrierOfficerListResponse) {
+        option (qrdb.v1.permission) = "tenant_barrier:officer_list";
+    }
 
     // ShareClaimBegin issues a challenge nonce to the named officer as the
     // first step of the two-phase share claim flow.
-    rpc ShareClaimBegin(TenantBarrierShareClaimBeginRequest) returns (TenantBarrierShareClaimBeginResponse);
+    rpc ShareClaimBegin(TenantBarrierShareClaimBeginRequest) returns (TenantBarrierShareClaimBeginResponse) {
+        option (qrdb.v1.permission) = "identity:gated";
+    }
 
     // ShareClaimComplete verifies the signed nonce and returns the share bytes
     // exactly once, then destroys the enclave.
-    rpc ShareClaimComplete(TenantBarrierShareClaimCompleteRequest) returns (TenantBarrierShareClaimCompleteResponse);
+    rpc ShareClaimComplete(TenantBarrierShareClaimCompleteRequest) returns (TenantBarrierShareClaimCompleteResponse) {
+        option (qrdb.v1.permission) = "identity:gated";
+    }
 
     // OfficerClaimStatus returns per-officer claim status for admin visibility.
-    rpc OfficerClaimStatus(TenantBarrierOfficerClaimStatusRequest) returns (TenantBarrierOfficerClaimStatusResponse);
+    rpc OfficerClaimStatus(TenantBarrierOfficerClaimStatusRequest) returns (TenantBarrierOfficerClaimStatusResponse) {
+        option (qrdb.v1.permission) = "tenant_barrier:officer_list";
+    }
 
     // ShamirSealVote submits one share toward the quorum-gated seal threshold.
-    rpc ShamirSealVote(TenantBarrierShamirSealVoteRequest) returns (TenantBarrierShamirSealVoteResponse);
+    rpc ShamirSealVote(TenantBarrierShamirSealVoteRequest) returns (TenantBarrierShamirSealVoteResponse) {
+        option (qrdb.v1.permission) = "tenant_barrier:seal_vote";
+    }
 }
 
 // TenantBarrierInitRequest initializes the barrier for tenant_id.
@@ -3636,7 +4037,9 @@ message TenantBarrierShamirSealVoteResponse {
 // ===========================================================================
 service AuditService {
     // Query returns audit events matching the supplied filter.
-    rpc Query(AuditQueryRequest) returns (AuditQueryResponse);
+    rpc Query(AuditQueryRequest) returns (AuditQueryResponse) {
+        option (qrdb.v1.permission) = "audit:query";
+    }
 }
 
 // AuditQueryRequest carries the filter criteria for an audit query.
@@ -3697,19 +4100,29 @@ message AuditEvent {
 // ===========================================================================
 service AuthFactorService {
     // EnrollFactor enrolls a custodian in the given auth factor type.
-    rpc EnrollFactor(EnrollFactorRequest) returns (EnrollFactorResponse);
+    rpc EnrollFactor(EnrollFactorRequest) returns (EnrollFactorResponse) {
+        option (qrdb.v1.permission) = "authfactor:enroll";
+    }
 
     // ChallengeFactor issues a challenge for a previously enrolled factor.
-    rpc ChallengeFactor(ChallengeFactorRequest) returns (ChallengeFactorResponse);
+    rpc ChallengeFactor(ChallengeFactorRequest) returns (ChallengeFactorResponse) {
+        option (qrdb.v1.permission) = "authfactor:challenge";
+    }
 
     // VerifyFactor verifies the custodian's challenge response.
-    rpc VerifyFactor(VerifyFactorRequest) returns (google.protobuf.Empty);
+    rpc VerifyFactor(VerifyFactorRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "authfactor:verify";
+    }
 
     // ListFactors lists enrolled auth factors, optionally filtered by subject.
-    rpc ListFactors(ListFactorsRequest) returns (ListFactorsResponse);
+    rpc ListFactors(ListFactorsRequest) returns (ListFactorsResponse) {
+        option (qrdb.v1.permission) = "authfactor:list";
+    }
 
     // RevokeFactor permanently revokes an enrollment.
-    rpc RevokeFactor(RevokeFactorRequest) returns (google.protobuf.Empty);
+    rpc RevokeFactor(RevokeFactorRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "authfactor:revoke";
+    }
 }
 
 // EnrollFactorRequest carries the enrollment parameters.
@@ -3792,26 +4205,40 @@ message RevokeFactorRequest {
 // ===========================================================================
 service UserAuthFactorService {
     // Add registers a new auth factor for a user.
-    rpc Add(UserAuthFactorAddRequest) returns (UserAuthFactorAddResponse);
+    rpc Add(UserAuthFactorAddRequest) returns (UserAuthFactorAddResponse) {
+        option (qrdb.v1.permission) = "user_authfactors:add";
+    }
 
     // List returns all auth factors for a user.
-    rpc List(UserAuthFactorListRequest) returns (UserAuthFactorListResponse);
+    rpc List(UserAuthFactorListRequest) returns (UserAuthFactorListResponse) {
+        option (qrdb.v1.permission) = "user_authfactors:list";
+    }
 
     // Get retrieves a single auth factor by ID.
-    rpc Get(UserAuthFactorGetRequest) returns (UserAuthFactorGetResponse);
+    rpc Get(UserAuthFactorGetRequest) returns (UserAuthFactorGetResponse) {
+        option (qrdb.v1.permission) = "user_authfactors:get";
+    }
 
     // Remove deletes an auth factor.
-    rpc Remove(UserAuthFactorRemoveRequest) returns (UserAuthFactorRemoveResponse);
+    rpc Remove(UserAuthFactorRemoveRequest) returns (UserAuthFactorRemoveResponse) {
+        option (qrdb.v1.permission) = "user_authfactors:remove";
+    }
 
     // Rotate atomically replaces one factor with another.
-    rpc Rotate(UserAuthFactorRotateRequest) returns (UserAuthFactorRotateResponse);
+    rpc Rotate(UserAuthFactorRotateRequest) returns (UserAuthFactorRotateResponse) {
+        option (qrdb.v1.permission) = "user_authfactors:rotate";
+    }
 
     // Relabel updates the human-readable label of a factor.
-    rpc Relabel(UserAuthFactorRelabelRequest) returns (UserAuthFactorRelabelResponse);
+    rpc Relabel(UserAuthFactorRelabelRequest) returns (UserAuthFactorRelabelResponse) {
+        option (qrdb.v1.permission) = "user_authfactors:relabel";
+    }
 
     // Login looks up the auth factor matching a credential key and returns
     // the associated user identity.
-    rpc Login(UserAuthFactorLoginRequest) returns (UserAuthFactorLoginResponse);
+    rpc Login(UserAuthFactorLoginRequest) returns (UserAuthFactorLoginResponse) {
+        option (qrdb.v1.permission) = "user_authfactors:login";
+    }
 }
 
 // UserAuthFactorRecord is the wire shape for a single auth factor.
