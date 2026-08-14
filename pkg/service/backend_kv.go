@@ -129,7 +129,7 @@ func (s *BackendKVService) List(ctx context.Context, prefix string) ([]string, e
 	if err != nil {
 		return nil, s.translateSealed(err)
 	}
-	filtered := filterSystemKeys(keys, prefix)
+	filtered := FilterInternalKeys(keys, prefix)
 	sort.Strings(filtered)
 	return filtered, nil
 }
@@ -150,7 +150,7 @@ func (s *BackendKVService) Scan(ctx context.Context, prefix string) (map[string]
 			result[k] = v
 		}
 	}
-	return filterSystemMap(result, prefix), nil
+	return FilterInternalMap(result, prefix), nil
 }
 
 // GetStale delegates to Get. There is no Raft layer so all reads are local.

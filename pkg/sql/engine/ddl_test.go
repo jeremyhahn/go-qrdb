@@ -698,3 +698,414 @@ func TestUnsupportedColumnTypeError(t *testing.T) {
 	err := &UnsupportedColumnTypeError{Type: "text[]"}
 	assert.Equal(t, "sql/engine: unsupported PostgreSQL column type: text[]", err.Error())
 }
+
+// TestTranslateDDLTypes_KeyedTextColumns covers the contextual half of the
+// type mapping: a column whose PostgreSQL type maps to one of MySQL's
+// unbounded TEXT/BLOB families takes a bounded substitution instead when the
+// same statement puts it in a key, because MySQL cannot index a TEXT or BLOB
+// column without a prefix length and rejects the whole CREATE TABLE with
+// "blob/text column 'code' used in key specification without a key length".
+//
+// The cases below are the discriminating ones: which clause names the
+// column, whether the column is named by a key at all, and the constraint
+// kinds that create no index and must therefore leave the column unbounded.
+func TestTranslateDDLTypes_KeyedTextColumns(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "primary_key_bounds_only_the_keyed_column",
+			input:    "CREATE TABLE `languages` (`code` text,`name` text,PRIMARY KEY (`code`))",
+			expected: "CREATE TABLE `languages` (`code` VARCHAR(768),`name` LONGTEXT,PRIMARY KEY (`code`))",
+		},
+		{
+			name:     "composite_primary_key_bounds_every_text_member",
+			input:    "CREATE TABLE `t` (`a` text,`b` text,`c` text,PRIMARY KEY (`a`,`b`))",
+			expected: "CREATE TABLE `t` (`a` VARCHAR(768),`b` VARCHAR(768),`c` LONGTEXT,PRIMARY KEY (`a`,`b`))",
+		},
+		{
+			name:     "named_unique_constraint",
+			input:    "CREATE TABLE `t` (`id` text,PRIMARY KEY (`id`),CONSTRAINT `uni_t_id` UNIQUE (`id`))",
+			expected: "CREATE TABLE `t` (`id` VARCHAR(768),PRIMARY KEY (`id`),CONSTRAINT `uni_t_id` UNIQUE (`id`))",
+		},
+		{
+			name:     "bare_unique_constraint",
+			input:    "CREATE TABLE `t` (`a` text,UNIQUE (`a`))",
+			expected: "CREATE TABLE `t` (`a` VARCHAR(768),UNIQUE (`a`))",
+		},
+		{
+			name:     "table_level_index_and_key_clauses",
+			input:    "CREATE TABLE `t` (`a` text,`b` text,INDEX (`a`),KEY `k` (`b`))",
+			expected: "CREATE TABLE `t` (`a` VARCHAR(768),`b` VARCHAR(768),INDEX (`a`),KEY `k` (`b`))",
+		},
+		{
+			name:     "inline_primary_key",
+			input:    "CREATE TABLE `t` (`id` text PRIMARY KEY,`body` text)",
+			expected: "CREATE TABLE `t` (`id` VARCHAR(768) PRIMARY KEY,`body` LONGTEXT)",
+		},
+		{
+			name:     "inline_unique",
+			input:    "CREATE TABLE `t` (`id` text UNIQUE,`body` text)",
+			expected: "CREATE TABLE `t` (`id` VARCHAR(768) UNIQUE,`body` LONGTEXT)",
+		},
+		{
+			name:     "bytea_in_key_is_bounded_as_binary",
+			input:    "CREATE TABLE `t` (`k` bytea,`v` bytea,PRIMARY KEY (`k`))",
+			expected: "CREATE TABLE `t` (`k` VARBINARY(3072),`v` LONGBLOB,PRIMARY KEY (`k`))",
+		},
+		{
+			name: "foreign_key_does_not_bound_its_child_column",
+			// The index a foreign key relies on is the referenced table's own
+			// key. Bounding the child column here would narrow it for a
+			// requirement go-mysql-server does not impose.
+			input:    "CREATE TABLE `labels` (`book_id` bigint,`note` text,CONSTRAINT `fk` FOREIGN KEY (`note`) REFERENCES `books`(`id`))",
+			expected: "CREATE TABLE `labels` (`book_id` bigint,`note` LONGTEXT,CONSTRAINT `fk` FOREIGN KEY (`note`) REFERENCES `books`(`id`))",
+		},
+		{
+			name:     "check_constraint_naming_the_column_does_not_bound_it",
+			input:    "CREATE TABLE `t` (`name` text,CONSTRAINT `name_checker` CHECK (name <> ''))",
+			expected: "CREATE TABLE `t` (`name` LONGTEXT,CONSTRAINT `name_checker` CHECK (name <> ''))",
+		},
+		{
+			name: "fulltext_index_leaves_the_column_unbounded",
+			// A FULLTEXT index over a TEXT column needs no prefix length --
+			// that combination is what FULLTEXT is for.
+			input:    "CREATE TABLE `t` (`body` text,FULLTEXT (`body`))",
+			expected: "CREATE TABLE `t` (`body` LONGTEXT,FULLTEXT (`body`))",
+		},
+		{
+			name:     "key_membership_is_case_insensitive_and_quote_insensitive",
+			input:    "CREATE TABLE `t` (`Code` text,PRIMARY KEY (code))",
+			expected: "CREATE TABLE `t` (`Code` VARCHAR(768),PRIMARY KEY (code))",
+		},
+		{
+			name: "prefix_length_in_the_key_list_is_not_another_column",
+			// The 10 sits in an option position, not a name position, so it
+			// must not be recorded as a keyed column name of its own.
+			input:    "CREATE TABLE `t` (`a` text,`b` text,PRIMARY KEY (`a`(10)))",
+			expected: "CREATE TABLE `t` (`a` VARCHAR(768),`b` LONGTEXT,PRIMARY KEY (`a`(10)))",
+		},
+		{
+			name:     "sort_direction_in_the_key_list_is_not_another_column",
+			input:    "CREATE TABLE `t` (`a` text,`desc` text,PRIMARY KEY (`a` DESC))",
+			expected: "CREATE TABLE `t` (`a` VARCHAR(768),`desc` LONGTEXT,PRIMARY KEY (`a` DESC))",
+		},
+		{
+			name: "already_bounded_type_in_a_key_passes_through",
+			// varchar carries its own bound, has no pgColumnTypes entry, and
+			// is indexable exactly as the client wrote it.
+			input:    "CREATE TABLE `t` (`a` varchar(20),PRIMARY KEY (`a`))",
+			expected: "CREATE TABLE `t` (`a` varchar(20),PRIMARY KEY (`a`))",
+		},
+		{
+			name: "keyed_serial_is_unaffected",
+			// Only the TEXT/BLOB-mapping types carry a KeyedName; an integer
+			// key needs no bound.
+			input:    "CREATE TABLE `t` (`id` bigserial,`code` text,PRIMARY KEY (`id`))",
+			expected: "CREATE TABLE `t` (`id` BIGINT AUTO_INCREMENT,`code` LONGTEXT,PRIMARY KEY (`id`))",
+		},
+		{
+			name: "key_naming_an_undeclared_column_bounds_nothing",
+			// The rewriter is not a validator: a key over a column the
+			// statement never declares is the parser's error to report, and
+			// no unrelated column may be narrowed on the way there.
+			input:    "CREATE TABLE `t` (`a` text,PRIMARY KEY (`missing`))",
+			expected: "CREATE TABLE `t` (`a` LONGTEXT,PRIMARY KEY (`missing`))",
+		},
+		{
+			name: "string_literal_default_cannot_forge_key_membership",
+			// PRIMARY appears only inside a DEFAULT value, which the lexer
+			// carries as one opaque region and never reads as a keyword.
+			input:    "CREATE TABLE `t` (`a` text DEFAULT 'PRIMARY KEY',`b` text)",
+			expected: "CREATE TABLE `t` (`a` LONGTEXT DEFAULT 'PRIMARY KEY',`b` LONGTEXT)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := translateDDLTypes(tt.input)
+			require.NoError(t, err)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+// TestTranslateDDLTypes_KeyedColumnsParseAndIndex is the end-to-end claim the
+// bounded substitution exists to make good on: the statements gorm's
+// PostgreSQL driver sends for a text-keyed model both parse AND survive
+// go-mysql-server's CREATE TABLE validation, which is where the unbounded
+// LONGTEXT spelling was rejected.
+func TestTranslateDDLTypes_KeyedColumnsParseAndIndex(t *testing.T) {
+	tr := NewTranslator()
+
+	// Exactly as captured from gorm.io/driver/postgres against this server.
+	corpus := []string{
+		`CREATE TABLE "languages" ("code" text,"name" text,PRIMARY KEY ("code"))`,
+		`CREATE TABLE "langs" ("code" text,"name" text,PRIMARY KEY ("code"))`,
+		`CREATE TABLE "orgs" ("id" text,PRIMARY KEY ("id"))`,
+		`CREATE TABLE "address_by_zip_codes" ("zip_code" text,"address" text,PRIMARY KEY ("zip_code"))`,
+		`CREATE TABLE "blogs" ("id" bigserial,"locale" text,"subject" text,"body" text,PRIMARY KEY ("id","locale"),CONSTRAINT "uni_blogs_id" UNIQUE ("id"))`,
+		`CREATE TABLE "labels" ("book_id" bigint,"name" text,"value" text,PRIMARY KEY ("book_id","name"),CONSTRAINT "fk_books_labels" FOREIGN KEY ("book_id") REFERENCES "books"("id"))`,
+		`CREATE TABLE "on_conflict_users" ("id" text,"name" text DEFAULT null,"email" text,"mobile" text DEFAULT '133xxxx',PRIMARY KEY ("id"))`,
+	}
+
+	for _, query := range corpus {
+		t.Run(query[:min(len(query), 44)], func(t *testing.T) {
+			translated, err := tr.Translate(query)
+			require.NoError(t, err)
+			assert.NotContains(t, keyedColumnTypes(t, translated), "LONGTEXT",
+				"no column named by a key may keep an unbounded type")
+
+			_, parseErr := sqlparser.Parse(translated)
+			require.NoError(t, parseErr)
+		})
+	}
+}
+
+// keyedColumnTypes returns the substituted type of every column the
+// statement's keys name, as a single string, for assertion.
+func keyedColumnTypes(t *testing.T, query string) string {
+	t.Helper()
+
+	toks := scanDDLTokens(query)
+	elements := createTableElements(query, toks)
+	keyed := keyedColumns(query, toks, elements)
+
+	var types string
+	for _, el := range elements {
+		if el.end-el.start < 2 || tableConstraintKeywords[toks[el.start].word(query)] {
+			continue
+		}
+		if keyed[identName(query, toks[el.start])] {
+			types += query[toks[el.start+1].start:toks[el.end-1].end] + " "
+		}
+	}
+	return types
+}
+
+// TestKeyedColumnBoundsAreIndexable pins the two constants against the limit
+// that dictates them: go-mysql-server enforces InnoDB's 3072-byte index-key
+// ceiling, scaled by the charset's bytes per character for character types.
+// A wider VARCHAR would be refused by the very validation the substitution
+// exists to satisfy, and a narrower one would truncate caller values this
+// engine can index.
+func TestKeyedColumnBoundsAreIndexable(t *testing.T) {
+	const maxBytePrefix = 3072    // analyzer.MaxBytePrefix
+	const utf8mb4BytesPerChar = 4 // widest charset go-mysql-server defaults to
+
+	assert.Equal(t, "VARCHAR(768)", keyedTextType)
+	assert.Equal(t, maxBytePrefix/utf8mb4BytesPerChar, 768,
+		"the character bound is the byte ceiling divided by the widest charset")
+
+	assert.Equal(t, "VARBINARY(3072)", keyedBlobType)
+	assert.Equal(t, maxBytePrefix, 3072,
+		"a binary prefix is counted in bytes, so no charset scaling applies")
+}
+
+// TestInlineKeyed covers the column-constraint scanner directly, including
+// the depth rule that keeps a parenthesized clause from triggering it.
+func TestInlineKeyed(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{name: "primary_key", input: "text PRIMARY KEY", want: true},
+		{name: "unique", input: "text UNIQUE", want: true},
+		{name: "not_null_only", input: "text NOT NULL", want: false},
+		{name: "references", input: "text REFERENCES `o`(`id`)", want: false},
+		{name: "nested_check_body", input: "text CHECK (x IN (SELECT UNIQUE))", want: false},
+		{name: "string_literal", input: "text DEFAULT 'PRIMARY'", want: false},
+		{name: "quoted_identifier", input: "text DEFAULT `unique`", want: false},
+		{name: "empty", input: "", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			toks := scanDDLTokens(tt.input)
+			assert.Equal(t, tt.want, inlineKeyed(tt.input, toks, 0, len(toks)))
+		})
+	}
+}
+
+// TestIdentName covers name normalization, which is what makes key
+// membership agree with MySQL's own case-insensitive column matching.
+func TestIdentName(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "bare_word", input: "Code", want: "code"},
+		{name: "backtick_quoted", input: "`Code`", want: "code"},
+		{name: "string_literal", input: "'code'", want: ""},
+		{name: "punctuation", input: ",", want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			toks := scanDDLTokens(tt.input)
+			require.Len(t, toks, 1)
+			assert.Equal(t, tt.want, identName(tt.input, toks[0]))
+		})
+	}
+}
+
+// TestCreateTableElements covers the element splitter, including the
+// truncated statement whose unterminated trailing fragment is deliberately
+// not an element.
+func TestCreateTableElements(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  int
+	}{
+		{name: "no_paren", input: "CREATE TABLE `t`", want: 0},
+		{name: "single_column", input: "CREATE TABLE `t` (`a` text)", want: 1},
+		{name: "three_elements", input: "CREATE TABLE `t` (`a` text,`b` text,PRIMARY KEY (`a`))", want: 3},
+		{name: "nested_parens_are_not_separators", input: "CREATE TABLE `t` (`a` numeric(9,0),`b` text)", want: 2},
+		{name: "unterminated_drops_trailing_fragment", input: "CREATE TABLE `t` (`a` text,`b` text", want: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			toks := scanDDLTokens(tt.input)
+			assert.Len(t, createTableElements(tt.input, toks), tt.want)
+		})
+	}
+}
+
+// TestTranslateDDLTypes_KeyedRejections pins that key membership never
+// converts a rejection into a silent substitution: a keyed column that
+// already names a modifier, or that is an array, is still refused by name.
+func TestTranslateDDLTypes_KeyedRejections(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "keyed_text_with_a_modifier",
+			input: "CREATE TABLE `t` (`a` text(20),PRIMARY KEY (`a`))",
+			want:  "text(20)",
+		},
+		{
+			name:  "keyed_text_array",
+			input: "CREATE TABLE `t` (`a` text[],PRIMARY KEY (`a`))",
+			want:  "text[]",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := translateDDLTypes(tt.input)
+			var typeErr *UnsupportedColumnTypeError
+			require.ErrorAs(t, err, &typeErr)
+			assert.Equal(t, tt.want, typeErr.Type)
+		})
+	}
+}
+
+// TestTranslateDDLTypes_AlterTableInlineKey covers the one form of key
+// membership an ALTER TABLE clause can express by itself. A column made a key
+// by some SEPARATE statement is out of reach by construction and keeps the
+// unbounded substitution.
+func TestTranslateDDLTypes_AlterTableInlineKey(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "add_column_unique",
+			input:    "ALTER TABLE `t` ADD COLUMN `code` text UNIQUE",
+			expected: "ALTER TABLE `t` ADD COLUMN `code` VARCHAR(768) UNIQUE",
+		},
+		{
+			name:     "add_column_primary_key",
+			input:    "ALTER TABLE `t` ADD `code` text PRIMARY KEY",
+			expected: "ALTER TABLE `t` ADD `code` VARCHAR(768) PRIMARY KEY",
+		},
+		{
+			name:     "add_plain_column_stays_unbounded",
+			input:    "ALTER TABLE `t` ADD COLUMN `body` text",
+			expected: "ALTER TABLE `t` ADD COLUMN `body` LONGTEXT",
+		},
+		{
+			name:     "modify_column_unique",
+			input:    "ALTER TABLE `t` MODIFY COLUMN `code` text UNIQUE",
+			expected: "ALTER TABLE `t` MODIFY COLUMN `code` VARCHAR(768) UNIQUE",
+		},
+		{
+			name:     "change_column_stays_unbounded",
+			input:    "ALTER TABLE `t` CHANGE `old` `new` text",
+			expected: "ALTER TABLE `t` CHANGE `old` `new` LONGTEXT",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := translateDDLTypes(tt.input)
+			require.NoError(t, err)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+// TestTranslateDDLTypes_KeyClauseWithoutColumnList pins that a key
+// constraint naming no column list at all contributes no key membership
+// rather than reaching past its own clause for one. The statement is
+// malformed and the parser will say so; the rewriter must not narrow an
+// unrelated column on the way there.
+func TestTranslateDDLTypes_KeyClauseWithoutColumnList(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "primary_key_with_no_list",
+			input:    "CREATE TABLE `t` (`a` text,PRIMARY KEY)",
+			expected: "CREATE TABLE `t` (`a` LONGTEXT,PRIMARY KEY)",
+		},
+		{
+			name:     "unique_with_no_list",
+			input:    "CREATE TABLE `t` (`a` text,CONSTRAINT `u` UNIQUE)",
+			expected: "CREATE TABLE `t` (`a` LONGTEXT,CONSTRAINT `u` UNIQUE)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := translateDDLTypes(tt.input)
+			require.NoError(t, err)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+// TestTranslateDDLTypes_AlterTableMultipleClauses covers the clause splitter
+// on a statement carrying several comma-separated clauses, including one
+// whose parenthesized modifier contains a comma that is not a separator.
+func TestTranslateDDLTypes_AlterTableMultipleClauses(t *testing.T) {
+	result, err := translateDDLTypes(
+		"ALTER TABLE `t` ADD COLUMN `a` text, ADD COLUMN `b` numeric(9,0), MODIFY COLUMN `c` timestamptz, DROP COLUMN `d`")
+	require.NoError(t, err)
+	assert.Equal(t,
+		"ALTER TABLE `t` ADD COLUMN `a` LONGTEXT, ADD COLUMN `b` numeric(9,0), MODIFY COLUMN `c` DATETIME, DROP COLUMN `d`",
+		result)
+}
+
+// TestTranslateDDLTypes_AlterTableRejectionInNonFinalClause pins that a type
+// that cannot be expressed is refused wherever it appears, including in a
+// clause that is not the statement's last: the whole statement fails with the
+// typed error rather than having the clauses before the offending one applied.
+func TestTranslateDDLTypes_AlterTableRejectionInNonFinalClause(t *testing.T) {
+	_, err := translateDDLTypes("ALTER TABLE `t` ADD COLUMN `a` text[], ADD COLUMN `b` bigint")
+
+	var typeErr *UnsupportedColumnTypeError
+	require.ErrorAs(t, err, &typeErr)
+	assert.Equal(t, "text[]", typeErr.Type)
+}

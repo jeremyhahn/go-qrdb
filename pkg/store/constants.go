@@ -20,15 +20,21 @@ import "github.com/jeremyhahn/go-qrdb/pkg/service"
 // Raft log index for crash recovery. Uses a null prefix to sort before user data.
 const metaKeyLastApplied = "\x00__quicraft_last_applied__"
 
-// internalPrefixes lists key prefixes used by internal subsystems (e.g.
-// roles, users, indexes) that should be excluded from user-facing key lists.
-// The canonical declaration lives in pkg/service; this is a view of it, not a
-// second copy, so a prefix added there is honoured here automatically.
-var internalPrefixes = service.InternalKeyPrefixes()
+// The internal key namespace is declared once, in pkg/service. This package
+// delegates both halves of the guard to it — the predicate and the skip rule —
+// so a prefix added there is honoured here automatically and the two can never
+// be answered from different lists.
 
-// isInternalKey reports whether k starts with any internal prefix. It
-// delegates to the canonical predicate in pkg/service so this package and
-// every other layer decide the question identically.
+// isInternalKey reports whether k belongs to an internal subsystem's reserved
+// namespace and must therefore be excluded from a user-facing key listing.
 func isInternalKey(k string) bool {
 	return service.IsInternalKey(k)
+}
+
+// skipInternalKeyFilter reports whether an enumeration rooted at prefix is the
+// owning subsystem reading its own reserved namespace back, in which case the
+// filter must not be applied or the subsystem would be hidden from its own
+// records.
+func skipInternalKeyFilter(prefix string) bool {
+	return service.SkipInternalKeyFilter(prefix)
 }

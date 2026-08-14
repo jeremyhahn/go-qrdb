@@ -303,7 +303,7 @@ func TestKVService_ExistsWithConsistency_OtherError(t *testing.T) {
 	}
 }
 
-// filterSystemMap – verify system keys are stripped from non-system prefixes
+// FilterInternalMap – verify internal keys are stripped from user prefixes
 // but retained when targeting the system namespace.
 func TestFilterSystemMap_StripsSysKeys(t *testing.T) {
 	data := map[string][]byte{
@@ -311,7 +311,7 @@ func TestFilterSystemMap_StripsSysKeys(t *testing.T) {
 		"__sys:config":  {2},
 		"__sys:version": {3},
 	}
-	result := filterSystemMap(data, "user:")
+	result := FilterInternalMap(data, "user:")
 	if _, ok := result["user:alice"]; !ok {
 		t.Fatal("expected user:alice to be retained")
 	}
@@ -325,14 +325,14 @@ func TestFilterSystemMap_RetainsSysKeysWhenSysPrefix(t *testing.T) {
 		"__sys:config":  {1},
 		"__sys:version": {2},
 	}
-	result := filterSystemMap(data, "__sys:")
+	result := FilterInternalMap(data, "__sys:")
 	if len(result) != 2 {
 		t.Fatalf("expected 2 entries, got %d", len(result))
 	}
 }
 
 func TestFilterSystemMap_EmptyMap(t *testing.T) {
-	result := filterSystemMap(map[string][]byte{}, "pfx")
+	result := FilterInternalMap(map[string][]byte{}, "pfx")
 	if len(result) != 0 {
 		t.Fatalf("expected empty result, got %d entries", len(result))
 	}

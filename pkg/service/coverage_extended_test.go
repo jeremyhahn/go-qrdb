@@ -2655,12 +2655,12 @@ func TestKVService_GetStale_NilResult(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// filterSystemKeys / filterSystemMap (partial coverage)
+// FilterInternalKeys / FilterInternalMap (partial coverage)
 // ---------------------------------------------------------------------------
 
 func TestFilterSystemKeys_WithSystemKey(t *testing.T) {
 	keys := []string{"user/1", "__sys:meta", "user/2"}
-	result := filterSystemKeys(keys, "user/")
+	result := FilterInternalKeys(keys, "user/")
 	if len(result) != 2 {
 		t.Fatalf("expected 2 user keys, got %d: %v", len(result), result)
 	}
@@ -2673,7 +2673,7 @@ func TestFilterSystemKeys_WithSystemKey(t *testing.T) {
 
 func TestFilterSystemKeys_SystemPrefix_NoFilter(t *testing.T) {
 	keys := []string{"__sys:meta", "__sys:config"}
-	result := filterSystemKeys(keys, "__sys:")
+	result := FilterInternalKeys(keys, "__sys:")
 	if len(result) != 2 {
 		t.Fatalf("expected 2 keys (no filtering for system prefix), got %d", len(result))
 	}
@@ -2684,7 +2684,7 @@ func TestFilterSystemMap_WithSystemKey(t *testing.T) {
 		"user/1":     []byte("v1"),
 		"__sys:meta": []byte("system"),
 	}
-	result := filterSystemMap(data, "user/")
+	result := FilterInternalMap(data, "user/")
 	if len(result) != 1 {
 		t.Fatalf("expected 1 entry after filtering, got %d", len(result))
 	}
@@ -2698,7 +2698,7 @@ func TestFilterSystemMap_SystemPrefix_NoFilter(t *testing.T) {
 		"__sys:a": []byte("1"),
 		"__sys:b": []byte("2"),
 	}
-	result := filterSystemMap(data, "__sys:")
+	result := FilterInternalMap(data, "__sys:")
 	if len(result) != 2 {
 		t.Fatalf("expected 2 entries (no filtering for system prefix), got %d", len(result))
 	}

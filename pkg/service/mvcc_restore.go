@@ -713,11 +713,25 @@ func diffRestoreKey(key string, was, is *KeyValue) (restoreStep, bool) {
 // This is the second half of the internal-key guard and it is not redundant
 // with validateRestorePrefix. A legitimate user prefix can SPAN internal keys
 // without being one: "i" covers "idx:metric:…" and "idx:tag:…", "r" covers
-// "retention:…", "t" covers "ts:…", and "_" covers "__sys:…". The MVCC range
-// query applies no internal-key filter of its own — pkg/engine filters only in
-// listKeys/lookupPrefix, not on the MVCC range path — so without this the
-// single-character prefix "_" would be an unguarded route to rewriting the
-// RBAC store.
+// "retention:…", "t" covers "ts:…", and "_" covers "__sys:…" and "__tbl:…".
+// The MVCC range query applies no internal-key filter of its own — pkg/engine
+// filters only in listKeys/lookupPrefix, not on the MVCC range path — so
+// without this the single-character prefix "_" would be an unguarded route to
+// rewriting the RBAC store.
+//
+// Since the internal namespace gained the relational prefixes, this also
+// excludes table rows ("__tbl:"), secondary index entries ("__idx:"), and
+// sequences ("__seq:") from a KV-level restore. That exclusion is deliberate
+// and it is a correctness fix, not collateral damage: restoreWriter applies
+// its plan through the ordinary Put/Delete path, which maintains the KV
+// secondary index (pkg/index) and nothing else. A relational row's "__idx:"
+// entries are only ever written inside the row+index compare-and-swap in
+// pkg/sql/provider/relational_writer.go, so restoring a row here would have
+// produced a row with no index entries: invisible to every indexed lookup and
+// with its unique constraints silently unenforced, which is a worse state than
+// not restoring it. Point-in-time recovery of relational data belongs to the
+// snapshot-based backup/restore path, which moves the whole keyspace
+// consistently.
 func filterRestorableKeyValues(kvs []*KeyValue) map[string]*KeyValue {
 	out := make(map[string]*KeyValue, len(kvs))
 	for _, kv := range kvs {

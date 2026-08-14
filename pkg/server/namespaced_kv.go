@@ -29,6 +29,15 @@ import (
 //
 // The prefix format is "{namespace}/" (e.g., "acme/"). All key operations
 // add the prefix on writes and strip it on reads.
+//
+// Enumeration additionally re-applies the internal-key guard on the stripped
+// keys, for the same reason ValidateRestoreRequest runs on the unprefixed
+// request: once the namespace is prepended, "acme/reports/__tbl:…" is an
+// ordinary user key, so the inner service's own guard admits it and every
+// reserved namespace — relational rows and index entries, the RBAC store, the
+// time-series keyspace — would be disclosed to any caller holding KV access to
+// the namespace. The guard belongs wherever the key is in the form the caller
+// wrote it, which for a namespaced view is here.
 type namespacedKVService struct {
 	inner  service.KVServicer
 	prefix string // namespace + "/"
@@ -78,7 +87,7 @@ func (s *namespacedKVService) List(ctx context.Context, prefix string) ([]string
 	if err != nil {
 		return nil, err
 	}
-	return s.stripPrefix(keys), nil
+	return s.visibleKeys(keys, prefix), nil
 }
 
 // Scan returns all key-value pairs matching the given prefix within the
@@ -88,7 +97,7 @@ func (s *namespacedKVService) Scan(ctx context.Context, prefix string) (map[stri
 	if err != nil {
 		return nil, err
 	}
-	return s.stripMapPrefix(result), nil
+	return s.visiblePairs(result, prefix), nil
 }
 
 // GetStale retrieves a value by prefixed key from the local state machine
@@ -104,7 +113,7 @@ func (s *namespacedKVService) ListStale(ctx context.Context, prefix string) ([]s
 	if err != nil {
 		return nil, err
 	}
-	return s.stripPrefix(keys), nil
+	return s.visibleKeys(keys, prefix), nil
 }
 
 // ScanStale returns all key-value pairs matching the given prefix within the
@@ -114,7 +123,7 @@ func (s *namespacedKVService) ScanStale(ctx context.Context, prefix string) (map
 	if err != nil {
 		return nil, err
 	}
-	return s.stripMapPrefix(result), nil
+	return s.visiblePairs(result, prefix), nil
 }
 
 // PutWithMode stores a key-value pair under the namespace prefix with the
@@ -142,7 +151,7 @@ func (s *namespacedKVService) ListWithConsistency(ctx context.Context, prefix st
 	if err != nil {
 		return nil, err
 	}
-	return s.stripPrefix(keys), nil
+	return s.visibleKeys(keys, prefix), nil
 }
 
 // ScanWithConsistency returns all key-value pairs matching the given prefix
@@ -152,7 +161,7 @@ func (s *namespacedKVService) ScanWithConsistency(ctx context.Context, prefix st
 	if err != nil {
 		return nil, err
 	}
-	return s.stripMapPrefix(result), nil
+	return s.visiblePairs(result, prefix), nil
 }
 
 // ExistsWithConsistency checks whether a prefixed key exists with the
@@ -218,4 +227,16 @@ func (s *namespacedKVService) stripMapPrefix(m map[string][]byte) map[string][]b
 		result[strings.TrimPrefix(k, s.prefix)] = v
 	}
 	return result
+}
+
+// visibleKeys strips the namespace from keys and applies the internal-key
+// guard against prefix as the caller wrote it (see the type's doc comment).
+func (s *namespacedKVService) visibleKeys(keys []string, prefix string) []string {
+	return service.FilterInternalKeys(s.stripPrefix(keys), prefix)
+}
+
+// visiblePairs strips the namespace from m's keys and applies the
+// internal-key guard against prefix as the caller wrote it.
+func (s *namespacedKVService) visiblePairs(m map[string][]byte, prefix string) map[string][]byte {
+	return service.FilterInternalMap(s.stripMapPrefix(m), prefix)
 }

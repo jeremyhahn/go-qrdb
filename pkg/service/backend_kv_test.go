@@ -187,13 +187,13 @@ func TestList_FiltersSystemKeys(t *testing.T) {
 
 	ctx := context.Background()
 	require.NoError(t, svc.Put(ctx, "user/1", []byte("u1")))
-	require.NoError(t, svc.Put(ctx, systemKeyPrefix+"role/admin", []byte("r1")))
+	require.NoError(t, svc.Put(ctx, InternalKeyPrefixSystem+"role/admin", []byte("r1")))
 
 	keys, err := svc.List(ctx, "")
 	require.NoError(t, err)
 
 	for _, k := range keys {
-		assert.False(t, len(k) >= len(systemKeyPrefix) && k[:len(systemKeyPrefix)] == systemKeyPrefix,
+		assert.False(t, len(k) >= len(InternalKeyPrefixSystem) && k[:len(InternalKeyPrefixSystem)] == InternalKeyPrefixSystem,
 			"system key %q must be filtered from List results", k)
 	}
 }
@@ -203,10 +203,10 @@ func TestList_SystemPrefixQueryPassesThrough(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	sysKey := systemKeyPrefix + "role/admin"
+	sysKey := InternalKeyPrefixSystem + "role/admin"
 	require.NoError(t, svc.Put(ctx, sysKey, []byte("data")))
 
-	keys, err := svc.List(ctx, systemKeyPrefix)
+	keys, err := svc.List(ctx, InternalKeyPrefixSystem)
 	require.NoError(t, err)
 	assert.Contains(t, keys, sysKey)
 }
@@ -282,13 +282,13 @@ func TestScan_FiltersSystemKeys(t *testing.T) {
 
 	ctx := context.Background()
 	require.NoError(t, svc.Put(ctx, "data/k", []byte("v")))
-	require.NoError(t, svc.Put(ctx, systemKeyPrefix+"internal", []byte("secret")))
+	require.NoError(t, svc.Put(ctx, InternalKeyPrefixSystem+"internal", []byte("secret")))
 
 	result, err := svc.Scan(ctx, "")
 	require.NoError(t, err)
 
 	for k := range result {
-		assert.False(t, len(k) >= len(systemKeyPrefix) && k[:len(systemKeyPrefix)] == systemKeyPrefix,
+		assert.False(t, len(k) >= len(InternalKeyPrefixSystem) && k[:len(InternalKeyPrefixSystem)] == InternalKeyPrefixSystem,
 			"system key %q must be filtered from Scan results", k)
 	}
 }

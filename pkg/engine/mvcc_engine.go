@@ -39,12 +39,6 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 )
 
-// internalPrefixes lists key prefixes used by internal subsystems (e.g.
-// roles, users, indexes) that should be excluded from user-facing key lists.
-// The canonical declaration lives in pkg/service; this is a view of it, not a
-// second copy, so a prefix added there is honoured here automatically.
-var internalPrefixes = service.InternalKeyPrefixes()
-
 // Notification captures a single change event for delivery to the watch hub
 // after the storage batch is committed.
 type Notification struct {
@@ -420,9 +414,10 @@ func (e *MVCCEngine) listKeys(prefix string) ([]string, error) {
 	})
 	defer func() { _ = iter.Close() }()
 
-	// When the prefix targets system key space, skip the internal key
-	// filter so that internal stores can list their own records.
-	skipFilter := strings.HasPrefix(prefix, "__sys:")
+	// When the prefix lies inside a reserved namespace whose owner enumerates
+	// it, skip the internal key filter so that subsystem can list its own
+	// records.
+	skipFilter := skipInternalKeyFilter(prefix)
 
 	var keys []string
 	for iter.SeekToFirst(); iter.Valid(); iter.Next() {
@@ -460,7 +455,7 @@ func (e *MVCCEngine) lookupPrefix(q *statemachine.PrefixQuery) (map[string][]byt
 	defer func() { _ = iter.Close() }()
 
 	prefix := string(q.Prefix)
-	skipFilter := strings.HasPrefix(prefix, "__sys:")
+	skipFilter := skipInternalKeyFilter(prefix)
 
 	result := make(map[string][]byte)
 	count := 0
@@ -1411,11 +1406,18 @@ func tsTimestampFromNano(ns int64) time.Time {
 	return time.Unix(0, ns)
 }
 
-// isInternalKey reports whether k starts with any internal prefix. It
-// delegates to the canonical predicate in pkg/service so this package and
-// every other layer decide the question identically.
+// isInternalKey reports whether k belongs to an internal subsystem's reserved
+// namespace and must therefore be excluded from a user-facing key listing.
 func isInternalKey(k string) bool {
 	return service.IsInternalKey(k)
+}
+
+// skipInternalKeyFilter reports whether an enumeration rooted at prefix is the
+// owning subsystem reading its own reserved namespace back, in which case the
+// filter must not be applied or the subsystem would be hidden from its own
+// records.
+func skipInternalKeyFilter(prefix string) bool {
+	return service.SkipInternalKeyFilter(prefix)
 }
 
 // scanChanges returns the distinct keys mutated in the query's inclusive

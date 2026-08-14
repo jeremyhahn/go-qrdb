@@ -289,6 +289,26 @@ func (t *Translator) Translate(query string) (string, error) {
 	return result, nil
 }
 
+// HasReturning reports whether query carries a RETURNING clause, ignoring
+// the word wherever it appears inside a string literal, a comment, or a
+// dollar-quoted string (see scanRegions).
+//
+// It exists so a protocol front end can tell, before execution, that a
+// statement which is not a SELECT nevertheless produces a result set, and
+// must therefore describe its result columns to the client. A PostgreSQL
+// client learns a statement's shape from the Describe phase of the extended
+// query protocol, which happens BEFORE any row exists, so answering "no
+// columns" for an INSERT … RETURNING and then producing a row is a protocol
+// violation the client cannot recover from.
+//
+// Only the RETURNING form the engine actually supports can reach a caller of
+// this function through Translate: UPDATE … RETURNING and DELETE … RETURNING
+// are rejected up front with a typed error (see Translate), so a surviving
+// RETURNING is necessarily an INSERT's.
+func HasReturning(query string) bool {
+	return findOutsideRegions(query, returningKeywordRe) != nil
+}
+
 // translateDefaultValues rewrites PostgreSQL's all-defaults insert,
 // INSERT INTO t DEFAULT VALUES, into MySQL's spelling of the same request,
 // INSERT INTO t () VALUES (). Both ask for exactly one row in which every

@@ -370,12 +370,12 @@ func TestBatchService_Execute_WriteOnly(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// service.go – filterSystemKeys – system prefix passthrough
+// FilterInternalKeys – reserved-prefix passthrough
 // ---------------------------------------------------------------------------
 
 func TestFilterSystemKeys_SystemPrefix_RetainsAll(t *testing.T) {
 	keys := []string{"__sys:config", "__sys:version", "user:alice"}
-	result := filterSystemKeys(keys, "__sys:")
+	result := FilterInternalKeys(keys, "__sys:")
 	// When prefix is system, all keys pass through unchanged.
 	if len(result) != 3 {
 		t.Fatalf("expected 3 keys with sys prefix, got %d", len(result))
@@ -384,7 +384,7 @@ func TestFilterSystemKeys_SystemPrefix_RetainsAll(t *testing.T) {
 
 func TestFilterSystemKeys_UserPrefix_FiltersSystem(t *testing.T) {
 	keys := []string{"user:alice", "__sys:config", "user:bob"}
-	result := filterSystemKeys(keys, "user:")
+	result := FilterInternalKeys(keys, "user:")
 	if len(result) != 2 {
 		t.Fatalf("expected 2 keys, got %d", len(result))
 	}

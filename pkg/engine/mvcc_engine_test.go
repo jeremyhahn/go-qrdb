@@ -2535,6 +2535,77 @@ func TestMVCCEngine_Lookup_ListQuery_SystemPrefix(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Lookup: the relational keyspace
+// ---------------------------------------------------------------------------
+
+// TestMVCCEngine_Lookup_GuardsTheRelationalKeyspace asserts both halves of the
+// guard at the engine layer: an unrooted enumeration must not disclose
+// relational rows, index entries, or sequences, while an enumeration rooted at
+// the table's own prefix -- which is how a table scan reaches this engine --
+// must return them. A guard that got only the first half would turn every
+// table scan into a silent zero-row result.
+func TestMVCCEngine_Lookup_GuardsTheRelationalKeyspace(t *testing.T) {
+	eng, stg := newMVCCEngine(t)
+	defer func() { _ = stg.Close() }()
+	defer func() { _ = eng.Close(context.Background()) }()
+
+	applyMVCCEntries(t, eng, []sm.Entry{
+		mvccPutEntry(1, []byte("app/a"), []byte("user data"), 0),
+		mvccPutEntry(2, []byte("__tbl:shop:1/row"), []byte("classified"), 0),
+		mvccPutEntry(3, []byte("__idx:shop:1:uq_e/a@b"), []byte("pk"), 0),
+		mvccPutEntry(4, []byte("__seq:shop:__tableid"), []byte("counter"), 0),
+	})
+
+	got, err := eng.Lookup(context.Background(), kv.ListQuery{Prefix: ""})
+	if err != nil {
+		t.Fatalf("Lookup list: %v", err)
+	}
+	keys := got.([]string)
+	if len(keys) != 1 || keys[0] != "app/a" {
+		t.Fatalf("unrooted list = %v, want only the user key", keys)
+	}
+
+	scanned, err := eng.Lookup(context.Background(), &statemachine.PrefixQuery{})
+	if err != nil {
+		t.Fatalf("Lookup scan: %v", err)
+	}
+	pairs := scanned.(map[string][]byte)
+	if len(pairs) != 1 {
+		t.Fatalf("unrooted scan = %v, want only the user key", pairs)
+	}
+
+	rows, err := eng.Lookup(context.Background(), &statemachine.PrefixQuery{
+		Prefix: []byte("__tbl:shop:1/"),
+	})
+	if err != nil {
+		t.Fatalf("Lookup rows: %v", err)
+	}
+	rowPairs := rows.(map[string][]byte)
+	if string(rowPairs["__tbl:shop:1/row"]) != "classified" {
+		t.Fatalf("the table's own scan returned %v -- the guard is hiding the relational layer from its own rows", rowPairs)
+	}
+
+	idx, err := eng.Lookup(context.Background(), kv.ListQuery{Prefix: "__idx:shop:1:uq_e/"})
+	if err != nil {
+		t.Fatalf("Lookup index entries: %v", err)
+	}
+	idxKeys := idx.([]string)
+	if len(idxKeys) != 1 || idxKeys[0] != "__idx:shop:1:uq_e/a@b" {
+		t.Fatalf("the index's own listing = %v, want its single entry", idxKeys)
+	}
+
+	// The sequence namespace has no enumerating owner, so naming it discloses
+	// nothing even though it is asked for outright.
+	seq, err := eng.Lookup(context.Background(), kv.ListQuery{Prefix: "__seq:"})
+	if err != nil {
+		t.Fatalf("Lookup sequences: %v", err)
+	}
+	if seqKeys := seq.([]string); len(seqKeys) != 0 {
+		t.Fatalf("sequence listing = %v, want nothing", seqKeys)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // PrefixQuery with system key prefix
 // ---------------------------------------------------------------------------
 

@@ -231,39 +231,69 @@ func (h *ParseHandler) executeDeferred(ctx context.Context, trimmed, translated 
 		}
 	}
 
-	// Determine result columns at PARSE time so pgx can negotiate proper
-	// format codes during BIND. Without this, pgx receives NoData from
-	// Describe and cannot decode values during EXECUTE.
-	//
-	// GMS PrepareQuery analyzes the SQL without executing, giving us the
-	// output schema. Since the translated query contains ? placeholders
-	// that GMS cannot analyze directly, we replace them with empty string
-	// literals — the output schema does not depend on parameter values.
-	//
-	// For DML statements (INSERT/UPDATE/DELETE), columns remain nil which
-	// is correct since they produce no result rows.
-	var columns wire.Columns
-	upper := strings.ToUpper(strings.TrimSpace(translated))
-	if strings.HasPrefix(upper, "SELECT") {
-		schemaQuery := strings.ReplaceAll(translated, "?", "''")
-		node, err := h.sqlEngine.PrepareQuery(sqlCtx, schemaQuery)
-		if err == nil && node != nil {
-			schema := node.Schema(sqlCtx)
-			if len(schema) > 0 {
-				columns = schemaToColumns(schema)
-			}
-		}
-	}
-
 	stmt := wire.NewStatement(
 		func(execCtx context.Context, writer wire.DataWriter, parameters []wire.Parameter) error {
 			return h.executeDeferredCallback(execCtx, writer, parameters, trimmed, translated, parsedStmt, paramOIDs)
 		},
-		wire.WithColumns(columns),
+		wire.WithColumns(h.resultColumns(sqlCtx, translated)),
 		wire.WithParameters(paramOIDs),
 	)
 
 	return wire.Prepared(stmt), nil
+}
+
+// resultColumns returns the result columns a deferred statement will produce,
+// resolved at PARSE time, or nil for a statement that produces no rows.
+//
+// The PostgreSQL extended query protocol settles a statement's result shape
+// during Describe, which happens before BIND delivers any parameter value and
+// long before a row exists. Whatever is declared here is what psql-wire sends
+// as the RowDescription, and it is binding: the client negotiates its format
+// codes from it, and psql-wire itself refuses to write a row whose width
+// disagrees with it ("unexpected columns, N columns are defined inside the
+// given table but M were given"). Declaring nothing for a statement that does
+// produce a row is therefore not a conservative default but a hard failure at
+// EXECUTE time.
+//
+// Two statement shapes produce rows. A SELECT is the obvious one. The other
+// is INSERT … RETURNING, which is how gorm.io/driver/postgres reads back
+// every generated primary key it issues — the single most common statement a
+// PostgreSQL ORM sends. Both are resolved the same way, by asking
+// go-mysql-server to analyze (not execute) the statement and taking the
+// resulting plan node's schema; go-mysql-server's InsertInto node reports its
+// RETURNING expressions as its schema, so no special case is needed beyond
+// asking.
+//
+// The translated text is handed to PrepareQuery with its ? placeholders
+// intact. Analyzing a statement that still has unbound parameters is exactly
+// what PrepareQuery is for, and a result schema depends only on a
+// statement's shape, never on parameter values. Substituting a stand-in
+// literal for each placeholder first — ” was the obvious choice — instead
+// makes the probe fail on every placeholder in a context that is not a
+// string: LIMIT ? became LIMIT ”, which is not a valid row count, so the
+// analysis errored and the statement was described as returning nothing.
+// gorm issues LIMIT $N on every First/Take/Last, so that stand-in silently
+// disabled the description for a large share of ordinary SELECT traffic.
+//
+// A probe that fails to analyze yields nil rather than an error: this is
+// metadata resolution, and the authoritative diagnosis of a bad statement
+// belongs to the execution path, which reports it against the caller's real
+// parameters.
+func (h *ParseHandler) resultColumns(sqlCtx *sql.Context, translated string) wire.Columns {
+	upper := strings.ToUpper(strings.TrimSpace(translated))
+	if !strings.HasPrefix(upper, "SELECT") && !engine.HasReturning(translated) {
+		return nil
+	}
+
+	node, err := h.sqlEngine.PrepareQuery(sqlCtx, translated)
+	if err != nil || node == nil {
+		return nil
+	}
+	schema := node.Schema(sqlCtx)
+	if len(schema) == 0 {
+		return nil
+	}
+	return schemaToColumns(schema)
 }
 
 // executeDeferredCallback is the body of the deferred PreparedStatementFn

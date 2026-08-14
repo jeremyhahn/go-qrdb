@@ -477,10 +477,11 @@ func (s *PebbleStateMachine) listKeys(prefix string) ([]string, error) {
 	}
 	defer func() { _ = iter.Close() }()
 
-	// When the prefix itself targets system key space, skip the internal
-	// key filter so that internal stores (users, roles, certs) can list
-	// their own records through the PebbleStateMachine path.
-	skipFilter := strings.HasPrefix(prefix, "__sys:")
+	// When the prefix itself lies inside a reserved namespace whose owner
+	// enumerates it, skip the internal key filter so that subsystem (the RBAC
+	// stores, the relational row and index reader) can list its own records
+	// through the PebbleStateMachine path.
+	skipFilter := skipInternalKeyFilter(prefix)
 
 	var keys []string
 	for iter.First(); iter.Valid(); iter.Next() {
@@ -527,7 +528,7 @@ func (s *PebbleStateMachine) scanPrefix(pq *statemachine.PrefixQuery) (map[strin
 	}
 	defer func() { _ = iter.Close() }()
 
-	skipFilter := strings.HasPrefix(prefix, "__sys:")
+	skipFilter := skipInternalKeyFilter(prefix)
 
 	result := make(map[string][]byte)
 	for iter.First(); iter.Valid(); iter.Next() {

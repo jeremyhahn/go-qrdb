@@ -2300,6 +2300,9 @@ func TestIsInternalKey(t *testing.T) {
 		{name: "idx_metric_prefix", key: "idx:metric:cpu", want: true},
 		{name: "idx_tag_prefix", key: "idx:tag:host:server1", want: true},
 		{name: "retention_prefix", key: "retention:cpu", want: true},
+		{name: "table_row_prefix", key: "__tbl:shop:1/row", want: true},
+		{name: "table_index_prefix", key: "__idx:shop:1:uq_e/a@b", want: true},
+		{name: "table_sequence_prefix", key: "__seq:shop:__autoinc:1", want: true},
 		{name: "user_key", key: "user:key", want: false},
 		{name: "empty_key", key: "", want: false},
 		{name: "regular_key", key: "regular-key", want: false},
@@ -2312,6 +2315,78 @@ func TestIsInternalKey(t *testing.T) {
 				t.Fatalf("isInternalKey(%q) = %v, want %v", tt.key, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestSkipInternalKeyFilter_MatchesTheEnumeratingNamespaces pins the skip
+// rule this package's listKeys and scanPrefix consult. The relational row and
+// index namespaces must earn the escape -- a table scan reaches this state
+// machine as a prefix scan of "__tbl:{db}:{id}/" and would otherwise come back
+// empty -- while the namespaces nothing enumerates must not.
+func TestSkipInternalKeyFilter_MatchesTheEnumeratingNamespaces(t *testing.T) {
+	tests := []struct {
+		name   string
+		prefix string
+		want   bool
+	}{
+		{name: "system_store", prefix: "__sys:roles/", want: true},
+		{name: "table_rows", prefix: "__tbl:shop:1/", want: true},
+		{name: "table_index", prefix: "__idx:shop:1:uq_e/", want: true},
+		{name: "sequences", prefix: "__seq:", want: false},
+		{name: "time_series", prefix: "ts:", want: false},
+		{name: "whole_keyspace", prefix: "", want: false},
+		{name: "spanning_underscore", prefix: "_", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := skipInternalKeyFilter(tt.prefix); got != tt.want {
+				t.Fatalf("skipInternalKeyFilter(%q) = %v, want %v", tt.prefix, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestPebbleStateMachine_ListAndScanGuardTheRelationalKeyspace exercises both
+// halves of the guard through the state machine itself: a whole-keyspace
+// enumeration must not disclose relational keys, and an enumeration rooted at
+// the table's own prefix must return them.
+func TestPebbleStateMachine_ListAndScanGuardTheRelationalKeyspace(t *testing.T) {
+	s := openStore(t)
+
+	seed := []struct{ key, value string }{
+		{"app/a", "user data"},
+		{"__tbl:shop:1/row", "classified"},
+		{"__idx:shop:1:uq_e/a@b", "pk"},
+		{"__seq:shop:__tableid", "counter"},
+	}
+	entries := make([]sm.Entry, len(seed))
+	for i, kvp := range seed {
+		entries[i] = putEntry(uint64(i+1), kvp.key, kvp.value)
+	}
+	applyEntries(t, s, entries)
+
+	keys, err := s.listKeys("")
+	if err != nil {
+		t.Fatalf("listKeys: %v", err)
+	}
+	if len(keys) != 1 || keys[0] != "app/a" {
+		t.Fatalf("listKeys(\"\") = %q, want only the user key", keys)
+	}
+
+	pairs, err := s.scanPrefix(&statemachine.PrefixQuery{})
+	if err != nil {
+		t.Fatalf("scanPrefix: %v", err)
+	}
+	if len(pairs) != 1 {
+		t.Fatalf("scanPrefix(\"\") = %v, want only the user key", pairs)
+	}
+
+	rows, err := s.scanPrefix(&statemachine.PrefixQuery{Prefix: []byte("__tbl:shop:1/")})
+	if err != nil {
+		t.Fatalf("scanPrefix rows: %v", err)
+	}
+	if string(rows["__tbl:shop:1/row"]) != "classified" {
+		t.Fatalf("the table's own scan returned %v -- the guard is hiding the relational layer from its own rows", rows)
 	}
 }
 

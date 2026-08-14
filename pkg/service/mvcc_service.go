@@ -258,15 +258,7 @@ func (s *MVCCKVService) List(ctx context.Context, prefix string) ([]string, erro
 		return nil, &ReadError{Err: &unexpectedResultTypeError{}}
 	}
 
-	skipFilter := isSystemPrefix(prefix)
-	keys := make([]string, 0, len(rr.KeyValues))
-	for _, kv := range rr.KeyValues {
-		k := string(kv.Key)
-		if skipFilter || !strings.HasPrefix(k, systemKeyPrefix) {
-			keys = append(keys, k)
-		}
-	}
-	return keys, nil
+	return rangeResultKeys(rr, prefix), nil
 }
 
 // Scan returns all key-value pairs matching the given prefix. Uses a
@@ -289,7 +281,7 @@ func (s *MVCCKVService) Scan(ctx context.Context, prefix string) (map[string][]b
 	if !ok {
 		return nil, &ReadError{Err: &unexpectedResultTypeError{}}
 	}
-	return filterSystemMap(data, prefix), nil
+	return FilterInternalMap(data, prefix), nil
 }
 
 // GetStale retrieves a value by key from the local state machine without
@@ -337,15 +329,7 @@ func (s *MVCCKVService) ListStale(ctx context.Context, prefix string) ([]string,
 		return nil, &ReadError{Err: &unexpectedResultTypeError{}}
 	}
 
-	skipFilter := isSystemPrefix(prefix)
-	keys := make([]string, 0, len(rr.KeyValues))
-	for _, kv := range rr.KeyValues {
-		k := string(kv.Key)
-		if skipFilter || !strings.HasPrefix(k, systemKeyPrefix) {
-			keys = append(keys, k)
-		}
-	}
-	return keys, nil
+	return rangeResultKeys(rr, prefix), nil
 }
 
 // ScanStale returns all key-value pairs matching the given prefix from the
@@ -368,7 +352,7 @@ func (s *MVCCKVService) ScanStale(ctx context.Context, prefix string) (map[strin
 	if !ok {
 		return nil, &ReadError{Err: &unexpectedResultTypeError{}}
 	}
-	return filterSystemMap(data, prefix), nil
+	return FilterInternalMap(data, prefix), nil
 }
 
 // ---------------------------------------------------------------------------
@@ -448,15 +432,7 @@ func (s *MVCCKVService) ListWithConsistency(ctx context.Context, prefix string, 
 		return nil, &ReadError{Err: &unexpectedResultTypeError{}}
 	}
 
-	skipFilter := isSystemPrefix(prefix)
-	keys := make([]string, 0, len(rr.KeyValues))
-	for _, kv := range rr.KeyValues {
-		k := string(kv.Key)
-		if skipFilter || !strings.HasPrefix(k, systemKeyPrefix) {
-			keys = append(keys, k)
-		}
-	}
-	return keys, nil
+	return rangeResultKeys(rr, prefix), nil
 }
 
 // ScanWithConsistency returns all key-value pairs matching the given prefix
@@ -478,7 +454,7 @@ func (s *MVCCKVService) ScanWithConsistency(ctx context.Context, prefix string, 
 	if !ok {
 		return nil, &ReadError{Err: &unexpectedResultTypeError{}}
 	}
-	return filterSystemMap(data, prefix), nil
+	return FilterInternalMap(data, prefix), nil
 }
 
 // ExistsWithConsistency checks whether a key exists with the specified
@@ -847,6 +823,22 @@ func (s *MVCCKVService) ListEntities(ctx context.Context, req *ListEntitiesReque
 		NextPageToken: nextPageToken,
 		TotalCount:    totalCount,
 	}, nil
+}
+
+// rangeResultKeys projects an MVCC range result onto its keys and applies the
+// internal-key filter for the enumeration rooted at prefix.
+//
+// The three keys-only range reads (List, ListStale, ListWithConsistency)
+// differ only in how they issue the read, so the projection and the guard live
+// here rather than three times over: the MVCC range path applies no filter of
+// its own, which is exactly why forgetting it in one of the three would leak
+// the internal keyspace through that one method alone.
+func rangeResultKeys(rr *MVCCRangeResult, prefix string) []string {
+	keys := make([]string, 0, len(rr.KeyValues))
+	for _, kv := range rr.KeyValues {
+		keys = append(keys, string(kv.Key))
+	}
+	return FilterInternalKeys(keys, prefix)
 }
 
 // translateProposeError converts QuicRaft proposal errors to service-level

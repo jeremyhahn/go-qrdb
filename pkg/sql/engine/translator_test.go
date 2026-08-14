@@ -848,3 +848,176 @@ func TestTranslator_Translate_CorruptionRegressions(t *testing.T) {
 		})
 	}
 }
+
+// TestTranslator_Translate_ExcludedQualifierSpellings covers both spellings
+// of the EXCLUDED pseudo-table qualifier.
+//
+// The quoted spelling is the one that matters in practice and is the one
+// that used to be missed: gorm.io/driver/postgres writes the qualifier as
+// "excluded"."col", which the double-quote conversion turns into
+// `excluded`.`col` before this rewrite ever sees it. Left unmatched, that
+// reads as a reference to a table literally named excluded and the statement
+// failed downstream with "table not found: excluded" -- so every upsert the
+// driver generated was broken while the hand-written bare spelling worked.
+func TestTranslator_Translate_ExcludedQualifierSpellings(t *testing.T) {
+	tr := NewTranslator()
+
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "bare_qualifier_bare_column",
+			input:    "INSERT INTO t (a) VALUES ($1) ON CONFLICT (a) DO UPDATE SET a = EXCLUDED.a",
+			expected: "INSERT INTO t (a) VALUES (?) ON DUPLICATE KEY UPDATE a = VALUES(a)",
+		},
+		{
+			name:     "bare_qualifier_lower_case",
+			input:    "INSERT INTO t (a) VALUES ($1) ON CONFLICT (a) DO UPDATE SET a = excluded.a",
+			expected: "INSERT INTO t (a) VALUES (?) ON DUPLICATE KEY UPDATE a = VALUES(a)",
+		},
+		{
+			name:     "quoted_qualifier_quoted_column",
+			input:    `INSERT INTO "t" ("a") VALUES ($1) ON CONFLICT ("a") DO UPDATE SET "a"="excluded"."a"`,
+			expected: "INSERT INTO `t` (`a`) VALUES (?) ON DUPLICATE KEY UPDATE `a`=VALUES(`a`)",
+		},
+		{
+			name: "driver_corpus_multi_assignment",
+			// Verbatim from gorm.io/driver/postgres against this server.
+			input:    `INSERT INTO "toys" ("name","owner_id","owner_type") VALUES ($1,$2,$3) ON CONFLICT ("id") DO UPDATE SET "owner_type"="excluded"."owner_type","owner_id"="excluded"."owner_id" RETURNING "id"`,
+			expected: "INSERT INTO `toys` (`name`,`owner_id`,`owner_type`) VALUES (?,?,?) ON DUPLICATE KEY UPDATE `owner_type`=VALUES(`owner_type`),`owner_id`=VALUES(`owner_id`) RETURNING `id`",
+		},
+		{
+			name: "literal_naming_excluded_is_not_a_qualifier",
+			// The rewrite is applied through applyOutsideRegions, so a value
+			// that merely spells excluded.col is caller data, not SQL.
+			input:    `INSERT INTO t (a) VALUES ('excluded.a') ON CONFLICT (a) DO UPDATE SET a = EXCLUDED.a`,
+			expected: "INSERT INTO t (a) VALUES ('excluded.a') ON DUPLICATE KEY UPDATE a = VALUES(a)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := tr.Translate(tt.input)
+			require.NoError(t, err)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+// TestTranslator_Translate_DefaultValues covers PostgreSQL's all-defaults
+// insert, INSERT INTO t DEFAULT VALUES, and MySQL's spelling of the same
+// request, INSERT INTO t () VALUES ().
+func TestTranslator_Translate_DefaultValues(t *testing.T) {
+	tr := NewTranslator()
+
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "bare",
+			input:    `INSERT INTO "empty_structs" DEFAULT VALUES`,
+			expected: "INSERT INTO `empty_structs` () VALUES ()",
+		},
+		{
+			name:     "with_returning",
+			input:    `INSERT INTO "empty_structs" DEFAULT VALUES RETURNING "id"`,
+			expected: "INSERT INTO `empty_structs` () VALUES () RETURNING `id`",
+		},
+		{
+			name:     "with_multiple_returning_columns",
+			input:    `INSERT INTO "events" DEFAULT VALUES RETURNING "uid","id"`,
+			expected: "INSERT INTO `events` () VALUES () RETURNING `uid`,`id`",
+		},
+		{
+			name:     "case_and_spacing_insensitive",
+			input:    "insert into t\ndefault   values",
+			expected: "insert into t\n() VALUES ()",
+		},
+		{
+			name:     "ordinary_insert_untouched",
+			input:    "INSERT INTO t (a) VALUES ($1)",
+			expected: "INSERT INTO t (a) VALUES (?)",
+		},
+		{
+			name: "column_default_clause_is_not_an_all_defaults_insert",
+			// DEFAULT here introduces a column default, and no VALUES follows
+			// it, so the pattern cannot match.
+			input:    "CREATE TABLE t (a bigint DEFAULT 1)",
+			expected: "CREATE TABLE t (a bigint DEFAULT 1)",
+		},
+		{
+			name: "phrase_outside_an_insert_is_untouched",
+			// The rewrite is confined to statements whose leading keyword is
+			// INSERT, the only production the phrase belongs to.
+			input:    "SELECT 'x' FROM t WHERE a = 1 -- DEFAULT VALUES",
+			expected: "SELECT 'x' FROM t WHERE a = 1 -- DEFAULT VALUES",
+		},
+		{
+			name: "phrase_inside_a_literal_is_untouched",
+			// applyOutsideRegions protects caller data even in an INSERT.
+			input:    "INSERT INTO t (a) VALUES ('DEFAULT VALUES')",
+			expected: "INSERT INTO t (a) VALUES ('DEFAULT VALUES')",
+		},
+		{
+			name:     "phrase_inside_a_comment_within_an_insert_is_untouched",
+			input:    "INSERT INTO t (a) /* DEFAULT VALUES */ VALUES (1)",
+			expected: "INSERT INTO t (a) /* DEFAULT VALUES */ VALUES (1)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := tr.Translate(tt.input)
+			require.NoError(t, err)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+// TestHasReturning covers the predicate a protocol front end uses to decide
+// that a non-SELECT statement still produces a result set and must therefore
+// describe its columns before execution.
+func TestHasReturning(t *testing.T) {
+	tests := []struct {
+		name  string
+		query string
+		want  bool
+	}{
+		{name: "insert_returning", query: "INSERT INTO t (a) VALUES (1) RETURNING id", want: true},
+		{name: "insert_returning_quoted", query: "INSERT INTO `t` (`a`) VALUES (1) RETURNING `id`", want: true},
+		{name: "lower_case", query: "insert into t (a) values (1) returning id", want: true},
+		{name: "plain_insert", query: "INSERT INTO t (a) VALUES (1)", want: false},
+		{name: "select", query: "SELECT a FROM t", want: false},
+		{name: "empty", query: "", want: false},
+		{
+			name:  "word_inside_a_string_literal",
+			query: "INSERT INTO t (a) VALUES ('RETURNING id')",
+			want:  false,
+		},
+		{
+			name:  "word_inside_a_line_comment",
+			query: "INSERT INTO t (a) VALUES (1) -- RETURNING id",
+			want:  false,
+		},
+		{
+			name:  "word_inside_a_block_comment",
+			query: "INSERT INTO t (a) /* RETURNING id */ VALUES (1)",
+			want:  false,
+		},
+		{
+			name:  "substring_is_not_the_keyword",
+			query: "SELECT returningly FROM t",
+			want:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, HasReturning(tt.query))
+		})
+	}
+}

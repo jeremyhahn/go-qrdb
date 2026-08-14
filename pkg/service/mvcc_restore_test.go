@@ -1221,6 +1221,51 @@ func TestFilterRestorableKeyValues_DropsInternalAndNilEntries(t *testing.T) {
 	}
 }
 
+// TestFilterRestorableKeyValues_ExcludesTheRelationalKeyspace pins the
+// deliberate exclusion of relational data from a KV-level restore.
+//
+// It is not an oversight that a table row cannot be restored this way.
+// restoreWriter applies its plan through the ordinary Put/Delete path, which
+// maintains the KV secondary index and nothing else; a row's "__idx:" entries
+// are written only inside the row+index compare-and-swap in
+// pkg/sql/provider/relational_writer.go. Restoring a row here would therefore
+// produce a row with no index entries -- invisible to indexed lookups, with
+// its unique constraints unenforced -- which is a worse state than leaving it
+// alone. Relational point-in-time recovery belongs to the snapshot path.
+func TestFilterRestorableKeyValues_ExcludesTheRelationalKeyspace(t *testing.T) {
+	out := filterRestorableKeyValues([]*KeyValue{
+		{Key: []byte("app/a")},
+		{Key: []byte("__tbl:shop:1/\x00\x00\x00\x00\x00\x00\x00\x01")},
+		{Key: []byte("__idx:shop:1:uq_email/a@b")},
+		{Key: []byte("__seq:shop:__autoinc:1")},
+		{Key: []byte("__sys:tables/shop/orders")},
+	})
+	if len(out) != 1 {
+		t.Fatalf("got %d entries, want only the user key: %v", len(out), out)
+	}
+	if _, ok := out["app/a"]; !ok {
+		t.Fatalf("the user key was dropped: %v", out)
+	}
+}
+
+// TestValidateRestorePrefix_RefusesTheRelationalKeyspace covers the other
+// half of the same guard: a restore scoped directly at a relational prefix is
+// refused outright rather than silently planning nothing.
+func TestValidateRestorePrefix_RefusesTheRelationalKeyspace(t *testing.T) {
+	for _, prefix := range []string{
+		"__tbl:",
+		"__tbl:shop:1/",
+		"__idx:shop:1:uq_email/",
+		"__seq:shop:__autoinc:1",
+	} {
+		err := ValidateRestoreRequest(&RestoreRevisionRequest{Revision: 7, Prefix: prefix})
+		var ike *RestoreInternalKeyError
+		if !errors.As(err, &ike) {
+			t.Errorf("ValidateRestoreRequest(prefix=%q) = %v, want *RestoreInternalKeyError", prefix, err)
+		}
+	}
+}
+
 func TestRestoreAppliers_CoverEveryPlannedAction(t *testing.T) {
 	for _, action := range []RestoreAction{RestoreActionRevert, RestoreActionRecreate, RestoreActionDelete} {
 		if _, ok := restoreAppliers[action]; !ok {

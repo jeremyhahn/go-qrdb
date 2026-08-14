@@ -468,7 +468,7 @@ func (s *KVService) List(ctx context.Context, prefix string) ([]string, error) {
 		return nil, &ReadError{Err: &unexpectedResultTypeError{}}
 	}
 
-	return filterSystemKeys(keys, prefix), nil
+	return FilterInternalKeys(keys, prefix), nil
 }
 
 // Scan returns all key-value pairs matching the given prefix. Uses a
@@ -491,7 +491,7 @@ func (s *KVService) Scan(ctx context.Context, prefix string) (map[string][]byte,
 	if !ok {
 		return nil, &ReadError{Err: &unexpectedResultTypeError{}}
 	}
-	return filterSystemMap(data, prefix), nil
+	return FilterInternalMap(data, prefix), nil
 }
 
 // GetStale retrieves a value by key from the local state machine without
@@ -532,7 +532,7 @@ func (s *KVService) ListStale(ctx context.Context, prefix string) ([]string, err
 		return nil, &ReadError{Err: &unexpectedResultTypeError{}}
 	}
 
-	return filterSystemKeys(keys, prefix), nil
+	return FilterInternalKeys(keys, prefix), nil
 }
 
 // ScanStale returns all key-value pairs matching the given prefix from the
@@ -554,7 +554,7 @@ func (s *KVService) ScanStale(ctx context.Context, prefix string) (map[string][]
 	if !ok {
 		return nil, &ReadError{Err: &unexpectedResultTypeError{}}
 	}
-	return filterSystemMap(data, prefix), nil
+	return FilterInternalMap(data, prefix), nil
 }
 
 // ---------------------------------------------------------------------------
@@ -634,7 +634,7 @@ func (s *KVService) ListWithConsistency(ctx context.Context, prefix string, opts
 		return nil, &ReadError{Err: &unexpectedResultTypeError{}}
 	}
 
-	return filterSystemKeys(keys, prefix), nil
+	return FilterInternalKeys(keys, prefix), nil
 }
 
 // ScanWithConsistency returns all key-value pairs matching the given prefix
@@ -657,7 +657,7 @@ func (s *KVService) ScanWithConsistency(ctx context.Context, prefix string, opts
 	if !ok {
 		return nil, &ReadError{Err: &unexpectedResultTypeError{}}
 	}
-	return filterSystemMap(data, prefix), nil
+	return FilterInternalMap(data, prefix), nil
 }
 
 // ExistsWithConsistency checks whether a key exists with the specified
@@ -1145,44 +1145,6 @@ func (s *AdminService) GetTopology(_ context.Context) (*TopologyResponse, error)
 	}, nil
 }
 
-// systemKeyPrefix is the prefix used for internal system keys (roles, users,
-// indexes) that should be hidden from user-facing list/scan operations.
-const systemKeyPrefix = InternalKeyPrefixSystem
-
-// isSystemPrefix returns true when the query prefix itself targets system
-// keys. Internal stores (users, roles, certs) intentionally scan system
-// key space and must receive unfiltered results.
-func isSystemPrefix(prefix string) bool {
-	return strings.HasPrefix(prefix, systemKeyPrefix)
-}
-
-// filterSystemKeys returns a new slice with internal system keys removed.
-// When the query prefix targets the system key namespace, no filtering is
-// applied so that internal stores receive their own records.
-func filterSystemKeys(keys []string, prefix string) []string {
-	if isSystemPrefix(prefix) {
-		return keys
-	}
-	filtered := make([]string, 0, len(keys))
-	for _, k := range keys {
-		if !strings.HasPrefix(k, systemKeyPrefix) {
-			filtered = append(filtered, k)
-		}
-	}
-	return filtered
-}
-
-// filterSystemMap returns a new map with internal system keys removed.
-// When the query prefix targets the system key namespace, no filtering is
-// applied so that internal stores receive their own records.
-func filterSystemMap(data map[string][]byte, prefix string) map[string][]byte {
-	if isSystemPrefix(prefix) {
-		return data
-	}
-	for k := range data {
-		if strings.HasPrefix(k, systemKeyPrefix) {
-			delete(data, k)
-		}
-	}
-	return data
-}
+// The internal-key predicate and the two filters built on it live in
+// internal_keys.go, which is the canonical declaration of the reserved
+// namespace for every layer.
