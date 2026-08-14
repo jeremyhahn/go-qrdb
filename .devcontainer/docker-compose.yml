@@ -38,6 +38,11 @@ services:
       - ../../go-truststrap:/workspace/go-truststrap
       - ../../go-objstore:/workspace/go-objstore
     working_dir: /workspace/go-qrdb
+    environment:
+      - GOPRIVATE=github.com/jeremyhahn/*
+      - GIT_CONFIG_COUNT=1
+      - GIT_CONFIG_KEY_0=url.http://x:${GITEA_GO_TOKEN}@198.51.100.91:3001/jeremyhahn/.insteadOf
+      - GIT_CONFIG_VALUE_0=https://github.com/jeremyhahn/
     command: ["make", "_build-client"]
 
   e2e:
@@ -53,6 +58,10 @@ services:
     working_dir: /workspace/go-qrdb
     environment:
       - CI=true
+      - GOPRIVATE=github.com/jeremyhahn/*
+      - GIT_CONFIG_COUNT=1
+      - GIT_CONFIG_KEY_0=url.http://x:${GITEA_GO_TOKEN}@198.51.100.91:3001/jeremyhahn/.insteadOf
+      - GIT_CONFIG_VALUE_0=https://github.com/jeremyhahn/
     command: ["make", "_test-e2e"]
 
   devcontainer-gpu:

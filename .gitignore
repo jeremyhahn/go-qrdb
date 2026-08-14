@@ -42,3 +42,6 @@ go.work.sum
 # compiled binaries never enter the module tree
 cmd/qrdb-sqlite/qrdb-sqlite
 /bin/
+
+# devcontainer secrets (Gitea module-fetch token)
+.devcontainer/.env
