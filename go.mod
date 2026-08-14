@@ -22,8 +22,9 @@ require (
 	github.com/dolthub/vitess v0.0.0-20260728212736-0542037326d7
 	github.com/flynn/noise v1.1.0
 	github.com/fsnotify/fsnotify v1.10.1
+	github.com/go-chi/chi/v5 v5.3.0
 	github.com/go-sql-driver/mysql v1.9.3
-	github.com/jackc/pgx/v5 v5.8.0
+	github.com/jackc/pgx/v5 v5.10.0
 	github.com/jeremyhahn/go-codec v1.3.1
 	github.com/jeremyhahn/go-objstore v0.2.1-alpha
 	github.com/jeremyhahn/go-quicraft v0.3.0-alpha
