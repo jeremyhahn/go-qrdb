@@ -11,6 +11,42 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.3.0-alpha] - 2026-08-14
+
+### Added — the unified API server seam
+
+Phases 0-2 and phase 3 wave 1 of
+`software/plans/unified-api-server-2026-08-14.md`, the work that lets a host
+process expose go-qrdb's own control plane instead of reimplementing it per
+transport. New exported API, so MINOR.
+
+- `pkg/apimodule`: `ServiceModule` and `BaseModule` with `Start`/`Stop`, a
+  duplicate-name check, and a startup assertion that every registered route
+  carries a permission. `WithModule` fans a module out across the transports.
+  Re-exported from `sdk/go`. Additive — nothing existing changes shape.
+- The control plane's own admin, rebalance and user-auth-factor surfaces are
+  served through the seam.
+- `pkg/sql/privilege`: GRANT, REVOKE and SHOW GRANTS parsing, rewriting and
+  enforcement over `service.PrivilegeService`, plus `pkg/sql/pgcatalog`.
+
+### Changed
+
+- REST runs on chi/v5 v5.3.0. SSE `/watch`, on-behalf-of and the cluster-peer
+  exempt routes are unchanged, gated by the pre-existing watch and
+  barrier-authz tests passing unmodified.
+- One authorization path: `authz.proto` carries `option (auth.permission)`, a
+  reflection interceptor reads it, and `Perm_*` constants replace the five
+  hand-maintained permission tables. Default-deny, the `IdentityGated`
+  sentinel, the public-route allowlists and on-behalf-of handling are retained.
+  QUIC and MCP gain method registries with mapping guard tests and REST a route
+  guard, so a handler added without a permission now fails a test instead of
+  shipping unauthenticated.
+
+### Removed
+
+- `pkg/auth/middleware/mapping.go` and the five permission tables it fed.
+- The `pkg/sql/internal/privprobe` scaffolding, superseded by `pkg/sql/privilege`.
+
 ## [0.2.1-alpha] - 2026-08-14
 
 ### Fixed
@@ -92,6 +128,7 @@ ProtoBuf codecs are unaffected.
 - Playwright's generated `playwright-report/` and `test-results/` output no
   longer ships in the repository.
 
-[Unreleased]: https://github.com/jeremyhahn/go-qrdb/compare/v0.2.1-alpha...HEAD
+[Unreleased]: https://github.com/jeremyhahn/go-qrdb/compare/v0.3.0-alpha...HEAD
+[0.3.0-alpha]: https://github.com/jeremyhahn/go-qrdb/compare/v0.2.1-alpha...v0.3.0-alpha
 [0.2.1-alpha]: https://github.com/jeremyhahn/go-qrdb/compare/v0.2.0-alpha...v0.2.1-alpha
 [0.2.0-alpha]: https://github.com/jeremyhahn/go-qrdb/compare/v0.1.1-alpha...v0.2.0-alpha
