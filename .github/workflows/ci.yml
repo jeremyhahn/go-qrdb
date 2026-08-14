@@ -11,6 +11,7 @@ on:
     branches: [master]
   pull_request:
     branches: [master]
+  workflow_dispatch:                    # manual rerun — Gitea has no rerun API
 
 permissions:
   contents: read
