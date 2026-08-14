@@ -19,6 +19,7 @@ package pgsql
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"regexp"
@@ -797,7 +798,7 @@ func collectRows(ctx *sql.Context, schema sql.Schema, iter sql.RowIter) (*queryR
 	result := &queryResult{}
 	for {
 		row, err := iter.Next(ctx)
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {

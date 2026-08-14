@@ -165,6 +165,8 @@ func handleBarrierEnableEncryption(migrator service.EncryptionMigrator) mcpserve
 		// cancelled once the tool result returns, and the migration must
 		// continue independent of this call's lifetime.
 		resultCh := make(chan error, 1)
+		// #nosec G118 -- detaching from the request context is the point: the
+		// migration must survive the response returning.
 		go func() {
 			resultCh <- migrator.EnableEncryption(context.Background(), scope, opts)
 		}()

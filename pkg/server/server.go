@@ -1656,7 +1656,7 @@ func (s *Server) StopEtcd(dbName string) {
 	}
 	val, ok := s.etcdServers.LoadAndDelete(dbName)
 	if ok {
-		stopEtcdServerFn(val.(EtcdProtocolServer))
+		stopEtcdServerFn(val.(EtcdProtocolServer)) //nolint:errcheck // type assertion on a value this container only ever holds
 	}
 }
 
@@ -1667,7 +1667,7 @@ func (s *Server) EtcdAddr(dbName string) string {
 	if !ok {
 		return ""
 	}
-	return val.(EtcdProtocolServer).Addr()
+	return val.(EtcdProtocolServer).Addr() //nolint:errcheck // type assertion on a value this container only ever holds
 }
 
 // stopMySQL stops the MySQL server if it was started.
@@ -1690,7 +1690,7 @@ func (s *Server) stopAllEtcd() {
 		return
 	}
 	s.etcdServers.Range(func(key, value any) bool {
-		stopEtcdServerFn(value.(EtcdProtocolServer))
+		stopEtcdServerFn(value.(EtcdProtocolServer)) //nolint:errcheck // type assertion on a value this container only ever holds
 		s.etcdServers.Delete(key)
 		return true
 	})

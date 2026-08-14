@@ -399,7 +399,7 @@ func (s *Server) Stop() {
 	s.closed.Store(true)
 	_ = s.listener.Close()
 	s.conns.Range(func(key, _ any) bool {
-		_ = key.(*quicgo.Conn).CloseWithError(0, "server shutting down")
+		_ = key.(*quicgo.Conn).CloseWithError(0, "server shutting down") //nolint:errcheck // type assertion on a value this container only ever holds
 		return true
 	})
 	s.wg.Wait()

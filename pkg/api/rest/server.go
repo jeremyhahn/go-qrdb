@@ -23,6 +23,7 @@ import (
 	"crypto"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -993,7 +994,7 @@ func (s *Server) Start() error {
 			Handler:   s.server.Handler,
 		}
 		go func() {
-			if h3Err := s.http3Server.ListenAndServe(); h3Err != nil && h3Err != http.ErrServerClosed {
+			if h3Err := s.http3Server.ListenAndServe(); h3Err != nil && !errors.Is(h3Err, http.ErrServerClosed) {
 				slog.Error("HTTP/3 server error", "error", h3Err)
 			}
 		}()

@@ -184,10 +184,10 @@ func (m PrivilegeMask) Names() []string {
 // (MySQL prints it as a WITH clause), so it is excluded here.
 func (m PrivilegeMask) String() string {
 	grantable := m &^ PrivilegeGrantOption
-	switch {
-	case grantable == PrivilegeAll:
+	switch grantable {
+	case PrivilegeAll:
 		return PrivilegeAllName
-	case grantable == 0:
+	case 0:
 		return "USAGE"
 	default:
 		return strings.Join(grantable.Names(), ", ")
