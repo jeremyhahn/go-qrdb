@@ -2514,6 +2514,11 @@ func TestNewStartCmd_UnknownSM_NoConfig(t *testing.T) {
 	// This exercises the RunE path without --config:
 	// logCfg.SetDefaults -> logCfg.Validate -> resolveAutoConfig -> runStart -> initializeNode
 	// It fails at resolveCreateFunc with UnknownSMError.
+	//
+	// --data-dir is given an empty temporary directory rather than left at its
+	// "./data" default: anything the package directory happens to contain
+	// would be read as partial TLS material, and clustertls would fail before
+	// the state machine name is ever resolved.
 	cmd := newStartCmd()
 	buf := &bytes.Buffer{}
 	cmd.SetOut(buf)
@@ -2522,6 +2527,7 @@ func TestNewStartCmd_UnknownSM_NoConfig(t *testing.T) {
 		"--sm", "invalid-sm",
 		"--discovery", "static",
 		"--peers", "1=127.0.0.1:63001",
+		"--data-dir", t.TempDir(),
 	})
 
 	err := cmd.Execute()
