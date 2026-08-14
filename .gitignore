@@ -1,7 +1,11 @@
-# Binaries
+# Binaries. These must stay anchored: an unanchored `qrdb` matches at any
+# depth and matches directories, which silently excluded the whole of
+# cmd/qrdb/ and cmd/qrdbd/ from the repository.
 bin/
-qrdb
-qrdbd
+/qrdb
+/qrdbd
+/kvcompare
+test/performance/kvcompare
 *.exe
 *.test
 *.out
@@ -33,6 +37,13 @@ cmd/qrdb/frontend/dist/
 # Wails generated bindings
 cmd/qrdb/frontend/src/lib/wails/
 
+# Playwright output: the HTML reporter's report directories and the per-run
+# artifact directory, in both TypeScript projects. The glob is deliberate --
+# playwright.dom.config.ts and playwright.real.config.ts each write their own
+# suffixed report directory, and a bare `playwright-report/` misses both.
+playwright-report*/
+test-results/
+
 .serena
 .claude
 CLAUDE.md
@@ -49,3 +60,16 @@ cmd/qrdb-sqlite/qrdb-sqlite
 # CI security-scan reports (devops.md §8)
 gosec.sarif
 trivy-results.sarif
+
+# Runtime state a locally-run daemon leaves behind, including its issued
+# keys and certificates. Previously covered only as collateral of the
+# unanchored `qrdbd` pattern above.
+cmd/qrdbd/data/
+
+# Web UI bundle, produced by `make webui` and consumed by the qrdbd_webui
+# build tag.
+cmd/qrdbd/webui_dist/
+
+# A literal `~` directory, created when a tool expanded a home-relative path
+# inside the repository instead of the shell doing it.
+/~/

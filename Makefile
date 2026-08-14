@@ -60,7 +60,6 @@ WITH_QRDBD_WEBUI   ?= 0
 WITH_CODEC_MSGPACK  ?= 1
 WITH_CODEC_YAML     ?= 1
 WITH_CODEC_BSON     ?= 1
-WITH_CODEC_AVRO     ?= 1
 WITH_CODEC_PROTOBUF ?= 1
 
 # Object-storage (go-objstore) cloud backends, used by the objstore storage
@@ -124,9 +123,6 @@ ifeq ($(WITH_CODEC_YAML),1)
 endif
 ifeq ($(WITH_CODEC_BSON),1)
   BUILD_TAGS += codec_bson
-endif
-ifeq ($(WITH_CODEC_AVRO),1)
-  BUILD_TAGS += codec_avro
 endif
 ifeq ($(WITH_CODEC_PROTOBUF),1)
   BUILD_TAGS += codec_protobuf

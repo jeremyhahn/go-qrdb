@@ -23,7 +23,6 @@
 //	codec_msgpack  — MessagePack (github.com/vmihailenco/msgpack/v5)
 //	codec_yaml     — YAML (gopkg.in/yaml.v3)
 //	codec_bson     — BSON (go.mongodb.org/mongo-driver/bson)
-//	codec_avro     — Avro (github.com/hamba/avro/v2)
 //	codec_protobuf — Protocol Buffers (google.golang.org/protobuf/proto)
 //
 // JSON is always compiled in. All other codecs are opt-in via build tags.
@@ -54,7 +53,6 @@ const (
 	TypeYAML     = "yaml"
 	TypeProtoBuf = "protobuf"
 	TypeBSON     = "bson"
-	TypeAvro     = "avro"
 )
 
 // JSONCodec implements Codec using encoding/json.

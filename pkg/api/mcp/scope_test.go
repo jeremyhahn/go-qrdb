@@ -91,7 +91,6 @@ func (r *recordingRegistry) SequenceService(t, d string) (service.SequenceServic
 	r.record("sequence", t, d)
 	return nil, nil
 }
-
 func (r *recordingRegistry) PrivilegeService(t, d string) (service.PrivilegeServicer, error) {
 	r.record("privilege", t, d)
 	return nil, nil

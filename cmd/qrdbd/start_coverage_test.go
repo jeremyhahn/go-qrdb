@@ -1,0 +1,2084 @@
+// Copyright 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package main
+
+import (
+	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
+	"errors"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/quota"
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
+	tenantpkg "github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
+)
+
+// ---------------------------------------------------------------------------
+// fileExists tests
+// ---------------------------------------------------------------------------
+
+func TestFileExists_RegularFile(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "testfile.txt")
+	require.NoError(t, os.WriteFile(tmpFile, []byte("data"), 0o600))
+	assert.True(t, fileExists(tmpFile))
+}
+
+func TestFileExists_NonExistent(t *testing.T) {
+	assert.False(t, fileExists(filepath.Join(t.TempDir(), "nofile.txt")))
+}
+
+func TestFileExists_Directory(t *testing.T) {
+	dir := t.TempDir()
+	assert.False(t, fileExists(dir))
+}
+
+// ---------------------------------------------------------------------------
+// generateAdminClientCert tests
+// ---------------------------------------------------------------------------
+
+func TestGenerateAdminClientCert_Success(t *testing.T) {
+	bundle, err := generateCATLS()
+	require.NoError(t, err)
+
+	dataDir := t.TempDir()
+	err = generateAdminClientCert(bundle, dataDir, "admin", "default")
+	require.NoError(t, err)
+
+	// Verify files were created.
+	assert.True(t, fileExists(filepath.Join(dataDir, "admin-cert.pem")))
+	assert.True(t, fileExists(filepath.Join(dataDir, "admin-key.pem")))
+}
+
+func TestGenerateAdminClientCert_AlreadyExists(t *testing.T) {
+	bundle, err := generateCATLS()
+	require.NoError(t, err)
+
+	dataDir := t.TempDir()
+
+	// Create both files so the function returns early.
+	require.NoError(t, os.WriteFile(filepath.Join(dataDir, "admin-cert.pem"), []byte("cert"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dataDir, "admin-key.pem"), []byte("key"), 0o600))
+
+	err = generateAdminClientCert(bundle, dataDir, "admin", "default")
+	require.NoError(t, err)
+}
+
+func TestGenerateAdminClientCert_InvalidCACertPEM(t *testing.T) {
+	bundle := &TLSBundle{
+		CACertPEM: []byte("not valid PEM"),
+		CAKeyPEM:  []byte("not valid PEM"),
+	}
+
+	dataDir := t.TempDir()
+	err := generateAdminClientCert(bundle, dataDir, "admin", "default")
+	require.Error(t, err)
+	var certErr *AdminCertError
+	require.True(t, errors.As(err, &certErr))
+}
+
+func TestGenerateAdminClientCert_NoCAKey(t *testing.T) {
+	bundle, err := generateCATLS()
+	require.NoError(t, err)
+	bundle.CAKeyPEM = nil // Remove the CA key.
+
+	dataDir := t.TempDir()
+	err = generateAdminClientCert(bundle, dataDir, "admin", "default")
+	require.Error(t, err)
+	var certErr *AdminCertError
+	require.True(t, errors.As(err, &certErr))
+	assert.True(t, errors.Is(certErr.Err, errNoCAKeyAvailable))
+}
+
+func TestGenerateAdminClientCert_InvalidCAKeyPEM(t *testing.T) {
+	bundle, err := generateCATLS()
+	require.NoError(t, err)
+	bundle.CAKeyPEM = []byte("not valid PEM key data")
+
+	dataDir := t.TempDir()
+	err = generateAdminClientCert(bundle, dataDir, "admin", "default")
+	require.Error(t, err)
+	var certErr *AdminCertError
+	require.True(t, errors.As(err, &certErr))
+}
+
+func TestGenerateAdminClientCert_CAKeyIsNotEC(t *testing.T) {
+	bundle, err := generateCATLS()
+	require.NoError(t, err)
+
+	// Replace the CA key PEM with an RSA-style key block (wrong type for
+	// x509.ParseECPrivateKey). Use a PEM block with correct structure but
+	// invalid DER for EC parsing.
+	bundle.CAKeyPEM = pem.EncodeToMemory(&pem.Block{
+		Type:  "EC PRIVATE KEY",
+		Bytes: []byte("not-a-valid-der-encoded-ec-key"),
+	})
+
+	dataDir := t.TempDir()
+	err = generateAdminClientCert(bundle, dataDir, "admin", "default")
+	require.Error(t, err)
+	var certErr *AdminCertError
+	require.True(t, errors.As(err, &certErr))
+}
+
+func TestGenerateAdminClientCert_OnlyCertExistsNotKey(t *testing.T) {
+	bundle, err := generateCATLS()
+	require.NoError(t, err)
+
+	dataDir := t.TempDir()
+	// Only create cert, not key -- should proceed to generate.
+	require.NoError(t, os.WriteFile(filepath.Join(dataDir, "admin-cert.pem"), []byte("cert"), 0o600))
+
+	err = generateAdminClientCert(bundle, dataDir, "admin", "default")
+	require.NoError(t, err)
+
+	// Both files should now exist.
+	assert.True(t, fileExists(filepath.Join(dataDir, "admin-cert.pem")))
+	assert.True(t, fileExists(filepath.Join(dataDir, "admin-key.pem")))
+}
+
+func TestGenerateAdminClientCert_CACertDERInvalid(t *testing.T) {
+	// Valid PEM block but with garbage DER bytes that cannot be parsed as a certificate.
+	bundle := &TLSBundle{
+		CACertPEM: pem.EncodeToMemory(&pem.Block{
+			Type:  "CERTIFICATE",
+			Bytes: []byte("not-valid-der-certificate"),
+		}),
+		CAKeyPEM: pem.EncodeToMemory(&pem.Block{
+			Type:  "EC PRIVATE KEY",
+			Bytes: []byte("some-key-bytes"),
+		}),
+	}
+
+	dataDir := t.TempDir()
+	err := generateAdminClientCert(bundle, dataDir, "admin", "default")
+	require.Error(t, err)
+	var certErr *AdminCertError
+	require.True(t, errors.As(err, &certErr))
+}
+
+// ---------------------------------------------------------------------------
+// loadTLSFromFiles tests
+// ---------------------------------------------------------------------------
+
+func TestLoadTLSFromFiles_Success(t *testing.T) {
+	bundle, err := generateCATLS()
+	require.NoError(t, err)
+
+	dir := t.TempDir()
+	caPath := filepath.Join(dir, "ca.pem")
+	certPath := filepath.Join(dir, "cert.pem")
+	keyPath := filepath.Join(dir, "key.pem")
+
+	require.NoError(t, os.WriteFile(caPath, bundle.CACertPEM, 0o600))
+	require.NoError(t, os.WriteFile(certPath, bundle.CertPEM, 0o600))
+	require.NoError(t, os.WriteFile(keyPath, bundle.KeyPEM, 0o600))
+
+	result, err := loadTLSFromFiles(caPath, certPath, keyPath)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.NotNil(t, result.TLSConfig)
+	assert.NotNil(t, result.CACertPool)
+	assert.NotEmpty(t, result.CACertPEM)
+	assert.NotEmpty(t, result.CertPEM)
+	assert.NotEmpty(t, result.KeyPEM)
+}
+
+func TestLoadTLSFromFiles_MissingCAFile(t *testing.T) {
+	dir := t.TempDir()
+	_, err := loadTLSFromFiles(
+		filepath.Join(dir, "missing-ca.pem"),
+		filepath.Join(dir, "cert.pem"),
+		filepath.Join(dir, "key.pem"),
+	)
+	require.Error(t, err)
+	var loadErr *TLSLoadError
+	require.True(t, errors.As(err, &loadErr))
+}
+
+func TestLoadTLSFromFiles_MissingCertFile(t *testing.T) {
+	dir := t.TempDir()
+	caPath := filepath.Join(dir, "ca.pem")
+	require.NoError(t, os.WriteFile(caPath, []byte("ca-data"), 0o600))
+
+	_, err := loadTLSFromFiles(
+		caPath,
+		filepath.Join(dir, "missing-cert.pem"),
+		filepath.Join(dir, "key.pem"),
+	)
+	require.Error(t, err)
+	var loadErr *TLSLoadError
+	require.True(t, errors.As(err, &loadErr))
+}
+
+func TestLoadTLSFromFiles_MissingKeyFile(t *testing.T) {
+	dir := t.TempDir()
+	caPath := filepath.Join(dir, "ca.pem")
+	certPath := filepath.Join(dir, "cert.pem")
+	require.NoError(t, os.WriteFile(caPath, []byte("ca-data"), 0o600))
+	require.NoError(t, os.WriteFile(certPath, []byte("cert-data"), 0o600))
+
+	_, err := loadTLSFromFiles(
+		caPath,
+		certPath,
+		filepath.Join(dir, "missing-key.pem"),
+	)
+	require.Error(t, err)
+	var loadErr *TLSLoadError
+	require.True(t, errors.As(err, &loadErr))
+}
+
+func TestLoadTLSFromFiles_InvalidKeyPair(t *testing.T) {
+	dir := t.TempDir()
+	caPath := filepath.Join(dir, "ca.pem")
+	certPath := filepath.Join(dir, "cert.pem")
+	keyPath := filepath.Join(dir, "key.pem")
+
+	// Write valid-looking PEM but mismatched cert/key.
+	require.NoError(t, os.WriteFile(caPath, []byte("-----BEGIN CERTIFICATE-----\nfoo\n-----END CERTIFICATE-----\n"), 0o600))
+	require.NoError(t, os.WriteFile(certPath, []byte("not-a-valid-cert"), 0o600))
+	require.NoError(t, os.WriteFile(keyPath, []byte("not-a-valid-key"), 0o600))
+
+	_, err := loadTLSFromFiles(caPath, certPath, keyPath)
+	require.Error(t, err)
+	var loadErr *TLSLoadError
+	require.True(t, errors.As(err, &loadErr))
+}
+
+func TestLoadTLSFromFiles_InvalidCACertPool(t *testing.T) {
+	// Valid cert/key pair but CA PEM that contains no valid certificates.
+	bundle, err := generateCATLS()
+	require.NoError(t, err)
+
+	dir := t.TempDir()
+	caPath := filepath.Join(dir, "ca.pem")
+	certPath := filepath.Join(dir, "cert.pem")
+	keyPath := filepath.Join(dir, "key.pem")
+
+	// Write invalid CA PEM (not a valid certificate).
+	require.NoError(t, os.WriteFile(caPath, []byte("not a valid PEM cert"), 0o600))
+	require.NoError(t, os.WriteFile(certPath, bundle.CertPEM, 0o600))
+	require.NoError(t, os.WriteFile(keyPath, bundle.KeyPEM, 0o600))
+
+	_, err = loadTLSFromFiles(caPath, certPath, keyPath)
+	require.Error(t, err)
+	var loadErr *TLSLoadError
+	require.True(t, errors.As(err, &loadErr))
+}
+
+// ---------------------------------------------------------------------------
+// loadCACertPool tests
+// ---------------------------------------------------------------------------
+
+func TestLoadCACertPool_EmptyPath_Coverage(t *testing.T) {
+	pool, err := loadCACertPool("")
+	require.NoError(t, err)
+	assert.Nil(t, pool)
+}
+
+func TestLoadCACertPool_ValidCA(t *testing.T) {
+	bundle, err := generateCATLS()
+	require.NoError(t, err)
+
+	dir := t.TempDir()
+	caPath := filepath.Join(dir, "ca.pem")
+	require.NoError(t, os.WriteFile(caPath, bundle.CACertPEM, 0o600))
+
+	pool, err := loadCACertPool(caPath)
+	require.NoError(t, err)
+	require.NotNil(t, pool)
+}
+
+func TestLoadCACertPool_MissingFile(t *testing.T) {
+	_, err := loadCACertPool(filepath.Join(t.TempDir(), "nonexistent.pem"))
+	require.Error(t, err)
+	var loadErr *TLSLoadError
+	require.True(t, errors.As(err, &loadErr))
+}
+
+func TestLoadCACertPool_InvalidPEM_Coverage(t *testing.T) {
+	dir := t.TempDir()
+	caPath := filepath.Join(dir, "bad-ca.pem")
+	require.NoError(t, os.WriteFile(caPath, []byte("not valid PEM"), 0o600))
+
+	_, err := loadCACertPool(caPath)
+	require.Error(t, err)
+	var loadErr *TLSLoadError
+	require.True(t, errors.As(err, &loadErr))
+	assert.True(t, errors.Is(loadErr.Err, errNoCertsInPEM))
+}
+
+// ---------------------------------------------------------------------------
+// applyConfigToFlags TLS fields coverage
+// ---------------------------------------------------------------------------
+
+func TestApplyConfigToFlags_TLSFieldsFromConfig(t *testing.T) {
+	cmd := newStartCmd()
+
+	cfg := &qrdbconfig.Config{
+		Server: qrdbconfig.ServerConfig{Host: "0.0.0.0", AdminPort: 63002},
+		TLS: qrdbconfig.TLSConfig{
+			CAFile:   "/etc/tls/ca.pem",
+			CertFile: "/etc/tls/cert.pem",
+			KeyFile:  "/etc/tls/key.pem",
+		},
+	}
+
+	f := &startFlags{}
+	applyConfigToFlags(cmd, f, cfg)
+
+	assert.Equal(t, "/etc/tls/ca.pem", f.tlsCAFile)
+	assert.Equal(t, "/etc/tls/cert.pem", f.tlsCertFile)
+	assert.Equal(t, "/etc/tls/key.pem", f.tlsKeyFile)
+}
+
+func TestApplyConfigToFlags_TLSFieldsCLIPrecedence(t *testing.T) {
+	cmd := newStartCmd()
+	require.NoError(t, cmd.Flags().Set("tls-ca-file", "/cli/ca.pem"))
+	require.NoError(t, cmd.Flags().Set("tls-cert-file", "/cli/cert.pem"))
+	require.NoError(t, cmd.Flags().Set("tls-key-file", "/cli/key.pem"))
+
+	cfg := &qrdbconfig.Config{
+		Server: qrdbconfig.ServerConfig{Host: "0.0.0.0", AdminPort: 63002},
+		TLS: qrdbconfig.TLSConfig{
+			CAFile:   "/yaml/ca.pem",
+			CertFile: "/yaml/cert.pem",
+			KeyFile:  "/yaml/key.pem",
+		},
+	}
+
+	f := &startFlags{
+		tlsCAFile:   "/cli/ca.pem",
+		tlsCertFile: "/cli/cert.pem",
+		tlsKeyFile:  "/cli/key.pem",
+	}
+	applyConfigToFlags(cmd, f, cfg)
+
+	assert.Equal(t, "/cli/ca.pem", f.tlsCAFile)
+	assert.Equal(t, "/cli/cert.pem", f.tlsCertFile)
+	assert.Equal(t, "/cli/key.pem", f.tlsKeyFile)
+}
+
+func TestApplyConfigToFlags_EmptyTLSFieldsNotOverridden(t *testing.T) {
+	cmd := newStartCmd()
+
+	cfg := &qrdbconfig.Config{
+		Server: qrdbconfig.ServerConfig{Host: "0.0.0.0", AdminPort: 63002},
+		TLS: qrdbconfig.TLSConfig{
+			CAFile:   "",
+			CertFile: "",
+			KeyFile:  "",
+		},
+	}
+
+	f := &startFlags{
+		tlsCAFile:   "/existing/ca.pem",
+		tlsCertFile: "/existing/cert.pem",
+		tlsKeyFile:  "/existing/key.pem",
+	}
+	applyConfigToFlags(cmd, f, cfg)
+
+	assert.Equal(t, "/existing/ca.pem", f.tlsCAFile)
+	assert.Equal(t, "/existing/cert.pem", f.tlsCertFile)
+	assert.Equal(t, "/existing/key.pem", f.tlsKeyFile)
+}
+
+// ---------------------------------------------------------------------------
+// runFirstBoot tests (mock-based)
+// ---------------------------------------------------------------------------
+
+// mockUserServicer satisfies user.UserServicer for bootstrap testing.
+type mockUserServicer struct {
+	getUserByUsernameFn func(ctx context.Context, tenantID, username string) (*user.User, error)
+	createUserFn        func(ctx context.Context, req *user.CreateUserRequest) (*user.User, error)
+}
+
+func (m *mockUserServicer) CreateUser(ctx context.Context, req *user.CreateUserRequest) (*user.User, error) {
+	if m.createUserFn != nil {
+		return m.createUserFn(ctx, req)
+	}
+	return &user.User{ID: 1, Username: req.Username, TenantID: req.TenantID}, nil
+}
+
+func (m *mockUserServicer) GetUser(_ context.Context, _ uint64) (*user.User, error) {
+	return nil, nil
+}
+
+func (m *mockUserServicer) GetUserByUsername(ctx context.Context, tenantID, username string) (*user.User, error) {
+	if m.getUserByUsernameFn != nil {
+		return m.getUserByUsernameFn(ctx, tenantID, username)
+	}
+	return nil, &user.UserNotFoundError{Lookup: username}
+}
+
+func (m *mockUserServicer) UpdateUser(_ context.Context, _ *user.UpdateUserRequest) (*user.User, error) {
+	return nil, nil
+}
+
+func (m *mockUserServicer) DeleteUser(_ context.Context, _ uint64) error {
+	return nil
+}
+
+func (m *mockUserServicer) ListUsers(_ context.Context, _ *user.ListUsersRequest) (*user.ListUsersResponse, error) {
+	return nil, nil
+}
+
+func (m *mockUserServicer) EnableUser(_ context.Context, _ uint64) error {
+	return nil
+}
+
+func (m *mockUserServicer) DisableUser(_ context.Context, _ uint64) error {
+	return nil
+}
+
+func (m *mockUserServicer) UserByCertThumbprint(_ context.Context, _ string) (*user.User, error) {
+	return nil, nil
+}
+
+func (m *mockUserServicer) AddCertBinding(_ context.Context, _ uint64, _ string, _ int64) (*user.User, error) {
+	return nil, nil
+}
+
+// mockRoleServicer satisfies role.RoleServicer for bootstrap testing.
+type mockRoleServicer struct {
+	createRoleFn    func(ctx context.Context, req *role.CreateRoleRequest) (*role.Role, error)
+	getRoleByNameFn func(ctx context.Context, tenantID, name string) (*role.Role, error)
+}
+
+func (m *mockRoleServicer) CreateRole(ctx context.Context, req *role.CreateRoleRequest) (*role.Role, error) {
+	if m.createRoleFn != nil {
+		return m.createRoleFn(ctx, req)
+	}
+	return &role.Role{ID: "r-" + req.Name, Name: req.Name, TenantID: req.TenantID}, nil
+}
+
+func (m *mockRoleServicer) GetRole(_ context.Context, _ string) (*role.Role, error) {
+	return nil, nil
+}
+
+func (m *mockRoleServicer) GetRoleByName(ctx context.Context, tenantID, name string) (*role.Role, error) {
+	if m.getRoleByNameFn != nil {
+		return m.getRoleByNameFn(ctx, tenantID, name)
+	}
+	return &role.Role{ID: "r-" + name, Name: name, TenantID: tenantID}, nil
+}
+
+func (m *mockRoleServicer) UpdateRole(_ context.Context, _ *role.UpdateRoleRequest) (*role.Role, error) {
+	return nil, nil
+}
+
+func (m *mockRoleServicer) DeleteRole(_ context.Context, _ string) error {
+	return nil
+}
+
+func (m *mockRoleServicer) ListRoles(_ context.Context, _ *role.ListRolesRequest) (*role.ListRolesResponse, error) {
+	return nil, nil
+}
+
+func (m *mockRoleServicer) ResolvePermissions(_ context.Context, _ []string) ([]permission.Permission, error) {
+	return nil, nil
+}
+
+// mockTenantServicer satisfies tenant.TenantServicer for first-boot
+// orchestration tests. CreateTenant defaults to a happy-path response
+// that lets runFirstBoot proceed; tests override via createTenantFn when
+// they need to inject specific behavior.
+type mockTenantServicer struct {
+	createTenantFn func(ctx context.Context, id, name string, isolationType tenantpkg.IsolationType) (*tenantpkg.TenantInfo, error)
+}
+
+func (m *mockTenantServicer) CreateTenant(ctx context.Context, id, name string, isolationType tenantpkg.IsolationType, _ ...tenantpkg.CreateTenantOption) (*tenantpkg.TenantInfo, error) {
+	if m.createTenantFn != nil {
+		return m.createTenantFn(ctx, id, name, isolationType)
+	}
+	return &tenantpkg.TenantInfo{ID: id, Name: name, IsolationType: isolationType}, nil
+}
+
+func (m *mockTenantServicer) GetTenant(_ context.Context, _ string) (*tenantpkg.TenantInfo, error) {
+	return nil, nil
+}
+
+func (m *mockTenantServicer) ListTenants(_ context.Context) ([]tenantpkg.TenantInfo, error) {
+	return nil, nil
+}
+
+func (m *mockTenantServicer) DeleteTenant(_ context.Context, _ string) error { return nil }
+
+func (m *mockTenantServicer) UpdateTenant(_ context.Context, _ string, _ tenantpkg.TenantPatch) (*tenantpkg.TenantInfo, error) {
+	return nil, nil
+}
+
+func (m *mockTenantServicer) UpdateQuotas(_ context.Context, _ string, _ *quota.Quotas) (*tenantpkg.TenantInfo, error) {
+	return nil, nil
+}
+
+func (m *mockTenantServicer) UpdateEntitlements(ctx context.Context, id string, e *quota.Entitlements) (*tenantpkg.TenantInfo, error) {
+	return &tenantpkg.TenantInfo{ID: id, Entitlements: e}, nil
+}
+
+func (m *mockTenantServicer) TenantBarrierInit(_ context.Context, _, _ string, _, _ int) (*tenantpkg.TenantBarrierInitResult, error) {
+	return nil, nil
+}
+
+func (m *mockTenantServicer) TenantBarrierInitWithStrategy(_ context.Context, _, _ string, _, _ int, _ seal.StrategyID) (*tenantpkg.TenantBarrierInitResult, error) {
+	return nil, nil
+}
+
+func (m *mockTenantServicer) TenantBarrierUnsealShare(_ context.Context, _, _ string) (*tenantpkg.TenantBarrierUnsealProgress, error) {
+	return nil, nil
+}
+
+func (m *mockTenantServicer) TenantBarrierUnseal(_ context.Context, _ string, _ []byte) error {
+	return nil
+}
+
+func (m *mockTenantServicer) TenantBarrierSeal(_ context.Context, _ string) error { return nil }
+
+func (m *mockTenantServicer) TenantBarrierStatus(_ context.Context, _ string) (*tenantpkg.TenantBarrierStatus, error) {
+	return nil, nil
+}
+func (m *mockTenantServicer) CheckBarrierMode(_ context.Context, _ string, _ seal.StrategyID) error {
+	return nil
+}
+func (m *mockTenantServicer) IncrementQuotaUsage(_ context.Context, _ string, _ quota.Resource, _ int64) (*tenantpkg.TenantInfo, error) {
+	return nil, nil
+}
+func (m *mockTenantServicer) DecrementQuotaUsage(_ context.Context, _ string, _ quota.Resource, _ int64) (*tenantpkg.TenantInfo, error) {
+	return nil, nil
+}
+func (m *mockTenantServicer) GetQuotaUsage(_ context.Context, _ string, _ quota.Resource) (int64, error) {
+	return 0, nil
+}
+
+func (m *mockTenantServicer) TenantBarrierOfficerRegister(_ context.Context, _ string, _ *ceremony.RegisterOfficerRequest) (*ceremony.RegisterOfficerResult, error) {
+	return &ceremony.RegisterOfficerResult{}, nil
+}
+func (m *mockTenantServicer) TenantBarrierOfficerList(_ context.Context, _ string) ([]*ceremony.OfficerStatus, error) {
+	return nil, nil
+}
+func (m *mockTenantServicer) TenantBarrierOfficerClaimStatus(_ context.Context, _ string) ([]*ceremony.OfficerStatus, error) {
+	return nil, nil
+}
+func (m *mockTenantServicer) TenantBarrierShareClaimBegin(_ context.Context, _, _, _ string) (*ceremony.ChallengeResponse, error) {
+	return &ceremony.ChallengeResponse{}, nil
+}
+func (m *mockTenantServicer) TenantBarrierShareClaimComplete(_ context.Context, _, _, _ string, _ []byte, _ string) (*ceremony.ShareClaimResult, error) {
+	return &ceremony.ShareClaimResult{}, nil
+}
+func (m *mockTenantServicer) TenantBarrierShamirSealVote(_ context.Context, _, _ string) (*tenantpkg.TenantBarrierUnsealProgress, error) {
+	return &tenantpkg.TenantBarrierUnsealProgress{}, nil
+}
+
+// ---------------------------------------------------------------------------
+// runFirstBoot: admin already exists
+// ---------------------------------------------------------------------------
+
+func TestRunFirstBoot_AdminAlreadyExists(t *testing.T) {
+	userSvc := &mockUserServicer{
+		getUserByUsernameFn: func(_ context.Context, _ string, _ string) (*user.User, error) {
+			return &user.User{ID: 9001, Username: "admin"}, nil
+		},
+	}
+	roleSvc := &mockRoleServicer{}
+	node := &mockRaftNode{} // default: leader ready
+
+	err := runFirstBoot(context.Background(), node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "")
+	require.NoError(t, err)
+}
+
+// ---------------------------------------------------------------------------
+// runFirstBoot: fresh bootstrap (UserNotFound -> create roles + admin)
+// ---------------------------------------------------------------------------
+
+func TestRunFirstBoot_FreshBootstrap(t *testing.T) {
+	userSvc := &mockUserServicer{
+		getUserByUsernameFn: func(_ context.Context, _ string, _ string) (*user.User, error) {
+			return nil, &user.UserNotFoundError{Lookup: "admin"}
+		},
+		createUserFn: func(_ context.Context, req *user.CreateUserRequest) (*user.User, error) {
+			return &user.User{ID: 9002, Username: req.Username, TenantID: req.TenantID}, nil
+		},
+	}
+
+	var createdRoles []string
+	roleSvc := &mockRoleServicer{
+		createRoleFn: func(_ context.Context, req *role.CreateRoleRequest) (*role.Role, error) {
+			createdRoles = append(createdRoles, req.Name)
+			return &role.Role{ID: "r-" + req.Name, Name: req.Name, TenantID: req.TenantID}, nil
+		},
+	}
+
+	node := &mockRaftNode{} // default: leader ready
+	err := runFirstBoot(context.Background(), node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "")
+	require.NoError(t, err)
+	// All built-in roles should have been created.
+	assert.True(t, len(createdRoles) > 0, "expected at least one role to be created")
+}
+
+// ---------------------------------------------------------------------------
+// runFirstBoot: role already exists (RoleNameExistsError tolerated)
+// ---------------------------------------------------------------------------
+
+func TestRunFirstBoot_RoleAlreadyExists(t *testing.T) {
+	userSvc := &mockUserServicer{
+		getUserByUsernameFn: func(_ context.Context, _ string, _ string) (*user.User, error) {
+			return nil, &user.UserNotFoundError{Lookup: "admin"}
+		},
+		createUserFn: func(_ context.Context, req *user.CreateUserRequest) (*user.User, error) {
+			return &user.User{ID: 9001, Username: req.Username}, nil
+		},
+	}
+
+	roleSvc := &mockRoleServicer{
+		createRoleFn: func(_ context.Context, req *role.CreateRoleRequest) (*role.Role, error) {
+			return nil, &role.RoleNameExistsError{Name: req.Name, TenantID: req.TenantID}
+		},
+		getRoleByNameFn: func(_ context.Context, tenantID, name string) (*role.Role, error) {
+			return &role.Role{ID: "r-existing-" + name, Name: name, TenantID: tenantID}, nil
+		},
+	}
+
+	node := &mockRaftNode{} // default: leader ready
+	err := runFirstBoot(context.Background(), node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "")
+	require.NoError(t, err)
+}
+
+// ---------------------------------------------------------------------------
+// runFirstBoot: role create fails with real error
+// ---------------------------------------------------------------------------
+
+func TestRunFirstBoot_RoleCreateError(t *testing.T) {
+	userSvc := &mockUserServicer{
+		getUserByUsernameFn: func(_ context.Context, _ string, _ string) (*user.User, error) {
+			return nil, &user.UserNotFoundError{Lookup: "admin"}
+		},
+	}
+
+	sentinel := errors.New("role create failed")
+	roleSvc := &mockRoleServicer{
+		createRoleFn: func(_ context.Context, _ *role.CreateRoleRequest) (*role.Role, error) {
+			return nil, sentinel
+		},
+	}
+
+	// Creation failure causes fallback to waitForAdminReplication;
+	// use a short timeout so the test doesn't block for 30s.
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	node := &mockRaftNode{} // default: leader ready
+	err := runFirstBoot(ctx, node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "")
+	require.Error(t, err)
+	var abe *AuthBootstrapError
+	require.True(t, errors.As(err, &abe))
+}
+
+// ---------------------------------------------------------------------------
+// runFirstBoot: admin user create fails
+// ---------------------------------------------------------------------------
+
+func TestRunFirstBoot_AdminCreateError(t *testing.T) {
+	userSvc := &mockUserServicer{
+		getUserByUsernameFn: func(_ context.Context, _ string, _ string) (*user.User, error) {
+			return nil, &user.UserNotFoundError{Lookup: "admin"}
+		},
+		createUserFn: func(_ context.Context, _ *user.CreateUserRequest) (*user.User, error) {
+			return nil, errors.New("user create failed")
+		},
+	}
+
+	roleSvc := &mockRoleServicer{}
+
+	// Creation failure causes fallback to waitForAdminReplication;
+	// use a short timeout so the test doesn't block for 30s.
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	node := &mockRaftNode{} // default: leader ready
+	err := runFirstBoot(ctx, node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "")
+	require.Error(t, err)
+	var abe *AuthBootstrapError
+	require.True(t, errors.As(err, &abe))
+	assert.Equal(t, "wait for admin replication", abe.Step)
+}
+
+// ---------------------------------------------------------------------------
+// runFirstBoot: admin user create returns UsernameExistsError (tolerated)
+// ---------------------------------------------------------------------------
+
+func TestRunFirstBoot_AdminUsernameExists(t *testing.T) {
+	userSvc := &mockUserServicer{
+		getUserByUsernameFn: func(_ context.Context, _ string, _ string) (*user.User, error) {
+			return nil, &user.UserNotFoundError{Lookup: "admin"}
+		},
+		createUserFn: func(_ context.Context, _ *user.CreateUserRequest) (*user.User, error) {
+			return nil, &user.UsernameExistsError{Username: "admin", TenantID: "system"}
+		},
+	}
+
+	roleSvc := &mockRoleServicer{}
+
+	node := &mockRaftNode{} // default: leader ready
+	err := runFirstBoot(context.Background(), node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "")
+	require.NoError(t, err)
+}
+
+// ---------------------------------------------------------------------------
+// runFirstBoot: leader election wait succeeds after retries
+// ---------------------------------------------------------------------------
+
+func TestRunFirstBoot_LeaderElectionWait(t *testing.T) {
+	// Simulate leader not ready for a few attempts, then ready.
+	attempts := 0
+	node := &mockRaftNode{
+		getLeaderFn: func(_ uint64) (uint64, bool, error) {
+			attempts++
+			if attempts <= 3 {
+				return 0, false, nil
+			}
+			return 1, true, nil
+		},
+	}
+
+	userSvc := &mockUserServicer{
+		getUserByUsernameFn: func(_ context.Context, _ string, _ string) (*user.User, error) {
+			return nil, &user.UserNotFoundError{Lookup: "admin"}
+		},
+		createUserFn: func(_ context.Context, req *user.CreateUserRequest) (*user.User, error) {
+			return &user.User{ID: 9001, Username: req.Username, TenantID: req.TenantID}, nil
+		},
+	}
+	roleSvc := &mockRoleServicer{}
+
+	err := runFirstBoot(context.Background(), node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "")
+	require.NoError(t, err)
+	assert.Greater(t, attempts, 3)
+}
+
+// ---------------------------------------------------------------------------
+// runFirstBoot: context canceled during leader wait
+// ---------------------------------------------------------------------------
+
+func TestRunFirstBoot_ContextCanceledDuringLeaderWait(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	attempts := 0
+	node := &mockRaftNode{
+		getLeaderFn: func(_ uint64) (uint64, bool, error) {
+			attempts++
+			if attempts >= 2 {
+				cancel()
+			}
+			return 0, false, nil
+		},
+	}
+
+	userSvc := &mockUserServicer{
+		getUserByUsernameFn: func(_ context.Context, _ string, _ string) (*user.User, error) {
+			return nil, &user.UserNotFoundError{Lookup: "admin"}
+		},
+	}
+	roleSvc := &mockRoleServicer{}
+
+	err := runFirstBoot(ctx, node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "")
+	require.Error(t, err)
+	var abe *AuthBootstrapError
+	require.True(t, errors.As(err, &abe))
+	assert.Equal(t, "wait for leader", abe.Step)
+}
+
+// ---------------------------------------------------------------------------
+// runFirstBoot: GetUserByUsername returns unexpected error
+// ---------------------------------------------------------------------------
+
+func TestRunFirstBoot_UnexpectedStoreError(t *testing.T) {
+	// When adminExists returns false (due to any error), tryCreate runs
+	// and also fails with a storage error. The function falls back to
+	// waitForAdminReplication which times out.
+	sentinel := errors.New("storage corrupted")
+	userSvc := &mockUserServicer{
+		getUserByUsernameFn: func(_ context.Context, _ string, _ string) (*user.User, error) {
+			return nil, sentinel
+		},
+	}
+	roleSvc := &mockRoleServicer{
+		createRoleFn: func(_ context.Context, _ *role.CreateRoleRequest) (*role.Role, error) {
+			return nil, sentinel
+		},
+	}
+	node := &mockRaftNode{}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	err := runFirstBoot(ctx, node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "")
+	require.Error(t, err)
+	var abe *AuthBootstrapError
+	require.True(t, errors.As(err, &abe))
+	assert.Equal(t, "wait for admin replication", abe.Step)
+}
+
+// ---------------------------------------------------------------------------
+// runFirstBoot: RoleNameExistsError uses deterministic IDs
+// ---------------------------------------------------------------------------
+
+func TestRunFirstBoot_RoleExistsUsesDeterministicIDs(t *testing.T) {
+	var capturedRoleIDs []string
+	userSvc := &mockUserServicer{
+		getUserByUsernameFn: func(_ context.Context, _ string, _ string) (*user.User, error) {
+			return nil, &user.UserNotFoundError{Lookup: "admin"}
+		},
+		createUserFn: func(_ context.Context, req *user.CreateUserRequest) (*user.User, error) {
+			capturedRoleIDs = req.RoleIDs
+			return &user.User{ID: 9001, Username: req.Username, TenantID: req.TenantID, RoleIDs: req.RoleIDs}, nil
+		},
+	}
+
+	roleSvc := &mockRoleServicer{
+		createRoleFn: func(_ context.Context, req *role.CreateRoleRequest) (*role.Role, error) {
+			return nil, &role.RoleNameExistsError{Name: req.Name, TenantID: req.TenantID}
+		},
+	}
+	node := &mockRaftNode{} // default: leader ready
+
+	// When all roles already exist, bootstrap succeeds using deterministic
+	// IDs from BuiltInRoles rather than calling GetRoleByName.
+	err := runFirstBoot(context.Background(), node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "")
+	require.NoError(t, err)
+
+	// Verify the admin user was assigned deterministic role IDs in the
+	// system tenant. Under the standard posture (strictSoD=false) that is
+	// the canonical Admin@system grant plus the Owner@system convenience
+	// grant — both derived from SystemRoleID, not GetRoleByName.
+	expectedAdminID := role.SystemRoleID(tenantpkg.SystemTenantID, role.RoleNameAdmin)
+	expectedOwnerID := role.SystemRoleID(tenantpkg.SystemTenantID, role.RoleNameOwner)
+	require.Len(t, capturedRoleIDs, 2)
+	assert.Equal(t, expectedAdminID, capturedRoleIDs[0])
+	assert.Equal(t, expectedOwnerID, capturedRoleIDs[1])
+}
+
+// ---------------------------------------------------------------------------
+// runFirstBoot: follower falls back to replication wait
+// ---------------------------------------------------------------------------
+
+func TestRunFirstBoot_FollowerWaitsForReplication(t *testing.T) {
+	// Simulate a follower: admin doesn't exist initially, role creation
+	// fails (not leader), then admin appears via replication.
+	calls := 0
+	userSvc := &mockUserServicer{
+		getUserByUsernameFn: func(_ context.Context, _ string, _ string) (*user.User, error) {
+			calls++
+			if calls <= 2 {
+				return nil, &user.UserNotFoundError{Lookup: "admin"}
+			}
+			// Admin replicated from leader.
+			return &user.User{ID: 9001, Username: "admin"}, nil
+		},
+	}
+
+	roleSvc := &mockRoleServicer{
+		createRoleFn: func(_ context.Context, _ *role.CreateRoleRequest) (*role.Role, error) {
+			return nil, &service.NotLeaderError{ShardID: 1}
+		},
+	}
+	node := &mockRaftNode{}
+
+	err := runFirstBoot(context.Background(), node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "")
+	require.NoError(t, err)
+	assert.Greater(t, calls, 2, "should have polled for admin replication")
+}
+
+// ---------------------------------------------------------------------------
+// runFirstBoot: no leader after max attempts
+// ---------------------------------------------------------------------------
+
+func TestRunFirstBoot_NoLeaderExhaustsRetries(t *testing.T) {
+	node := &mockRaftNode{
+		getLeaderFn: func(_ uint64) (uint64, bool, error) {
+			return 0, false, nil // never returns a leader
+		},
+	}
+
+	userSvc := &mockUserServicer{
+		getUserByUsernameFn: func(_ context.Context, _ string, _ string) (*user.User, error) {
+			return nil, &user.UserNotFoundError{Lookup: "admin"}
+		},
+	}
+	roleSvc := &mockRoleServicer{}
+
+	// Use a short timeout so the test doesn't wait for all 30 attempts.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	err := runFirstBoot(ctx, node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "")
+	require.Error(t, err)
+	var abe *AuthBootstrapError
+	require.True(t, errors.As(err, &abe))
+	assert.Equal(t, "wait for leader", abe.Step)
+}
+
+// ---------------------------------------------------------------------------
+// bootstrapUserRoleStores + bootstrapAuthEnforcement tests
+// ---------------------------------------------------------------------------
+
+func TestBootstrapAuth_Success(t *testing.T) {
+	// Use a mock KVServicer that simulates a fresh cluster.
+	// GetUserByUsername returns UserNotFound, so bootstrap creates roles + admin.
+	store := make(map[string][]byte)
+	mock := &mockKVServicer{
+		putFn: func(_ context.Context, key string, value []byte) error {
+			store[key] = value
+			return nil
+		},
+		getFn: func(_ context.Context, key string) ([]byte, error) {
+			if v, ok := store[key]; ok {
+				return v, nil
+			}
+			return nil, &service.KeyNotFoundError{Key: key}
+		},
+		deleteFn: func(_ context.Context, key string) error {
+			delete(store, key)
+			return nil
+		},
+		scanFn: func(_ context.Context, prefix string) (map[string][]byte, error) {
+			result := make(map[string][]byte)
+			for k, v := range store {
+				if len(k) >= len(prefix) && k[:len(prefix)] == prefix {
+					result[k] = v
+				}
+			}
+			return result, nil
+		},
+		listFn: func(_ context.Context, prefix string) ([]string, error) {
+			var keys []string
+			for k := range store {
+				if len(k) >= len(prefix) && k[:len(prefix)] == prefix {
+					keys = append(keys, k)
+				}
+			}
+			return keys, nil
+		},
+	}
+
+	dataDir := t.TempDir()
+	node := &mockRaftNode{} // default: leader ready
+	mgmt, err := bootstrapUserRoleStores(context.Background(), mock, mock, node, 1, 1, &mockTenantServicer{}, false, nil, "", nil)
+	require.NoError(t, err)
+	require.NotNil(t, mgmt)
+	require.NotNil(t, mgmt.userSvc)
+	require.NotNil(t, mgmt.roleSvc)
+
+	authResult, err := bootstrapAuthEnforcement(context.Background(), mgmt, mock, dataDir, node, audit.NewNoopLogger(), false, "")
+	require.NoError(t, err)
+	require.NotNil(t, authResult)
+	require.NotNil(t, authResult.auditLogger)
+	require.NotNil(t, authResult.authMW)
+
+	// Clean up.
+	_ = authResult.auditLogger.Close()
+}
+
+// ---------------------------------------------------------------------------
+// bootstrapAuth: audit logger creation failure
+// ---------------------------------------------------------------------------
+
+func TestBootstrapAuth_AuditLoggerError(t *testing.T) {
+	// The audit logger's file backend creates a file at
+	// filepath.Join(dataDir, "audit.log"). If the dataDir does not exist
+	// and cannot be created, os.OpenFile fails and bootstrapAuth wraps
+	// the error in an AuthBootstrapError with Step "audit logger".
+	store := make(map[string][]byte)
+	mock := &mockKVServicer{
+		putFn: func(_ context.Context, key string, value []byte) error {
+			store[key] = value
+			return nil
+		},
+		getFn: func(_ context.Context, key string) ([]byte, error) {
+			if v, ok := store[key]; ok {
+				return v, nil
+			}
+			return nil, &service.KeyNotFoundError{Key: key}
+		},
+		deleteFn: func(_ context.Context, key string) error {
+			delete(store, key)
+			return nil
+		},
+		scanFn: func(_ context.Context, prefix string) (map[string][]byte, error) {
+			result := make(map[string][]byte)
+			for k, v := range store {
+				if len(k) >= len(prefix) && k[:len(prefix)] == prefix {
+					result[k] = v
+				}
+			}
+			return result, nil
+		},
+		listFn: func(_ context.Context, prefix string) ([]string, error) {
+			var keys []string
+			for k := range store {
+				if len(k) >= len(prefix) && k[:len(prefix)] == prefix {
+					keys = append(keys, k)
+				}
+			}
+			return keys, nil
+		},
+	}
+
+	// Pass a nonexistent nested directory as dataDir so that
+	// os.OpenFile(filepath.Join(dataDir, "audit.log"), ...) fails.
+	nonexistentDir := filepath.Join(t.TempDir(), "does", "not", "exist")
+	node := &mockRaftNode{} // default: leader ready
+
+	// First bootstrap the management stores (this succeeds).
+	mgmt, err := bootstrapUserRoleStores(context.Background(), mock, mock, node, 1, 1, &mockTenantServicer{}, false, nil, "", nil)
+	require.NoError(t, err)
+
+	// Then bootstrap auth enforcement with the bad dataDir (this fails).
+	_, err = bootstrapAuthEnforcement(context.Background(), mgmt, mock, nonexistentDir, node, audit.NewNoopLogger(), false, "")
+	require.Error(t, err)
+	var abe *AuthBootstrapError
+	require.True(t, errors.As(err, &abe))
+	assert.Equal(t, "audit logger", abe.Step)
+}
+
+// ---------------------------------------------------------------------------
+// generateAdminClientCert: verify certificate CN and OU
+// ---------------------------------------------------------------------------
+
+func TestGenerateAdminClientCert_VerifyCertificateIdentity(t *testing.T) {
+	bundle, err := generateCATLS()
+	require.NoError(t, err)
+
+	dataDir := t.TempDir()
+	err = generateAdminClientCert(bundle, dataDir, "testadmin", "test-tenant")
+	require.NoError(t, err)
+
+	// Read and parse the generated certificate.
+	certPEM, err := os.ReadFile(filepath.Join(dataDir, "admin-cert.pem"))
+	require.NoError(t, err)
+
+	block, _ := pem.Decode(certPEM)
+	require.NotNil(t, block)
+
+	cert, err := x509.ParseCertificate(block.Bytes)
+	require.NoError(t, err)
+
+	assert.Equal(t, "testadmin", cert.Subject.CommonName)
+	require.Len(t, cert.Subject.OrganizationalUnit, 1)
+	assert.Equal(t, "test-tenant", cert.Subject.OrganizationalUnit[0])
+
+	// Verify the certificate is signed by the CA.
+	caBlock, _ := pem.Decode(bundle.CACertPEM)
+	require.NotNil(t, caBlock)
+	caCert, err := x509.ParseCertificate(caBlock.Bytes)
+	require.NoError(t, err)
+	require.NoError(t, cert.CheckSignatureFrom(caCert))
+
+	// Verify ClientAuth EKU.
+	assert.Contains(t, cert.ExtKeyUsage, x509.ExtKeyUsageClientAuth)
+}
+
+// ---------------------------------------------------------------------------
+// generateAdminClientCert: write to unwritable directory
+// ---------------------------------------------------------------------------
+
+func TestGenerateAdminClientCert_WriteErrorOnCert(t *testing.T) {
+	bundle, err := generateCATLS()
+	require.NoError(t, err)
+
+	// Use a path where we construct a valid cert but the directory is
+	// actually a file, which causes MkdirAll/WriteFile to fail.
+	dir := t.TempDir()
+	blockingFile := filepath.Join(dir, "subdir")
+	require.NoError(t, os.WriteFile(blockingFile, []byte("x"), 0o600))
+
+	// The dataDir "subdir" is a file, so MkdirAll should fail.
+	err = generateAdminClientCert(bundle, blockingFile, "admin", "default")
+	require.Error(t, err)
+	var writeErr *AdminCertWriteError
+	require.True(t, errors.As(err, &writeErr))
+}
+
+// ---------------------------------------------------------------------------
+// generateAdminClientCert: cert write succeeds but key write fails
+// ---------------------------------------------------------------------------
+
+func TestGenerateAdminClientCert_WriteErrorOnKey(t *testing.T) {
+	bundle, err := generateCATLS()
+	require.NoError(t, err)
+
+	// Create a directory where admin-cert.pem can be written but
+	// admin-key.pem is a directory (causing WriteFile to fail).
+	dataDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dataDir, "admin-key.pem"), 0o700))
+
+	err = generateAdminClientCert(bundle, dataDir, "admin", "default")
+	require.Error(t, err)
+	var writeErr *AdminCertWriteError
+	require.True(t, errors.As(err, &writeErr))
+	assert.Contains(t, writeErr.Path, "admin-key.pem")
+}
+
+// ---------------------------------------------------------------------------
+// resolveAutoConfig edge cases
+// ---------------------------------------------------------------------------
+
+func TestResolveAutoConfig_NonStaticWithAllExplicit(t *testing.T) {
+	cmd := newStartCmd()
+	// Mark every auto-gen flag as explicitly set.
+	require.NoError(t, cmd.Flags().Set("replica-id", "99"))
+	require.NoError(t, cmd.Flags().Set("listen", "0.0.0.0:40000"))
+	require.NoError(t, cmd.Flags().Set("raft-address", "10.0.0.1:40000"))
+	require.NoError(t, cmd.Flags().Set("admin-port", "40001"))
+	require.NoError(t, cmd.Flags().Set("grpc-port", "40002"))
+	require.NoError(t, cmd.Flags().Set("data-dir", "/explicit/data"))
+
+	f := &startFlags{
+		discoveryMethod: "dns",
+		replicaID:       99,
+		listen:          "0.0.0.0:40000",
+		raftAddress:     "10.0.0.1:40000",
+		adminPort:       40001,
+		grpcPort:        40002,
+		dataDir:         "/explicit/data",
+	}
+
+	err := resolveAutoConfig(cmd, f)
+	require.NoError(t, err)
+
+	// All values should remain as explicitly set.
+	assert.Equal(t, uint64(99), f.replicaID)
+	assert.Equal(t, "0.0.0.0:40000", f.listen)
+	assert.Equal(t, "10.0.0.1:40000", f.raftAddress)
+	assert.Equal(t, 40001, f.adminPort)
+	assert.Equal(t, 40002, f.grpcPort)
+	assert.Equal(t, "/explicit/data", f.dataDir)
+}
+
+func TestResolveAutoConfig_DNSAutoGenerates(t *testing.T) {
+	cmd := newStartCmd()
+	f := &startFlags{
+		discoveryMethod: "dns",
+		listen:          "0.0.0.0:63001",
+		raftAddress:     "127.0.0.1:63001",
+		dataDir:         "./data",
+		replicaID:       1,
+		adminPort:       63002,
+		grpcPort:        63003,
+	}
+
+	err := resolveAutoConfig(cmd, f)
+	require.NoError(t, err)
+
+	// replicaID should have been auto-generated.
+	assert.NotEqual(t, uint64(1), f.replicaID)
+	assert.NotEqual(t, uint64(0), f.replicaID)
+	// Ports should have changed.
+	assert.NotEqual(t, "0.0.0.0:63001", f.listen)
+	assert.NotEqual(t, 63002, f.adminPort)
+	assert.NotEqual(t, 63003, f.grpcPort)
+}
+
+// ---------------------------------------------------------------------------
+// resolveAutoConfig: partial explicit flags (only listen set)
+// ---------------------------------------------------------------------------
+
+func TestResolveAutoConfig_PartialExplicitFlags(t *testing.T) {
+	cmd := newStartCmd()
+	// Only set listen and raft-address, but not replica-id, admin-port, grpc-port, data-dir.
+	require.NoError(t, cmd.Flags().Set("listen", "0.0.0.0:50000"))
+	require.NoError(t, cmd.Flags().Set("raft-address", "10.0.0.1:50000"))
+
+	f := &startFlags{
+		discoveryMethod: "multicast",
+		listen:          "0.0.0.0:50000",
+		raftAddress:     "10.0.0.1:50000",
+		dataDir:         "./data",
+		replicaID:       1,
+		adminPort:       63002,
+		grpcPort:        63003,
+	}
+
+	err := resolveAutoConfig(cmd, f)
+	require.NoError(t, err)
+
+	// Listen should remain unchanged (explicitly set).
+	assert.Equal(t, "0.0.0.0:50000", f.listen)
+	assert.Equal(t, "10.0.0.1:50000", f.raftAddress)
+
+	// replicaID, adminPort, grpcPort, dataDir should be auto-generated.
+	assert.NotEqual(t, uint64(1), f.replicaID)
+	assert.NotEqual(t, 63002, f.adminPort)
+	assert.NotEqual(t, 63003, f.grpcPort)
+}
+
+// ---------------------------------------------------------------------------
+// newKVServiceAdapter: ensure adapter creation and identity
+// ---------------------------------------------------------------------------
+
+func TestNewKVServiceAdapter_ReturnsNonNil(t *testing.T) {
+	adapter := newKVServiceAdapter(&mockKVServicer{}, nil, nil)
+	require.NotNil(t, adapter)
+}
+
+// ---------------------------------------------------------------------------
+// generateAdminClientCert: valid CA cert but CA key is a different key than
+// what signed the CA cert (will fail at CreateCertificate or earlier)
+// ---------------------------------------------------------------------------
+
+func TestGenerateAdminClientCert_MismatchedCAKeyForCert(t *testing.T) {
+	bundle, err := generateCATLS()
+	require.NoError(t, err)
+
+	// Generate a different EC key and replace the CA key PEM.
+	differentKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	differentKeyDER, err := x509.MarshalECPrivateKey(differentKey)
+	require.NoError(t, err)
+	bundle.CAKeyPEM = pem.EncodeToMemory(&pem.Block{
+		Type:  "EC PRIVATE KEY",
+		Bytes: differentKeyDER,
+	})
+
+	dataDir := t.TempDir()
+	// Go's x509.CreateCertificate validates that the provided private key
+	// matches the parent certificate's public key (since Go 1.20+).
+	err = generateAdminClientCert(bundle, dataDir, "admin", "default")
+	require.Error(t, err)
+
+	var certErr *AdminCertError
+	require.True(t, errors.As(err, &certErr))
+}
+
+// ---------------------------------------------------------------------------
+// buildMulticastDiscovery: success path with valid secret
+// ---------------------------------------------------------------------------
+
+func TestBuildMulticastDiscovery_Success_Coverage(t *testing.T) {
+	f := &startFlags{
+		multicastSecret: "test-secret",
+		replicaID:       42,
+		raftAddress:     "127.0.0.1:63001",
+		deploymentID:    1,
+	}
+
+	disc, err := buildMulticastDiscovery(f)
+	require.NoError(t, err)
+	require.NotNil(t, disc)
+}
+
+// ---------------------------------------------------------------------------
+// buildMulticastDiscovery: NewMulticastDiscovery returns error
+// ---------------------------------------------------------------------------
+
+func TestBuildMulticastDiscovery_NewMulticastDiscoveryError(t *testing.T) {
+	// The multicast discovery constructor validates that Address is non-empty.
+	// Pass a valid secret but empty raftAddress to trigger the error from
+	// discovery.NewMulticastDiscovery.
+	f := &startFlags{
+		multicastSecret: "test-secret",
+		replicaID:       42,
+		raftAddress:     "",
+		deploymentID:    1,
+	}
+
+	disc, err := buildMulticastDiscovery(f)
+	require.Error(t, err)
+	assert.Nil(t, disc)
+}
+
+// ---------------------------------------------------------------------------
+// newStatusCmd: invalid tls-ca-file triggers error in RunE
+// ---------------------------------------------------------------------------
+
+func TestNewStatusCmd_InvalidCAFile(t *testing.T) {
+	cmd := newStatusCmd()
+	// Point to a non-existent CA file so loadCACertPool returns an error.
+	require.NoError(t, cmd.Flags().Set("tls-ca-file", filepath.Join(t.TempDir(), "nonexistent-ca.pem")))
+
+	err := cmd.RunE(cmd, nil)
+	require.Error(t, err)
+	var loadErr *TLSLoadError
+	require.True(t, errors.As(err, &loadErr))
+}
+
+// ---------------------------------------------------------------------------
+// newPeersCmd: invalid tls-ca-file triggers error in RunE
+// ---------------------------------------------------------------------------
+
+func TestNewPeersCmd_InvalidCAFile(t *testing.T) {
+	cmd := newPeersCmd()
+	// Point to a non-existent CA file so loadCACertPool returns an error.
+	require.NoError(t, cmd.Flags().Set("tls-ca-file", filepath.Join(t.TempDir(), "nonexistent-ca.pem")))
+
+	err := cmd.RunE(cmd, nil)
+	require.Error(t, err)
+	var loadErr *TLSLoadError
+	require.True(t, errors.As(err, &loadErr))
+}
+
+// ---------------------------------------------------------------------------
+// generateAdminClientCert: read-only directory covers cert write error
+// ---------------------------------------------------------------------------
+
+func TestGenerateAdminClientCert_ReadOnlyDir(t *testing.T) {
+	bundle, err := generateCATLS()
+	require.NoError(t, err)
+
+	// Place a directory at the admin-cert.pem path so WriteFile fails
+	// (works even as root, unlike chmod).
+	dataDir := t.TempDir()
+	certPath := filepath.Join(dataDir, "admin-cert.pem")
+	require.NoError(t, os.MkdirAll(certPath, 0o700))
+
+	err = generateAdminClientCert(bundle, dataDir, "admin", "default")
+	require.Error(t, err)
+	var writeErr *AdminCertWriteError
+	require.True(t, errors.As(err, &writeErr))
+}
+
+// ---------------------------------------------------------------------------
+// runStart: TLS file load error path
+//
+// Exercises the loadTLSFromFiles branch inside runStart by providing all
+// three TLS flags with nonexistent file paths. This covers the TLS file
+// loading and early error return (start.go:380-382, 397-399).
+// ---------------------------------------------------------------------------
+
+func TestRunStart_TLSLoadError(t *testing.T) {
+	dir := t.TempDir()
+	f := &startFlags{
+		tlsCAFile:   filepath.Join(dir, "nonexistent-ca.pem"),
+		tlsCertFile: filepath.Join(dir, "nonexistent-cert.pem"),
+		tlsKeyFile:  filepath.Join(dir, "nonexistent-key.pem"),
+		dataDir:     dir,
+		smType:      "memory",
+	}
+
+	err := runStart(f)
+	require.Error(t, err)
+	var loadErr *TLSLoadError
+	require.True(t, errors.As(err, &loadErr))
+}
+
+// ---------------------------------------------------------------------------
+// runStart: CA cert directory creation failure
+//
+// Exercises the resolveTLS -> persistFullBundle path where MkdirAll fails
+// because the data directory path traverses a regular file.
+// ---------------------------------------------------------------------------
+
+func TestRunStart_CACertMkdirAllError(t *testing.T) {
+	dir := t.TempDir()
+	// Create a file that blocks directory creation.
+	blocker := filepath.Join(dir, "blocker")
+	require.NoError(t, os.WriteFile(blocker, []byte("x"), 0o600))
+
+	// Use the blocker file as a path component so MkdirAll fails.
+	badDataDir := filepath.Join(blocker, "subdir")
+
+	f := &startFlags{
+		dataDir: badDataDir,
+		smType:  "memory",
+	}
+
+	err := runStart(f)
+	require.Error(t, err)
+	var writeErr *BootstrapWriteError
+	require.True(t, errors.As(err, &writeErr))
+}
+
+// ---------------------------------------------------------------------------
+// runStart: CA cert file write failure
+//
+// Exercises the resolveTLS -> persistFullBundle path where MkdirAll succeeds
+// but os.WriteFile fails because the data directory is read-only.
+// ---------------------------------------------------------------------------
+
+func TestRunStart_CACertWriteFileError(t *testing.T) {
+	dataDir := t.TempDir()
+	// Place a directory at the ca.pem path so WriteFile fails
+	// (works even as root, unlike chmod).
+	caPath := filepath.Join(dataDir, "ca.pem")
+	require.NoError(t, os.MkdirAll(caPath, 0o700))
+
+	f := &startFlags{
+		dataDir: dataDir,
+		smType:  "memory",
+	}
+
+	err := runStart(f)
+	require.Error(t, err)
+	var writeErr *BootstrapWriteError
+	require.True(t, errors.As(err, &writeErr))
+}
+
+// ---------------------------------------------------------------------------
+// initializeNode: peer parse error for static multi-node
+//
+// Exercises the parsePeers error path in initializeNode by providing
+// static discovery with multiple peers that have invalid format. This
+// covers start.go:560-563.
+// ---------------------------------------------------------------------------
+
+func TestInitializeNode_PeerParseError(t *testing.T) {
+	bundle, err := generateCATLS()
+	require.NoError(t, err)
+
+	f := &startFlags{
+		smType:          "memory",
+		discoveryMethod: "static",
+		peers:           []string{"1=127.0.0.1:63001", "invalid-peer-format"},
+		dataDir:         t.TempDir(),
+		listen:          "0.0.0.0:63001",
+		raftAddress:     "127.0.0.1:63001",
+		shardID:         1,
+		replicaID:       1,
+	}
+
+	_, err = initializeNode(context.Background(), f, bundle)
+	require.Error(t, err)
+	var peerErr *PeerParseError
+	require.True(t, errors.As(err, &peerErr))
+	assert.Equal(t, "invalid-peer-format", peerErr.Input)
+}
+
+// ---------------------------------------------------------------------------
+// initializeNode: unknown SM type
+//
+// Exercises the resolveCreateFunc error path in initializeNode by
+// providing an unknown state machine type. Covers start.go:552-554.
+// ---------------------------------------------------------------------------
+
+func TestInitializeNode_UnknownSMType(t *testing.T) {
+	f := &startFlags{
+		smType:          "nonexistent-sm",
+		discoveryMethod: "static",
+		dataDir:         t.TempDir(),
+		listen:          "0.0.0.0:63001",
+		raftAddress:     "127.0.0.1:63001",
+		shardID:         1,
+		replicaID:       1,
+	}
+
+	_, err := initializeNode(context.Background(), f, nil)
+	require.Error(t, err)
+	var smErr *UnknownSMError
+	require.True(t, errors.As(err, &smErr))
+	assert.Equal(t, "nonexistent-sm", smErr.Name)
+}
+
+// ---------------------------------------------------------------------------
+// defaultMVCCFastLogger: returns a valid logger
+// ---------------------------------------------------------------------------
+
+func TestDefaultMVCCFastLogger(t *testing.T) {
+	log := defaultMVCCFastLogger()
+	require.NotNil(t, log)
+}
+
+// ---------------------------------------------------------------------------
+// defaultMVCCFastStorageFactory: happy path
+// ---------------------------------------------------------------------------
+
+func TestDefaultMVCCFastStorageFactory(t *testing.T) {
+	factory := defaultMVCCFastStorageFactory()
+	require.NotNil(t, factory)
+
+	s := factory(1, 1)
+	require.NotNil(t, s)
+	t.Cleanup(func() { _ = s.Close() })
+}
+
+// ---------------------------------------------------------------------------
+// init(): mvcc-fast registry factory is callable
+// ---------------------------------------------------------------------------
+
+func TestInitMVCCFastRegistered(t *testing.T) {
+	// Resolving "mvcc-fast" from the registry invokes the closure
+	// registered in init(), covering the factory call at start.go:151-155.
+	createFn, err := statemachine.Resolve("mvcc-fast")
+	require.NoError(t, err)
+	require.NotNil(t, createFn)
+}
+
+// ---------------------------------------------------------------------------
+// applyConfigToFlags: bootstrap fields applied from config
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// CertReloader watch: debounce Reload error path
+//
+// When the watched cert file is overwritten with invalid data, the
+// debounce timer fires and Reload fails. This covers the error branch
+// inside the debounce callback (cert_reload.go:192-194).
+// ---------------------------------------------------------------------------
+
+func TestCertReloader_FileWatch_DebounceReloadError(t *testing.T) {
+	dir := t.TempDir()
+	certPEM, keyPEM := testCertPair(t)
+	certPath, keyPath := writeCertFiles(t, dir, certPEM, keyPEM)
+
+	r, err := NewCertReloader(certPath, keyPath, testLogger())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = r.Stop() })
+
+	origLoaded := r.cert.Load()
+
+	// Overwrite the cert file with invalid data to make the debounced
+	// Reload fail. Write to both files to ensure the fsnotify event fires.
+	require.NoError(t, os.WriteFile(certPath, []byte("invalid-cert"), 0o600))
+	require.NoError(t, os.WriteFile(keyPath, []byte("invalid-key"), 0o600))
+
+	// Wait for debounce + a little margin. The debounce interval is 100ms.
+	time.Sleep(500 * time.Millisecond)
+
+	// The original certificate must still be served because the reload
+	// failed and the old cert is preserved.
+	current := r.cert.Load()
+	assert.Equal(t, origLoaded.Certificate, current.Certificate,
+		"failed debounce reload must preserve the original certificate")
+}
+
+// ---------------------------------------------------------------------------
+// CertReloader watch: watcher.Errors path
+//
+// Sends an error through the fsnotify watcher's Errors channel to exercise
+// the error logging branch in the watch goroutine (cert_reload.go:197-201).
+// ---------------------------------------------------------------------------
+
+func TestCertReloader_FileWatch_WatcherError(t *testing.T) {
+	dir := t.TempDir()
+	certPEM, keyPEM := testCertPair(t)
+	certPath, keyPath := writeCertFiles(t, dir, certPEM, keyPEM)
+
+	r, err := NewCertReloader(certPath, keyPath, testLogger())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = r.Stop() })
+
+	// Send a synthetic error through the watcher's error channel.
+	r.watcher.Errors <- errors.New("synthetic watcher error")
+
+	// Give the watch goroutine time to process the error.
+	time.Sleep(100 * time.Millisecond)
+
+	// The reloader should still be functional.
+	cert, err := r.GetCertificate(nil)
+	require.NoError(t, err)
+	require.NotNil(t, cert)
+}
+
+func TestApplyConfigToFlags_BootstrapFields(t *testing.T) {
+	cmd := newStartCmd()
+	f := &startFlags{}
+	cfg := &qrdbconfig.Config{
+		Bootstrap: qrdbconfig.BootstrapConfig{
+			NoiseKey:  "testnoisekey",
+			NoiseAddr: "10.0.0.1:63006",
+			NoisePort: 63007,
+			SPKIPin:   "testspkipin",
+			DANEDNS:   "8.8.8.8:53",
+			DANEDoT:   true,
+			DirectURL: "https://bootstrap.example.com",
+			Addr:      "10.0.0.1:8443",
+		},
+	}
+	applyConfigToFlags(cmd, f, cfg)
+
+	assert.Equal(t, "testnoisekey", f.bootstrapNoiseKey)
+	assert.Equal(t, "10.0.0.1:63006", f.bootstrapNoiseAddr)
+	assert.Equal(t, 63007, f.bootstrapNoisePort)
+	assert.Equal(t, "testspkipin", f.bootstrapSPKIPin)
+	assert.Equal(t, "8.8.8.8:53", f.bootstrapDANEDNS)
+	assert.True(t, f.bootstrapDANEDoT)
+	assert.Equal(t, "https://bootstrap.example.com", f.bootstrapDirectURL)
+	assert.Equal(t, "10.0.0.1:8443", f.bootstrapAddr)
+}
+
+// ---------------------------------------------------------------------------
+// applyConfigToFlags: CLI flags take precedence over bootstrap config
+// ---------------------------------------------------------------------------
+
+func TestApplyConfigToFlags_BootstrapCLIPrecedence(t *testing.T) {
+	cmd := newStartCmd()
+	require.NoError(t, cmd.Flags().Set("bootstrap-noise-key", "cli-key"))
+	require.NoError(t, cmd.Flags().Set("bootstrap-noise-addr", "cli-addr"))
+	require.NoError(t, cmd.Flags().Set("bootstrap-noise-port", "9999"))
+	require.NoError(t, cmd.Flags().Set("bootstrap-spki-pin", "cli-pin"))
+	require.NoError(t, cmd.Flags().Set("bootstrap-dane-dns", "cli-dns"))
+	require.NoError(t, cmd.Flags().Set("bootstrap-dane-dot", "true"))
+	require.NoError(t, cmd.Flags().Set("bootstrap-direct-url", "cli-url"))
+	require.NoError(t, cmd.Flags().Set("bootstrap-addr", "cli-baddr"))
+
+	cfg := &qrdbconfig.Config{
+		Bootstrap: qrdbconfig.BootstrapConfig{
+			NoiseKey:  "yaml-key",
+			NoiseAddr: "yaml-addr",
+			NoisePort: 1111,
+			SPKIPin:   "yaml-pin",
+			DANEDNS:   "yaml-dns",
+			DANEDoT:   false,
+			DirectURL: "yaml-url",
+			Addr:      "yaml-baddr",
+		},
+	}
+
+	f := &startFlags{
+		bootstrapNoiseKey:  "cli-key",
+		bootstrapNoiseAddr: "cli-addr",
+		bootstrapNoisePort: 9999,
+		bootstrapSPKIPin:   "cli-pin",
+		bootstrapDANEDNS:   "cli-dns",
+		bootstrapDANEDoT:   true,
+		bootstrapDirectURL: "cli-url",
+		bootstrapAddr:      "cli-baddr",
+	}
+	applyConfigToFlags(cmd, f, cfg)
+
+	assert.Equal(t, "cli-key", f.bootstrapNoiseKey)
+	assert.Equal(t, "cli-addr", f.bootstrapNoiseAddr)
+	assert.Equal(t, 9999, f.bootstrapNoisePort)
+	assert.Equal(t, "cli-pin", f.bootstrapSPKIPin)
+	assert.Equal(t, "cli-dns", f.bootstrapDANEDNS)
+	assert.True(t, f.bootstrapDANEDoT)
+	assert.Equal(t, "cli-url", f.bootstrapDirectURL)
+	assert.Equal(t, "cli-baddr", f.bootstrapAddr)
+}
+
+// ---------------------------------------------------------------------------
+// newStartCmd + config file: bootstrap section loaded and applied
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// runStart: wireCertReloader fails when node-cert.pem/node-key.pem exist
+// but are not valid TLS certificates. The error is logged as a warning
+// and execution continues to the next stage.
+// ---------------------------------------------------------------------------
+
+func TestRunStart_WireCertReloaderWarnsOnInvalidCerts(t *testing.T) {
+	dataDir := t.TempDir()
+
+	// Generate valid TLS bundle and write CA/cert/key to separate files
+	// that will be loaded via --tls-ca-file, --tls-cert-file, --tls-key-file.
+	bundle, err := generateCATLS()
+	require.NoError(t, err)
+
+	caFile := filepath.Join(dataDir, "ca.pem")
+	certFile := filepath.Join(dataDir, "cert.pem")
+	keyFile := filepath.Join(dataDir, "key.pem")
+	require.NoError(t, os.WriteFile(caFile, bundle.CACertPEM, 0o600))
+	require.NoError(t, os.WriteFile(certFile, bundle.CertPEM, 0o600))
+	require.NoError(t, os.WriteFile(keyFile, bundle.KeyPEM, 0o600))
+
+	// Write invalid node-cert.pem and node-key.pem so that
+	// wireCertReloader's tls.LoadX509KeyPair fails with an error.
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dataDir, "node-cert.pem"), []byte("invalid-cert"), 0o600))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dataDir, "node-key.pem"), []byte("invalid-key"), 0o600))
+
+	f := &startFlags{
+		tlsCAFile:       caFile,
+		tlsCertFile:     certFile,
+		tlsKeyFile:      keyFile,
+		dataDir:         dataDir,
+		smType:          "nonexistent",
+		discoveryMethod: "static",
+		listen:          "0.0.0.0:63001",
+		raftAddress:     "127.0.0.1:63001",
+		shardID:         1,
+		replicaID:       1,
+	}
+
+	err = runStart(f)
+	require.Error(t, err)
+	var smErr *UnknownSMError
+	require.True(t, errors.As(err, &smErr))
+}
+
+func TestNewStartCmd_BootstrapConfigApplied(t *testing.T) {
+	dir := t.TempDir()
+	cfgFile := filepath.Join(dir, "config.yaml")
+	yaml := `
+raft:
+  sm_type: "memory"
+  data_dir: "` + dir + `"
+discovery:
+  method: "static"
+tls:
+  enabled: false
+bootstrap:
+  noise_key: "aabbccdd"
+  noise_addr: "10.0.0.1:63006"
+  noise_port: 63007
+  spki_pin: "sha256pin"
+  dane_dns: "8.8.8.8:53"
+  dane_dot: true
+  direct_url: "https://bootstrap.example.com"
+  addr: "10.0.0.1:8443"
+`
+	require.NoError(t, os.WriteFile(cfgFile, []byte(yaml), 0o600))
+
+	// Use --sm nonexistent via CLI to force an UnknownSMError after the
+	// config (including bootstrap fields) has been loaded and applied.
+	cmd := newStartCmd()
+	cmd.SetArgs([]string{"--config", cfgFile, "--sm", "nonexistent"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	var smErr *UnknownSMError
+	require.True(t, errors.As(err, &smErr))
+}
+
+// ---------------------------------------------------------------------------
+// runStart: SQL database creation when sqlDatabase flag is set and mysql enabled
+//
+// The test sets smType to "nonexistent" so that initializeNode fails with
+// UnknownSMError immediately after the SQL database setup code runs. This
+// exercises the sqlDatabase + enableMySQL code path in runStart
+// (start.go:706-738) without actually starting a Raft node.
+// ---------------------------------------------------------------------------
+
+func TestRunStart_SQLDatabaseCreated(t *testing.T) {
+	dataDir := t.TempDir()
+
+	f := &startFlags{
+		dataDir:         dataDir,
+		smType:          "nonexistent-sm",
+		discoveryMethod: "static",
+		listen:          "0.0.0.0:63001",
+		raftAddress:     "127.0.0.1:63001",
+		shardID:         1,
+		replicaID:       1,
+		sqlDatabase:     "testdb",
+		enableMySQL:     true,
+	}
+
+	err := runStart(f)
+	require.Error(t, err)
+	// The SQL database creation path is exercised (smType fails after).
+	var smErr *UnknownSMError
+	require.True(t, errors.As(err, &smErr))
+}
+
+// ---------------------------------------------------------------------------
+// runStart: SQL database "memory" backend when smType is "concurrent"
+//
+// Exercises the backend == memory branch (start.go:712-713) when the
+// sql database does not yet exist.
+// ---------------------------------------------------------------------------
+
+func TestRunStart_SQLDatabaseConcurrentMemoryBackend(t *testing.T) {
+	dataDir := t.TempDir()
+
+	f := &startFlags{
+		dataDir:         dataDir,
+		smType:          "nonexistent-sm",
+		discoveryMethod: "static",
+		listen:          "0.0.0.0:63001",
+		raftAddress:     "127.0.0.1:63001",
+		shardID:         1,
+		replicaID:       1,
+		sqlDatabase:     "testdb-concurrent",
+		enablePgSQL:     true,
+	}
+
+	err := runStart(f)
+	require.Error(t, err)
+	var smErr *UnknownSMError
+	require.True(t, errors.As(err, &smErr))
+}
+
+// ---------------------------------------------------------------------------
+// runStart: database already exists - Open path exercised
+//
+// Write a pebble database directory so the default database already exists
+// from a prior run. runStart must succeed in opening it and then fail
+// at initializeNode (unknown SM type).
+// ---------------------------------------------------------------------------
+
+func TestRunStart_DatabaseAlreadyExistsOpensIt(t *testing.T) {
+	dataDir := t.TempDir()
+
+	// First run creates the database and fails at initializeNode.
+	f1 := &startFlags{
+		dataDir:         dataDir,
+		smType:          "nonexistent-sm",
+		discoveryMethod: "static",
+		listen:          "0.0.0.0:63001",
+		raftAddress:     "127.0.0.1:63001",
+		shardID:         1,
+		replicaID:       1,
+	}
+
+	err := runStart(f1)
+	require.Error(t, err)
+
+	// Second run: database exists -> AlreadyExistsError -> Open path.
+	f2 := &startFlags{
+		dataDir:         dataDir,
+		smType:          "nonexistent-sm",
+		discoveryMethod: "static",
+		listen:          "0.0.0.0:63001",
+		raftAddress:     "127.0.0.1:63001",
+		shardID:         1,
+		replicaID:       1,
+	}
+
+	err = runStart(f2)
+	require.Error(t, err)
+	var smErr *UnknownSMError
+	require.True(t, errors.As(err, &smErr))
+}
+
+// ---------------------------------------------------------------------------
+// runStart: pebble SM type registers a factory (exercises switch case)
+//
+// The pebble case in the switch at start.go:744-757 assigns f.createFn.
+// Setting smType to "pebble" enters that branch; initializeNode then
+// proceeds and fails at the shard start step (no real cluster available),
+// which is a non-UnknownSMError.
+// ---------------------------------------------------------------------------
+
+func TestRunStart_PebbleSMTypeExercisesSwitch(t *testing.T) {
+	dataDir := t.TempDir()
+
+	f := &startFlags{
+		dataDir:         dataDir,
+		smType:          "pebble",
+		discoveryMethod: "static",
+		listen:          "0.0.0.0:63001",
+		raftAddress:     "127.0.0.1:63001",
+		shardID:         1,
+		replicaID:       1,
+	}
+
+	// pebble SM type is valid so initializeNode proceeds past the factory
+	// assignment. Any error from the host/shard layer is acceptable; the
+	// key assertion is that UnknownSMError is NOT returned.
+	err := runStart(f)
+	if err != nil {
+		var smErr *UnknownSMError
+		assert.False(t, errors.As(err, &smErr),
+			"pebble SM should not trigger UnknownSMError: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// bootstrapTLS: SPKI configured but no bootstrapAddr skips SPKI method
+//
+// bootstrapSPKIPin is set but bootstrapAddr is empty, so the SPKI config
+// branch is not entered. With no other methods configured, AutoFetch
+// fails with BootstrapFetchError (no methods to try).
+// ---------------------------------------------------------------------------
+
+func TestBootstrapTLS_SPKIPinWithNoAddr(t *testing.T) {
+	f := &startFlags{
+		dataDir:          t.TempDir(),
+		bootstrapSPKIPin: "sha256//AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+		// bootstrapAddr intentionally omitted — SPKI block not entered.
+	}
+
+	_, err := bootstrapTLS(f, testLogger())
+	require.Error(t, err)
+	var fetchErr *BootstrapFetchError
+	require.True(t, errors.As(err, &fetchErr))
+}
+
+// ---------------------------------------------------------------------------
+// localSANs: returns at least localhost and the required base IPs
+// ---------------------------------------------------------------------------
+
+func TestLocalSANs_ReturnsLocalhostAndBaseIPs(t *testing.T) {
+	dnsNames, ips := localSANs()
+	assert.Contains(t, dnsNames, "localhost")
+	// At minimum: 127.0.0.1, ::1 (IPv6 loopback), 0.0.0.0, ::0 are present.
+	assert.GreaterOrEqual(t, len(ips), 4)
+}
+
+// ---------------------------------------------------------------------------
+// applyTLSClientAuth: explicit operator-selected client-auth modes
+// ---------------------------------------------------------------------------
+
+func TestApplyTLSClientAuth_RequestAttachesClientCAs(t *testing.T) {
+	bundle, err := generateCATLS()
+	require.NoError(t, err)
+
+	f := &startFlags{tlsClientAuth: "request", tlsClientAuthSet: true}
+	applyTLSClientAuth(f, bundle)
+
+	assert.Equal(t, tls.RequestClientCert, bundle.TLSConfig.ClientAuth)
+	assert.Same(t, bundle.CACertPool, bundle.TLSConfig.ClientCAs)
+}
+
+func TestApplyTLSClientAuth_NoneLeavesClientCAsUnset(t *testing.T) {
+	bundle, err := generateCATLS()
+	require.NoError(t, err)
+
+	f := &startFlags{tlsClientAuth: "none", tlsClientAuthSet: true}
+	applyTLSClientAuth(f, bundle)
+
+	assert.Equal(t, tls.NoClientCert, bundle.TLSConfig.ClientAuth)
+	assert.Nil(t, bundle.TLSConfig.ClientCAs)
+}
+
+func TestApplyTLSClientAuth_RequireAndVerify(t *testing.T) {
+	bundle, err := generateCATLS()
+	require.NoError(t, err)
+
+	f := &startFlags{tlsClientAuth: "require_and_verify", tlsClientAuthSet: true}
+	applyTLSClientAuth(f, bundle)
+
+	assert.Equal(t, tls.RequireAndVerifyClientCert, bundle.TLSConfig.ClientAuth)
+	assert.Same(t, bundle.CACertPool, bundle.TLSConfig.ClientCAs)
+}
+
+// ---------------------------------------------------------------------------
+// applyConfigToFlags: YAML tls.client_auth marks the mode explicitly set
+// ---------------------------------------------------------------------------
+
+func TestApplyConfigToFlags_TLSClientAuthFromYAML(t *testing.T) {
+	cmd := newStartCmd()
+	f := &startFlags{}
+
+	cfg := &qrdbconfig.Config{
+		TLS: qrdbconfig.TLSConfig{ClientAuth: "request"},
+	}
+	applyConfigToFlags(cmd, f, cfg)
+
+	assert.Equal(t, "request", f.tlsClientAuth)
+	assert.True(t, f.tlsClientAuthSet)
+}
+
+func TestApplyConfigToFlags_TLSClientAuthUnsetStaysImplicit(t *testing.T) {
+	cmd := newStartCmd()
+	f := &startFlags{}
+
+	applyConfigToFlags(cmd, f, &qrdbconfig.Config{})
+
+	assert.False(t, f.tlsClientAuthSet)
+}
+
+// ---------------------------------------------------------------------------
+// applyConfigToFlags: ClusterTrustDomain from config
+//
+// When the --cluster-trust-domain flag has not been set on the command line,
+// a non-empty Auth.ClusterTrustDomain in the config file must be applied to
+// f.clusterTrustDomain (start.go:611-613).
+// ---------------------------------------------------------------------------
+
+func TestApplyConfigToFlags_ClusterTrustDomainFromConfig(t *testing.T) {
+	t.Parallel()
+
+	cmd := newStartCmd()
+	f := &startFlags{}
+
+	cfg := &qrdbconfig.Config{
+		Auth: qrdbconfig.AuthConfig{
+			ClusterTrustDomain: "test.example.cluster",
+		},
+	}
+	applyConfigToFlags(cmd, f, cfg)
+
+	assert.Equal(t, "test.example.cluster", f.clusterTrustDomain)
+}
+
+// TestApplyConfigToFlags_ClusterTrustDomainCLIPrecedence verifies that an
+// explicit --cluster-trust-domain flag is not overwritten by the config value.
+func TestApplyConfigToFlags_ClusterTrustDomainCLIPrecedence(t *testing.T) {
+	t.Parallel()
+
+	cmd := newStartCmd()
+	require.NoError(t, cmd.Flags().Set("cluster-trust-domain", "cli.cluster"))
+
+	f := &startFlags{clusterTrustDomain: "cli.cluster"}
+	cfg := &qrdbconfig.Config{
+		Auth: qrdbconfig.AuthConfig{
+			ClusterTrustDomain: "yaml.cluster",
+		},
+	}
+	applyConfigToFlags(cmd, f, cfg)
+
+	assert.Equal(t, "cli.cluster", f.clusterTrustDomain)
+}
+
+// ---------------------------------------------------------------------------
+// applyConfigToFlags: PeerAdminURLs from config
+//
+// A non-empty Auth.PeerAdminURLs slice in the config is parsed into the
+// f.peerAdminURLs map (start.go:614-624). Entries with empty RaftAddr or
+// AdminURL are silently skipped.
+// ---------------------------------------------------------------------------
+
+func TestApplyConfigToFlags_PeerAdminURLsFromConfig(t *testing.T) {
+	t.Parallel()
+
+	cmd := newStartCmd()
+	f := &startFlags{}
+
+	cfg := &qrdbconfig.Config{
+		Auth: qrdbconfig.AuthConfig{
+			PeerAdminURLs: []qrdbconfig.PeerAdminEntry{
+				{RaftAddr: "10.0.0.1:7946", AdminURL: "https://10.0.0.1:8443"},
+				{RaftAddr: "10.0.0.2:7946", AdminURL: "https://10.0.0.2:8443"},
+			},
+		},
+	}
+	applyConfigToFlags(cmd, f, cfg)
+
+	require.NotNil(t, f.peerAdminURLs)
+	assert.Equal(t, "https://10.0.0.1:8443", f.peerAdminURLs["10.0.0.1:7946"])
+	assert.Equal(t, "https://10.0.0.2:8443", f.peerAdminURLs["10.0.0.2:7946"])
+}
+
+// TestApplyConfigToFlags_PeerAdminURLsSkipsIncomplete verifies that entries
+// with missing RaftAddr or AdminURL are not written to f.peerAdminURLs, and
+// that the entire map is nil when no valid entries remain.
+func TestApplyConfigToFlags_PeerAdminURLsSkipsIncomplete(t *testing.T) {
+	t.Parallel()
+
+	cmd := newStartCmd()
+	f := &startFlags{}
+
+	cfg := &qrdbconfig.Config{
+		Auth: qrdbconfig.AuthConfig{
+			PeerAdminURLs: []qrdbconfig.PeerAdminEntry{
+				{RaftAddr: "", AdminURL: "https://10.0.0.1:8443"}, // missing RaftAddr
+				{RaftAddr: "10.0.0.2:7946", AdminURL: ""},         // missing AdminURL
+			},
+		},
+	}
+	applyConfigToFlags(cmd, f, cfg)
+
+	// No valid entries → peerAdminURLs must remain nil (the map is not
+	// assigned when len(m) == 0).
+	assert.Nil(t, f.peerAdminURLs)
+}

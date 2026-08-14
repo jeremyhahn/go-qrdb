@@ -150,7 +150,6 @@ func (r *errServiceRegistry) TableService(_, _ string) (service.TableServicer, e
 func (r *errServiceRegistry) SequenceService(_, _ string) (service.SequenceServicer, error) {
 	return nil, r.err
 }
-
 func (r *errServiceRegistry) PrivilegeService(_, _ string) (service.PrivilegeServicer, error) {
 	return nil, r.err
 }
@@ -1240,7 +1239,6 @@ func (r *stubServiceRegistryForTenant) TableService(_, _ string) (service.TableS
 func (r *stubServiceRegistryForTenant) SequenceService(_, _ string) (service.SequenceServicer, error) {
 	return nil, errors.New("not implemented")
 }
-
 func (r *stubServiceRegistryForTenant) PrivilegeService(_, _ string) (service.PrivilegeServicer, error) {
 	return nil, errors.New("not implemented")
 }

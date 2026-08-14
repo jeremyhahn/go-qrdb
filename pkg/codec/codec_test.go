@@ -25,15 +25,15 @@ import (
 
 // testPayload is a representative struct used for round-trip tests.
 type testPayload struct {
-	Name    string   `json:"name" msgpack:"name" yaml:"name" bson:"name" avro:"name"`
-	Value   int64    `json:"value" msgpack:"value" yaml:"value" bson:"value" avro:"value"`
-	Tags    []string `json:"tags" msgpack:"tags" yaml:"tags" bson:"tags" avro:"tags"`
-	Nested  *nested  `json:"nested,omitempty" msgpack:"nested,omitempty" yaml:"nested,omitempty" bson:"nested,omitempty" avro:"nested,omitempty"`
-	Enabled bool     `json:"enabled" msgpack:"enabled" yaml:"enabled" bson:"enabled" avro:"enabled"`
+	Name    string   `json:"name" msgpack:"name" yaml:"name" bson:"name"`
+	Value   int64    `json:"value" msgpack:"value" yaml:"value" bson:"value"`
+	Tags    []string `json:"tags" msgpack:"tags" yaml:"tags" bson:"tags"`
+	Nested  *nested  `json:"nested,omitempty" msgpack:"nested,omitempty" yaml:"nested,omitempty" bson:"nested,omitempty"`
+	Enabled bool     `json:"enabled" msgpack:"enabled" yaml:"enabled" bson:"enabled"`
 }
 
 type nested struct {
-	Score float64 `json:"score" msgpack:"score" yaml:"score" bson:"score" avro:"score"`
+	Score float64 `json:"score" msgpack:"score" yaml:"score" bson:"score"`
 }
 
 func samplePayload() testPayload {

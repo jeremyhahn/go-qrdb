@@ -1,0 +1,690 @@
+<!--
+  Copyright 2026 Jeremy Hahn
+  SPDX-License-Identifier: Apache-2.0
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+-->
+<script lang="ts">
+  import { onMount } from "svelte";
+  import type { Component } from "svelte";
+  import type {
+    Client,
+    TSDataPoint,
+    TSTag,
+  } from "@qrdb/sdk";
+  import type { Column, RowClickEvent } from "../../components/core/DataTable/types.ts";
+  import { showToast } from "../../stores/toast.svelte.ts";
+  import PageHeader from "../../components/PageHeader.svelte";
+  import EmptyState from "../../components/EmptyState.svelte";
+  import ConfirmModal from "../../components/ConfirmModal.svelte";
+  import { CrudTable } from "../../components/core/CrudTable";
+  import SlidePanel from "../../components/core/SlidePanel.svelte";
+  import TimeSeriesChart from "../../components/core/TimeSeriesChart.svelte";
+  import {
+    Plus,
+    Trash2,
+    RefreshCw,
+    Search,
+    TrendingUp,
+    LineChart,
+    AreaChart,
+    ScatterChart as ScatterChartIcon,
+  } from "lucide-svelte";
+
+  let { client }: { client: Client } = $props();
+
+  // ---------------------------------------------------------------------------
+  // Types
+  // ---------------------------------------------------------------------------
+
+  interface TimeSeriesRow {
+    metric: string;
+    timestampNs: number;
+    value: number;
+    tags: readonly TSTag[];
+  }
+
+  // ---------------------------------------------------------------------------
+  // State
+  // ---------------------------------------------------------------------------
+
+  let metrics: string[] = $state([]);
+  let loading: boolean = $state(false);
+  let prefixFilter: string = $state("");
+
+  // Selected metric and its data points
+  let selectedMetric: string | null = $state(null);
+  let dataPoints: TimeSeriesRow[] = $state([]);
+  let pointsLoading: boolean = $state(false);
+
+  // Date range state (milliseconds)
+  let rangeStartMs: number = $state(Date.now() - 3600_000);
+  let rangeEndMs: number = $state(Date.now());
+  let rangeStartInput: string = $state(toDateTimeLocal(Date.now() - 3600_000));
+  let rangeEndInput: string = $state(toDateTimeLocal(Date.now()));
+
+  // Chart controls
+  let showChart: boolean = $state(true);
+  let chartType: "line" | "area" | "scatter" = $state("line");
+
+  // Write SlidePanel
+  let showWritePanel: boolean = $state(false);
+  let writeMetric: string = $state("");
+  let writeValue: string = $state("");
+  let writeTimestamp: string = $state("");
+  let writeTags: string = $state("");
+  let writeLoading: boolean = $state(false);
+
+  // Delete confirmation
+  let deleteTarget: string | null = $state(null);
+
+  // Detail panel for a single data point
+  let selectedPoint: TimeSeriesRow | null = $state(null);
+
+  // ---------------------------------------------------------------------------
+  // Column Definitions
+  // ---------------------------------------------------------------------------
+
+  const pointColumns: Column<TimeSeriesRow>[] = [
+    {
+      id: "metric",
+      header: "Metric",
+      accessor: "metric",
+      sortable: true,
+      filterable: true,
+      filterType: "text",
+      width: "25%",
+    },
+    {
+      id: "timestamp",
+      header: "Timestamp",
+      accessor: (row) => formatTimestamp(row.timestampNs / 1_000_000),
+      sortable: true,
+      width: "30%",
+    },
+    {
+      id: "value",
+      header: "Value",
+      accessor: "value",
+      sortable: true,
+      align: "right",
+      width: "20%",
+    },
+    {
+      id: "tags",
+      header: "Tags",
+      accessor: (row) => formatTags(row.tags),
+      sortable: false,
+      width: "25%",
+    },
+  ];
+
+  // ---------------------------------------------------------------------------
+  // Derived
+  // ---------------------------------------------------------------------------
+
+  const chartData = $derived(
+    dataPoints.map((dp) => ({
+      timestamp: Math.round(dp.timestampNs / 1_000_000),
+      value: dp.value,
+      metric: dp.metric,
+    }))
+  );
+
+  // ---------------------------------------------------------------------------
+  // Helpers
+  // ---------------------------------------------------------------------------
+
+  function formatTimestamp(ms: number): string {
+    return new Date(ms).toLocaleString();
+  }
+
+  function formatTags(tags: readonly TSTag[]): string {
+    if (!tags || tags.length === 0) return "";
+    return tags.map((t) => `${t.key}=${t.value}`).join(", ");
+  }
+
+  function toDateTimeLocal(ms: number): string {
+    const d = new Date(ms);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
+  function fromDateTimeLocal(s: string): number {
+    return new Date(s).getTime();
+  }
+
+  function setPresetRange(durationMs: number): void {
+    const now = Date.now();
+    rangeStartMs = now - durationMs;
+    rangeEndMs = now;
+    rangeStartInput = toDateTimeLocal(rangeStartMs);
+    rangeEndInput = toDateTimeLocal(rangeEndMs);
+    if (selectedMetric !== null) {
+      loadDataPoints(selectedMetric);
+    }
+  }
+
+  function applyCustomRange(): void {
+    rangeStartMs = fromDateTimeLocal(rangeStartInput);
+    rangeEndMs = fromDateTimeLocal(rangeEndInput);
+    if (selectedMetric !== null) {
+      loadDataPoints(selectedMetric);
+    }
+  }
+
+  function parseTags(raw: string): TSTag[] {
+    const tags: TSTag[] = [];
+    if (raw.trim() === "") return tags;
+    const pairs = raw.split(",");
+    for (const pair of pairs) {
+      const idx = pair.indexOf("=");
+      if (idx > 0) {
+        const k = pair.substring(0, idx).trim();
+        const v = pair.substring(idx + 1).trim();
+        if (k !== "") {
+          tags.push({ key: k, value: v });
+        }
+      }
+    }
+    return tags;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Actions
+  // ---------------------------------------------------------------------------
+
+  async function loadMetrics(): Promise<void> {
+
+    loading = true;
+    try {
+      const resp = await client.timeSeries!.listMetrics({ prefix: prefixFilter });
+      metrics = resp?.metrics ? [...resp.metrics] : [];
+    } catch (err: unknown) {
+      showToast("error", err instanceof Error ? err.message : String(err));
+      metrics = [];
+    } finally {
+      loading = false;
+    }
+  }
+
+  async function selectMetric(metric: string): Promise<void> {
+    const now = Date.now();
+    rangeStartMs = now - 3600_000;
+    rangeEndMs = now;
+    rangeStartInput = toDateTimeLocal(rangeStartMs);
+    rangeEndInput = toDateTimeLocal(rangeEndMs);
+    // Switch to the detail view first, then load data. This ensures the
+    // view transitions immediately on click rather than waiting for the
+    // async query to complete.
+    selectedMetric = metric;
+    await loadDataPoints(metric);
+  }
+
+  async function loadDataPoints(metric: string): Promise<void> {
+
+    pointsLoading = true;
+    try {
+      const resp = await client.timeSeries!.query({
+        metric,
+        startNs: rangeStartMs * 1_000_000,
+        endNs: rangeEndMs * 1_000_000,
+      });
+      const points = resp?.points ?? [];
+      dataPoints = points.map((dp) => ({
+        metric: dp.metric,
+        timestampNs: dp.timestampNs,
+        value: dp.value,
+        tags: dp.tags ?? [],
+      }));
+    } catch (err: unknown) {
+      showToast("error", err instanceof Error ? err.message : String(err));
+      dataPoints = [];
+    } finally {
+      pointsLoading = false;
+    }
+  }
+
+  function backToMetrics(): void {
+    selectedMetric = null;
+    dataPoints = [];
+    selectedPoint = null;
+  }
+
+  function openWritePanel(): void {
+    writeMetric = "";
+    writeValue = "";
+    writeTimestamp = "";
+    writeTags = "";
+    showWritePanel = true;
+  }
+
+  async function handleWrite(): Promise<void> {
+
+    if (writeMetric.trim() === "" || writeValue.trim() === "") {
+      showToast("warning", "Metric and value are required.");
+      return;
+    }
+    const val = parseFloat(writeValue);
+    if (Number.isNaN(val)) {
+      showToast("warning", "Value must be a valid number.");
+      return;
+    }
+
+    writeLoading = true;
+    try {
+      const ts = writeTimestamp.trim() !== ""
+        ? parseInt(writeTimestamp, 10)
+        : Date.now() * 1_000_000;
+      const tags = parseTags(writeTags);
+      const point: TSDataPoint = {
+        metric: writeMetric,
+        value: val,
+        timestampNs: ts,
+        ...(tags.length > 0 ? { tags } : {}),
+      };
+      await client.timeSeries!.writePoint(point);
+      showToast("success", `Data point written for "${writeMetric}".`);
+      showWritePanel = false;
+
+      // Refresh: reload metrics list and current metric data
+      await loadMetrics();
+      if (selectedMetric !== null) {
+        await loadDataPoints(selectedMetric);
+      }
+    } catch (err: unknown) {
+      showToast("error", err instanceof Error ? err.message : String(err));
+    } finally {
+      writeLoading = false;
+    }
+  }
+
+  function requestDeleteMetric(metric: string): void {
+    deleteTarget = metric;
+  }
+
+  async function confirmDeleteMetric(): Promise<void> {
+    if (deleteTarget === null || client.timeSeries === null) return;
+    const metric = deleteTarget;
+    deleteTarget = null;
+    loading = true;
+    try {
+      await client.timeSeries!.deleteSeries({ metric });
+      showToast("success", `Deleted metric "${metric}"`);
+      if (selectedMetric === metric) {
+        backToMetrics();
+      }
+      await loadMetrics();
+    } catch (err: unknown) {
+      showToast("error", err instanceof Error ? err.message : String(err));
+    } finally {
+      loading = false;
+    }
+  }
+
+  function handlePointClick(event: RowClickEvent<TimeSeriesRow>): void {
+    selectedPoint = event.row;
+  }
+
+  async function handleRefresh(): Promise<void> {
+    await loadMetrics();
+    if (selectedMetric !== null) {
+      await loadDataPoints(selectedMetric);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Lifecycle
+  // ---------------------------------------------------------------------------
+
+  onMount(() => {
+    loadMetrics();
+  });
+</script>
+
+<PageHeader
+    title="TimeSeries"
+    description={selectedMetric !== null
+      ? `Browsing data points for "${selectedMetric}"`
+      : "Browse, write, and manage time series data"}
+    accentColor="#22d3ee"
+  >
+    {#snippet actions()}
+      <div class="flex items-center gap-2">
+        {#if selectedMetric !== null}
+          <button class="btn btn-ghost btn-sm" onclick={backToMetrics}>
+            Back to Metrics
+          </button>
+        {/if}
+        <button class="btn btn-ghost btn-sm" onclick={handleRefresh} disabled={loading || pointsLoading}>
+          {#if loading || pointsLoading}
+            <span class="loading loading-spinner loading-xs"></span>
+          {:else}
+            <RefreshCw class="h-4 w-4" />
+          {/if}
+          Refresh
+        </button>
+        <button class="btn btn-primary btn-sm" onclick={openWritePanel}>
+          <Plus class="h-4 w-4" />
+          Write
+        </button>
+      </div>
+    {/snippet}
+  </PageHeader>
+
+  {#if selectedMetric === null}
+    <!-- ===== Metrics Browser ===== -->
+
+    <!-- Search/Filter Bar -->
+    <div class="surface-panel mb-4 rounded-xl p-4">
+      <div class="flex items-center gap-3">
+        <div class="flex-1">
+          <div class="join w-full max-w-md">
+            <input
+              type="text"
+              class="input join-item input-bordered input-sm w-full font-mono"
+              placeholder="Filter by metric prefix..."
+              bind:value={prefixFilter}
+              onkeydown={(e) => e.key === "Enter" && loadMetrics()}
+            />
+            <button class="btn btn-sm join-item" onclick={loadMetrics} disabled={loading} aria-label="Search">
+              <Search class="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+        <div class="text-sm text-base-content/60">
+          {metrics.length} metrics
+        </div>
+      </div>
+    </div>
+
+    <!-- Metrics List -->
+    <div class="surface-panel rounded-xl overflow-hidden">
+      {#if metrics.length === 0 && !loading}
+        <div class="p-8">
+          <EmptyState
+            icon={TrendingUp as unknown as Component}
+            title="No metrics found"
+            description="Write your first data point to get started."
+          />
+        </div>
+      {:else}
+        <div class="divide-y divide-base-content/5">
+          {#each metrics as metric (metric)}
+            <div
+              class="flex items-center justify-between px-4 py-3 hover:bg-base-content/3 cursor-pointer transition-colors"
+              role="button"
+              tabindex="0"
+              onclick={() => selectMetric(metric)}
+              onkeydown={(e) => e.key === "Enter" && selectMetric(metric)}
+            >
+              <div class="flex items-center gap-3">
+                <TrendingUp class="h-4 w-4 text-base-content/40" />
+                <span class="font-mono text-sm">{metric}</span>
+              </div>
+              <div class="flex items-center gap-2">
+                <button
+                  class="btn btn-ghost btn-xs btn-square opacity-0 group-hover:opacity-100"
+                  onclick={(e: MouseEvent) => { e.stopPropagation(); requestDeleteMetric(metric); }}
+                  aria-label="Delete metric"
+                >
+                  <Trash2 class="h-3.5 w-3.5 text-error" />
+                </button>
+              </div>
+            </div>
+          {/each}
+        </div>
+      {/if}
+    </div>
+
+  {:else}
+    <!-- ===== Data Points Browser for Selected Metric ===== -->
+
+    <!-- Date Range Controls -->
+    <div class="surface-panel mb-4 rounded-xl p-4">
+      <div class="flex flex-wrap items-center gap-3">
+        <!-- Preset buttons -->
+        <div class="flex items-center gap-1">
+          <span class="text-sm text-base-content/60 mr-1">Range:</span>
+          {#each [
+            { label: "1h", ms: 3600_000 },
+            { label: "6h", ms: 21600_000 },
+            { label: "24h", ms: 86400_000 },
+            { label: "7d", ms: 604800_000 },
+            { label: "30d", ms: 2592000_000 },
+          ] as preset (preset.label)}
+            <button
+              class="btn btn-xs {rangeEndMs - rangeStartMs === preset.ms ? 'btn-primary' : 'btn-ghost'}"
+              onclick={() => setPresetRange(preset.ms)}
+            >
+              {preset.label}
+            </button>
+          {/each}
+        </div>
+
+        <div class="divider divider-horizontal mx-0"></div>
+
+        <!-- Custom date range inputs -->
+        <div class="flex items-center gap-2">
+          <input
+            type="datetime-local"
+            class="input input-bordered input-sm font-mono text-xs"
+            bind:value={rangeStartInput}
+          />
+          <span class="text-base-content/40">to</span>
+          <input
+            type="datetime-local"
+            class="input input-bordered input-sm font-mono text-xs"
+            bind:value={rangeEndInput}
+          />
+          <button
+            class="btn btn-sm btn-primary"
+            onclick={applyCustomRange}
+            disabled={pointsLoading}
+          >
+            <Search class="h-3.5 w-3.5" />
+            Query
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Chart / Table Toggle -->
+    {#if dataPoints.length > 0}
+      <div class="mb-4 flex items-center justify-between">
+        <div class="flex items-center gap-2">
+          <button
+            class="btn btn-sm {showChart ? 'btn-active' : 'btn-ghost'}"
+            onclick={() => (showChart = !showChart)}
+          >
+            <TrendingUp class="h-4 w-4" />
+            Chart
+          </button>
+          {#if showChart}
+            <div class="join ml-2">
+              <button
+                class="join-item btn btn-sm btn-square {chartType === 'line' ? 'btn-active' : ''}"
+                onclick={() => (chartType = "line")}
+                aria-label="Line chart"
+              >
+                <LineChart class="h-4 w-4" />
+              </button>
+              <button
+                class="join-item btn btn-sm btn-square {chartType === 'area' ? 'btn-active' : ''}"
+                onclick={() => (chartType = "area")}
+                aria-label="Area chart"
+              >
+                <AreaChart class="h-4 w-4" />
+              </button>
+              <button
+                class="join-item btn btn-sm btn-square {chartType === 'scatter' ? 'btn-active' : ''}"
+                onclick={() => (chartType = "scatter")}
+                aria-label="Scatter chart"
+              >
+                <ScatterChartIcon class="h-4 w-4" />
+              </button>
+            </div>
+          {/if}
+        </div>
+        <div class="text-sm text-base-content/60">
+          {dataPoints.length} data points
+        </div>
+      </div>
+    {/if}
+
+    <!-- Chart -->
+    {#if showChart && dataPoints.length > 0}
+      <div class="surface-panel mb-4 rounded-xl p-5">
+        <TimeSeriesChart
+          data={chartData}
+          {chartType}
+          height={280}
+          loading={pointsLoading}
+          accentColor="#22d3ee"
+        />
+      </div>
+    {/if}
+
+    <!-- Data Points Table -->
+    <CrudTable
+      title="Data Points"
+      data={dataPoints}
+      columns={pointColumns}
+      loading={pointsLoading}
+      showCreate={false}
+      showDelete={false}
+      onrowclick={handlePointClick}
+      rowKey={(row) => `${row.metric}-${row.timestampNs}`}
+      pageSize={10}
+      emptyMessage="No data points found"
+    />
+  {/if}
+
+<!-- Data Point Detail SlidePanel -->
+<SlidePanel
+  open={selectedPoint !== null}
+  title="Data Point"
+  onclose={() => (selectedPoint = null)}
+>
+  {#snippet children()}
+    {#if selectedPoint}
+      <div class="space-y-5">
+        <div>
+          <span class="text-sm font-medium text-base-content/70 block mb-1">Metric</span>
+          <div class="font-mono text-sm bg-base-200 rounded px-3 py-2">{selectedPoint.metric}</div>
+        </div>
+        <div>
+          <span class="text-sm font-medium text-base-content/70 block mb-1">Value</span>
+          <div class="font-mono text-sm bg-base-200 rounded px-3 py-2">{selectedPoint.value}</div>
+        </div>
+        <div>
+          <span class="text-sm font-medium text-base-content/70 block mb-1">Timestamp</span>
+          <div class="font-mono text-sm bg-base-200 rounded px-3 py-2">
+            {formatTimestamp(selectedPoint.timestampNs / 1_000_000)}
+          </div>
+          <div class="text-xs text-base-content/40 mt-1">{selectedPoint.timestampNs} ns</div>
+        </div>
+        {#if selectedPoint.tags.length > 0}
+          <div>
+            <span class="text-sm font-medium text-base-content/70 block mb-1">Tags</span>
+            <div class="flex flex-wrap gap-1">
+              {#each selectedPoint.tags as tag}
+                <span class="badge badge-sm badge-outline font-mono">
+                  {tag.key}={tag.value}
+                </span>
+              {/each}
+            </div>
+          </div>
+        {/if}
+      </div>
+    {/if}
+  {/snippet}
+</SlidePanel>
+
+<!-- Write Data Point SlidePanel -->
+<SlidePanel
+  open={showWritePanel}
+  title="Write Data Point"
+  onclose={() => (showWritePanel = false)}
+>
+  {#snippet children()}
+    <div class="space-y-5">
+      <label class="form-control w-full">
+        <div class="label"><span class="label-text">Metric</span></div>
+        <input
+          type="text"
+          class="input input-bordered w-full font-mono"
+          placeholder="cpu.usage"
+          bind:value={writeMetric}
+        />
+      </label>
+      <label class="form-control w-full">
+        <div class="label"><span class="label-text">Value</span></div>
+        <input
+          type="text"
+          class="input input-bordered w-full font-mono"
+          placeholder="42.5"
+          bind:value={writeValue}
+        />
+      </label>
+      <label class="form-control w-full">
+        <div class="label"><span class="label-text">Timestamp (ns)</span></div>
+        <input
+          type="text"
+          class="input input-bordered w-full font-mono"
+          placeholder="Leave empty for now"
+          bind:value={writeTimestamp}
+        />
+        <div class="label">
+          <span class="label-text-alt text-base-content/50">Unix nanoseconds. Empty uses current time.</span>
+        </div>
+      </label>
+      <label class="form-control w-full">
+        <div class="label"><span class="label-text">Tags</span></div>
+        <input
+          type="text"
+          class="input input-bordered w-full font-mono"
+          placeholder="host=node1,region=us-east"
+          bind:value={writeTags}
+        />
+        <div class="label">
+          <span class="label-text-alt text-base-content/50">Comma-separated key=value pairs.</span>
+        </div>
+      </label>
+    </div>
+  {/snippet}
+  {#snippet footer()}
+    <div class="flex justify-end gap-2">
+      <button class="btn btn-ghost" onclick={() => (showWritePanel = false)} disabled={writeLoading}>
+        Cancel
+      </button>
+      <button class="btn btn-primary" onclick={handleWrite} disabled={writeLoading}>
+        {#if writeLoading}
+          <span class="loading loading-spinner loading-sm"></span>
+        {/if}
+        Write
+      </button>
+    </div>
+  {/snippet}
+</SlidePanel>
+
+<!-- Delete confirmation modal -->
+<ConfirmModal
+  open={deleteTarget !== null}
+  title="Delete Metric"
+  message={`Are you sure you want to delete all data for "${deleteTarget ?? ""}"? This action cannot be undone.`}
+  confirmLabel="Delete"
+  variant="error"
+  onconfirm={confirmDeleteMetric}
+  oncancel={() => (deleteTarget = null)}
+/>

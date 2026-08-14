@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="320" viewBox="0 0 960 320" role="img" aria-labelledby="title desc">
+  <title id="title">QUICRaft DB project logo</title>
+  <desc id="desc">A stylized logo for QUICRaft DB combining a replicated database core, transport ring, and query pulse lines.</desc>
+  <defs>
+    <linearGradient id="panel" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#8a4b12"/>
+      <stop offset="55%" stop-color="#b46312"/>
+      <stop offset="100%" stop-color="#6f3b0f"/>
+    </linearGradient>
+    <linearGradient id="ring" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#d97706"/>
+      <stop offset="100%" stop-color="#f59e0b"/>
+    </linearGradient>
+    <linearGradient id="data" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fff1cf"/>
+      <stop offset="100%" stop-color="#ffd27a"/>
+    </linearGradient>
+    <linearGradient id="pulse" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#ffe9bc" stop-opacity="0.06"/>
+      <stop offset="50%" stop-color="#ffe9bc" stop-opacity="0.52"/>
+      <stop offset="100%" stop-color="#ffe9bc" stop-opacity="0.08"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="14" stdDeviation="12" flood-color="#b45309" flood-opacity="0.22"/>
+    </filter>
+  </defs>
+
+  <rect x="24" y="24" width="912" height="272" rx="36" fill="#f4faf9"/>
+
+  <g filter="url(#shadow)">
+    <rect x="48" y="48" width="224" height="224" rx="52" fill="url(#panel)"/>
+
+    <path d="M160 96
+             a64 64 0 1 1 -0.01 0"
+          fill="none"
+          stroke="url(#ring)"
+          stroke-width="16"
+          stroke-linecap="round"
+          stroke-dasharray="320 56"/>
+
+    <path d="M197 188
+             q18 10 29 28"
+          fill="none"
+          stroke="url(#ring)"
+          stroke-width="12"
+          stroke-linecap="round"/>
+
+    <circle cx="160" cy="96" r="11" fill="#ffe9bc"/>
+    <circle cx="223" cy="206" r="11" fill="#ffe9bc"/>
+    <circle cx="97" cy="206" r="11" fill="#ffe9bc"/>
+
+    <path d="M96 188
+             C120 174 138 168 160 168
+             C182 168 200 174 224 188"
+          fill="none"
+          stroke="url(#pulse)"
+          stroke-width="8"
+          stroke-linecap="round"/>
+    <path d="M88 202
+             C116 186 138 182 160 182
+             C182 182 204 186 232 202"
+          fill="none"
+          stroke="url(#pulse)"
+          stroke-width="8"
+          stroke-linecap="round"/>
+    <path d="M100 216
+             C123 205 141 200 160 200
+             C179 200 197 205 220 216"
+          fill="none"
+          stroke="url(#pulse)"
+          stroke-width="8"
+          stroke-linecap="round"/>
+
+    <g>
+      <rect x="122" y="122" width="76" height="18" rx="9" fill="url(#data)"/>
+      <rect x="122" y="146" width="76" height="18" rx="9" fill="url(#data)" opacity="0.92"/>
+      <rect x="122" y="170" width="76" height="18" rx="9" fill="url(#data)" opacity="0.84"/>
+
+      <circle cx="136" cy="131" r="3.5" fill="#b45309"/>
+      <circle cx="136" cy="155" r="3.5" fill="#b45309"/>
+      <circle cx="136" cy="179" r="3.5" fill="#b45309"/>
+
+      <path d="M148 131 h33" stroke="#b45309" stroke-width="4" stroke-linecap="round"/>
+      <path d="M148 155 h39" stroke="#b45309" stroke-width="4" stroke-linecap="round"/>
+      <path d="M148 179 h28" stroke="#b45309" stroke-width="4" stroke-linecap="round"/>
+    </g>
+  </g>
+
+  <g transform="translate(314 86)">
+    <text x="0" y="72" fill="#0c2230" font-size="72" font-weight="700" font-family="'Trebuchet MS', 'Segoe UI', sans-serif" letter-spacing="1">QUICRaft DB</text>
+    <text x="2" y="122" fill="#9a5311" font-size="26" font-weight="600" font-family="'Trebuchet MS', 'Segoe UI', sans-serif" letter-spacing="3">DISTRIBUTED KV DATABASE</text>
+    <path d="M2 144 h420" stroke="#ead8bb" stroke-width="4" stroke-linecap="round"/>
+    <text x="0" y="186" fill="#7c5a33" font-size="24" font-family="'Trebuchet MS', 'Segoe UI', sans-serif">
+      <tspan>MVCC</tspan>
+      <tspan dx="18">•</tspan>
+      <tspan dx="18">Transactions</tspan>
+      <tspan dx="18">•</tspan>
+      <tspan dx="18">Time series</tspan>
+      <tspan dx="18">•</tspan>
+      <tspan dx="18">Vector</tspan>
+    </text>
+  </g>
+</svg>

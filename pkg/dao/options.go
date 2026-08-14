@@ -34,7 +34,6 @@ const (
 	CodecProtoBuf CodecType = codec.ProtoBuf // Protocol Buffers (requires proto.Message)
 	CodecBSON     CodecType = codec.BSON     // BSON binary (MongoDB compatible)
 	CodecCBOR     CodecType = codec.CBOR     // CBOR binary (when available)
-	CodecAvro     CodecType = codec.Avro     // Avro binary (when available)
 )
 
 // Default configuration values.

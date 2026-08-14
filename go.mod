@@ -25,9 +25,9 @@ require (
 	github.com/go-chi/chi/v5 v5.3.0
 	github.com/go-sql-driver/mysql v1.9.3
 	github.com/jackc/pgx/v5 v5.10.0
-	github.com/jeremyhahn/go-codec v1.3.1
+	github.com/jeremyhahn/go-codec v1.4.0
 	github.com/jeremyhahn/go-objstore v0.2.1-alpha
-	github.com/jeremyhahn/go-quicraft v0.3.0-alpha
+	github.com/jeremyhahn/go-quicraft v0.3.1-alpha
 	github.com/jeroenrinzema/psql-wire v0.18.0
 	github.com/mark3labs/mcp-go v0.45.0
 	github.com/prometheus/client_golang v1.23.2
@@ -193,11 +193,10 @@ require (
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/snappy v1.0.0 // indirect
 	github.com/google/uuid v1.6.0
-	github.com/hamba/avro/v2 v2.31.0
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/invopop/jsonschema v0.13.0 // indirect
 	github.com/jchv/go-winloader v0.0.0-20250406163304-c1995be93bd1 // indirect
-	github.com/jeremyhahn/go-qrdb/sdk/go v0.1.0-alpha
+	github.com/jeremyhahn/go-qrdb/sdk/go v0.2.1-alpha
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/compress v1.18.4 // indirect
 	github.com/kr/pretty v0.3.1 // indirect

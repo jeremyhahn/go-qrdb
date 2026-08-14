@@ -140,7 +140,6 @@ All codecs supported by `go-codec` work transparently:
 | MsgPack | (always available) | Binary, compact |
 | BSON | (always available) | Binary, MongoDB-compatible |
 | CBOR | `codec_cbor` | Binary, IoT-friendly |
-| Avro | `codec_avro` | Binary, schema-based |
 | ProtoBuf | `codec_protobuf` | Binary, schema-based |
 
 ## Entity Registry

@@ -551,7 +551,7 @@ func TestOptimizedCodec_LargePayload_JSON(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // detect.go — probeCodecs (currently only JSON codec is registered under
-// codec_json+raft; probeableCodecs only includes protobuf and avro so
+// codec_json+raft; probeableCodecs only includes protobuf so
 // probeCodecs always returns ("", false) in this build.  The test
 // verifies the function path still executes without panic and that
 // DetectFormat falls through to FormatDetectionError for unknown binary

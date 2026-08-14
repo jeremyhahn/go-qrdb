@@ -60,8 +60,6 @@ func TestDetectFormat_Extensions(t *testing.T) {
 		{"data.msgpack", "msgpack"},
 		{"data.mp", "msgpack"},
 		{"data.bson", "bson"},
-		{"data.avro", "avro"},
-		{"data.avsc", "avro"},
 		{"data.zip", "zip"},
 		{"data.tar", "tar"},
 		{"data.tgz", "tar.gz"},
