@@ -240,7 +240,7 @@ func isEncfsFile(path string) (bool, error) {
 	defer func() { _ = f.Close() }()
 	hdr := make([]byte, len(encfsMagic))
 	n, err := io.ReadFull(f, hdr)
-	if err == io.EOF || err == io.ErrUnexpectedEOF {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 		return false, nil // too short to be encfs
 	}
 	if err != nil {

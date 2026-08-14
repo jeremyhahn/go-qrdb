@@ -27,6 +27,7 @@ import (
 
 const (
 	credentialScheme = "credential"
+	// #nosec G101 -- URI scheme prefix for indirect references, not a credential.
 	credentialPrefix = "credential://"
 )
 

@@ -130,13 +130,14 @@ func mergeParagraphs(paragraphs []string, minSize int) []string {
 	for _, para := range paragraphs {
 		paraLen := len([]rune(para))
 
-		if accumulator.Len() == 0 {
+		switch {
+		case accumulator.Len() == 0:
 			accumulator.WriteString(para)
-		} else if paraLen < minSize {
+		case paraLen < minSize:
 			// The current paragraph is small; append it to the accumulator.
 			accumulator.WriteString("\n\n")
 			accumulator.WriteString(para)
-		} else {
+		default:
 			// Current accumulated block is ready; flush and start fresh.
 			merged = append(merged, accumulator.String())
 			accumulator.Reset()

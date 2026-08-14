@@ -283,7 +283,6 @@ func TestVerify_MissingSegments(t *testing.T) {
 		{"two colons", "v1:argon2id:salt"},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			err := kdf.Verify([]byte("password"), tc.hash)

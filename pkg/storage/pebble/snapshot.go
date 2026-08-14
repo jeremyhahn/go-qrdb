@@ -15,6 +15,7 @@
 package pebble
 
 import (
+	"errors"
 	"sync/atomic"
 
 	"github.com/cockroachdb/pebble/v2"
@@ -45,7 +46,7 @@ func (s *pebbleSnapshot) Get(key []byte) ([]byte, error) {
 
 	value, closer, err := s.snap.Get(key)
 	if err != nil {
-		if err == pebble.ErrNotFound {
+		if errors.Is(err, pebble.ErrNotFound) {
 			return nil, nil
 		}
 		return nil, &storage.SnapshotError{Op: "get", Err: err}

@@ -404,7 +404,6 @@ func TestImportRootKey_ValidationErrors(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			follower := newFollowerBarrier(t)
 			err := follower.ImportRootKey(ctx, tc.key, Credentials{})
@@ -655,7 +654,6 @@ func TestImportSealedBlob_InvalidStructure(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			b := newFollowerBarrier(t)
 			if err := b.ImportSealedBlob(ctx, tc.blob); err != ErrImportSealedBlobInvalid {

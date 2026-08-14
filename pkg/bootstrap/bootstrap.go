@@ -180,10 +180,11 @@ func BootstrapSystem(ctx context.Context, cfg SystemConfig, deps Dependencies) (
 	// already unsealed we MUST NOT demand a passphrase or re-initialize — we
 	// skip both credentialsForStrategy and Initialize and proceed to first-boot.
 	system := deps.Barriers.SystemBarrier()
-	if !system.IsSealed() {
+	switch {
+	case !system.IsSealed():
 		result.BarrierAlreadyInitialized = true
 		deps.Logger.Info("bootstrap: system barrier already initialized")
-	} else if strategy == StrategyShamir {
+	case strategy == StrategyShamir:
 		// Shamir barrier initialization is the ceremony's job (multiple SOs),
 		// never inline here. A still-sealed shamir barrier means the ceremony
 		// has not completed; first-boot below would fail against a sealed data
@@ -191,7 +192,7 @@ func BootstrapSystem(ctx context.Context, cfg SystemConfig, deps Dependencies) (
 		// initialize it and we do NOT demand a single passphrase. Proceed so
 		// first-boot runs once the ceremony has unsealed the barrier.
 		deps.Logger.Info("bootstrap: shamir system barrier sealed; deferring to ceremony for initialization")
-	} else {
+	default:
 		// Sealed AND uninitialized for none/passphrase: compute credentials
 		// (passphrase strategy demands a non-empty passphrase) and initialize.
 		creds, credErr := credentialsForStrategy(strategy, cfg.Passphrase)

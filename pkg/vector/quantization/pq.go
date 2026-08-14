@@ -27,8 +27,6 @@ import (
 const (
 	// defaultMaxKMeansIterations is the default maximum number of k-means iterations.
 	defaultMaxKMeansIterations = 25
-	// defaultKMeansEpsilon is the convergence threshold for k-means.
-	defaultKMeansEpsilon = 1e-6
 )
 
 // PQQuantizer provides high compression by splitting vectors into M sub-spaces
@@ -295,6 +293,7 @@ func kmeansCluster(vectors [][]float32, k, maxIter int) ([][]float32, error) {
 	// k-means++ initialization
 	centroids := make([][]float32, k)
 	centroids[0] = make([]float32, dim)
+	// #nosec G404 -- k-means++ seeding; statistical sampling, not security.
 	copy(centroids[0], vectors[rand.IntN(n)])
 
 	distances := make([]float32, n)
@@ -316,10 +315,12 @@ func kmeansCluster(vectors [][]float32, k, maxIter int) ([][]float32, error) {
 		if totalDist == 0 {
 			// All points identical to existing centroids; pick randomly.
 			centroids[c] = make([]float32, dim)
+			// #nosec G404 -- k-means++ seeding; statistical sampling, not security.
 			copy(centroids[c], vectors[rand.IntN(n)])
 			continue
 		}
 
+		// #nosec G404 -- k-means++ weighted selection; statistical sampling, not security.
 		threshold := rand.Float64() * totalDist
 		var cumulative float64
 		selected := n - 1

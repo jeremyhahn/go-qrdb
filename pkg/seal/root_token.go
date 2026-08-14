@@ -24,7 +24,8 @@ import (
 )
 
 const (
-	rootTokenSize     = 32
+	rootTokenSize = 32
+	// #nosec G101 -- HKDF/HMAC domain-separation label, not a credential.
 	rootTokenHMACInfo = "go-qrdb/root-token/v1"
 )
 

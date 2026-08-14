@@ -17,6 +17,7 @@ package pebble
 import (
 	"bytes"
 	"context"
+	"errors"
 	"sync/atomic"
 
 	"github.com/cockroachdb/pebble/v2"
@@ -110,7 +111,7 @@ func (s *PebbleStorage) Get(key []byte) ([]byte, error) {
 
 	value, closer, err := s.db.Get(key)
 	if err != nil {
-		if err == pebble.ErrNotFound {
+		if errors.Is(err, pebble.ErrNotFound) {
 			return nil, nil
 		}
 		return nil, &storage.OpError{Op: "get", Err: err}
@@ -231,7 +232,7 @@ func (s *PebbleStorage) Exists(key []byte) (bool, error) {
 
 	_, closer, err := s.db.Get(key)
 	if err != nil {
-		if err == pebble.ErrNotFound {
+		if errors.Is(err, pebble.ErrNotFound) {
 			return false, nil
 		}
 		return false, &storage.OpError{Op: "exists", Err: err}

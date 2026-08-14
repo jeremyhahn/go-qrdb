@@ -149,7 +149,7 @@ func (m *NodeStoreMigration) Run(ctx context.Context, opts seal.MigrationOptions
 
 	// --- Copy phase: re-encrypt each store into a keyed sibling. ----------
 	j.Phase = seal.PhaseCopying
-	if err = m.journalStore().CheckpointMigration(ctx, j); err != nil {
+	if err := m.journalStore().CheckpointMigration(ctx, j); err != nil {
 		return err
 	}
 	for _, dir := range m.StoreDirs {
@@ -163,14 +163,14 @@ func (m *NodeStoreMigration) Run(ctx context.Context, opts seal.MigrationOptions
 			return err
 		}
 		j.Stores[dir] = true
-		if err = m.journalStore().CheckpointMigration(ctx, j); err != nil {
+		if err := m.journalStore().CheckpointMigration(ctx, j); err != nil {
 			return err
 		}
 	}
 
 	// --- Verify phase: prove no data loss before the point of no return. --
 	j.Phase = seal.PhaseVerifying
-	if err = m.journalStore().CheckpointMigration(ctx, j); err != nil {
+	if err := m.journalStore().CheckpointMigration(ctx, j); err != nil {
 		return err
 	}
 	for _, dir := range m.StoreDirs {
@@ -182,7 +182,7 @@ func (m *NodeStoreMigration) Run(ctx context.Context, opts seal.MigrationOptions
 
 	// --- Commit phase: point of no return; recovery rolls FORWARD. --------
 	j.Phase = seal.PhaseCommitting
-	if err = m.journalStore().CheckpointMigration(ctx, j); err != nil {
+	if err := m.journalStore().CheckpointMigration(ctx, j); err != nil {
 		return err
 	}
 	// 1. Swap each keyed copy into place, keeping a backup of the original.
@@ -193,7 +193,7 @@ func (m *NodeStoreMigration) Run(ctx context.Context, opts seal.MigrationOptions
 		}
 	}
 	// 2. Adopt the keyed root key as the canonical root key.
-	if err = m.journalStore().AdoptMigratedRootKey(ctx, m.Target); err != nil {
+	if err := m.journalStore().AdoptMigratedRootKey(ctx, m.Target); err != nil {
 		return err
 	}
 	// 3. Remove the pre-migration backups now that the commit is durable.
@@ -203,10 +203,10 @@ func (m *NodeStoreMigration) Run(ctx context.Context, opts seal.MigrationOptions
 
 	// --- Done. -----------------------------------------------------------
 	j.Phase = seal.PhaseComplete
-	if err = m.journalStore().CheckpointMigration(ctx, j); err != nil {
+	if err := m.journalStore().CheckpointMigration(ctx, j); err != nil {
 		return err
 	}
-	if err = m.journalStore().FinishMigration(ctx); err != nil {
+	if err := m.journalStore().FinishMigration(ctx); err != nil {
 		return err
 	}
 	if m.Logger != nil {

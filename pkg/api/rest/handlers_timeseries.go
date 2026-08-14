@@ -805,7 +805,7 @@ var aggFuncMap = map[string]timeseries.AggFunc{
 }
 
 // parseTags parses a comma-separated list of key=value pairs into a map.
-// Example: "region=us-east,env=prod" -> {"region": "us-east", "env": "prod"}
+// Example: "region=us-east,env=prod" -> {"region": "us-east", "env": "prod"}.
 func parseTags(s string) map[string]string {
 	tags := make(map[string]string)
 	pairs := strings.Split(s, ",")

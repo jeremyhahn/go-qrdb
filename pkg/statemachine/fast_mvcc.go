@@ -27,7 +27,7 @@ import (
 // handleMVCCPut decodes an MVCC Put command and delegates to the configured
 // MVCCStore. Returns the Raft revision as the result value.
 //
-// Payload format: [keyLen:2 LE][key][leaseID:8 LE][value]
+// Payload format: [keyLen:2 LE][key][leaseID:8 LE][value].
 func (f *FastStateMachine) handleMVCCPut(payload []byte, revision uint64) (sm.Result, error) {
 	if f.mvccStore == nil {
 		return sm.Result{}, &ServiceNotConfiguredError{Service: "mvcc"}
@@ -48,7 +48,7 @@ func (f *FastStateMachine) handleMVCCPut(payload []byte, revision uint64) (sm.Re
 // handleMVCCDelete decodes an MVCC Delete command and delegates to the
 // configured MVCCStore. Returns the Raft revision as the result value.
 //
-// Payload format: [keyLen:2 LE][key]
+// Payload format: [keyLen:2 LE][key].
 func (f *FastStateMachine) handleMVCCDelete(payload []byte, revision uint64) (sm.Result, error) {
 	if f.mvccStore == nil {
 		return sm.Result{}, &ServiceNotConfiguredError{Service: "mvcc"}
@@ -71,7 +71,7 @@ func (f *FastStateMachine) handleMVCCDelete(payload []byte, revision uint64) (sm
 // the Update path ensures linearizability. Returns the Raft revision as the
 // result value.
 //
-// Payload format: [startLen:2 LE][start][endLen:2 LE][end][revision:8 LE][limit:8 LE][flags:1]
+// Payload format: [startLen:2 LE][start][endLen:2 LE][end][revision:8 LE][limit:8 LE][flags:1].
 func (f *FastStateMachine) handleMVCCRange(payload []byte, revision uint64) (sm.Result, error) {
 	if f.mvccStore == nil {
 		return sm.Result{}, &ServiceNotConfiguredError{Service: "mvcc"}
@@ -92,7 +92,7 @@ func (f *FastStateMachine) handleMVCCRange(payload []byte, revision uint64) (sm.
 // handleMVCCCompact decodes an MVCC Compact command and delegates to the
 // configured MVCCStore. Returns the Raft revision as the result value.
 //
-// Payload format: [revision:8 LE]
+// Payload format: [revision:8 LE].
 func (f *FastStateMachine) handleMVCCCompact(payload []byte, revision uint64) (sm.Result, error) {
 	if f.mvccStore == nil {
 		return sm.Result{}, &ServiceNotConfiguredError{Service: "mvcc"}
@@ -115,7 +115,7 @@ func (f *FastStateMachine) handleMVCCCompact(payload []byte, revision uint64) (s
 // MVCCStore. Returns the transaction revision as the result value and
 // encodes the succeeded flag into Result.Data.
 //
-// Payload format: [compareCount:2 LE][compares...][successCount:2 LE][successOps...][failureCount:2 LE][failureOps...]
+// Payload format: [compareCount:2 LE][compares...][successCount:2 LE][successOps...][failureCount:2 LE][failureOps...].
 func (f *FastStateMachine) handleTransaction(payload []byte, _ uint64) (sm.Result, error) {
 	if f.mvccStore == nil {
 		return sm.Result{}, &ServiceNotConfiguredError{Service: "mvcc"}
@@ -192,7 +192,6 @@ func (f *FastStateMachine) handleTransaction(payload []byte, _ uint64) (sm.Resul
 //   - (nil, false, nil) when the query is not an MVCC type
 func (f *FastStateMachine) lookupMVCC(query interface{}) (interface{}, bool, error) {
 	switch q := query.(type) {
-
 	case MVCCGetQuery:
 		if f.mvccStore == nil {
 			return nil, true, &ServiceNotConfiguredError{Service: "mvcc"}

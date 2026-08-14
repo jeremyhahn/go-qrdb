@@ -29,7 +29,7 @@ import (
 // configured LeaseManager. Returns the assigned lease ID as the result
 // value.
 //
-// Payload format: [ttl:8 LE]
+// Payload format: [ttl:8 LE].
 func (r *RegularStateMachine) handleLeaseGrant(payload []byte, _ uint64) (sm.Result, error) {
 	if r.leaseManager == nil {
 		return sm.Result{}, &ServiceNotConfiguredError{Service: "lease"}
@@ -52,7 +52,7 @@ func (r *RegularStateMachine) handleLeaseGrant(payload []byte, _ uint64) (sm.Res
 // configured LeaseManager. Returns the current revision as the result
 // value.
 //
-// Payload format: [leaseID:8 LE]
+// Payload format: [leaseID:8 LE].
 func (r *RegularStateMachine) handleLeaseRevoke(payload []byte, revision uint64) (sm.Result, error) {
 	if r.leaseManager == nil {
 		return sm.Result{}, &ServiceNotConfiguredError{Service: "lease"}
@@ -74,7 +74,7 @@ func (r *RegularStateMachine) handleLeaseRevoke(payload []byte, revision uint64)
 // to the configured LeaseManager. Returns the current revision as the
 // result value.
 //
-// Payload format: [leaseID:8 LE]
+// Payload format: [leaseID:8 LE].
 func (r *RegularStateMachine) handleLeaseKeepAlive(payload []byte, revision uint64) (sm.Result, error) {
 	if r.leaseManager == nil {
 		return sm.Result{}, &ServiceNotConfiguredError{Service: "lease"}

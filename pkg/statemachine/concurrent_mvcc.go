@@ -158,7 +158,6 @@ func (c *ConcurrentStateMachine) handleTransaction(payload []byte, _ uint64) (sm
 
 func (c *ConcurrentStateMachine) concurrentLookupMVCC(query interface{}) (interface{}, bool, error) {
 	switch q := query.(type) {
-
 	case MVCCGetQuery:
 		if c.mvccStore == nil {
 			return nil, true, &ServiceNotConfiguredError{Service: "mvcc"}

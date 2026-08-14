@@ -28,7 +28,7 @@ import (
 // handleTSWrite decodes a Time-Series Write command and delegates to the
 // configured TimeSeriesStore. Returns the Raft revision on success.
 //
-// Payload format: [metricLen:2 LE][metric][timestamp:8 LE][value:8 LE float64][tagCount:2 LE][tags...]
+// Payload format: [metricLen:2 LE][metric][timestamp:8 LE][value:8 LE float64][tagCount:2 LE][tags...].
 func (f *FastStateMachine) handleTSWrite(payload []byte, revision uint64) (sm.Result, error) {
 	if f.tsStore == nil {
 		return sm.Result{}, &ServiceNotConfiguredError{Service: "timeseries"}
@@ -49,7 +49,7 @@ func (f *FastStateMachine) handleTSWrite(payload []byte, revision uint64) (sm.Re
 // handleTSWriteBatch decodes a Time-Series WriteBatch command and delegates
 // to the configured TimeSeriesStore. Returns the Raft revision on success.
 //
-// Payload format: [pointCount:2 LE][points...]
+// Payload format: [pointCount:2 LE][points...].
 func (f *FastStateMachine) handleTSWriteBatch(payload []byte, revision uint64) (sm.Result, error) {
 	if f.tsStore == nil {
 		return sm.Result{}, &ServiceNotConfiguredError{Service: "timeseries"}
@@ -82,7 +82,7 @@ func (f *FastStateMachine) handleTSWriteBatch(payload []byte, revision uint64) (
 // TSWrite; only the op code differs so the state machine can apply
 // validation before persisting.
 //
-// Payload format: [metricLen:2 LE][metric][timestamp:8 LE][value:8 LE float64][tagCount:2 LE][tags...]
+// Payload format: [metricLen:2 LE][metric][timestamp:8 LE][value:8 LE float64][tagCount:2 LE][tags...].
 func (f *FastStateMachine) handleTSWritePoint(payload []byte, revision uint64) (sm.Result, error) {
 	if f.tsStore == nil {
 		return sm.Result{}, &ServiceNotConfiguredError{Service: "timeseries"}
@@ -104,7 +104,7 @@ func (f *FastStateMachine) handleTSWritePoint(payload []byte, revision uint64) (
 // delegates to the configured TimeSeriesStore. Returns the Raft revision
 // on success.
 //
-// Payload format: [metricLen:2 LE][metric][startNs:8 LE][endNs:8 LE][tagCount:2 LE][tags...]
+// Payload format: [metricLen:2 LE][metric][startNs:8 LE][endNs:8 LE][tagCount:2 LE][tags...].
 func (f *FastStateMachine) handleTSDeleteSeries(payload []byte, revision uint64) (sm.Result, error) {
 	if f.tsStore == nil {
 		return sm.Result{}, &ServiceNotConfiguredError{Service: "timeseries"}
@@ -126,7 +126,7 @@ func (f *FastStateMachine) handleTSDeleteSeries(payload []byte, revision uint64)
 // delegates to the configured TimeSeriesStore. Returns the Raft revision
 // on success.
 //
-// Payload format: [metricLen:2 LE][metric][durationNs:8 LE][resolutionNs:8 LE][aggregation:1]
+// Payload format: [metricLen:2 LE][metric][durationNs:8 LE][resolutionNs:8 LE][aggregation:1].
 func (f *FastStateMachine) handleTSSetRetention(payload []byte, revision uint64) (sm.Result, error) {
 	if f.tsStore == nil {
 		return sm.Result{}, &ServiceNotConfiguredError{Service: "timeseries"}
@@ -153,7 +153,6 @@ func (f *FastStateMachine) handleTSSetRetention(payload []byte, revision uint64)
 // (nil, false, nil) if the query is not a time-series type.
 func (f *FastStateMachine) lookupTimeSeries(query interface{}) (interface{}, bool, error) {
 	switch q := query.(type) {
-
 	// --- TSQueryRequest (struct) ---
 	case timeseries.TSQueryRequest:
 		if f.tsStore == nil {

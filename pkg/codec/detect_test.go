@@ -72,7 +72,6 @@ func TestDetectFormat_Extensions(t *testing.T) {
 		{"data.protobuf", "protobuf"},
 	}
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.filename, func(t *testing.T) {
 			got, err := DetectFormat(tc.filename, nil)
 			if err != nil {

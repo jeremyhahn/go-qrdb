@@ -232,7 +232,7 @@ func isIndexResolutionError(err error) bool {
 func primaryKeyIndexOf(def *service.TableDef) service.TableIndex {
 	cols := make([]service.IndexCol, len(def.PrimaryKey))
 	for i, pk := range def.PrimaryKey {
-		cols[i] = service.IndexCol{Name: pk.Name, PrefixLength: pk.PrefixLength}
+		cols[i] = service.IndexCol(pk)
 	}
 	return service.TableIndex{Name: primaryIndexName, Columns: cols, Unique: true}
 }

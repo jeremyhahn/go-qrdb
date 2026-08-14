@@ -365,11 +365,12 @@ func (s *Storage) QueryRich(_ context.Context, req *QueryRequest) (*QueryResult,
 	}
 
 	if req.Aggregation != AggNone {
-		if len(req.GroupBy) > 0 {
+		switch {
+		case len(req.GroupBy) > 0:
 			result.GroupedResults = groupAndAggregate(points, req.GroupBy, req.Aggregation, req.Interval, req.Percentile)
-		} else if req.Interval > 0 {
+		case req.Interval > 0:
 			result.Points = downsample(points, req.Interval, req.Aggregation, req.Percentile)
-		} else {
+		default:
 			value := aggregatePoints(points, req.Aggregation, req.Percentile)
 			result.AggregatedValue = &value
 		}

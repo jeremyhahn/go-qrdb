@@ -284,6 +284,8 @@ func (s *Server) handleBarrierEnableEncryption(_ context.Context, payload []byte
 	// of this request's lifetime.
 	migrator := s.encMigrator
 	resultCh := make(chan error, 1)
+	// #nosec G118 -- detaching from the request context is the point: the
+	// migration must survive the response returning.
 	go func() {
 		resultCh <- migrator.EnableEncryption(context.Background(), scope, opts)
 	}()

@@ -897,7 +897,7 @@ func parseTar(r io.Reader, skipHeader bool) ([]map[string]string, error) {
 	var allRecords []map[string]string
 	for {
 		header, err := tarReader.Next()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {

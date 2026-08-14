@@ -40,11 +40,11 @@ func docMetaKVKey(namespace, docID string) string {
 // and chunk index using FNV-64a hashing.
 func chunkVectorID(namespace, docID string, chunkIdx int) uint64 {
 	h := fnv.New64a()
-	h.Write([]byte(namespace))
-	h.Write([]byte{0})
-	h.Write([]byte(docID))
-	h.Write([]byte{0})
-	h.Write([]byte(strconv.Itoa(chunkIdx)))
+	_, _ = h.Write([]byte(namespace))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(docID))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(strconv.Itoa(chunkIdx)))
 	return h.Sum64()
 }
 

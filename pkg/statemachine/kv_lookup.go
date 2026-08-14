@@ -185,7 +185,6 @@ func (k *KVStateMachine) lookupLease(query interface{}) (interface{}, bool, erro
 
 func (k *KVStateMachine) lookupMVCC(query interface{}) (interface{}, bool, error) {
 	switch q := query.(type) {
-
 	case MVCCGetQuery:
 		if k.mvccStore == nil {
 			return nil, true, &ServiceNotConfiguredError{Service: "mvcc"}
@@ -267,7 +266,6 @@ func (k *KVStateMachine) lookupMVCC(query interface{}) (interface{}, bool, error
 
 func (k *KVStateMachine) lookupTimeSeries(query interface{}) (interface{}, bool, error) {
 	switch q := query.(type) {
-
 	case timeseries.TSQueryRequest:
 		if k.tsStore == nil {
 			return nil, true, &ServiceNotConfiguredError{Service: "timeseries"}

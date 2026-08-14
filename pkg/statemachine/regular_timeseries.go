@@ -141,7 +141,6 @@ func (r *RegularStateMachine) handleTSSetRetention(payload []byte, revision uint
 // (nil, false, nil) if the query is not a time-series type.
 func (r *RegularStateMachine) lookupTimeSeries(query interface{}) (interface{}, bool, error) {
 	switch q := query.(type) {
-
 	case timeseries.TSQueryRequest:
 		if r.tsStore == nil {
 			return nil, true, &ServiceNotConfiguredError{Service: "timeseries"}

@@ -779,7 +779,7 @@ func (s *MVCCKVService) ListEntities(ctx context.Context, req *ListEntitiesReque
 
 	prefix := entityPrefix(req.EntityType)
 	if req.Prefix != "" {
-		prefix = prefix + req.Prefix
+		prefix += req.Prefix
 	}
 
 	allKeys, err := s.List(ctx, prefix)

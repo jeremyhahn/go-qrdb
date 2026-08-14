@@ -29,7 +29,7 @@ import (
 // configured LeaseManager. Returns the assigned lease ID as the result
 // value.
 //
-// Payload format: [ttl:8 LE]
+// Payload format: [ttl:8 LE].
 func (f *FastStateMachine) handleLeaseGrant(payload []byte, _ uint64) (sm.Result, error) {
 	if f.leaseManager == nil {
 		return sm.Result{}, &ServiceNotConfiguredError{Service: "lease"}
@@ -52,7 +52,7 @@ func (f *FastStateMachine) handleLeaseGrant(payload []byte, _ uint64) (sm.Result
 // configured LeaseManager. Returns the current revision as the result
 // value.
 //
-// Payload format: [leaseID:8 LE]
+// Payload format: [leaseID:8 LE].
 func (f *FastStateMachine) handleLeaseRevoke(payload []byte, revision uint64) (sm.Result, error) {
 	if f.leaseManager == nil {
 		return sm.Result{}, &ServiceNotConfiguredError{Service: "lease"}
@@ -74,7 +74,7 @@ func (f *FastStateMachine) handleLeaseRevoke(payload []byte, revision uint64) (s
 // to the configured LeaseManager. Returns the current revision as the
 // result value.
 //
-// Payload format: [leaseID:8 LE]
+// Payload format: [leaseID:8 LE].
 func (f *FastStateMachine) handleLeaseKeepAlive(payload []byte, revision uint64) (sm.Result, error) {
 	if f.leaseManager == nil {
 		return sm.Result{}, &ServiceNotConfiguredError{Service: "lease"}

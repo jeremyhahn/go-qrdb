@@ -16,6 +16,7 @@ package grpc
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"google.golang.org/grpc"
@@ -171,21 +172,29 @@ func mapAuthFactorGRPCError(err error) error {
 	if err == nil {
 		return nil
 	}
-	switch err.(type) {
-	case *authfactors.EnrollmentNotFoundError, *authfactors.FactorNotFoundError:
+	var (
+		enrollmentNotFound  *authfactors.EnrollmentNotFoundError
+		factorNotFound      *authfactors.FactorNotFoundError
+		enrollmentInvalid   *authfactors.EnrollmentInvalidError
+		enrollmentRevoked   *authfactors.EnrollmentRevokedError
+		challengeExpired    *authfactors.ChallengeExpiredError
+		verificationFailed  *authfactors.VerificationFailedError
+		hardwareUnavailable *authfactors.HardwareUnavailableError
+	)
+	switch {
+	case errors.As(err, &enrollmentNotFound), errors.As(err, &factorNotFound):
 		return status.Error(codes.NotFound, err.Error())
-	case *authfactors.EnrollmentInvalidError:
+	case errors.As(err, &enrollmentInvalid):
 		return status.Error(codes.InvalidArgument, err.Error())
-	case *authfactors.EnrollmentRevokedError, *authfactors.ChallengeExpiredError:
+	case errors.As(err, &enrollmentRevoked), errors.As(err, &challengeExpired):
 		return status.Error(codes.FailedPrecondition, err.Error())
-	case *authfactors.VerificationFailedError:
+	case errors.As(err, &verificationFailed):
 		return status.Error(codes.Unauthenticated, err.Error())
-	case *authfactors.HardwareUnavailableError:
+	case errors.As(err, &hardwareUnavailable):
 		return status.Error(codes.Unavailable, err.Error())
+	case errors.Is(err, authfactors.ErrFactorDisabled):
+		return status.Error(codes.Unimplemented, err.Error())
 	default:
-		if err == authfactors.ErrFactorDisabled {
-			return status.Error(codes.Unimplemented, err.Error())
-		}
 		return status.Error(codes.Internal, err.Error())
 	}
 }

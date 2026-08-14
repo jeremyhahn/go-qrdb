@@ -34,21 +34,27 @@ var (
 	buildDate = "unknown"
 )
 
-// main is the entry point for the qrdbd daemon. It is intentionally excluded
-// from unit test coverage: Go's testing binary replaces main() at link time,
-// making it unreachable from any test. Integration tests exercise the full
-// command surface via cobra subcommands instead.
+// main is the entry point for the qrdbd daemon. It holds nothing but the
+// os.Exit call so that every deferred cleanup in run — above all the mlocked
+// memory wipe — actually runs before the process leaves.
+func main() {
+	os.Exit(run())
+}
+
+// run is the daemon body and returns the process exit code. It is intentionally
+// excluded from unit test coverage: integration tests exercise the full command
+// surface via cobra subcommands instead.
 //
 // The first call is secure.EnablePurge() — it arms the secure subsystem
 // so the deferred Purge below can run, WITHOUT installing memguard's
 // process signal handler. qrdbd owns its own signal handling: runStart
 // uses signal.NotifyContext(SIGINT, SIGTERM) to drive a graceful
-// shutdown and then returns nil, so cobra returns nil and main exits 0 —
+// shutdown and then returns nil, so cobra returns nil and run returns 0 —
 // the behavior systemd/docker/k8s expect on SIGTERM. (memguard's
 // CatchSignal would instead race that path and hard os.Exit(1).) The
 // matching deferred secure.Purge() synchronously wipes mlocked memory on
 // every orderly exit path.
-func main() {
+func run() int {
 	secure.EnablePurge()
 	defer func() {
 		if err := secure.Purge(); err != nil {
@@ -69,8 +75,9 @@ func main() {
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }
 
 func newVersionCmd() *cobra.Command {

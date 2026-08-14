@@ -292,7 +292,7 @@ func (c *ConcurrentStateMachine) PrepareSnapshot() (interface{}, error) {
 // SaveSnapshot serializes the snapshot context captured by PrepareSnapshot
 // to the writer.
 // Format: [entryCount:4 LE][entries...].
-// Each entry: [keyLen:4 LE][key][valueLen:4 LE][value]
+// Each entry: [keyLen:4 LE][key][valueLen:4 LE][value].
 func (c *ConcurrentStateMachine) SaveSnapshot(_ context.Context, snapshotCtx interface{}, w io.Writer, stopper <-chan struct{}) error {
 	data, ok := snapshotCtx.(map[string][]byte)
 	if !ok {
@@ -541,10 +541,8 @@ func (c *ConcurrentStateMachine) lookupConcurrentPrefix(pq *PrefixQuery) (interf
 			}
 			if v == nil {
 				delete(result, k)
-			} else {
-				if len(result) < limit {
-					result[k] = v
-				}
+			} else if len(result) < limit {
+				result[k] = v
 			}
 		}
 		s.mu.RUnlock()
@@ -687,7 +685,7 @@ func (c *ConcurrentStateMachine) clearStorage() error {
 // ---------------------------------------------------------------------------
 
 // handlePut decodes a KV Put command and writes the key-value pair.
-// Payload format: [keyLen:2 LE][key][value]
+// Payload format: [keyLen:2 LE][key][value].
 func (c *ConcurrentStateMachine) handlePut(payload []byte, revision uint64) (sm.Result, error) {
 	if len(payload) < 2 {
 		return sm.Result{}, &IncompleteDataError{Reason: "put: payload too short"}
@@ -712,7 +710,7 @@ func (c *ConcurrentStateMachine) handlePut(payload []byte, revision uint64) (sm.
 }
 
 // handleDelete decodes a KV Delete command and removes the key.
-// Payload format: [keyLen:2 LE][key]
+// Payload format: [keyLen:2 LE][key].
 func (c *ConcurrentStateMachine) handleDelete(payload []byte, revision uint64) (sm.Result, error) {
 	if len(payload) < 2 {
 		return sm.Result{}, &IncompleteDataError{Reason: "delete: payload too short"}
@@ -733,7 +731,7 @@ func (c *ConcurrentStateMachine) handleDelete(payload []byte, revision uint64) (
 }
 
 // handleBatch decodes and applies a batch of operations atomically.
-// Payload format: [opCount:2 LE][ops...]
+// Payload format: [opCount:2 LE][ops...].
 func (c *ConcurrentStateMachine) handleBatch(payload []byte, revision uint64) (sm.Result, error) {
 	ops, err := protocol.DecodeBatch(payload)
 	if err != nil {

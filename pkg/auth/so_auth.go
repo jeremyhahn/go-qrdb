@@ -36,7 +36,7 @@ import (
 
 const (
 	// soPINCommitPrefix is the KV key prefix for hash-committed SO PINs.
-	// Full key: __sys:so-pin-commit/{tenantID}
+	// Full key: __sys:so-pin-commit/{tenantID}.
 	soPINCommitPrefix = "__sys:so-pin-commit/"
 
 	// envGOFIPS140 is the environment variable that controls FIPS mode.

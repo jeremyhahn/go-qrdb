@@ -16,7 +16,6 @@
 package quantization
 
 import (
-	"sync"
 	"sync/atomic"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/vector/hnsw"
@@ -32,7 +31,6 @@ type SQ8Quantizer struct {
 	maxs       []float32 // per-dimension maximum values
 	scales     []float32 // per-dimension scale = 255 / (max - min)
 	calibrated atomic.Bool
-	mu         sync.RWMutex // protects calibration state only
 }
 
 // NewSQ8Quantizer creates a new SQ8Quantizer for vectors of the given dimensionality.

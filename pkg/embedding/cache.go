@@ -95,7 +95,7 @@ func (c *Cache) Get(model, text string) ([]float32, bool) {
 	k := cacheKey(model, text)
 
 	c.mu.RLock()
-	entry, ok := c.items[k]
+	_, ok := c.items[k]
 	c.mu.RUnlock()
 
 	if !ok {
@@ -107,7 +107,7 @@ func (c *Cache) Get(model, text string) ([]float32, bool) {
 	c.mu.Lock()
 	// Re-check presence; another goroutine may have evicted this entry between
 	// the RUnlock and Lock.
-	entry, ok = c.items[k]
+	entry, ok := c.items[k]
 	if !ok {
 		c.mu.Unlock()
 		c.misses.Add(1)

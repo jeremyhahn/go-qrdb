@@ -263,7 +263,7 @@ func (f *FastStateMachine) Lookup(_ context.Context, query interface{}) (interfa
 
 // SaveSnapshot serializes the in-memory cache to the writer.
 // Format: [entryCount:4 LE][entries...].
-// Each entry: [keyLen:4 LE][key][valueLen:4 LE][value]
+// Each entry: [keyLen:4 LE][key][valueLen:4 LE][value].
 func (f *FastStateMachine) SaveSnapshot(_ context.Context, w io.Writer, stopper <-chan struct{}) error {
 	// Collect all non-tombstoned entries from cache.
 	type entry struct {
@@ -524,10 +524,8 @@ func (f *FastStateMachine) lookupPrefix(pq *PrefixQuery) (interface{}, error) {
 			if v == nil {
 				// Tombstone: remove from result.
 				delete(result, k)
-			} else {
-				if len(result) < limit {
-					result[k] = v
-				}
+			} else if len(result) < limit {
+				result[k] = v
 			}
 		}
 		s.mu.RUnlock()
@@ -666,7 +664,7 @@ func (f *FastStateMachine) cacheDelete(key string) {
 // ---------------------------------------------------------------------------
 
 // handlePut decodes a KV Put command and writes the key-value pair.
-// Payload format: [keyLen:2 LE][key][value]
+// Payload format: [keyLen:2 LE][key][value].
 func (f *FastStateMachine) handlePut(payload []byte, revision uint64) (sm.Result, error) {
 	if len(payload) < 2 {
 		return sm.Result{}, &IncompleteDataError{Reason: "put: payload too short"}
@@ -693,7 +691,7 @@ func (f *FastStateMachine) handlePut(payload []byte, revision uint64) (sm.Result
 }
 
 // handleDelete decodes a KV Delete command and removes the key.
-// Payload format: [keyLen:2 LE][key]
+// Payload format: [keyLen:2 LE][key].
 func (f *FastStateMachine) handleDelete(payload []byte, revision uint64) (sm.Result, error) {
 	if len(payload) < 2 {
 		return sm.Result{}, &IncompleteDataError{Reason: "delete: payload too short"}
@@ -714,7 +712,7 @@ func (f *FastStateMachine) handleDelete(payload []byte, revision uint64) (sm.Res
 }
 
 // handleBatch decodes and applies a batch of operations atomically.
-// Payload format: [opCount:2 LE][ops...] (protocol.DecodeBatch format)
+// Payload format: [opCount:2 LE][ops...] (protocol.DecodeBatch format).
 func (f *FastStateMachine) handleBatch(payload []byte, revision uint64) (sm.Result, error) {
 	ops, err := protocol.DecodeBatch(payload)
 	if err != nil {

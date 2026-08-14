@@ -509,7 +509,6 @@ func TestMapBackupError_AllCases(t *testing.T) {
 		{"generic", errors.New("boom"), http.StatusInternalServerError},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			got := mapBackupError(tc.err)
 			if got != tc.want {

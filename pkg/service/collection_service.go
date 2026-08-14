@@ -228,7 +228,7 @@ func (s *CollectionService) CreateCollection(ctx context.Context, req *CreateCol
 	// IDStrategyIncrement is routed through SequenceServicer instead (see
 	// nextDocumentID), in which case there is nothing to prime: the
 	// sequence's state lives in the replicated store, not in this process.
-	if !(strategy == IDStrategyIncrement && s.seqSvc != nil) {
+	if strategy != IDStrategyIncrement || s.seqSvc == nil {
 		s.getOrCreateIDGen(info)
 	}
 
@@ -754,7 +754,7 @@ func (s *CollectionService) nextDocumentID(ctx context.Context, info *Collection
 func (s *CollectionService) getOrCreateIDGen(info *CollectionInfo) dao.IDGenerator {
 	cacheKey := info.Database + ":" + info.Name
 	if gen, ok := s.idGens.Load(cacheKey); ok {
-		return gen.(dao.IDGenerator)
+		return gen.(dao.IDGenerator) //nolint:errcheck // type assertion on a value this container only ever holds
 	}
 
 	var gen dao.IDGenerator
@@ -768,7 +768,7 @@ func (s *CollectionService) getOrCreateIDGen(info *CollectionInfo) dao.IDGenerat
 	}
 
 	actual, _ := s.idGens.LoadOrStore(cacheKey, gen)
-	return actual.(dao.IDGenerator)
+	return actual.(dao.IDGenerator) //nolint:errcheck // type assertion on a value this container only ever holds
 }
 
 // updateSchema discovers field types from the document and merges them

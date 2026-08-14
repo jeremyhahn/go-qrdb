@@ -260,7 +260,6 @@ func TestCache_ConcurrentReadWrite(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
 	for g := 0; g < goroutines; g++ {
-		g := g
 		go func() {
 			defer wg.Done()
 			for i := 0; i < iterations; i++ {

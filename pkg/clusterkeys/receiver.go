@@ -175,12 +175,10 @@ func (r *Receiver) Handler() http.HandlerFunc {
 					slog.String("error", err.Error()))
 				return
 			}
-		} else {
+		} else if r.downgradeLogged.CompareAndSwap(false, true) {
 			// No peer cert — SECURITY-DOWNGRADE: logged once.
-			if r.downgradeLogged.CompareAndSwap(false, true) {
-				r.logger.Warn("clusterkeys: SECURITY-DOWNGRADE: no peer certificate present; " +
-					"authorization relies on HPKE recipient-binding and placement gate only")
-			}
+			r.logger.Warn("clusterkeys: SECURITY-DOWNGRADE: no peer certificate present; " +
+				"authorization relies on HPKE recipient-binding and placement gate only")
 		}
 
 		// --- b: decode envelope ------------------------------------------

@@ -394,7 +394,7 @@ func ResolveCA(ctx context.Context, opts *Options, logger *slog.Logger) (caCertP
 		if err != nil {
 			return nil, nil, nil, &JoinError{Err: err}
 		}
-		if err = clustertls.PersistCA(caCertPEM, caKeyPEM, opts.DataDir); err != nil {
+		if err := clustertls.PersistCA(caCertPEM, caKeyPEM, opts.DataDir); err != nil {
 			return nil, nil, nil, err
 		}
 		return caCertPEM, caKeyPEM, nil, nil
@@ -410,7 +410,7 @@ func ResolveCA(ctx context.Context, opts *Options, logger *slog.Logger) (caCertP
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	if err = clustertls.PersistCA(caCertPEM, caKeyPEM, opts.DataDir); err != nil {
+	if err := clustertls.PersistCA(caCertPEM, caKeyPEM, opts.DataDir); err != nil {
 		return nil, nil, nil, err
 	}
 

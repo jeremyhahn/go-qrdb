@@ -175,7 +175,6 @@ func (r *RegularStateMachine) handleTransaction(payload []byte, _ uint64) (sm.Re
 //   - (nil, false, nil) when the query is not an MVCC type
 func (r *RegularStateMachine) lookupMVCC(query interface{}) (interface{}, bool, error) {
 	switch q := query.(type) {
-
 	case MVCCGetQuery:
 		if r.mvccStore == nil {
 			return nil, true, &ServiceNotConfiguredError{Service: "mvcc"}

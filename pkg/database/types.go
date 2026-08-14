@@ -481,11 +481,9 @@ func (c *DatabaseConfig) Validate() error {
 		if err := c.Connection.Validate(); err != nil {
 			return err
 		}
-	} else {
+	} else if !c.Backend.Valid() {
 		// Embedded mode requires a valid backend.
-		if !c.Backend.Valid() {
-			return &InvalidBackendError{Backend: string(c.Backend)}
-		}
+		return &InvalidBackendError{Backend: string(c.Backend)}
 	}
 
 	if c.Raft != nil {

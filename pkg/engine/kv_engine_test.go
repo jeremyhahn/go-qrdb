@@ -2929,7 +2929,6 @@ func TestEntityTypeFromKey(t *testing.T) {
 		{"a/b", "a"},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.key, func(t *testing.T) {
 			t.Parallel()
 			got := entityTypeFromKey([]byte(tc.key))

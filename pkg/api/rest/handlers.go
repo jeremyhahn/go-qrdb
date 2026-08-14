@@ -521,6 +521,9 @@ func (s *Server) handleKVGet(w http.ResponseWriter, r *http.Request, key string)
 
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.WriteHeader(http.StatusOK)
+	// #nosec G705 -- the body is an opaque KV value served as octet-stream,
+	// never interpolated into a document; the value is returned verbatim by
+	// contract, so escaping it would corrupt it.
 	_, _ = w.Write(data)
 }
 

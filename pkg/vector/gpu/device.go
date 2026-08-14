@@ -28,9 +28,7 @@ type MemoryInfo struct {
 }
 
 // DeviceManager manages GPU device lifecycle and health.
-type DeviceManager struct {
-	config *GPUConfig
-}
+type DeviceManager struct{}
 
 // NewDeviceManager creates a new GPU device manager.
 // Returns ErrGPUNotCompiled when GPU support is not compiled in.

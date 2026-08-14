@@ -144,7 +144,6 @@ func TestResolve_happyPath_eachType(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			f := &AuthFactor{
 				ID:         "factor-" + tc.name,

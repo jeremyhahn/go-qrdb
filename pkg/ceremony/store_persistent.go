@@ -17,6 +17,7 @@ package ceremony
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"time"
@@ -179,7 +180,7 @@ func (r *OfficerRegistry) Load(ctx context.Context, username string) (*Persisten
 	// Fall through to backend.
 	blob, err := r.backend.Get(ctx, r.officerKey(username))
 	if err != nil {
-		if err == seal.ErrSecretNotFound {
+		if errors.Is(err, seal.ErrSecretNotFound) {
 			return nil, ErrUserNotFound
 		}
 		return nil, err

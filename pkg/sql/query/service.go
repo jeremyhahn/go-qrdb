@@ -22,6 +22,7 @@ package query
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -275,7 +276,7 @@ func run(ctx context.Context, eng *sqle.Engine, dbName, query string) (*service.
 	rows := []map[string]any{}
 	for {
 		row, err := iter.Next(sqlCtx)
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {

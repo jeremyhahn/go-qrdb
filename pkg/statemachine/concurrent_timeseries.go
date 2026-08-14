@@ -126,7 +126,6 @@ func (c *ConcurrentStateMachine) handleTSSetRetention(payload []byte, revision u
 
 func (c *ConcurrentStateMachine) concurrentLookupTimeSeries(query interface{}) (interface{}, bool, error) {
 	switch q := query.(type) {
-
 	case timeseries.TSQueryRequest:
 		if c.tsStore == nil {
 			return nil, true, &ServiceNotConfiguredError{Service: "timeseries"}

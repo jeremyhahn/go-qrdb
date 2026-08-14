@@ -254,7 +254,7 @@ func (r *RegularStateMachine) Lookup(_ context.Context, query interface{}) (inte
 // without blocking concurrent operations.
 //
 // Format: [entryCount:4 LE][entries...].
-// Each entry: [keyLen:4 LE][key][valueLen:4 LE][value]
+// Each entry: [keyLen:4 LE][key][valueLen:4 LE][value].
 func (r *RegularStateMachine) SaveSnapshot(_ context.Context, w io.Writer, stopper <-chan struct{}) error {
 	// Deep-copy under read lock.
 	r.mu.RLock()
@@ -459,7 +459,7 @@ func (r *RegularStateMachine) listKeys(prefix string) ([]string, error) {
 // ---------------------------------------------------------------------------
 
 // handlePut decodes a KV Put command and writes the key-value pair.
-// Payload format: [keyLen:2 LE][key][value]
+// Payload format: [keyLen:2 LE][key][value].
 func (r *RegularStateMachine) handlePut(payload []byte, revision uint64) (sm.Result, error) {
 	if len(payload) < 2 {
 		return sm.Result{}, &IncompleteDataError{Reason: "put: payload too short"}
@@ -488,7 +488,7 @@ func (r *RegularStateMachine) handlePut(payload []byte, revision uint64) (sm.Res
 }
 
 // handleDelete decodes a KV Delete command and removes the key.
-// Payload format: [keyLen:2 LE][key]
+// Payload format: [keyLen:2 LE][key].
 func (r *RegularStateMachine) handleDelete(payload []byte, revision uint64) (sm.Result, error) {
 	if len(payload) < 2 {
 		return sm.Result{}, &IncompleteDataError{Reason: "delete: payload too short"}
@@ -511,7 +511,7 @@ func (r *RegularStateMachine) handleDelete(payload []byte, revision uint64) (sm.
 }
 
 // handleBatch decodes and applies a batch of operations atomically.
-// Payload format: [opCount:2 LE][ops...] (protocol.DecodeBatch format)
+// Payload format: [opCount:2 LE][ops...] (protocol.DecodeBatch format).
 func (r *RegularStateMachine) handleBatch(payload []byte, revision uint64) (sm.Result, error) {
 	ops, err := protocol.DecodeBatch(payload)
 	if err != nil {

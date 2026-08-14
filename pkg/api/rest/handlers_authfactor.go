@@ -16,6 +16,7 @@ package rest
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -303,28 +304,29 @@ func mapAuthFactorError(err error) int {
 	if err == nil {
 		return http.StatusOK
 	}
-	switch err.(type) {
-	case *authfactors.EnrollmentNotFoundError:
+	var (
+		enrollmentNotFound  *authfactors.EnrollmentNotFoundError
+		enrollmentRevoked   *authfactors.EnrollmentRevokedError
+		enrollmentInvalid   *authfactors.EnrollmentInvalidError
+		challengeExpired    *authfactors.ChallengeExpiredError
+		verificationFailed  *authfactors.VerificationFailedError
+		factorNotFound      *authfactors.FactorNotFoundError
+		hardwareUnavailable *authfactors.HardwareUnavailableError
+	)
+	switch {
+	case errors.As(err, &enrollmentNotFound), errors.As(err, &factorNotFound):
 		return http.StatusNotFound
-	case *authfactors.EnrollmentRevokedError:
+	case errors.As(err, &enrollmentRevoked), errors.As(err, &challengeExpired):
 		return http.StatusGone
-	case *authfactors.EnrollmentInvalidError:
+	case errors.As(err, &enrollmentInvalid):
 		return http.StatusBadRequest
-	case *authfactors.ChallengeExpiredError:
-		return http.StatusGone
-	case *authfactors.VerificationFailedError:
+	case errors.As(err, &verificationFailed):
 		return http.StatusUnauthorized
-	case *authfactors.FactorNotFoundError:
-		return http.StatusNotFound
-	case *authfactors.HardwareUnavailableError:
+	case errors.As(err, &hardwareUnavailable), errors.Is(err, authfactors.ErrHardwareUnavailable):
 		return http.StatusServiceUnavailable
+	case errors.Is(err, authfactors.ErrFactorDisabled):
+		return http.StatusNotImplemented
 	default:
-		if err == authfactors.ErrFactorDisabled {
-			return http.StatusNotImplemented
-		}
-		if err == authfactors.ErrHardwareUnavailable {
-			return http.StatusServiceUnavailable
-		}
 		return http.StatusInternalServerError
 	}
 }

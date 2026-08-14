@@ -150,7 +150,7 @@ func (k *KVStateMachine) Update(entries []sm.Entry, results []sm.Result) error {
 
 // handlePut decodes a KV Put command and writes the key-value pair via
 // the backend.
-// Payload format: [keyLen:2 LE][key][value]
+// Payload format: [keyLen:2 LE][key][value].
 func (k *KVStateMachine) handlePut(payload []byte, revision uint64) (sm.Result, error) {
 	if len(payload) < 2 {
 		return sm.Result{}, &IncompleteDataError{Reason: "put: payload too short"}
@@ -175,7 +175,7 @@ func (k *KVStateMachine) handlePut(payload []byte, revision uint64) (sm.Result, 
 
 // handleDelete decodes a KV Delete command and removes the key via the
 // backend.
-// Payload format: [keyLen:2 LE][key]
+// Payload format: [keyLen:2 LE][key].
 func (k *KVStateMachine) handleDelete(payload []byte, revision uint64) (sm.Result, error) {
 	if len(payload) < 2 {
 		return sm.Result{}, &IncompleteDataError{Reason: "delete: payload too short"}
@@ -198,7 +198,7 @@ func (k *KVStateMachine) handleDelete(payload []byte, revision uint64) (sm.Resul
 }
 
 // handleBatch decodes and applies a batch of operations via the backend.
-// Payload format: [opCount:2 LE][ops...]
+// Payload format: [opCount:2 LE][ops...].
 func (k *KVStateMachine) handleBatch(payload []byte, revision uint64) (sm.Result, error) {
 	ops, err := protocol.DecodeBatch(payload)
 	if err != nil {

@@ -187,7 +187,6 @@ func TestBuildServices_CoreServicesNonNil(t *testing.T) {
 		{"Tenant", node.Tenant},
 	}
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.svc == nil {
 				t.Errorf("%s is nil", tc.name)
@@ -232,7 +231,6 @@ func TestBuildServices_SealGatedServicesNonNil(t *testing.T) {
 		{"CertProv", node.CertProv},
 	}
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.svc == nil {
 				t.Errorf("%s is nil", tc.name)

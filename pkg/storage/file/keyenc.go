@@ -60,7 +60,7 @@ func encodeKeyToPath(key []byte) string {
 			b.WriteByte('/')
 			segStart = true
 			continue
-		case isSafeKeyByte(c) && !(segStart && c == '.'):
+		case isSafeKeyByte(c) && (!segStart || c != '.'):
 			b.WriteByte(c)
 		default:
 			b.WriteByte('%')

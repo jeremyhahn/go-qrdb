@@ -11,6 +11,7 @@ package seal
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"sort"
 	"strings"
@@ -72,7 +73,7 @@ func (b *StorageBarrier) persistMetadata(ctx context.Context, meta barrierMetada
 func (b *StorageBarrier) loadInitializedAt(ctx context.Context) (time.Time, error) {
 	blob, err := b.base.Get(ctx, b.metadataPath())
 	if err != nil {
-		if err == ErrSecretNotFound {
+		if errors.Is(err, ErrSecretNotFound) {
 			return time.Time{}, nil
 		}
 		return time.Time{}, err
@@ -353,7 +354,7 @@ func (b *StorageBarrier) Unseal(ctx context.Context, creds Credentials) error {
 
 	blob, err := b.base.Get(ctx, b.config.RootKeyPath)
 	if err != nil {
-		if err == ErrSecretNotFound {
+		if errors.Is(err, ErrSecretNotFound) {
 			return ErrNotInitialized
 		}
 		return err

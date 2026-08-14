@@ -381,7 +381,7 @@ func (s *BackupService) loadEntry(ctx context.Context, id string) (*backupEntry,
 		return entry, nil
 	}
 
-	info := BackupInfo{}
+	var info BackupInfo
 	if ok {
 		info = entry.info
 	} else {

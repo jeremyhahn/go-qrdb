@@ -71,7 +71,6 @@ func newBenchPebbleStateMachine(b *testing.B) *PebbleStateMachine {
 // reporting nanoseconds per applied ENTRY rather than per batch.
 func runApplyBenchmark(b *testing.B, size int, build func(index uint64) sm.Entry,
 	update func(entries []sm.Entry, results []sm.Result) error) {
-
 	entries := make([]sm.Entry, size)
 	results := make([]sm.Result, size)
 	var index uint64

@@ -1883,13 +1883,14 @@ func (v *vectorService) GetRebuildProgress(ctx context.Context, req *GetRebuildP
 	}
 
 	var status string
-	if job.Error != nil {
+	switch {
+	case job.Error != nil:
 		status = "failed"
-	} else if job.CompletedAt != nil {
+	case job.CompletedAt != nil:
 		status = "completed"
-	} else if job.InProgress {
+	case job.InProgress:
 		status = "running"
-	} else {
+	default:
 		status = "pending"
 	}
 

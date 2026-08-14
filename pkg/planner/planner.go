@@ -239,6 +239,7 @@ func (p *Planner) planCompoundIndex(predicates []Predicate, indexes []IndexInfo)
 		var rangePred *Predicate
 		var rangePredIdx int
 
+	fieldLoop:
 		for _, field := range idx.FieldNames {
 			predIdx, ok := predByField[field]
 			if !ok {
@@ -246,14 +247,15 @@ func (p *Planner) planCompoundIndex(predicates []Predicate, indexes []IndexInfo)
 			}
 			pred := predicates[predIdx]
 
-			if pred.Op == OpEq || pred.Op == OpIn {
+			switch pred.Op {
+			case OpEq, OpIn:
 				// Exact match on this field — extends the prefix.
 				exactValues = append(exactValues, pred.Value)
 				consumed[predIdx] = true
 				fieldsMatched++
-			} else if pred.Op == OpNeq {
-				break // Inequality cannot use index.
-			} else {
+			case OpNeq:
+				break fieldLoop // Inequality cannot use index.
+			default:
 				// Range operator (Gt, Gte, Lt, Lte, Between, Prefix) on
 				// this field. This is valid only as the LAST matched field.
 				hasRange = true
@@ -261,7 +263,7 @@ func (p *Planner) planCompoundIndex(predicates []Predicate, indexes []IndexInfo)
 				rangePredIdx = predIdx
 				consumed[predIdx] = true
 				fieldsMatched++
-				break // Range terminates prefix matching.
+				break fieldLoop // Range terminates prefix matching.
 			}
 		}
 

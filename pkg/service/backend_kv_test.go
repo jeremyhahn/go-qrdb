@@ -379,7 +379,6 @@ func TestPutWithMode_IgnoresMode_DelegatesToPut(t *testing.T) {
 		writemode.Batched,
 	}
 	for _, m := range modes {
-		m := m
 		t.Run(m.String(), func(t *testing.T) {
 			svc, cleanup := newBackendKVService(t)
 			defer cleanup()
@@ -401,7 +400,6 @@ func TestDeleteWithMode_IgnoresMode_DelegatesToDelete(t *testing.T) {
 		writemode.Batched,
 	}
 	for _, m := range modes {
-		m := m
 		t.Run(m.String(), func(t *testing.T) {
 			svc, cleanup := newBackendKVService(t)
 			defer cleanup()

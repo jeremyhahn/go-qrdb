@@ -249,7 +249,7 @@ func (s *PebbleStateMachine) Open(_ context.Context, initialDir string, _ <-chan
 func (s *PebbleStateMachine) readLastApplied() (uint64, error) {
 	val, closer, err := s.db.Get([]byte(metaKeyLastApplied))
 	if err != nil {
-		if err == pebble.ErrNotFound {
+		if errors.Is(err, pebble.ErrNotFound) {
 			return 0, nil
 		}
 		return 0, err
@@ -578,7 +578,7 @@ func prefixUpperBound(prefix []byte) []byte {
 func (s *PebbleStateMachine) getKey(key []byte) ([]byte, error) {
 	val, closer, err := s.db.Get(key)
 	if err != nil {
-		if err == pebble.ErrNotFound {
+		if errors.Is(err, pebble.ErrNotFound) {
 			return nil, &kv.KeyNotFoundError{Key: string(key)}
 		}
 		return nil, &ReadError{Key: string(key), Err: err}

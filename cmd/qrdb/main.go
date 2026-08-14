@@ -99,13 +99,20 @@ func initLogger(level, file string) (*logger.Logger, error) {
 }
 
 func main() {
+	os.Exit(run())
+}
+
+// run is main's body, split out so that os.Exit is confined to main and every
+// deferred cleanup here still runs before the process exits. It returns the
+// process exit code.
+func run() int {
 	// Parse log flags from os.Args before Cobra to initialize logging
 	// early, including for the GUI path which bypasses Cobra entirely.
 	level, file := parseLogArgs()
 	log, err := initLogger(level, file)
 	if err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		return 1
 	}
 
 	// When invoked with no subcommands (only log flags allowed) and a
@@ -117,11 +124,11 @@ func main() {
 			var unavail *GUIUnavailableError
 			if !errors.As(err, &unavail) {
 				_, _ = fmt.Fprintln(os.Stderr, err)
-				os.Exit(1)
+				return 1
 			}
 			// GUI unavailable — fall through to CLI.
 		} else {
-			return
+			return 0
 		}
 	}
 
@@ -136,6 +143,7 @@ func main() {
 
 	if err := rootCmd.ExecuteContext(ctx); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }

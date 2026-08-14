@@ -218,7 +218,7 @@ func (r *Receiver) Open(env *Envelope) ([]byte, error) {
 	if env == nil || len(env.Payload) == 0 || len(env.Nonce) != nonceLen || env.IssuedAt.IsZero() {
 		return nil, ErrMalformedEnvelope
 	}
-	if err := env.Meta.validate(); err != nil {
+	if err := env.validate(); err != nil {
 		return nil, err
 	}
 	if env.TargetNodeID != r.nodeID {

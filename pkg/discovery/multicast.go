@@ -486,7 +486,8 @@ func (md *MulticastDiscovery) listenLoop() {
 		n, err := md.transport.ReadFrom(buf)
 		if err != nil {
 			// Timeout errors are normal (read deadline expired).
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			var netErr net.Error
+			if errors.As(err, &netErr) && netErr.Timeout() {
 				continue
 			}
 			// "use of closed network connection" is expected during shutdown.

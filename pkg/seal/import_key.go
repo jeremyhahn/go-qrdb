@@ -17,6 +17,7 @@ package seal
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -226,7 +227,7 @@ func (b *StorageBarrier) ImportRootKey(ctx context.Context, imported *ImportedKe
 func (b *StorageBarrier) ExportSealedBlob(ctx context.Context) ([]byte, error) {
 	blob, err := b.base.Get(ctx, b.config.RootKeyPath)
 	if err != nil {
-		if err == ErrSecretNotFound {
+		if errors.Is(err, ErrSecretNotFound) {
 			return nil, ErrNotInitialized
 		}
 		return nil, err

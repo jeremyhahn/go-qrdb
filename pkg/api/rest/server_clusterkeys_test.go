@@ -93,7 +93,6 @@ func TestWithClusterKeyReceiver_NotRegisteredWhenNil(t *testing.T) {
 		{"POST keydelivery", http.MethodPost, "/v1/cluster/keydelivery"},
 		{"GET nodekey", http.MethodGet, "/v1/cluster/nodekey"},
 	} {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			rr := httptest.NewRecorder()
@@ -117,7 +116,6 @@ func TestWithClusterKeyReceiver_SealedWindowAllowlist(t *testing.T) {
 		"/v1/cluster/nodekey",
 	}
 	for _, path := range paths {
-		path := path
 		t.Run(path, func(t *testing.T) {
 			t.Parallel()
 			if !pathInAllowlist(path, SealedWindowAllowlist) {

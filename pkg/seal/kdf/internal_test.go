@@ -88,7 +88,6 @@ func TestParseHashWithParams_InvalidSegments(t *testing.T) {
 		{"six parts", "v1:argon2id:p:s:d:extra"},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			_, _, _, _, err := parseHashWithParams(tc.hash)

@@ -276,7 +276,7 @@ func (s *BackendKVService) ListEntities(ctx context.Context, req *ListEntitiesRe
 
 	prefix := entityPrefix(req.EntityType)
 	if req.Prefix != "" {
-		prefix = prefix + req.Prefix
+		prefix += req.Prefix
 	}
 
 	allKeys, err := s.List(ctx, prefix)

@@ -193,7 +193,7 @@ func (c *Client) Close() error {
 	} else {
 		// Default transport is a *http.Transport accessed via the unexported field;
 		// calling CloseIdleConnections on the Client itself covers the default case.
-		http.DefaultTransport.(*http.Transport).CloseIdleConnections() //nolint:forcetypeassert
+		http.DefaultTransport.(*http.Transport).CloseIdleConnections() //nolint:errcheck,forcetypeassert // net/http always installs a *http.Transport as DefaultTransport
 	}
 	return nil
 }
@@ -245,13 +245,13 @@ func (c *Client) doWithRetry(ctx context.Context, req *http.Request, body []byte
 		// 4xx (except 429) — client errors, do not retry.
 		if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests {
 			raw, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			return nil, &HTTPError{StatusCode: resp.StatusCode, Body: strings.TrimSpace(string(raw))}
 		}
 
 		// 5xx or 429 — server/rate-limit errors, retry.
 		raw, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		lastErr = &HTTPError{StatusCode: resp.StatusCode, Body: strings.TrimSpace(string(raw))}
 	}
 

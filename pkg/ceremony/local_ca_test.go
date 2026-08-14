@@ -132,7 +132,6 @@ func TestNewLocalCA_EmptyInputs(t *testing.T) {
 		{"both empty", nil, nil},
 	}
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			ca, err := NewLocalCA(tc.cert, tc.key)
 			assert.Nil(t, ca)
@@ -152,7 +151,6 @@ func TestNewLocalCA_BadCertPEM(t *testing.T) {
 		{"bad DER", pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("garbage")})},
 	}
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			ca, err := NewLocalCA(tc.cert, sec1KeyPEM)
 			assert.Nil(t, ca)
@@ -181,7 +179,6 @@ func TestNewLocalCA_BadKeyPEM(t *testing.T) {
 		{"non-signer key", x25519PEM},
 	}
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			ca, err := NewLocalCA(certPEM, tc.key)
 			assert.Nil(t, ca)
@@ -260,7 +257,6 @@ func TestLocalCA_SignCSR_InvalidInputs(t *testing.T) {
 		{"tampered signature", tamperedDER, validOpts},
 	}
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			cert, err := ca.SignCSR(context.Background(), tc.csr, tc.opts)
 			assert.Nil(t, cert)
@@ -358,7 +354,6 @@ func TestSplitSANs(t *testing.T) {
 		{"empty", nil, nil, 0},
 	}
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			dns, ips := splitSANs(tc.sans)
 			assert.Equal(t, tc.wantDNS, dns)

@@ -85,7 +85,7 @@ func (p *ConfigProcessor) Process(ctx context.Context, cfgPtr any) (*ProcessResu
 		return nil, &ProcessorInputError{Msg: "config must not be nil"}
 	}
 	rv := reflect.ValueOf(cfgPtr)
-	if rv.Kind() != reflect.Ptr || rv.IsNil() {
+	if rv.Kind() != reflect.Pointer || rv.IsNil() {
 		return nil, &ProcessorInputError{Msg: "config must be a non-nil pointer to a struct"}
 	}
 	elem := rv.Elem()
@@ -122,7 +122,7 @@ func (p *ConfigProcessor) processValue(ctx context.Context, v reflect.Value, pat
 	switch v.Kind() {
 	case reflect.Struct:
 		p.processStruct(ctx, v, path, result, depth)
-	case reflect.Ptr:
+	case reflect.Pointer:
 		if !v.IsNil() {
 			p.processValue(ctx, v.Elem(), path, result, depth+1)
 		}
