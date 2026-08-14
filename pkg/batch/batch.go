@@ -85,7 +85,13 @@ func NewAggregator(proposer Proposer, opts ...Option) (*Aggregator, error) {
 
 // EncodeBatch combines multiple command payloads into a single batch.
 // Format: [cmd1_len:4 BE][cmd1_data][cmd2_len:4 BE][cmd2_data]...
-func EncodeBatch(cmds [][]byte) []byte {
+//
+// It returns an error when a command cannot be represented in the format: the
+// length prefix is a uint32, so a command at or above MaxInt32 would encode to
+// a batch that DecodeBatch is required to reject. Refusing at encode time is
+// what keeps the two ends symmetric — the alternative is a batch that commits
+// durably and is then permanently undecodable.
+func EncodeBatch(cmds [][]byte) ([]byte, error) {
 	return qcbatch.EncodeBatch(cmds)
 }
 

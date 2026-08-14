@@ -138,7 +138,10 @@ func Test_Constants_allPositive(t *testing.T) {
 func Test_EncodeBatch_singleCommand(t *testing.T) {
 	t.Parallel()
 	cmd := []byte("PUT key1 value1")
-	encoded := EncodeBatch([][]byte{cmd})
+	encoded, err := EncodeBatch([][]byte{cmd})
+	if err != nil {
+		t.Fatalf("EncodeBatch: %v", err)
+	}
 
 	// 4-byte length prefix + len(cmd) data bytes.
 	expectedLen := 4 + len(cmd)
@@ -165,7 +168,10 @@ func Test_EncodeBatch_multipleCommands(t *testing.T) {
 		[]byte("PUT key2 val2"),
 		[]byte("DELETE key3"),
 	}
-	encoded := EncodeBatch(cmds)
+	encoded, err := EncodeBatch(cmds)
+	if err != nil {
+		t.Fatalf("EncodeBatch: %v", err)
+	}
 
 	decoded, err := DecodeBatch(encoded)
 	if err != nil {
@@ -183,7 +189,10 @@ func Test_EncodeBatch_multipleCommands(t *testing.T) {
 
 func Test_EncodeBatch_nilSlice(t *testing.T) {
 	t.Parallel()
-	result := EncodeBatch(nil)
+	result, err := EncodeBatch(nil)
+	if err != nil {
+		t.Fatalf("EncodeBatch(nil): %v", err)
+	}
 	if len(result) != 0 {
 		t.Errorf("EncodeBatch(nil) produced %d bytes, want 0", len(result))
 	}
@@ -191,7 +200,10 @@ func Test_EncodeBatch_nilSlice(t *testing.T) {
 
 func Test_EncodeBatch_emptySlice(t *testing.T) {
 	t.Parallel()
-	result := EncodeBatch([][]byte{})
+	result, err := EncodeBatch([][]byte{})
+	if err != nil {
+		t.Fatalf("EncodeBatch(empty): %v", err)
+	}
 	if len(result) != 0 {
 		t.Errorf("EncodeBatch(empty) produced %d bytes, want 0", len(result))
 	}
@@ -200,7 +212,10 @@ func Test_EncodeBatch_emptySlice(t *testing.T) {
 func Test_EncodeBatch_emptyCommands(t *testing.T) {
 	t.Parallel()
 	cmds := [][]byte{{}, {}, {}}
-	encoded := EncodeBatch(cmds)
+	encoded, encErr := EncodeBatch(cmds)
+	if encErr != nil {
+		t.Fatalf("EncodeBatch: %v", encErr)
+	}
 
 	decoded, err := DecodeBatch(encoded)
 	if err != nil {
@@ -222,7 +237,10 @@ func Test_EncodeBatch_binaryData(t *testing.T) {
 	for i := range cmd {
 		cmd[i] = byte(i)
 	}
-	encoded := EncodeBatch([][]byte{cmd})
+	encoded, encErr := EncodeBatch([][]byte{cmd})
+	if encErr != nil {
+		t.Fatalf("EncodeBatch: %v", encErr)
+	}
 	decoded, err := DecodeBatch(encoded)
 	if err != nil {
 		t.Fatalf("DecodeBatch failed: %v", err)
@@ -330,7 +348,10 @@ func Test_RoundTrip_manyCommands(t *testing.T) {
 	for i := range original {
 		original[i] = []byte{byte(i & 0xFF), byte((i >> 8) & 0xFF)}
 	}
-	encoded := EncodeBatch(original)
+	encoded, encErr1 := EncodeBatch(original)
+	if encErr1 != nil {
+		t.Fatalf("EncodeBatch: %v", encErr1)
+	}
 	decoded, err := DecodeBatch(encoded)
 	if err != nil {
 		t.Fatalf("round-trip decode failed: %v", err)
@@ -356,7 +377,10 @@ func Test_RoundTrip_mixedSizes(t *testing.T) {
 	for i := range original[1] {
 		original[1][i] = byte(i % 256)
 	}
-	encoded := EncodeBatch(original)
+	encoded, encErr2 := EncodeBatch(original)
+	if encErr2 != nil {
+		t.Fatalf("EncodeBatch: %v", encErr2)
+	}
 	decoded, err := DecodeBatch(encoded)
 	if err != nil {
 		t.Fatalf("round-trip decode failed: %v", err)
