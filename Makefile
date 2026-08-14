@@ -992,20 +992,33 @@ ci:
 	docker compose -f $(COMPOSE_FILE) run --rm --build devcontainer make _ci
 
 .PHONY: _ci
-_ci: fmt vet lint gosec vuln build-server test
+# `security` is the full §8 suite (gosec, govulncheck, go mod verify, trivy fs)
+# and replaces the loose `gosec vuln` pair: devops.md §4 requires `make ci` to
+# include it.
+_ci: fmt vet lint security build-server test
 	@echo "CI pipeline passed"
 
 # ============================================================================
 # Linting and static analysis
 # ============================================================================
 
+# golangci-lint and go vet need the same build tags the rest of the build uses.
+# Untagged, whole packages fail to typecheck — pkg/api/mcp's test mocks sit
+# behind `codec_json && raft && qrdb_ts && ...` — and a typecheck failure is
+# reported as a lint issue, so the gate goes red for a reason that has nothing
+# to do with the code. LINT_TAGS is BUILD_TAGS comma-joined, which is the form
+# --build-tags takes.
+comma      := ,
+space      := $(subst ,, )
+LINT_TAGS  := $(subst $(space),$(comma),$(strip $(BUILD_TAGS)))
+
 .PHONY: lint
 lint:
-	$(GOLINT) run --timeout=5m ./...
+	$(GOLINT) run --build-tags "$(LINT_TAGS)" --timeout=5m ./...
 
 .PHONY: vet
 vet:
-	$(GOVET) ./...
+	$(GOVET) $(TAG_FLAG) ./...
 
 .PHONY: fmt
 fmt:
@@ -1025,9 +1038,48 @@ fmt:
 gosec:
 	$(GOSEC) -exclude=$(GOSEC_EXCLUDE) -exclude-dir=test/performance -severity=medium -confidence=medium ./...
 
+# SARIF for GitHub code scanning. Same exclusions as `gosec` above so the
+# dashboard and the gate never disagree; non-blocking because `gosec` is the
+# gate.
+.PHONY: gosec-sarif
+gosec-sarif:
+	$(GOSEC) -fmt=sarif -out=gosec.sarif -exclude=$(GOSEC_EXCLUDE) -exclude-dir=test/performance -severity=medium -confidence=medium ./... || true
+
+# Blocking. govulncheck is the forcing function for toolchain currency
+# (devops.md §9) — swallowing its exit code is what lets a known-vulnerable
+# stdlib sit in a release for months, which is exactly the failure mode the
+# section exists to prevent.
 .PHONY: vuln
 vuln:
-	$(GOVULNCHECK) ./... || echo "WARNING: govulncheck found stdlib vulnerabilities (upgrade Go to fix)"
+	$(GOVULNCHECK) ./...
+	cd sdk/go && $(GOVULNCHECK) ./...
+
+.PHONY: mod-verify
+mod-verify:
+	$(GO) mod verify
+	cd sdk/go && $(GO) mod verify
+
+# Directories excluded from the filesystem scan, kept identical to the
+# skip-dirs list in .github/workflows/ci.yml so `make trivy` and CI agree
+# (devops.md §4). test/ holds benchmark harnesses that ship in no release.
+# Suppressions belong in a .trivyignore with a reason and a date, not here.
+TRIVY_SKIP_DIRS := --skip-dirs test
+
+.PHONY: trivy
+trivy:
+	@if command -v trivy >/dev/null 2>&1; then \
+		trivy fs --scanners vuln,secret --severity CRITICAL,HIGH --exit-code 1 $(TRIVY_SKIP_DIRS) . ; \
+	else \
+		echo "trivy not found - skipping (install: curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b \$$(go env GOPATH)/bin)"; \
+	fi
+
+# The contract CI calls (devops.md §8): gosec, govulncheck, go mod verify and
+# trivy fs, in the same form a developer runs locally. trivy carries its own
+# `command -v` guard so a developer without it installed still gets the Go half
+# of the suite; CI installs the CLI, so nothing is skipped there.
+.PHONY: security
+security: gosec vuln mod-verify trivy
+	@echo "Security suite passed"
 
 # ============================================================================
 # Docker

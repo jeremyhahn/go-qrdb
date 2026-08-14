@@ -1,0 +1,235 @@
+name: CI
+
+# One workflow, both hosts. Gitea Actions is GitHub-Actions-compatible, so the
+# GitHub-only mechanics (SARIF upload to code scanning, aquasecurity/trivy-action,
+# whose setup cannot authenticate to github.com from a Gitea runner) are guarded
+# on `github.server_url` and the Gitea leg installs the Trivy CLI instead.
+# See automatethethings software/conventions/devops.md §1 and §8.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+  security-events: write
+
+env:
+  GO_VERSION: "1.26.6"
+  # Builds never resolve through a workspace: first-party modules come from
+  # Gitea tags (conventions/dependency-resolution.md §2). The runner injects
+  # GOPRIVATE and the tokenised git rewrite for github.com/jeremyhahn/* itself —
+  # no credentials belong in this file.
+  GOWORK: "off"
+  GOFLAGS: "-buildvcs=false"
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      # devops.md §9: tools installed in CI take @latest, never a pin.
+      - name: Install golangci-lint
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+
+      # devops.md §4: CI runs the same targets a developer runs. `make fmt` is
+      # the gofmt check, not a rewrite.
+      - name: gofmt
+        run: make fmt
+
+      - name: go vet
+        run: make vet
+
+      - name: golangci-lint
+        run: make lint
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      # Compile-check every package with the default (untagged) build, then the
+      # real server binary with the Makefile's default feature tag set — this
+      # repository is build-tag driven, so an untagged build alone compiles very
+      # little of it.
+      - name: Build all packages (default tags)
+        run: go build ./...
+
+      - name: Build qrdbd with the default feature set
+        run: make build-server
+
+      - name: Build sdk/go module
+        working-directory: sdk/go
+        run: go build ./...
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    needs: [lint, build]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      # `make test` = `go test -race -count=1 -v -tags "$(BUILD_TAGS)"
+      # ./pkg/... ./cmd/...`. The tags matter: without them the codec registry
+      # is empty and packages such as pkg/invite fail at run time while
+      # pkg/api/mcp, pkg/api/unix and pkg/server fail to build at all.
+      - name: Unit tests (race)
+        run: make test
+
+  security:
+    name: Security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Install gosec
+        run: go install github.com/securego/gosec/v2/cmd/gosec@latest
+
+      # `make gosec` carries GOSEC_EXCLUDE and its written justifications in the
+      # Makefile, so the exclusion list is single-sourced rather than copied
+      # into this file (devops.md §8).
+      - name: gosec
+        run: make gosec
+
+      # SARIF is a GitHub code-scanning feature; Gitea has no equivalent
+      # ingest. The gate above already ran, so this leg only produces the
+      # report — `|| true` keeps a SARIF-writing failure from double-failing a
+      # build the gate step has already judged.
+      - name: gosec (SARIF for code scanning)
+        if: github.server_url == 'https://github.com'
+        run: make gosec-sarif || true
+
+      - name: Upload gosec SARIF
+        if: always() && github.server_url == 'https://github.com'
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: gosec.sarif
+          category: gosec
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      # Blocking, in both modules. This is also the §9 forcing function for
+      # toolchain currency — it fails on a known-vulnerable stdlib.
+      - name: govulncheck (root module)
+        run: govulncheck ./...
+
+      - name: govulncheck (sdk/go module)
+        working-directory: sdk/go
+        run: govulncheck ./...
+
+      - name: go mod verify
+        run: make mod-verify
+
+  trivy:
+    name: Trivy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      # GitHub leg: a fresh source-scoped scan is uploaded to code scanning on
+      # every run so the dashboard never reflects a stale analysis, then a
+      # second pass gates on CRITICAL/HIGH. test/ holds benchmark harnesses
+      # that ship in no release.
+      - name: Trivy scan (SARIF for code scanning)
+        if: github.server_url == 'https://github.com'
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret
+          format: sarif
+          output: trivy-results.sarif
+          exit-code: 0
+          skip-dirs: test
+
+      - name: Upload Trivy SARIF
+        if: always() && github.server_url == 'https://github.com'
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-fs
+
+      - name: Trivy gate (fail on CRITICAL/HIGH)
+        if: github.server_url == 'https://github.com'
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret
+          severity: CRITICAL,HIGH
+          exit-code: 1
+          format: table
+          skip-dirs: test
+
+      # Gitea leg: trivy-action's setup step cannot authenticate to github.com
+      # from a Gitea runner, so install the CLI and run the identical gate.
+      - name: Install Trivy CLI
+        if: github.server_url != 'https://github.com'
+        run: curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: Trivy gate (fail on CRITICAL/HIGH)
+        if: github.server_url != 'https://github.com'
+        run: trivy fs --scanners vuln,secret --severity CRITICAL,HIGH --exit-code 1 --skip-dirs test .
+
+  ci-gate:
+    name: CI Gate
+    runs-on: ubuntu-latest
+    if: always()
+    # devops.md §1: one gate for branch protection to require, with every job
+    # listed explicitly. `join(needs.*.result)` is a GitHub extension that
+    # evaluates to an empty string on Gitea, so a gate built on it reports
+    # success while jobs fail. Adding a job means adding it to `needs` AND to
+    # the env block and the loop below.
+    needs: [lint, build, test, security, trivy]
+    steps:
+      - name: Verify every job succeeded
+        env:
+          RESULT_LINT: ${{ needs.lint.result }}
+          RESULT_BUILD: ${{ needs.build.result }}
+          RESULT_TEST: ${{ needs.test.result }}
+          RESULT_SECURITY: ${{ needs.security.result }}
+          RESULT_TRIVY: ${{ needs.trivy.result }}
+        run: |
+          status=0
+          check() {
+            name="$1"
+            result="$2"
+            if [ -z "$result" ]; then
+              echo "FAIL: $name result is unreadable - failing closed"
+              status=1
+            elif [ "$result" != "success" ]; then
+              echo "FAIL: $name = $result"
+              status=1
+            else
+              echo "ok:   $name = success"
+            fi
+          }
+          check lint "$RESULT_LINT"
+          check build "$RESULT_BUILD"
+          check test "$RESULT_TEST"
+          check security "$RESULT_SECURITY"
+          check trivy "$RESULT_TRIVY"
+          exit $status

@@ -45,3 +45,7 @@ cmd/qrdb-sqlite/qrdb-sqlite
 
 # devcontainer secrets (Gitea module-fetch token)
 .devcontainer/.env
+
+# CI security-scan reports (devops.md §8)
+gosec.sarif
+trivy-results.sarif

@@ -16,8 +16,13 @@ formatters:
         - github.com/jeremyhahn/go-qrdb
 
 linters:
+  # devops.md §8 requires the umbrella to actually carry the security linters:
+  # staticcheck (which subsumes gosimple), errcheck, unused, ineffassign,
+  # misspell and gocritic. Installing golangci-lint with them switched off does
+  # not satisfy that section.
   enable:
     - errcheck
+    - gocritic
     - govet
     - misspell
     - bodyclose
@@ -35,7 +40,6 @@ linters:
     - unconvert   # Style preference
     - unparam     # Too noisy for production code
     - goconst     # Too aggressive, better handled in code review
-    - gocritic    # Style preferences, not bugs
     - gocyclo     # Complexity handled in code review
     - goprintffuncname # Style preference
     - revive      # Too aggressive, covered by other linters
@@ -75,12 +79,14 @@ linters:
       min-len: 3
       min-occurrences: 5
     gocritic:
+      # Bug-finding only. The style, opinionated, experimental and performance
+      # groups are taste, and on a codebase this size they would bury the
+      # diagnostics that matter — a noisy gate is a gate people learn to ignore.
       enabled-tags:
         - diagnostic
-        - experimental
-        - opinionated
-        - performance
-        - style
+      disabled-checks:
+        - appendAssign
+        - commentFormatting
     gocyclo:
       min-complexity: 30
     revive:
