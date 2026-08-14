@@ -95,6 +95,34 @@ jobs:
       - name: Unit tests (race)
         run: make test
 
+  integration-sqlite:
+    name: Integration (sqlite gateway)
+    runs-on: ubuntu-latest
+    needs: [lint, build]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      # The only integration suite in this repository that a runner can host.
+      # cmd/qrdb-sqlite is its own module whose first-party dependencies are
+      # satisfied by intra-repo replaces, and the suite spawns its own qrdbd
+      # subprocess via sdk/go/testutil/qrdbdharness -- no docker, no sibling
+      # checkouts, no cluster. The rest of the integration surface still needs
+      # the compose harness rebuilt onto tagged modules before it can run here.
+      #
+      # CGO_ENABLED=1 is required: mattn/go-sqlite3 and the sqlite_vtable tag.
+      # gcc ships in the runner image.
+      #
+      # Verified before wiring, per testing-guidelines.md: green as root on the
+      # dev host and green in a clean gitea/runner-images:ubuntu-latest
+      # container carrying nothing from a workstation.
+      - name: Integration tests (sqlite gateway, race)
+        run: make integration-test-sqlite-gateway
+
   security:
     name: Security
     runs-on: ubuntu-latest
@@ -204,13 +232,14 @@ jobs:
     # evaluates to an empty string on Gitea, so a gate built on it reports
     # success while jobs fail. Adding a job means adding it to `needs` AND to
     # the env block and the loop below.
-    needs: [lint, build, test, security, trivy]
+    needs: [lint, build, test, integration-sqlite, security, trivy]
     steps:
       - name: Verify every job succeeded
         env:
           RESULT_LINT: ${{ needs.lint.result }}
           RESULT_BUILD: ${{ needs.build.result }}
           RESULT_TEST: ${{ needs.test.result }}
+          RESULT_INTEGRATION_SQLITE: ${{ needs.integration-sqlite.result }}
           RESULT_SECURITY: ${{ needs.security.result }}
           RESULT_TRIVY: ${{ needs.trivy.result }}
         run: |
@@ -231,6 +260,7 @@ jobs:
           check lint "$RESULT_LINT"
           check build "$RESULT_BUILD"
           check test "$RESULT_TEST"
+          check integration-sqlite "$RESULT_INTEGRATION_SQLITE"
           check security "$RESULT_SECURITY"
           check trivy "$RESULT_TRIVY"
           exit $status

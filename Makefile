@@ -1370,9 +1370,15 @@ build-sqlite-gateway:
 test-sqlite-gateway:
 	cd $(SQLITE_DIR) && CGO_ENABLED=1 go test -tags $(SQLITE_TAGS) -race -count=1 ./... 2>&1 | tee ../../test-sqlite-gateway.log
 
+# The suite drives a real qrdbd subprocess over five transports under -race and
+# takes well over ten minutes, so it needs an explicit timeout: go test's default
+# is 10m, and without this the run dies mid-suite with "panic: test timed out"
+# and no failing test to point at.
+SQLITE_INT_TIMEOUT := 40m
+
 .PHONY: integration-test-sqlite-gateway
 integration-test-sqlite-gateway:
-	cd $(SQLITE_DIR) && CGO_ENABLED=1 go test -tags "$(SQLITE_TAGS) integration" -race -count=1 ./integration/... 2>&1 | tee ../../integration-test-sqlite-gateway.log
+	cd $(SQLITE_DIR) && CGO_ENABLED=1 go test -tags "$(SQLITE_TAGS) integration" -race -count=1 -timeout $(SQLITE_INT_TIMEOUT) ./integration/... 2>&1 | tee ../../integration-test-sqlite-gateway.log
 
 .PHONY: bench-sqlite-gateway
 bench-sqlite-gateway:
