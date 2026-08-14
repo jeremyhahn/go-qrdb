@@ -12,6 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// This is a mock-based unit test, not an integration test: it shares
+// newMockKVStore with the other !integration files in this package, so
+// without the tag `go test -tags integration ./cmd/qrdbd/` does not compile.
+
+//go:build !integration
+
 package main
 
 import (
