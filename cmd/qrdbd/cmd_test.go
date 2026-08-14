@@ -3722,18 +3722,25 @@ func TestNoBootstrapAddrError_Error_ContainsExpectedMessage(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// startBootstrapServers: ReadFile error on existing noise-key.hex
+// startBootstrapServers: advertiser failure propagates to the caller
 // ---------------------------------------------------------------------------
 
-func TestStartBootstrapServers_KeyReadError(t *testing.T) {
+// TestStartBootstrapServers_KeyError checks what this layer actually owns:
+// startBootstrapServers is a thin call onto clusterenroll.StartAdvertiser, so
+// what it must get right is surfacing the advertiser's failure rather than
+// starting a node with no bootstrap server.
+//
+// An unparseable key file is the fault used because it holds for every uid.
+// This test previously made the file mode 0o000 and asserted a ReadFile
+// failure, which was wrong twice over: root reads such a file successfully,
+// and the read happens inside pkg/clusterenroll, not here — so under root it
+// passed on a different error entirely. That branch is now covered where it
+// lives, by TestStartAdvertiser_KeyReadFails.
+func TestStartBootstrapServers_KeyError(t *testing.T) {
 	dir := t.TempDir()
 
-	// Write a noise key file, then remove read permission so os.ReadFile fails
-	// while fileExists returns true.
 	keyPath := filepath.Join(dir, noiseKeyFile)
-	require.NoError(t, os.WriteFile(keyPath, []byte("deadbeef"), 0o600))
-	require.NoError(t, os.Chmod(keyPath, 0o000))
-	t.Cleanup(func() { _ = os.Chmod(keyPath, 0o600) })
+	require.NoError(t, os.WriteFile(keyPath, []byte("not-valid-hex!!!"), 0o600))
 
 	bundle, err := generateCATLS()
 	require.NoError(t, err)
@@ -3747,6 +3754,6 @@ func TestStartBootstrapServers_KeyReadError(t *testing.T) {
 
 	var serverErr *BootstrapServerError
 	assert.True(t, errors.As(err, &serverErr),
-		"expected *BootstrapServerError for ReadFile failure, got %T", err)
+		"expected *BootstrapServerError from the advertiser, got %T", err)
 	assert.Equal(t, "noise", serverErr.Protocol)
 }

@@ -738,41 +738,44 @@ func TestHasSavedConfig_WithDefaultConfigDir_AfterSave(t *testing.T) {
 }
 
 // ===========================================================================
-// loadConfig — ReadFile permission-denied error path
+// loadConfig — unreadable config file
 // ===========================================================================
 
-// TestLoadConfig_ReadFileError exercises the path where the config file
-// exists but cannot be read (skipped when running as root).
+// TestLoadConfig_ReadFileError exercises the path where the config path
+// exists but cannot be read as a file. loadConfig must distinguish that from
+// "no config saved yet": the first is a real fault the caller has to see, the
+// second is the ordinary first-run case.
+//
+// The fault is a directory at the config path, which os.ReadFile rejects with
+// ENOTDIR-class EISDIR for every uid. A mode-0000 file would not do: CI job
+// containers run as root and read it successfully, which is why this test
+// previously skipped itself there and covered nothing
+// (testing-guidelines.md, Fault Injection).
 func TestLoadConfig_ReadFileError(t *testing.T) {
-	if os.Getuid() == 0 {
-		t.Skip("skipping permission test: running as root")
-	}
-
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	log := testLogger(t)
 	conn := NewConnectionBinding(log)
 	esb := NewEmbeddedServerBinding(log, conn, NewSQLBinding(log, conn))
 
-	if err := esb.saveConfig(&EmbeddedConfig{StorageBackend: "memory"}); err != nil {
-		t.Fatalf("saveConfig: %v", err)
-	}
-
 	path, err := esb.configPath()
 	if err != nil {
 		t.Fatalf("configPath: %v", err)
 	}
-	if err := os.Chmod(path, 0o000); err != nil {
-		t.Fatalf("Chmod: %v", err)
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		t.Fatalf("MkdirAll over the config path: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
 
 	_, loadErr := esb.loadConfig()
 	if loadErr == nil {
-		t.Fatal("expected error from loadConfig when file is unreadable")
+		t.Fatal("expected error from loadConfig when the config path is unreadable")
 	}
 	var cle *ConfigLoadError
 	if !errors.As(loadErr, &cle) {
 		t.Fatalf("expected ConfigLoadError, got %T: %v", loadErr, loadErr)
+	}
+	var nsc *NoSavedConfigError
+	if errors.As(loadErr, &nsc) {
+		t.Fatal("an unreadable config was reported as no-saved-config")
 	}
 }
