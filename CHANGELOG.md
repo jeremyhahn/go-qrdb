@@ -11,6 +11,23 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.2.1-alpha] - 2026-08-14
+
+### Fixed
+
+- The two in-repo modules pinned each other at `v0.1.0-alpha`, so a consumer
+  taking `sdk/go v0.2.0-alpha` resolved the parent module to the release that
+  still had Avro, and the build failed with `undefined: codec.Avro` — the new
+  SDK pulls go-codec v1.4.0, which the old parent's `pkg/dao` cannot compile
+  against. Both modules carry a local-path `replace` at each other, which
+  applies only in a main module, so every in-repo build resolved through the
+  working tree and nothing surfaced the stale requirement. `sdk/go` now
+  requires the parent at `v0.2.1-alpha` and the root requires `sdk/go` at the
+  same version.
+
+`v0.2.0-alpha` and `sdk/go/v0.2.0-alpha` are superseded and must not be
+pinned. The tags remain, per the immutability rule.
+
 ## [0.2.0-alpha] - 2026-08-14
 
 ### Removed — BREAKING: the Avro codec is gone from both modules
@@ -75,5 +92,6 @@ ProtoBuf codecs are unaffected.
 - Playwright's generated `playwright-report/` and `test-results/` output no
   longer ships in the repository.
 
-[Unreleased]: https://github.com/jeremyhahn/go-qrdb/compare/v0.2.0-alpha...HEAD
+[Unreleased]: https://github.com/jeremyhahn/go-qrdb/compare/v0.2.1-alpha...HEAD
+[0.2.1-alpha]: https://github.com/jeremyhahn/go-qrdb/compare/v0.2.0-alpha...v0.2.1-alpha
 [0.2.0-alpha]: https://github.com/jeremyhahn/go-qrdb/compare/v0.1.1-alpha...v0.2.0-alpha
