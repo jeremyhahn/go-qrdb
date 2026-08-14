@@ -389,16 +389,20 @@ func validatePrivilegeRef(database, grantee string) error {
 	if database == "" {
 		return &PrivilegeEmptyDatabaseError{}
 	}
-	return validateGrantee(grantee)
+	return ValidateGrantee(grantee)
 }
 
-// validateGrantee validates that a grantee name can be used as a catalog key
+// ValidateGrantee validates that a grantee name can be used as a catalog key
 // without colliding with the catalog's own reserved keys.
 //
 // The "/" ban is what keeps the key space unambiguous: a grantee containing
 // one could otherwise be mistaken for another grantee's epoch key, or escape
 // the database's prefix entirely.
-func validateGrantee(grantee string) error {
+//
+// It is exported so that the SQL layer can refuse an unusable grantee while
+// a GRANT statement is still being planned, against these rules rather than
+// a second copy of them.
+func ValidateGrantee(grantee string) error {
 	switch {
 	case grantee == "":
 		return &PrivilegeInvalidGranteeError{Grantee: grantee, Reason: "must not be empty"}

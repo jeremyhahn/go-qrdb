@@ -232,7 +232,7 @@ func TestNormalizeArgValue_Widths(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := normalizeArgValue(tt.value)
+			got, err := normalizeArgValue(1, tt.value)
 			if err != nil {
 				t.Fatalf("normalizeArgValue: %v", err)
 			}
@@ -247,7 +247,7 @@ func TestNormalizeArgValue_Widths(t *testing.T) {
 // are unwrapped before type analysis, so sql.NullX and similar wrappers bind
 // as their underlying value.
 func TestNormalizeArgValue_UnwrapsValuer(t *testing.T) {
-	got, err := normalizeArgValue(sql.NullString{String: "hi", Valid: true})
+	got, err := normalizeArgValue(1, sql.NullString{String: "hi", Valid: true})
 	if err != nil {
 		t.Fatalf("normalizeArgValue: %v", err)
 	}
@@ -255,7 +255,7 @@ func TestNormalizeArgValue_UnwrapsValuer(t *testing.T) {
 		t.Errorf("value = %#v, want \"hi\"", got)
 	}
 
-	got, err = normalizeArgValue(sql.NullInt64{Valid: false})
+	got, err = normalizeArgValue(1, sql.NullInt64{Valid: false})
 	if err != nil {
 		t.Fatalf("normalizeArgValue: %v", err)
 	}
@@ -266,11 +266,323 @@ func TestNormalizeArgValue_UnwrapsValuer(t *testing.T) {
 
 // TestNormalizeArgValue_Unsupported verifies an unconvertible type is reported.
 func TestNormalizeArgValue_Unsupported(t *testing.T) {
-	_, err := normalizeArgValue(struct{ A int }{})
+	_, err := normalizeArgValue(1, struct{ A int }{})
 
 	var unsupported *UnsupportedArgumentTypeError
 	if !errors.As(err, &unsupported) {
 		t.Fatalf("error = %v, want *UnsupportedArgumentTypeError", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Defined (named) argument types
+// ---------------------------------------------------------------------------
+
+// The idiom every ORM uses for a typed column: a type defined from a type the
+// driver already binds. GORM's own test models declare exactly these
+// (scanner_valuer_test.go's `type Num int64`, query_test.go's `type ID uint`).
+type (
+	definedInt64   int64
+	definedInt     int
+	definedUint    uint
+	definedUint64  uint64
+	definedFloat32 float32
+	definedString  string
+	definedBool    bool
+	definedBytes   []byte
+	definedByte    byte
+	definedByteSl  []definedByte
+	definedTime    time.Time
+	definedStruct  struct{ A int }
+	definedMap     map[string]string
+)
+
+// TestNormalizeArgValue_DefinedTypes verifies a defined type binds as the type
+// it was defined from.
+//
+// This is a regression guard with a specific history: classification used to be
+// a concrete type switch, which no defined type can match however trivially
+// convertible it is. Passing `type Num int64` as an argument was rejected with
+// *UnsupportedArgumentTypeError before any SQL ran, which failed GORM's
+// TestScannerValuer, TestScannerValuerWithFirstOrCreate, TestInvalidValuer and
+// TestCustomizedTypePrimaryKey.
+func TestNormalizeArgValue_DefinedTypes(t *testing.T) {
+	ts := time.Date(2026, 8, 13, 1, 2, 3, 0, time.UTC)
+
+	tests := []struct {
+		name  string
+		value any
+		want  any
+	}{
+		{"defined int64", definedInt64(18), int64(18)},
+		{"defined int", definedInt(-7), int64(-7)},
+		{"defined uint", definedUint(7), uint64(7)},
+		{"defined uint64 beyond int64", definedUint64(math.MaxUint64), uint64(math.MaxUint64)},
+		{"defined float32", definedFloat32(0.5), float64(0.5)},
+		{"defined string", definedString("s"), "s"},
+		{"defined bool", definedBool(true), true},
+		{"defined time.Time", definedTime(ts), ts},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := normalizeArgValue(1, tt.value)
+			if err != nil {
+				t.Fatalf("normalizeArgValue(%T): %v", tt.value, err)
+			}
+			if got != tt.want {
+				t.Errorf("normalizeArgValue(%T) = %#v (%T), want %#v", tt.value, got, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestNormalizeArgValue_DefinedByteSlices verifies a defined byte slice — and a
+// slice of a defined byte type — binds as []byte, keeping the hex-literal
+// binding that protects non-UTF-8 payloads.
+func TestNormalizeArgValue_DefinedByteSlices(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		value any
+	}{
+		{"defined []byte", definedBytes{0x00, 0xFF, 0x41}},
+		{"slice of defined byte", definedByteSl{0x00, 0xFF, 0x41}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := normalizeArgValue(1, tt.value)
+			if err != nil {
+				t.Fatalf("normalizeArgValue(%T): %v", tt.value, err)
+			}
+			b, ok := got.([]byte)
+			if !ok {
+				t.Fatalf("value = %#v (%T), want []byte", got, got)
+			}
+			if string(b) != "\x00\xffA" {
+				t.Errorf("value = %q, want %q", b, "\x00\xffA")
+			}
+		})
+	}
+}
+
+// TestNormalizeArgValue_DefinedTypesAreValidDriverValues verifies the widened
+// classification still produces values database/sql itself recognizes, so
+// nothing downstream of the checker has to special-case them.
+func TestNormalizeArgValue_DefinedTypesAreValidDriverValues(t *testing.T) {
+	for _, v := range []any{
+		definedInt64(1), definedUint(2), definedFloat32(3), definedString("4"),
+		definedBool(true), definedBytes("5"), definedTime(time.Now()),
+	} {
+		got, err := normalizeArgValue(1, v)
+		if err != nil {
+			t.Fatalf("normalizeArgValue(%T): %v", v, err)
+		}
+		// uint64 is admitted by this driver but not by driver.IsValue; every
+		// other normalized form must satisfy the standard contract.
+		if _, isUint := got.(uint64); isUint {
+			continue
+		}
+		if !sqld.IsValue(got) {
+			t.Errorf("normalizeArgValue(%T) = %#v, which is not a driver.Value", v, got)
+		}
+	}
+}
+
+// TestNormalizeArgValue_KindIsNotEnough verifies kind-based classification
+// still refuses a value whose kind does not identify it. Widening the accepted
+// set must not become a catch-all: an unrecognized argument is reported, never
+// stringified into something that would silently be the wrong value.
+func TestNormalizeArgValue_KindIsNotEnough(t *testing.T) {
+	tests := []struct {
+		name  string
+		value any
+	}{
+		{"struct that is not a time", definedStruct{A: 1}},
+		{"struct embedding time.Time", struct{ time.Time }{}},
+		{"slice of non-bytes", []int{1, 2, 3}},
+		{"map", definedMap{"a": "b"}},
+		{"channel", make(chan int)},
+		{"func", func() {}},
+		{"complex", complex(1, 2)},
+		{"array of bytes", [3]byte{1, 2, 3}},
+		{"uintptr", uintptr(1)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := normalizeArgValue(4, tt.value)
+
+			var unsupported *UnsupportedArgumentTypeError
+			if !errors.As(err, &unsupported) {
+				t.Fatalf("error = %v, want *UnsupportedArgumentTypeError", err)
+			}
+			if unsupported.Ordinal != 4 {
+				t.Errorf("Ordinal = %d, want 4", unsupported.Ordinal)
+			}
+		})
+	}
+}
+
+// TestNormalizeArgValue_ReportsOrdinal verifies the reported ordinal is the
+// argument's own position. It used to be reported as 0 for every argument,
+// which pointed at the wrong parameter in a multi-argument statement.
+func TestNormalizeArgValue_ReportsOrdinal(t *testing.T) {
+	_, err := normalizeArgValue(3, definedStruct{})
+
+	var unsupported *UnsupportedArgumentTypeError
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("error = %v, want *UnsupportedArgumentTypeError", err)
+	}
+	if unsupported.Ordinal != 3 {
+		t.Errorf("Ordinal = %d, want 3", unsupported.Ordinal)
+	}
+	if !strings.Contains(err.Error(), "argument 3") {
+		t.Errorf("Error() = %q, want it to name argument 3", err.Error())
+	}
+}
+
+// TestCheckNamedValue_ReportsOrdinal verifies the ordinal survives the driver's
+// real entry point, which is the only place it is known.
+func TestCheckNamedValue_ReportsOrdinal(t *testing.T) {
+	c := &embeddedConn{}
+	nv := &sqld.NamedValue{Ordinal: 2, Value: definedStruct{}}
+
+	err := c.CheckNamedValue(nv)
+
+	var unsupported *UnsupportedArgumentTypeError
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("error = %v, want *UnsupportedArgumentTypeError", err)
+	}
+	if unsupported.Ordinal != 2 {
+		t.Errorf("Ordinal = %d, want 2", unsupported.Ordinal)
+	}
+}
+
+// TestCheckNamedValue_DefinedType verifies a defined type is accepted through
+// the driver's real entry point, which is where GORM's failure surfaced.
+func TestCheckNamedValue_DefinedType(t *testing.T) {
+	c := &embeddedConn{}
+	nv := &sqld.NamedValue{Ordinal: 1, Value: definedInt64(18)}
+
+	if err := c.CheckNamedValue(nv); err != nil {
+		t.Fatalf("CheckNamedValue: %v", err)
+	}
+	if nv.Value != int64(18) {
+		t.Errorf("Value = %#v (%T), want int64(18)", nv.Value, nv.Value)
+	}
+}
+
+// TestNormalizeArgValue_ValuerReturningDefinedType verifies a driver.Valuer
+// that returns a defined type is honoured. Value() is declared to return a
+// driver.Value, but implementations routinely return a domain type, and the
+// unwrapped result gets the same classification as a direct argument.
+func TestNormalizeArgValue_ValuerReturningDefinedType(t *testing.T) {
+	got, err := normalizeArgValue(1, definedTypeValuer{})
+	if err != nil {
+		t.Fatalf("normalizeArgValue: %v", err)
+	}
+	if got != int64(99) {
+		t.Errorf("value = %#v (%T), want int64(99)", got, got)
+	}
+}
+
+// definedTypeValuer is a driver.Valuer whose Value returns a defined type
+// rather than a canonical driver.Value.
+type definedTypeValuer struct{}
+
+func (definedTypeValuer) Value() (sqld.Value, error) { return definedInt64(99), nil }
+
+// TestNormalizeArgValue_DereferencesInterfaces verifies a pointer to an
+// interface is unwrapped to the dynamic value it holds. database/sql's own
+// converter unwraps interfaces, and replacing it means reproducing that.
+func TestNormalizeArgValue_DereferencesInterfaces(t *testing.T) {
+	var boxed any = definedInt64(5)
+
+	got, err := normalizeArgValue(1, &boxed)
+	if err != nil {
+		t.Fatalf("normalizeArgValue: %v", err)
+	}
+	if got != int64(5) {
+		t.Errorf("value = %#v (%T), want int64(5)", got, got)
+	}
+
+	var empty any
+	got, err = normalizeArgValue(1, &empty)
+	if err != nil {
+		t.Fatalf("normalizeArgValue: %v", err)
+	}
+	if got != nil {
+		t.Errorf("value = %#v, want nil (SQL NULL)", got)
+	}
+}
+
+// TestNormalizeArgValue_DefinedTypePointers verifies a pointer to a defined
+// type is dereferenced and a nil one becomes SQL NULL, which is how an ORM
+// passes a nullable column of a domain type.
+func TestNormalizeArgValue_DefinedTypePointers(t *testing.T) {
+	n := definedInt64(42)
+
+	got, err := normalizeArgValue(1, &n)
+	if err != nil {
+		t.Fatalf("normalizeArgValue: %v", err)
+	}
+	if got != int64(42) {
+		t.Errorf("value = %#v (%T), want int64(42)", got, got)
+	}
+
+	var nilPtr *definedInt64
+	got, err = normalizeArgValue(1, nilPtr)
+	if err != nil {
+		t.Fatalf("normalizeArgValue: %v", err)
+	}
+	if got != nil {
+		t.Errorf("value = %#v, want nil (SQL NULL)", got)
+	}
+}
+
+// TestBindArg_DefinedTypesBindLikeTheirUnderlying verifies the normalized form
+// of a defined type reaches the AST as the same expression its underlying type
+// does — in particular that a defined byte slice keeps the hex-literal binding
+// and a defined uint64 above math.MaxInt64 keeps its decimal text.
+func TestBindArg_DefinedTypesBindLikeTheirUnderlying(t *testing.T) {
+	tests := []struct {
+		name     string
+		value    any
+		wantType sqlparser.ValType
+		wantVal  string
+	}{
+		{"defined int64", definedInt64(-42), sqlparser.IntVal, "-42"},
+		{"defined uint64 beyond int64", definedUint64(math.MaxUint64), sqlparser.IntVal, "18446744073709551615"},
+		{"defined string", definedString("O'Brien"), sqlparser.StrVal, "O'Brien"},
+		{"defined bytes", definedBytes{0x00, 0xFF, 0x41}, sqlparser.HexVal, "00ff41"},
+		{"defined bool", definedBool(true), sqlparser.IntVal, "1"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			normalized, err := normalizeArgValue(1, tt.value)
+			if err != nil {
+				t.Fatalf("normalizeArgValue: %v", err)
+			}
+			expr, err := bindArg(1, normalized, time.UTC)
+			if err != nil {
+				t.Fatalf("bindArg: %v", err)
+			}
+
+			val, ok := expr.(*sqlparser.SQLVal)
+			if !ok {
+				t.Fatalf("expr = %T, want *sqlparser.SQLVal", expr)
+			}
+			if val.Type != tt.wantType {
+				t.Errorf("Type = %v, want %v", val.Type, tt.wantType)
+			}
+			got := string(val.Val)
+			if val.Type == sqlparser.HexVal {
+				got = strings.ToLower(got)
+			}
+			if got != tt.wantVal {
+				t.Errorf("Val = %q, want %q", got, tt.wantVal)
+			}
+		})
 	}
 }
 
@@ -312,7 +624,7 @@ func TestNormalizeArgValue_DereferencesPointers(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := normalizeArgValue(tt.value)
+			got, err := normalizeArgValue(1, tt.value)
 			if err != nil {
 				t.Fatalf("normalizeArgValue: %v", err)
 			}
@@ -333,7 +645,7 @@ func TestNormalizeArgValue_NilPointerIsNull(t *testing.T) {
 	)
 
 	for _, v := range []any{nilInt, nilTime, nilStr} {
-		got, err := normalizeArgValue(v)
+		got, err := normalizeArgValue(1, v)
 		if err != nil {
 			t.Fatalf("normalizeArgValue(%T): %v", v, err)
 		}
@@ -350,7 +662,7 @@ func TestNormalizeArgValue_PointerToPointer(t *testing.T) {
 	p := &i
 	pp := &p
 
-	got, err := normalizeArgValue(pp)
+	got, err := normalizeArgValue(1, pp)
 	if err != nil {
 		t.Fatalf("normalizeArgValue: %v", err)
 	}
@@ -392,7 +704,7 @@ func (v *pointerReceiverValuer) Value() (sqld.Value, error) {
 func TestNormalizeArgValue_NilValueReceiverValuerIsNull(t *testing.T) {
 	var arg *valueReceiverValuer
 
-	got, err := normalizeArgValue(arg)
+	got, err := normalizeArgValue(1, arg)
 	if err != nil {
 		t.Fatalf("normalizeArgValue: %v", err)
 	}
@@ -404,7 +716,7 @@ func TestNormalizeArgValue_NilValueReceiverValuerIsNull(t *testing.T) {
 // TestNormalizeArgValue_NonNilValueReceiverValuer verifies a populated value
 // still round-trips through Value().
 func TestNormalizeArgValue_NonNilValueReceiverValuer(t *testing.T) {
-	got, err := normalizeArgValue(&valueReceiverValuer{payload: "hello"})
+	got, err := normalizeArgValue(1, &valueReceiverValuer{payload: "hello"})
 	if err != nil {
 		t.Fatalf("normalizeArgValue: %v", err)
 	}
@@ -419,7 +731,7 @@ func TestNormalizeArgValue_NonNilValueReceiverValuer(t *testing.T) {
 func TestNormalizeArgValue_NilPointerReceiverValuerIsHonoured(t *testing.T) {
 	var arg *pointerReceiverValuer
 
-	got, err := normalizeArgValue(arg)
+	got, err := normalizeArgValue(1, arg)
 	if err != nil {
 		t.Fatalf("normalizeArgValue: %v", err)
 	}

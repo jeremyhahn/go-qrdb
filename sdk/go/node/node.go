@@ -1898,6 +1898,16 @@ func buildServerOpts(svcNode *lifecycle.Node, callerOpts []server.ServerOption) 
 	if svcNode.RAG != nil {
 		opts = append(opts, server.WithRAG(svcNode.RAG))
 	}
+	// Cluster-operations services. Without these the node's own server exposes
+	// cluster status/membership (admin) but not shard rebalance or backup, so an
+	// embedder (or qrdbd) that hosts this server could not reach them. Wired here
+	// so they are served across every transport like any other capability.
+	if svcNode.Rebalance != nil {
+		opts = append(opts, server.WithRebalanceService(svcNode.Rebalance))
+	}
+	if svcNode.Backup != nil {
+		opts = append(opts, server.WithBackupService(svcNode.Backup))
+	}
 	// Caller opts last: allow overriding any of the above.
 	return append(opts, callerOpts...)
 }
@@ -2179,6 +2189,16 @@ func (n *Node) AdminService() service.AdminServicer {
 		return nil
 	}
 	return n.svcNode.Admin
+}
+
+// RebalanceService returns the node's RebalanceServicer (shard stats, plan,
+// execute, imbalance report), or nil if the node has no service layer. It pairs
+// with AdminService for composers that host qrdb's control plane directly.
+func (n *Node) RebalanceService() service.RebalanceServicer {
+	if n.svcNode == nil {
+		return nil
+	}
+	return n.svcNode.Rebalance
 }
 
 // UserAuthFactorService returns the UserAuthFactor service instance the

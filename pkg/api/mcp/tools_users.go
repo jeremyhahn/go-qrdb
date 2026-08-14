@@ -22,50 +22,61 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
 // userTools returns the MCP tool registrations for user management operations.
-func userTools(svc user.UserServicer) []mcpserver.ServerTool {
-	return []mcpserver.ServerTool{
+func userTools(svc user.UserServicer) []serverTool {
+	return []serverTool{
 		{
 			Tool:    toolUserCreate(),
+			Perm:    permission.UsersCreate,
 			Handler: handleUserCreate(svc),
 		},
 		{
 			Tool:    toolUserGet(),
+			Perm:    permission.UsersRead,
 			Handler: handleUserGet(svc),
 		},
 		{
 			Tool:    toolUserGetByUsername(),
+			Perm:    permission.UsersRead,
 			Handler: handleUserGetByUsername(svc),
 		},
 		{
 			Tool:    toolUserGetByCertThumbprint(),
+			Perm:    permission.UsersGetByCertThumbprint,
 			Handler: handleUserGetByCertThumbprint(svc),
 		},
 		{
 			Tool:    toolUserAddCertBinding(),
+			Perm:    permission.UsersAddCertBinding,
 			Handler: handleUserAddCertBinding(svc),
 		},
 		{
 			Tool:    toolUserUpdate(),
+			Perm:    permission.UsersUpdate,
 			Handler: handleUserUpdate(svc),
 		},
 		{
 			Tool:    toolUserDelete(),
+			Perm:    permission.UsersDelete,
 			Handler: handleUserDelete(svc),
 		},
 		{
 			Tool:    toolUserList(),
+			Perm:    permission.UsersList,
 			Handler: handleUserList(svc),
 		},
 		{
 			Tool:    toolUserEnable(),
+			Perm:    permission.UsersEnable,
 			Handler: handleUserEnable(svc),
 		},
 		{
 			Tool:    toolUserDisable(),
+			Perm:    permission.UsersDisable,
 			Handler: handleUserDisable(svc),
 		},
 	}

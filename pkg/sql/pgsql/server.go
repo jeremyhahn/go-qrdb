@@ -31,6 +31,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/engine"
+	"github.com/jeremyhahn/go-qrdb/pkg/sql/infoschema"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/provider"
 )
 
@@ -227,7 +228,16 @@ func (s *Server) Start() error {
 			opt(dbProvider)
 		}
 	}
-	sqlEngine := engine.New(engine.Config{Provider: dbProvider})
+	// Add the information_schema views go-mysql-server does not serve, before
+	// the engine below builds the catalog that copies them. See
+	// pkg/sql/infoschema for why this cannot go through the DatabaseProvider
+	// the way pg_catalog does.
+	infoschema.Register()
+
+	sqlEngine := engine.New(engine.Config{
+		Provider: dbProvider,
+		Dialect:  engine.DialectPostgreSQL,
+	})
 	s.sqlEngine = sqlEngine
 	translator := engine.NewTranslator()
 	parseHandler := NewParseHandler(sqlEngine, translator, s.dbName)
@@ -239,6 +249,7 @@ func (s *Server) Start() error {
 	// authentication work happens (fail-closed).
 	wireOpts := []wire.OptionFn{
 		wire.Logger(s.logger),
+		wire.GlobalParameters(serverParameters()),
 	}
 	if s.sealedProbe != nil {
 		wireOpts = append(wireOpts, wire.SessionMiddleware(sealedSessionHandler(s.sealedProbe)))
@@ -402,6 +413,36 @@ func sealedSessionHandler(probe sealedWindowProbe) wire.SessionHandler {
 			return ctx, sealedWireError(psqlerr.LevelFatal)
 		}
 		return ctx, nil
+	}
+}
+
+// standardConformingStrings is the ParameterStatus every PostgreSQL server
+// reports at startup to state that a backslash inside a '...' literal is an
+// ordinary character rather than an escape introducer. PostgreSQL has
+// defaulted it on since 9.1.
+//
+// Advertising it is required, not decorative. pgx refuses outright to run a
+// simple-protocol query against a server that has not reported it -- "simple
+// protocol queries must be run with standard_conforming_strings=on" -- and
+// gorm.io/driver/postgres forces simple protocol for Migrator.GetRows, which
+// backs ColumnTypes and therefore every schema-introspecting migration a GORM
+// application performs.
+//
+// It is also only true because pkg/sql/engine rewrites backslashes inside
+// plain string literals before go-mysql-server's MySQL lexer sees them (see
+// escapeBackslashesInStringLiterals). Reporting it without that rewrite would
+// be a false promise a client acts on: having seen it, pgx escapes an
+// interpolated value by doubling quotes alone, so a value ending in a
+// backslash would escape its own closing quote and let the remainder of the
+// statement be parsed as SQL.
+const standardConformingStrings wire.ParameterStatus = "standard_conforming_strings"
+
+// serverParameters returns the ParameterStatus set this server reports beyond
+// the ones psql-wire emits for itself (server_encoding, client_encoding,
+// server_version, is_superuser, session_authorization).
+func serverParameters() wire.Parameters {
+	return wire.Parameters{
+		standardConformingStrings: "on",
 	}
 }
 

@@ -22,30 +22,36 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // kvTools returns the MCP tool registrations for KV data-plane operations.
-func kvTools(kvSvc service.KVServicer) []mcpserver.ServerTool {
-	return []mcpserver.ServerTool{
+func kvTools(kvSvc service.KVServicer) []serverTool {
+	return []serverTool{
 		{
 			Tool:    toolPut(),
+			Perm:    permission.KVPut,
 			Handler: handlePut(kvSvc),
 		},
 		{
 			Tool:    toolGet(),
+			Perm:    permission.KVGet,
 			Handler: handleGet(kvSvc),
 		},
 		{
 			Tool:    toolDelete(),
+			Perm:    permission.KVDelete,
 			Handler: handleDelete(kvSvc),
 		},
 		{
 			Tool:    toolList(),
+			Perm:    permission.KVList,
 			Handler: handleList(kvSvc),
 		},
 		{
 			Tool:    toolScan(),
+			Perm:    permission.KVRange,
 			Handler: handleScan(kvSvc),
 		},
 	}

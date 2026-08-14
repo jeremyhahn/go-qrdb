@@ -22,21 +22,22 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // tenantTools returns the MCP tool registrations for tenant lifecycle
 // management: create, get, list, update, delete, and quota management.
-func tenantTools(svc tenant.TenantServicer) []mcpserver.ServerTool {
-	return []mcpserver.ServerTool{
-		{Tool: toolTenantCreate(), Handler: handleTenantCreate(svc)},
-		{Tool: toolTenantGet(), Handler: handleTenantGet(svc)},
-		{Tool: toolTenantList(), Handler: handleTenantList(svc)},
-		{Tool: toolTenantUpdate(), Handler: handleTenantUpdate(svc)},
-		{Tool: toolTenantDelete(), Handler: handleTenantDelete(svc)},
-		{Tool: toolTenantUpdateQuotas(), Handler: handleTenantUpdateQuotas(svc)},
-		{Tool: toolTenantUpdateEntitlements(), Handler: handleTenantUpdateEntitlements(svc)},
+func tenantTools(svc tenant.TenantServicer) []serverTool {
+	return []serverTool{
+		{Tool: toolTenantCreate(), Perm: permission.TenantsCreate, Handler: handleTenantCreate(svc)},
+		{Tool: toolTenantGet(), Perm: permission.TenantsRead, Handler: handleTenantGet(svc)},
+		{Tool: toolTenantList(), Perm: permission.TenantsList, Handler: handleTenantList(svc)},
+		{Tool: toolTenantUpdate(), Perm: permission.TenantsUpdate, Handler: handleTenantUpdate(svc)},
+		{Tool: toolTenantDelete(), Perm: permission.TenantsDelete, Handler: handleTenantDelete(svc)},
+		{Tool: toolTenantUpdateQuotas(), Perm: permission.TenantsUpdate, Handler: handleTenantUpdateQuotas(svc)},
+		{Tool: toolTenantUpdateEntitlements(), Perm: permission.TenantsSetEntitlements, Handler: handleTenantUpdateEntitlements(svc)},
 	}
 }
 

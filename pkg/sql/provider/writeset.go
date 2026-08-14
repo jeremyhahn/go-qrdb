@@ -17,6 +17,7 @@ package provider
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -40,10 +41,16 @@ import (
 // precondition -- the ModRevision (or absence) that key had at the pinned
 // snapshot -- so a concurrent transaction that modified the same key after
 // the snapshot was taken causes this transaction's commit to fail atomically
-// as a single compare-and-swap. Compares cover only the keys actually
-// WRITTEN, never a scan's full read set: a read-set compare would grow
-// without bound across a large SELECT and blow the proposal's operation-count
-// ceiling almost immediately.
+// as a single compare-and-swap. By default, compares cover only the keys
+// actually WRITTEN, never a scan's full read set: a read-set compare would
+// grow without bound across a large SELECT and blow the proposal's
+// operation-count ceiling almost immediately.
+//
+// Which keys are compared is selectable per session -- see IsolationLevel
+// and the qrdb_isolation session variable in session.go. The default,
+// IsolationWritten, is exactly the model described above. No level changes
+// what is APPLIED or how atomically: every level commits the same single
+// proposal.
 //
 // A session executes one statement at a time -- go-mysql-server never calls
 // two methods on the same *sqle.Context/session concurrently -- so WriteSet
@@ -74,6 +81,128 @@ const (
 	writeSetOpOverheadBytes = 32
 )
 
+// ---------------------------------------------------------------------------
+// Isolation levels
+// ---------------------------------------------------------------------------
+
+// IsolationLevel selects which keys an interactive transaction attaches a
+// commit-time precondition to. It tunes CONFLICT DETECTION only -- it does
+// not tune atomicity, and in particular IsolationNone does not mean "no
+// atomicity".
+//
+// At every level the entire buffered write-set -- every row, every index
+// entry, every catalog key the transaction touched -- is still applied as
+// exactly ONE TransactionServicer.Execute proposal (see commit), so a
+// transaction is still all-or-nothing and a row can still never become
+// durable without the index entries that point at it. What the level varies
+// is only the set of preconditions attached to that one proposal, i.e.
+// which concurrent modifications made by OTHER transactions cause it to be
+// rejected. What the transaction itself writes is unaffected.
+//
+// The level is a per-session setting (see the qrdb_isolation session system
+// variable in session.go), sampled once when the transaction starts and
+// then fixed for that transaction's lifetime.
+//
+// The zero value is IsolationWritten: a WriteSet constructed without an
+// explicit level behaves exactly as this package always has.
+type IsolationLevel uint8
+
+const (
+	// IsolationWritten compares every key the transaction WROTE against
+	// the state that key had at the pinned snapshot revision. This is
+	// snapshot isolation with first-committer-wins, the default, and the
+	// only behavior this package had before the level became selectable.
+	//
+	// It guarantees: reads see one consistent snapshot for the whole
+	// transaction; and no lost update on any row the transaction wrote --
+	// if another transaction committed over any of those keys after this
+	// one pinned its snapshot, this one is rejected with MySQL 1213
+	// rather than silently overwriting the other's work.
+	//
+	// It does NOT guarantee serializability: a transaction that reads a
+	// row, decides something from it, and then writes a DIFFERENT row is
+	// unprotected, because the row it merely read carries no precondition
+	// (the classic write skew). IsolationWrittenReads closes exactly that
+	// hole for point reads.
+	IsolationWritten IsolationLevel = iota
+
+	// IsolationNone attaches no preconditions at all: the transaction's
+	// buffered writes are applied unconditionally, last-writer-wins.
+	//
+	// It is for append-heavy or idempotent workloads -- audit trails,
+	// event logs, upserts of externally-authoritative state -- where a
+	// lost update is acceptable by construction and the 1213 a genuine
+	// key overlap would produce is pure cost, since the correct client
+	// response would be to retry and overwrite anyway.
+	//
+	// It still guarantees: the whole write-set applies atomically at one
+	// revision, and reads within the transaction still come from one
+	// pinned snapshot. What is given up is exclusively the CROSS-
+	// TRANSACTION precondition -- a concurrent transaction's committed
+	// write to a key this transaction also wrote is silently overwritten
+	// instead of detected. Nothing internal to the transaction is
+	// relaxed: a row and its index entries still become visible together
+	// or not at all, and PRIMARY/UNIQUE constraints are still enforced by
+	// the state machine, which validates them over the proposed op set
+	// independently of any compare (see MVCCEngine.handleTransaction).
+	IsolationNone
+
+	// IsolationWrittenReads compares every key the transaction wrote AND
+	// every key it read BY EXACT KEY (a point read through Lookup/Get --
+	// a primary-key or whole-tuple unique-index lookup), approaching
+	// serializability for transactions whose reads are all point reads.
+	// It is what catches the write skew IsolationWritten misses: the key
+	// that was only read still has to hold the value it held at the
+	// pinned snapshot for the commit to succeed.
+	//
+	// It deliberately stops short of true serializability, and says so
+	// rather than pretending otherwise: a RANGE read (any table scan or
+	// multi-entry index scan) is REFUSED at this level with
+	// *IsolationRangeReadError instead of being admitted with its read
+	// set silently ignored. Comparing a scan's read set would grow the
+	// proposal without bound and blow its operation-count ceiling almost
+	// immediately, and admitting the scan while ignoring it would report
+	// a guarantee that is not being enforced. Phantoms are therefore out
+	// of scope by construction: at this level a transaction cannot
+	// perform the range read that would expose one.
+	IsolationWrittenReads
+)
+
+// isolationLevelNames maps each level to the spelling the qrdb_isolation
+// session variable uses.
+var isolationLevelNames = map[IsolationLevel]string{
+	IsolationNone:         "none",
+	IsolationWritten:      "written",
+	IsolationWrittenReads: "written+reads",
+}
+
+// isolationLevelOrder fixes the order the levels are registered in as the
+// qrdb_isolation enum's values, weakest first, so that the numeric aliases
+// MySQL accepts for an ENUM system variable (SET qrdb_isolation = 1) read as
+// increasing strictness. That ordinal is deliberately independent of the Go
+// constants' own values, which instead put the DEFAULT at zero so that an
+// IsolationLevel field left uninitialized means "behave exactly as before".
+var isolationLevelOrder = []IsolationLevel{IsolationNone, IsolationWritten, IsolationWrittenReads}
+
+// isolationLevels resolves a qrdb_isolation spelling back to its level. It
+// is derived from isolationLevelNames so the two can never disagree.
+var isolationLevels = func() map[string]IsolationLevel {
+	out := make(map[string]IsolationLevel, len(isolationLevelNames))
+	for level, name := range isolationLevelNames {
+		out[name] = level
+	}
+	return out
+}()
+
+// String implements fmt.Stringer, returning the level's qrdb_isolation
+// spelling.
+func (l IsolationLevel) String() string {
+	if name, ok := isolationLevelNames[l]; ok {
+		return name
+	}
+	return "IsolationLevel(" + strconv.Itoa(int(l)) + ")"
+}
+
 // wsEntry is the buffered state of one physical key: its current value (or
 // tombstone), the commit-time precondition established when the key was
 // first touched by this transaction, and the estimated byte size it
@@ -101,6 +230,11 @@ type undoRecord struct {
 type WriteSet struct {
 	readOnly bool
 
+	// level is the conflict-detection scope this transaction commits
+	// with, sampled from the session when the transaction started and
+	// fixed thereafter. Its zero value, IsolationWritten, is the default.
+	level IsolationLevel
+
 	// bound is true once the write-set has pinned a snapshot revision and
 	// resolved the TransactionServicer/MVCCKVServicer it will commit
 	// through -- deferred until the first relational table actually
@@ -117,16 +251,27 @@ type WriteSet struct {
 	order   []string // insertion order; savepoint marks are indexes into undoLog, not this slice
 	undoLog []undoRecord
 
+	// reads holds the commit-time precondition for every key the
+	// transaction has read BY EXACT KEY but not (yet) written, and
+	// readOrder their first-read order. Both are populated only at
+	// IsolationWrittenReads -- recordRead returns immediately at every
+	// other level, so at the default the map is never even allocated and
+	// a read costs exactly what it always did.
+	reads     map[string]service.Compare
+	readOrder []string
+
 	savepoints map[string]int // name -> undoLog length at the time of the mark
 
 	totalBytes int
 }
 
 // newWriteSet creates an empty, unbound WriteSet. readOnly reflects the
-// TransactionCharacteristic StartTransaction was called with.
-func newWriteSet(readOnly bool) *WriteSet {
+// TransactionCharacteristic StartTransaction was called with; level is the
+// conflict-detection scope the session selected (see IsolationLevel).
+func newWriteSet(readOnly bool, level IsolationLevel) *WriteSet {
 	return &WriteSet{
 		readOnly:   readOnly,
+		level:      level,
 		entries:    make(map[string]*wsEntry),
 		savepoints: make(map[string]int),
 	}
@@ -139,6 +284,10 @@ func (ws *WriteSet) Bound() bool { return ws.bound }
 // ReadOnly reports whether the transaction was started with
 // START TRANSACTION READ ONLY.
 func (ws *WriteSet) ReadOnly() bool { return ws.readOnly }
+
+// Isolation returns the conflict-detection scope this transaction will
+// commit with, fixed when the transaction started.
+func (ws *WriteSet) Isolation() IsolationLevel { return ws.level }
 
 // HasBufferedWrites reports whether the transaction has buffered any
 // mutation not yet visible in committed storage. Callers that would
@@ -187,6 +336,14 @@ func (ws *WriteSet) bind(ctx context.Context, tenantID, database string, txnSvc 
 // buffer-deleted), otherwise the value at the pinned snapshot revision.
 // found is false when the key does not exist in either the buffer or the
 // snapshot.
+//
+// Lookup is this package's only point-read entry point (Get delegates to
+// it), so at IsolationWrittenReads it is also where a read's commit-time
+// precondition is recorded -- from the very snapshot read the answer
+// itself comes from, never a second one. A key served from the buffer
+// records nothing: the transaction has already written it, so it already
+// carries a write precondition, and by read-your-own-writes the buffered
+// answer did not come from the snapshot at all.
 func (ws *WriteSet) Lookup(ctx context.Context, key string) (value []byte, found bool, err error) {
 	if e, ok := ws.entries[key]; ok {
 		if e.tombstone {
@@ -201,11 +358,56 @@ func (ws *WriteSet) Lookup(ctx context.Context, key string) (value []byte, found
 	kv, err := ws.mvccSvc.GetAtRevision(ctx, key, ws.revision)
 	if err != nil {
 		if snapshotAbsent(err) {
+			if rerr := ws.recordRead(key, absenceCompare(key)); rerr != nil {
+				return nil, false, rerr
+			}
 			return nil, false, nil
 		}
 		return nil, false, translateSnapshotError(err)
 	}
+	if rerr := ws.recordRead(key, modRevisionCompare(key, kv.ModRevision)); rerr != nil {
+		return nil, false, rerr
+	}
 	return kv.Value, true, nil
+}
+
+// recordRead remembers, at IsolationWrittenReads only, the commit-time
+// precondition cmp for a key this transaction read by exact key, so that
+// Compares can require the key to still hold that state when the
+// transaction commits. It is a no-op at every other level, which is what
+// keeps IsolationWritten's read path byte-for-byte what it always was.
+//
+// The first read of a key wins, exactly as the first write of a key does
+// (see recordTouch): every read in the transaction is served from the same
+// pinned snapshot, so re-deriving could only ever produce the same compare.
+//
+// Read preconditions count against the same write-set ceilings the buffered
+// writes do -- they occupy the same single proposal -- so a transaction that
+// point-reads its way past them is refused with *WriteSetLimitError at the
+// offending statement rather than at COMMIT.
+func (ws *WriteSet) recordRead(key string, cmp service.Compare) error {
+	if ws.level != IsolationWrittenReads {
+		return nil
+	}
+	if _, ok := ws.reads[key]; ok {
+		return nil
+	}
+
+	size := len(key) + writeSetOpOverheadBytes
+	if len(ws.order)+len(ws.readOrder) >= writeSetMaxOps {
+		return &WriteSetLimitError{Reason: "operation count", Size: len(ws.order) + len(ws.readOrder) + 1, Max: writeSetMaxOps}
+	}
+	if ws.totalBytes+size > writeSetMaxBytes {
+		return &WriteSetLimitError{Reason: "byte size", Size: ws.totalBytes + size, Max: writeSetMaxBytes}
+	}
+
+	if ws.reads == nil {
+		ws.reads = make(map[string]service.Compare)
+	}
+	ws.reads[key] = cmp
+	ws.readOrder = append(ws.readOrder, key)
+	ws.totalBytes += size
+	return nil
 }
 
 // snapshotAbsent reports whether a pinned-revision read failed because the key
@@ -254,7 +456,20 @@ func (ws *WriteSet) Get(ctx context.Context, key string) ([]byte, error) {
 // adds; a delete removes). The returned map has the same shape
 // service.KVServicer.Scan returns, so a RelationalTable read path can use it
 // as a drop-in replacement.
+//
+// At IsolationWrittenReads a range read is refused outright with
+// *IsolationRangeReadError. That level's contract is that every key the
+// transaction read is compared at commit, and a scan's read set cannot be
+// compared -- it grows without bound and would blow the proposal's
+// operation-count ceiling. Serving the scan anyway and quietly leaving its
+// read set uncompared would report a guarantee that is not being enforced,
+// so the transaction is told, at the statement that asked, exactly what
+// this level cannot do.
 func (ws *WriteSet) RangeOverlay(ctx context.Context, prefix string) (map[string][]byte, error) {
+	if ws.level == IsolationWrittenReads {
+		return nil, &IsolationRangeReadError{Level: ws.level.String(), Prefix: prefix}
+	}
+
 	out := make(map[string][]byte)
 
 	if ws.bound {
@@ -357,8 +572,8 @@ func (ws *WriteSet) recordTouch(ctx context.Context, key string, value []byte, t
 		return nil
 	}
 
-	if len(ws.order) >= writeSetMaxOps {
-		return &WriteSetLimitError{Reason: "operation count", Size: len(ws.order) + 1, Max: writeSetMaxOps}
+	if len(ws.order)+len(ws.readOrder) >= writeSetMaxOps {
+		return &WriteSetLimitError{Reason: "operation count", Size: len(ws.order) + len(ws.readOrder) + 1, Max: writeSetMaxOps}
 	}
 	if ws.totalBytes+newSize > writeSetMaxBytes {
 		return &WriteSetLimitError{Reason: "byte size", Size: ws.totalBytes + newSize, Max: writeSetMaxBytes}
@@ -366,7 +581,7 @@ func (ws *WriteSet) recordTouch(ctx context.Context, key string, value []byte, t
 
 	var cmp service.Compare
 	if unique {
-		cmp = service.Compare{Key: []byte(key), Target: service.CompareVersion, Result: service.CompareEqual, Version: 0}
+		cmp = absenceCompare(key)
 	} else {
 		var err error
 		cmp, err = ws.baselineCompare(ctx, key)
@@ -390,11 +605,25 @@ func (ws *WriteSet) baselineCompare(ctx context.Context, key string) (service.Co
 	kv, err := ws.mvccSvc.GetAtRevision(ctx, key, ws.revision)
 	if err != nil {
 		if snapshotAbsent(err) {
-			return service.Compare{Key: []byte(key), Target: service.CompareVersion, Result: service.CompareEqual, Version: 0}, nil
+			return absenceCompare(key), nil
 		}
 		return service.Compare{}, translateSnapshotError(err)
 	}
-	return service.Compare{Key: []byte(key), Target: service.CompareModRevision, Result: service.CompareEqual, ModRevision: kv.ModRevision}, nil
+	return modRevisionCompare(key, kv.ModRevision), nil
+}
+
+// absenceCompare builds the precondition "key did not exist at the pinned
+// snapshot and must still not exist at commit". Version==0 is how the store
+// spells absence: a key that has never been written, or has been deleted,
+// has no version.
+func absenceCompare(key string) service.Compare {
+	return service.Compare{Key: []byte(key), Target: service.CompareVersion, Result: service.CompareEqual, Version: 0}
+}
+
+// modRevisionCompare builds the precondition "key must still hold the
+// revision it held at the pinned snapshot at commit time".
+func modRevisionCompare(key string, modRevision int64) service.Compare {
+	return service.Compare{Key: []byte(key), Target: service.CompareModRevision, Result: service.CompareEqual, ModRevision: modRevision}
 }
 
 // ---------------------------------------------------------------------------
@@ -415,6 +644,12 @@ func (ws *WriteSet) Mark(name string) {
 // subsequent RollbackTo the same name is still well-defined -- but any
 // savepoint marked after this one is discarded, matching MySQL, which removes
 // any savepoints that were set after the one being rolled back to.
+//
+// Read preconditions recorded at IsolationWrittenReads are deliberately NOT
+// undone: rolling back a buffered write un-writes it, but nothing can
+// un-read a value the transaction has already seen and may have branched
+// on. InnoDB draws the same line -- ROLLBACK TO SAVEPOINT releases no row
+// locks acquired since the mark.
 func (ws *WriteSet) RollbackTo(name string) error {
 	mark, ok := ws.savepoints[name]
 	if !ok {
@@ -475,12 +710,62 @@ func (ws *WriteSet) rebuildOrder() {
 // Commit
 // ---------------------------------------------------------------------------
 
-// Compares returns the commit-time precondition for every buffered key, in
-// insertion order.
+// compareBuilders dispatches Compares to the builder for each isolation
+// level, so adding a level is adding an entry here and a builder below
+// rather than another arm of a conditional threaded through the commit
+// path.
+var compareBuilders = map[IsolationLevel]func(*WriteSet) []service.Compare{
+	IsolationNone:         (*WriteSet).noCompares,
+	IsolationWritten:      (*WriteSet).writtenCompares,
+	IsolationWrittenReads: (*WriteSet).writtenAndReadCompares,
+}
+
+// Compares returns the commit-time preconditions this transaction's single
+// compare-and-swap carries, which keys those cover being determined by the
+// transaction's isolation level (see IsolationLevel).
+//
+// A level with no builder -- only reachable by constructing an
+// IsolationLevel value that is not one of this package's constants -- falls
+// back to IsolationWritten, the default, so an out-of-range value can never
+// silently weaken a transaction's conflict detection.
 func (ws *WriteSet) Compares() []service.Compare {
+	build, ok := compareBuilders[ws.level]
+	if !ok {
+		build = (*WriteSet).writtenCompares
+	}
+	return build(ws)
+}
+
+// noCompares is IsolationNone's builder: the write-set commits
+// unconditionally.
+func (ws *WriteSet) noCompares() []service.Compare { return nil }
+
+// writtenCompares is IsolationWritten's builder: the precondition of every
+// buffered key, in insertion order.
+func (ws *WriteSet) writtenCompares() []service.Compare {
 	out := make([]service.Compare, 0, len(ws.order))
 	for _, k := range ws.order {
 		out = append(out, ws.entries[k].compare)
+	}
+	return out
+}
+
+// writtenAndReadCompares is IsolationWrittenReads' builder: every written
+// key's precondition, then every point-read key's, in first-read order.
+//
+// A key that was read and later written contributes only its WRITE
+// precondition. Both derive from the same pinned snapshot, so for an
+// ordinary Put the two are identical and the second would be redundant;
+// for a PutUnique they deliberately differ (see that method), and it is the
+// write's unconditional absence requirement -- the one enforcing the
+// PRIMARY/UNIQUE constraint -- that must be the one to survive.
+func (ws *WriteSet) writtenAndReadCompares() []service.Compare {
+	out := ws.writtenCompares()
+	for _, k := range ws.readOrder {
+		if _, written := ws.entries[k]; written {
+			continue
+		}
+		out = append(out, ws.reads[k])
 	}
 	return out
 }
@@ -506,6 +791,14 @@ func (ws *WriteSet) Ops() []service.Op {
 // SELECTed from legacy tables, or committed immediately after BEGIN) and a
 // bound-but-empty one (every statement was a read) both commit trivially
 // without proposing anything, since there is nothing to make durable.
+//
+// That holds at IsolationWrittenReads too, where a read-only transaction
+// may have accumulated read preconditions but no writes. Proposing them
+// alone would only ask "did anything I read change?", and a transaction
+// that wrote nothing cannot lose an update or skew a write no matter what
+// the answer is -- it already observed one consistent snapshot, and its
+// effect on the database is empty. So a read-only transaction is never
+// failed for losing a race it was not in, at any level.
 func (ws *WriteSet) commit(ctx context.Context) (*service.TransactionResponse, error) {
 	if !ws.bound || len(ws.order) == 0 {
 		return &service.TransactionResponse{Succeeded: true}, nil

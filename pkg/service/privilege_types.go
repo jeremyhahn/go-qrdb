@@ -184,10 +184,10 @@ func (m PrivilegeMask) Names() []string {
 // (MySQL prints it as a WITH clause), so it is excluded here.
 func (m PrivilegeMask) String() string {
 	grantable := m &^ PrivilegeGrantOption
-	switch {
-	case grantable == PrivilegeAll:
+	switch grantable {
+	case PrivilegeAll:
 		return PrivilegeAllName
-	case grantable == 0:
+	case 0:
 		return "USAGE"
 	default:
 		return strings.Join(grantable.Names(), ", ")
@@ -514,7 +514,9 @@ type PrivilegeResolution struct {
 	Epoch uint64 `json:"epoch,omitempty"`
 
 	// Set is the grantee's privilege record, nil when Unchanged is true or
-	// when the grantee has no record.
+	// when the database is not latched. A grantee that simply has no record
+	// resolves to a non-nil empty set, which is the same thing to every
+	// accessor and saves the caller a nil branch.
 	Set *PrivilegeSet `json:"set,omitempty"`
 
 	// Unchanged reports that the caller's cached Set is still current, so

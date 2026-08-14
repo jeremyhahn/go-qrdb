@@ -431,12 +431,12 @@ func TestBatchService_ExecuteWithMode_ReadRange(t *testing.T) {
 }
 
 // executeGet path: key-not-found returns succeeded with empty Kvs.
-// We use mockKeyNotFoundErr which satisfies the keyNotFoundErr interface
+// We use mockKeyNotFoundError which satisfies the keyNotFoundErr interface
 // (has both Error() and KeyNotFound() methods).
 func TestBatchService_Execute_GetKeyNotFound(t *testing.T) {
 	host := &mockHost{
 		syncReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
-			return nil, &mockKeyNotFoundErr{key: "missing"}
+			return nil, &mockKeyNotFoundError{key: "missing"}
 		},
 	}
 	svc := NewBatchService(host, 1)

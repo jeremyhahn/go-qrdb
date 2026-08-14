@@ -53,7 +53,7 @@ from the test suite.
 | [scoping.md](scoping.md) | Tenant & database scoping: tenant from the authenticated mTLS identity, X-QRDB-Database for multi-database isolation, keyspace + vector-namespace tenant-partitioning |
 | [embedding/README.md](embedding/README.md) | Embedding service: OpenAI-compatible providers (Ollama, OpenAI, vLLM), caching, batch processing |
 | [rag/README.md](rag/README.md) | Retrieval-Augmented Generation: document chunking, ingestion pipeline, semantic retrieval |
-| [sql/README.md](sql/README.md) | SQL wire protocol: MySQL and PostgreSQL compatibility, mTLS auth, PG syntax translation, multi-tenancy, relational tables (DDL, DML, secondary indexes, foreign keys), interactive transactions, index-accelerated WHERE clauses |
+| [sql/README.md](sql/README.md) | SQL wire protocol: MySQL and PostgreSQL compatibility, mTLS auth, the two authorization planes (service RBAC vs SQL table privileges: GRANT/REVOKE/SHOW GRANTS, per-database activation latch), PG syntax translation, multi-tenancy, relational tables (DDL, DML, secondary indexes, foreign keys), interactive transactions, index-accelerated WHERE clauses |
 | [sql/gorm.md](sql/gorm.md) | GORM provider (`sdk/go/gorm`): getting started, `node://` vs `embedded://` DSNs, migrations, transactions, error mapping (1062/1451/1452/1213), known limitations, conformance harness |
 | [etcd/README.md](etcd/README.md) | etcd protocol compatibility: per-database gRPC endpoint, Kubernetes integration, watch/lease/transaction support |
 

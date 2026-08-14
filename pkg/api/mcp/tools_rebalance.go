@@ -21,17 +21,18 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // rebalanceTools returns the MCP tool registrations for cluster rebalance
 // operations: shard statistics, plan generation, execution, and reporting.
-func rebalanceTools(svc service.RebalanceServicer) []mcpserver.ServerTool {
-	return []mcpserver.ServerTool{
-		{Tool: toolRebalanceShardStats(), Handler: handleRebalanceShardStats(svc)},
-		{Tool: toolRebalancePlan(), Handler: handleRebalancePlan(svc)},
-		{Tool: toolRebalanceExecute(), Handler: handleRebalanceExecute(svc)},
-		{Tool: toolRebalanceReport(), Handler: handleRebalanceReport(svc)},
+func rebalanceTools(svc service.RebalanceServicer) []serverTool {
+	return []serverTool{
+		{Tool: toolRebalanceShardStats(), Perm: permission.RebalanceStats, Handler: handleRebalanceShardStats(svc)},
+		{Tool: toolRebalancePlan(), Perm: permission.RebalancePlan, Handler: handleRebalancePlan(svc)},
+		{Tool: toolRebalanceExecute(), Perm: permission.RebalanceExecute, Handler: handleRebalanceExecute(svc)},
+		{Tool: toolRebalanceReport(), Perm: permission.RebalanceReport, Handler: handleRebalanceReport(svc)},
 	}
 }
 

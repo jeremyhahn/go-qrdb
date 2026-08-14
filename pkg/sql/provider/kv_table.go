@@ -15,6 +15,7 @@
 package provider
 
 import (
+	"errors"
 	"io"
 	"sort"
 	"strings"
@@ -197,12 +198,24 @@ func (t *KVTable) Replacer(ctx *sqle.Context) sqle.RowReplacer {
 // GetIndexes returns all secondary indexes registered for the KV table. When
 // no IndexServicer is configured, an empty slice is returned and the query
 // planner falls back to full table scans.
+//
+// A node whose state machine was built without the index subsystem answers
+// the same way, for the same reason. The two are one condition described at
+// two layers -- there is no index to consult either way -- and the "memory"
+// state machine is exactly such a node. Propagating that as a query error
+// instead failed every SELECT carrying a WHERE clause on it, over both wire
+// protocols, because the planner asks for a table's indexes before it can
+// choose a scan.
 func (t *KVTable) GetIndexes(ctx *sqle.Context) ([]sqle.Index, error) {
 	if t.indexSvc == nil {
 		return nil, nil
 	}
 	names, err := t.indexSvc.ListIndexes(ctx)
 	if err != nil {
+		var notConfigured *service.SubsystemNotConfiguredError
+		if errors.As(err, &notConfigured) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	indexes := make([]sqle.Index, 0, len(names))

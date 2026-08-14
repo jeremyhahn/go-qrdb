@@ -31,7 +31,7 @@ func newBoundWriteSet(t *testing.T) (*WriteSet, *memStore) {
 	t.Helper()
 	store := newMemStore()
 	txn := &memTxn{store: store}
-	ws := newWriteSet(false)
+	ws := newWriteSet(false, IsolationWritten)
 	require.NoError(t, ws.bind(context.Background(), "t1", "db1", txn, store))
 	return ws, store
 }
@@ -52,7 +52,7 @@ func TestWriteSet_Bind_CrossDatabaseRejected(t *testing.T) {
 }
 
 func TestWriteSet_Bind_PropagatesCurrentRevisionError(t *testing.T) {
-	ws := newWriteSet(false)
+	ws := newWriteSet(false, IsolationWritten)
 	boom := errors.New("boom")
 	mvcc := &errMVCC{revErr: boom}
 	err := ws.bind(context.Background(), "t1", "db1", nil, mvcc)
@@ -81,7 +81,7 @@ func (e *errMVCC) Range(context.Context, []byte, []byte, ...service.RangeOption)
 }
 
 func TestWriteSet_Lookup_UnboundReturnsNotFound(t *testing.T) {
-	ws := newWriteSet(false)
+	ws := newWriteSet(false, IsolationWritten)
 	v, found, err := ws.Lookup(context.Background(), "k1")
 	require.NoError(t, err)
 	assert.False(t, found)
@@ -91,7 +91,7 @@ func TestWriteSet_Lookup_UnboundReturnsNotFound(t *testing.T) {
 func TestWriteSet_Lookup_BufferBeforeSnapshot(t *testing.T) {
 	store := newMemStore()
 	require.NoError(t, store.Put(context.Background(), "k1", []byte("snapshot")))
-	ws := newWriteSet(false)
+	ws := newWriteSet(false, IsolationWritten)
 	require.NoError(t, ws.bind(context.Background(), "t1", "db1", &memTxn{store: store}, store))
 
 	require.NoError(t, ws.Put(context.Background(), "k1", []byte("buffered")))
@@ -104,7 +104,7 @@ func TestWriteSet_Lookup_BufferBeforeSnapshot(t *testing.T) {
 func TestWriteSet_Lookup_TombstoneHidesSnapshotValue(t *testing.T) {
 	store := newMemStore()
 	require.NoError(t, store.Put(context.Background(), "k1", []byte("v1")))
-	ws := newWriteSet(false)
+	ws := newWriteSet(false, IsolationWritten)
 	require.NoError(t, ws.bind(context.Background(), "t1", "db1", &memTxn{store: store}, store))
 
 	require.NoError(t, ws.Delete(context.Background(), "k1"))
@@ -133,7 +133,7 @@ func TestWriteSet_PutUnique_AlwaysAbsentPrecondition(t *testing.T) {
 	// Pre-existing key at bind time: a plain Put would derive a
 	// ModRevision precondition; PutUnique must still derive Version==0.
 	require.NoError(t, store.Put(context.Background(), "k1", []byte("existing")))
-	ws := newWriteSet(false)
+	ws := newWriteSet(false, IsolationWritten)
 	require.NoError(t, ws.bind(context.Background(), "t1", "db1", &memTxn{store: store}, store))
 
 	require.NoError(t, ws.PutUnique(context.Background(), "k1", []byte("new")))
@@ -156,7 +156,7 @@ func TestWriteSet_Put_DerivesModRevisionPrecondition(t *testing.T) {
 	rev, err := store.GetRevision(context.Background(), "k1")
 	require.NoError(t, err)
 
-	ws := newWriteSet(false)
+	ws := newWriteSet(false, IsolationWritten)
 	require.NoError(t, ws.bind(context.Background(), "t1", "db1", &memTxn{store: store}, store))
 	require.NoError(t, ws.Put(context.Background(), "k1", []byte("v1")))
 
@@ -183,7 +183,7 @@ func TestWriteSet_SecondTouch_PreservesFirstTouchPrecondition(t *testing.T) {
 func TestWriteSet_Delete_ThenPutUnique_ReinsertWithinTx(t *testing.T) {
 	store := newMemStore()
 	require.NoError(t, store.Put(context.Background(), "k1", []byte("v0")))
-	ws := newWriteSet(false)
+	ws := newWriteSet(false, IsolationWritten)
 	require.NoError(t, ws.bind(context.Background(), "t1", "db1", &memTxn{store: store}, store))
 
 	require.NoError(t, ws.Delete(context.Background(), "k1"))
@@ -203,7 +203,7 @@ func TestWriteSet_RangeOverlay_MergesSnapshotAndBuffer(t *testing.T) {
 	store := newMemStore()
 	require.NoError(t, store.Put(context.Background(), "p/a", []byte("va")))
 	require.NoError(t, store.Put(context.Background(), "p/b", []byte("vb")))
-	ws := newWriteSet(false)
+	ws := newWriteSet(false, IsolationWritten)
 	require.NoError(t, ws.bind(context.Background(), "t1", "db1", &memTxn{store: store}, store))
 
 	require.NoError(t, ws.Put(context.Background(), "p/c", []byte("vc")))  // buffered add
@@ -219,7 +219,7 @@ func TestWriteSet_RangeOverlay_MergesSnapshotAndBuffer(t *testing.T) {
 }
 
 func TestWriteSet_RangeOverlay_Unbound(t *testing.T) {
-	ws := newWriteSet(false)
+	ws := newWriteSet(false, IsolationWritten)
 	out, err := ws.RangeOverlay(context.Background(), "p/")
 	require.NoError(t, err)
 	assert.Empty(t, out)
@@ -227,7 +227,7 @@ func TestWriteSet_RangeOverlay_Unbound(t *testing.T) {
 
 func TestWriteSet_ReadOnly_RejectsWrites(t *testing.T) {
 	store := newMemStore()
-	ws := newWriteSet(true)
+	ws := newWriteSet(true, IsolationWritten)
 	require.NoError(t, ws.bind(context.Background(), "t1", "db1", &memTxn{store: store}, store))
 
 	err := ws.Put(context.Background(), "k1", []byte("v1"))
@@ -242,7 +242,7 @@ func TestWriteSet_ReadOnly_RejectsWrites(t *testing.T) {
 }
 
 func TestWriteSet_Commit_Empty(t *testing.T) {
-	ws := newWriteSet(false)
+	ws := newWriteSet(false, IsolationWritten)
 	resp, err := ws.commit(context.Background())
 	require.NoError(t, err)
 	assert.True(t, resp.Succeeded)
@@ -400,7 +400,7 @@ func TestWriteSet_OpCountLimit_Enforced(t *testing.T) {
 func TestWriteSet_BaselineCompare_TranslatesRevisionCompacted(t *testing.T) {
 	compactedErr := &service.RevisionCompactedError{Requested: 5, Compacted: 10}
 	mvcc := &errMVCC{getErr: compactedErr}
-	ws := newWriteSet(false)
+	ws := newWriteSet(false, IsolationWritten)
 	require.NoError(t, ws.bind(context.Background(), "t1", "db1", nil, &errMVCC{revErr: nil}))
 	ws.mvccSvc = mvcc // swap in the erroring MVCC after a successful bind
 
@@ -413,7 +413,7 @@ func TestWriteSet_BaselineCompare_TranslatesRevisionCompacted(t *testing.T) {
 
 func TestWriteSet_RangeOverlay_TranslatesRevisionCompacted(t *testing.T) {
 	compactedErr := &service.RevisionCompactedError{Requested: 5, Compacted: 10}
-	ws := newWriteSet(false)
+	ws := newWriteSet(false, IsolationWritten)
 	require.NoError(t, ws.bind(context.Background(), "t1", "db1", nil, &errMVCC{revErr: nil}))
 	ws.mvccSvc = &errMVCC{rangeErr: compactedErr}
 
@@ -424,7 +424,7 @@ func TestWriteSet_RangeOverlay_TranslatesRevisionCompacted(t *testing.T) {
 
 func TestWriteSet_Lookup_TranslatesRevisionCompacted(t *testing.T) {
 	compactedErr := &service.RevisionCompactedError{Requested: 5, Compacted: 10}
-	ws := newWriteSet(false)
+	ws := newWriteSet(false, IsolationWritten)
 	require.NoError(t, ws.bind(context.Background(), "t1", "db1", nil, &errMVCC{revErr: nil}))
 	ws.mvccSvc = &errMVCC{getErr: compactedErr}
 
@@ -435,7 +435,7 @@ func TestWriteSet_Lookup_TranslatesRevisionCompacted(t *testing.T) {
 
 func TestWriteSet_BaselineCompare_PropagatesOtherErrors(t *testing.T) {
 	boom := errors.New("boom")
-	ws := newWriteSet(false)
+	ws := newWriteSet(false, IsolationWritten)
 	require.NoError(t, ws.bind(context.Background(), "t1", "db1", nil, &errMVCC{revErr: nil}))
 	ws.mvccSvc = &errMVCC{getErr: boom}
 
@@ -455,7 +455,7 @@ func TestWriteSet_BaselineCompare_PropagatesOtherErrors(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWriteSet_Lookup_RevisionNotFoundIsAbsence(t *testing.T) {
-	ws := newWriteSet(false)
+	ws := newWriteSet(false, IsolationWritten)
 	require.NoError(t, ws.bind(context.Background(), "t1", "db1", nil, &errMVCC{}))
 	ws.mvccSvc = &errMVCC{getErr: &service.RevisionNotFoundError{Revision: 7}}
 
@@ -466,7 +466,7 @@ func TestWriteSet_Lookup_RevisionNotFoundIsAbsence(t *testing.T) {
 }
 
 func TestWriteSet_Get_RevisionNotFoundIsKeyNotFound(t *testing.T) {
-	ws := newWriteSet(false)
+	ws := newWriteSet(false, IsolationWritten)
 	require.NoError(t, ws.bind(context.Background(), "t1", "db1", nil, &errMVCC{}))
 	ws.mvccSvc = &errMVCC{getErr: &service.RevisionNotFoundError{Revision: 7}}
 
@@ -476,7 +476,7 @@ func TestWriteSet_Get_RevisionNotFoundIsKeyNotFound(t *testing.T) {
 }
 
 func TestWriteSet_BaselineCompare_RevisionNotFoundYieldsAbsencePrecondition(t *testing.T) {
-	ws := newWriteSet(false)
+	ws := newWriteSet(false, IsolationWritten)
 	require.NoError(t, ws.bind(context.Background(), "t1", "db1", nil, &errMVCC{}))
 	ws.mvccSvc = &errMVCC{getErr: &service.RevisionNotFoundError{Revision: 7}}
 

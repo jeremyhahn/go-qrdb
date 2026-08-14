@@ -136,13 +136,18 @@ func bindArg(ordinal int, v sqld.Value, loc *time.Location) (sqlparser.Expr, err
 // driver.Valuer is honoured first so that types implementing it (sql.NullX,
 // custom domain types, GORM serializers) are unwrapped before type analysis.
 //
-// Pointers are dereferenced, with a nil pointer becoming SQL NULL. That is
-// not a convenience: implementing driver.NamedValueChecker replaces
-// database/sql's DefaultParameterConverter entirely, and that converter is
-// what used to dereference pointers. Without this, an ordinary *time.Time or
-// *int field — which ORMs pass routinely for nullable columns — would be
-// rejected as an unsupported type.
-func normalizeArgValue(v any) (sqld.Value, error) {
+// Pointers and interfaces are dereferenced, with a nil at any level becoming
+// SQL NULL. That is not a convenience: implementing driver.NamedValueChecker
+// replaces database/sql's DefaultParameterConverter entirely, and that
+// converter is what used to dereference pointers. Without this, an ordinary
+// *time.Time or *int field — which ORMs pass routinely for nullable columns —
+// would be rejected as an unsupported type.
+//
+// The remaining value is classified by reflect.Kind rather than by concrete
+// type, so a defined type keeps the binding of the type it was defined from
+// (see argKindConverters). A kind with no converter is reported, never
+// stringified.
+func normalizeArgValue(ordinal int, v any) (sqld.Value, error) {
 	if valuer, ok := v.(sqld.Valuer); ok {
 		val, err := callValuerValue(valuer)
 		if err != nil {
@@ -150,49 +155,106 @@ func normalizeArgValue(v any) (sqld.Value, error) {
 		}
 		v = val
 	}
+	if v == nil {
+		return nil, nil
+	}
 
-	// Dereference through any depth of pointer, mapping a nil at any level to
-	// SQL NULL. reflect is used rather than a type switch because the pointee
-	// may be any of the types handled below.
-	for v != nil {
-		rv := reflect.ValueOf(v)
-		if rv.Kind() != reflect.Pointer {
-			break
-		}
+	// Unwrap through any depth of pointer or interface. reflect.Value.Elem is
+	// used rather than a re-boxed Interface() call so no step allocates.
+	rv := reflect.ValueOf(v)
+	for rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface {
 		if rv.IsNil() {
 			return nil, nil
 		}
-		v = rv.Elem().Interface()
+		rv = rv.Elem()
 	}
 
-	switch val := v.(type) {
-	case nil, bool, int64, uint64, float64, string, []byte, time.Time:
-		return val, nil
-
-	case int:
-		return int64(val), nil
-	case int8:
-		return int64(val), nil
-	case int16:
-		return int64(val), nil
-	case int32:
-		return int64(val), nil
-
-	case uint:
-		return uint64(val), nil
-	case uint8:
-		return uint64(val), nil
-	case uint16:
-		return uint64(val), nil
-	case uint32:
-		return uint64(val), nil
-
-	case float32:
-		return float64(val), nil
-
-	default:
-		return nil, &UnsupportedArgumentTypeError{Value: v}
+	if convert, ok := argKindConverters[rv.Kind()]; ok {
+		if val, ok := convert(rv); ok {
+			return val, nil
+		}
 	}
+	return nil, &UnsupportedArgumentTypeError{Ordinal: ordinal, Value: rv.Interface()}
+}
+
+// argKindConverters maps an argument's reflect.Kind to the conversion that
+// produces the driver.Value bindArg binds.
+//
+// Dispatching on kind rather than on concrete type is what admits a defined
+// type whose underlying type is already bindable — `type ID int64`, the idiom
+// every ORM uses for a typed primary key, and the one GORM's own models use.
+// Such a type matches no case in a concrete type switch, yet it has exactly
+// the representation of the type it was defined from, so converting it is a
+// widening of the accepted set and not a guess about its meaning.
+//
+// The map is deliberately partial, and a converter may still decline: a kind
+// with no entry, and a value whose kind is too coarse to identify it (a struct
+// that is not a time.Time, a slice that is not of bytes), is an argument this
+// driver cannot bind. It is reported. There is no stringifying fallback,
+// because a value bound as text the engine then reinterprets is a silently
+// wrong query rather than a failed one.
+var argKindConverters = map[reflect.Kind]func(reflect.Value) (sqld.Value, bool){
+	reflect.Bool: func(rv reflect.Value) (sqld.Value, bool) { return rv.Bool(), true },
+
+	reflect.Int:   convertArgInt,
+	reflect.Int8:  convertArgInt,
+	reflect.Int16: convertArgInt,
+	reflect.Int32: convertArgInt,
+	reflect.Int64: convertArgInt,
+
+	// Unsigned widths stay unsigned rather than folding into int64, so a
+	// uint64 above math.MaxInt64 reaches bindArg with its value intact.
+	reflect.Uint:   convertArgUint,
+	reflect.Uint8:  convertArgUint,
+	reflect.Uint16: convertArgUint,
+	reflect.Uint32: convertArgUint,
+	reflect.Uint64: convertArgUint,
+
+	reflect.Float32: convertArgFloat,
+	reflect.Float64: convertArgFloat,
+
+	reflect.String: func(rv reflect.Value) (sqld.Value, bool) { return rv.String(), true },
+	reflect.Slice:  convertArgSlice,
+	reflect.Struct: convertArgStruct,
+}
+
+// timeType is time.Time's reflect.Type, used by convertArgStruct.
+var timeType = reflect.TypeFor[time.Time]()
+
+// convertArgInt widens any signed integer width to int64.
+func convertArgInt(rv reflect.Value) (sqld.Value, bool) { return rv.Int(), true }
+
+// convertArgUint widens any unsigned integer width to uint64.
+func convertArgUint(rv reflect.Value) (sqld.Value, bool) { return rv.Uint(), true }
+
+// convertArgFloat widens any float width to float64.
+func convertArgFloat(rv reflect.Value) (sqld.Value, bool) { return rv.Float(), true }
+
+// convertArgSlice accepts a slice of bytes and declines every other slice.
+//
+// The element kind is what is tested, not the element type, so a defined byte
+// type ([]MyByte) is accepted on the same reasoning as a defined []byte: its
+// elements are bytes. The returned slice shares the caller's backing array,
+// which bindArg only reads.
+func convertArgSlice(rv reflect.Value) (sqld.Value, bool) {
+	if rv.Type().Elem().Kind() != reflect.Uint8 {
+		return nil, false
+	}
+	return rv.Bytes(), true
+}
+
+// convertArgStruct accepts a struct convertible to time.Time and declines
+// every other struct.
+//
+// Convertibility is the precise test: Go permits a struct conversion only
+// between identical underlying types, and time.Time's fields are unexported,
+// so the only types that satisfy this are time.Time itself and types defined
+// from it. A struct that merely resembles a timestamp does not qualify.
+func convertArgStruct(rv reflect.Value) (sqld.Value, bool) {
+	if !rv.Type().ConvertibleTo(timeType) {
+		return nil, false
+	}
+	return rv.Convert(timeType).Interface().(time.Time), true
 }
 
 // valuerType is driver.Valuer's reflect.Type, used by callValuerValue.

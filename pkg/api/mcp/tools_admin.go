@@ -21,59 +21,72 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // adminTools returns the MCP tool registrations for admin control-plane
 // operations.
-func adminTools(adminSvc service.AdminServicer) []mcpserver.ServerTool {
-	return []mcpserver.ServerTool{
+func adminTools(adminSvc service.AdminServicer) []serverTool {
+	return []serverTool{
 		{
 			Tool:    toolHealth(),
+			Perm:    permission.AdminHealth,
 			Handler: handleHealth(adminSvc),
 		},
 		{
 			Tool:    toolStatus(),
+			Perm:    permission.AdminStatus,
 			Handler: handleStatus(adminSvc),
 		},
 		{
 			Tool:    toolPeers(),
+			Perm:    permission.AdminPeers,
 			Handler: handlePeers(adminSvc),
 		},
 		{
 			Tool:    toolAddMember(),
+			Perm:    permission.AdminAddMember,
 			Handler: handleAddMember(adminSvc),
 		},
 		{
 			Tool:    toolRemoveMember(),
+			Perm:    permission.AdminRemoveMember,
 			Handler: handleRemoveMember(adminSvc),
 		},
 		{
 			Tool:    toolSnapshot(),
+			Perm:    permission.AdminSnapshot,
 			Handler: handleSnapshot(adminSvc),
 		},
 		{
 			Tool:    toolDrain(),
+			Perm:    permission.AdminDrain,
 			Handler: handleDrain(adminSvc),
 		},
 		{
 			Tool:    toolCapabilities(),
+			Perm:    permission.AdminCapabilities,
 			Handler: handleCapabilities(adminSvc),
 		},
 		{
 			Tool:    toolStartShard(),
+			Perm:    permission.AdminStartShard,
 			Handler: handleStartShard(adminSvc),
 		},
 		{
 			Tool:    toolStopShard(),
+			Perm:    permission.AdminStopShard,
 			Handler: handleStopShard(adminSvc),
 		},
 		{
 			Tool:    toolGetShardState(),
+			Perm:    permission.AdminShardState,
 			Handler: handleGetShardState(adminSvc),
 		},
 		{
 			Tool:    toolGetTopology(),
+			Perm:    permission.AdminTopology,
 			Handler: handleGetTopology(adminSvc),
 		},
 	}

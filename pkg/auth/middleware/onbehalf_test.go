@@ -138,7 +138,7 @@ func runOnBehalf(t *testing.T, r *http.Request, storeUser *user.User, authz *cap
 	})
 
 	rec := httptest.NewRecorder()
-	m.RESTMiddleware(next).ServeHTTP(rec, r)
+	m.RESTMiddleware(testRESTRoutes(), next).ServeHTTP(rec, r)
 	_ = bodyAtHandler
 	return rec, handlerRan, seen
 }
@@ -321,7 +321,7 @@ func TestOnBehalf_AbsentHeadersUseNormalAuth(t *testing.T) {
 	})
 	r := httptest.NewRequest(http.MethodPut, "/kv/foo", bytes.NewReader([]byte("x")))
 	rec := httptest.NewRecorder()
-	m.RESTMiddleware(next).ServeHTTP(rec, r)
+	m.RESTMiddleware(testRESTRoutes(), next).ServeHTTP(rec, r)
 	if !ran {
 		t.Fatalf("normal-auth request did not reach handler; status=%d", rec.Code)
 	}

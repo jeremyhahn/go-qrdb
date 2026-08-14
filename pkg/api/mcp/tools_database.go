@@ -22,64 +22,78 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // databaseTools returns the MCP tool registrations for database management
 // operations.
-func databaseTools(dbSvc service.DatabaseServicer) []mcpserver.ServerTool {
-	return []mcpserver.ServerTool{
+func databaseTools(dbSvc service.DatabaseServicer) []serverTool {
+	return []serverTool{
 		{
 			Tool:    toolDatabaseCreate(),
+			Perm:    permission.DatabasesCreate,
 			Handler: handleDatabaseCreate(dbSvc),
 		},
 		{
 			Tool:    toolDatabaseList(),
+			Perm:    permission.DatabasesList,
 			Handler: handleDatabaseList(dbSvc),
 		},
 		{
 			Tool:    toolDatabaseGet(),
+			Perm:    permission.DatabasesRead,
 			Handler: handleDatabaseGet(dbSvc),
 		},
 		{
 			Tool:    toolDatabaseDrop(),
+			Perm:    permission.DatabasesDelete,
 			Handler: handleDatabaseDrop(dbSvc),
 		},
 		{
 			Tool:    toolDatabaseUpdateProtocol(),
+			Perm:    permission.DatabasesUpdate,
 			Handler: handleDatabaseUpdateProtocol(dbSvc),
 		},
 		{
 			Tool:    toolDatabaseUpdateEtcd(),
+			Perm:    permission.DatabasesUpdate,
 			Handler: handleDatabaseUpdateEtcd(dbSvc),
 		},
 		{
 			Tool:    toolDatabaseUpdateRaft(),
+			Perm:    permission.DatabasesUpdate,
 			Handler: handleDatabaseUpdateRaft(dbSvc),
 		},
 		{
 			Tool:    toolDatabaseScale(),
+			Perm:    permission.DatabasesScale,
 			Handler: handleDatabaseScale(dbSvc),
 		},
 		{
 			Tool:    toolDatabaseUpdateBarrier(),
+			Perm:    permission.DatabasesUpdate,
 			Handler: handleDatabaseUpdateBarrier(dbSvc),
 		},
 		{
 			Tool:    toolDatabaseUpdateConnection(),
+			Perm:    permission.DatabasesUpdate,
 			Handler: handleDatabaseUpdateConnection(dbSvc),
 		},
 		{
 			Tool:    toolDatabaseSeal(),
+			Perm:    permission.DatabasesSeal,
 			Handler: handleDatabaseSeal(dbSvc),
 		},
 		{
 			Tool:    toolDatabaseUnseal(),
+			Perm:    permission.DatabasesUnseal,
 			Handler: handleDatabaseUnseal(dbSvc),
 		},
 		{
 			Tool:    toolDatabaseBarrierStatus(),
+			Perm:    permission.DatabasesBarrierStatus,
 			Handler: handleDatabaseBarrierStatus(dbSvc),
 		},
 	}

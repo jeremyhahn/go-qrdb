@@ -22,38 +22,46 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // mvccTools returns the MCP tool registrations for MVCC key-value operations.
-func mvccTools(mvccSvc service.MVCCKVServicer) []mcpserver.ServerTool {
-	return []mcpserver.ServerTool{
+func mvccTools(mvccSvc service.MVCCKVServicer) []serverTool {
+	return []serverTool{
 		{
 			Tool:    toolMVCCPutWithLease(),
+			Perm:    permission.MVCCPutWithLease,
 			Handler: handleMVCCPutWithLease(mvccSvc),
 		},
 		{
 			Tool:    toolMVCCGetRevision(),
+			Perm:    permission.MVCCGetRevision,
 			Handler: handleMVCCGetRevision(mvccSvc),
 		},
 		{
 			Tool:    toolMVCCGetAtRevision(),
+			Perm:    permission.MVCCGetAtRevision,
 			Handler: handleMVCCGetAtRevision(mvccSvc),
 		},
 		{
 			Tool:    toolMVCCRange(),
+			Perm:    permission.MVCCRange,
 			Handler: handleMVCCRange(mvccSvc),
 		},
 		{
 			Tool:    toolMVCCCompact(),
+			Perm:    permission.MVCCCompact,
 			Handler: handleMVCCCompact(mvccSvc),
 		},
 		{
 			Tool:    toolMVCCCurrentRevision(),
+			Perm:    permission.MVCCCurrentRevision,
 			Handler: handleMVCCCurrentRevision(mvccSvc),
 		},
 		{
 			Tool:    toolMVCCRestoreToRevision(),
+			Perm:    permission.MVCCRestore,
 			Handler: handleMVCCRestoreToRevision(mvccSvc),
 		},
 	}

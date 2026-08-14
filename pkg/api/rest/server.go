@@ -23,21 +23,27 @@ import (
 	"crypto"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/quic-go/quic-go/http3"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -81,7 +87,9 @@ type LeaderAdminResolver interface {
 	Register(raftAddr, adminURL string)
 }
 
-// route pairs an HTTP method with its handler function.
+// route pairs an HTTP method with its handler function. It is retained for
+// the legacy Server.routes introspection map; request routing itself is
+// performed by the chi router.
 type route struct {
 	method  string
 	handler func(w http.ResponseWriter, r *http.Request)
@@ -138,11 +146,33 @@ type Server struct {
 	// on-behalf assertion and re-checked by the leader against the mTLS peer
 	// certificate. Empty when the node certificate carries no node SAN, in
 	// which case on-behalf assertions are not emitted.
-	forwardNodeID   string
-	addr            string
-	server          *http.Server
-	listener        net.Listener
-	routes          map[string]route
+	forwardNodeID string
+	addr          string
+	server        *http.Server
+	listener      net.Listener
+
+	// routes is a legacy introspection map of the STATIC (non-templated)
+	// built-in routes, populated as a byproduct of route registration. Routing
+	// is performed natively by the chi router; this map exists only so tests
+	// and embedders can inspect which static routes were registered.
+	routes map[string]route
+
+	// routePerms is the single source of truth for per-route authorization.
+	// Every route registered through the registration helpers declares its
+	// permission (or an explicit public/authenticated marker) here, at the
+	// registration site. RESTMiddleware and SOMiddleware consult it, and the
+	// default-deny startup assertion walks the router against it.
+	routePerms *authmw.RESTRouteRegistry
+
+	// router is the top-level chi router carrying every route natively:
+	// capability-module routes (ServiceModule.RegisterHTTP) are registered
+	// first, then qrdb's own built-in routes. NotFound falls through to the
+	// embedded web UI (when configured) or 404.
+	router chi.Router
+
+	// modules are capability modules whose HTTP routes are registered on the chi
+	// router. Set via WithServiceModules by the server orchestrator.
+	modules         []apimodule.ServiceModule
 	tlsConfig       *tls.Config
 	tlsErr          error
 	caCertPool      *x509.CertPool
@@ -191,6 +221,15 @@ type ServerOption func(*Server)
 func WithGatherer(g prometheus.Gatherer) ServerOption {
 	return func(s *Server) {
 		s.gatherer = g
+	}
+}
+
+// WithServiceModules registers capability modules whose HTTP routes are attached
+// to the chi router at construction. Module routes take precedence over the
+// built-in dispatch fallback.
+func WithServiceModules(mods []apimodule.ServiceModule) ServerOption {
+	return func(s *Server) {
+		s.modules = mods
 	}
 }
 
@@ -612,290 +651,52 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 		s.forwardSigner, s.forwardNodeID = deriveForwardIdentity(s.tlsConfig)
 	}
 
-	// Map-based dispatch for O(1) routing with method enforcement.
+	// The chi router is the single routing surface. Capability modules
+	// (ServiceModule.RegisterHTTP) register first so their routes take
+	// precedence; qrdb's own built-in routes are registered natively via the
+	// registration helpers, each declaring its required permission (or an
+	// explicit public/authenticated marker) in routePerms at the registration
+	// site. A default-deny startup assertion then walks the router and fails
+	// construction if any route is missing from the registry.
 	s.routes = map[string]route{}
+	s.routePerms = authmw.NewRESTRouteRegistry()
+	r := chi.NewRouter()
+	s.router = r
 
-	// Server configuration routes (always available).
-	s.routes["/v1/config/initialized"] = route{method: http.MethodGet, handler: s.handleConfigInitialized}
-
-	// Admin routes are registered only when an admin service is provided.
-	if s.adminSvc != nil {
-		s.routes["/status"] = route{method: http.MethodGet, handler: s.handleStatus}
-		s.routes["/peers"] = route{method: http.MethodGet, handler: s.handlePeers}
-		s.routes["/health"] = route{method: http.MethodGet, handler: s.handleHealth}
-		s.routes["/drain"] = route{method: http.MethodPost, handler: s.handleDrain}
-		s.routes["/capabilities"] = route{method: http.MethodGet, handler: s.handleCapabilities}
-		s.routes["/membership/add"] = route{method: http.MethodPost, handler: s.handleMembershipAdd}
-		s.routes["/membership/remove"] = route{method: http.MethodPost, handler: s.handleMembershipRemove}
-		s.routes["/snapshot"] = route{method: http.MethodPost, handler: s.handleSnapshot}
-		s.routes["/admin/shards"] = route{method: http.MethodPost, handler: s.handleStartShard}
-		s.routes["/admin/topology"] = route{method: http.MethodGet, handler: s.handleGetTopology}
+	// Modules register through the same permission-recording helpers the
+	// built-in routes use, so their routes feed routePerms and the default-deny
+	// assertion identically.
+	moduleRegistrar := apimodule.NewHTTPRegistrar(r, s.route, s.public)
+	for _, m := range s.modules {
+		m.RegisterHTTP(moduleRegistrar)
 	}
+	s.registerRoutes()
 
-	// Register /metrics when a Prometheus gatherer is provided.
-	if s.gatherer != nil {
-		s.routes["/metrics"] = route{
-			method:  http.MethodGet,
-			handler: s.handleMetrics,
+	// Requests matching no route fall through to the embedded web UI when
+	// configured (SPA fallback), otherwise 404.
+	r.NotFound(func(w http.ResponseWriter, req *http.Request) {
+		if s.webUI != nil {
+			s.webUI.ServeHTTP(w, req)
+			return
 		}
-	}
+		http.NotFound(w, req)
+	})
 
-	// MVCC routes: range/compact/revision self-guard on mvccSvc inside the
-	// handler, so they are registered unconditionally. The KV scan route
-	// calls kvSvc directly and is registered only when kvSvc is provided.
-	s.routes["/kv/range"] = route{method: http.MethodGet, handler: s.handleRange}
-	s.routes["/kv/compact"] = route{method: http.MethodPost, handler: s.handleCompact}
-	s.routes["/kv/revision"] = route{method: http.MethodGet, handler: s.handleCurrentRevision}
-	s.routes["/kv/restore"] = route{method: http.MethodPost, handler: s.handleRestoreToRevision}
-	if s.kvSvc != nil {
-		s.routes["/kv/scan"] = route{method: http.MethodGet, handler: s.handleKVScan}
-	}
-
-	// Transaction route.
-	s.routes["/tx"] = route{method: http.MethodPost, handler: s.handleTransaction}
-
-	// Batch routes.
-	s.routes["/batch"] = route{method: http.MethodPost, handler: s.handleBatch}
-	s.routes["/batch/import"] = route{method: http.MethodPost, handler: s.handleBatchImport}
-
-	// Watch route (Server-Sent Events).
-	s.routes["/watch"] = route{method: http.MethodGet, handler: s.handleWatch}
-
-	// Lease routes: only registered when a lease service is wired. Without
-	// gating, proposals would reach a SM instance that has no lease subsystem,
-	// causing SM.Apply to fail and blocking all subsequent linearizable reads.
-	if s.leaseSvc != nil || s.serviceRegistry != nil {
-		s.routes["/lease/grant"] = route{method: http.MethodPost, handler: s.handleLeaseGrant}
-		s.routes["/lease/revoke"] = route{method: http.MethodPost, handler: s.handleLeaseRevoke}
-		s.routes["/lease/keepalive"] = route{method: http.MethodPost, handler: s.handleLeaseKeepAlive}
-		s.routes["/lease/ttl"] = route{method: http.MethodGet, handler: s.handleLeaseTimeToLive}
-		s.routes["/lease/list"] = route{method: http.MethodGet, handler: s.handleLeaseList}
-	}
-
-	// Lock routes: only registered when a lock service is wired.
-	if s.lockSvc != nil || s.serviceRegistry != nil {
-		s.routes["/lock/acquire"] = route{method: http.MethodPost, handler: s.handleLockAcquire}
-		s.routes["/lock/trylock"] = route{method: http.MethodPost, handler: s.handleLockTryLock}
-		s.routes["/lock/release"] = route{method: http.MethodPost, handler: s.handleLockRelease}
-		s.routes["/lock/extend"] = route{method: http.MethodPost, handler: s.handleLockExtend}
-		s.routes["/lock/status"] = route{method: http.MethodGet, handler: s.handleLockStatus}
-		s.routes["/lock/list"] = route{method: http.MethodGet, handler: s.handleLockList}
-	}
-
-	// Index routes.
-	s.routes["/index/create"] = route{method: http.MethodPost, handler: s.handleIndexCreate}
-	s.routes["/index/drop"] = route{method: http.MethodPost, handler: s.handleIndexDrop}
-	s.routes["/index/query"] = route{method: http.MethodGet, handler: s.handleIndexQuery}
-	s.routes["/index/scan"] = route{method: http.MethodGet, handler: s.handleIndexScan}
-	s.routes["/index/list"] = route{method: http.MethodGet, handler: s.handleIndexList}
-
-	// TimeSeries routes.
-	s.routes["/ts/write"] = route{method: http.MethodPost, handler: s.handleTSWrite}
-	s.routes["/ts/write-batch"] = route{method: http.MethodPost, handler: s.handleTSWriteBatch}
-	s.routes["/ts/write-point"] = route{method: http.MethodPost, handler: s.handleTSWritePoint}
-	s.routes["/ts/query"] = route{method: http.MethodGet, handler: s.handleTSQuery}
-	s.routes["/ts/query-rich"] = route{method: http.MethodPost, handler: s.handleTSRichQuery}
-	s.routes["/ts/aggregate"] = route{method: http.MethodGet, handler: s.handleTSAggregate}
-	s.routes["/ts/metrics"] = route{method: http.MethodGet, handler: s.handleTSListMetrics}
-
-	// Vector routes.
-	s.routes["/vector/namespace"] = route{method: http.MethodPost, handler: s.handleVectorCreateNamespace}
-	s.routes["/vector/namespace/delete"] = route{method: http.MethodPost, handler: s.handleVectorDeleteNamespace}
-	s.routes["/vector/namespaces"] = route{method: http.MethodGet, handler: s.handleVectorListNamespaces}
-	s.routes["/vector/namespace/info"] = route{method: http.MethodGet, handler: s.handleVectorGetNamespaceInfo}
-	s.routes["/vector/upsert"] = route{method: http.MethodPost, handler: s.handleVectorUpsert}
-	s.routes["/vector/get"] = route{method: http.MethodGet, handler: s.handleVectorGet}
-	s.routes["/vector/delete"] = route{method: http.MethodPost, handler: s.handleVectorDelete}
-	s.routes["/vector/batch/upsert"] = route{method: http.MethodPost, handler: s.handleVectorBatchUpsert}
-	s.routes["/vector/batch/delete"] = route{method: http.MethodPost, handler: s.handleVectorBatchDeleteVectors}
-	s.routes["/vector/list"] = route{method: http.MethodGet, handler: s.handleVectorListVectors}
-	s.routes["/vector/metadata"] = route{method: http.MethodPost, handler: s.handleVectorUpdateMetadata}
-	s.routes["/vector/search/similar"] = route{method: http.MethodPost, handler: s.handleVectorSearchSimilar}
-	s.routes["/vector/search/metadata"] = route{method: http.MethodPost, handler: s.handleVectorSearchByMetadata}
-	s.routes["/vector/search/hybrid"] = route{method: http.MethodPost, handler: s.handleVectorHybridSearch}
-	s.routes["/vector/search/by-id"] = route{method: http.MethodPost, handler: s.handleVectorSearchByID}
-	s.routes["/vector/index/rebuild"] = route{method: http.MethodPost, handler: s.handleVectorRebuildIndex}
-	s.routes["/vector/index/rebuild/progress"] = route{method: http.MethodGet, handler: s.handleVectorGetRebuildProgress}
-	s.routes["/vector/index/stats"] = route{method: http.MethodGet, handler: s.handleVectorGetIndexStats}
-	s.routes["/vector/compact"] = route{method: http.MethodPost, handler: s.handleVectorCompactNamespace}
-	s.routes["/vector/compact/progress"] = route{method: http.MethodGet, handler: s.handleVectorGetCompactionProgress}
-
-	// Embedding routes.
-	if s.embeddingSvc != nil {
-		s.routes["/v1/embeddings"] = route{method: http.MethodPost, handler: s.handleEmbedText}
-		s.routes["/v1/embeddings/batch"] = route{method: http.MethodPost, handler: s.handleBatchEmbed}
-		s.routes["/v1/embedding/models"] = route{method: http.MethodGet, handler: s.handleListEmbeddingModels}
-	}
-
-	// RAG routes.
-	if s.ragSvc != nil {
-		s.routes["/v1/rag/ingest"] = route{method: http.MethodPost, handler: s.handleRAGIngest}
-		s.routes["/v1/rag/query"] = route{method: http.MethodPost, handler: s.handleRAGQuery}
-		s.routes["/v1/rag/documents/delete"] = route{method: http.MethodPost, handler: s.handleRAGDeleteDocument}
-		s.routes["/v1/rag/documents"] = route{method: http.MethodGet, handler: s.handleRAGListDocuments}
-	}
-
-	// Database management routes.
-	if s.databaseSvc != nil {
-		s.routes["/v1/databases"] = route{method: http.MethodPost, handler: s.handleCreateDatabase}
-		s.routes["/v1/databases/list"] = route{method: http.MethodGet, handler: s.handleListDatabases}
-	}
-
-	// Collection management routes.
-	if s.collectionSvc != nil {
-		s.routes["/v1/collections"] = route{method: http.MethodPost, handler: s.handleCreateCollection}
-		s.routes["/v1/collections/list"] = route{method: http.MethodGet, handler: s.handleListCollections}
-	}
-
-	// SQL query routes. /sql/query is the canonical data-plane mount used
-	// by the TypeScript SDK; /v1/sql/query is the mount used by the Go
-	// database/sql driver. Both dispatch to the same handler.
-	if s.sqlSvc != nil {
-		s.routes["/sql/query"] = route{method: http.MethodPost, handler: s.handleSQLQuery}
-		s.routes["/v1/sql/query"] = route{method: http.MethodPost, handler: s.handleSQLQuery}
-	}
-
-	// User management routes.
-	if s.userSvc != nil {
-		s.routes["/users"] = route{method: http.MethodPost, handler: s.handleCreateUser}
-		s.routes["/users/list"] = route{method: http.MethodGet, handler: s.handleListUsers}
-	}
-
-	// Role management routes.
-	if s.roleSvc != nil {
-		s.routes["/roles"] = route{method: http.MethodPost, handler: s.handleCreateRole}
-		s.routes["/roles/list"] = route{method: http.MethodGet, handler: s.handleListRoles}
-		s.routes["/roles/by-name"] = route{method: http.MethodGet, handler: s.handleGetRoleByName}
-		s.routes["/roles/resolve-permissions"] = route{method: http.MethodPost, handler: s.handleResolvePermissions}
-		s.routes["/roles/assign"] = route{method: http.MethodPost, handler: s.handleAssignRole}
-		s.routes["/roles/unassign"] = route{method: http.MethodPost, handler: s.handleUnassignRole}
-		s.routes["/permissions"] = route{method: http.MethodGet, handler: s.handleListPermissions}
-	}
-
-	// Tenant management routes. Registered unconditionally so the router
-	// always returns a meaningful status (201/200/501) rather than 404.
-	// Handlers return 501 when tenantSvc is nil (seal barrier not configured).
-	s.routes["/v1/tenants"] = route{method: http.MethodPost, handler: s.handleCreateTenant}
-	s.routes["/v1/tenants/list"] = route{method: http.MethodGet, handler: s.handleListTenants}
-
-	// Backup management routes.
-	if s.backupSvc != nil {
-		s.routes["/v1/backups"] = route{method: http.MethodPost, handler: s.handleCreateBackup}
-		s.routes["/v1/backups/list"] = route{method: http.MethodGet, handler: s.handleListBackups}
-		s.routes["/v1/backups/restore"] = route{method: http.MethodPost, handler: s.handleRestoreBackup}
-	}
-
-	// Cluster rebalance routes.
-	if s.rebalanceSvc != nil {
-		s.routes["/v1/rebalance/plan"] = route{method: http.MethodPost, handler: s.handleRebalancePlan}
-		s.routes["/v1/rebalance/execute"] = route{method: http.MethodPost, handler: s.handleRebalanceExecute}
-		s.routes["/v1/rebalance/report"] = route{method: http.MethodGet, handler: s.handleImbalanceReport}
-	}
-
-	// Auth factor routes. Registered unconditionally; handlers return 501 when
-	// authFactorSvc is nil (service not configured).
-	s.routes["/v1/authfactors/list"] = route{method: http.MethodGet, handler: s.handleAuthFactorList}
-
-	// User auth factor routes (M14). Registered unconditionally; handlers
-	// return 501 when userAuthFactorSvc is nil.
-	s.routes["/v1/users/factors"] = route{method: http.MethodPost, handler: s.handleUserAuthFactorAdd}
-	s.routes["/v1/users/factors/list"] = route{method: http.MethodGet, handler: s.handleUserAuthFactorList}
-	s.routes["/v1/users/factors/login"] = route{method: http.MethodPost, handler: s.handleUserAuthFactorLogin}
-	s.routes["/v1/users/factors/rotate"] = route{method: http.MethodPost, handler: s.handleUserAuthFactorRotate}
-
-	// Certificate management routes.
-	if s.certProv != nil {
-		s.routes["/certs/generate"] = route{method: http.MethodPost, handler: s.handleGenerateCert}
-		s.routes["/certs/export"] = route{method: http.MethodPost, handler: s.handleExportCert}
-		s.routes["/certs/revoke"] = route{method: http.MethodPost, handler: s.handleRevokeCert}
-		s.routes["/certs/list"] = route{method: http.MethodGet, handler: s.handleListCerts}
-	}
-
-	// CA bootstrap endpoint (public, no auth required).
-	if len(s.caBootstrapCert) > 0 {
-		s.routes["/v1/ca/bootstrap"] = route{method: http.MethodGet, handler: s.handleCABootstrap}
-	}
-
-	// Cluster peer key-transport endpoints. Both routes are pre-exempt from the
-	// auth middleware (/v1/cluster/ prefix in middleware/rest.go) and are on the
-	// SealedWindowAllowlist (/v1/cluster/ prefix) so they work in every daemon
-	// state. The receiver self-authorises via node-cert verification and
-	// placement-table gate.
-	if s.clusterKeyReceiver != nil {
-		s.routes["/v1/cluster/keydelivery"] = route{method: http.MethodPost, handler: s.clusterKeyReceiver.Handler()}
-		s.routes["/v1/cluster/nodekey"] = route{method: http.MethodGet, handler: s.clusterKeyReceiver.NodeKeyHandler()}
-	}
-
-	// Barrier lifecycle routes.
-	if s.barrierSvc != nil {
-		s.routes["/v1/barrier/initialize"] = route{method: http.MethodPost, handler: s.handleBarrierInitialize}
-		s.routes["/v1/barrier/unseal"] = route{method: http.MethodPost, handler: s.handleBarrierUnseal}
-		s.routes["/v1/barrier/seal"] = route{method: http.MethodPost, handler: s.handleBarrierSeal}
-		s.routes["/v1/barrier/status"] = route{method: http.MethodGet, handler: s.handleBarrierStatus}
-		s.routes["/v1/barrier/shamir/initialize"] = route{method: http.MethodPost, handler: s.handleBarrierShamirInitialize}
-		s.routes["/v1/barrier/shamir/unseal-share"] = route{method: http.MethodPost, handler: s.handleBarrierShamirUnsealShare}
-		s.routes["/v1/barrier/shamir/unseal-shares"] = route{method: http.MethodPost, handler: s.handleBarrierShamirUnsealShares}
-		s.routes["/v1/barrier/shamir/seal-vote"] = route{method: http.MethodPost, handler: s.handleBarrierShamirSealVote}
-		s.routes["/v1/barrier/rekey"] = route{method: http.MethodPost, handler: s.handleBarrierRekey}
-		if s.encMigrator != nil {
-			s.routes["/v1/barrier/enable-encryption"] = route{method: http.MethodPost, handler: s.handleBarrierEnableEncryption}
+	// Method-not-allowed mirrors the legacy dispatcher: 405 with an Allow
+	// header listing the methods registered for the path.
+	r.MethodNotAllowed(func(w http.ResponseWriter, req *http.Request) {
+		if allow := s.allowedMethods(req.URL.Path); allow != "" {
+			w.Header().Set("Allow", allow)
 		}
-		s.routes["/v1/barrier/recovery/generate"] = route{method: http.MethodPost, handler: s.handleBarrierRecoveryGenerate}
-		s.routes["/v1/barrier/recovery/recover"] = route{method: http.MethodPost, handler: s.handleBarrierRecoveryRecover}
-		s.routes["/v1/barrier/recovery"] = route{method: http.MethodDelete, handler: s.handleBarrierRecoveryDelete}
-		s.routes["/v1/barrier/recovery/status"] = route{method: http.MethodGet, handler: s.handleBarrierRecoveryStatus}
-		s.routes["/v1/barrier/root-token"] = route{method: http.MethodPost, handler: s.handleBarrierRootToken}
-		// Security Officer static routes. GET and POST /v1/barrier/officers
-		// share the same path; they are dispatched via handleBarrierOfficers
-		// from dispatch() which performs method-based routing.
-		s.routes["/v1/barrier/officers/claim-status"] = route{method: http.MethodGet, handler: s.handleBarrierOfficerClaimStatus}
-		s.routes["/v1/barrier/recovery/officers"] = route{method: http.MethodPost, handler: s.handleBarrierRecoveryOfficerRegister}
-		// Path-param claim routes (/{username}/claim/begin|complete) are
-		// dispatched via handleBarrierOfficersByPath in dispatch() using the
-		// /v1/barrier/officers/ and /v1/barrier/recovery/officers/ prefixes.
-	}
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	})
 
-	// Ceremony lifecycle routes.
-	if s.ceremonySvc != nil {
-		s.routes["/v1/ceremony/initialize"] = route{method: http.MethodPost, handler: s.handleCeremonyInitialize}
-		s.routes["/v1/ceremony/status"] = route{method: http.MethodGet, handler: s.handleCeremonyStatus}
-		s.routes["/v1/ceremony/claim-cert/begin"] = route{method: http.MethodPost, handler: s.handleCeremonyClaimCertBegin}
-		s.routes["/v1/ceremony/claim-cert/complete"] = route{method: http.MethodPost, handler: s.handleCeremonyClaimCertComplete}
-		s.routes["/v1/ceremony/officer-share/begin"] = route{method: http.MethodPost, handler: s.handleCeremonyBeginClaimShare}
-		s.routes["/v1/ceremony/officer-share/complete"] = route{method: http.MethodPost, handler: s.handleCeremonyCompleteClaimShare}
-		s.routes["/v1/ceremony/sign-csr"] = route{method: http.MethodPost, handler: s.handleCeremonySignCSR}
-		s.routes["/v1/init/enroll-external-officer"] = route{method: http.MethodPost, handler: s.handleCeremonyEnrollExternalOfficer}
-	}
-
-	// Custodian lifecycle routes (Phase 4).
-	if s.custodianSvc != nil {
-		s.routes["/v1/ceremony/enroll-custodian"] = route{method: http.MethodPost, handler: s.handleEnrollCustodian}
-		s.routes["/v1/ceremony/revoke-custodian"] = route{method: http.MethodPost, handler: s.handleRevokeCustodian}
-		s.routes["/v1/ceremony/claim-share/begin"] = route{method: http.MethodPost, handler: s.handleCustodianClaimShareBegin}
-		s.routes["/v1/ceremony/claim-share/complete"] = route{method: http.MethodPost, handler: s.handleCustodianClaimShareComplete}
-		s.routes["/v1/barrier/unseal-share"] = route{method: http.MethodPost, handler: s.handleUnsealShare}
-	}
-
-	// Credential management routes.
-	if s.credentialSvc != nil {
-		s.routes["/v1/credentials/submit"] = route{method: http.MethodPost, handler: s.handleCredentialSubmit}
-		s.routes["/v1/credentials/store"] = route{method: http.MethodPost, handler: s.handleCredentialStore}
-		s.routes["/v1/credentials/strategy"] = route{method: http.MethodGet, handler: s.handleCredentialStrategy}
-		s.routes["/v1/credentials"] = route{method: http.MethodGet, handler: s.handleCredentialList}
-	}
-
-	// Audit event retrieval route.
-	// Authorization: requires "audit:query" permission.
-	// TODO: switch to permission.AuditQuery constant once Phase 2 lands.
-	if s.auditLogger != nil {
-		s.routes["/v1/audit/events"] = route{method: http.MethodGet, handler: s.handleAuditQuery}
-	}
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", s.dispatch)
+	// DEFAULT-DENY structural invariant: every registered route must carry a
+	// permission or an explicit public/authenticated marker.
+	s.assertRoutesAuthorized()
 
 	// Build the middleware chain from innermost to outermost:
-	//   mux → auth → sealed-window → scope → CORS
+	//   router → auth → sealed-window → scope → CORS
 	// scopeMiddleware runs before auth so that auth middleware can read the
 	// tenant/database from context if it needs to (future-proof). CORS is the
 	// outermost layer so that preflight OPTIONS requests are handled before any
@@ -909,12 +710,12 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	// routes mapped to authmw.SOPermissions and is installed only when
 	// explicitly enabled (auth.so_dual_factor) and an SO PIN verifier is
 	// wired — default posture is unchanged.
-	var handler http.Handler = mux
+	var handler http.Handler = r
 	if s.soDualFactor && s.soPINVerifier != nil {
-		handler = authmw.SOMiddleware(s.soPINVerifier, s.auditLogger, slog.Default(), handler)
+		handler = authmw.SOMiddleware(s.routePerms, s.soPINVerifier, s.auditLogger, slog.Default(), handler)
 	}
 	if s.authMW != nil {
-		handler = s.authMW.RESTMiddleware(handler)
+		handler = s.authMW.RESTMiddleware(s.routePerms, handler)
 	}
 	if s.sealedWindowProbe != nil {
 		handler = SealedWindowMiddleware(s.sealedWindowProbe, nil)(handler)
@@ -993,7 +794,7 @@ func (s *Server) Start() error {
 			Handler:   s.server.Handler,
 		}
 		go func() {
-			if h3Err := s.http3Server.ListenAndServe(); h3Err != nil && h3Err != http.ErrServerClosed {
+			if h3Err := s.http3Server.ListenAndServe(); h3Err != nil && !errors.Is(h3Err, http.ErrServerClosed) {
 				slog.Error("HTTP/3 server error", "error", h3Err)
 			}
 		}()
@@ -1031,159 +832,557 @@ func (s *Server) Addr() string {
 	return s.addr
 }
 
-// dispatch routes incoming requests using map-based dispatch for O(1)
-// path lookup. The /kv prefix is handled separately to support path
-// parameters (/kv/{key}).
+// route registers a built-in API route on the chi router and declares its
+// required permission in the routePerms registry — ONE registration per
+// route, with authorization declared at the registration site. Static
+// (non-templated) patterns are additionally recorded in the legacy
+// Server.routes introspection map.
+func (s *Server) route(method, pattern string, perm permission.Permission, h http.HandlerFunc) {
+	s.routeIf(true, method, pattern, perm, h)
+}
+
+// routeIf registers the route's PERMISSION unconditionally but attaches the
+// route to the router only when enabled (its backing service is wired).
+// The unconditional registry entry preserves the legacy middleware contract,
+// where the permission tables were static: a request for an un-wired route
+// is authorized against its declared permission first and then 404s at the
+// router, and SO dual-factor gating recognizes SO-permissioned paths even on
+// servers that do not serve them.
+func (s *Server) routeIf(enabled bool, method, pattern string, perm permission.Permission, h http.HandlerFunc) {
+	s.routePerms.Register(method, pattern, perm)
+	if !enabled {
+		return
+	}
+	s.router.Method(method, pattern, h)
+	s.recordStaticRoute(method, pattern, h)
+}
+
+// public registers a route that is reachable WITHOUT authentication. The
+// route must also be on RESTMiddleware's pre-authentication exact-path
+// allowlist; the registry marker makes the exemption explicit for the
+// default-deny startup assertion.
+func (s *Server) public(method, pattern string, h http.HandlerFunc) {
+	s.publicIf(true, method, pattern, h)
+}
+
+// publicIf mirrors routeIf for public routes: the public marker is recorded
+// unconditionally, the router registration is gated on enabled.
+func (s *Server) publicIf(enabled bool, method, pattern string, h http.HandlerFunc) {
+	s.routePerms.RegisterPublic(method, pattern)
+	if !enabled {
+		return
+	}
+	s.router.Method(method, pattern, h)
+	s.recordStaticRoute(method, pattern, h)
+}
+
+// authenticatedIf registers a route that requires an authenticated caller
+// but no specific permission (e.g. /metrics for Prometheus scraping). The
+// marker is recorded unconditionally, the router registration is gated on
+// enabled.
+func (s *Server) authenticatedIf(enabled bool, method, pattern string, h http.HandlerFunc) {
+	s.routePerms.RegisterAuthenticated(method, pattern)
+	if !enabled {
+		return
+	}
+	s.router.Method(method, pattern, h)
+	s.recordStaticRoute(method, pattern, h)
+}
+
+// recordStaticRoute mirrors static registrations into the legacy routes map.
+func (s *Server) recordStaticRoute(method, pattern string, h http.HandlerFunc) {
+	if !strings.ContainsAny(pattern, "{*") {
+		s.routes[pattern] = route{method: method, handler: h}
+	}
+}
+
+// notImplemented returns a handler that reports 501 for a service that was
+// not wired into this server, preserving the legacy dispatcher's nil-service
+// guards (e.g. /kv/{key} without a KV service, /v1/barrier/officers without
+// a barrier service).
+func (s *Server) notImplemented(service string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: service})
+	}
+}
+
+// allowedMethodProbeOrder is the order methods are probed when computing the
+// Allow header for a 405 response. It mirrors the Allow strings the legacy
+// dispatcher and handlers emitted ("GET, PUT, DELETE", "GET, POST", ...).
+var allowedMethodProbeOrder = [...]string{
+	http.MethodGet,
+	http.MethodPut,
+	http.MethodPost,
+	http.MethodDelete,
+	http.MethodPatch,
+	http.MethodHead,
+	http.MethodOptions,
+}
+
+// allowedMethods returns a comma-separated list of the methods registered
+// for path, in canonical order, for the 405 Allow header.
+func (s *Server) allowedMethods(path string) string {
+	var allow []string
+	for _, m := range allowedMethodProbeOrder {
+		rctx := chi.NewRouteContext()
+		if s.router.Match(rctx, m, path) {
+			allow = append(allow, m)
+		}
+	}
+	return strings.Join(allow, ", ")
+}
+
+// assertRoutesAuthorized is the DEFAULT-DENY startup assertion: it walks the
+// chi routing tree and fails server construction if any registered route —
+// built-in or module-registered — is missing from the routePerms registry
+// (i.e. carries neither a permission nor an explicit public/authenticated
+// marker). This replaces the old table-based default-deny with a structural
+// invariant enforced at construction time.
+func (s *Server) assertRoutesAuthorized() {
+	var missing []string
+	_ = chi.Walk(s.router, func(method, routePattern string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
+		// chi.Walk emits mounted patterns with a trailing slash; a route may
+		// be registered either with or without one, so accept both forms.
+		trimmed := routePattern
+		if len(trimmed) > 1 {
+			trimmed = strings.TrimSuffix(trimmed, "/")
+		}
+		if !s.routePerms.Covered(method, routePattern) && !s.routePerms.Covered(method, trimmed) {
+			missing = append(missing, method+" "+trimmed)
+		}
+		return nil
+	})
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		panic(fmt.Sprintf(
+			"rest: DEFAULT-DENY startup assertion failed: %d route(s) registered without a permission or explicit public/authenticated marker: %s",
+			len(missing), strings.Join(missing, ", ")))
+	}
+}
+
+// registerRoutes registers every built-in route natively on the chi router,
+// declaring each route's permission at the registration site. Conditional
+// registration (routes gated on an optional service being wired) mirrors the
+// legacy dispatcher exactly; path-parameter families that the old dispatcher
+// resolved by prefix parsing are registered unconditionally with the same
+// family handlers, which nil-check their service themselves.
+func (s *Server) registerRoutes() {
+	// Server configuration (public: the first-boot setup wizard checks
+	// provisioning state before any user or certificate exists).
+	s.public(http.MethodGet, "/v1/config/initialized", s.handleConfigInitialized)
+
+	// Admin routes are attached only when an admin service is provided; the
+	// permissions are declared unconditionally (routeIf).
+	adminOn := s.adminSvc != nil
+	s.routeIf(adminOn, http.MethodGet, "/status", permission.AdminStatus, s.handleStatus)
+	s.routeIf(adminOn, http.MethodGet, "/peers", permission.AdminPeers, s.handlePeers)
+	s.publicIf(adminOn, http.MethodGet, "/health", s.handleHealth)
+	s.routeIf(adminOn, http.MethodPost, "/drain", permission.AdminDrain, s.handleDrain)
+	s.routeIf(adminOn, http.MethodGet, "/capabilities", permission.AdminCapabilities, s.handleCapabilities)
+	s.routeIf(adminOn, http.MethodPost, "/membership/add", permission.AdminAddMember, s.handleMembershipAdd)
+	s.routeIf(adminOn, http.MethodPost, "/membership/remove", permission.AdminRemoveMember, s.handleMembershipRemove)
+	s.routeIf(adminOn, http.MethodPost, "/snapshot", permission.AdminSnapshot, s.handleSnapshot)
+	s.routeIf(adminOn, http.MethodPost, "/admin/shards", permission.AdminStartShard, s.handleStartShard)
+	s.routeIf(adminOn, http.MethodGet, "/admin/topology", permission.AdminTopology, s.handleGetTopology)
+
+	// Admin per-shard path-param routes (always attached; the handler
+	// nil-checks the admin service).
+	s.route(http.MethodDelete, "/admin/shards/{id}", permission.AdminStopShard, s.handleAdminShardByID)
+	s.route(http.MethodGet, "/admin/shards/{id}/state", permission.AdminShardState, s.handleAdminShardByID)
+
+	// /metrics requires authentication but no specific permission: any
+	// authenticated peer may scrape.
+	s.authenticatedIf(s.gatherer != nil, http.MethodGet, "/metrics", s.handleMetrics)
+
+	// MVCC routes: range/compact/revision self-guard on mvccSvc inside the
+	// handler, so they are attached unconditionally. The KV scan route calls
+	// kvSvc directly and is attached only when kvSvc is provided.
+	s.route(http.MethodGet, "/kv/range", permission.KVRange, s.handleRange)
+	s.route(http.MethodPost, "/kv/compact", permission.MVCCCompact, s.handleCompact)
+	s.route(http.MethodGet, "/kv/revision", permission.MVCCCurrentRevision, s.handleCurrentRevision)
+	s.route(http.MethodPost, "/kv/restore", permission.MVCCRestore, s.handleRestoreToRevision)
+	s.routeIf(s.kvSvc != nil, http.MethodGet, "/kv/scan", permission.KVList, s.handleKVScan)
+
+	// KV data plane: /kv (list / missing-key) and /kv/{key}. Without a KV
+	// service the routes still attach and report 501, preserving the legacy
+	// nil-service guard.
+	kvHandler := http.HandlerFunc(s.handleKV)
+	if s.kvSvc == nil {
+		kvHandler = s.notImplemented("kv")
+	}
+	s.route(http.MethodGet, "/kv", permission.KVGet, kvHandler)
+	s.route(http.MethodPut, "/kv", permission.KVPut, kvHandler)
+	s.route(http.MethodDelete, "/kv", permission.KVDelete, kvHandler)
+	s.route(http.MethodGet, "/kv/*", permission.KVGet, kvHandler)
+	s.route(http.MethodPut, "/kv/*", permission.KVPut, kvHandler)
+	s.route(http.MethodDelete, "/kv/*", permission.KVDelete, kvHandler)
+
+	// Transaction route.
+	s.route(http.MethodPost, "/tx", permission.TransactionExecute, s.handleTransaction)
+
+	// Batch routes.
+	s.route(http.MethodPost, "/batch", permission.BatchExecute, s.handleBatch)
+	s.route(http.MethodPost, "/batch/import", permission.BatchExecute, s.handleBatchImport)
+
+	// Watch route (Server-Sent Events; the middleware chain never wraps the
+	// ResponseWriter, so the handler's http.Flusher assertion holds).
+	s.route(http.MethodGet, "/watch", permission.WatchWatch, s.handleWatch)
+
+	// Lease routes: only attached when a lease service is wired. Without
+	// gating, proposals would reach a SM instance that has no lease subsystem,
+	// causing SM.Apply to fail and blocking all subsequent linearizable reads.
+	leaseOn := s.leaseSvc != nil || s.serviceRegistry != nil
+	s.routeIf(leaseOn, http.MethodPost, "/lease/grant", permission.LeaseGrant, s.handleLeaseGrant)
+	s.routeIf(leaseOn, http.MethodPost, "/lease/revoke", permission.LeaseRevoke, s.handleLeaseRevoke)
+	s.routeIf(leaseOn, http.MethodPost, "/lease/keepalive", permission.LeaseKeepAlive, s.handleLeaseKeepAlive)
+	s.routeIf(leaseOn, http.MethodGet, "/lease/ttl", permission.LeaseTTL, s.handleLeaseTimeToLive)
+	s.routeIf(leaseOn, http.MethodGet, "/lease/list", permission.LeaseList, s.handleLeaseList)
+
+	// Lock routes: only attached when a lock service is wired.
+	lockOn := s.lockSvc != nil || s.serviceRegistry != nil
+	s.routeIf(lockOn, http.MethodPost, "/lock/acquire", permission.LocksAcquire, s.handleLockAcquire)
+	s.routeIf(lockOn, http.MethodPost, "/lock/trylock", permission.LocksAcquire, s.handleLockTryLock)
+	s.routeIf(lockOn, http.MethodPost, "/lock/release", permission.LocksRelease, s.handleLockRelease)
+	s.routeIf(lockOn, http.MethodPost, "/lock/extend", permission.LocksExtend, s.handleLockExtend)
+	s.routeIf(lockOn, http.MethodGet, "/lock/status", permission.LocksStatus, s.handleLockStatus)
+	s.routeIf(lockOn, http.MethodGet, "/lock/list", permission.LocksList, s.handleLockList)
+
+	// Index routes.
+	s.route(http.MethodPost, "/index/create", permission.IndexCreate, s.handleIndexCreate)
+	s.route(http.MethodPost, "/index/drop", permission.IndexDrop, s.handleIndexDrop)
+	s.route(http.MethodGet, "/index/query", permission.IndexQuery, s.handleIndexQuery)
+	s.route(http.MethodGet, "/index/scan", permission.IndexScan, s.handleIndexScan)
+	s.route(http.MethodGet, "/index/list", permission.IndexList, s.handleIndexList)
+
+	// TimeSeries routes.
+	s.route(http.MethodPost, "/ts/write", permission.TSWrite, s.handleTSWrite)
+	s.route(http.MethodPost, "/ts/write-batch", permission.TSWriteBatch, s.handleTSWriteBatch)
+	s.route(http.MethodPost, "/ts/write-point", permission.TSWritePoint, s.handleTSWritePoint)
+	s.route(http.MethodGet, "/ts/query", permission.TSQuery, s.handleTSQuery)
+	s.route(http.MethodPost, "/ts/query-rich", permission.TSRichQuery, s.handleTSRichQuery)
+	s.route(http.MethodGet, "/ts/aggregate", permission.TSAggregate, s.handleTSAggregate)
+	s.route(http.MethodGet, "/ts/metrics", permission.TSListMetrics, s.handleTSListMetrics)
+
+	// TimeSeries per-metric path-param routes.
+	s.route(http.MethodDelete, "/ts/series/{metric}", permission.TSDeleteSeries, s.handleTSSeries)
+	s.route(http.MethodGet, "/ts/series/{metric}/retention", permission.TSGetRetention, s.handleTSSeries)
+	s.route(http.MethodPut, "/ts/series/{metric}/retention", permission.TSSetRetention, s.handleTSSeries)
+
+	// Vector routes.
+	s.route(http.MethodPost, "/vector/namespace", permission.VectorNamespaceCreate, s.handleVectorCreateNamespace)
+	s.route(http.MethodPost, "/vector/namespace/delete", permission.VectorNamespaceDelete, s.handleVectorDeleteNamespace)
+	s.route(http.MethodGet, "/vector/namespaces", permission.VectorNamespaceList, s.handleVectorListNamespaces)
+	s.route(http.MethodGet, "/vector/namespace/info", permission.VectorNamespaceInfo, s.handleVectorGetNamespaceInfo)
+	s.route(http.MethodPost, "/vector/upsert", permission.VectorUpsert, s.handleVectorUpsert)
+	s.route(http.MethodGet, "/vector/get", permission.VectorGet, s.handleVectorGet)
+	s.route(http.MethodPost, "/vector/delete", permission.VectorDelete, s.handleVectorDelete)
+	s.route(http.MethodPost, "/vector/batch/upsert", permission.VectorBatchUpsert, s.handleVectorBatchUpsert)
+	s.route(http.MethodPost, "/vector/batch/delete", permission.VectorBatchDelete, s.handleVectorBatchDeleteVectors)
+	s.route(http.MethodGet, "/vector/list", permission.VectorList, s.handleVectorListVectors)
+	s.route(http.MethodPost, "/vector/metadata", permission.VectorUpdateMetadata, s.handleVectorUpdateMetadata)
+	s.route(http.MethodPost, "/vector/search/similar", permission.VectorSearchSimilar, s.handleVectorSearchSimilar)
+	s.route(http.MethodPost, "/vector/search/metadata", permission.VectorSearchByMetadata, s.handleVectorSearchByMetadata)
+	s.route(http.MethodPost, "/vector/search/hybrid", permission.VectorHybridSearch, s.handleVectorHybridSearch)
+	s.route(http.MethodPost, "/vector/search/by-id", permission.VectorSearchByID, s.handleVectorSearchByID)
+	s.route(http.MethodPost, "/vector/index/rebuild", permission.VectorRebuildIndex, s.handleVectorRebuildIndex)
+	s.route(http.MethodGet, "/vector/index/rebuild/progress", permission.VectorGetRebuildProg, s.handleVectorGetRebuildProgress)
+	s.route(http.MethodGet, "/vector/index/stats", permission.VectorGetIndexStats, s.handleVectorGetIndexStats)
+	s.route(http.MethodPost, "/vector/compact", permission.VectorCompact, s.handleVectorCompactNamespace)
+	s.route(http.MethodGet, "/vector/compact/progress", permission.VectorGetCompactProg, s.handleVectorGetCompactionProgress)
+
+	// Embedding routes.
+	embeddingOn := s.embeddingSvc != nil
+	s.routeIf(embeddingOn, http.MethodPost, "/v1/embeddings", permission.EmbeddingEmbed, s.handleEmbedText)
+	s.routeIf(embeddingOn, http.MethodPost, "/v1/embeddings/batch", permission.EmbeddingEmbed, s.handleBatchEmbed)
+	s.routeIf(embeddingOn, http.MethodGet, "/v1/embedding/models", permission.EmbeddingListModels, s.handleListEmbeddingModels)
+
+	// RAG routes.
+	ragOn := s.ragSvc != nil
+	s.routeIf(ragOn, http.MethodPost, "/v1/rag/ingest", permission.RAGIngest, s.handleRAGIngest)
+	s.routeIf(ragOn, http.MethodPost, "/v1/rag/query", permission.RAGQuery, s.handleRAGQuery)
+	s.routeIf(ragOn, http.MethodPost, "/v1/rag/documents/delete", permission.RAGDeleteDocument, s.handleRAGDeleteDocument)
+	s.routeIf(ragOn, http.MethodGet, "/v1/rag/documents", permission.RAGListDocuments, s.handleRAGListDocuments)
+
+	// Database management routes.
+	dbOn := s.databaseSvc != nil
+	s.routeIf(dbOn, http.MethodPost, "/v1/databases", permission.DatabasesCreate, s.handleCreateDatabase)
+	s.routeIf(dbOn, http.MethodGet, "/v1/databases/list", permission.DatabasesList, s.handleListDatabases)
+
+	// Database per-database path-param routes (the handler nil-checks the
+	// database service). The config sub-resources are updated with PATCH.
+	s.route(http.MethodGet, "/v1/databases/{name}", permission.DatabasesRead, s.handleDatabaseByName)
+	s.route(http.MethodDelete, "/v1/databases/{name}", permission.DatabasesDelete, s.handleDatabaseByName)
+	s.route(http.MethodPatch, "/v1/databases/{name}/barrier", permission.DatabasesUpdate, s.handleDatabaseByName)
+	s.route(http.MethodPatch, "/v1/databases/{name}/connection", permission.DatabasesUpdate, s.handleDatabaseByName)
+	s.route(http.MethodPatch, "/v1/databases/{name}/etcd", permission.DatabasesUpdate, s.handleDatabaseByName)
+	s.route(http.MethodPatch, "/v1/databases/{name}/protocol", permission.DatabasesUpdate, s.handleDatabaseByName)
+	s.route(http.MethodPatch, "/v1/databases/{name}/raft", permission.DatabasesUpdate, s.handleDatabaseByName)
+	s.route(http.MethodPatch, "/v1/databases/{name}/scale", permission.DatabasesScale, s.handleDatabaseByName)
+	s.route(http.MethodPost, "/v1/databases/{name}/seal", permission.DatabasesSeal, s.handleDatabaseByName)
+	s.route(http.MethodPost, "/v1/databases/{name}/unseal", permission.DatabasesUnseal, s.handleDatabaseByName)
+	s.route(http.MethodGet, "/v1/databases/{name}/barrier/status", permission.DatabasesBarrierStatus, s.handleDatabaseByName)
+
+	// Collection management routes.
+	collOn := s.collectionSvc != nil
+	s.routeIf(collOn, http.MethodPost, "/v1/collections", permission.CollectionsCreate, s.handleCreateCollection)
+	s.routeIf(collOn, http.MethodGet, "/v1/collections/list", permission.CollectionsList, s.handleListCollections)
+
+	// Collection / document path-param routes (the handler nil-checks the
+	// collection service).
+	s.route(http.MethodGet, "/v1/collections/{database}/{name}", permission.CollectionsRead, s.handleCollectionByPath)
+	s.route(http.MethodDelete, "/v1/collections/{database}/{name}", permission.CollectionsDrop, s.handleCollectionByPath)
+	s.route(http.MethodPost, "/v1/collections/{database}/{name}/documents", permission.CollectionsInsert, s.handleCollectionByPath)
+	s.route(http.MethodGet, "/v1/collections/{database}/{name}/documents", permission.CollectionsList, s.handleCollectionByPath)
+	s.route(http.MethodGet, "/v1/collections/{database}/{name}/documents/{id}", permission.CollectionsRead, s.handleCollectionByPath)
+	s.route(http.MethodPut, "/v1/collections/{database}/{name}/documents/{id}", permission.CollectionsUpdate, s.handleCollectionByPath)
+	s.route(http.MethodDelete, "/v1/collections/{database}/{name}/documents/{id}", permission.CollectionsDelete, s.handleCollectionByPath)
+
+	// Collection catch-alls: the legacy dispatcher routed EVERY path under
+	// /v1/collections/ to handleCollectionByPath, which performs its own
+	// parsing (trailing slashes, missing segments -> 400/404, method checks
+	// with precise Allow headers). The catch-all keeps those semantics for
+	// paths the templated routes above do not match.
+	s.route(http.MethodGet, "/v1/collections/*", permission.CollectionsRead, s.handleCollectionByPath)
+	s.route(http.MethodPost, "/v1/collections/*", permission.CollectionsInsert, s.handleCollectionByPath)
+	s.route(http.MethodPut, "/v1/collections/*", permission.CollectionsUpdate, s.handleCollectionByPath)
+	s.route(http.MethodDelete, "/v1/collections/*", permission.CollectionsDelete, s.handleCollectionByPath)
+
+	// SQL query routes. /sql/query is the canonical data-plane mount used
+	// by the TypeScript SDK; /v1/sql/query is the mount used by the Go
+	// database/sql driver. Both dispatch to the same handler. The SQL layer
+	// is a read-through over the KV range surface, hence KVRange.
+	sqlOn := s.sqlSvc != nil
+	s.routeIf(sqlOn, http.MethodPost, "/sql/query", permission.KVRange, s.handleSQLQuery)
+	s.routeIf(sqlOn, http.MethodPost, "/v1/sql/query", permission.KVRange, s.handleSQLQuery)
+
+	// User management routes.
+	userOn := s.userSvc != nil
+	s.routeIf(userOn, http.MethodPost, "/users", permission.UsersCreate, s.handleCreateUser)
+	s.routeIf(userOn, http.MethodGet, "/users/list", permission.UsersList, s.handleListUsers)
+
+	// User path-param routes (the handler nil-checks the user service).
+	s.route(http.MethodGet, "/users/{id}", permission.UsersRead, s.handleUser)
+	s.route(http.MethodPut, "/users/{id}", permission.UsersUpdate, s.handleUser)
+	s.route(http.MethodDelete, "/users/{id}", permission.UsersDelete, s.handleUser)
+	s.route(http.MethodPost, "/users/{id}/enable", permission.UsersEnable, s.handleUser)
+	s.route(http.MethodPost, "/users/{id}/disable", permission.UsersDisable, s.handleUser)
+	s.route(http.MethodPost, "/users/{id}/cert-bindings", permission.UsersAddCertBinding, s.handleUser)
+	s.route(http.MethodGet, "/users/by-cert-thumbprint/{thumbprint}", permission.UsersGetByCertThumbprint, s.handleUser)
+	s.route(http.MethodGet, "/users/by-username/{username}", permission.UsersRead, s.handleUser)
+
+	// Role management routes.
+	rolesOn := s.roleSvc != nil
+	s.routeIf(rolesOn, http.MethodPost, "/roles", permission.RolesCreate, s.handleCreateRole)
+	s.routeIf(rolesOn, http.MethodGet, "/roles/list", permission.RolesList, s.handleListRoles)
+	s.routeIf(rolesOn, http.MethodGet, "/roles/by-name", permission.RolesRead, s.handleGetRoleByName)
+	s.routeIf(rolesOn, http.MethodPost, "/roles/resolve-permissions", permission.PermissionsResolve, s.handleResolvePermissions)
+	s.routeIf(rolesOn, http.MethodPost, "/roles/assign", permission.RolesAssign, s.handleAssignRole)
+	s.routeIf(rolesOn, http.MethodPost, "/roles/unassign", permission.RolesUnassign, s.handleUnassignRole)
+	s.routeIf(rolesOn, http.MethodGet, "/permissions", permission.PermissionsList, s.handleListPermissions)
+
+	// Role path-param routes (the handler nil-checks the role service).
+	s.route(http.MethodGet, "/roles/{id}", permission.RolesRead, s.handleRole)
+	s.route(http.MethodPut, "/roles/{id}", permission.RolesUpdate, s.handleRole)
+	s.route(http.MethodDelete, "/roles/{id}", permission.RolesDelete, s.handleRole)
+
+	// Without a role service the legacy dispatcher still routed the /roles/
+	// keyword paths to handleRole, which reports 501. Attach the same
+	// fallback (router-only: the permissions above are already registered).
+	if !rolesOn {
+		for _, mp := range [...]struct{ method, pattern string }{
+			{http.MethodGet, "/roles/list"},
+			{http.MethodGet, "/roles/by-name"},
+			{http.MethodPost, "/roles/resolve-permissions"},
+			{http.MethodPost, "/roles/assign"},
+			{http.MethodPost, "/roles/unassign"},
+		} {
+			s.router.Method(mp.method, mp.pattern, http.HandlerFunc(s.handleRole))
+		}
+	}
+
+	// Tenant management routes. Attached unconditionally so the router
+	// always returns a meaningful status (201/200/501) rather than 404.
+	// Handlers return 501 when tenantSvc is nil (seal barrier not configured).
+	s.route(http.MethodPost, "/v1/tenants", permission.TenantsCreate, s.handleCreateTenant)
+	s.route(http.MethodGet, "/v1/tenants/list", permission.TenantsList, s.handleListTenants)
+
+	// Tenant path-param routes, including the per-tenant barrier plane. The
+	// barrier sub-routes carry tenant-scoped (ScopeTenantOnly) permissions;
+	// the handler additionally validates the {id} against the caller's
+	// tenant. Officer share-claim routes are identity-gated: the registered
+	// officer's mTLS certificate is the credential and the handler enforces
+	// registry lookup, thumbprint match, and nonce signature.
+	s.route(http.MethodGet, "/v1/tenants/{id}", permission.TenantsRead, s.handleTenantByID)
+	s.route(http.MethodPut, "/v1/tenants/{id}", permission.TenantsUpdate, s.handleTenantByID)
+	s.route(http.MethodDelete, "/v1/tenants/{id}", permission.TenantsDelete, s.handleTenantByID)
+	s.route(http.MethodPost, "/v1/tenants/{id}/quotas", permission.TenantsUpdate, s.handleTenantByID)
+	s.route(http.MethodPatch, "/v1/tenants/{id}/entitlements", permission.TenantsSetEntitlements, s.handleTenantByID)
+	s.route(http.MethodGet, "/v1/tenants/{id}/barrier/status", permission.TenantBarrierStatus, s.handleTenantByID)
+	s.route(http.MethodGet, "/v1/tenants/{id}/barrier/officers", permission.TenantBarrierOfficerList, s.handleTenantByID)
+	s.route(http.MethodGet, "/v1/tenants/{id}/barrier/officers/claim-status", permission.TenantBarrierOfficerList, s.handleTenantByID)
+	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/init", permission.TenantBarrierInit, s.handleTenantByID)
+	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/unseal", permission.TenantBarrierUnseal, s.handleTenantByID)
+	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/unseal-share", permission.TenantBarrierUnseal, s.handleTenantByID)
+	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/seal", permission.TenantBarrierSeal, s.handleTenantByID)
+	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/seal-vote", permission.TenantBarrierSealVote, s.handleTenantByID)
+	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/officers", permission.TenantBarrierOfficerRegister, s.handleTenantByID)
+	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/officers/{username}/claim/begin", permission.IdentityGated, s.handleTenantByID)
+	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/officers/{username}/claim/complete", permission.IdentityGated, s.handleTenantByID)
+
+	// The legacy dispatcher routed the bare "/v1/tenants/" (trailing slash,
+	// empty id) to handleTenantByID, which reports 400 missing-parameter.
+	s.route(http.MethodGet, "/v1/tenants/", permission.TenantsRead, s.handleTenantByID)
+
+	// Backup management routes.
+	backupOn := s.backupSvc != nil
+	s.routeIf(backupOn, http.MethodPost, "/v1/backups", permission.BackupCreate, s.handleCreateBackup)
+	s.routeIf(backupOn, http.MethodGet, "/v1/backups/list", permission.BackupList, s.handleListBackups)
+	s.routeIf(backupOn, http.MethodPost, "/v1/backups/restore", permission.BackupRestore, s.handleRestoreBackup)
+
+	// Backup path-param routes (the handler nil-checks the backup service).
+	s.route(http.MethodGet, "/v1/backups/{id}", permission.BackupRead, s.handleBackupByID)
+	s.route(http.MethodDelete, "/v1/backups/{id}", permission.BackupDelete, s.handleBackupByID)
+	s.route(http.MethodPost, "/v1/backups/{id}/verify", permission.BackupVerify, s.handleBackupByID)
+
+	// Cluster rebalance routes.
+	rebalanceOn := s.rebalanceSvc != nil
+	s.routeIf(rebalanceOn, http.MethodPost, "/v1/rebalance/plan", permission.RebalancePlan, s.handleRebalancePlan)
+	s.routeIf(rebalanceOn, http.MethodPost, "/v1/rebalance/execute", permission.RebalanceExecute, s.handleRebalanceExecute)
+	s.routeIf(rebalanceOn, http.MethodGet, "/v1/rebalance/report", permission.RebalanceReport, s.handleImbalanceReport)
+
+	// Rebalance per-shard stats route (the handler nil-checks the service).
+	s.route(http.MethodGet, "/v1/rebalance/shards/{id}", permission.RebalanceStats, s.handleRebalanceShardStats)
+
+	// Auth factor routes. Attached unconditionally; handlers return 501
+	// when authFactorSvc is nil (service not configured).
+	s.route(http.MethodGet, "/v1/authfactors/list", permission.AuthFactorList, s.handleAuthFactorList)
+	s.route(http.MethodPost, "/v1/authfactors/{factor}/enroll", permission.AuthFactorEnroll, s.handleAuthFactorByPath)
+	s.route(http.MethodPost, "/v1/authfactors/{factor}/challenge", permission.AuthFactorChallenge, s.handleAuthFactorByPath)
+	s.route(http.MethodPost, "/v1/authfactors/{factor}/verify", permission.AuthFactorVerify, s.handleAuthFactorByPath)
+	s.route(http.MethodDelete, "/v1/authfactors/{factor}", permission.AuthFactorRevoke, s.handleAuthFactorByPath)
+
+	// User auth factor routes (M14). Attached unconditionally; handlers
+	// return 501 when userAuthFactorSvc is nil.
+	s.route(http.MethodPost, "/v1/users/factors", permission.UserAuthFactorsAdd, s.handleUserAuthFactorAdd)
+	s.route(http.MethodGet, "/v1/users/factors/list", permission.UserAuthFactorsList, s.handleUserAuthFactorList)
+	s.route(http.MethodPost, "/v1/users/factors/login", permission.UserAuthFactorsLogin, s.handleUserAuthFactorLogin)
+	s.route(http.MethodPost, "/v1/users/factors/rotate", permission.UserAuthFactorsRotate, s.handleUserAuthFactorRotate)
+	s.route(http.MethodGet, "/v1/users/factors/{id}", permission.UserAuthFactorsGet, s.handleUserAuthFactorByPath)
+	s.route(http.MethodDelete, "/v1/users/factors/{id}", permission.UserAuthFactorsRemove, s.handleUserAuthFactorByPath)
+	s.route(http.MethodPut, "/v1/users/factors/{id}/label", permission.UserAuthFactorsRelabel, s.handleUserAuthFactorByPath)
+
+	// Certificate management routes.
+	certsOn := s.certProv != nil
+	s.routeIf(certsOn, http.MethodPost, "/certs/generate", permission.CertsGenerate, s.handleGenerateCert)
+	s.routeIf(certsOn, http.MethodPost, "/certs/export", permission.CertsExport, s.handleExportCert)
+	s.routeIf(certsOn, http.MethodPost, "/certs/revoke", permission.CertsRevoke, s.handleRevokeCert)
+	s.routeIf(certsOn, http.MethodGet, "/certs/list", permission.CertsList, s.handleListCerts)
+
+	// CA bootstrap endpoint (public, no auth required: joining nodes fetch
+	// the trust anchor before they hold credentials).
+	s.publicIf(len(s.caBootstrapCert) > 0, http.MethodGet, "/v1/ca/bootstrap", s.handleCABootstrap)
+
+	// Cluster peer key-transport endpoints. Both routes are pre-exempt from
+	// the auth middleware (exact-path allowlist in middleware/rest.go) and on
+	// the SealedWindowAllowlist (/v1/cluster/ prefix) so they work in every
+	// daemon state. The receiver self-authorises via node-cert verification
+	// and placement-table gate.
+	var keyDeliveryH, nodeKeyH http.HandlerFunc
+	if s.clusterKeyReceiver != nil {
+		keyDeliveryH = s.clusterKeyReceiver.Handler()
+		nodeKeyH = s.clusterKeyReceiver.NodeKeyHandler()
+	}
+	s.publicIf(s.clusterKeyReceiver != nil, http.MethodPost, "/v1/cluster/keydelivery", keyDeliveryH)
+	s.publicIf(s.clusterKeyReceiver != nil, http.MethodGet, "/v1/cluster/nodekey", nodeKeyH)
+
+	// Barrier lifecycle routes.
+	barrierOn := s.barrierSvc != nil
+	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/initialize", permission.SealBootstrap, s.handleBarrierInitialize)
+	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/unseal", permission.SealUnseal, s.handleBarrierUnseal)
+	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/seal", permission.SealSeal, s.handleBarrierSeal)
+	s.routeIf(barrierOn, http.MethodGet, "/v1/barrier/status", permission.SealStatus, s.handleBarrierStatus)
+	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/shamir/initialize", permission.SealInitializeShamir, s.handleBarrierShamirInitialize)
+	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/shamir/unseal-share", permission.BarrierUnsealShare, s.handleBarrierShamirUnsealShare)
+	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/shamir/unseal-shares", permission.BarrierUnsealShare, s.handleBarrierShamirUnsealShares)
+	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/shamir/seal-vote", permission.SealSubmitSealVote, s.handleBarrierShamirSealVote)
+	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/rekey", permission.SealRekey, s.handleBarrierRekey)
+	s.routeIf(barrierOn && s.encMigrator != nil, http.MethodPost, "/v1/barrier/enable-encryption", permission.SealEnableEncryption, s.handleBarrierEnableEncryption)
+	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/recovery/generate", permission.SealGenerateRecovery, s.handleBarrierRecoveryGenerate)
+	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/recovery/recover", permission.SealRecoverWithKeys, s.handleBarrierRecoveryRecover)
+	s.routeIf(barrierOn, http.MethodDelete, "/v1/barrier/recovery", permission.SealGenerateRecovery, s.handleBarrierRecoveryDelete)
+	s.routeIf(barrierOn, http.MethodGet, "/v1/barrier/recovery/status", permission.SealStatus, s.handleBarrierRecoveryStatus)
+	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/root-token", permission.SealBootstrap, s.handleBarrierRootToken)
+	s.routeIf(barrierOn, http.MethodGet, "/v1/barrier/officers/claim-status", permission.SealOfficerList, s.handleBarrierOfficerClaimStatus)
+	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/recovery/officers", permission.SealOfficerRegister, s.handleBarrierRecoveryOfficerRegister)
+
+	// Security Officer registration/listing on the shared /v1/barrier/officers
+	// path. Attached unconditionally (mirroring the legacy dispatcher): a
+	// server without a barrier service reports 501 rather than 404.
+	officerListH := http.HandlerFunc(s.handleBarrierOfficerList)
+	officerRegisterH := http.HandlerFunc(s.handleBarrierOfficerRegister)
+	if !barrierOn {
+		officerListH = s.notImplemented("barrier")
+		officerRegisterH = s.notImplemented("barrier")
+	}
+	s.route(http.MethodGet, "/v1/barrier/officers", permission.SealOfficerList, officerListH)
+	s.route(http.MethodPost, "/v1/barrier/officers", permission.SealOfficerRegister, officerRegisterH)
+
+	// Officer share-claim path-param routes (identity-gated: the registered
+	// officer's mTLS certificate is the credential; the handler enforces
+	// registry lookup, thumbprint match, and nonce signature).
+	s.route(http.MethodPost, "/v1/barrier/officers/{username}/claim/begin", permission.IdentityGated, s.handleBarrierOfficersByPath)
+	s.route(http.MethodPost, "/v1/barrier/officers/{username}/claim/complete", permission.IdentityGated, s.handleBarrierOfficersByPath)
+	s.route(http.MethodPost, "/v1/barrier/recovery/officers/{username}/claim/begin", permission.IdentityGated, s.handleBarrierOfficersByPath)
+	s.route(http.MethodPost, "/v1/barrier/recovery/officers/{username}/claim/complete", permission.IdentityGated, s.handleBarrierOfficersByPath)
+
+	// Ceremony lifecycle routes. The officer-share claim routes are
+	// identity-gated (see permission.IdentityGated).
+	ceremonyOn := s.ceremonySvc != nil
+	s.routeIf(ceremonyOn, http.MethodPost, "/v1/ceremony/initialize", permission.CeremonyInitialize, s.handleCeremonyInitialize)
+	s.routeIf(ceremonyOn, http.MethodGet, "/v1/ceremony/status", permission.CeremonyStatus, s.handleCeremonyStatus)
+	s.routeIf(ceremonyOn, http.MethodPost, "/v1/ceremony/claim-cert/begin", permission.CeremonyClaimCert, s.handleCeremonyClaimCertBegin)
+	s.routeIf(ceremonyOn, http.MethodPost, "/v1/ceremony/claim-cert/complete", permission.CeremonyClaimCert, s.handleCeremonyClaimCertComplete)
+	s.routeIf(ceremonyOn, http.MethodPost, "/v1/ceremony/officer-share/begin", permission.IdentityGated, s.handleCeremonyBeginClaimShare)
+	s.routeIf(ceremonyOn, http.MethodPost, "/v1/ceremony/officer-share/complete", permission.IdentityGated, s.handleCeremonyCompleteClaimShare)
+	s.routeIf(ceremonyOn, http.MethodPost, "/v1/ceremony/sign-csr", permission.CeremonySignCSR, s.handleCeremonySignCSR)
+	s.routeIf(ceremonyOn, http.MethodPost, "/v1/init/enroll-external-officer", permission.CeremonyEnrollCustodian, s.handleCeremonyEnrollExternalOfficer)
+
+	// Custodian lifecycle routes (Phase 4). Custodian share-claim routes are
+	// identity-gated: the handler verifies the enrolled custodian's factor
+	// challenge response.
+	custodianOn := s.custodianSvc != nil
+	s.routeIf(custodianOn, http.MethodPost, "/v1/ceremony/enroll-custodian", permission.CeremonyEnrollCustodian, s.handleEnrollCustodian)
+	s.routeIf(custodianOn, http.MethodPost, "/v1/ceremony/revoke-custodian", permission.CeremonyRevokeCustodian, s.handleRevokeCustodian)
+	s.routeIf(custodianOn, http.MethodPost, "/v1/ceremony/claim-share/begin", permission.IdentityGated, s.handleCustodianClaimShareBegin)
+	s.routeIf(custodianOn, http.MethodPost, "/v1/ceremony/claim-share/complete", permission.IdentityGated, s.handleCustodianClaimShareComplete)
+	s.routeIf(custodianOn, http.MethodPost, "/v1/barrier/unseal-share", permission.BarrierUnsealShare, s.handleUnsealShare)
+
+	// Credential management routes.
+	credOn := s.credentialSvc != nil
+	s.routeIf(credOn, http.MethodPost, "/v1/credentials/submit", permission.CredentialsSubmit, s.handleCredentialSubmit)
+	s.routeIf(credOn, http.MethodPost, "/v1/credentials/store", permission.CredentialsStore, s.handleCredentialStore)
+	s.routeIf(credOn, http.MethodGet, "/v1/credentials/strategy", permission.CredentialsStrategy, s.handleCredentialStrategy)
+	s.routeIf(credOn, http.MethodGet, "/v1/credentials", permission.CredentialsList, s.handleCredentialList)
+
+	// Credential path-param routes (the handler nil-checks the service).
+	s.route(http.MethodDelete, "/v1/credentials/{name}", permission.CredentialsDelete, s.handleCredentialByPath)
+	s.route(http.MethodPost, "/v1/credentials/{name}/rotate", permission.CredentialsRotate, s.handleCredentialByPath)
+	s.route(http.MethodPost, "/v1/credentials/{name}/gc", permission.CredentialsGCExpired, s.handleCredentialByPath)
+	s.route(http.MethodGet, "/v1/credentials/{name}/versions", permission.CredentialsListVersions, s.handleCredentialByPath)
+	s.route(http.MethodGet, "/v1/credentials/{name}/versions/{version}", permission.CredentialsRetrieveVersion, s.handleCredentialByPath)
+	s.route(http.MethodGet, "/v1/credentials/{name}/value", permission.CredentialsRetrieve, s.handleCredentialByPath)
+
+	// Audit event retrieval route.
+	s.routeIf(s.auditLogger != nil, http.MethodGet, "/v1/audit/events", permission.AuditQuery, s.handleAuditQuery)
+}
+
+// dispatch serves a request through the chi router. It is retained as the
+// historical single entry point: many tests (and the embeddable surface)
+// invoke it directly, and it serves the full route table WITHOUT the
+// authn/authz middleware chain — exactly like the legacy map-based
+// dispatcher it replaced.
 func (s *Server) dispatch(w http.ResponseWriter, r *http.Request) {
-	rt, ok := s.routes[r.URL.Path]
-	if !ok {
-		// Check for /kv prefix routing. Requires kvSvc to be configured.
-		if len(r.URL.Path) >= 3 && r.URL.Path[:3] == "/kv" {
-			if s.kvSvc == nil {
-				writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "kv"})
-				return
-			}
-			s.handleKV(w, r)
-			return
-		}
-		// User routes with path params (GET/PUT/DELETE /users/{id},
-		// POST /users/{id}/enable, /users/{id}/disable).
-		if len(r.URL.Path) > 7 && r.URL.Path[:7] == "/users/" {
-			s.handleUser(w, r)
-			return
-		}
-		// Role routes with path params (GET/PUT/DELETE /roles/{id}).
-		if len(r.URL.Path) > 7 && r.URL.Path[:7] == "/roles/" {
-			s.handleRole(w, r)
-			return
-		}
-		// Admin per-shard routes with path params:
-		//   DELETE /admin/shards/{id}       -> stop shard
-		//   GET    /admin/shards/{id}/state -> shard Raft state
-		const adminShardsPrefix = "/admin/shards/"
-		if len(r.URL.Path) > len(adminShardsPrefix) && r.URL.Path[:len(adminShardsPrefix)] == adminShardsPrefix {
-			s.handleAdminShardByID(w, r)
-			return
-		}
-		// TimeSeries series routes with path params
-		// (DELETE /ts/series/{metric}, GET/PUT /ts/series/{metric}/retention).
-		if len(r.URL.Path) > 11 && r.URL.Path[:11] == "/ts/series/" {
-			s.handleTSSeries(w, r)
-			return
-		}
-		// Database routes with path params
-		// (GET /v1/databases/{name}, DELETE /v1/databases/{name}).
-		if len(r.URL.Path) > 14 && r.URL.Path[:14] == "/v1/databases/" {
-			s.handleDatabaseByName(w, r)
-			return
-		}
-		// Collection routes with path params
-		// (GET/DELETE /v1/collections/{db}/{name},
-		// POST/GET /v1/collections/{db}/{name}/documents,
-		// GET/PUT/DELETE /v1/collections/{db}/{name}/documents/{id}).
-		if len(r.URL.Path) > 16 && r.URL.Path[:16] == "/v1/collections/" {
-			s.handleCollectionByPath(w, r)
-			return
-		}
-		// Barrier officer routes (GET/POST /v1/barrier/officers and path-param
-		// claim routes under /v1/barrier/officers/{username}/... and
-		// /v1/barrier/recovery/officers/{username}/...).
-		const barrierOfficersPrefix = "/v1/barrier/officers/"
-		const barrierRecoveryOfficersPrefix = "/v1/barrier/recovery/officers/"
-		if r.URL.Path == "/v1/barrier/officers" {
-			// Exact path: GET lists, POST registers.
-			if s.barrierSvc == nil {
-				writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "barrier"})
-				return
-			}
-			switch r.Method {
-			case http.MethodGet:
-				s.handleBarrierOfficerList(w, r)
-			case http.MethodPost:
-				s.handleBarrierOfficerRegister(w, r)
-			default:
-				w.Header().Set("Allow", "GET, POST")
-				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			}
-			return
-		}
-		if len(r.URL.Path) > len(barrierOfficersPrefix) && r.URL.Path[:len(barrierOfficersPrefix)] == barrierOfficersPrefix {
-			s.handleBarrierOfficersByPath(w, r)
-			return
-		}
-		if len(r.URL.Path) > len(barrierRecoveryOfficersPrefix) && r.URL.Path[:len(barrierRecoveryOfficersPrefix)] == barrierRecoveryOfficersPrefix {
-			s.handleBarrierOfficersByPath(w, r)
-			return
-		}
-		// Tenant routes with path params
-		// (GET /v1/tenants/{id}, DELETE /v1/tenants/{id},
-		// POST /v1/tenants/{id}/quotas).
-		if len(r.URL.Path) >= 12 && r.URL.Path[:12] == "/v1/tenants/" {
-			s.handleTenantByID(w, r)
-			return
-		}
-		// Backup routes with path params:
-		//   GET    /v1/backups/{id}        -> get backup
-		//   DELETE /v1/backups/{id}        -> delete backup
-		//   POST   /v1/backups/{id}/verify -> verify backup
-		// The keyword routes (list, restore) are matched earlier via s.routes.
-		if len(r.URL.Path) > 12 && r.URL.Path[:12] == "/v1/backups/" {
-			s.handleBackupByID(w, r)
-			return
-		}
-		// Rebalance shard-stats route with path param:
-		//   GET /v1/rebalance/shards/{id} -> shard statistics
-		const rebalanceShardsPrefix = "/v1/rebalance/shards/"
-		if len(r.URL.Path) > len(rebalanceShardsPrefix) && r.URL.Path[:len(rebalanceShardsPrefix)] == rebalanceShardsPrefix {
-			s.handleRebalanceShardStats(w, r)
-			return
-		}
-		// Credential routes with path params:
-		//   DELETE /v1/credentials/{name}
-		//   POST   /v1/credentials/{name}/rotate
-		//   POST   /v1/credentials/{name}/gc
-		//   GET    /v1/credentials/{name}/versions
-		//   GET    /v1/credentials/{name}/versions/{version}.
-		if len(r.URL.Path) > 16 && r.URL.Path[:16] == "/v1/credentials/" {
-			s.handleCredentialByPath(w, r)
-			return
-		}
-		// Auth factor routes with path params:
-		//   POST /v1/authfactors/{factor}/enroll
-		//   POST /v1/authfactors/{enrollment_id}/challenge
-		//   POST /v1/authfactors/{enrollment_id}/verify
-		//   DELETE /v1/authfactors/{enrollment_id}
-		if len(r.URL.Path) > 16 && r.URL.Path[:16] == "/v1/authfactors/" {
-			s.handleAuthFactorByPath(w, r)
-			return
-		}
-		// User auth factor routes with path params (M14):
-		//   GET    /v1/users/factors/{id}
-		//   DELETE /v1/users/factors/{id}
-		//   PUT    /v1/users/factors/{id}/label
-		const userFactorPrefix = "/v1/users/factors/"
-		if len(r.URL.Path) > len(userFactorPrefix) && r.URL.Path[:len(userFactorPrefix)] == userFactorPrefix {
-			// Skip the keyword routes already in s.routes (list, login, rotate).
-			suffix := r.URL.Path[len(userFactorPrefix):]
-			if suffix != "list" && suffix != "login" && suffix != "rotate" {
-				s.handleUserAuthFactorByPath(w, r)
-				return
-			}
-		}
-		// Fall through to embedded web UI if configured.
-		if s.webUI != nil {
-			s.webUI.ServeHTTP(w, r)
-			return
-		}
-		http.NotFound(w, r)
-		return
-	}
-	if r.Method != rt.method {
-		w.Header().Set("Allow", rt.method)
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	rt.handler(w, r)
+	s.router.ServeHTTP(w, r)
 }
 
 // handleCABootstrap serves the cluster CA certificate bundle for joining

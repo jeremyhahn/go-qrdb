@@ -29,46 +29,56 @@ import (
 // roleTools returns the MCP tool registrations for role management and
 // permission operations. Role assignment and unassignment require both
 // the role and user services.
-func roleTools(roleSvc role.RoleServicer, userSvc user.UserServicer) []mcpserver.ServerTool {
-	return []mcpserver.ServerTool{
+func roleTools(roleSvc role.RoleServicer, userSvc user.UserServicer) []serverTool {
+	return []serverTool{
 		{
 			Tool:    toolRoleCreate(),
+			Perm:    permission.RolesCreate,
 			Handler: handleRoleCreate(roleSvc),
 		},
 		{
 			Tool:    toolRoleGet(),
+			Perm:    permission.RolesRead,
 			Handler: handleRoleGet(roleSvc),
 		},
 		{
 			Tool:    toolRoleGetByName(),
+			Perm:    permission.RolesRead,
 			Handler: handleRoleGetByName(roleSvc),
 		},
 		{
 			Tool:    toolRoleUpdate(),
+			Perm:    permission.RolesUpdate,
 			Handler: handleRoleUpdate(roleSvc),
 		},
 		{
 			Tool:    toolRoleDelete(),
+			Perm:    permission.RolesDelete,
 			Handler: handleRoleDelete(roleSvc),
 		},
 		{
 			Tool:    toolRoleList(),
+			Perm:    permission.RolesList,
 			Handler: handleRoleList(roleSvc),
 		},
 		{
 			Tool:    toolRoleAssign(),
+			Perm:    permission.RolesAssign,
 			Handler: handleRoleAssign(roleSvc, userSvc),
 		},
 		{
 			Tool:    toolRoleUnassign(),
+			Perm:    permission.RolesUnassign,
 			Handler: handleRoleUnassign(userSvc),
 		},
 		{
 			Tool:    toolPermissionsList(),
+			Perm:    permission.PermissionsList,
 			Handler: handlePermissionsList(),
 		},
 		{
 			Tool:    toolPermissionsResolve(),
+			Perm:    permission.PermissionsResolve,
 			Handler: handlePermissionsResolve(roleSvc),
 		},
 	}

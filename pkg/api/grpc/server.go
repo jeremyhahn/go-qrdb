@@ -32,6 +32,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
@@ -107,6 +108,11 @@ type Server struct {
 	// component is not on SealedWindowAllowlist is rejected with
 	// codes.Unavailable. When nil the interceptors are not installed.
 	sealedWindowProbe sealedWindowProbe
+
+	// modules holds capability modules whose gRPC services are attached
+	// to the *grpc.Server at construction. Set via WithServiceModules by
+	// the server orchestrator.
+	modules []apimodule.ServiceModule
 }
 
 // ServerOption configures optional Server dependencies.
@@ -362,6 +368,12 @@ func WithAdminService(svc service.AdminServicer) ServerOption {
 	return func(s *Server) { s.adminSvc = svc }
 }
 
+// WithServiceModules registers capability modules whose gRPC services are
+// attached to the server at construction.
+func WithServiceModules(mods []apimodule.ServiceModule) ServerOption {
+	return func(s *Server) { s.modules = mods }
+}
+
 // NewServer creates a new gRPC server that listens on the given address
 // and delegates to the provided service implementations. kvSvc and adminSvc
 // may be nil when only non-KV services (barrier, cert, auth) are needed;
@@ -496,6 +508,12 @@ func (s *Server) Start() error {
 	// Register the audit query service when an audit logger is configured.
 	if s.auditLogger != nil {
 		RegisterAuditService(s.server, s.auditLogger)
+	}
+
+	// Register capability modules' gRPC services onto the same *grpc.Server.
+	// Placed last so module registrations never shadow qrdb's own services.
+	for _, m := range s.modules {
+		m.RegisterGRPC(s.server)
 	}
 
 	proto := "gRPC"

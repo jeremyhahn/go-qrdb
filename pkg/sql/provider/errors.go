@@ -126,11 +126,18 @@ func (e *MutableOperationNotSupportedError) Error() string {
 	return "provider: " + e.Operation + " not supported without database manager"
 }
 
-// ReservedDatabaseNameError is returned when CREATE DATABASE names a schema
-// the SQL layer reserves for itself. Today that is only MySQLSchemaName,
-// which every GRANT, REVOKE, and SHOW GRANTS statement resolves; allowing a
-// user database to take the name would make those statements resolve the
-// user's database instead, and make the user's database unreachable.
+// ReservedDatabaseNameError is returned when CREATE DATABASE or DROP
+// DATABASE names a schema the SQL layer reserves for itself:
+//
+//   - MySQLSchemaName, which every GRANT, REVOKE, and SHOW GRANTS statement
+//     resolves; allowing a user database to take the name would make those
+//     statements resolve the user's database instead, and make the user's
+//     database unreachable.
+//   - pgcatalog.SchemaName, which every PostgreSQL client's schema
+//     introspection resolves, for the same reason. It is additionally the
+//     only write against the PostgreSQL system catalogue that is reachable
+//     at all: none of its relations implements a write-capability
+//     interface, so DML against one is refused during analysis.
 type ReservedDatabaseNameError struct {
 	Name string
 }
@@ -727,4 +734,35 @@ type ReadOnlyTransactionError struct{}
 // Error returns a human-readable description.
 func (e *ReadOnlyTransactionError) Error() string {
 	return "provider: cannot write in a READ ONLY transaction"
+}
+
+// IsolationRangeReadError is returned when a statement inside a transaction
+// running at qrdb_isolation='written+reads' performs a RANGE read -- a table
+// scan, or an index scan that can match more than one entry -- rather than a
+// point read by exact key.
+//
+// That level's contract is that every key the transaction read is compared
+// at commit time, and a scan's read set cannot be: it grows without bound
+// across a large SELECT and would blow the commit proposal's operation-count
+// ceiling almost immediately (see WriteSet's doc comment). The two honest
+// responses are to refuse the read or to refuse the level; silently serving
+// the scan while leaving its read set uncompared is not one of them, because
+// it would report a guarantee that is not being enforced. This error is the
+// first: the transaction is told at the statement that asked, before any
+// work is wasted, precisely which capability the level does not have.
+//
+// It is deliberately NOT reported as MySQL 1213 / SQLSTATE 40001: it is not
+// a conflict, and retrying the transaction unchanged would only produce it
+// again. The transaction should either address the row by an exact key
+// (a primary-key or whole-tuple unique-index equality predicate) or run at
+// qrdb_isolation='written'.
+type IsolationRangeReadError struct {
+	Level  string
+	Prefix string
+}
+
+// Error returns a human-readable description.
+func (e *IsolationRangeReadError) Error() string {
+	return "provider: qrdb_isolation=" + e.Level + " cannot compare the read set of a range scan over " +
+		strconv.Quote(e.Prefix) + "; read by exact key, or use qrdb_isolation='written' for this transaction"
 }

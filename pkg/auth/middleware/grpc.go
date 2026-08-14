@@ -29,8 +29,10 @@ import (
 )
 
 // UnaryInterceptor returns a grpc.UnaryServerInterceptor that performs
-// authentication and authorization for each unary RPC. Methods without
-// a permission mapping are allowed through without authorization.
+// authentication and authorization for each unary RPC. The required
+// permission is declared once on the RPC's proto descriptor via the
+// (qrdb.v1.permission) method option; methods without the option are
+// denied unless they belong to an infrastructure service.
 func (m *AuthMiddleware) UnaryInterceptor() grpc.UnaryServerInterceptor {
 	return func(
 		ctx context.Context,
@@ -48,12 +50,13 @@ func (m *AuthMiddleware) UnaryInterceptor() grpc.UnaryServerInterceptor {
 			return nil, mapGRPCAuthError(authnErr)
 		}
 
-		// Look up the required permission for this method. DEFAULT-DENY: an
-		// unmapped method that reaches a service handler is rejected rather
-		// than treated as public, so a newly-added RPC cannot silently become
-		// unauthorized. Only infrastructure services (health/reflection) are
-		// exempt.
-		perm, ok := LookupGRPC(info.FullMethod)
+		// Look up the required permission for this method from its proto
+		// descriptor's (qrdb.v1.permission) option. DEFAULT-DENY: a method
+		// without the option that reaches a service handler is rejected
+		// rather than treated as public, so a newly-added RPC cannot
+		// silently become unauthorized. Only infrastructure services
+		// (health/reflection) are exempt.
+		perm, ok := LookupGRPCFromDescriptor(info.FullMethod)
 		if !ok {
 			if isPublicGRPCMethod(info.FullMethod) {
 				return handler(ctx, req)
@@ -112,10 +115,11 @@ func (m *AuthMiddleware) StreamInterceptor() grpc.StreamServerInterceptor {
 			return mapGRPCAuthError(authnErr)
 		}
 
-		// Look up the required permission for this stream method. DEFAULT-DENY
-		// (see UnaryInterceptor): an unmapped non-infrastructure method is
-		// rejected rather than treated as public.
-		perm, ok := LookupGRPC(info.FullMethod)
+		// Look up the required permission for this stream method from its
+		// proto descriptor's (qrdb.v1.permission) option. DEFAULT-DENY (see
+		// UnaryInterceptor): a non-infrastructure method without the option
+		// is rejected rather than treated as public.
+		perm, ok := LookupGRPCFromDescriptor(info.FullMethod)
 		if !ok {
 			if isPublicGRPCMethod(info.FullMethod) {
 				return handler(srv, &wrappedStream{ServerStream: ss, ctx: ctx})

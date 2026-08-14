@@ -20,8 +20,10 @@
 package server
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -35,6 +37,7 @@ import (
 	quicapi "github.com/jeremyhahn/go-qrdb/pkg/api/quic"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
 	unixapi "github.com/jeremyhahn/go-qrdb/pkg/api/unix"
+	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
@@ -125,13 +128,16 @@ type Server struct {
 
 // serverOptions holds optional dependencies injected via ServerOption.
 type serverOptions struct {
-	tlsConfig          *tls.Config
-	caCertPool         *x509.CertPool
-	gatherer           prometheus.Gatherer
-	resolver           rest.LeaderAdminResolver
-	host               rest.Host
-	kvSvc              service.KVServicer
-	adminSvc           service.AdminServicer
+	tlsConfig  *tls.Config
+	caCertPool *x509.CertPool
+	gatherer   prometheus.Gatherer
+	resolver   rest.LeaderAdminResolver
+	host       rest.Host
+	kvSvc      service.KVServicer
+	adminSvc   service.AdminServicer
+	// modules are capability modules a higher layer (e.g. go-xkms) registers via
+	// WithModule. Each is exposed across every transport by the start* methods.
+	modules            []apimodule.ServiceModule
 	userSvc            user.UserServicer
 	roleSvc            role.RoleServicer
 	certProv           cert.CertProvider
@@ -230,6 +236,23 @@ func WithTLS(cfg *tls.Config) ServerOption {
 func WithGatherer(g prometheus.Gatherer) ServerOption {
 	return func(o *serverOptions) {
 		o.gatherer = g
+	}
+}
+
+// WithModule registers a capability module into the unified server. The module's
+// gRPC services, HTTP routes and MCP tools are attached to every transport during
+// startup, and its Start/Stop lifecycle runs with the server's. Modules are the
+// generic generalization of the strategy/factor/PIN registries: a higher layer
+// injects one instead of building its own transport stack. Registering two modules
+// with the same Name is a programming error and panics at wiring time.
+func WithModule(m apimodule.ServiceModule) ServerOption {
+	return func(o *serverOptions) {
+		for _, existing := range o.modules {
+			if existing.Name() == m.Name() {
+				panic(fmt.Sprintf("server: duplicate ServiceModule name %q", m.Name()))
+			}
+		}
+		o.modules = append(o.modules, m)
 	}
 }
 
@@ -813,7 +836,46 @@ func (s *Server) Start() error {
 		}
 	}
 
+	// Start capability modules' background resources after every transport has
+	// registered them and is serving. A module Start failure rolls the whole
+	// server back, exactly like a transport start failure.
+	if err := s.startModules(); err != nil {
+		s.stopModules()
+		s.stopPgSQL()
+		s.stopMySQL()
+		s.stopMCP()
+		s.stopUnix()
+		s.stopQUIC()
+		s.stopGRPC()
+		s.stopREST()
+		return err
+	}
+
 	return nil
+}
+
+// startModules runs each registered module's Start hook in registration order.
+// It stops at the first error and returns it (the caller rolls back). Modules
+// already started are stopped by the caller's s.stopModules().
+func (s *Server) startModules() error {
+	for _, m := range s.opts.modules {
+		if err := m.Start(context.Background()); err != nil {
+			return fmt.Errorf("server: module %q failed to start: %w", m.Name(), err)
+		}
+	}
+	return nil
+}
+
+// stopModules runs each module's Stop hook in reverse registration order (LIFO),
+// after the transports have stopped so no new traffic reaches a module while its
+// resources are released. Stop errors are logged, not fatal.
+func (s *Server) stopModules() {
+	for i := len(s.opts.modules) - 1; i >= 0; i-- {
+		m := s.opts.modules[i]
+		if err := m.Stop(context.Background()); err != nil {
+			s.logger.Error("module stop failed", "module", m.Name(), "err", err)
+		}
+	}
 }
 
 // Stop gracefully shuts down all running API servers in reverse startup
@@ -828,6 +890,7 @@ func (s *Server) Stop() {
 	s.stopQUIC()
 	s.stopGRPC()
 	s.stopREST()
+	s.stopModules()
 	s.wg.Wait()
 	s.logger.Info("server orchestrator stopped")
 }
@@ -1016,6 +1079,10 @@ func (s *Server) startREST() error {
 	}
 	if s.opts.clusterKeyReceiver != nil {
 		restOpts = append(restOpts, rest.WithClusterKeyReceiver(s.opts.clusterKeyReceiver))
+	}
+
+	if len(s.opts.modules) > 0 {
+		restOpts = append(restOpts, rest.WithServiceModules(s.opts.modules))
 	}
 
 	s.restSrv = rest.NewServer(s.kvSvc, s.adminSvc, addr, restOpts...)
@@ -1215,6 +1282,10 @@ func (s *Server) startGRPC() error {
 	}
 	if reg := s.buildServiceRegistry(); reg != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithServiceRegistry(reg))
+	}
+
+	if len(s.opts.modules) > 0 {
+		grpcOpts = append(grpcOpts, grpcapi.WithServiceModules(s.opts.modules))
 	}
 
 	s.grpcSrv = grpcapi.NewServer(s.kvSvc, s.adminSvc, addr, grpcOpts...)
@@ -1455,6 +1526,10 @@ func (s *Server) startUnix() error {
 		unixOpts = append(unixOpts, unixapi.WithServiceRegistry(reg))
 	}
 
+	if len(s.opts.modules) > 0 {
+		unixOpts = append(unixOpts, unixapi.WithServiceModules(s.opts.modules))
+	}
+
 	s.unixSrv = unixapi.NewServer(s.kvSvc, s.adminSvc, s.config.Unix.SocketPath, unixOpts...)
 
 	if err := s.unixSrv.Start(); err != nil {
@@ -1575,6 +1650,10 @@ func (s *Server) startMCP() error {
 		mcpOpts = append(mcpOpts, mcpapi.WithServiceRegistry(reg))
 	}
 
+	if len(s.opts.modules) > 0 {
+		mcpOpts = append(mcpOpts, mcpapi.WithServiceModules(s.opts.modules))
+	}
+
 	s.mcpSrv = mcpapi.NewServer(s.kvSvc, s.adminSvc, addr, mcpOpts...)
 
 	if err := s.mcpSrv.Start(); err != nil {
@@ -1656,7 +1735,7 @@ func (s *Server) StopEtcd(dbName string) {
 	}
 	val, ok := s.etcdServers.LoadAndDelete(dbName)
 	if ok {
-		stopEtcdServerFn(val.(EtcdProtocolServer))
+		stopEtcdServerFn(val.(EtcdProtocolServer)) //nolint:errcheck // type assertion on a value this container only ever holds
 	}
 }
 
@@ -1667,7 +1746,7 @@ func (s *Server) EtcdAddr(dbName string) string {
 	if !ok {
 		return ""
 	}
-	return val.(EtcdProtocolServer).Addr()
+	return val.(EtcdProtocolServer).Addr() //nolint:errcheck // type assertion on a value this container only ever holds
 }
 
 // stopMySQL stops the MySQL server if it was started.
@@ -1690,7 +1769,7 @@ func (s *Server) stopAllEtcd() {
 		return
 	}
 	s.etcdServers.Range(func(key, value any) bool {
-		stopEtcdServerFn(value.(EtcdProtocolServer))
+		stopEtcdServerFn(value.(EtcdProtocolServer)) //nolint:errcheck // type assertion on a value this container only ever holds
 		s.etcdServers.Delete(key)
 		return true
 	})

@@ -249,16 +249,18 @@ func TestDataTypeOf_Time(t *testing.T) {
 	}{
 		{"nullable by default", &struct {
 			F time.Time
-		}{}, "datetime(3) NULL"},
+		}{}, "datetime(6) NULL"},
 		{"not null suppresses NULL suffix", &struct {
 			F time.Time `gorm:"not null"`
-		}{}, "datetime(3)"},
+		}{}, "datetime(6)"},
 		{"primary key suppresses NULL suffix", &struct {
 			F time.Time `gorm:"primaryKey"`
-		}{}, "datetime(3)"},
+		}{}, "datetime(6)"},
+		// Deliberately a precision the default is NOT, so the case still
+		// proves the tag wins rather than agreeing with it by accident.
 		{"explicit precision tag", &struct {
-			F time.Time `gorm:"precision:6"`
-		}{}, "datetime(6) NULL"},
+			F time.Time `gorm:"precision:3"`
+		}{}, "datetime(3) NULL"},
 		{"explicit zero precision tag disables default", &struct {
 			F time.Time `gorm:"precision:0"`
 		}{}, "datetime NULL"},

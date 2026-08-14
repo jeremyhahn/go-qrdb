@@ -80,6 +80,10 @@ func (r *recordingRegistry) SequenceService(t, db string) (service.SequenceServi
 	return nil, r.err
 }
 
+func (r *recordingRegistry) PrivilegeService(t, db string) (service.PrivilegeServicer, error) {
+	return nil, r.err
+}
+
 func TestDatabaseScopeUnaryInterceptor_DefaultWhenAbsent(t *testing.T) {
 	var got string
 	handler := func(ctx context.Context, _ any) (any, error) {

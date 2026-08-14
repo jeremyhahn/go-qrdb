@@ -23943,7 +23943,7 @@ var File_pkg_api_grpc_proto_qrdbv1_qrdb_proto protoreflect.FileDescriptor
 
 const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\n" +
-	"$pkg/api/grpc/proto/qrdbv1/qrdb.proto\x12\aqrdb.v1\x1a\x1bgoogle/protobuf/empty.proto\"g\n" +
+	"$pkg/api/grpc/proto/qrdbv1/qrdb.proto\x12\aqrdb.v1\x1a\x1bgoogle/protobuf/empty.proto\x1a%pkg/api/grpc/proto/qrdbv1/authz.proto\"g\n" +
 	"\n" +
 	"PutRequest\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
@@ -25792,244 +25792,263 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"INDEX_HNSW\x10\x00\x12\x0e\n" +
 	"\n" +
 	"INDEX_FLAT\x10\x01\x12\x12\n" +
-	"\x0eINDEX_IVF_FLAT\x10\x022\xf8v\n" +
-	"\vQRDBService\x120\n" +
-	"\x03Put\x12\x13.qrdb.v1.PutRequest\x1a\x14.qrdb.v1.PutResponse\x120\n" +
-	"\x03Get\x12\x13.qrdb.v1.GetRequest\x1a\x14.qrdb.v1.GetResponse\x129\n" +
-	"\x06Delete\x12\x16.qrdb.v1.DeleteRequest\x1a\x17.qrdb.v1.DeleteResponse\x123\n" +
-	"\x04List\x12\x14.qrdb.v1.ListRequest\x1a\x15.qrdb.v1.ListResponse\x123\n" +
-	"\x04Scan\x12\x14.qrdb.v1.ScanRequest\x1a\x15.qrdb.v1.ScanResponse\x12K\n" +
-	"\fPutWithLease\x12\x1c.qrdb.v1.PutWithLeaseRequest\x1a\x1d.qrdb.v1.PutWithLeaseResponse\x12H\n" +
-	"\vGetRevision\x12\x1b.qrdb.v1.GetRevisionRequest\x1a\x1c.qrdb.v1.GetRevisionResponse\x12N\n" +
-	"\rGetAtRevision\x12\x1d.qrdb.v1.GetAtRevisionRequest\x1a\x1e.qrdb.v1.GetAtRevisionResponse\x126\n" +
-	"\x05Range\x12\x15.qrdb.v1.RangeRequest\x1a\x16.qrdb.v1.RangeResponse\x12:\n" +
-	"\aCompact\x12\x17.qrdb.v1.CompactRequest\x1a\x16.google.protobuf.Empty\x12K\n" +
-	"\x0fCurrentRevision\x12\x16.google.protobuf.Empty\x1a .qrdb.v1.CurrentRevisionResponse\x12V\n" +
-	"\x11RestoreToRevision\x12\x1f.qrdb.v1.RestoreRevisionRequest\x1a .qrdb.v1.RestoreRevisionResponse\x12H\n" +
-	"\vTransaction\x12\x1b.qrdb.v1.TransactionRequest\x1a\x1c.qrdb.v1.TransactionResponse\x126\n" +
-	"\x05Batch\x12\x15.qrdb.v1.BatchRequest\x1a\x16.qrdb.v1.BatchResponse\x12H\n" +
-	"\vBatchImport\x12\x1b.qrdb.v1.BatchImportRequest\x1a\x1c.qrdb.v1.BatchImportResponse\x128\n" +
-	"\x05Watch\x12\x15.qrdb.v1.WatchRequest\x1a\x16.qrdb.v1.WatchResponse0\x01\x12E\n" +
+	"\x0eINDEX_IVF_FLAT\x10\x022\xa0\x97\x01\n" +
+	"\vQRDBService\x12<\n" +
+	"\x03Put\x12\x13.qrdb.v1.PutRequest\x1a\x14.qrdb.v1.PutResponse\"\n" +
+	"\xc2\xf3\x18\x06kv:put\x12<\n" +
+	"\x03Get\x12\x13.qrdb.v1.GetRequest\x1a\x14.qrdb.v1.GetResponse\"\n" +
+	"\xc2\xf3\x18\x06kv:get\x12H\n" +
+	"\x06Delete\x12\x16.qrdb.v1.DeleteRequest\x1a\x17.qrdb.v1.DeleteResponse\"\r\xc2\xf3\x18\tkv:delete\x12@\n" +
+	"\x04List\x12\x14.qrdb.v1.ListRequest\x1a\x15.qrdb.v1.ListResponse\"\v\xc2\xf3\x18\akv:list\x12A\n" +
+	"\x04Scan\x12\x14.qrdb.v1.ScanRequest\x1a\x15.qrdb.v1.ScanResponse\"\f\xc2\xf3\x18\bkv:range\x12d\n" +
+	"\fPutWithLease\x12\x1c.qrdb.v1.PutWithLeaseRequest\x1a\x1d.qrdb.v1.PutWithLeaseResponse\"\x17\xc2\xf3\x18\x13mvcc:put_with_lease\x12_\n" +
+	"\vGetRevision\x12\x1b.qrdb.v1.GetRevisionRequest\x1a\x1c.qrdb.v1.GetRevisionResponse\"\x15\xc2\xf3\x18\x11mvcc:get_revision\x12h\n" +
+	"\rGetAtRevision\x12\x1d.qrdb.v1.GetAtRevisionRequest\x1a\x1e.qrdb.v1.GetAtRevisionResponse\"\x18\xc2\xf3\x18\x14mvcc:get_at_revision\x12F\n" +
+	"\x05Range\x12\x15.qrdb.v1.RangeRequest\x1a\x16.qrdb.v1.RangeResponse\"\x0e\xc2\xf3\x18\n" +
+	"mvcc:range\x12L\n" +
+	"\aCompact\x12\x17.qrdb.v1.CompactRequest\x1a\x16.google.protobuf.Empty\"\x10\xc2\xf3\x18\fmvcc:compact\x12f\n" +
+	"\x0fCurrentRevision\x12\x16.google.protobuf.Empty\x1a .qrdb.v1.CurrentRevisionResponse\"\x19\xc2\xf3\x18\x15mvcc:current_revision\x12h\n" +
+	"\x11RestoreToRevision\x12\x1f.qrdb.v1.RestoreRevisionRequest\x1a .qrdb.v1.RestoreRevisionResponse\"\x10\xc2\xf3\x18\fmvcc:restore\x12a\n" +
+	"\vTransaction\x12\x1b.qrdb.v1.TransactionRequest\x1a\x1c.qrdb.v1.TransactionResponse\"\x17\xc2\xf3\x18\x13transaction:execute\x12I\n" +
+	"\x05Batch\x12\x15.qrdb.v1.BatchRequest\x1a\x16.qrdb.v1.BatchResponse\"\x11\xc2\xf3\x18\rbatch:execute\x12[\n" +
+	"\vBatchImport\x12\x1b.qrdb.v1.BatchImportRequest\x1a\x1c.qrdb.v1.BatchImportResponse\"\x11\xc2\xf3\x18\rbatch:execute\x12I\n" +
+	"\x05Watch\x12\x15.qrdb.v1.WatchRequest\x1a\x16.qrdb.v1.WatchResponse\"\x0f\xc2\xf3\x18\vwatch:watch0\x01\x12V\n" +
 	"\n" +
-	"LeaseGrant\x12\x1a.qrdb.v1.LeaseGrantRequest\x1a\x1b.qrdb.v1.LeaseGrantResponse\x12B\n" +
-	"\vLeaseRevoke\x12\x1b.qrdb.v1.LeaseRevokeRequest\x1a\x16.google.protobuf.Empty\x12Q\n" +
-	"\x0eLeaseKeepAlive\x12\x1e.qrdb.v1.LeaseKeepAliveRequest\x1a\x1f.qrdb.v1.LeaseKeepAliveResponse\x12T\n" +
-	"\x0fLeaseTimeToLive\x12\x1f.qrdb.v1.LeaseTimeToLiveRequest\x1a .qrdb.v1.LeaseTimeToLiveResponse\x12?\n" +
-	"\tLeaseList\x12\x16.google.protobuf.Empty\x1a\x1a.qrdb.v1.LeaseListResponse\x12H\n" +
-	"\vLockAcquire\x12\x1b.qrdb.v1.LockAcquireRequest\x1a\x1c.qrdb.v1.LockAcquireResponse\x12H\n" +
-	"\vLockTryLock\x12\x1b.qrdb.v1.LockTryLockRequest\x1a\x1c.qrdb.v1.LockTryLockResponse\x12B\n" +
-	"\vLockRelease\x12\x1b.qrdb.v1.LockReleaseRequest\x1a\x16.google.protobuf.Empty\x12E\n" +
+	"LeaseGrant\x12\x1a.qrdb.v1.LeaseGrantRequest\x1a\x1b.qrdb.v1.LeaseGrantResponse\"\x0f\xc2\xf3\x18\vlease:grant\x12T\n" +
+	"\vLeaseRevoke\x12\x1b.qrdb.v1.LeaseRevokeRequest\x1a\x16.google.protobuf.Empty\"\x10\xc2\xf3\x18\flease:revoke\x12f\n" +
+	"\x0eLeaseKeepAlive\x12\x1e.qrdb.v1.LeaseKeepAliveRequest\x1a\x1f.qrdb.v1.LeaseKeepAliveResponse\"\x13\xc2\xf3\x18\x0flease:keepalive\x12c\n" +
+	"\x0fLeaseTimeToLive\x12\x1f.qrdb.v1.LeaseTimeToLiveRequest\x1a .qrdb.v1.LeaseTimeToLiveResponse\"\r\xc2\xf3\x18\tlease:ttl\x12O\n" +
+	"\tLeaseList\x12\x16.google.protobuf.Empty\x1a\x1a.qrdb.v1.LeaseListResponse\"\x0e\xc2\xf3\x18\n" +
+	"lease:list\x12[\n" +
+	"\vLockAcquire\x12\x1b.qrdb.v1.LockAcquireRequest\x1a\x1c.qrdb.v1.LockAcquireResponse\"\x11\xc2\xf3\x18\rlocks:acquire\x12[\n" +
+	"\vLockTryLock\x12\x1b.qrdb.v1.LockTryLockRequest\x1a\x1c.qrdb.v1.LockTryLockResponse\"\x11\xc2\xf3\x18\rlocks:acquire\x12U\n" +
+	"\vLockRelease\x12\x1b.qrdb.v1.LockReleaseRequest\x1a\x16.google.protobuf.Empty\"\x11\xc2\xf3\x18\rlocks:release\x12W\n" +
 	"\n" +
-	"LockExtend\x12\x1a.qrdb.v1.LockExtendRequest\x1a\x1b.qrdb.v1.LockExtendResponse\x12E\n" +
+	"LockExtend\x12\x1a.qrdb.v1.LockExtendRequest\x1a\x1b.qrdb.v1.LockExtendResponse\"\x10\xc2\xf3\x18\flocks:extend\x12W\n" +
 	"\n" +
-	"LockStatus\x12\x1a.qrdb.v1.LockStatusRequest\x1a\x1b.qrdb.v1.LockStatusResponse\x12?\n" +
-	"\bLockList\x12\x18.qrdb.v1.LockListRequest\x1a\x19.qrdb.v1.LockListResponse\x12B\n" +
-	"\vIndexCreate\x12\x1b.qrdb.v1.IndexCreateRequest\x1a\x16.google.protobuf.Empty\x12>\n" +
-	"\tIndexDrop\x12\x19.qrdb.v1.IndexDropRequest\x1a\x16.google.protobuf.Empty\x12E\n" +
+	"LockStatus\x12\x1a.qrdb.v1.LockStatusRequest\x1a\x1b.qrdb.v1.LockStatusResponse\"\x10\xc2\xf3\x18\flocks:status\x12O\n" +
+	"\bLockList\x12\x18.qrdb.v1.LockListRequest\x1a\x19.qrdb.v1.LockListResponse\"\x0e\xc2\xf3\x18\n" +
+	"locks:list\x12T\n" +
+	"\vIndexCreate\x12\x1b.qrdb.v1.IndexCreateRequest\x1a\x16.google.protobuf.Empty\"\x10\xc2\xf3\x18\findex:create\x12N\n" +
+	"\tIndexDrop\x12\x19.qrdb.v1.IndexDropRequest\x1a\x16.google.protobuf.Empty\"\x0e\xc2\xf3\x18\n" +
+	"index:drop\x12V\n" +
 	"\n" +
-	"IndexQuery\x12\x1a.qrdb.v1.IndexQueryRequest\x1a\x1b.qrdb.v1.IndexQueryResponse\x12B\n" +
-	"\tIndexScan\x12\x19.qrdb.v1.IndexScanRequest\x1a\x1a.qrdb.v1.IndexScanResponse\x12?\n" +
-	"\tIndexList\x12\x16.google.protobuf.Empty\x1a\x1a.qrdb.v1.IndexListResponse\x12:\n" +
-	"\aTSWrite\x12\x17.qrdb.v1.TSWriteRequest\x1a\x16.google.protobuf.Empty\x12D\n" +
-	"\fTSWriteBatch\x12\x1c.qrdb.v1.TSWriteBatchRequest\x1a\x16.google.protobuf.Empty\x12<\n" +
-	"\aTSQuery\x12\x17.qrdb.v1.TSQueryRequest\x1a\x18.qrdb.v1.TSQueryResponse\x12H\n" +
-	"\vTSAggregate\x12\x1b.qrdb.v1.TSAggregateRequest\x1a\x1c.qrdb.v1.TSAggregateResponse\x12?\n" +
-	"\fTSWritePoint\x12\x17.qrdb.v1.TSWriteRequest\x1a\x16.google.protobuf.Empty\x12H\n" +
-	"\vTSRichQuery\x12\x1b.qrdb.v1.TSRichQueryRequest\x1a\x1c.qrdb.v1.TSRichQueryResponse\x12H\n" +
-	"\x0eTSDeleteSeries\x12\x1e.qrdb.v1.TSDeleteSeriesRequest\x1a\x16.google.protobuf.Empty\x12T\n" +
-	"\x0eTSGetRetention\x12\x1e.qrdb.v1.TSGetRetentionRequest\x1a\".qrdb.v1.TSRetentionPolicyResponse\x12H\n" +
-	"\x0eTSSetRetention\x12\x1e.qrdb.v1.TSSetRetentionRequest\x1a\x16.google.protobuf.Empty\x12N\n" +
-	"\rTSListMetrics\x12\x1d.qrdb.v1.TSListMetricsRequest\x1a\x1e.qrdb.v1.TSListMetricsResponse\x12f\n" +
-	"\x15VectorCreateNamespace\x12%.qrdb.v1.VectorCreateNamespaceRequest\x1a&.qrdb.v1.VectorCreateNamespaceResponse\x12V\n" +
-	"\x15VectorDeleteNamespace\x12%.qrdb.v1.VectorDeleteNamespaceRequest\x1a\x16.google.protobuf.Empty\x12c\n" +
-	"\x14VectorListNamespaces\x12$.qrdb.v1.VectorListNamespacesRequest\x1a%.qrdb.v1.VectorListNamespacesResponse\x12^\n" +
-	"\x16VectorGetNamespaceInfo\x12&.qrdb.v1.VectorGetNamespaceInfoRequest\x1a\x1c.qrdb.v1.VectorNamespaceInfo\x12K\n" +
-	"\fVectorUpsert\x12\x1c.qrdb.v1.VectorUpsertRequest\x1a\x1d.qrdb.v1.VectorUpsertResponse\x12@\n" +
-	"\tVectorGet\x12\x19.qrdb.v1.VectorGetRequest\x1a\x18.qrdb.v1.VectorDataProto\x12D\n" +
-	"\fVectorDelete\x12\x1c.qrdb.v1.VectorDeleteRequest\x1a\x16.google.protobuf.Empty\x12Z\n" +
-	"\x11VectorBatchUpsert\x12!.qrdb.v1.VectorBatchUpsertRequest\x1a\".qrdb.v1.VectorBatchUpsertResponse\x12Z\n" +
-	"\x11VectorBatchDelete\x12!.qrdb.v1.VectorBatchDeleteRequest\x1a\".qrdb.v1.VectorBatchDeleteResponse\x12E\n" +
+	"IndexQuery\x12\x1a.qrdb.v1.IndexQueryRequest\x1a\x1b.qrdb.v1.IndexQueryResponse\"\x0f\xc2\xf3\x18\vindex:query\x12R\n" +
+	"\tIndexScan\x12\x19.qrdb.v1.IndexScanRequest\x1a\x1a.qrdb.v1.IndexScanResponse\"\x0e\xc2\xf3\x18\n" +
+	"index:scan\x12O\n" +
+	"\tIndexList\x12\x16.google.protobuf.Empty\x1a\x1a.qrdb.v1.IndexListResponse\"\x0e\xc2\xf3\x18\n" +
+	"index:list\x12P\n" +
+	"\aTSWrite\x12\x17.qrdb.v1.TSWriteRequest\x1a\x16.google.protobuf.Empty\"\x14\xc2\xf3\x18\x10timeseries:write\x12`\n" +
+	"\fTSWriteBatch\x12\x1c.qrdb.v1.TSWriteBatchRequest\x1a\x16.google.protobuf.Empty\"\x1a\xc2\xf3\x18\x16timeseries:write_batch\x12R\n" +
+	"\aTSQuery\x12\x17.qrdb.v1.TSQueryRequest\x1a\x18.qrdb.v1.TSQueryResponse\"\x14\xc2\xf3\x18\x10timeseries:query\x12b\n" +
+	"\vTSAggregate\x12\x1b.qrdb.v1.TSAggregateRequest\x1a\x1c.qrdb.v1.TSAggregateResponse\"\x18\xc2\xf3\x18\x14timeseries:aggregate\x12[\n" +
+	"\fTSWritePoint\x12\x17.qrdb.v1.TSWriteRequest\x1a\x16.google.protobuf.Empty\"\x1a\xc2\xf3\x18\x16timeseries:write_point\x12c\n" +
+	"\vTSRichQuery\x12\x1b.qrdb.v1.TSRichQueryRequest\x1a\x1c.qrdb.v1.TSRichQueryResponse\"\x19\xc2\xf3\x18\x15timeseries:rich_query\x12f\n" +
+	"\x0eTSDeleteSeries\x12\x1e.qrdb.v1.TSDeleteSeriesRequest\x1a\x16.google.protobuf.Empty\"\x1c\xc2\xf3\x18\x18timeseries:delete_series\x12r\n" +
+	"\x0eTSGetRetention\x12\x1e.qrdb.v1.TSGetRetentionRequest\x1a\".qrdb.v1.TSRetentionPolicyResponse\"\x1c\xc2\xf3\x18\x18timeseries:get_retention\x12f\n" +
+	"\x0eTSSetRetention\x12\x1e.qrdb.v1.TSSetRetentionRequest\x1a\x16.google.protobuf.Empty\"\x1c\xc2\xf3\x18\x18timeseries:set_retention\x12k\n" +
+	"\rTSListMetrics\x12\x1d.qrdb.v1.TSListMetricsRequest\x1a\x1e.qrdb.v1.TSListMetricsResponse\"\x1b\xc2\xf3\x18\x17timeseries:list_metrics\x12\x83\x01\n" +
+	"\x15VectorCreateNamespace\x12%.qrdb.v1.VectorCreateNamespaceRequest\x1a&.qrdb.v1.VectorCreateNamespaceResponse\"\x1b\xc2\xf3\x18\x17vector:namespace_create\x12s\n" +
+	"\x15VectorDeleteNamespace\x12%.qrdb.v1.VectorDeleteNamespaceRequest\x1a\x16.google.protobuf.Empty\"\x1b\xc2\xf3\x18\x17vector:namespace_delete\x12~\n" +
+	"\x14VectorListNamespaces\x12$.qrdb.v1.VectorListNamespacesRequest\x1a%.qrdb.v1.VectorListNamespacesResponse\"\x19\xc2\xf3\x18\x15vector:namespace_list\x12y\n" +
+	"\x16VectorGetNamespaceInfo\x12&.qrdb.v1.VectorGetNamespaceInfoRequest\x1a\x1c.qrdb.v1.VectorNamespaceInfo\"\x19\xc2\xf3\x18\x15vector:namespace_info\x12^\n" +
+	"\fVectorUpsert\x12\x1c.qrdb.v1.VectorUpsertRequest\x1a\x1d.qrdb.v1.VectorUpsertResponse\"\x11\xc2\xf3\x18\rvector:upsert\x12P\n" +
+	"\tVectorGet\x12\x19.qrdb.v1.VectorGetRequest\x1a\x18.qrdb.v1.VectorDataProto\"\x0e\xc2\xf3\x18\n" +
+	"vector:get\x12W\n" +
+	"\fVectorDelete\x12\x1c.qrdb.v1.VectorDeleteRequest\x1a\x16.google.protobuf.Empty\"\x11\xc2\xf3\x18\rvector:delete\x12s\n" +
+	"\x11VectorBatchUpsert\x12!.qrdb.v1.VectorBatchUpsertRequest\x1a\".qrdb.v1.VectorBatchUpsertResponse\"\x17\xc2\xf3\x18\x13vector:batch_upsert\x12s\n" +
+	"\x11VectorBatchDelete\x12!.qrdb.v1.VectorBatchDeleteRequest\x1a\".qrdb.v1.VectorBatchDeleteResponse\"\x17\xc2\xf3\x18\x13vector:batch_delete\x12V\n" +
 	"\n" +
-	"VectorList\x12\x1a.qrdb.v1.VectorListRequest\x1a\x1b.qrdb.v1.VectorListResponse\x12T\n" +
-	"\x14VectorUpdateMetadata\x12$.qrdb.v1.VectorUpdateMetadataRequest\x1a\x16.google.protobuf.Empty\x12`\n" +
-	"\x13VectorSearchSimilar\x12#.qrdb.v1.VectorSearchSimilarRequest\x1a$.qrdb.v1.VectorSearchSimilarResponse\x12i\n" +
-	"\x16VectorSearchByMetadata\x12&.qrdb.v1.VectorSearchByMetadataRequest\x1a'.qrdb.v1.VectorSearchByMetadataResponse\x12]\n" +
-	"\x12VectorHybridSearch\x12\".qrdb.v1.VectorHybridSearchRequest\x1a#.qrdb.v1.VectorHybridSearchResponse\x12Z\n" +
-	"\x10VectorSearchByID\x12 .qrdb.v1.VectorSearchByIDRequest\x1a$.qrdb.v1.VectorSearchSimilarResponse\x12]\n" +
-	"\x12VectorRebuildIndex\x12\".qrdb.v1.VectorRebuildIndexRequest\x1a#.qrdb.v1.VectorRebuildIndexResponse\x12d\n" +
-	"\x18VectorGetRebuildProgress\x12(.qrdb.v1.VectorGetRebuildProgressRequest\x1a\x1e.qrdb.v1.VectorRebuildProgress\x12U\n" +
-	"\x13VectorGetIndexStats\x12#.qrdb.v1.VectorGetIndexStatsRequest\x1a\x19.qrdb.v1.VectorIndexStats\x12i\n" +
-	"\x16VectorCompactNamespace\x12&.qrdb.v1.VectorCompactNamespaceRequest\x1a'.qrdb.v1.VectorCompactNamespaceResponse\x12m\n" +
-	"\x1bVectorGetCompactionProgress\x12+.qrdb.v1.VectorGetCompactionProgressRequest\x1a!.qrdb.v1.VectorCompactionProgress\x129\n" +
-	"\x06Health\x12\x16.google.protobuf.Empty\x1a\x17.qrdb.v1.HealthResponse\x129\n" +
-	"\x06Status\x12\x16.google.protobuf.Empty\x1a\x17.qrdb.v1.StatusResponse\x127\n" +
-	"\x05Peers\x12\x16.google.protobuf.Empty\x1a\x16.qrdb.v1.PeersResponse\x12>\n" +
-	"\tAddMember\x12\x19.qrdb.v1.AddMemberRequest\x1a\x16.google.protobuf.Empty\x12D\n" +
-	"\fRemoveMember\x12\x1c.qrdb.v1.RemoveMemberRequest\x1a\x16.google.protobuf.Empty\x12J\n" +
-	"\x0fRequestSnapshot\x12\x1f.qrdb.v1.RequestSnapshotMessage\x1a\x16.google.protobuf.Empty\x127\n" +
-	"\x05Drain\x12\x16.google.protobuf.Empty\x1a\x16.google.protobuf.Empty\x12K\n" +
-	"\fCapabilities\x12\x1c.qrdb.v1.CapabilitiesRequest\x1a\x1d.qrdb.v1.CapabilitiesResponse\x12@\n" +
+	"VectorList\x12\x1a.qrdb.v1.VectorListRequest\x1a\x1b.qrdb.v1.VectorListResponse\"\x0f\xc2\xf3\x18\vvector:list\x12p\n" +
+	"\x14VectorUpdateMetadata\x12$.qrdb.v1.VectorUpdateMetadataRequest\x1a\x16.google.protobuf.Empty\"\x1a\xc2\xf3\x18\x16vector:update_metadata\x12{\n" +
+	"\x13VectorSearchSimilar\x12#.qrdb.v1.VectorSearchSimilarRequest\x1a$.qrdb.v1.VectorSearchSimilarResponse\"\x19\xc2\xf3\x18\x15vector:search_similar\x12\x88\x01\n" +
+	"\x16VectorSearchByMetadata\x12&.qrdb.v1.VectorSearchByMetadataRequest\x1a'.qrdb.v1.VectorSearchByMetadataResponse\"\x1d\xc2\xf3\x18\x19vector:search_by_metadata\x12w\n" +
+	"\x12VectorHybridSearch\x12\".qrdb.v1.VectorHybridSearchRequest\x1a#.qrdb.v1.VectorHybridSearchResponse\"\x18\xc2\xf3\x18\x14vector:hybrid_search\x12s\n" +
+	"\x10VectorSearchByID\x12 .qrdb.v1.VectorSearchByIDRequest\x1a$.qrdb.v1.VectorSearchSimilarResponse\"\x17\xc2\xf3\x18\x13vector:search_by_id\x12w\n" +
+	"\x12VectorRebuildIndex\x12\".qrdb.v1.VectorRebuildIndexRequest\x1a#.qrdb.v1.VectorRebuildIndexResponse\"\x18\xc2\xf3\x18\x14vector:rebuild_index\x12\x85\x01\n" +
+	"\x18VectorGetRebuildProgress\x12(.qrdb.v1.VectorGetRebuildProgressRequest\x1a\x1e.qrdb.v1.VectorRebuildProgress\"\x1f\xc2\xf3\x18\x1bvector:get_rebuild_progress\x12q\n" +
+	"\x13VectorGetIndexStats\x12#.qrdb.v1.VectorGetIndexStatsRequest\x1a\x19.qrdb.v1.VectorIndexStats\"\x1a\xc2\xf3\x18\x16vector:get_index_stats\x12}\n" +
+	"\x16VectorCompactNamespace\x12&.qrdb.v1.VectorCompactNamespaceRequest\x1a'.qrdb.v1.VectorCompactNamespaceResponse\"\x12\xc2\xf3\x18\x0evector:compact\x12\x91\x01\n" +
+	"\x1bVectorGetCompactionProgress\x12+.qrdb.v1.VectorGetCompactionProgressRequest\x1a!.qrdb.v1.VectorCompactionProgress\"\"\xc2\xf3\x18\x1evector:get_compaction_progress\x12K\n" +
+	"\x06Health\x12\x16.google.protobuf.Empty\x1a\x17.qrdb.v1.HealthResponse\"\x10\xc2\xf3\x18\fadmin:health\x12K\n" +
+	"\x06Status\x12\x16.google.protobuf.Empty\x1a\x17.qrdb.v1.StatusResponse\"\x10\xc2\xf3\x18\fadmin:status\x12H\n" +
+	"\x05Peers\x12\x16.google.protobuf.Empty\x1a\x16.qrdb.v1.PeersResponse\"\x0f\xc2\xf3\x18\vadmin:peers\x12T\n" +
+	"\tAddMember\x12\x19.qrdb.v1.AddMemberRequest\x1a\x16.google.protobuf.Empty\"\x14\xc2\xf3\x18\x10admin:add_member\x12]\n" +
+	"\fRemoveMember\x12\x1c.qrdb.v1.RemoveMemberRequest\x1a\x16.google.protobuf.Empty\"\x17\xc2\xf3\x18\x13admin:remove_member\x12^\n" +
+	"\x0fRequestSnapshot\x12\x1f.qrdb.v1.RequestSnapshotMessage\x1a\x16.google.protobuf.Empty\"\x12\xc2\xf3\x18\x0eadmin:snapshot\x12H\n" +
+	"\x05Drain\x12\x16.google.protobuf.Empty\x1a\x16.google.protobuf.Empty\"\x0f\xc2\xf3\x18\vadmin:drain\x12c\n" +
+	"\fCapabilities\x12\x1c.qrdb.v1.CapabilitiesRequest\x1a\x1d.qrdb.v1.CapabilitiesResponse\"\x16\xc2\xf3\x18\x12admin:capabilities\x12W\n" +
 	"\n" +
-	"StartShard\x12\x1a.qrdb.v1.StartShardRequest\x1a\x16.google.protobuf.Empty\x12>\n" +
-	"\tStopShard\x12\x19.qrdb.v1.StopShardRequest\x1a\x16.google.protobuf.Empty\x12K\n" +
-	"\rGetShardState\x12\x1d.qrdb.v1.GetShardStateRequest\x1a\x1b.qrdb.v1.ShardStateResponse\x12@\n" +
-	"\vGetTopology\x12\x16.google.protobuf.Empty\x1a\x19.qrdb.v1.TopologyResponse\x12?\n" +
+	"StartShard\x12\x1a.qrdb.v1.StartShardRequest\x1a\x16.google.protobuf.Empty\"\x15\xc2\xf3\x18\x11admin:start_shard\x12T\n" +
+	"\tStopShard\x12\x19.qrdb.v1.StopShardRequest\x1a\x16.google.protobuf.Empty\"\x14\xc2\xf3\x18\x10admin:stop_shard\x12b\n" +
+	"\rGetShardState\x12\x1d.qrdb.v1.GetShardStateRequest\x1a\x1b.qrdb.v1.ShardStateResponse\"\x15\xc2\xf3\x18\x11admin:shard_state\x12T\n" +
+	"\vGetTopology\x12\x16.google.protobuf.Empty\x1a\x19.qrdb.v1.TopologyResponse\"\x12\xc2\xf3\x18\x0eadmin:topology\x12Q\n" +
 	"\n" +
-	"CreateUser\x12\x1a.qrdb.v1.CreateUserRequest\x1a\x15.qrdb.v1.UserResponse\x129\n" +
-	"\aGetUser\x12\x17.qrdb.v1.GetUserRequest\x1a\x15.qrdb.v1.UserResponse\x12M\n" +
-	"\x11GetUserByUsername\x12!.qrdb.v1.GetUserByUsernameRequest\x1a\x15.qrdb.v1.UserResponse\x12Y\n" +
-	"\x17GetUserByCertThumbprint\x12'.qrdb.v1.GetUserByCertThumbprintRequest\x1a\x15.qrdb.v1.UserResponse\x12G\n" +
-	"\x0eAddCertBinding\x12\x1e.qrdb.v1.AddCertBindingRequest\x1a\x15.qrdb.v1.UserResponse\x12D\n" +
+	"CreateUser\x12\x1a.qrdb.v1.CreateUserRequest\x1a\x15.qrdb.v1.UserResponse\"\x10\xc2\xf3\x18\fusers:create\x12I\n" +
+	"\aGetUser\x12\x17.qrdb.v1.GetUserRequest\x1a\x15.qrdb.v1.UserResponse\"\x0e\xc2\xf3\x18\n" +
+	"users:read\x12]\n" +
+	"\x11GetUserByUsername\x12!.qrdb.v1.GetUserByUsernameRequest\x1a\x15.qrdb.v1.UserResponse\"\x0e\xc2\xf3\x18\n" +
+	"users:read\x12{\n" +
+	"\x17GetUserByCertThumbprint\x12'.qrdb.v1.GetUserByCertThumbprintRequest\x1a\x15.qrdb.v1.UserResponse\" \xc2\xf3\x18\x1cusers:get_by_cert_thumbprint\x12c\n" +
+	"\x0eAddCertBinding\x12\x1e.qrdb.v1.AddCertBindingRequest\x1a\x15.qrdb.v1.UserResponse\"\x1a\xc2\xf3\x18\x16users:add_cert_binding\x12V\n" +
 	"\n" +
-	"UpdateUser\x12\x1f.qrdb.v1.UpdateUserProtoRequest\x1a\x15.qrdb.v1.UserResponse\x12@\n" +
+	"UpdateUser\x12\x1f.qrdb.v1.UpdateUserProtoRequest\x1a\x15.qrdb.v1.UserResponse\"\x10\xc2\xf3\x18\fusers:update\x12R\n" +
 	"\n" +
-	"DeleteUser\x12\x1a.qrdb.v1.DeleteUserRequest\x1a\x16.google.protobuf.Empty\x12B\n" +
-	"\tListUsers\x12\x19.qrdb.v1.ListUsersRequest\x1a\x1a.qrdb.v1.ListUsersResponse\x12@\n" +
+	"DeleteUser\x12\x1a.qrdb.v1.DeleteUserRequest\x1a\x16.google.protobuf.Empty\"\x10\xc2\xf3\x18\fusers:delete\x12R\n" +
+	"\tListUsers\x12\x19.qrdb.v1.ListUsersRequest\x1a\x1a.qrdb.v1.ListUsersResponse\"\x0e\xc2\xf3\x18\n" +
+	"users:list\x12R\n" +
 	"\n" +
-	"EnableUser\x12\x1a.qrdb.v1.EnableUserRequest\x1a\x16.google.protobuf.Empty\x12B\n" +
-	"\vDisableUser\x12\x1b.qrdb.v1.DisableUserRequest\x1a\x16.google.protobuf.Empty\x12?\n" +
+	"EnableUser\x12\x1a.qrdb.v1.EnableUserRequest\x1a\x16.google.protobuf.Empty\"\x10\xc2\xf3\x18\fusers:enable\x12U\n" +
+	"\vDisableUser\x12\x1b.qrdb.v1.DisableUserRequest\x1a\x16.google.protobuf.Empty\"\x11\xc2\xf3\x18\rusers:disable\x12Q\n" +
 	"\n" +
-	"CreateRole\x12\x1a.qrdb.v1.CreateRoleRequest\x1a\x15.qrdb.v1.RoleResponse\x129\n" +
-	"\aGetRole\x12\x17.qrdb.v1.GetRoleRequest\x1a\x15.qrdb.v1.RoleResponse\x12E\n" +
-	"\rGetRoleByName\x12\x1d.qrdb.v1.GetRoleByNameRequest\x1a\x15.qrdb.v1.RoleResponse\x12D\n" +
+	"CreateRole\x12\x1a.qrdb.v1.CreateRoleRequest\x1a\x15.qrdb.v1.RoleResponse\"\x10\xc2\xf3\x18\froles:create\x12I\n" +
+	"\aGetRole\x12\x17.qrdb.v1.GetRoleRequest\x1a\x15.qrdb.v1.RoleResponse\"\x0e\xc2\xf3\x18\n" +
+	"roles:read\x12U\n" +
+	"\rGetRoleByName\x12\x1d.qrdb.v1.GetRoleByNameRequest\x1a\x15.qrdb.v1.RoleResponse\"\x0e\xc2\xf3\x18\n" +
+	"roles:read\x12V\n" +
 	"\n" +
-	"UpdateRole\x12\x1f.qrdb.v1.UpdateRoleProtoRequest\x1a\x15.qrdb.v1.RoleResponse\x12@\n" +
+	"UpdateRole\x12\x1f.qrdb.v1.UpdateRoleProtoRequest\x1a\x15.qrdb.v1.RoleResponse\"\x10\xc2\xf3\x18\froles:update\x12R\n" +
 	"\n" +
-	"DeleteRole\x12\x1a.qrdb.v1.DeleteRoleRequest\x1a\x16.google.protobuf.Empty\x12B\n" +
-	"\tListRoles\x12\x19.qrdb.v1.ListRolesRequest\x1a\x1a.qrdb.v1.ListRolesResponse\x12@\n" +
+	"DeleteRole\x12\x1a.qrdb.v1.DeleteRoleRequest\x1a\x16.google.protobuf.Empty\"\x10\xc2\xf3\x18\froles:delete\x12R\n" +
+	"\tListRoles\x12\x19.qrdb.v1.ListRolesRequest\x1a\x1a.qrdb.v1.ListRolesResponse\"\x0e\xc2\xf3\x18\n" +
+	"roles:list\x12R\n" +
 	"\n" +
-	"AssignRole\x12\x1a.qrdb.v1.AssignRoleRequest\x1a\x16.google.protobuf.Empty\x12D\n" +
-	"\fUnassignRole\x12\x1c.qrdb.v1.UnassignRoleRequest\x1a\x16.google.protobuf.Empty\x12K\n" +
-	"\x0fListPermissions\x12\x16.google.protobuf.Empty\x1a .qrdb.v1.ListPermissionsResponse\x12i\n" +
-	"\x16ResolveRolePermissions\x12&.qrdb.v1.ResolveRolePermissionsRequest\x1a'.qrdb.v1.ResolveRolePermissionsResponse\x12I\n" +
-	"\fGenerateCert\x12\x1c.qrdb.v1.GenerateCertRequest\x1a\x1b.qrdb.v1.CertBundleResponse\x12E\n" +
+	"AssignRole\x12\x1a.qrdb.v1.AssignRoleRequest\x1a\x16.google.protobuf.Empty\"\x10\xc2\xf3\x18\froles:assign\x12X\n" +
+	"\fUnassignRole\x12\x1c.qrdb.v1.UnassignRoleRequest\x1a\x16.google.protobuf.Empty\"\x12\xc2\xf3\x18\x0eroles:unassign\x12a\n" +
+	"\x0fListPermissions\x12\x16.google.protobuf.Empty\x1a .qrdb.v1.ListPermissionsResponse\"\x14\xc2\xf3\x18\x10permissions:list\x12\x82\x01\n" +
+	"\x16ResolveRolePermissions\x12&.qrdb.v1.ResolveRolePermissionsRequest\x1a'.qrdb.v1.ResolveRolePermissionsResponse\"\x17\xc2\xf3\x18\x13permissions:resolve\x12]\n" +
+	"\fGenerateCert\x12\x1c.qrdb.v1.GenerateCertRequest\x1a\x1b.qrdb.v1.CertBundleResponse\"\x12\xc2\xf3\x18\x0ecerts:generate\x12W\n" +
 	"\n" +
-	"ExportCert\x12\x1a.qrdb.v1.ExportCertRequest\x1a\x1b.qrdb.v1.ExportCertResponse\x12@\n" +
+	"ExportCert\x12\x1a.qrdb.v1.ExportCertRequest\x1a\x1b.qrdb.v1.ExportCertResponse\"\x10\xc2\xf3\x18\fcerts:export\x12R\n" +
 	"\n" +
-	"RevokeCert\x12\x1a.qrdb.v1.RevokeCertRequest\x1a\x16.google.protobuf.Empty\x12B\n" +
-	"\tListCerts\x12\x19.qrdb.v1.ListCertsRequest\x1a\x1a.qrdb.v1.ListCertsResponse\x12U\n" +
-	"\x10CreateCollection\x12 .qrdb.v1.CreateCollectionRequest\x1a\x1f.qrdb.v1.CollectionInfoResponse\x12W\n" +
-	"\x11GetCollectionInfo\x12!.qrdb.v1.GetCollectionInfoRequest\x1a\x1f.qrdb.v1.CollectionInfoResponse\x12T\n" +
-	"\x0fListCollections\x12\x1f.qrdb.v1.ListCollectionsRequest\x1a .qrdb.v1.ListCollectionsResponse\x12H\n" +
-	"\x0eDropCollection\x12\x1e.qrdb.v1.DropCollectionRequest\x1a\x16.google.protobuf.Empty\x12Q\n" +
-	"\x0eInsertDocument\x12\x1e.qrdb.v1.InsertDocumentRequest\x1a\x1f.qrdb.v1.InsertDocumentResponse\x12E\n" +
-	"\vGetDocument\x12\x1b.qrdb.v1.GetDocumentRequest\x1a\x19.qrdb.v1.DocumentResponse\x12H\n" +
-	"\x0eUpdateDocument\x12\x1e.qrdb.v1.UpdateDocumentRequest\x1a\x16.google.protobuf.Empty\x12H\n" +
-	"\x0eDeleteDocument\x12\x1e.qrdb.v1.DeleteDocumentRequest\x1a\x16.google.protobuf.Empty\x12N\n" +
-	"\rListDocuments\x12\x1d.qrdb.v1.ListDocumentsRequest\x1a\x1e.qrdb.v1.ListDocumentsResponse\x12O\n" +
-	"\x0eDatabaseCreate\x12\x1e.qrdb.v1.DatabaseCreateRequest\x1a\x1d.qrdb.v1.DatabaseInfoResponse\x12I\n" +
-	"\vDatabaseGet\x12\x1b.qrdb.v1.DatabaseGetRequest\x1a\x1d.qrdb.v1.DatabaseInfoResponse\x12E\n" +
-	"\fDatabaseList\x12\x16.google.protobuf.Empty\x1a\x1d.qrdb.v1.DatabaseListResponse\x12D\n" +
-	"\fDatabaseDrop\x12\x1c.qrdb.v1.DatabaseDropRequest\x1a\x16.google.protobuf.Empty\x12_\n" +
-	"\x16DatabaseUpdateProtocol\x12&.qrdb.v1.DatabaseUpdateProtocolRequest\x1a\x1d.qrdb.v1.DatabaseInfoResponse\x12W\n" +
-	"\x12DatabaseUpdateEtcd\x12\".qrdb.v1.DatabaseUpdateEtcdRequest\x1a\x1d.qrdb.v1.DatabaseInfoResponse\x12W\n" +
-	"\x12DatabaseUpdateRaft\x12\".qrdb.v1.DatabaseUpdateRaftRequest\x1a\x1d.qrdb.v1.DatabaseInfoResponse\x12M\n" +
-	"\rDatabaseScale\x12\x1d.qrdb.v1.DatabaseScaleRequest\x1a\x1d.qrdb.v1.DatabaseInfoResponse\x12]\n" +
-	"\x15DatabaseUpdateBarrier\x12%.qrdb.v1.DatabaseUpdateBarrierRequest\x1a\x1d.qrdb.v1.DatabaseInfoResponse\x12c\n" +
-	"\x18DatabaseUpdateConnection\x12(.qrdb.v1.DatabaseUpdateConnectionRequest\x1a\x1d.qrdb.v1.DatabaseInfoResponse\x12N\n" +
-	"\x11BarrierInitialize\x12!.qrdb.v1.BarrierInitializeRequest\x1a\x16.google.protobuf.Empty\x12F\n" +
-	"\rBarrierUnseal\x12\x1d.qrdb.v1.BarrierUnsealRequest\x1a\x16.google.protobuf.Empty\x12=\n" +
-	"\vBarrierSeal\x12\x16.google.protobuf.Empty\x1a\x16.google.protobuf.Empty\x12G\n" +
-	"\rBarrierStatus\x12\x16.google.protobuf.Empty\x1a\x1e.qrdb.v1.BarrierStatusResponse\x12k\n" +
-	"\x17BarrierShamirInitialize\x12'.qrdb.v1.BarrierShamirInitializeRequest\x1a'.qrdb.v1.BarrierShamirOperationResponse\x12o\n" +
-	"\x18BarrierShamirUnsealShare\x12(.qrdb.v1.BarrierShamirUnsealShareRequest\x1a).qrdb.v1.BarrierShamirUnsealShareResponse\x12^\n" +
-	"\x19BarrierShamirUnsealShares\x12).qrdb.v1.BarrierShamirUnsealSharesRequest\x1a\x16.google.protobuf.Empty\x12U\n" +
-	"\fBarrierRekey\x12\x1c.qrdb.v1.BarrierRekeyRequest\x1a'.qrdb.v1.BarrierShamirOperationResponse\x12l\n" +
-	"\x17BarrierEnableEncryption\x12'.qrdb.v1.BarrierEnableEncryptionRequest\x1a(.qrdb.v1.BarrierEnableEncryptionResponse\x12i\n" +
-	"\x16BarrierOfficerRegister\x12&.qrdb.v1.BarrierOfficerRegisterRequest\x1a'.qrdb.v1.BarrierOfficerRegisterResponse\x12Q\n" +
-	"\x12BarrierOfficerList\x12\x16.google.protobuf.Empty\x1a#.qrdb.v1.BarrierOfficerListResponse\x12i\n" +
-	"\x16BarrierShareClaimBegin\x12&.qrdb.v1.BarrierShareClaimBeginRequest\x1a'.qrdb.v1.BarrierShareClaimBeginResponse\x12r\n" +
-	"\x19BarrierShareClaimComplete\x12).qrdb.v1.BarrierShareClaimCompleteRequest\x1a*.qrdb.v1.BarrierShareClaimCompleteResponse\x12_\n" +
-	"\x19BarrierOfficerClaimStatus\x12\x16.google.protobuf.Empty\x1a*.qrdb.v1.BarrierOfficerClaimStatusResponse\x12f\n" +
-	"\x15BarrierShamirSealVote\x12%.qrdb.v1.BarrierShamirSealVoteRequest\x1a&.qrdb.v1.BarrierShamirSealVoteResponse\x12q\n" +
-	"\x1eBarrierRecoveryOfficerRegister\x12&.qrdb.v1.BarrierOfficerRegisterRequest\x1a'.qrdb.v1.BarrierOfficerRegisterResponse\x12q\n" +
-	"\x1eBarrierRecoveryShareClaimBegin\x12&.qrdb.v1.BarrierShareClaimBeginRequest\x1a'.qrdb.v1.BarrierShareClaimBeginResponse\x12z\n" +
-	"!BarrierRecoveryShareClaimComplete\x12).qrdb.v1.BarrierShareClaimCompleteRequest\x1a*.qrdb.v1.BarrierShareClaimCompleteResponse\x12h\n" +
-	"\x17BarrierRecoveryGenerate\x12'.qrdb.v1.BarrierRecoveryGenerateRequest\x1a$.qrdb.v1.BarrierRecoveryKeysResponse\x12X\n" +
-	"\x16BarrierRecoveryRecover\x12&.qrdb.v1.BarrierRecoveryRecoverRequest\x1a\x16.google.protobuf.Empty\x12G\n" +
-	"\x15BarrierRecoveryDelete\x12\x16.google.protobuf.Empty\x1a\x16.google.protobuf.Empty\x12W\n" +
-	"\x15BarrierRecoveryStatus\x12\x16.google.protobuf.Empty\x1a&.qrdb.v1.BarrierRecoveryStatusResponse\x12W\n" +
-	"\x10BarrierRootToken\x12 .qrdb.v1.BarrierRootTokenRequest\x1a!.qrdb.v1.BarrierRootTokenResponse\x12]\n" +
-	"\x12CeremonyInitialize\x12\".qrdb.v1.CeremonyInitializeRequest\x1a#.qrdb.v1.CeremonyInitializeResponse\x12I\n" +
-	"\x0eCeremonyStatus\x12\x16.google.protobuf.Empty\x1a\x1f.qrdb.v1.CeremonyStatusResponse\x12i\n" +
-	"\x16CeremonyClaimCertBegin\x12&.qrdb.v1.CeremonyClaimCertBeginRequest\x1a'.qrdb.v1.CeremonyClaimCertBeginResponse\x12r\n" +
-	"\x19CeremonyClaimCertComplete\x12).qrdb.v1.CeremonyClaimCertCompleteRequest\x1a*.qrdb.v1.CeremonyClaimCertCompleteResponse\x12l\n" +
-	"\x17CeremonyBeginClaimShare\x12'.qrdb.v1.CeremonyBeginClaimShareRequest\x1a(.qrdb.v1.CeremonyBeginClaimShareResponse\x12u\n" +
-	"\x1aCeremonyCompleteClaimShare\x12*.qrdb.v1.CeremonyCompleteClaimShareRequest\x1a+.qrdb.v1.CeremonyCompleteClaimShareResponse\x12T\n" +
-	"\x0fCeremonySignCSR\x12\x1f.qrdb.v1.CeremonySignCSRRequest\x1a .qrdb.v1.CeremonySignCSRResponse\x12~\n" +
-	"\x1dCeremonyEnrollExternalOfficer\x12-.qrdb.v1.CeremonyEnrollExternalOfficerRequest\x1a..qrdb.v1.CeremonyEnrollExternalOfficerResponse\x12l\n" +
-	"\x17CeremonyClaimShareBegin\x12'.qrdb.v1.CeremonyClaimShareBeginRequest\x1a(.qrdb.v1.CeremonyClaimShareBeginResponse\x12l\n" +
-	"\x1aCeremonyClaimShareComplete\x12*.qrdb.v1.CeremonyClaimShareCompleteRequest\x1a\".qrdb.v1.CeremonyCustodianResponse\x12r\n" +
-	"\x19CeremonySubmitUnsealShare\x12).qrdb.v1.CeremonySubmitUnsealShareRequest\x1a*.qrdb.v1.CeremonySubmitUnsealShareResponse\x12E\n" +
-	"\fTenantCreate\x12\x1c.qrdb.v1.TenantCreateRequest\x1a\x17.qrdb.v1.TenantResponse\x12?\n" +
-	"\tTenantGet\x12\x19.qrdb.v1.TenantGetRequest\x1a\x17.qrdb.v1.TenantResponse\x12A\n" +
+	"RevokeCert\x12\x1a.qrdb.v1.RevokeCertRequest\x1a\x16.google.protobuf.Empty\"\x10\xc2\xf3\x18\fcerts:revoke\x12R\n" +
+	"\tListCerts\x12\x19.qrdb.v1.ListCertsRequest\x1a\x1a.qrdb.v1.ListCertsResponse\"\x0e\xc2\xf3\x18\n" +
+	"certs:list\x12m\n" +
+	"\x10CreateCollection\x12 .qrdb.v1.CreateCollectionRequest\x1a\x1f.qrdb.v1.CollectionInfoResponse\"\x16\xc2\xf3\x18\x12collections:create\x12m\n" +
+	"\x11GetCollectionInfo\x12!.qrdb.v1.GetCollectionInfoRequest\x1a\x1f.qrdb.v1.CollectionInfoResponse\"\x14\xc2\xf3\x18\x10collections:read\x12j\n" +
+	"\x0fListCollections\x12\x1f.qrdb.v1.ListCollectionsRequest\x1a .qrdb.v1.ListCollectionsResponse\"\x14\xc2\xf3\x18\x10collections:list\x12^\n" +
+	"\x0eDropCollection\x12\x1e.qrdb.v1.DropCollectionRequest\x1a\x16.google.protobuf.Empty\"\x14\xc2\xf3\x18\x10collections:drop\x12i\n" +
+	"\x0eInsertDocument\x12\x1e.qrdb.v1.InsertDocumentRequest\x1a\x1f.qrdb.v1.InsertDocumentResponse\"\x16\xc2\xf3\x18\x12collections:insert\x12[\n" +
+	"\vGetDocument\x12\x1b.qrdb.v1.GetDocumentRequest\x1a\x19.qrdb.v1.DocumentResponse\"\x14\xc2\xf3\x18\x10collections:read\x12`\n" +
+	"\x0eUpdateDocument\x12\x1e.qrdb.v1.UpdateDocumentRequest\x1a\x16.google.protobuf.Empty\"\x16\xc2\xf3\x18\x12collections:update\x12`\n" +
+	"\x0eDeleteDocument\x12\x1e.qrdb.v1.DeleteDocumentRequest\x1a\x16.google.protobuf.Empty\"\x16\xc2\xf3\x18\x12collections:delete\x12d\n" +
+	"\rListDocuments\x12\x1d.qrdb.v1.ListDocumentsRequest\x1a\x1e.qrdb.v1.ListDocumentsResponse\"\x14\xc2\xf3\x18\x10collections:list\x12e\n" +
+	"\x0eDatabaseCreate\x12\x1e.qrdb.v1.DatabaseCreateRequest\x1a\x1d.qrdb.v1.DatabaseInfoResponse\"\x14\xc2\xf3\x18\x10databases:create\x12]\n" +
+	"\vDatabaseGet\x12\x1b.qrdb.v1.DatabaseGetRequest\x1a\x1d.qrdb.v1.DatabaseInfoResponse\"\x12\xc2\xf3\x18\x0edatabases:read\x12Y\n" +
+	"\fDatabaseList\x12\x16.google.protobuf.Empty\x1a\x1d.qrdb.v1.DatabaseListResponse\"\x12\xc2\xf3\x18\x0edatabases:list\x12Z\n" +
+	"\fDatabaseDrop\x12\x1c.qrdb.v1.DatabaseDropRequest\x1a\x16.google.protobuf.Empty\"\x14\xc2\xf3\x18\x10databases:delete\x12u\n" +
+	"\x16DatabaseUpdateProtocol\x12&.qrdb.v1.DatabaseUpdateProtocolRequest\x1a\x1d.qrdb.v1.DatabaseInfoResponse\"\x14\xc2\xf3\x18\x10databases:update\x12m\n" +
+	"\x12DatabaseUpdateEtcd\x12\".qrdb.v1.DatabaseUpdateEtcdRequest\x1a\x1d.qrdb.v1.DatabaseInfoResponse\"\x14\xc2\xf3\x18\x10databases:update\x12m\n" +
+	"\x12DatabaseUpdateRaft\x12\".qrdb.v1.DatabaseUpdateRaftRequest\x1a\x1d.qrdb.v1.DatabaseInfoResponse\"\x14\xc2\xf3\x18\x10databases:update\x12b\n" +
+	"\rDatabaseScale\x12\x1d.qrdb.v1.DatabaseScaleRequest\x1a\x1d.qrdb.v1.DatabaseInfoResponse\"\x13\xc2\xf3\x18\x0fdatabases:scale\x12s\n" +
+	"\x15DatabaseUpdateBarrier\x12%.qrdb.v1.DatabaseUpdateBarrierRequest\x1a\x1d.qrdb.v1.DatabaseInfoResponse\"\x14\xc2\xf3\x18\x10databases:update\x12y\n" +
+	"\x18DatabaseUpdateConnection\x12(.qrdb.v1.DatabaseUpdateConnectionRequest\x1a\x1d.qrdb.v1.DatabaseInfoResponse\"\x14\xc2\xf3\x18\x10databases:update\x12b\n" +
+	"\x11BarrierInitialize\x12!.qrdb.v1.BarrierInitializeRequest\x1a\x16.google.protobuf.Empty\"\x12\xc2\xf3\x18\x0eseal:bootstrap\x12W\n" +
+	"\rBarrierUnseal\x12\x1d.qrdb.v1.BarrierUnsealRequest\x1a\x16.google.protobuf.Empty\"\x0f\xc2\xf3\x18\vseal:unseal\x12L\n" +
+	"\vBarrierSeal\x12\x16.google.protobuf.Empty\x1a\x16.google.protobuf.Empty\"\r\xc2\xf3\x18\tseal:seal\x12X\n" +
+	"\rBarrierStatus\x12\x16.google.protobuf.Empty\x1a\x1e.qrdb.v1.BarrierStatusResponse\"\x0f\xc2\xf3\x18\vseal:status\x12\x87\x01\n" +
+	"\x17BarrierShamirInitialize\x12'.qrdb.v1.BarrierShamirInitializeRequest\x1a'.qrdb.v1.BarrierShamirOperationResponse\"\x1a\xc2\xf3\x18\x16seal:initialize_shamir\x12\x89\x01\n" +
+	"\x18BarrierShamirUnsealShare\x12(.qrdb.v1.BarrierShamirUnsealShareRequest\x1a).qrdb.v1.BarrierShamirUnsealShareResponse\"\x18\xc2\xf3\x18\x14barrier:unseal-share\x12x\n" +
+	"\x19BarrierShamirUnsealShares\x12).qrdb.v1.BarrierShamirUnsealSharesRequest\x1a\x16.google.protobuf.Empty\"\x18\xc2\xf3\x18\x14barrier:unseal-share\x12e\n" +
+	"\fBarrierRekey\x12\x1c.qrdb.v1.BarrierRekeyRequest\x1a'.qrdb.v1.BarrierShamirOperationResponse\"\x0e\xc2\xf3\x18\n" +
+	"seal:rekey\x12\x88\x01\n" +
+	"\x17BarrierEnableEncryption\x12'.qrdb.v1.BarrierEnableEncryptionRequest\x1a(.qrdb.v1.BarrierEnableEncryptionResponse\"\x1a\xc2\xf3\x18\x16seal:enable_encryption\x12\x84\x01\n" +
+	"\x16BarrierOfficerRegister\x12&.qrdb.v1.BarrierOfficerRegisterRequest\x1a'.qrdb.v1.BarrierOfficerRegisterResponse\"\x19\xc2\xf3\x18\x15seal:officer_register\x12h\n" +
+	"\x12BarrierOfficerList\x12\x16.google.protobuf.Empty\x1a#.qrdb.v1.BarrierOfficerListResponse\"\x15\xc2\xf3\x18\x11seal:officer_list\x12}\n" +
+	"\x16BarrierShareClaimBegin\x12&.qrdb.v1.BarrierShareClaimBeginRequest\x1a'.qrdb.v1.BarrierShareClaimBeginResponse\"\x12\xc2\xf3\x18\x0eidentity:gated\x12\x86\x01\n" +
+	"\x19BarrierShareClaimComplete\x12).qrdb.v1.BarrierShareClaimCompleteRequest\x1a*.qrdb.v1.BarrierShareClaimCompleteResponse\"\x12\xc2\xf3\x18\x0eidentity:gated\x12v\n" +
+	"\x19BarrierOfficerClaimStatus\x12\x16.google.protobuf.Empty\x1a*.qrdb.v1.BarrierOfficerClaimStatusResponse\"\x15\xc2\xf3\x18\x11seal:officer_list\x12\x81\x01\n" +
+	"\x15BarrierShamirSealVote\x12%.qrdb.v1.BarrierShamirSealVoteRequest\x1a&.qrdb.v1.BarrierShamirSealVoteResponse\"\x19\xc2\xf3\x18\x15seal:submit_seal_vote\x12\x8c\x01\n" +
+	"\x1eBarrierRecoveryOfficerRegister\x12&.qrdb.v1.BarrierOfficerRegisterRequest\x1a'.qrdb.v1.BarrierOfficerRegisterResponse\"\x19\xc2\xf3\x18\x15seal:officer_register\x12\x85\x01\n" +
+	"\x1eBarrierRecoveryShareClaimBegin\x12&.qrdb.v1.BarrierShareClaimBeginRequest\x1a'.qrdb.v1.BarrierShareClaimBeginResponse\"\x12\xc2\xf3\x18\x0eidentity:gated\x12\x8e\x01\n" +
+	"!BarrierRecoveryShareClaimComplete\x12).qrdb.v1.BarrierShareClaimCompleteRequest\x1a*.qrdb.v1.BarrierShareClaimCompleteResponse\"\x12\xc2\xf3\x18\x0eidentity:gated\x12\x84\x01\n" +
+	"\x17BarrierRecoveryGenerate\x12'.qrdb.v1.BarrierRecoveryGenerateRequest\x1a$.qrdb.v1.BarrierRecoveryKeysResponse\"\x1a\xc2\xf3\x18\x16seal:generate_recovery\x12t\n" +
+	"\x16BarrierRecoveryRecover\x12&.qrdb.v1.BarrierRecoveryRecoverRequest\x1a\x16.google.protobuf.Empty\"\x1a\xc2\xf3\x18\x16seal:recover_with_keys\x12c\n" +
+	"\x15BarrierRecoveryDelete\x12\x16.google.protobuf.Empty\x1a\x16.google.protobuf.Empty\"\x1a\xc2\xf3\x18\x16seal:generate_recovery\x12h\n" +
+	"\x15BarrierRecoveryStatus\x12\x16.google.protobuf.Empty\x1a&.qrdb.v1.BarrierRecoveryStatusResponse\"\x0f\xc2\xf3\x18\vseal:status\x12k\n" +
+	"\x10BarrierRootToken\x12 .qrdb.v1.BarrierRootTokenRequest\x1a!.qrdb.v1.BarrierRootTokenResponse\"\x12\xc2\xf3\x18\x0eseal:bootstrap\x12v\n" +
+	"\x12CeremonyInitialize\x12\".qrdb.v1.CeremonyInitializeRequest\x1a#.qrdb.v1.CeremonyInitializeResponse\"\x17\xc2\xf3\x18\x13ceremony:initialize\x12^\n" +
+	"\x0eCeremonyStatus\x12\x16.google.protobuf.Empty\x1a\x1f.qrdb.v1.CeremonyStatusResponse\"\x13\xc2\xf3\x18\x0fceremony:status\x12\x82\x01\n" +
+	"\x16CeremonyClaimCertBegin\x12&.qrdb.v1.CeremonyClaimCertBeginRequest\x1a'.qrdb.v1.CeremonyClaimCertBeginResponse\"\x17\xc2\xf3\x18\x13ceremony:claim_cert\x12\x8b\x01\n" +
+	"\x19CeremonyClaimCertComplete\x12).qrdb.v1.CeremonyClaimCertCompleteRequest\x1a*.qrdb.v1.CeremonyClaimCertCompleteResponse\"\x17\xc2\xf3\x18\x13ceremony:claim_cert\x12\x80\x01\n" +
+	"\x17CeremonyBeginClaimShare\x12'.qrdb.v1.CeremonyBeginClaimShareRequest\x1a(.qrdb.v1.CeremonyBeginClaimShareResponse\"\x12\xc2\xf3\x18\x0eidentity:gated\x12\x89\x01\n" +
+	"\x1aCeremonyCompleteClaimShare\x12*.qrdb.v1.CeremonyCompleteClaimShareRequest\x1a+.qrdb.v1.CeremonyCompleteClaimShareResponse\"\x12\xc2\xf3\x18\x0eidentity:gated\x12k\n" +
+	"\x0fCeremonySignCSR\x12\x1f.qrdb.v1.CeremonySignCSRRequest\x1a .qrdb.v1.CeremonySignCSRResponse\"\x15\xc2\xf3\x18\x11ceremony:sign_csr\x12\x9d\x01\n" +
+	"\x1dCeremonyEnrollExternalOfficer\x12-.qrdb.v1.CeremonyEnrollExternalOfficerRequest\x1a..qrdb.v1.CeremonyEnrollExternalOfficerResponse\"\x1d\xc2\xf3\x18\x19ceremony:enroll_custodian\x12\x80\x01\n" +
+	"\x17CeremonyClaimShareBegin\x12'.qrdb.v1.CeremonyClaimShareBeginRequest\x1a(.qrdb.v1.CeremonyClaimShareBeginResponse\"\x12\xc2\xf3\x18\x0eidentity:gated\x12\x80\x01\n" +
+	"\x1aCeremonyClaimShareComplete\x12*.qrdb.v1.CeremonyClaimShareCompleteRequest\x1a\".qrdb.v1.CeremonyCustodianResponse\"\x12\xc2\xf3\x18\x0eidentity:gated\x12\x8c\x01\n" +
+	"\x19CeremonySubmitUnsealShare\x12).qrdb.v1.CeremonySubmitUnsealShareRequest\x1a*.qrdb.v1.CeremonySubmitUnsealShareResponse\"\x18\xc2\xf3\x18\x14barrier:unseal-share\x12Y\n" +
+	"\fTenantCreate\x12\x1c.qrdb.v1.TenantCreateRequest\x1a\x17.qrdb.v1.TenantResponse\"\x12\xc2\xf3\x18\x0etenants:create\x12Q\n" +
+	"\tTenantGet\x12\x19.qrdb.v1.TenantGetRequest\x1a\x17.qrdb.v1.TenantResponse\"\x10\xc2\xf3\x18\ftenants:read\x12S\n" +
 	"\n" +
-	"TenantList\x12\x16.google.protobuf.Empty\x1a\x1b.qrdb.v1.TenantListResponse\x12E\n" +
-	"\fTenantUpdate\x12\x1c.qrdb.v1.TenantUpdateRequest\x1a\x17.qrdb.v1.TenantResponse\x12D\n" +
-	"\fTenantDelete\x12\x1c.qrdb.v1.TenantDeleteRequest\x1a\x16.google.protobuf.Empty\x12Q\n" +
-	"\x12TenantUpdateQuotas\x12\".qrdb.v1.TenantUpdateQuotasRequest\x1a\x17.qrdb.v1.TenantResponse\x12]\n" +
-	"\x18TenantUpdateEntitlements\x12(.qrdb.v1.TenantUpdateEntitlementsRequest\x1a\x17.qrdb.v1.TenantResponse\x12L\n" +
-	"\x10CredentialSubmit\x12 .qrdb.v1.CredentialSubmitRequest\x1a\x16.google.protobuf.Empty\x12Q\n" +
-	"\x12CredentialStrategy\x12\x16.google.protobuf.Empty\x1a#.qrdb.v1.CredentialStrategyResponse\x12L\n" +
-	"\x10CredentialDelete\x12 .qrdb.v1.CredentialDeleteRequest\x1a\x16.google.protobuf.Empty\x12Q\n" +
-	"\x0eCredentialList\x12\x1e.qrdb.v1.CredentialListRequest\x1a\x1f.qrdb.v1.CredentialListResponse\x12W\n" +
-	"\x10CredentialRotate\x12 .qrdb.v1.CredentialRotateRequest\x1a!.qrdb.v1.CredentialRotateResponse\x12r\n" +
-	"\x19CredentialRetrieveVersion\x12).qrdb.v1.CredentialRetrieveVersionRequest\x1a*.qrdb.v1.CredentialRetrieveVersionResponse\x12i\n" +
-	"\x16CredentialListVersions\x12&.qrdb.v1.CredentialListVersionsRequest\x1a'.qrdb.v1.CredentialListVersionsResponse\x12R\n" +
-	"\x13CredentialGCExpired\x12\x1c.qrdb.v1.CredentialGCRequest\x1a\x1d.qrdb.v1.CredentialGCResponse\x12J\n" +
-	"\x0fCredentialStore\x12\x1f.qrdb.v1.CredentialStoreRequest\x1a\x16.google.protobuf.Empty\x12]\n" +
-	"\x12CredentialRetrieve\x12\".qrdb.v1.CredentialRetrieveRequest\x1a#.qrdb.v1.CredentialRetrieveResponse\x12A\n" +
-	"\fBackupCreate\x12\x1c.qrdb.v1.BackupCreateRequest\x1a\x13.qrdb.v1.BackupInfo\x12A\n" +
+	"TenantList\x12\x16.google.protobuf.Empty\x1a\x1b.qrdb.v1.TenantListResponse\"\x10\xc2\xf3\x18\ftenants:list\x12Y\n" +
+	"\fTenantUpdate\x12\x1c.qrdb.v1.TenantUpdateRequest\x1a\x17.qrdb.v1.TenantResponse\"\x12\xc2\xf3\x18\x0etenants:update\x12X\n" +
+	"\fTenantDelete\x12\x1c.qrdb.v1.TenantDeleteRequest\x1a\x16.google.protobuf.Empty\"\x12\xc2\xf3\x18\x0etenants:delete\x12e\n" +
+	"\x12TenantUpdateQuotas\x12\".qrdb.v1.TenantUpdateQuotasRequest\x1a\x17.qrdb.v1.TenantResponse\"\x12\xc2\xf3\x18\x0etenants:update\x12{\n" +
+	"\x18TenantUpdateEntitlements\x12(.qrdb.v1.TenantUpdateEntitlementsRequest\x1a\x17.qrdb.v1.TenantResponse\"\x1c\xc2\xf3\x18\x18tenants:set_entitlements\x12d\n" +
+	"\x10CredentialSubmit\x12 .qrdb.v1.CredentialSubmitRequest\x1a\x16.google.protobuf.Empty\"\x16\xc2\xf3\x18\x12credentials:submit\x12k\n" +
+	"\x12CredentialStrategy\x12\x16.google.protobuf.Empty\x1a#.qrdb.v1.CredentialStrategyResponse\"\x18\xc2\xf3\x18\x14credentials:strategy\x12d\n" +
+	"\x10CredentialDelete\x12 .qrdb.v1.CredentialDeleteRequest\x1a\x16.google.protobuf.Empty\"\x16\xc2\xf3\x18\x12credentials:delete\x12g\n" +
+	"\x0eCredentialList\x12\x1e.qrdb.v1.CredentialListRequest\x1a\x1f.qrdb.v1.CredentialListResponse\"\x14\xc2\xf3\x18\x10credentials:list\x12o\n" +
+	"\x10CredentialRotate\x12 .qrdb.v1.CredentialRotateRequest\x1a!.qrdb.v1.CredentialRotateResponse\"\x16\xc2\xf3\x18\x12credentials:rotate\x12\x94\x01\n" +
+	"\x19CredentialRetrieveVersion\x12).qrdb.v1.CredentialRetrieveVersionRequest\x1a*.qrdb.v1.CredentialRetrieveVersionResponse\" \xc2\xf3\x18\x1ccredentials:retrieve_version\x12\x88\x01\n" +
+	"\x16CredentialListVersions\x12&.qrdb.v1.CredentialListVersionsRequest\x1a'.qrdb.v1.CredentialListVersionsResponse\"\x1d\xc2\xf3\x18\x19credentials:list_versions\x12n\n" +
+	"\x13CredentialGCExpired\x12\x1c.qrdb.v1.CredentialGCRequest\x1a\x1d.qrdb.v1.CredentialGCResponse\"\x1a\xc2\xf3\x18\x16credentials:gc_expired\x12a\n" +
+	"\x0fCredentialStore\x12\x1f.qrdb.v1.CredentialStoreRequest\x1a\x16.google.protobuf.Empty\"\x15\xc2\xf3\x18\x11credentials:store\x12w\n" +
+	"\x12CredentialRetrieve\x12\".qrdb.v1.CredentialRetrieveRequest\x1a#.qrdb.v1.CredentialRetrieveResponse\"\x18\xc2\xf3\x18\x14credentials:retrieve\x12T\n" +
+	"\fBackupCreate\x12\x1c.qrdb.v1.BackupCreateRequest\x1a\x13.qrdb.v1.BackupInfo\"\x11\xc2\xf3\x18\rbackup:create\x12R\n" +
 	"\n" +
-	"BackupList\x12\x16.google.protobuf.Empty\x1a\x1b.qrdb.v1.BackupListResponse\x12;\n" +
-	"\tBackupGet\x12\x19.qrdb.v1.BackupGetRequest\x1a\x13.qrdb.v1.BackupInfo\x12D\n" +
-	"\fBackupDelete\x12\x1c.qrdb.v1.BackupDeleteRequest\x1a\x16.google.protobuf.Empty\x12N\n" +
-	"\rBackupRestore\x12\x1d.qrdb.v1.BackupRestoreRequest\x1a\x1e.qrdb.v1.BackupRestoreResponse\x12K\n" +
-	"\fBackupVerify\x12\x1c.qrdb.v1.BackupVerifyRequest\x1a\x1d.qrdb.v1.BackupVerifyResponse\x12R\n" +
-	"\x16RebalanceGetShardStats\x12#.qrdb.v1.RebalanceShardStatsRequest\x1a\x13.qrdb.v1.ShardStats\x12L\n" +
-	"\x13RebalanceCreatePlan\x12\x1d.qrdb.v1.RebalancePlanRequest\x1a\x16.qrdb.v1.RebalancePlan\x12O\n" +
-	"\x10RebalanceExecute\x12\x16.qrdb.v1.RebalancePlan\x1a#.qrdb.v1.RebalanceExecutionResponse\x12O\n" +
-	"\x1bRebalanceGetImbalanceReport\x12\x16.google.protobuf.Empty\x1a\x18.qrdb.v1.ImbalanceReport\x126\n" +
-	"\x05Embed\x12\x15.qrdb.v1.EmbedRequest\x1a\x16.qrdb.v1.EmbedResponse\x12E\n" +
+	"BackupList\x12\x16.google.protobuf.Empty\x1a\x1b.qrdb.v1.BackupListResponse\"\x0f\xc2\xf3\x18\vbackup:list\x12L\n" +
+	"\tBackupGet\x12\x19.qrdb.v1.BackupGetRequest\x1a\x13.qrdb.v1.BackupInfo\"\x0f\xc2\xf3\x18\vbackup:read\x12W\n" +
+	"\fBackupDelete\x12\x1c.qrdb.v1.BackupDeleteRequest\x1a\x16.google.protobuf.Empty\"\x11\xc2\xf3\x18\rbackup:delete\x12b\n" +
+	"\rBackupRestore\x12\x1d.qrdb.v1.BackupRestoreRequest\x1a\x1e.qrdb.v1.BackupRestoreResponse\"\x12\xc2\xf3\x18\x0ebackup:restore\x12^\n" +
+	"\fBackupVerify\x12\x1c.qrdb.v1.BackupVerifyRequest\x1a\x1d.qrdb.v1.BackupVerifyResponse\"\x11\xc2\xf3\x18\rbackup:verify\x12g\n" +
+	"\x16RebalanceGetShardStats\x12#.qrdb.v1.RebalanceShardStatsRequest\x1a\x13.qrdb.v1.ShardStats\"\x13\xc2\xf3\x18\x0frebalance:stats\x12`\n" +
+	"\x13RebalanceCreatePlan\x12\x1d.qrdb.v1.RebalancePlanRequest\x1a\x16.qrdb.v1.RebalancePlan\"\x12\xc2\xf3\x18\x0erebalance:plan\x12f\n" +
+	"\x10RebalanceExecute\x12\x16.qrdb.v1.RebalancePlan\x1a#.qrdb.v1.RebalanceExecutionResponse\"\x15\xc2\xf3\x18\x11rebalance:execute\x12e\n" +
+	"\x1bRebalanceGetImbalanceReport\x12\x16.google.protobuf.Empty\x1a\x18.qrdb.v1.ImbalanceReport\"\x14\xc2\xf3\x18\x10rebalance:report\x12K\n" +
+	"\x05Embed\x12\x15.qrdb.v1.EmbedRequest\x1a\x16.qrdb.v1.EmbedResponse\"\x13\xc2\xf3\x18\x0fembedding:embed\x12Z\n" +
 	"\n" +
-	"BatchEmbed\x12\x1a.qrdb.v1.BatchEmbedRequest\x1a\x1b.qrdb.v1.BatchEmbedResponse\x12`\n" +
-	"\x13ListEmbeddingModels\x12#.qrdb.v1.ListEmbeddingModelsRequest\x1a$.qrdb.v1.ListEmbeddingModelsResponse\x12Z\n" +
-	"\x11RAGIngestDocument\x12!.qrdb.v1.RAGIngestDocumentRequest\x1a\".qrdb.v1.RAGIngestDocumentResponse\x12?\n" +
-	"\bRAGQuery\x12\x18.qrdb.v1.RAGQueryRequest\x1a\x19.qrdb.v1.RAGQueryResponse\x12Z\n" +
-	"\x11RAGDeleteDocument\x12!.qrdb.v1.RAGDeleteDocumentRequest\x1a\".qrdb.v1.RAGDeleteDocumentResponse\x12W\n" +
-	"\x10RAGListDocuments\x12 .qrdb.v1.RAGListDocumentsRequest\x1a!.qrdb.v1.RAGListDocumentsResponse\x12D\n" +
-	"\fDatabaseSeal\x12\x1c.qrdb.v1.DatabaseSealRequest\x1a\x16.google.protobuf.Empty\x12H\n" +
-	"\x0eDatabaseUnseal\x12\x1e.qrdb.v1.DatabaseUnsealRequest\x1a\x16.google.protobuf.Empty\x12f\n" +
-	"\x15DatabaseBarrierStatus\x12%.qrdb.v1.DatabaseBarrierStatusRequest\x1a&.qrdb.v1.DatabaseBarrierStatusResponse\x12?\n" +
-	"\bSQLQuery\x12\x18.qrdb.v1.SQLQueryRequest\x1a\x19.qrdb.v1.SQLQueryResponse2\xc6\b\n" +
-	"\x14TenantBarrierService\x12M\n" +
-	"\x04Init\x12!.qrdb.v1.TenantBarrierInitRequest\x1a\".qrdb.v1.TenantBarrierInitResponse\x12E\n" +
-	"\x06Unseal\x12#.qrdb.v1.TenantBarrierUnsealRequest\x1a\x16.google.protobuf.Empty\x12]\n" +
-	"\vUnsealShare\x12(.qrdb.v1.TenantBarrierUnsealShareRequest\x1a$.qrdb.v1.TenantBarrierUnsealProgress\x12A\n" +
-	"\x04Seal\x12!.qrdb.v1.TenantBarrierSealRequest\x1a\x16.google.protobuf.Empty\x12S\n" +
-	"\x06Status\x12#.qrdb.v1.TenantBarrierStatusRequest\x1a$.qrdb.v1.TenantBarrierStatusResponse\x12n\n" +
-	"\x0fOfficerRegister\x12,.qrdb.v1.TenantBarrierOfficerRegisterRequest\x1a-.qrdb.v1.TenantBarrierOfficerRegisterResponse\x12b\n" +
-	"\vOfficerList\x12(.qrdb.v1.TenantBarrierOfficerListRequest\x1a).qrdb.v1.TenantBarrierOfficerListResponse\x12n\n" +
-	"\x0fShareClaimBegin\x12,.qrdb.v1.TenantBarrierShareClaimBeginRequest\x1a-.qrdb.v1.TenantBarrierShareClaimBeginResponse\x12w\n" +
-	"\x12ShareClaimComplete\x12/.qrdb.v1.TenantBarrierShareClaimCompleteRequest\x1a0.qrdb.v1.TenantBarrierShareClaimCompleteResponse\x12w\n" +
-	"\x12OfficerClaimStatus\x12/.qrdb.v1.TenantBarrierOfficerClaimStatusRequest\x1a0.qrdb.v1.TenantBarrierOfficerClaimStatusResponse\x12k\n" +
-	"\x0eShamirSealVote\x12+.qrdb.v1.TenantBarrierShamirSealVoteRequest\x1a,.qrdb.v1.TenantBarrierShamirSealVoteResponse2P\n" +
-	"\fAuditService\x12@\n" +
-	"\x05Query\x12\x1a.qrdb.v1.AuditQueryRequest\x1a\x1b.qrdb.v1.AuditQueryResponse2\x8c\x03\n" +
-	"\x11AuthFactorService\x12K\n" +
-	"\fEnrollFactor\x12\x1c.qrdb.v1.EnrollFactorRequest\x1a\x1d.qrdb.v1.EnrollFactorResponse\x12T\n" +
-	"\x0fChallengeFactor\x12\x1f.qrdb.v1.ChallengeFactorRequest\x1a .qrdb.v1.ChallengeFactorResponse\x12D\n" +
-	"\fVerifyFactor\x12\x1c.qrdb.v1.VerifyFactorRequest\x1a\x16.google.protobuf.Empty\x12H\n" +
-	"\vListFactors\x12\x1b.qrdb.v1.ListFactorsRequest\x1a\x1c.qrdb.v1.ListFactorsResponse\x12D\n" +
-	"\fRevokeFactor\x12\x1c.qrdb.v1.RevokeFactorRequest\x1a\x16.google.protobuf.Empty2\xe0\x04\n" +
-	"\x15UserAuthFactorService\x12L\n" +
-	"\x03Add\x12!.qrdb.v1.UserAuthFactorAddRequest\x1a\".qrdb.v1.UserAuthFactorAddResponse\x12O\n" +
-	"\x04List\x12\".qrdb.v1.UserAuthFactorListRequest\x1a#.qrdb.v1.UserAuthFactorListResponse\x12L\n" +
-	"\x03Get\x12!.qrdb.v1.UserAuthFactorGetRequest\x1a\".qrdb.v1.UserAuthFactorGetResponse\x12U\n" +
-	"\x06Remove\x12$.qrdb.v1.UserAuthFactorRemoveRequest\x1a%.qrdb.v1.UserAuthFactorRemoveResponse\x12U\n" +
-	"\x06Rotate\x12$.qrdb.v1.UserAuthFactorRotateRequest\x1a%.qrdb.v1.UserAuthFactorRotateResponse\x12X\n" +
-	"\aRelabel\x12%.qrdb.v1.UserAuthFactorRelabelRequest\x1a&.qrdb.v1.UserAuthFactorRelabelResponse\x12R\n" +
-	"\x05Login\x12#.qrdb.v1.UserAuthFactorLoginRequest\x1a$.qrdb.v1.UserAuthFactorLoginResponseB9Z7github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1b\x06proto3"
+	"BatchEmbed\x12\x1a.qrdb.v1.BatchEmbedRequest\x1a\x1b.qrdb.v1.BatchEmbedResponse\"\x13\xc2\xf3\x18\x0fembedding:embed\x12{\n" +
+	"\x13ListEmbeddingModels\x12#.qrdb.v1.ListEmbeddingModelsRequest\x1a$.qrdb.v1.ListEmbeddingModelsResponse\"\x19\xc2\xf3\x18\x15embedding:list_models\x12j\n" +
+	"\x11RAGIngestDocument\x12!.qrdb.v1.RAGIngestDocumentRequest\x1a\".qrdb.v1.RAGIngestDocumentResponse\"\x0e\xc2\xf3\x18\n" +
+	"rag:ingest\x12N\n" +
+	"\bRAGQuery\x12\x18.qrdb.v1.RAGQueryRequest\x1a\x19.qrdb.v1.RAGQueryResponse\"\r\xc2\xf3\x18\trag:query\x12s\n" +
+	"\x11RAGDeleteDocument\x12!.qrdb.v1.RAGDeleteDocumentRequest\x1a\".qrdb.v1.RAGDeleteDocumentResponse\"\x17\xc2\xf3\x18\x13rag:delete_document\x12o\n" +
+	"\x10RAGListDocuments\x12 .qrdb.v1.RAGListDocumentsRequest\x1a!.qrdb.v1.RAGListDocumentsResponse\"\x16\xc2\xf3\x18\x12rag:list_documents\x12X\n" +
+	"\fDatabaseSeal\x12\x1c.qrdb.v1.DatabaseSealRequest\x1a\x16.google.protobuf.Empty\"\x12\xc2\xf3\x18\x0edatabases:seal\x12^\n" +
+	"\x0eDatabaseUnseal\x12\x1e.qrdb.v1.DatabaseUnsealRequest\x1a\x16.google.protobuf.Empty\"\x14\xc2\xf3\x18\x10databases:unseal\x12\x84\x01\n" +
+	"\x15DatabaseBarrierStatus\x12%.qrdb.v1.DatabaseBarrierStatusRequest\x1a&.qrdb.v1.DatabaseBarrierStatusResponse\"\x1c\xc2\xf3\x18\x18databases:barrier_status\x12M\n" +
+	"\bSQLQuery\x12\x18.qrdb.v1.SQLQueryRequest\x1a\x19.qrdb.v1.SQLQueryResponse\"\f\xc2\xf3\x18\bkv:range2\xfc\n" +
+	"\n" +
+	"\x14TenantBarrierService\x12f\n" +
+	"\x04Init\x12!.qrdb.v1.TenantBarrierInitRequest\x1a\".qrdb.v1.TenantBarrierInitResponse\"\x17\xc2\xf3\x18\x13tenant_barrier:init\x12`\n" +
+	"\x06Unseal\x12#.qrdb.v1.TenantBarrierUnsealRequest\x1a\x16.google.protobuf.Empty\"\x19\xc2\xf3\x18\x15tenant_barrier:unseal\x12x\n" +
+	"\vUnsealShare\x12(.qrdb.v1.TenantBarrierUnsealShareRequest\x1a$.qrdb.v1.TenantBarrierUnsealProgress\"\x19\xc2\xf3\x18\x15tenant_barrier:unseal\x12Z\n" +
+	"\x04Seal\x12!.qrdb.v1.TenantBarrierSealRequest\x1a\x16.google.protobuf.Empty\"\x17\xc2\xf3\x18\x13tenant_barrier:seal\x12n\n" +
+	"\x06Status\x12#.qrdb.v1.TenantBarrierStatusRequest\x1a$.qrdb.v1.TenantBarrierStatusResponse\"\x19\xc2\xf3\x18\x15tenant_barrier:status\x12\x93\x01\n" +
+	"\x0fOfficerRegister\x12,.qrdb.v1.TenantBarrierOfficerRegisterRequest\x1a-.qrdb.v1.TenantBarrierOfficerRegisterResponse\"#\xc2\xf3\x18\x1ftenant_barrier:officer_register\x12\x83\x01\n" +
+	"\vOfficerList\x12(.qrdb.v1.TenantBarrierOfficerListRequest\x1a).qrdb.v1.TenantBarrierOfficerListResponse\"\x1f\xc2\xf3\x18\x1btenant_barrier:officer_list\x12\x82\x01\n" +
+	"\x0fShareClaimBegin\x12,.qrdb.v1.TenantBarrierShareClaimBeginRequest\x1a-.qrdb.v1.TenantBarrierShareClaimBeginResponse\"\x12\xc2\xf3\x18\x0eidentity:gated\x12\x8b\x01\n" +
+	"\x12ShareClaimComplete\x12/.qrdb.v1.TenantBarrierShareClaimCompleteRequest\x1a0.qrdb.v1.TenantBarrierShareClaimCompleteResponse\"\x12\xc2\xf3\x18\x0eidentity:gated\x12\x98\x01\n" +
+	"\x12OfficerClaimStatus\x12/.qrdb.v1.TenantBarrierOfficerClaimStatusRequest\x1a0.qrdb.v1.TenantBarrierOfficerClaimStatusResponse\"\x1f\xc2\xf3\x18\x1btenant_barrier:officer_list\x12\x89\x01\n" +
+	"\x0eShamirSealVote\x12+.qrdb.v1.TenantBarrierShamirSealVoteRequest\x1a,.qrdb.v1.TenantBarrierShamirSealVoteResponse\"\x1c\xc2\xf3\x18\x18tenant_barrier:seal_vote2a\n" +
+	"\fAuditService\x12Q\n" +
+	"\x05Query\x12\x1a.qrdb.v1.AuditQueryRequest\x1a\x1b.qrdb.v1.AuditQueryResponse\"\x0f\xc2\xf3\x18\vaudit:query2\x80\x04\n" +
+	"\x11AuthFactorService\x12b\n" +
+	"\fEnrollFactor\x12\x1c.qrdb.v1.EnrollFactorRequest\x1a\x1d.qrdb.v1.EnrollFactorResponse\"\x15\xc2\xf3\x18\x11authfactor:enroll\x12n\n" +
+	"\x0fChallengeFactor\x12\x1f.qrdb.v1.ChallengeFactorRequest\x1a .qrdb.v1.ChallengeFactorResponse\"\x18\xc2\xf3\x18\x14authfactor:challenge\x12[\n" +
+	"\fVerifyFactor\x12\x1c.qrdb.v1.VerifyFactorRequest\x1a\x16.google.protobuf.Empty\"\x15\xc2\xf3\x18\x11authfactor:verify\x12]\n" +
+	"\vListFactors\x12\x1b.qrdb.v1.ListFactorsRequest\x1a\x1c.qrdb.v1.ListFactorsResponse\"\x13\xc2\xf3\x18\x0fauthfactor:list\x12[\n" +
+	"\fRevokeFactor\x12\x1c.qrdb.v1.RevokeFactorRequest\x1a\x16.google.protobuf.Empty\"\x15\xc2\xf3\x18\x11authfactor:revoke2\xa3\x06\n" +
+	"\x15UserAuthFactorService\x12f\n" +
+	"\x03Add\x12!.qrdb.v1.UserAuthFactorAddRequest\x1a\".qrdb.v1.UserAuthFactorAddResponse\"\x18\xc2\xf3\x18\x14user_authfactors:add\x12j\n" +
+	"\x04List\x12\".qrdb.v1.UserAuthFactorListRequest\x1a#.qrdb.v1.UserAuthFactorListResponse\"\x19\xc2\xf3\x18\x15user_authfactors:list\x12f\n" +
+	"\x03Get\x12!.qrdb.v1.UserAuthFactorGetRequest\x1a\".qrdb.v1.UserAuthFactorGetResponse\"\x18\xc2\xf3\x18\x14user_authfactors:get\x12r\n" +
+	"\x06Remove\x12$.qrdb.v1.UserAuthFactorRemoveRequest\x1a%.qrdb.v1.UserAuthFactorRemoveResponse\"\x1b\xc2\xf3\x18\x17user_authfactors:remove\x12r\n" +
+	"\x06Rotate\x12$.qrdb.v1.UserAuthFactorRotateRequest\x1a%.qrdb.v1.UserAuthFactorRotateResponse\"\x1b\xc2\xf3\x18\x17user_authfactors:rotate\x12v\n" +
+	"\aRelabel\x12%.qrdb.v1.UserAuthFactorRelabelRequest\x1a&.qrdb.v1.UserAuthFactorRelabelResponse\"\x1c\xc2\xf3\x18\x18user_authfactors:relabel\x12n\n" +
+	"\x05Login\x12#.qrdb.v1.UserAuthFactorLoginRequest\x1a$.qrdb.v1.UserAuthFactorLoginResponse\"\x1a\xc2\xf3\x18\x16user_authfactors:loginB9Z7github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1b\x06proto3"
 
 var (
 	file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescOnce sync.Once
@@ -27055,6 +27074,7 @@ func file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_init() {
 	if File_pkg_api_grpc_proto_qrdbv1_qrdb_proto != nil {
 		return
 	}
+	file_pkg_api_grpc_proto_qrdbv1_authz_proto_init()
 	file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[24].OneofWrappers = []any{
 		(*Compare_Version)(nil),
 		(*Compare_CreateRevision)(nil),

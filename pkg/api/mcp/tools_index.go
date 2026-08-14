@@ -22,30 +22,36 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // indexTools returns the MCP tool registrations for secondary index operations.
-func indexTools(indexSvc service.IndexServicer) []mcpserver.ServerTool {
-	return []mcpserver.ServerTool{
+func indexTools(indexSvc service.IndexServicer) []serverTool {
+	return []serverTool{
 		{
 			Tool:    toolIndexCreate(),
+			Perm:    permission.IndexCreate,
 			Handler: handleIndexCreate(indexSvc),
 		},
 		{
 			Tool:    toolIndexDrop(),
+			Perm:    permission.IndexDrop,
 			Handler: handleIndexDrop(indexSvc),
 		},
 		{
 			Tool:    toolIndexQuery(),
+			Perm:    permission.IndexQuery,
 			Handler: handleIndexQuery(indexSvc),
 		},
 		{
 			Tool:    toolIndexScan(),
+			Perm:    permission.IndexScan,
 			Handler: handleIndexScan(indexSvc),
 		},
 		{
 			Tool:    toolIndexList(),
+			Perm:    permission.IndexList,
 			Handler: handleIndexList(indexSvc),
 		},
 	}

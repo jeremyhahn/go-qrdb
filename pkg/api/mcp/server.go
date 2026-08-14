@@ -27,6 +27,7 @@ import (
 
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
@@ -88,6 +89,19 @@ type Server struct {
 	httpSrv   *http.Server
 	listener  net.Listener
 
+	// toolPerms is the single source of truth for per-tool authorization.
+	// addTools populates it from each tool's registration-site permission
+	// declaration (the serverTool.Perm field), so every tool declares its
+	// permission alongside its schema and handler; AuthorizeMCP consults it
+	// with DEFAULT-DENY semantics.
+	toolPerms *authmw.MCPToolRegistry
+
+	// modules are ServiceModule instances (see pkg/apimodule) whose MCP tools
+	// are registered on the shared mcpSrv after the built-in tool sets, giving
+	// higher layers (e.g. go-xkms) the same MCP transport reach as REST, gRPC,
+	// QUIC, and Unix without standing up a parallel server.
+	modules []apimodule.ServiceModule
+
 	// sealedWindowProbe controls the sealed-window tool-handler middleware.
 	// While the probe reports sealed, every tool call not on
 	// SealedWindowAllowlist is rejected. Wired identically to the REST,
@@ -126,9 +140,10 @@ func WithTLS(cfg *tls.Config) ServerOption {
 // WithAuthMiddleware configures authentication and per-tool authorization for
 // the MCP server. When set, every tool call is authenticated (mTLS peer
 // identity, injected by the HTTP context func) and authorized against the
-// tool's required permission (mcpPermissions, DEFAULT-DENY). When nil, the
-// server runs unauthenticated — matching the other transports' behavior when
-// no middleware is supplied.
+// tool's required permission (declared with the tool at registration time in
+// the toolPerms registry, DEFAULT-DENY). When nil, the server runs
+// unauthenticated — matching the other transports' behavior when no
+// middleware is supplied.
 func WithAuthMiddleware(mw *authmw.AuthMiddleware) ServerOption {
 	return func(s *Server) {
 		s.authMW = mw
@@ -355,6 +370,14 @@ func WithServiceRegistry(reg service.Registry) ServerOption {
 	return func(s *Server) { s.registry = reg }
 }
 
+// WithServiceModules registers ServiceModule instances (see pkg/apimodule)
+// whose MCP tools are added to the shared mcp-go server after the built-in
+// tool sets. This lets higher layers inject capabilities that reach the MCP
+// transport the same way they already reach gRPC, unix, REST, and QUIC.
+func WithServiceModules(mods []apimodule.ServiceModule) ServerOption {
+	return func(s *Server) { s.modules = mods }
+}
+
 // WithKVService registers KV tools on the MCP server. This is an alternative
 // to passing kvSvc as a positional parameter and is useful when constructing
 // a server that handles only barrier, cert, or auth services.
@@ -407,96 +430,112 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 		mcpOpts...,
 	)
 
+	// toolPerms is populated by the addTools calls below: every built-in tool
+	// declares its permission at the registration site, and AuthorizeMCP
+	// consults the registry with DEFAULT-DENY semantics.
+	s.toolPerms = authmw.NewMCPToolRegistry()
+
 	// Register KV and admin tools only when the respective service is provided.
 	if s.kvSvc != nil {
-		s.mcpSrv.AddTools(kvTools(s.kvSvc)...)
+		s.addTools(kvTools(s.kvSvc)...)
 	}
 	if s.adminSvc != nil {
-		s.mcpSrv.AddTools(adminTools(s.adminSvc)...)
+		s.addTools(adminTools(s.adminSvc)...)
 	}
 
 	// Register optional feature tools when their services are provided.
 	if s.mvccSvc != nil {
-		s.mcpSrv.AddTools(mvccTools(s.mvccSvc)...)
+		s.addTools(mvccTools(s.mvccSvc)...)
 	}
 	if s.txSvc != nil {
-		s.mcpSrv.AddTools(transactionTools(s.txSvc)...)
+		s.addTools(transactionTools(s.txSvc)...)
 	}
 	if s.batchSvc != nil {
-		s.mcpSrv.AddTools(batchTools(s.batchSvc)...)
+		s.addTools(batchTools(s.batchSvc)...)
 	}
 	if s.watchSvc != nil {
-		s.mcpSrv.AddTools(watchTools(s.watchSvc)...)
+		s.addTools(watchTools(s.watchSvc)...)
 	}
 	if s.leaseSvc != nil {
-		s.mcpSrv.AddTools(leaseTools(s.leaseSvc)...)
+		s.addTools(leaseTools(s.leaseSvc)...)
 	}
 	if s.lockSvc != nil {
-		s.mcpSrv.AddTools(lockTools(s.lockSvc)...)
+		s.addTools(lockTools(s.lockSvc)...)
 	}
 	if s.indexSvc != nil {
-		s.mcpSrv.AddTools(indexTools(s.indexSvc)...)
+		s.addTools(indexTools(s.indexSvc)...)
 	}
 	if s.tsSvc != nil {
-		s.mcpSrv.AddTools(timeSeriesTools(s.tsSvc)...)
+		s.addTools(timeSeriesTools(s.tsSvc)...)
 	}
 	if s.vectorSvc != nil {
-		s.mcpSrv.AddTools(vectorTools(s.vectorSvc)...)
+		s.addTools(vectorTools(s.vectorSvc)...)
 	}
 	if s.embeddingSvc != nil {
-		s.mcpSrv.AddTools(embeddingTools(s.embeddingSvc)...)
+		s.addTools(embeddingTools(s.embeddingSvc)...)
 	}
 	if s.ragSvc != nil {
-		s.mcpSrv.AddTools(ragTools(s.ragSvc)...)
+		s.addTools(ragTools(s.ragSvc)...)
 	}
 	if s.userSvc != nil {
-		s.mcpSrv.AddTools(userTools(s.userSvc)...)
+		s.addTools(userTools(s.userSvc)...)
 	}
 	if s.roleSvc != nil && s.userSvc != nil {
-		s.mcpSrv.AddTools(roleTools(s.roleSvc, s.userSvc)...)
+		s.addTools(roleTools(s.roleSvc, s.userSvc)...)
 	}
 	if s.certProv != nil {
-		s.mcpSrv.AddTools(certTools(s.certProv)...)
+		s.addTools(certTools(s.certProv)...)
 	}
 	if s.collectionSvc != nil {
-		s.mcpSrv.AddTools(collectionTools(s.collectionSvc)...)
+		s.addTools(collectionTools(s.collectionSvc)...)
 	}
 	if s.dbSvc != nil {
-		s.mcpSrv.AddTools(databaseTools(s.dbSvc)...)
+		s.addTools(databaseTools(s.dbSvc)...)
 	}
 	if s.barrierSvc != nil {
-		s.mcpSrv.AddTools(barrierTools(s.barrierSvc, s.pinBackend, s.encMigrator)...)
+		s.addTools(barrierTools(s.barrierSvc, s.pinBackend, s.encMigrator)...)
 	}
 	if s.ceremonySvc != nil {
-		s.mcpSrv.AddTools(ceremonyTools(s.ceremonySvc, s.ceremonyCA)...)
+		s.addTools(ceremonyTools(s.ceremonySvc, s.ceremonyCA)...)
 	}
 	if s.credentialSvc != nil {
-		s.mcpSrv.AddTools(credentialTools(s.credentialSvc)...)
+		s.addTools(credentialTools(s.credentialSvc)...)
 	}
 	if s.tenantSvc != nil {
-		s.mcpSrv.AddTools(tenantTools(s.tenantSvc)...)
-		s.mcpSrv.AddTools(tenantBarrierTools(s.tenantSvc, s.authorizeTenantBarrierOp)...)
+		s.addTools(tenantTools(s.tenantSvc)...)
+		s.addTools(tenantBarrierTools(s.tenantSvc, s.authorizeTenantBarrierOp)...)
 	}
 	if s.backupSvc != nil {
-		s.mcpSrv.AddTools(backupTools(s.backupSvc)...)
+		s.addTools(backupTools(s.backupSvc)...)
 	}
 	if s.rebalanceSvc != nil {
-		s.mcpSrv.AddTools(rebalanceTools(s.rebalanceSvc)...)
+		s.addTools(rebalanceTools(s.rebalanceSvc)...)
 	}
 	if s.authFactorSvc != nil {
-		s.mcpSrv.AddTools(authFactorTools(s.authFactorSvc)...)
+		s.addTools(authFactorTools(s.authFactorSvc)...)
 	}
 	if s.userAuthFactorSvc != nil {
-		s.mcpSrv.AddTools(userAuthFactorTools(s.userAuthFactorSvc, s.userSvc)...)
+		s.addTools(userAuthFactorTools(s.userAuthFactorSvc, s.userSvc)...)
 	}
 	// Audit query tool.
 	// Authorization: requires "audit:query" permission.
 	// TODO: switch to permission.AuditQuery constant once Phase 2 lands.
 	if s.auditLogger != nil {
-		s.mcpSrv.AddTools(auditTools(s.auditLogger)...)
+		s.addTools(auditTools(s.auditLogger)...)
 	}
 	if s.sqlSvc != nil {
-		s.mcpSrv.AddTools(sqlTools(s.sqlSvc)...)
+		s.addTools(sqlTools(s.sqlSvc)...)
+	}
+
+	// Register module tools last so they layer on top of the built-in tool
+	// sets on the same real mcp-go server. NOTE: RegisterMCP registers tools
+	// directly on the mcp-go server, bypassing the toolPerms registry — so
+	// when auth middleware is configured, a module tool is DENIED by
+	// AuthorizeMCP (default-deny) until it gains registry coverage. This is
+	// deliberate fail-closed behavior; module tools currently require
+	// registry coverage to become callable on an authenticated server.
+	for _, m := range s.modules {
+		m.RegisterMCP(s.mcpSrv)
 	}
 
 	return s

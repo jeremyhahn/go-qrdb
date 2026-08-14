@@ -145,6 +145,21 @@ func (c *Connector) Driver() driver.Driver {
 	return &qrdbdriver.Driver{}
 }
 
+// Node returns the in-process node this connector started, or nil before the
+// first Connect. The node remains owned by the connector: Close shuts it
+// down, and a caller must not close it directly.
+//
+// It exists because the connector is the only thing that knows how to start
+// this node, and some operations have no SQL surface at all -- provisioning a
+// tenant, driving the seal, inspecting the service graph. Without an accessor
+// an embedder wanting any of those would have to rebuild the whole start
+// sequence beside the one here and keep the two in step.
+func (c *Connector) Node() *qrdbnode.Node {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.node
+}
+
 // Close shuts down the inner connector and then the node it was built over,
 // and removes the scratch directory an in-memory node needed. Every step is
 // attempted even when an earlier one fails -- leaving a node running because

@@ -28,8 +28,9 @@ import (
 // Watch method names. Watch is server-streaming and is handled by the
 // dedicated streaming path in handleStream (handleWatchStream), NOT the
 // request/response dispatch table — so these are intentionally absent from
-// s.handlers. Authorization still applies via the AuthorizeQUIC mapping for
-// these method strings.
+// s.handlers. Authorization still applies: buildHandlers declares these
+// method strings in the methodPerms registry (handleStreamOnly), so
+// AuthorizeQUIC resolves them like any unary method.
 const (
 	watchMethodKey       = "watch.Watch"
 	watchPrefixMethodKey = "watch.WatchPrefix"

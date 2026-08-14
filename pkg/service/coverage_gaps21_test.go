@@ -109,10 +109,10 @@ func TestAuthFactorService_LoadEnrollment_GetReturnsEmpty(t *testing.T) {
 
 func TestMVCCKVService_ExistsWithConsistency_KeyNotFound_Mock(t *testing.T) {
 	// keyNotFoundErr interface: has KeyNotFound() string method.
-	// Use mockKeyNotFoundErr from mvcc_service_test.go.
+	// Use mockKeyNotFoundError from mvcc_service_test.go.
 	host := &mockHost{
 		readWithConsistencyFn: func(_ context.Context, _ uint64, _ interface{}, _ consistency.ReadOptions) (interface{}, error) {
-			return nil, &mockKeyNotFoundErr{key: "k"}
+			return nil, &mockKeyNotFoundError{key: "k"}
 		},
 	}
 	svc := NewMVCCKVService(host, 1)

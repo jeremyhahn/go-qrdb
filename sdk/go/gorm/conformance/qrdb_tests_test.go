@@ -217,6 +217,38 @@ func openMySQL(cfg *gorm.Config) (*gorm.DB, error) {
 	return gorm.Open(mysql.Open(dsn), cfg)
 }
 
+// pgsqlQueryExecMode is the pgx query execution mode this target runs the
+// upstream suite under, set as a connection-string parameter pgx reads in
+// ParseConfig.
+//
+// describe_exec keeps the PostgreSQL EXTENDED query protocol -- Parse,
+// Describe, Bind, Execute, with real parameter OIDs -- but re-describes each
+// statement instead of reusing a cached RowDescription. pgx's default,
+// cache_statement, describes once and then BINDs against that descriptor
+// forever, which is unusable for a test suite whose whole shape is
+// DropTable/AutoMigrate followed by queries over the recreated table: the
+// upstream suite reuses one model name (hn_posts) at two different widths
+// across two adjacent tests, so the second one executes against the first
+// one's descriptor.
+//
+// That is not a qrdb limitation. PostgreSQL 16 refuses the identical
+// sequence with "cached plan must not change result type (SQLSTATE 0A000)",
+// measured directly, and qrdb now returns exactly that (see
+// pkg/sql/pgsql/errors.go's CachedPlanResultTypeError). No PostgreSQL of any
+// kind can serve those two tests over a cached statement, so running the
+// suite that way tests nothing about qrdb -- it only re-measures a
+// restriction of the protocol.
+//
+// Upstream GORM resolves this by setting PreferSimpleProtocol: true for its
+// own postgres target, which drops to the SIMPLE query protocol and gives up
+// prepared statements, parameter OIDs, and the entire extended path. This
+// target deliberately does not go that far: describe_exec is the strictest
+// mode that is actually serveable, so qrdb's extended-protocol implementation
+// -- by far the larger and subtler half of pkg/sql/pgsql -- stays under test
+// rather than being skipped. The cached-statement behaviour itself is covered
+// where it belongs, by pkg/sql/pgsql's own tests.
+const pgsqlQueryExecMode = "describe_exec"
+
 // openPgSQL opens a *gorm.DB through gorm.io/driver/postgres against the
 // shared qrdbd subprocess's PostgreSQL wire port, over mTLS. shared is
 // populated by TestMain via startWireServer before any opener runs.
@@ -225,9 +257,10 @@ func openPgSQL(cfg *gorm.Config) (*gorm.DB, error) {
 		return nil, &wireServerNotStartedError{Target: targetPgSQL}
 	}
 	dsn := fmt.Sprintf(
-		"host=127.0.0.1 port=%d dbname=%s user=%s sslmode=verify-full sslrootcert=%s sslcert=%s sslkey=%s",
+		"host=127.0.0.1 port=%d dbname=%s user=%s sslmode=verify-full sslrootcert=%s sslcert=%s sslkey=%s default_query_exec_mode=%s",
 		shared.pgsqlPort, sqlDatabase, sqlUser,
 		shared.ca.CertPath, shared.client.CertPath, shared.client.KeyPath,
+		pgsqlQueryExecMode,
 	)
 	return gorm.Open(postgres.Open(dsn), cfg)
 }

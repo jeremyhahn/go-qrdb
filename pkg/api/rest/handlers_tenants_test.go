@@ -218,6 +218,9 @@ func (m *mockServiceRegistry) TableService(_, _ string) (service.TableServicer, 
 func (m *mockServiceRegistry) SequenceService(_, _ string) (service.SequenceServicer, error) {
 	return nil, nil
 }
+func (m *mockServiceRegistry) PrivilegeService(_, _ string) (service.PrivilegeServicer, error) {
+	return nil, nil
+}
 
 var _ service.Registry = (*mockServiceRegistry)(nil)
 

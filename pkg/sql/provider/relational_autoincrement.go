@@ -15,6 +15,8 @@
 package provider
 
 import (
+	"math"
+
 	sqle "github.com/dolthub/go-mysql-server/sql"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -34,6 +36,15 @@ import (
 // value, GetNextAutoIncrementValue advances the sequence past it
 // (SequenceServicer.Advance), so a subsequently auto-generated value never
 // collides with one a caller supplied explicitly -- again matching MySQL.
+//
+// Generating a value is also what publishes the statement's LAST_INSERT_ID
+// (publishLastInsertID). MySQL defines LAST_INSERT_ID as the value the
+// statement generated for the FIRST row that needed one -- explicitly
+// supplied values never set it -- and the generator is the only layer that
+// knows which rows those were, exactly as it is in MySQL itself
+// (handler::update_auto_increment writing THD::first_successful_insert_id_
+// in_cur_stmt). See publishLastInsertID for why go-mysql-server cannot be
+// left to derive it on its own.
 // ---------------------------------------------------------------------------
 
 // Compile-time interface assertions.
@@ -91,6 +102,9 @@ func (t *RelationalTable) PeekNextAutoIncrementValue(ctx *sqle.Context) (uint64,
 // with it, and insertVal itself is returned -- though go-mysql-server
 // discards this particular return value in that case, using the row's own
 // supplied value instead.
+//
+// A generated value -- and only a generated value -- also becomes the
+// statement's LAST_INSERT_ID; see publishLastInsertID.
 func (t *RelationalTable) GetNextAutoIncrementValue(ctx *sqle.Context, insertVal any) (uint64, error) {
 	if err := t.requireAutoIncrement(); err != nil {
 		return 0, err
@@ -105,7 +119,51 @@ func (t *RelationalTable) GetNextAutoIncrementValue(ctx *sqle.Context, insertVal
 		}
 		return 0, nil
 	}
-	return t.autoInc.next(ctx, t.seqSvc, t.def.Database, t.autoIncSequenceName())
+	next, err := t.autoInc.next(ctx, t.seqSvc, t.def.Database, t.autoIncSequenceName())
+	if err != nil {
+		return 0, err
+	}
+	t.publishLastInsertID(ctx, next)
+	return next, nil
+}
+
+// publishLastInsertID records value as the current statement's
+// LAST_INSERT_ID, which is what the client reads back as the OK packet's
+// insert id (database/sql's Result.LastInsertId) and what the SQL function
+// LAST_INSERT_ID() returns.
+//
+// Only the FIRST value the statement generates is published, matching
+// MySQL: a multi-row INSERT reports the id of the first row that needed a
+// generated value, and the client derives the rest by adding
+// auto_increment_increment. Later calls are dropped by the
+// compare-and-swap, which is also what makes this safe without a lock.
+// firstAutoInc's zero value is what makes "no value generated yet" and
+// "generated the value 0" indistinguishable, which is harmless: an
+// AUTO_INCREMENT sequence never generates 0 (see sequenceBlock).
+//
+// This is required because go-mysql-server cannot derive it reliably on its
+// own. Its insertIter counts down to the row index its analyzer predicted
+// would generate the first value, but only for rows that take the plain
+// insert path: a row diverted into ON DUPLICATE KEY UPDATE skips the
+// countdown entirely (sql/rowexec/insert.go, updateLastInsertId is reached
+// only after a successful Insert). For
+//
+//	INSERT INTO t (id, v) VALUES (<existing>, ...), (DEFAULT, ...)
+//	  ON DUPLICATE KEY UPDATE ...
+//
+// -- the shape every ORM emits when it saves an association whose members
+// are a mix of existing and new rows -- the countdown therefore never
+// reaches zero, nothing is stored, and the accumulator reports the
+// PREVIOUS statement's insert id. The client then treats an already-used id
+// as the new row's, silently collapsing two rows into one.
+func (t *RelationalTable) publishLastInsertID(ctx *sqle.Context, value uint64) {
+	if ctx == nil || ctx.Session == nil || value == 0 || value > math.MaxInt64 {
+		return
+	}
+	if !t.firstAutoInc.CompareAndSwap(0, value) {
+		return
+	}
+	ctx.GetLastQueryInfo().LastInsertId.Store(int64(value))
 }
 
 // AutoIncrementSetter returns the sql.AutoIncrementSetter backing

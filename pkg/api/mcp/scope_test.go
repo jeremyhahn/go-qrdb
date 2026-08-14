@@ -92,6 +92,11 @@ func (r *recordingRegistry) SequenceService(t, d string) (service.SequenceServic
 	return nil, nil
 }
 
+func (r *recordingRegistry) PrivilegeService(t, d string) (service.PrivilegeServicer, error) {
+	r.record("privilege", t, d)
+	return nil, nil
+}
+
 func TestMCPResolveKVUsesRegistryScope(t *testing.T) {
 	regKV := &mockKVService{}
 	reg := &recordingRegistry{kv: regKV}

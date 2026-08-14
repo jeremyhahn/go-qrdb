@@ -148,6 +148,41 @@ func (e *UnsupportedParameterTypeError) Error() string {
 	return fmt.Sprintf("sql/pgsql: unsupported parameter value type %T", e.Value)
 }
 
+// CachedPlanResultTypeError is returned when a prepared statement produces a
+// result shape that differs from the one it was described with during the
+// PARSE/Describe phase.
+//
+// A PostgreSQL client is allowed to PARSE a statement once and then BIND and
+// EXECUTE it many times, reusing the RowDescription it was given at Describe
+// time; pgx does exactly this by default (QueryExecModeCacheStatement), and
+// so therefore does gorm.io/driver/postgres. If DDL changes the underlying
+// table in between, the rows the statement now produces no longer match the
+// descriptor the client is still decoding against -- silently mis-mapping
+// values into the wrong columns if the widths happen to agree.
+//
+// PostgreSQL detects this when it revalidates the cached plan and refuses to
+// execute, and this error is the same refusal: the message and the SQLSTATE
+// it is delivered with (0A000, feature_not_supported) are PostgreSQL's own,
+// verbatim, because clients recognise the condition by them. pgx drops the
+// statement from its cache on any error, so a client that simply retries the
+// same SQL re-PARSEs it and succeeds -- which is how PostgreSQL itself
+// behaves and why the retry is the documented recovery rather than something
+// this server should attempt on the client's behalf.
+type CachedPlanResultTypeError struct {
+	// Declared is the column count sent in the RowDescription at Describe
+	// time; Actual is the count the statement produced at EXECUTE time.
+	// Equal counts with differing column names or type OIDs are also a
+	// mismatch, which is precisely the case that would otherwise corrupt
+	// silently.
+	Declared int
+	Actual   int
+}
+
+// Error returns PostgreSQL's own wording for this condition.
+func (e *CachedPlanResultTypeError) Error() string {
+	return "cached plan must not change result type"
+}
+
 // BarrierSealedError is returned when a PostgreSQL connection or query
 // is attempted while the storage barrier is sealed. The server is
 // fail-closed during the sealed window: only the unseal-flow endpoints

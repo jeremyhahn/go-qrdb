@@ -23,6 +23,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -55,86 +56,106 @@ var consistencyLevelMap = map[string]service.ConsistencyLevel{
 }
 
 // vectorTools returns the MCP tool registrations for vector operations.
-func vectorTools(vectorSvc service.VectorServicer) []mcpserver.ServerTool {
-	return []mcpserver.ServerTool{
+func vectorTools(vectorSvc service.VectorServicer) []serverTool {
+	return []serverTool{
 		{
 			Tool:    toolVectorCreateNamespace(),
+			Perm:    permission.VectorNamespaceCreate,
 			Handler: handleVectorCreateNamespace(vectorSvc),
 		},
 		{
 			Tool:    toolVectorDeleteNamespace(),
+			Perm:    permission.VectorNamespaceDelete,
 			Handler: handleVectorDeleteNamespace(vectorSvc),
 		},
 		{
 			Tool:    toolVectorListNamespaces(),
+			Perm:    permission.VectorNamespaceList,
 			Handler: handleVectorListNamespaces(vectorSvc),
 		},
 		{
 			Tool:    toolVectorGetNamespaceInfo(),
+			Perm:    permission.VectorNamespaceInfo,
 			Handler: handleVectorGetNamespaceInfo(vectorSvc),
 		},
 		{
 			Tool:    toolVectorUpsert(),
+			Perm:    permission.VectorUpsert,
 			Handler: handleVectorUpsert(vectorSvc),
 		},
 		{
 			Tool:    toolVectorGet(),
+			Perm:    permission.VectorGet,
 			Handler: handleVectorGet(vectorSvc),
 		},
 		{
 			Tool:    toolVectorDelete(),
+			Perm:    permission.VectorDelete,
 			Handler: handleVectorDelete(vectorSvc),
 		},
 		{
 			Tool:    toolVectorBatchUpsert(),
+			Perm:    permission.VectorBatchUpsert,
 			Handler: handleVectorBatchUpsert(vectorSvc),
 		},
 		{
 			Tool:    toolVectorBatchDelete(),
+			Perm:    permission.VectorBatchDelete,
 			Handler: handleVectorBatchDelete(vectorSvc),
 		},
 		{
 			Tool:    toolVectorList(),
+			Perm:    permission.VectorList,
 			Handler: handleVectorList(vectorSvc),
 		},
 		{
 			Tool:    toolVectorUpdateMetadata(),
+			Perm:    permission.VectorUpdateMetadata,
 			Handler: handleVectorUpdateMetadata(vectorSvc),
 		},
 		{
 			Tool:    toolVectorSearchSimilar(),
+			Perm:    permission.VectorSearchSimilar,
 			Handler: handleVectorSearchSimilar(vectorSvc),
 		},
 		{
 			Tool:    toolVectorSearchByMetadata(),
+			Perm:    permission.VectorSearchByMetadata,
 			Handler: handleVectorSearchByMetadata(vectorSvc),
 		},
 		{
 			Tool:    toolVectorHybridSearch(),
+			Perm:    permission.VectorHybridSearch,
 			Handler: handleVectorHybridSearch(vectorSvc),
 		},
 		{
 			Tool:    toolVectorSearchByID(),
+			Perm:    permission.VectorSearchByID,
 			Handler: handleVectorSearchByID(vectorSvc),
 		},
 		{
 			Tool:    toolVectorRebuildIndex(),
+			Perm:    permission.VectorRebuildIndex,
 			Handler: handleVectorRebuildIndex(vectorSvc),
 		},
 		{
 			Tool:    toolVectorGetRebuildProgress(),
+			Perm:    permission.VectorGetRebuildProg,
 			Handler: handleVectorGetRebuildProgress(vectorSvc),
 		},
 		{
 			Tool:    toolVectorGetIndexStats(),
+			Perm:    permission.VectorGetIndexStats,
 			Handler: handleVectorGetIndexStats(vectorSvc),
 		},
 		{
 			Tool:    toolVectorCompactNamespace(),
+			Perm:    permission.VectorCompact,
 			Handler: handleVectorCompactNamespace(vectorSvc),
 		},
 		{
 			Tool:    toolVectorGetCompactionProgress(),
+			Perm:    permission.VectorGetCompactProg,
 			Handler: handleVectorGetCompactionProgress(vectorSvc),
 		},
 	}

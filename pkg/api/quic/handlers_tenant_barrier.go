@@ -29,8 +29,8 @@ import (
 
 // authorizeTenantBarrierOp authorizes a per-tenant barrier operation against
 // the TRUE target tenant carried in the frame (not the caller's ambient
-// tenant). The coarse quicPermissions mapping only proves the caller holds
-// the permission at all; this fine-grained gate delegates to the tenant-scoped
+// tenant). The coarse registration-site permission (methodPerms registry)
+// only proves the caller holds the permission at all; this fine-grained gate delegates to the tenant-scoped
 // authorizer, whose ScopeTenantOnly rule denies the system tenant and any
 // cross-tenant access. When no auth middleware is configured the gate is a
 // no-op, matching the rest of the server's unauthenticated-mode behavior.

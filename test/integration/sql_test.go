@@ -36,6 +36,13 @@ import (
 // PostgreSQL ports along with the test CA used for mTLS.
 func startSingleNodeWithSQL(t *testing.T) (adminPort, mysqlPort, pgsqlPort int, ca *testCA) {
 	t.Helper()
+	return startSingleNodeSQL(t, "memory")
+}
+
+// startSingleNodeSQL boots the single-node SQL fixture over the named state
+// machine. See startSingleNodeWithSQL and startSingleNodeWithSQLMVCC.
+func startSingleNodeSQL(t *testing.T, stateMachine string) (adminPort, mysqlPort, pgsqlPort int, ca *testCA) {
+	t.Helper()
 
 	bin := buildBinary(t)
 	ca = generateTestCA(t)
@@ -51,7 +58,7 @@ func startSingleNodeWithSQL(t *testing.T) (adminPort, mysqlPort, pgsqlPort int, 
 		"--listen", fmt.Sprintf("0.0.0.0:%d", raftPorts[0]),
 		"--raft-address", fmt.Sprintf("127.0.0.1:%d", raftPorts[0]),
 		"--data-dir", dataDir,
-		"--sm", "memory",
+		"--sm", stateMachine,
 		"--discovery", "static",
 		"--peers", fmt.Sprintf("1=127.0.0.1:%d", raftPorts[0]),
 		"--shard-id", "1",
@@ -73,6 +80,21 @@ func startSingleNodeWithSQL(t *testing.T) (adminPort, mysqlPort, pgsqlPort int, 
 	warmupWrite(t, ca, adminPorts[0], 15*time.Second)
 
 	return adminPorts[0], mysqlPorts[0], pgsqlPorts[0], ca
+}
+
+// startSingleNodeWithSQLMVCC is startSingleNodeWithSQL over the "mvcc" state
+// machine rather than "memory".
+//
+// The distinction is load-bearing, not incidental: the relational stack is
+// built on MVCC revisions -- the table catalog is a compare-and-swap keyed off
+// a revision, an interactive transaction commits its buffered write-set as one
+// revision-guarded compare-and-swap, and AUTO_INCREMENT allocates from a
+// Raft-committed sequence the same way. Under the "memory" SM the very first
+// CREATE TABLE fails with `statemachine: mvcc not configured`, so any test
+// that needs a relational table needs this variant.
+func startSingleNodeWithSQLMVCC(t *testing.T) (adminPort, mysqlPort, pgsqlPort int, ca *testCA) {
+	t.Helper()
+	return startSingleNodeSQL(t, "mvcc")
 }
 
 // ---------------------------------------------------------------------------

@@ -31,6 +31,17 @@ type GRPCRegisterOption = qrdbgrpc.RegisterOption
 // *grpc.Server. (Aliases pkg/api/grpc.RegisterService.)
 var RegisterGRPCService = qrdbgrpc.RegisterService
 
+// WithRegisterAdminService attaches the cluster admin service (status, peers,
+// membership add/remove) to the registered qrdb gRPC service. An embedding
+// daemon (e.g. xkmsd) uses this to host qrdb's own cluster control plane on its
+// server instead of authoring a parallel one.
+var WithRegisterAdminService = qrdbgrpc.WithRegisterAdminService
+
+// WithRegisterRebalanceService attaches the shard rebalance service (stats,
+// plan, execute, imbalance report) to the registered qrdb gRPC service. Pairs
+// with Node.RebalanceService for composers hosting qrdb's control plane.
+var WithRegisterRebalanceService = qrdbgrpc.WithRegisterRebalanceService
+
 // WithRegisterBarrierService attaches a barrier service to the registered
 // qrdb gRPC service.
 var WithRegisterBarrierService = qrdbgrpc.WithRegisterBarrierService

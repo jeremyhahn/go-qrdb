@@ -207,8 +207,31 @@ func TestBuildSQLContext(t *testing.T) {
 
 func TestSchemaToColumns(t *testing.T) {
 	t.Run("empty schema", func(t *testing.T) {
-		columns := schemaToColumns(sql.Schema{})
+		columns := schemaToColumns(sql.NewContext(context.Background()), sql.Schema{})
 		assert.Empty(t, columns)
+	})
+
+	// go-mysql-server resolves a TEXT column's declared width against the
+	// session's result character set, so every TEXT variant narrower than
+	// LONGTEXT dereferences the context. PostgreSQL's own `text` translates
+	// to LONGTEXT and takes the branch that needs none, but the engine is
+	// shared: a table created over the MySQL wire with a plain TEXT column is
+	// read back over this one, and a context-free conversion crashed the
+	// connection goroutine on it.
+	t.Run("a TEXT column resolves its width", func(t *testing.T) {
+		sqlCtx := sql.NewContext(context.Background())
+		schema := sql.Schema{
+			{Name: "body", Type: sqltypes.Text},
+			{Name: "note", Type: sqltypes.TinyText},
+			{Name: "long", Type: sqltypes.LongText},
+		}
+
+		columns := schemaToColumns(sqlCtx, schema)
+
+		require.Len(t, columns, 3)
+		for _, column := range columns {
+			assert.NotZero(t, column.Oid, "every column must describe a type OID")
+		}
 	})
 
 	t.Run("non-empty schema", func(t *testing.T) {
@@ -222,7 +245,7 @@ func TestSchemaToColumns(t *testing.T) {
 		schema, _, _, err := sqlEngine.Query(sqlCtx, "SELECT * FROM kv LIMIT 0")
 		require.NoError(t, err)
 
-		columns := schemaToColumns(schema)
+		columns := schemaToColumns(sqlCtx, schema)
 		assert.Len(t, columns, 2)
 		assert.Equal(t, "key", columns[0].Name)
 		assert.Equal(t, "value", columns[1].Name)
@@ -257,19 +280,36 @@ func TestFormatValue(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    any
+		oid      uint32
 		expected any
 	}{
-		{"nil", nil, nil},
-		{"byte slice", []byte("hello"), "hello"},
-		{"string", "world", "world"},
-		{"int", 42, 42},
-		{"float", 3.14, 3.14},
-		{"bool", true, true},
+		{"nil", nil, DefaultOID, nil},
+		{"byte slice", []byte("hello"), DefaultOID, "hello"},
+		{"string", "world", DefaultOID, "world"},
+		{"int", 42, DefaultOID, 42},
+		{"float", 3.14, pgtype.Float8OID, 3.14},
+		{"bool", true, pgtype.BoolOID, true},
+
+		// A column DESCRIBED as bool must carry a Go bool, whatever
+		// go-mysql-server produced for it: pgx refuses to encode anything
+		// else under BoolOID and fails the whole statement.
+		{"stored tinyint false", int8(0), pgtype.BoolOID, false},
+		{"stored tinyint true", int8(1), pgtype.BoolOID, true},
+		{"widened comparison", int64(1), pgtype.BoolOID, true},
+
+		// An integer under an integer declaration is left exactly alone --
+		// the coercion is keyed on the declaration, not on the Go type.
+		{"tinyint under int8 oid", int8(0), pgtype.Int8OID, int8(0)},
+		{"int64 under int8 oid", int64(7), pgtype.Int8OID, int64(7)},
+
+		// A byte slice is text-encoded regardless of declaration, which is
+		// why BLOB/VARBINARY are declared TextOID in the first place.
+		{"byte slice under bool oid", []byte("raw"), pgtype.BoolOID, "raw"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := formatValue(tt.input)
+			result := formatValue(tt.input, tt.oid)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
@@ -1046,6 +1086,7 @@ func TestExecuteDeferredCallback_InsertAndSelect(t *testing.T) {
 			"INSERT INTO kv (`key`, `value`) VALUES (?, ?)",
 			nil,
 			nil,
+			nil,
 		)
 		require.NoError(t, err)
 		assert.Equal(t, "INSERT 0 1", writer.completeTag)
@@ -1066,6 +1107,7 @@ func TestExecuteDeferredCallback_InsertAndSelect(t *testing.T) {
 			params,
 			`SELECT * FROM kv WHERE "key" = $1`,
 			"SELECT * FROM kv WHERE `key` = ?",
+			nil,
 			nil,
 			nil,
 		)
@@ -1105,6 +1147,7 @@ func TestExecuteDeferredCallback_WithParsedStatement(t *testing.T) {
 		translated,
 		parsedStmt,
 		nil,
+		nil,
 	)
 	require.NoError(t, err)
 	assert.Equal(t, "INSERT 0 1", writer.completeTag)
@@ -1130,6 +1173,7 @@ func TestExecuteDeferredCallback_QueryError(t *testing.T) {
 		params,
 		"SELECT * FROM nonexistent WHERE id = $1",
 		"SELECT * FROM nonexistent WHERE id = ?",
+		nil,
 		nil,
 		nil,
 	)
@@ -1164,6 +1208,7 @@ func TestExecuteDeferredCallback_EmptyParams(t *testing.T) {
 		"SELECT * FROM kv",
 		nil,
 		nil,
+		nil,
 	)
 	require.NoError(t, err)
 	assert.Equal(t, 1, writer.rowCount)
@@ -1193,6 +1238,7 @@ func TestExecuteDeferredCallback_WriteRowError(t *testing.T) {
 		params,
 		`SELECT * FROM kv WHERE "key" = $1`,
 		"SELECT * FROM kv WHERE `key` = ?",
+		nil,
 		nil,
 		nil,
 	)
@@ -1520,7 +1566,7 @@ func TestHandleParse_BinaryParameterRoundTripsWithoutCorruption(t *testing.T) {
 	}
 
 	writer := &mockDataWriter{}
-	err = h.executeDeferredCallback(context.Background(), writer, params, trimmed, translated, parsedStmt, paramOIDs)
+	err = h.executeDeferredCallback(context.Background(), writer, params, trimmed, translated, parsedStmt, paramOIDs, nil)
 	require.NoError(t, err)
 
 	// The stored key carries a tenant/database namespace prefix applied by
@@ -1578,4 +1624,57 @@ func TestHandleParse_EndCommitsRealTransaction(t *testing.T) {
 	require.NoError(t, err)
 	_, err = h.HandleParse(connCtx, "END")
 	require.NoError(t, err, "END must be accepted as a real COMMIT, not rejected as invalid syntax")
+}
+
+// TestInferParamOIDs_UpsertAssignments covers the SET clause of an
+// ON DUPLICATE KEY UPDATE, which gorm.io/driver/postgres writes on every
+// upsert as `ON CONFLICT (...) DO UPDATE SET "col" = $N`.
+//
+// Those parameters were previously left unresolved, so they fell back to a
+// plain string literal. That is harmless for a scalar -- go-mysql-server
+// coerces the literal during analysis -- but not for a timestamp: pgx sends
+// PostgreSQL's wire form, whose zone designator MySQL's DATETIME parser
+// rejects outright, so every GORM upsert carrying an updated_at failed with
+// "is not a valid value for 'datetime'".
+func TestInferParamOIDs_UpsertAssignments(t *testing.T) {
+	kvSvc := &mockKVService{}
+	dbProvider := provider.NewProvider("qrdb", kvSvc)
+	sqlEngine := engine.New(engine.Config{Provider: dbProvider})
+	sqlCtx := sql.NewContext(context.Background())
+	sqlCtx.SetCurrentDatabase("qrdb")
+
+	stmt, err := sqlparser.Parse(
+		"INSERT INTO kv (`key`, `value`) VALUES (:v1, :v2) " +
+			"ON DUPLICATE KEY UPDATE `value` = :v3")
+	require.NoError(t, err)
+
+	oids := inferParamOIDs(sqlCtx, sqlEngine.Analyzer.Catalog, "qrdb", stmt)
+
+	assert.Equal(t, uint32(pgtype.TextOID), oids[1], "the VALUES tuple still resolves")
+	assert.Equal(t, uint32(pgtype.ByteaOID), oids[2], "the VALUES tuple still resolves")
+	assert.Equal(t, uint32(pgtype.ByteaOID), oids[3],
+		"the upsert's SET clause assigns to the same table and must resolve too")
+}
+
+// TestInferParamOIDs_UpsertAssignmentOfAnUnknownColumn verifies the walk stays
+// best-effort: an assignment this resolution cannot place leaves its parameter
+// unmapped, falling back to the string-literal binding rather than guessing an
+// OID for it.
+func TestInferParamOIDs_UpsertAssignmentOfAnUnknownColumn(t *testing.T) {
+	kvSvc := &mockKVService{}
+	dbProvider := provider.NewProvider("qrdb", kvSvc)
+	sqlEngine := engine.New(engine.Config{Provider: dbProvider})
+	sqlCtx := sql.NewContext(context.Background())
+	sqlCtx.SetCurrentDatabase("qrdb")
+
+	stmt, err := sqlparser.Parse(
+		"INSERT INTO kv (`key`, `value`) VALUES (:v1, :v2) " +
+			"ON DUPLICATE KEY UPDATE `value` = VALUES(`value`)")
+	require.NoError(t, err)
+
+	oids := inferParamOIDs(sqlCtx, sqlEngine.Analyzer.Catalog, "qrdb", stmt)
+
+	assert.Equal(t, uint32(pgtype.TextOID), oids[1])
+	assert.Equal(t, uint32(pgtype.ByteaOID), oids[2])
+	assert.NotContains(t, oids, 3, "a non-parameter assignment contributes no OID")
 }

@@ -78,6 +78,28 @@ func (e *ProposeError) Unwrap() error {
 	return e.Err
 }
 
+// SubsystemNotConfiguredError is returned when a request reaches a state
+// machine that was built without the subsystem the request needs. It is the
+// service-layer spelling of statemachine.ServiceNotConfiguredError, translated
+// at this boundary for the same reason NotLeaderError is: a caller above the
+// service layer should not have to reach into the state machine's error types
+// to tell a missing capability apart from a genuine failure.
+//
+// The distinction matters because some subsystems are optional accelerators.
+// A node built on the "memory" state machine has no index subsystem at all, so
+// asking it for the indexes on a table is not an error condition -- the honest
+// answer is that there are none, and the query planner should scan. Reported
+// as an opaque read failure instead, it failed every SQL query carrying a
+// WHERE clause on such a node.
+type SubsystemNotConfiguredError struct {
+	Subsystem string
+}
+
+// Error returns a human-readable description of the missing subsystem.
+func (e *SubsystemNotConfiguredError) Error() string {
+	return "service: " + e.Subsystem + " subsystem not configured on this state machine"
+}
+
 // ReadError is returned when a linearizable read fails.
 type ReadError struct {
 	Err error

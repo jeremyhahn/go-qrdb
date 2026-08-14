@@ -176,8 +176,32 @@ func TestApply_InstallsRoundingNowFunc(t *testing.T) {
 	}
 
 	got := cfg.NowFunc()
-	if got.Nanosecond()%int(time.Millisecond) != 0 {
-		t.Errorf("NowFunc() = %v, want rounded to millisecond precision (3 fractional digits)", got)
+	unit := time.Duration(1)
+	for i := 0; i < 9-defaultDatetimePrecision; i++ {
+		unit *= 10
+	}
+	if got.Nanosecond()%int(unit) != 0 {
+		t.Errorf("NowFunc() = %v, want rounded to %d fractional digits", got, defaultDatetimePrecision)
+	}
+}
+
+// TestApply_NowFuncMatchesColumnPrecision pins the invariant the rounding
+// exists for: the NowFunc must not produce a timestamp finer than the
+// DATETIME column defaultDatetimePrecision declares, or a value written and
+// read back compares unequal on the digits the column truncated.
+func TestApply_NowFuncMatchesColumnPrecision(t *testing.T) {
+	dialector := New(Config{}).(Dialector)
+	cfg := &gorm.Config{}
+	if err := dialector.Apply(cfg); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+
+	field := parseField(t, &struct{ F time.Time }{})
+	if got, want := dialector.DataTypeOf(field), "datetime(6) NULL"; got != want {
+		t.Fatalf("DataTypeOf() = %q, want %q", got, want)
+	}
+	if field.Precision != defaultDatetimePrecision {
+		t.Errorf("field.Precision = %d, want %d", field.Precision, defaultDatetimePrecision)
 	}
 }
 

@@ -38,6 +38,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	grpcpkg "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
+	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
@@ -92,6 +93,7 @@ type Server struct {
 	auditLogger       audit.AuditLogger
 	sqlSvc            service.SQLServicer
 	registry          service.Registry
+	modules           []apimodule.ServiceModule
 	tls               *tls.Config
 	tlsErr            error
 	authMW            *authmw.AuthMiddleware
@@ -353,6 +355,16 @@ func WithServiceRegistry(reg service.Registry) ServerOption {
 	return func(s *Server) { s.registry = reg }
 }
 
+// WithServiceModules configures the Unix socket server with the capability
+// modules (pkg/apimodule.ServiceModule) registered on the shared server via
+// server.WithModule. The Unix transport serves the same gRPC wire as the TCP
+// gRPC server over a UDS, so each module's RegisterGRPC hook is invoked
+// against this server's own *grpc.Server in Start, exactly as it is against
+// the TCP gRPC server's, giving every module gRPC parity on both transports.
+func WithServiceModules(mods []apimodule.ServiceModule) ServerOption {
+	return func(s *Server) { s.modules = mods }
+}
+
 // WithKVService configures the Unix socket server with a KV service. This is
 // an alternative to passing kvSvc as a positional parameter and is useful when
 // constructing a server that handles only barrier, cert, or auth services.
@@ -584,6 +596,14 @@ func (s *Server) Start() error {
 	// authorization gate, exactly as on the TCP gRPC server.
 	if s.tenantBarrierSvc != nil {
 		grpcpkg.RegisterTenantBarrierService(s.server, s.tenantBarrierSvc, s.authMW)
+	}
+
+	// Register capability modules' gRPC service(s) alongside QRDBService. The
+	// Unix transport serves the same gRPC wire over a UDS, so modules gain
+	// parity here identically to the TCP gRPC server; s.server (*grpc.Server)
+	// implements grpc.ServiceRegistrar directly.
+	for _, m := range s.modules {
+		m.RegisterGRPC(s.server)
 	}
 
 	proto := "unix"

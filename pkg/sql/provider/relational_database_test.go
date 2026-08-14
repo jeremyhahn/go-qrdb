@@ -188,6 +188,11 @@ func (r *fakeRelationalRegistry) SequenceService(string, string) (service.Sequen
 	return r.seqSvc, nil
 }
 
+func (r *fakeRelationalRegistry) PrivilegeService(tenantID, db string) (service.PrivilegeServicer, error) {
+	r.record("privilege", tenantID, db)
+	return nil, nil
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

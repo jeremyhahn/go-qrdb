@@ -55,7 +55,9 @@ type SOPINVerifier interface {
 }
 
 // SOMiddleware returns an http.Handler that enforces SO dual-factor
-// authentication for SO-permissioned routes. It wraps the provided
+// authentication for SO-permissioned routes. The required permission for
+// the request's route is resolved from the RESTRouteRegistry the REST
+// server populates at route-registration time. It wraps the provided
 // base handler and:
 //
 //  1. Passes through every route that is not mapped to an SO-only
@@ -72,6 +74,7 @@ type SOPINVerifier interface {
 // SO PIN check is applied to the empty-string tenant key — callers
 // should ensure SetSOPIN is called with the appropriate tenantID.
 func SOMiddleware(
+	routes *RESTRouteRegistry,
 	verifier SOPINVerifier,
 	auditLogger audit.AuditLogger,
 	logger *slog.Logger,
@@ -81,10 +84,9 @@ func SOMiddleware(
 		ctx := r.Context()
 
 		// Determine the required permission for this route.
-		path := normalizePath(r.URL.Path)
-		perm, hasPerm := LookupREST(r.Method, path)
-		if !hasPerm {
-			// Not a mapped route; no SO gating needed.
+		perm, kind, hasPerm := routes.Lookup(r.Method, r.URL.Path)
+		if !hasPerm || kind != RESTRoutePermission {
+			// Not a permission-mapped route; no SO gating needed.
 			next.ServeHTTP(w, r)
 			return
 		}

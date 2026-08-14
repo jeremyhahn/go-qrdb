@@ -151,6 +151,10 @@ func (r *errServiceRegistry) SequenceService(_, _ string) (service.SequenceServi
 	return nil, r.err
 }
 
+func (r *errServiceRegistry) PrivilegeService(_, _ string) (service.PrivilegeServicer, error) {
+	return nil, r.err
+}
+
 // ---------------------------------------------------------------------------
 // Helper: build test auth factor
 // ---------------------------------------------------------------------------
@@ -1234,6 +1238,10 @@ func (r *stubServiceRegistryForTenant) TableService(_, _ string) (service.TableS
 	return nil, errors.New("not implemented")
 }
 func (r *stubServiceRegistryForTenant) SequenceService(_, _ string) (service.SequenceServicer, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (r *stubServiceRegistryForTenant) PrivilegeService(_, _ string) (service.PrivilegeServicer, error) {
 	return nil, errors.New("not implemented")
 }
 

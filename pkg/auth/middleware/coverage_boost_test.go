@@ -31,10 +31,25 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// LookupMCP
+// MCPToolRegistry lookup semantics. The exhaustive tool -> permission
+// expectations live in pkg/api/mcp's tool_mapping_guard_test.go, which drives
+// the real registry built by a fully wired server.
 // ---------------------------------------------------------------------------
 
-func TestLookupMCP_Found(t *testing.T) {
+// testMCPToolRegistry builds a minimal registration-site registry for the
+// AuthorizeMCP unit tests.
+func testMCPToolRegistry() *MCPToolRegistry {
+	r := NewMCPToolRegistry()
+	r.Register("qrdb_put", permission.KVPut)
+	r.Register("qrdb_get", permission.KVGet)
+	r.Register("qrdb_delete", permission.KVDelete)
+	r.Register("qrdb_list", permission.KVList)
+	r.Register("qrdb_status", permission.AdminStatus)
+	return r
+}
+
+func TestMCPToolRegistry_LookupFound(t *testing.T) {
+	reg := testMCPToolRegistry()
 	tests := []struct {
 		tool string
 		want permission.Permission
@@ -47,21 +62,24 @@ func TestLookupMCP_Found(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.tool, func(t *testing.T) {
-			p, ok := LookupMCP(tc.tool)
+			p, ok := reg.Lookup(tc.tool)
 			if !ok {
-				t.Fatalf("LookupMCP(%q): not found", tc.tool)
+				t.Fatalf("Lookup(%q): not found", tc.tool)
 			}
 			if p != tc.want {
-				t.Errorf("LookupMCP(%q) = %v, want %v", tc.tool, p, tc.want)
+				t.Errorf("Lookup(%q) = %v, want %v", tc.tool, p, tc.want)
 			}
 		})
 	}
 }
 
-func TestLookupMCP_NotFound(t *testing.T) {
-	_, ok := LookupMCP("qrdb_nonexistent_tool_xyz")
-	if ok {
+func TestMCPToolRegistry_LookupNotFound(t *testing.T) {
+	reg := testMCPToolRegistry()
+	if _, ok := reg.Lookup("qrdb_nonexistent_tool_xyz"); ok {
 		t.Error("expected not-found for unknown tool")
+	}
+	if reg.Covered("qrdb_nonexistent_tool_xyz") {
+		t.Error("expected Covered to be false for unknown tool")
 	}
 }
 
@@ -72,7 +90,7 @@ func TestLookupMCP_NotFound(t *testing.T) {
 func TestAuthorizeMCP_NoIdentity_Denied(t *testing.T) {
 	m := New(&mockAuthorizer{})
 	ctx := context.Background()
-	err := m.AuthorizeMCP(ctx, "qrdb_kv_put")
+	err := m.AuthorizeMCP(ctx, testMCPToolRegistry(), "qrdb_kv_put")
 	if err == nil {
 		t.Fatal("expected error when no identity in context")
 	}
@@ -93,7 +111,7 @@ func TestAuthorizeMCP_UnmappedTool_Denied(t *testing.T) {
 		Roles:    []string{"admin"},
 	}
 	ctx := auth.WithIdentity(context.Background(), identity)
-	err := m.AuthorizeMCP(ctx, "qrdb_tool_that_does_not_exist")
+	err := m.AuthorizeMCP(ctx, testMCPToolRegistry(), "qrdb_tool_that_does_not_exist")
 	if err == nil {
 		t.Fatal("expected error for unmapped tool (default-deny)")
 	}
@@ -114,7 +132,7 @@ func TestAuthorizeMCP_AuthorizedCaller_Allowed(t *testing.T) {
 		Roles:    []string{"admin"},
 	}
 	ctx := auth.WithIdentity(context.Background(), identity)
-	if err := m.AuthorizeMCP(ctx, "qrdb_put"); err != nil {
+	if err := m.AuthorizeMCP(ctx, testMCPToolRegistry(), "qrdb_put"); err != nil {
 		t.Fatalf("expected success, got: %v", err)
 	}
 }
@@ -128,7 +146,7 @@ func TestAuthorizeMCP_AuthorizerDenied(t *testing.T) {
 		Roles:    []string{"reader"},
 	}
 	ctx := auth.WithIdentity(context.Background(), identity)
-	err := m.AuthorizeMCP(ctx, "qrdb_put")
+	err := m.AuthorizeMCP(ctx, testMCPToolRegistry(), "qrdb_put")
 	if err == nil {
 		t.Fatal("expected deny from authorizer")
 	}
@@ -192,30 +210,30 @@ func TestAuthorizeTenant_InjectsTenantInContext(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// splitMethodPath
+// RESTRouteRegistry — registration + coverage marker
 // ---------------------------------------------------------------------------
 
-func TestSplitMethodPath_Valid(t *testing.T) {
-	m, p, ok := splitMethodPath("GET /v1/users")
-	if !ok {
-		t.Fatal("expected ok=true")
+func TestRESTRouteRegistry_RegisterAndCovered(t *testing.T) {
+	rr := NewRESTRouteRegistry()
+	rr.Register("GET", "/v1/widgets/{id}", permission.AdminStatus)
+	if !rr.Covered("GET", "/v1/widgets/{id}") {
+		t.Error("registered route should be covered")
 	}
-	if m != "GET" || p != "/v1/users" {
-		t.Errorf("got method=%q path=%q", m, p)
-	}
-}
-
-func TestSplitMethodPath_NoSpace(t *testing.T) {
-	_, _, ok := splitMethodPath("GETPATH")
-	if ok {
-		t.Error("expected ok=false for string without space")
+	if rr.Covered("POST", "/v1/widgets/{id}") {
+		t.Error("unregistered method should NOT be covered")
 	}
 }
 
-func TestSplitMethodPath_EmptyString(t *testing.T) {
-	_, _, ok := splitMethodPath("")
-	if ok {
-		t.Error("expected ok=false for empty string")
+func TestRESTRouteRegistry_PublicAndAuthenticatedKinds(t *testing.T) {
+	rr := NewRESTRouteRegistry()
+	rr.RegisterPublic("GET", "/health")
+	rr.RegisterAuthenticated("GET", "/metrics")
+
+	if _, kind, ok := rr.Lookup("GET", "/health"); !ok || kind != RESTRoutePublic {
+		t.Errorf("expected public kind for /health, ok=%v kind=%v", ok, kind)
+	}
+	if _, kind, ok := rr.Lookup("GET", "/metrics"); !ok || kind != RESTRouteAuthenticated {
+		t.Errorf("expected authenticated kind for /metrics, ok=%v kind=%v", ok, kind)
 	}
 }
 
@@ -242,58 +260,35 @@ func TestIsPublicGRPCMethod_Application(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// isRESTAPISurface + isRESTAuthzPublic
+// RESTRouteRegistry — path probes (the default-deny surface test)
 // ---------------------------------------------------------------------------
 
-func TestIsRESTAPISurface_API(t *testing.T) {
-	for _, p := range []string{
-		"/kv", "/kv/mykey", "/v1/users", "/tx", "/batch", "/vector/ns",
-	} {
-		if !isRESTAPISurface(p) {
-			t.Errorf("expected %q to be on API surface", p)
+func TestRESTRouteRegistry_PathHasRoutes(t *testing.T) {
+	rr := testRESTRoutes()
+	for _, p := range []string{"/kv", "/kv/mykey", "/status", "/metrics"} {
+		if !rr.PathHasRoutes(p) {
+			t.Errorf("expected %q to be on the registered API surface", p)
+		}
+	}
+	for _, p := range []string{"/", "/favicon.ico", "/app.js", "/static/logo.png"} {
+		if rr.PathHasRoutes(p) {
+			t.Errorf("expected %q to NOT be on the registered API surface", p)
 		}
 	}
 }
 
-func TestIsRESTAPISurface_NonAPI(t *testing.T) {
-	for _, p := range []string{
-		"/", "/favicon.ico", "/app.js", "/static/logo.png",
-	} {
-		if isRESTAPISurface(p) {
-			t.Errorf("expected %q to NOT be on API surface", p)
-		}
-	}
-}
-
-func TestIsRESTAuthzPublic_Metrics(t *testing.T) {
-	if !isRESTAuthzPublic("/metrics") {
-		t.Error("/metrics should be authz-public")
-	}
-}
-
-func TestIsRESTAuthzPublic_KV(t *testing.T) {
-	if isRESTAuthzPublic("/kv") {
-		t.Error("/kv should NOT be authz-public")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// matchRESTPattern
-// ---------------------------------------------------------------------------
-
-func TestMatchRESTPattern_NoMatch(t *testing.T) {
-	_, ok := matchRESTPattern("DELETE", "/nonexistent/route/xyz/abc")
-	if ok {
+func TestRESTRouteRegistry_Lookup_NoMatch(t *testing.T) {
+	rr := testRESTRoutes()
+	if _, _, ok := rr.Lookup("DELETE", "/nonexistent/route/xyz/abc"); ok {
 		t.Error("expected no match for completely unknown route")
 	}
 }
 
-func TestMatchRESTPattern_EmptyWildcardRejected(t *testing.T) {
-	// A path segment that maps to a wildcard must not be empty.
-	// /users// has an empty second segment which should not match /users/{id}.
-	_, ok := matchRESTPattern("GET", "/users//")
-	// This may or may not match; the critical test is that matchRESTPattern
-	// doesn't panic and returns a well-formed result.
+func TestRESTRouteRegistry_Lookup_EmptySegment(t *testing.T) {
+	// A path with an empty parameter segment must not panic and must return a
+	// well-formed result.
+	rr := testRESTRoutes()
+	_, _, ok := rr.Lookup("POST", "/v1/barrier/officers//claim/begin")
 	_ = ok
 }
 
@@ -313,7 +308,7 @@ func TestRESTMiddleware_NonAPIPath_PassThrough(t *testing.T) {
 		called = true
 		w.WriteHeader(http.StatusOK)
 	})
-	handler := m.RESTMiddleware(next)
+	handler := m.RESTMiddleware(testRESTRoutes(), next)
 
 	req := httptest.NewRequest("GET", "/static/app.js", nil)
 	w := httptest.NewRecorder()
@@ -336,7 +331,7 @@ func TestRESTMiddleware_PublicPath_SkipsAuthn(t *testing.T) {
 		called = true
 		w.WriteHeader(http.StatusOK)
 	})
-	handler := m.RESTMiddleware(next)
+	handler := m.RESTMiddleware(testRESTRoutes(), next)
 
 	req := httptest.NewRequest("GET", "/health", nil)
 	w := httptest.NewRecorder()
@@ -360,10 +355,11 @@ func TestRESTMiddleware_APIPath_NoPermissionMapping_DefaultDeny(t *testing.T) {
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	handler := m.RESTMiddleware(next)
+	handler := m.RESTMiddleware(testRESTRoutes(), next)
 
-	// /v1/no-such-endpoint is under the API surface but has no mapping.
-	req := httptest.NewRequest("DELETE", "/v1/no-such-endpoint", nil)
+	// /status is a registered route (GET) but DELETE carries no registered
+	// permission: default-deny must reject rather than pass through.
+	req := httptest.NewRequest("DELETE", "/status", nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -386,7 +382,7 @@ func TestRESTMiddleware_AuthzPublicPath_Allowed(t *testing.T) {
 		called = true
 		w.WriteHeader(http.StatusOK)
 	})
-	handler := m.RESTMiddleware(next)
+	handler := m.RESTMiddleware(testRESTRoutes(), next)
 
 	req := httptest.NewRequest("GET", "/metrics", nil)
 	w := httptest.NewRecorder()
@@ -503,12 +499,14 @@ func TestStreamInterceptor_UnmappedNonPublicMethod_DefaultDeny(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// init() coverage — verify rest patterns compiled
+// RESTRouteRegistry — templated routes resolve via the chi matcher
 // ---------------------------------------------------------------------------
 
-func TestInitRestPatterns_AllParsed(t *testing.T) {
-	if len(restPatterns) == 0 {
-		t.Error("expected restPatterns to be non-empty after init()")
+func TestRESTRouteRegistry_TemplatedRoutesResolve(t *testing.T) {
+	rr := testRESTRoutes()
+	perm, kind, ok := rr.Lookup("POST", "/v1/barrier/officers/so-1/claim/begin")
+	if !ok || kind != RESTRoutePermission || perm != permission.IdentityGated {
+		t.Errorf("templated officer claim route did not resolve: ok=%v kind=%v perm=%q", ok, kind, perm)
 	}
 }
 

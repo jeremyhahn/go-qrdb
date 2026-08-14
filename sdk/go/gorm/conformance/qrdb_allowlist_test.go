@@ -147,13 +147,6 @@ var allowlist = []expectedFailure{
 		Retire:  mustParseRetire("2026-09-30"),
 	},
 	{
-		Test:    "TestHasManyAssociation",
-		Targets: []target{targetNode},
-		Reason:  "qrdb:relational-gap",
-		Issue:   "not yet individually triaged: seeded when this target had no relational catalog at all, and still failing after the node:// target gave it one and after FOREIGN KEY support landed in pkg/sql/provider (which retired 117 of the original 138 entries). What remains is no longer one shared blocker; the recurring themes are many2many/nested-preload behaviour, ALTER TABLE column-type migration, and unique-constraint reporting; see conformance/README.md",
-		Retire:  mustParseRetire("2026-09-30"),
-	},
-	{
 		Test:    "TestMigrateColumns",
 		Targets: []target{targetNode},
 		Reason:  "qrdb:relational-gap",
@@ -162,13 +155,6 @@ var allowlist = []expectedFailure{
 	},
 	{
 		Test:    "TestMigrateConstraint",
-		Targets: []target{targetNode},
-		Reason:  "qrdb:relational-gap",
-		Issue:   "not yet individually triaged: seeded when this target had no relational catalog at all, and still failing after the node:// target gave it one and after FOREIGN KEY support landed in pkg/sql/provider (which retired 117 of the original 138 entries). What remains is no longer one shared blocker; the recurring themes are many2many/nested-preload behaviour, ALTER TABLE column-type migration, and unique-constraint reporting; see conformance/README.md",
-		Retire:  mustParseRetire("2026-09-30"),
-	},
-	{
-		Test:    "TestSingleTableMany2ManyAssociation",
 		Targets: []target{targetNode},
 		Reason:  "qrdb:relational-gap",
 		Issue:   "not yet individually triaged: seeded when this target had no relational catalog at all, and still failing after the node:// target gave it one and after FOREIGN KEY support landed in pkg/sql/provider (which retired 117 of the original 138 entries). What remains is no longer one shared blocker; the recurring themes are many2many/nested-preload behaviour, ALTER TABLE column-type migration, and unique-constraint reporting; see conformance/README.md",

@@ -62,14 +62,15 @@ func (s *Server) authorizeTenantBarrierOp(ctx context.Context, tenantID string, 
 
 // toolAuthzMiddleware returns an mcp-go tool-handler middleware that authorizes
 // every tool invocation against the caller's identity and the tool's required
-// permission BEFORE the tool handler runs. Authorization is DEFAULT-DENY: a
-// tool with no permission mapping, or a caller lacking the permission, is
+// permission BEFORE the tool handler runs. The permission is resolved from
+// the registration-site toolPerms registry. Authorization is DEFAULT-DENY: a
+// tool with no registered permission, or a caller lacking the permission, is
 // rejected. The MCP surface exposes the full administrative API, so it must
 // never be reachable without an authenticated, authorized identity.
 func (s *Server) toolAuthzMiddleware() mcpserver.ToolHandlerMiddleware {
 	return func(next mcpserver.ToolHandlerFunc) mcpserver.ToolHandlerFunc {
 		return func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-			if err := s.authMW.AuthorizeMCP(ctx, req.Params.Name); err != nil {
+			if err := s.authMW.AuthorizeMCP(ctx, s.toolPerms, req.Params.Name); err != nil {
 				slog.Warn("mcp: tool call denied",
 					"tool", req.Params.Name, "error", err)
 				return mcpgo.NewToolResultError("authorization denied: " + err.Error()), nil

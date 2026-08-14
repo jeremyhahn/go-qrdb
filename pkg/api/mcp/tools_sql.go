@@ -21,14 +21,15 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // sqlTools returns the MCP tool registrations for ad-hoc SQL query
 // execution.
-func sqlTools(svc service.SQLServicer) []mcpserver.ServerTool {
-	return []mcpserver.ServerTool{
-		{Tool: toolSQLQuery(), Handler: handleSQLQuery(svc)},
+func sqlTools(svc service.SQLServicer) []serverTool {
+	return []serverTool{
+		{Tool: toolSQLQuery(), Perm: permission.KVRange, Handler: handleSQLQuery(svc)},
 	}
 }
 

@@ -22,34 +22,41 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // lockTools returns the MCP tool registrations for distributed lock operations.
-func lockTools(lockSvc service.LockServicer) []mcpserver.ServerTool {
-	return []mcpserver.ServerTool{
+func lockTools(lockSvc service.LockServicer) []serverTool {
+	return []serverTool{
 		{
 			Tool:    toolLockAcquire(),
+			Perm:    permission.LocksAcquire,
 			Handler: handleLockAcquire(lockSvc),
 		},
 		{
 			Tool:    toolLockTryLock(),
+			Perm:    permission.LocksAcquire,
 			Handler: handleLockTryLock(lockSvc),
 		},
 		{
 			Tool:    toolLockRelease(),
+			Perm:    permission.LocksRelease,
 			Handler: handleLockRelease(lockSvc),
 		},
 		{
 			Tool:    toolLockExtend(),
+			Perm:    permission.LocksExtend,
 			Handler: handleLockExtend(lockSvc),
 		},
 		{
 			Tool:    toolLockStatus(),
+			Perm:    permission.LocksStatus,
 			Handler: handleLockStatus(lockSvc),
 		},
 		{
 			Tool:    toolLockList(),
+			Perm:    permission.LocksList,
 			Handler: handleLockList(lockSvc),
 		},
 	}

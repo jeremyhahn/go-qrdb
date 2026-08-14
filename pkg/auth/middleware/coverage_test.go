@@ -35,6 +35,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -385,17 +386,41 @@ func TestAuthenticateQUIC_UserEnrichment(t *testing.T) {
 // AuthorizeQUIC tests
 // ---------------------------------------------------------------------------
 
+// testQUICMethodRegistry builds a minimal registration-site registry for the
+// AuthorizeQUIC unit tests (the full production registry is built by the QUIC
+// server's buildHandlers and guarded in pkg/api/quic).
+func testQUICMethodRegistry() *QUICMethodRegistry {
+	r := NewQUICMethodRegistry()
+	r.Register("kv.Put", permission.KVPut)
+	return r
+}
+
 func TestAuthorizeQUIC_NoMapping(t *testing.T) {
 	authz := &mockAuthorizer{}
 	m := New(authz)
 
-	// DEFAULT-DENY: a method without a permission mapping is rejected, not
-	// allowed through. The authorizer is never consulted for an unmapped
+	// DEFAULT-DENY: a method without a registered permission is rejected, not
+	// allowed through. The authorizer is never consulted for an unregistered
 	// method (the denial is decided before the permission check).
 	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "alice", TenantID: "t1"})
-	err := m.AuthorizeQUIC(ctx, "unknown.Method")
+	err := m.AuthorizeQUIC(ctx, testQUICMethodRegistry(), "unknown.Method")
 	if err == nil {
-		t.Fatal("expected unmapped QUIC method to be denied, got nil")
+		t.Fatal("expected unregistered QUIC method to be denied, got nil")
+	}
+	if authz.calls.Load() != 0 {
+		t.Errorf("expected 0 authorize calls, got %d", authz.calls.Load())
+	}
+}
+
+func TestAuthorizeQUIC_NilRegistryDenied(t *testing.T) {
+	authz := &mockAuthorizer{}
+	m := New(authz)
+
+	// A nil registry covers nothing: every method is denied (fail-closed).
+	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "alice", TenantID: "t1"})
+	err := m.AuthorizeQUIC(ctx, nil, "kv.Put")
+	if err == nil {
+		t.Fatal("expected nil registry to deny, got nil")
 	}
 	if authz.calls.Load() != 0 {
 		t.Errorf("expected 0 authorize calls, got %d", authz.calls.Load())
@@ -406,8 +431,8 @@ func TestAuthorizeQUIC_NoIdentity(t *testing.T) {
 	authz := &mockAuthorizer{}
 	m := New(authz)
 
-	// A mapped method with no identity in context should return unauthenticated.
-	err := m.AuthorizeQUIC(context.Background(), "kv.Put")
+	// A registered method with no identity in context should return unauthenticated.
+	err := m.AuthorizeQUIC(context.Background(), testQUICMethodRegistry(), "kv.Put")
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -428,7 +453,7 @@ func TestAuthorizeQUIC_Authorized(t *testing.T) {
 	id := &auth.Identity{Subject: "alice", TenantID: "t1", Roles: []string{"admin"}}
 	ctx := auth.WithIdentity(context.Background(), id)
 
-	err := m.AuthorizeQUIC(ctx, "kv.Put")
+	err := m.AuthorizeQUIC(ctx, testQUICMethodRegistry(), "kv.Put")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -444,7 +469,7 @@ func TestAuthorizeQUIC_Unauthorized(t *testing.T) {
 	id := &auth.Identity{Subject: "bob", TenantID: "t1"}
 	ctx := auth.WithIdentity(context.Background(), id)
 
-	err := m.AuthorizeQUIC(ctx, "kv.Put")
+	err := m.AuthorizeQUIC(ctx, testQUICMethodRegistry(), "kv.Put")
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -647,7 +672,7 @@ func TestRESTMiddleware_StoreUnavailable(t *testing.T) {
 		t.Error("handler should not be called")
 	})
 
-	handler := m.RESTMiddleware(next)
+	handler := m.RESTMiddleware(testRESTRoutes(), next)
 	req := httptest.NewRequest(http.MethodGet, "/status", nil)
 	rec := httptest.NewRecorder()
 
@@ -704,7 +729,7 @@ func TestRESTMiddleware_TLSInjection(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	handler := m.RESTMiddleware(next)
+	handler := m.RESTMiddleware(testRESTRoutes(), next)
 	req := httptest.NewRequest(http.MethodGet, "/status", nil)
 	req.TLS = tlsState
 	rec := httptest.NewRecorder()

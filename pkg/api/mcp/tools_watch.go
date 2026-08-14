@@ -22,6 +22,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
@@ -46,10 +47,11 @@ import (
 const defaultWatchTimeout = 5 * time.Second
 
 // watchTools returns the MCP tool registrations for watch operations.
-func watchTools(watchSvc service.WatchServicer) []mcpserver.ServerTool {
-	return []mcpserver.ServerTool{
+func watchTools(watchSvc service.WatchServicer) []serverTool {
+	return []serverTool{
 		{
 			Tool:    toolWatch(),
+			Perm:    permission.WatchWatch,
 			Handler: handleWatch(watchSvc),
 		},
 	}
